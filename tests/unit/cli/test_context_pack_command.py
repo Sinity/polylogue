@@ -15,7 +15,7 @@ from polylogue.cli.commands.context_pack import context_pack_command
 from polylogue.cli.shared.types import AppEnv
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.types import ContentBlockType, Provider
+from polylogue.types import BlockType, Provider
 
 
 def _archive_env(archive_root: Path) -> AppEnv:
@@ -43,7 +43,7 @@ def test_context_pack_reads_archive_from_archive_tiers(tmp_path: Path) -> None:
                         provider_message_id="m1",
                         role=Role.USER,
                         text="hello archive pack",
-                        content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="hello archive pack")],
+                        content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="hello archive pack")],
                     )
                 ],
             )

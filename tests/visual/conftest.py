@@ -163,7 +163,7 @@ def _build_reader_c1(workspace: ReaderWorkspace, *, attachments: bool = False) -
     """(Re)ingest the ``reader-c1`` session, optionally with the six
     MK3-state attachments linked to its first message."""
     from polylogue.daemon.web_shell_attachments import PREVIEW_SIZE_BUDGET
-    from polylogue.types import ContentBlockType
+    from polylogue.types import BlockType
     from tests.infra.storage_records import SessionBuilder
 
     builder = (
@@ -192,7 +192,7 @@ def _build_reader_c1(workspace: ReaderWorkspace, *, attachments: bool = False) -
             message_type="tool_result",
             content_blocks=[
                 {
-                    "type": ContentBlockType.TOOL_RESULT.value,
+                    "type": BlockType.TOOL_RESULT.value,
                     "text": "python -m pytest tests/visual\nstatus: passed",
                 }
             ],

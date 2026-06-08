@@ -145,7 +145,7 @@ def _seed_test_db(workspace: dict[str, Path]) -> None:
     from polylogue.archive.message.roles import Role
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.types import ContentBlockType, Provider
+    from polylogue.types import BlockType, Provider
 
     workspace["archive_root"].mkdir(parents=True, exist_ok=True)
     with ArchiveStore(workspace["archive_root"]) as archive:
@@ -163,7 +163,7 @@ def _seed_test_db(workspace: dict[str, Path]) -> None:
                             role=Role.USER,
                             text="Hello reader",
                             timestamp="2026-01-01T00:00:00+00:00",
-                            content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="Hello reader")],
+                            content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="Hello reader")],
                         )
                     ],
                 )
@@ -174,7 +174,7 @@ def _seed_archive_test_archive(workspace: dict[str, Path]) -> str:
     from polylogue.archive.message.roles import Role
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.types import ContentBlockType, Provider
+    from polylogue.types import BlockType, Provider
 
     workspace["archive_root"].mkdir(parents=True, exist_ok=True)
     with ArchiveStore(workspace["archive_root"]) as archive:
@@ -191,7 +191,7 @@ def _seed_archive_test_archive(workspace: dict[str, Path]) -> str:
                         role=Role.USER,
                         text="Hello archive reader",
                         timestamp="2026-01-01T00:00:00+00:00",
-                        content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="Hello archive reader")],
+                        content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="Hello archive reader")],
                     )
                 ],
             )

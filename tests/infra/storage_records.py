@@ -35,7 +35,7 @@ from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to
 from polylogue.storage.sqlite.connection import connection_context, open_connection
 from polylogue.types import (
     AttachmentId,
-    ContentBlockType,
+    BlockType,
     ContentHash,
     MessageId,
     Provider,
@@ -195,7 +195,7 @@ def _content_block_record(
         message_id=_message_id(message_id),
         session_id=_session_id(session_id),
         block_index=block_index,
-        type=ContentBlockType.from_string(block_type),
+        type=BlockType.from_string(block_type),
         text=text,
         tool_name=tool_name,
         tool_id=tool_id,
@@ -1065,11 +1065,9 @@ class SessionBuilder:
         role_value = None if role is None else Role.normalize(role)
         word_count = len(text.split()) if text.strip() else 0
         has_tool_use = (
-            1
-            if (block_types & {ContentBlockType.TOOL_USE, ContentBlockType.TOOL_RESULT}) or role_value is Role.TOOL
-            else 0
+            1 if (block_types & {BlockType.TOOL_USE, BlockType.TOOL_RESULT}) or role_value is Role.TOOL else 0
         )
-        has_thinking = 1 if ContentBlockType.THINKING in block_types else 0
+        has_thinking = 1 if BlockType.THINKING in block_types else 0
         default_sort_key = _timestamp_sort_key(ts) if ts is not None else None
         default_content_hash = uuid4().hex[:16]
 
@@ -1201,10 +1199,8 @@ def make_message(
     block_types = {blk.type for blk in all_blocks}
     role_value = Role.normalize(role)
     word_count = len(text.split()) if isinstance(text, str) and text.strip() else 0
-    has_tool_use = (
-        1 if (block_types & {ContentBlockType.TOOL_USE, ContentBlockType.TOOL_RESULT}) or role_value is Role.TOOL else 0
-    )
-    has_thinking = 1 if ContentBlockType.THINKING in block_types else 0
+    has_tool_use = 1 if (block_types & {BlockType.TOOL_USE, BlockType.TOOL_RESULT}) or role_value is Role.TOOL else 0
+    has_thinking = 1 if BlockType.THINKING in block_types else 0
     default_sort_key = _timestamp_sort_key(ts)
     default_content_hash = uuid4().hex[:16]
 

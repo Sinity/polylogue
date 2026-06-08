@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from pydantic import ValidationError
 
 from polylogue.sources.providers.claude_ai import ClaudeAISession
-from polylogue.types import ContentBlockType, Provider
+from polylogue.types import BlockType, Provider
 
 from ..base import (
     ParsedContentBlock,
@@ -63,7 +63,7 @@ def parse_ai(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
             raw_content = raw_message.get("content")
             content_blocks = content_blocks_from_segments(raw_content) if isinstance(raw_content, list) else []
             if not content_blocks and msg.text:
-                content_blocks = [ParsedContentBlock(type=ContentBlockType.TEXT, text=msg.text)]
+                content_blocks = [ParsedContentBlock(type=BlockType.TEXT, text=msg.text)]
             messages.append(
                 ParsedMessage(
                     provider_message_id=msg.uuid,

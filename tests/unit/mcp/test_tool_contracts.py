@@ -59,7 +59,7 @@ from polylogue.mcp.archive_support import (
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.surfaces.payloads import TagMutationResult
-from polylogue.types import ContentBlockType, Provider, SessionId
+from polylogue.types import BlockType, Provider, SessionId
 from tests.infra.mcp import (
     MCPServerUnderTest,
     invoke_surface,
@@ -298,7 +298,7 @@ def _seed_archive(
             provider_message_id=f"{native_id}-m1",
             role=Role.USER,
             text=text,
-            content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text=text)],
+            content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
         )
     ]
     for msg_id, msg_text in extra:
@@ -307,7 +307,7 @@ def _seed_archive(
                 provider_message_id=msg_id,
                 role=Role.ASSISTANT,
                 text=msg_text,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text=msg_text)],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text=msg_text)],
             )
         )
     with ArchiveStore(archive_root) as archive:
@@ -1138,7 +1138,7 @@ class TestStatsTool:
                             provider_message_id="m1",
                             role=Role.USER,
                             text="stats v1",
-                            content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="stats v1")],
+                            content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="stats v1")],
                         )
                     ],
                 )

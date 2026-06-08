@@ -619,7 +619,7 @@ def test_archive_pending_window_and_embedding_success(tmp_path: Path) -> None:
     from polylogue.archive.message.roles import Role
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.types import ContentBlockType, Provider
+    from polylogue.types import BlockType, Provider
 
     archive_root = tmp_path / "archive"
     long_text = "This archive message is long enough to embed for semantic search."
@@ -634,7 +634,7 @@ def test_archive_pending_window_and_embedding_success(tmp_path: Path) -> None:
                         provider_message_id="m1",
                         role=Role.USER,
                         text=long_text,
-                        content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text=long_text)],
+                        content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text=long_text)],
                     )
                 ],
             )
@@ -688,7 +688,7 @@ def test_archive_embedding_error_records_retryable_status(tmp_path: Path) -> Non
     from polylogue.archive.message.roles import Role
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.types import ContentBlockType, Provider
+    from polylogue.types import BlockType, Provider
 
     class ErrorProvider(_FakeV1VectorProvider):
         def _get_embeddings(self, texts: list[str], input_type: str = "document") -> list[list[float]]:
@@ -706,7 +706,7 @@ def test_archive_embedding_error_records_retryable_status(tmp_path: Path) -> Non
                         provider_message_id="m1",
                         role=Role.USER,
                         text=long_text,
-                        content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text=long_text)],
+                        content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text=long_text)],
                     )
                 ],
             )

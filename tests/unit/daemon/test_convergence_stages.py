@@ -26,7 +26,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.connection import open_connection
-from polylogue.types import ContentBlockType, Provider
+from polylogue.types import BlockType, Provider
 from tests.infra.frozen_clock import FrozenClock
 
 
@@ -74,7 +74,7 @@ def _seed_raw_source_session(conn: sqlite3.Connection, *, session_id: str, sourc
                     role=Role.normalize("user"),
                     text=f"Message for {session_id}",
                     position=0,
-                    content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text=f"Message for {session_id}")],
+                    content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text=f"Message for {session_id}")],
                 )
             ],
         ),
@@ -99,7 +99,7 @@ def _seed_index_session(conn: sqlite3.Connection, *, session_id: str, text: str)
                     role=Role.normalize("user"),
                     text=text,
                     position=0,
-                    content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text=text)],
+                    content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
                 )
             ],
         ),
@@ -120,7 +120,7 @@ def _seed_empty_text_index_session(conn: sqlite3.Connection, *, session_id: str)
                     role=Role.normalize("user"),
                     text="",
                     position=0,
-                    content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="")],
+                    content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="")],
                 )
             ],
         ),

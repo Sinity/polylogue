@@ -6,7 +6,7 @@ from typing import NewType
 
 from polylogue.core.enums import (
     ArtifactSupportStatus,
-    ContentBlockType,
+    BlockType,
     ExerciseIOMode,
     PlanStage,
     Provider,
@@ -26,7 +26,7 @@ SessionEventId = NewType("SessionEventId", str)
 __all__ = [
     "AttachmentId",
     "ArtifactSupportStatus",
-    "ContentBlockType",
+    "BlockType",
     "ContentHash",
     "SessionId",
     "ExerciseIOMode",

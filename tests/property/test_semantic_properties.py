@@ -17,7 +17,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.sources.dispatch import detect_provider, parse_payload
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.parsers.base_models import ParsedSessionEvent
-from polylogue.types import ContentBlockType
+from polylogue.types import BlockType
 from tests.infra.strategies.schema_driven import schema_conformant_payload
 
 PARSEABLE_PROVIDERS = ("chatgpt", "claude-code", "codex")
@@ -54,12 +54,12 @@ def test_parse_produces_valid_roles(provider: str, data: st.DataObject) -> None:
 @given(data=st.data())
 @settings(max_examples=15, deadline=None, suppress_health_check=_HEALTH_SUPPRESS)
 def test_parse_produces_valid_content_block_types(provider: str, data: st.DataObject) -> None:
-    """Content blocks always have valid ContentBlockType values."""
+    """Content blocks always have valid BlockType values."""
     payload = data.draw(schema_conformant_payload(provider))
     sessions = _try_parse(provider, payload)
     if not sessions:
         return
-    valid_types = set(ContentBlockType)
+    valid_types = set(BlockType)
     for conv in sessions:
         for msg in conv.messages:
             for block in msg.content_blocks:

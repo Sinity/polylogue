@@ -5,7 +5,6 @@ from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import (
     BlockType,
-    ContentBlockType,
     Origin,
     PasteBoundary,
     Provider,
@@ -14,13 +13,14 @@ from polylogue.core.enums import (
     sql_check_in,
     sql_value_list,
 )
-from polylogue.types import ContentBlockType as LegacyContentBlockType
+from polylogue.types import BlockType as TypesBlockType
 from polylogue.types import Provider as LegacyProvider
 
 
 def test_core_enums_preserve_legacy_import_identity() -> None:
     assert LegacyProvider is Provider
-    assert LegacyContentBlockType is ContentBlockType
+    # polylogue.types re-exports the same canonical BlockType object as core.enums.
+    assert TypesBlockType is BlockType
     assert Role.normalize("human") is Role.USER
     assert MessageType.normalize("tool-use") is MessageType.TOOL_USE
     assert BranchType.SIDECHAIN.value == "sidechain"
@@ -40,10 +40,20 @@ def test_origin_values_match_archive_issue_contract() -> None:
     )
 
 
-def test_archive_block_type_adds_reasoning_without_broadening_previous_content_block_shape() -> None:
-    assert "reasoning" in enum_values(BlockType)
-    assert "code" in enum_values(BlockType)
-    assert "reasoning" not in enum_values(ContentBlockType)
+def test_block_type_is_single_canonical_block_vocabulary() -> None:
+    # ContentBlockType (parse-side) and BlockType (storage-side) were merged into
+    # one canonical enum (#1743); BlockType carries the full stored+parsed block
+    # vocabulary, and the blocks.block_type CHECK validates against exactly this set.
+    assert enum_values(BlockType) == (
+        "text",
+        "thinking",
+        "reasoning",
+        "tool_use",
+        "tool_result",
+        "image",
+        "code",
+        "document",
+    )
 
 
 def test_sql_check_helpers_render_stable_sqlite_literals() -> None:

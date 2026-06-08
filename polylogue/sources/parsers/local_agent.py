@@ -7,7 +7,7 @@ from collections.abc import Mapping
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.json import JSONDocument, json_document
-from polylogue.types import ContentBlockType, Provider
+from polylogue.types import BlockType, Provider
 
 from .base import ParsedContentBlock, ParsedMessage, ParsedSession
 
@@ -57,7 +57,7 @@ def parse_hermes(payload: JSONDocument, fallback_id: str) -> ParsedSession:
                 provider_message_id=f"{session_id}:system",
                 role=Role.SYSTEM,
                 text=system_prompt,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text=system_prompt)],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text=system_prompt)],
                 position=0,
                 variant_index=0,
                 is_active_path=True,
@@ -97,7 +97,7 @@ def _parse_gemini_message(item: object, *, index: int, position: int) -> ParsedM
         if thought_text:
             content_blocks.append(
                 ParsedContentBlock(
-                    type=ContentBlockType.THINKING,
+                    type=BlockType.THINKING,
                     text=thought_text,
                     metadata={"index": thought_index},
                 )
@@ -115,7 +115,7 @@ def _parse_gemini_message(item: object, *, index: int, position: int) -> ParsedM
         role=_role(_string(record.get("type")) or "unknown", assistant_aliases={"gemini", "model"}),
         text=text,
         timestamp=_string(record.get("timestamp")),
-        content_blocks=content_blocks or [ParsedContentBlock(type=ContentBlockType.TEXT, text=text)],
+        content_blocks=content_blocks or [ParsedContentBlock(type=BlockType.TEXT, text=text)],
         position=position,
         variant_index=0,
         is_active_path=True,
@@ -144,7 +144,7 @@ def _parse_hermes_message(
     content_blocks = _content_blocks_from_content(record.get("content"))
     reasoning = _string(record.get("reasoning_content")) or _string(record.get("reasoning"))
     if reasoning:
-        content_blocks.append(ParsedContentBlock(type=ContentBlockType.THINKING, text=reasoning))
+        content_blocks.append(ParsedContentBlock(type=BlockType.THINKING, text=reasoning))
     for tool_index, tool_call in enumerate(_list(record.get("tool_calls")), start=1):
         tool_record = json_document(tool_call)
         if not tool_record:
@@ -153,7 +153,7 @@ def _parse_hermes_message(
     tool_call_id = _string(record.get("tool_call_id"))
     role = _role(_string(record.get("role")) or "unknown")
     if role is Role.TOOL and text:
-        content_blocks.append(ParsedContentBlock(type=ContentBlockType.TOOL_RESULT, tool_id=tool_call_id, text=text))
+        content_blocks.append(ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id=tool_call_id, text=text))
     if not text and not content_blocks:
         return None
     token_usage = _token_usage_fields(record)
@@ -162,7 +162,7 @@ def _parse_hermes_message(
         role=role,
         text=text,
         timestamp=_string(record.get("timestamp")) or _string(record.get("created_at")),
-        content_blocks=content_blocks or [ParsedContentBlock(type=ContentBlockType.TEXT, text=text)],
+        content_blocks=content_blocks or [ParsedContentBlock(type=BlockType.TEXT, text=text)],
         position=position,
         variant_index=0,
         is_active_path=True,
@@ -230,7 +230,7 @@ def _token_usage_fields(record: JSONDocument) -> dict[str, int]:
 
 def _content_blocks_from_content(content: object) -> list[ParsedContentBlock]:
     if isinstance(content, str):
-        return [ParsedContentBlock(type=ContentBlockType.TEXT, text=content)] if content else []
+        return [ParsedContentBlock(type=BlockType.TEXT, text=content)] if content else []
     if isinstance(content, list):
         blocks: list[ParsedContentBlock] = []
         for index, item in enumerate(content, start=1):
@@ -238,7 +238,7 @@ def _content_blocks_from_content(content: object) -> list[ParsedContentBlock]:
             if text:
                 blocks.append(
                     ParsedContentBlock(
-                        type=ContentBlockType.TEXT,
+                        type=BlockType.TEXT,
                         text=text,
                         metadata={"index": index} if not isinstance(item, str) else None,
                     )
@@ -246,7 +246,7 @@ def _content_blocks_from_content(content: object) -> list[ParsedContentBlock]:
         return blocks
     if isinstance(content, Mapping):
         text = _content_text(content)
-        return [ParsedContentBlock(type=ContentBlockType.TEXT, text=text)] if text else []
+        return [ParsedContentBlock(type=BlockType.TEXT, text=text)] if text else []
     return []
 
 
@@ -275,7 +275,7 @@ def _tool_use_block(record: JSONDocument, *, fallback_id: str) -> ParsedContentB
     tool_id = _string(record.get("id")) or _string(record.get("call_id")) or fallback_id
     raw_input = record.get("arguments") if "arguments" in record else function.get("arguments")
     return ParsedContentBlock(
-        type=ContentBlockType.TOOL_USE,
+        type=BlockType.TOOL_USE,
         tool_name=tool_name,
         tool_id=tool_id,
         tool_input=_tool_input(raw_input),

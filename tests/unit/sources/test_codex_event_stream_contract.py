@@ -32,7 +32,7 @@ from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.parsers.codex import looks_like as _looks_like_impl
 from polylogue.sources.parsers.codex import parse as _parse_impl
 from polylogue.sources.parsers.codex import parse_stream
-from polylogue.types import ContentBlockType
+from polylogue.types import BlockType
 
 CATALOG_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "codex_event_stream"
 
@@ -239,14 +239,10 @@ class TestToolCallStreamingContract:
         session = _parse(records, "tool_call_stream")
 
         tool_use_msgs = [
-            msg
-            for msg in session.messages
-            if any(block.type == ContentBlockType.TOOL_USE for block in msg.content_blocks)
+            msg for msg in session.messages if any(block.type == BlockType.TOOL_USE for block in msg.content_blocks)
         ]
         assert len(tool_use_msgs) == 1
-        tool_use_block = next(
-            block for block in tool_use_msgs[0].content_blocks if block.type == ContentBlockType.TOOL_USE
-        )
+        tool_use_block = next(block for block in tool_use_msgs[0].content_blocks if block.type == BlockType.TOOL_USE)
         assert tool_use_block.tool_name == "exec_command"
         assert tool_use_block.tool_id == "call_abc"
         assert tool_use_block.tool_input == {"cmd": "ls /tmp"}
@@ -259,7 +255,7 @@ class TestToolCallStreamingContract:
             (msg, block)
             for msg in session.messages
             for block in msg.content_blocks
-            if block.type == ContentBlockType.TOOL_RESULT
+            if block.type == BlockType.TOOL_RESULT
         ]
         assert len(tool_results) == 1
         result_msg, result_block = tool_results[0]
@@ -276,13 +272,13 @@ class TestToolCallStreamingContract:
             block.tool_id
             for msg in session.messages
             for block in msg.content_blocks
-            if block.type == ContentBlockType.TOOL_USE
+            if block.type == BlockType.TOOL_USE
         ]
         tool_result_ids = [
             block.tool_id
             for msg in session.messages
             for block in msg.content_blocks
-            if block.type == ContentBlockType.TOOL_RESULT
+            if block.type == BlockType.TOOL_RESULT
         ]
         assert tool_use_ids == ["call_git", "call_read"]
         assert tool_result_ids == ["call_git", "call_read"]
@@ -338,13 +334,13 @@ class TestStreamResilience:
             block.tool_id
             for msg in session.messages
             for block in msg.content_blocks
-            if block.type == ContentBlockType.TOOL_USE
+            if block.type == BlockType.TOOL_USE
         ]
         tool_result_ids = [
             block.tool_id
             for msg in session.messages
             for block in msg.content_blocks
-            if block.type == ContentBlockType.TOOL_RESULT
+            if block.type == BlockType.TOOL_RESULT
         ]
         assert tool_use_ids == ["call_truncated"]
         assert tool_result_ids == []
@@ -381,11 +377,11 @@ class TestStreamResilience:
             (block.type, block.tool_id)
             for msg in session.messages
             for block in msg.content_blocks
-            if block.type in (ContentBlockType.TOOL_USE, ContentBlockType.TOOL_RESULT)
+            if block.type in (BlockType.TOOL_USE, BlockType.TOOL_RESULT)
         ]
         # Both halves of the pair must survive — order may be insertion order.
-        assert (ContentBlockType.TOOL_RESULT, "call_oo") in tool_blocks
-        assert (ContentBlockType.TOOL_USE, "call_oo") in tool_blocks
+        assert (BlockType.TOOL_RESULT, "call_oo") in tool_blocks
+        assert (BlockType.TOOL_USE, "call_oo") in tool_blocks
 
     def test_malformed_record_does_not_abort_stream(self) -> None:
         records: list[object] = [

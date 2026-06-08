@@ -23,7 +23,7 @@ from polylogue.rendering.renderers.html import (
     _attach_branches,
     render_session_html,
 )
-from polylogue.types import ContentBlockType, Provider, SessionId
+from polylogue.types import BlockType, Provider, SessionId
 from polylogue.ui.facade_console import PlainConsole
 from tests.infra.builders import make_conv, make_msg
 
@@ -214,13 +214,13 @@ class TestMediaBlockRendering:
     def test_media_blocks_render_across_markdown_html_and_plaintext(self) -> None:
         blocks = [
             _make_media_block(
-                ContentBlockType.IMAGE.value,
+                BlockType.IMAGE.value,
                 name="Preview image",
                 url="https://example.com/image.png",
                 mime_type="image/png",
             ),
             _make_media_block(
-                ContentBlockType.DOCUMENT.value,
+                BlockType.DOCUMENT.value,
                 name="Spec",
                 url="https://example.com/spec.pdf",
                 mime_type="application/pdf",

@@ -515,7 +515,7 @@ class TestLikePatternResistance:
 
         Archive counts a tool use at its call site — the assistant message
         carrying the ``tool_use`` content block — via
-        ``write.py:_has_block(message, ContentBlockType.TOOL_USE)`` at both the
+        ``write.py:_has_block(message, BlockType.TOOL_USE)`` at both the
         per-message (``messages.has_tool_use``) and session
         (``sessions.tool_use_count``) levels. The tool *result*, delivered as a
         ``role='tool'`` message carrying a ``tool_result`` block, is therefore

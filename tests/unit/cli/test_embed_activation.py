@@ -203,7 +203,7 @@ class TestPreflightCommand:
         from polylogue.archive.message.roles import Role
         from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-        from polylogue.types import ContentBlockType, Provider
+        from polylogue.types import BlockType, Provider
 
         archive_root = tmp_path / "archive"
         monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
@@ -218,7 +218,7 @@ class TestPreflightCommand:
                             provider_message_id="m1",
                             role=Role.USER,
                             text="embed me",
-                            content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="embed me")],
+                            content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="embed me")],
                         )
                     ],
                 )
@@ -245,7 +245,7 @@ class TestPreflightCommand:
         from polylogue.archive.message.roles import Role
         from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-        from polylogue.types import ContentBlockType, Provider
+        from polylogue.types import BlockType, Provider
 
         archive_root = tmp_path / "archive"
         monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
@@ -261,9 +261,7 @@ class TestPreflightCommand:
                                 provider_message_id="m1",
                                 role=Role.USER,
                                 text=f"embed me {index}",
-                                content_blocks=[
-                                    ParsedContentBlock(type=ContentBlockType.TEXT, text=f"embed me {index}")
-                                ],
+                                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text=f"embed me {index}")],
                             )
                         ],
                     )

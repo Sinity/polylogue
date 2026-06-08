@@ -51,7 +51,7 @@ from polylogue.storage.search.cache import get_cache_stats
 from polylogue.storage.search.runtime import search_messages
 from polylogue.storage.sqlite.archive_tiers.write import _attachment_id
 from polylogue.storage.sqlite.connection import open_connection
-from polylogue.types import ContentBlockType, Provider, SessionId
+from polylogue.types import BlockType, Provider, SessionId
 
 BlockSpec: TypeAlias = tuple[str, ParsedContentBlock]
 AttachmentRefSpec: TypeAlias = tuple[str, str]
@@ -209,7 +209,7 @@ def _block_tuple(
     del block_id, session_id, block_index
     return (
         message_id,
-        ParsedContentBlock(type=ContentBlockType.TEXT, text=text),
+        ParsedContentBlock(type=BlockType.TEXT, text=text),
     )
 
 

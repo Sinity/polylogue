@@ -13,7 +13,7 @@ from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import PasteBoundary
 from polylogue.logging import get_logger
 from polylogue.pipeline.semantic_capture import detect_context_compaction
-from polylogue.types import ContentBlockType, Provider
+from polylogue.types import BlockType, Provider
 
 from ..base import (
     ParsedContentBlock,
@@ -101,7 +101,7 @@ def _content_blocks_from_record(message: object, text: str | None) -> list[Parse
     raw_msg_content = message.get("content") if isinstance(message, dict) else None
     content_blocks = content_blocks_from_segments(raw_msg_content) if raw_msg_content else []
     if not content_blocks and text:
-        return [ParsedContentBlock(type=ContentBlockType.TEXT, text=text)]
+        return [ParsedContentBlock(type=BlockType.TEXT, text=text)]
     return content_blocks
 
 
@@ -190,9 +190,7 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedSe
                     role=Role.SYSTEM,
                     text=summary_text,
                     timestamp=compaction_timestamp,
-                    content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text=summary_text)]
-                    if summary_text
-                    else [],
+                    content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text=summary_text)] if summary_text else [],
                     message_type=MessageType.SUMMARY,
                     position=message_position,
                     variant_index=0,

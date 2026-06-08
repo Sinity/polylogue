@@ -15,15 +15,15 @@ from polylogue.sources.parsers.claude.common import (
     extract_messages_from_chat_messages,
     reclassify_tool_result_envelope,
 )
-from polylogue.types import ContentBlockType
+from polylogue.types import BlockType
 
 
 def _tool_result(idx: int) -> ParsedContentBlock:
-    return ParsedContentBlock(type=ContentBlockType.TOOL_RESULT, text=f"result {idx}")
+    return ParsedContentBlock(type=BlockType.TOOL_RESULT, text=f"result {idx}")
 
 
 def _text(text: str) -> ParsedContentBlock:
-    return ParsedContentBlock(type=ContentBlockType.TEXT, text=text)
+    return ParsedContentBlock(type=BlockType.TEXT, text=text)
 
 
 class TestReclassifyToolResultEnvelope:

@@ -4,7 +4,7 @@ from collections.abc import Mapping
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.timestamps import parse_timestamp
-from polylogue.types import ContentBlockType, Provider
+from polylogue.types import BlockType, Provider
 
 from .base import ParsedAttachment, ParsedContentBlock, ParsedMessage, ParsedSession
 
@@ -195,7 +195,7 @@ def extract_messages_from_mapping(
             # ChatGPT thinking/reasoning blocks
             content_blocks.append(
                 ParsedContentBlock(
-                    type=ContentBlockType.THINKING,
+                    type=BlockType.THINKING,
                     text=text,
                     metadata={"content_type": content_type},
                 )
@@ -204,7 +204,7 @@ def extract_messages_from_mapping(
             # Code-interpreter input — top-level text, no parts (#1744).
             content_blocks.append(
                 ParsedContentBlock(
-                    type=ContentBlockType.CODE,
+                    type=BlockType.CODE,
                     text=text,
                     metadata={"content_type": content_type},
                 )
@@ -213,7 +213,7 @@ def extract_messages_from_mapping(
             # Code-interpreter output — top-level text, no parts (#1744).
             content_blocks.append(
                 ParsedContentBlock(
-                    type=ContentBlockType.TOOL_RESULT,
+                    type=BlockType.TOOL_RESULT,
                     text=text,
                     metadata={"content_type": content_type},
                 )
@@ -221,11 +221,11 @@ def extract_messages_from_mapping(
         elif parts:
             for part in parts:
                 if isinstance(part, str) and part:
-                    content_blocks.append(ParsedContentBlock(type=ContentBlockType.TEXT, text=part))
+                    content_blocks.append(ParsedContentBlock(type=BlockType.TEXT, text=part))
                 elif isinstance(part, dict) and part.get("content_type") == "image_asset_pointer":
                     content_blocks.append(
                         ParsedContentBlock(
-                            type=ContentBlockType.IMAGE,
+                            type=BlockType.IMAGE,
                             metadata={"asset_pointer": str(part.get("asset_pointer", ""))},
                         )
                     )

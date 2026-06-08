@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import cast
 
 from polylogue.archive.viewport.viewports import ToolCategory, classify_tool
-from polylogue.core.enums import BlockType, ContentBlockType, PasteBoundary
+from polylogue.core.enums import BlockType, PasteBoundary
 from polylogue.core.identity_law import message_id as archive_message_id
 from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.json import JSONValue
@@ -229,8 +229,8 @@ def write_parsed_session_to_archive(
                 session.reported_duration_ms,
                 len(messages),
                 sum(_word_count(message.text) for message in messages),
-                sum(_has_block(message, ContentBlockType.TOOL_USE) for message in messages),
-                sum(_has_block(message, ContentBlockType.THINKING) for message in messages),
+                sum(_has_block(message, BlockType.TOOL_USE) for message in messages),
+                sum(_has_block(message, BlockType.THINKING) for message in messages),
                 sum(_has_paste(message) for message in messages),
                 sum(1 for message in messages if _enum_value(message.role) == "user"),
                 sum(1 for message in messages if _enum_value(message.role) == "assistant"),
@@ -951,8 +951,8 @@ def _write_messages(
                 _enum_value(message.message_type),
                 message.model_name,
                 message.model_effort,
-                _has_block(message, ContentBlockType.TOOL_USE),
-                _has_block(message, ContentBlockType.THINKING),
+                _has_block(message, BlockType.TOOL_USE),
+                _has_block(message, BlockType.THINKING),
                 _has_paste(message),
                 _paste_boundary(message),
                 variant_index,
@@ -1681,7 +1681,7 @@ def _message_blocks(message: ParsedMessage) -> list[ParsedContentBlock]:
     if message.content_blocks:
         return list(message.content_blocks)
     if message.text:
-        return [ParsedContentBlock(type=ContentBlockType.TEXT, text=message.text)]
+        return [ParsedContentBlock(type=BlockType.TEXT, text=message.text)]
     return []
 
 
@@ -1752,7 +1752,7 @@ def _semantic_type(block: ParsedContentBlock) -> str | None:
     return None if category is ToolCategory.OTHER else category.value
 
 
-def _has_block(message: ParsedMessage, block_type: ContentBlockType) -> int:
+def _has_block(message: ParsedMessage, block_type: BlockType) -> int:
     return int(any(_enum_value(block.type) == block_type.value for block in message.content_blocks))
 
 

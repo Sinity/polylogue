@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import TypeAlias
 
 from polylogue.api import Polylogue
-from polylogue.core.enums import ContentBlockType, Origin, Role
+from polylogue.core.enums import BlockType, Origin, Role
 from polylogue.core.json import JSONDocument, JSONValue, require_json_document
 from polylogue.storage.hydrators import session_from_records
 from polylogue.storage.runtime import AttachmentRecord, ContentBlockRecord, MessageRecord, SessionRecord
@@ -363,7 +363,7 @@ def _content_blocks_by_message(conn: sqlite3.Connection, session_id: str) -> dic
             message_id=MessageId(message_id),
             session_id=SessionId(session_id),
             block_index=int(row["position"]),
-            type=ContentBlockType(str(row["block_type"])),
+            type=BlockType(str(row["block_type"])),
             text=row["text"],
             tool_name=row["tool_name"],
             tool_id=row["tool_id"],

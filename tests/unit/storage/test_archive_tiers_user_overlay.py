@@ -13,7 +13,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     upsert_session_work_event,
     write_parsed_session_to_archive,
 )
-from polylogue.types import ContentBlockType, Provider
+from polylogue.types import BlockType, Provider
 
 
 def _connect(path: Path, tier: ArchiveTier) -> sqlite3.Connection:
@@ -36,7 +36,7 @@ def test_archive_tiers_user_overlay_orphan_check_resolves_archive_targets(tmp_pa
                 ParsedMessage(
                     provider_message_id="m1",
                     role=Role.USER,
-                    content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="mark me")],
+                    content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="mark me")],
                 )
             ],
             attachments=[

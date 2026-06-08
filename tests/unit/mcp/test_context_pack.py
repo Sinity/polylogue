@@ -15,7 +15,7 @@ from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.mcp.context_pack import select_context_pack_sessions
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.types import ContentBlockType, Provider
+from polylogue.types import BlockType, Provider
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.mcp import (
     EXPECTED_TOOL_NAMES,
@@ -40,7 +40,7 @@ def _seed_context_pack_archive(tmp_path: Path, *, provider_session_id: str) -> P
                         provider_message_id="m1",
                         role=Role.USER,
                         text="context pack body",
-                        content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="context pack body")],
+                        content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="context pack body")],
                     )
                 ],
             )
@@ -197,7 +197,7 @@ class TestBuildContextPackRegistration:
                             provider_message_id="m1",
                             role=Role.USER,
                             text="mcp context needle",
-                            content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="mcp context needle")],
+                            content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="mcp context needle")],
                         )
                     ],
                 )
@@ -245,9 +245,7 @@ class TestBuildContextPackRegistration:
                             provider_message_id="m1",
                             role=Role.USER,
                             text="mixed context needle",
-                            content_blocks=[
-                                ParsedContentBlock(type=ContentBlockType.TEXT, text="mixed context needle")
-                            ],
+                            content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="mixed context needle")],
                         )
                     ],
                 )

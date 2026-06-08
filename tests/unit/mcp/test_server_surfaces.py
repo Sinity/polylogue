@@ -16,7 +16,7 @@ from polylogue.archive.models import Session, SessionSummary
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.types import ContentBlockType, Provider, SessionId
+from polylogue.types import BlockType, Provider, SessionId
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.mcp import (
     EXPECTED_PROMPT_NAMES,
@@ -52,7 +52,7 @@ def _write_archive_session(
                     provider_message_id=f"{native_id}-m1",
                     role=Role.USER,
                     text=text,
-                    content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text=text)],
+                    content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
                 )
             ],
         )
@@ -238,7 +238,7 @@ class TestResourceSurfaces:
                             provider_message_id="m1",
                             role=Role.USER,
                             text="resource stats v1",
-                            content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="resource stats v1")],
+                            content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="resource stats v1")],
                         )
                     ],
                 )
@@ -329,7 +329,7 @@ class TestResourceSurfaces:
                             provider_message_id=f"resource-single-m{i}",
                             role=Role.USER,
                             text=f"line {i}",
-                            content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text=f"line {i}")],
+                            content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text=f"line {i}")],
                         )
                         for i in range(2)
                     ],
@@ -749,9 +749,7 @@ class TestPromptSurfaces:
                             provider_message_id=f"m{i}",
                             role=Role.USER,
                             text=f"error number {i} occurred",
-                            content_blocks=[
-                                ParsedContentBlock(type=ContentBlockType.TEXT, text=f"error number {i} occurred")
-                            ],
+                            content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text=f"error number {i} occurred")],
                         )
                         for i in range(30)
                     ],
@@ -919,7 +917,7 @@ class TestExportSessionTool:
                             provider_message_id="msg-1",
                             role=Role.ASSISTANT,
                             text=body,
-                            content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text=body)],
+                            content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text=body)],
                         )
                     ],
                 )

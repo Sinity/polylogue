@@ -28,7 +28,7 @@ from polylogue.archive.attachment.models import Attachment
 from polylogue.archive.models import Message, Session
 from polylogue.rendering.core_markdown import format_session_markdown
 from polylogue.rendering.renderers.html import render_session_html
-from polylogue.types import ContentBlockType
+from polylogue.types import BlockType
 from tests.infra.builders import make_conv as build_conv
 from tests.infra.builders import make_msg as build_msg
 
@@ -173,7 +173,7 @@ def test_tool_use_roundtrip_markdown_snapshot(snapshot: object) -> None:
             text="",
             content_blocks=[
                 {
-                    "type": ContentBlockType.TOOL_USE.value,
+                    "type": BlockType.TOOL_USE.value,
                     "name": "bash",
                     "id": "call-1",
                     "input": {"command": "ls"},
@@ -186,7 +186,7 @@ def test_tool_use_roundtrip_markdown_snapshot(snapshot: object) -> None:
             text="",
             content_blocks=[
                 {
-                    "type": ContentBlockType.TOOL_RESULT.value,
+                    "type": BlockType.TOOL_RESULT.value,
                     "tool_use_id": "call-1",
                     "content": "README.md\npyproject.toml\n",
                 }
@@ -212,11 +212,11 @@ def test_thinking_block_markdown_snapshot(snapshot: object) -> None:
             text="",
             content_blocks=[
                 {
-                    "type": ContentBlockType.THINKING.value,
+                    "type": BlockType.THINKING.value,
                     "text": "Let me think step by step about this.",
                 },
                 {
-                    "type": ContentBlockType.TEXT.value,
+                    "type": BlockType.TEXT.value,
                     "text": "Final answer.",
                 },
             ],
@@ -268,7 +268,7 @@ def test_code_fence_with_backticks_markdown_snapshot(snapshot: object) -> None:
             text="",
             content_blocks=[
                 {
-                    "type": ContentBlockType.CODE.value,
+                    "type": BlockType.CODE.value,
                     "language": "python",
                     "text": "# example\nprint('inline `backticks` survive')\n",
                 }
@@ -350,7 +350,7 @@ def test_tool_use_roundtrip_html_snapshot(snapshot: object) -> None:
             text="",
             content_blocks=[
                 {
-                    "type": ContentBlockType.TOOL_USE.value,
+                    "type": BlockType.TOOL_USE.value,
                     "name": "bash",
                     "id": "call-1",
                     "input": {"command": "ls"},
@@ -363,7 +363,7 @@ def test_tool_use_roundtrip_html_snapshot(snapshot: object) -> None:
             text="",
             content_blocks=[
                 {
-                    "type": ContentBlockType.TOOL_RESULT.value,
+                    "type": BlockType.TOOL_RESULT.value,
                     "tool_use_id": "call-1",
                     "content": "README.md\npyproject.toml\n",
                 }
@@ -389,11 +389,11 @@ def test_thinking_block_html_snapshot(snapshot: object) -> None:
             text="",
             content_blocks=[
                 {
-                    "type": ContentBlockType.THINKING.value,
+                    "type": BlockType.THINKING.value,
                     "text": "Let me think step by step about this.",
                 },
                 {
-                    "type": ContentBlockType.TEXT.value,
+                    "type": BlockType.TEXT.value,
                     "text": "Final answer.",
                 },
             ],
@@ -418,7 +418,7 @@ def test_code_fence_with_backticks_html_snapshot(snapshot: object) -> None:
             text="",
             content_blocks=[
                 {
-                    "type": ContentBlockType.CODE.value,
+                    "type": BlockType.CODE.value,
                     "language": "python",
                     "text": "# example\nprint('inline `backticks` survive')\n",
                 }
@@ -444,7 +444,7 @@ def test_media_blocks_render_in_session_html() -> None:
             text="This fallback text should not be rendered",
             content_blocks=[
                 {
-                    "type": ContentBlockType.DOCUMENT.value,
+                    "type": BlockType.DOCUMENT.value,
                     "name": "Spec",
                     "url": "https://example.com/spec.pdf",
                     "mime_type": "application/pdf",

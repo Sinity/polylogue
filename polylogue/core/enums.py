@@ -152,26 +152,14 @@ class MessageType(PolylogueStrEnum):
         raise ValueError(msg)
 
 
-class ContentBlockType(PolylogueStrEnum):
-    """Canonical stored and parsed content block kinds."""
-
-    TEXT = "text"
-    THINKING = "thinking"
-    TOOL_USE = "tool_use"
-    TOOL_RESULT = "tool_result"
-    IMAGE = "image"
-    CODE = "code"
-    DOCUMENT = "document"
-
-    @classmethod
-    def from_string(cls, value: str | ContentBlockType) -> ContentBlockType:
-        if isinstance(value, cls):
-            return value
-        return cls(str(value).strip().lower())
-
-
 class BlockType(PolylogueStrEnum):
-    """Archive block kind vocabulary."""
+    """Canonical stored and parsed block kinds.
+
+    Single block-kind vocabulary across the parse and storage layers (the
+    `blocks.block_type` CHECK validates against it). `reasoning` is a
+    storage-side superset value; parsers may emit it where a provider
+    distinguishes reasoning from thinking.
+    """
 
     TEXT = "text"
     THINKING = "thinking"
@@ -181,6 +169,12 @@ class BlockType(PolylogueStrEnum):
     IMAGE = "image"
     CODE = "code"
     DOCUMENT = "document"
+
+    @classmethod
+    def from_string(cls, value: str | BlockType) -> BlockType:
+        if isinstance(value, cls):
+            return value
+        return cls(str(value).strip().lower())
 
 
 class SemanticBlockType(PolylogueStrEnum):
@@ -339,7 +333,6 @@ __all__ = [
     "ArtifactSupportStatus",
     "BlockType",
     "BranchType",
-    "ContentBlockType",
     "ExerciseIOMode",
     "LinkType",
     "MessageType",

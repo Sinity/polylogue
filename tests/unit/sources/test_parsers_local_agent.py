@@ -11,7 +11,7 @@ from polylogue.sources.dispatch import detect_provider, parse_payload
 from polylogue.sources.parsers import antigravity
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.source_parsing import iter_source_sessions
-from polylogue.types import ContentBlockType, Provider
+from polylogue.types import BlockType, Provider
 
 
 def test_gemini_cli_session_document_parses_through_dispatch() -> None:
@@ -59,9 +59,9 @@ def test_gemini_cli_session_document_parses_through_dispatch() -> None:
     assert session.messages[1].input_tokens == 0
     assert session.messages[1].output_tokens == 10
     assert {block.type for block in session.messages[1].content_blocks} >= {
-        ContentBlockType.TEXT,
-        ContentBlockType.THINKING,
-        ContentBlockType.TOOL_USE,
+        BlockType.TEXT,
+        BlockType.THINKING,
+        BlockType.TOOL_USE,
     }
 
 
@@ -113,14 +113,14 @@ def test_hermes_session_document_parses_through_dispatch() -> None:
     assert session.messages[2].input_tokens == 4
     assert session.messages[2].output_tokens == 6
     assert {block.type for block in session.messages[2].content_blocks} >= {
-        ContentBlockType.TEXT,
-        ContentBlockType.THINKING,
-        ContentBlockType.TOOL_USE,
+        BlockType.TEXT,
+        BlockType.THINKING,
+        BlockType.TOOL_USE,
     }
     assert session.messages[3].role == "tool"
     assert session.messages[3].is_active_leaf is True
     assert session.active_leaf_message_provider_id == "call-1"
-    assert any(block.type is ContentBlockType.TOOL_RESULT for block in session.messages[3].content_blocks)
+    assert any(block.type is BlockType.TOOL_RESULT for block in session.messages[3].content_blocks)
 
 
 def test_agent_sidecars_are_classified_as_non_session() -> None:

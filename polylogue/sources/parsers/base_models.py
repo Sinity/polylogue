@@ -12,7 +12,7 @@ from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import TitleSource
 from polylogue.core.security import sanitize_path as _sanitize_path_helper
 from polylogue.core.timestamps import parse_timestamp
-from polylogue.types import ContentBlockType, Provider
+from polylogue.types import BlockType, Provider
 
 
 class ParsedContentBlock(BaseModel):
@@ -28,7 +28,7 @@ class ParsedContentBlock(BaseModel):
     - document: document reference
     """
 
-    type: ContentBlockType
+    type: BlockType
     text: str | None = None
     tool_name: str | None = None
     tool_id: str | None = None
@@ -38,8 +38,8 @@ class ParsedContentBlock(BaseModel):
 
     @field_validator("type", mode="before")
     @classmethod
-    def coerce_type(cls, v: object) -> ContentBlockType:
-        return ContentBlockType.from_string(str(v))
+    def coerce_type(cls, v: object) -> BlockType:
+        return BlockType.from_string(str(v))
 
 
 class ParsedPasteEvidence(BaseModel):

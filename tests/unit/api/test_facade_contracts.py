@@ -38,7 +38,7 @@ from polylogue.core.enums import Origin
 from polylogue.errors import DatabaseError, PolylogueError
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.types import ContentBlockType, Provider
+from polylogue.types import BlockType, Provider
 from tests.infra.storage_records import db_setup
 
 # ---------------------------------------------------------------------------
@@ -258,7 +258,7 @@ async def test_archive_tiers_facade_reads_active_db_override_root(tmp_path: Path
     from polylogue.archive.message.roles import Role
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.types import ContentBlockType
+    from polylogue.types import BlockType
 
     configured_root = tmp_path / "configured"
     active_root = tmp_path / "active"
@@ -275,7 +275,7 @@ async def test_archive_tiers_facade_reads_active_db_override_root(tmp_path: Path
                         provider_message_id="m1",
                         role=Role.USER,
                         text="override root needle",
-                        content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="override root needle")],
+                        content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="override root needle")],
                     )
                 ],
             )
@@ -302,13 +302,13 @@ async def _seed_two_sessions(db_path: Path) -> None:
                         provider_message_id="alpha-m1",
                         role=Role.USER,
                         text="alpha body",
-                        content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="alpha body")],
+                        content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="alpha body")],
                     ),
                     ParsedMessage(
                         provider_message_id="alpha-m2",
                         role=Role.ASSISTANT,
                         text="alpha reply",
-                        content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="alpha reply")],
+                        content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="alpha reply")],
                     ),
                 ],
             )
@@ -323,7 +323,7 @@ async def _seed_two_sessions(db_path: Path) -> None:
                         provider_message_id="beta-m1",
                         role=Role.USER,
                         text="beta body",
-                        content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="beta body")],
+                        content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="beta body")],
                     )
                 ],
             )
@@ -643,7 +643,7 @@ async def test_get_actions_derives_from_archive_blocks(tmp_path: Path) -> None:
                         text="running a command",
                         content_blocks=[
                             ParsedContentBlock(
-                                type=ContentBlockType.TOOL_USE,
+                                type=BlockType.TOOL_USE,
                                 tool_name="Bash",
                                 tool_id="t1",
                                 tool_input={"command": "ls"},
@@ -854,7 +854,7 @@ async def test_archive_tiers_api_reads_native_sessions(tmp_path: Path) -> None:
         ArchiveStore,
     )
     from polylogue.storage.sqlite.archive_tiers.write import ArchiveSessionEnvelope
-    from polylogue.types import ContentBlockType
+    from polylogue.types import BlockType
 
     archive = _archive(tmp_path)
     session = ParsedSession(
@@ -868,15 +868,15 @@ async def test_archive_tiers_api_reads_native_sessions(tmp_path: Path) -> None:
                 role=Role.USER,
                 message_type=MessageType.TOOL_USE,
                 content_blocks=[
-                    ParsedContentBlock(type=ContentBlockType.TEXT, text="api archive needle"),
+                    ParsedContentBlock(type=BlockType.TEXT, text="api archive needle"),
                     ParsedContentBlock(
-                        type=ContentBlockType.TOOL_USE,
+                        type=BlockType.TOOL_USE,
                         tool_name="Read",
                         tool_id="api-tool-1",
                         tool_input={"file_path": "README.md"},
                     ),
                     ParsedContentBlock(
-                        type=ContentBlockType.TOOL_USE,
+                        type=BlockType.TOOL_USE,
                         tool_name="Bash",
                         tool_id="api-tool-2",
                         tool_input={"command": "pytest"},
@@ -1071,7 +1071,7 @@ async def test_archive_tiers_api_reads_session_topology(tmp_path: Path) -> None:
     from polylogue.archive.session.branch_type import BranchType
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.types import ContentBlockType
+    from polylogue.types import BlockType
 
     archive = _archive(tmp_path)
     root = ParsedSession(
@@ -1082,7 +1082,7 @@ async def test_archive_tiers_api_reads_session_topology(tmp_path: Path) -> None:
             ParsedMessage(
                 provider_message_id="root-message",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="root")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="root")],
             )
         ],
     )
@@ -1096,7 +1096,7 @@ async def test_archive_tiers_api_reads_session_topology(tmp_path: Path) -> None:
             ParsedMessage(
                 provider_message_id="child-message",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="child")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="child")],
             )
         ],
     )
@@ -1190,7 +1190,7 @@ async def test_archive_tiers_api_user_mutations_write_user_tier(tmp_path: Path) 
     from polylogue.archive.message.roles import Role
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.types import ContentBlockType
+    from polylogue.types import BlockType
 
     archive = _archive(tmp_path)
     session = ParsedSession(
@@ -1201,7 +1201,7 @@ async def test_archive_tiers_api_user_mutations_write_user_tier(tmp_path: Path) 
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="user state target")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="user state target")],
             )
         ],
     )
@@ -1260,7 +1260,7 @@ async def test_archive_tiers_api_tag_rollups_read_index_and_user_tiers(tmp_path:
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.archive_tiers.write import upsert_session_tag
-    from polylogue.types import ContentBlockType
+    from polylogue.types import BlockType
 
     archive = _archive(tmp_path)
     first = ParsedSession(
@@ -1273,7 +1273,7 @@ async def test_archive_tiers_api_tag_rollups_read_index_and_user_tiers(tmp_path:
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="rollup one")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="rollup one")],
             )
         ],
     )
@@ -1287,7 +1287,7 @@ async def test_archive_tiers_api_tag_rollups_read_index_and_user_tiers(tmp_path:
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="rollup two")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="rollup two")],
             )
         ],
     )
@@ -1328,7 +1328,7 @@ async def test_archive_tiers_api_archive_coverage_reads_index_tier(tmp_path: Pat
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.archive_tiers.write import upsert_session_profile_costs, upsert_session_work_event
-    from polylogue.types import ContentBlockType
+    from polylogue.types import BlockType
 
     archive = _archive(tmp_path)
     codex = ParsedSession(
@@ -1343,9 +1343,9 @@ async def test_archive_tiers_api_archive_coverage_reads_index_tier(tmp_path: Pat
                 role=Role.USER,
                 text="one two three",
                 content_blocks=[
-                    ParsedContentBlock(type=ContentBlockType.TEXT, text="one two three"),
+                    ParsedContentBlock(type=BlockType.TEXT, text="one two three"),
                     ParsedContentBlock(
-                        type=ContentBlockType.TOOL_USE,
+                        type=BlockType.TOOL_USE,
                         tool_name="Read",
                         tool_id="tool-1",
                         tool_input={"file_path": "README.md"},
@@ -1356,7 +1356,7 @@ async def test_archive_tiers_api_archive_coverage_reads_index_tier(tmp_path: Pat
                 provider_message_id="m2",
                 role=Role.ASSISTANT,
                 text="four five",
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="four five")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="four five")],
             ),
         ],
     )
@@ -1370,7 +1370,7 @@ async def test_archive_tiers_api_archive_coverage_reads_index_tier(tmp_path: Pat
                 provider_message_id="m1",
                 role=Role.USER,
                 text="plain",
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="plain")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="plain")],
             )
         ],
     )
@@ -1451,7 +1451,7 @@ async def test_archive_tiers_api_tool_usage_reads_index_actions(tmp_path: Path) 
     from polylogue.insights.tool_usage import ToolUsageInsightQuery
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.types import ContentBlockType
+    from polylogue.types import BlockType
 
     archive = _archive(tmp_path)
     codex = ParsedSession(
@@ -1463,15 +1463,15 @@ async def test_archive_tiers_api_tool_usage_reads_index_actions(tmp_path: Path) 
                 provider_message_id="m1",
                 role=Role.USER,
                 content_blocks=[
-                    ParsedContentBlock(type=ContentBlockType.TEXT, text="inspect file"),
+                    ParsedContentBlock(type=BlockType.TEXT, text="inspect file"),
                     ParsedContentBlock(
-                        type=ContentBlockType.TOOL_USE,
+                        type=BlockType.TOOL_USE,
                         tool_name="Read",
                         tool_id="tool-1",
                         tool_input={"file_path": "README.md"},
                     ),
                     ParsedContentBlock(
-                        type=ContentBlockType.TOOL_RESULT,
+                        type=BlockType.TOOL_RESULT,
                         text="read output",
                         tool_id="tool-1",
                     ),
@@ -1487,7 +1487,7 @@ async def test_archive_tiers_api_tool_usage_reads_index_actions(tmp_path: Path) 
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="plain chat")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="plain chat")],
             )
         ],
     )
@@ -1532,7 +1532,7 @@ async def test_archive_tiers_api_delete_uses_index_tier_and_keeps_user_overlay(t
     from polylogue.archive.message.roles import Role
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.types import ContentBlockType
+    from polylogue.types import BlockType
 
     archive = _archive(tmp_path)
     session = ParsedSession(
@@ -1542,7 +1542,7 @@ async def test_archive_tiers_api_delete_uses_index_tier_and_keeps_user_overlay(t
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="delete through v1")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="delete through v1")],
             )
         ],
     )
@@ -1576,7 +1576,7 @@ async def test_archive_tiers_api_raw_artifacts_read_source_tier(tmp_path: Path) 
     from polylogue.archive.message.roles import Role
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.types import ContentBlockType
+    from polylogue.types import BlockType
 
     archive = _archive(tmp_path)
     payload = b'{"session":"raw-artifact-v1"}'
@@ -1587,7 +1587,7 @@ async def test_archive_tiers_api_raw_artifacts_read_source_tier(tmp_path: Path) 
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="raw artifact target")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="raw artifact target")],
             )
         ],
     )
@@ -1634,7 +1634,7 @@ async def test_archive_tiers_api_timeline_insights_read_index_tier(tmp_path: Pat
         upsert_session_phase,
         upsert_session_work_event,
     )
-    from polylogue.types import ContentBlockType
+    from polylogue.types import BlockType
 
     archive = _archive(tmp_path)
     session = ParsedSession(
@@ -1644,7 +1644,7 @@ async def test_archive_tiers_api_timeline_insights_read_index_tier(tmp_path: Pat
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="timeline target")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="timeline target")],
             )
         ],
     )
@@ -1747,7 +1747,7 @@ async def test_archive_tiers_api_threads_read_index_tier(tmp_path: Path) -> None
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.archive_tiers.write import upsert_insight_materialization
-    from polylogue.types import ContentBlockType
+    from polylogue.types import BlockType
 
     archive = _archive(tmp_path)
     parent = ParsedSession(
@@ -1762,7 +1762,7 @@ async def test_archive_tiers_api_threads_read_index_tier(tmp_path: Path) -> None
             ParsedMessage(
                 provider_message_id="p1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="thread parent")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="thread parent")],
             )
         ],
     )
@@ -1780,12 +1780,12 @@ async def test_archive_tiers_api_threads_read_index_tier(tmp_path: Path) -> None
             ParsedMessage(
                 provider_message_id="c1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="thread child")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="thread child")],
             ),
             ParsedMessage(
                 provider_message_id="c2",
                 role=Role.ASSISTANT,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="thread reply")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="thread reply")],
             ),
         ],
     )
@@ -1934,7 +1934,7 @@ async def test_archive_tiers_api_session_costs_read_index_tier(tmp_path: Path) -
         upsert_insight_materialization,
         upsert_session_profile_costs,
     )
-    from polylogue.types import ContentBlockType
+    from polylogue.types import BlockType
 
     archive = _archive(tmp_path)
     priced_session = ParsedSession(
@@ -1947,7 +1947,7 @@ async def test_archive_tiers_api_session_costs_read_index_tier(tmp_path: Path) -
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="priced cost")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="priced cost")],
             )
         ],
     )
@@ -1961,7 +1961,7 @@ async def test_archive_tiers_api_session_costs_read_index_tier(tmp_path: Path) -
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="unpriced cost")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="unpriced cost")],
             )
         ],
     )
@@ -2045,7 +2045,7 @@ async def test_archive_tiers_api_latency_profiles_read_index_tier(tmp_path: Path
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.archive_tiers.write import upsert_insight_materialization
-    from polylogue.types import ContentBlockType
+    from polylogue.types import BlockType
 
     archive = _archive(tmp_path)
     session = ParsedSession(
@@ -2058,16 +2058,16 @@ async def test_archive_tiers_api_latency_profiles_read_index_tier(tmp_path: Path
                 provider_message_id="m1",
                 role=Role.USER,
                 occurred_at_ms=1_770_000_000_000,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="first prompt")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="first prompt")],
             ),
             ParsedMessage(
                 provider_message_id="m2",
                 role=Role.ASSISTANT,
                 occurred_at_ms=1_770_000_060_000,
                 content_blocks=[
-                    ParsedContentBlock(type=ContentBlockType.TEXT, text="using tool"),
+                    ParsedContentBlock(type=BlockType.TEXT, text="using tool"),
                     ParsedContentBlock(
-                        type=ContentBlockType.TOOL_USE,
+                        type=BlockType.TOOL_USE,
                         tool_name="Read",
                         tool_id="tool-1",
                         tool_input={"file_path": "README.md"},
@@ -2078,13 +2078,13 @@ async def test_archive_tiers_api_latency_profiles_read_index_tier(tmp_path: Path
                 provider_message_id="m3",
                 role=Role.USER,
                 occurred_at_ms=1_770_000_180_000,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="follow up")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="follow up")],
             ),
             ParsedMessage(
                 provider_message_id="m4",
                 role=Role.ASSISTANT,
                 occurred_at_ms=1_770_000_300_000,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="answer")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="answer")],
             ),
         ],
     )
@@ -2138,7 +2138,7 @@ async def test_archive_tiers_api_archive_debt_reads_archive_consistency(tmp_path
     from polylogue.insights.archive import ArchiveDebtInsightQuery
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.types import ContentBlockType
+    from polylogue.types import BlockType
 
     archive = _archive(tmp_path)
     session = ParsedSession(
@@ -2149,7 +2149,7 @@ async def test_archive_tiers_api_archive_debt_reads_archive_consistency(tmp_path
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="debt target")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="debt target")],
             )
         ],
     )
@@ -2194,7 +2194,7 @@ async def test_archive_tiers_api_session_profiles_read_index_tier(tmp_path: Path
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.archive_tiers.write import upsert_insight_materialization
-    from polylogue.types import ContentBlockType
+    from polylogue.types import BlockType
 
     archive = _archive(tmp_path)
     session = ParsedSession(
@@ -2207,7 +2207,7 @@ async def test_archive_tiers_api_session_profiles_read_index_tier(tmp_path: Path
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="profile target")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="profile target")],
             )
         ],
     )
@@ -2308,7 +2308,7 @@ async def test_archive_tiers_api_session_insight_status_reads_index_tier(tmp_pat
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.archive_tiers.write import upsert_insight_materialization
-    from polylogue.types import ContentBlockType
+    from polylogue.types import BlockType
 
     archive = _archive(tmp_path)
     first = ParsedSession(
@@ -2319,7 +2319,7 @@ async def test_archive_tiers_api_session_insight_status_reads_index_tier(tmp_pat
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="status target")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="status target")],
             )
         ],
     )
@@ -2331,7 +2331,7 @@ async def test_archive_tiers_api_session_insight_status_reads_index_tier(tmp_pat
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="missing profile")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="missing profile")],
             )
         ],
     )
@@ -2403,7 +2403,7 @@ async def test_archive_tiers_api_marks_and_annotations_write_user_tier(tmp_path:
     from polylogue.archive.message.roles import Role
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.types import ContentBlockType
+    from polylogue.types import BlockType
 
     archive = _archive(tmp_path)
     session = ParsedSession(
@@ -2413,7 +2413,7 @@ async def test_archive_tiers_api_marks_and_annotations_write_user_tier(tmp_path:
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="overlay target")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="overlay target")],
             )
         ],
     )
@@ -2465,7 +2465,7 @@ async def test_archive_tiers_api_reader_artifacts_write_user_tier(tmp_path: Path
     from polylogue.archive.message.roles import Role
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.types import ContentBlockType
+    from polylogue.types import BlockType
 
     archive = _archive(tmp_path)
     session = ParsedSession(
@@ -2476,7 +2476,7 @@ async def test_archive_tiers_api_reader_artifacts_write_user_tier(tmp_path: Path
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="reader artifact target")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="reader artifact target")],
             )
         ],
     )
@@ -2564,7 +2564,7 @@ async def test_archive_tiers_api_corrections_write_user_tier(tmp_path: Path) -> 
     from polylogue.insights.feedback import CorrectionKind
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.types import ContentBlockType
+    from polylogue.types import BlockType
 
     archive = _archive(tmp_path)
     session = ParsedSession(
@@ -2575,7 +2575,7 @@ async def test_archive_tiers_api_corrections_write_user_tier(tmp_path: Path) -> 
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="correction target")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="correction target")],
             )
         ],
     )

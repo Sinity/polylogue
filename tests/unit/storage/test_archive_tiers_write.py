@@ -37,7 +37,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     upsert_session_work_event,
     write_parsed_session_to_archive,
 )
-from polylogue.types import ContentBlockType, Provider
+from polylogue.types import BlockType, Provider
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -66,7 +66,7 @@ def test_archive_tiers_writer_materializes_codex_session(tmp_path: Path) -> None
                 variant_index=0,
                 is_active_path=True,
                 is_active_leaf=False,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="run focused checks")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="run focused checks")],
             ),
             ParsedMessage(
                 provider_message_id="a1",
@@ -82,13 +82,13 @@ def test_archive_tiers_writer_materializes_codex_session(tmp_path: Path) -> None
                 duration_ms=1200,
                 content_blocks=[
                     ParsedContentBlock(
-                        type=ContentBlockType.TOOL_USE,
+                        type=BlockType.TOOL_USE,
                         tool_name="exec_command",
                         tool_id="tool-1",
                         tool_input={"command": "pytest -q", "path": "tests"},
                     ),
                     ParsedContentBlock(
-                        type=ContentBlockType.TOOL_RESULT,
+                        type=BlockType.TOOL_RESULT,
                         tool_id="tool-1",
                         text="checks passed",
                     ),
@@ -127,7 +127,7 @@ def test_archive_tiers_writer_preserves_chatgpt_branch_variants(tmp_path: Path) 
                 role=Role.USER,
                 text="question",
                 position=0,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="question")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="question")],
             ),
             ParsedMessage(
                 provider_message_id="a-old",
@@ -138,7 +138,7 @@ def test_archive_tiers_writer_preserves_chatgpt_branch_variants(tmp_path: Path) 
                 variant_index=0,
                 is_active_path=False,
                 is_active_leaf=False,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="old answer")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="old answer")],
             ),
             ParsedMessage(
                 provider_message_id="a-new",
@@ -149,7 +149,7 @@ def test_archive_tiers_writer_preserves_chatgpt_branch_variants(tmp_path: Path) 
                 variant_index=1,
                 is_active_path=True,
                 is_active_leaf=True,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="new answer")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="new answer")],
             ),
         ],
         active_leaf_message_provider_id="a-new",
@@ -191,7 +191,7 @@ def test_archive_tiers_writer_accepts_code_blocks(tmp_path: Path) -> None:
                 role=Role.ASSISTANT,
                 text="print('ok')",
                 position=0,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.CODE, text="print('ok')")],
+                content_blocks=[ParsedContentBlock(type=BlockType.CODE, text="print('ok')")],
             )
         ],
     )
@@ -212,14 +212,14 @@ def test_archive_tiers_writer_uses_identity_law_for_messages_without_native_ids(
                 provider_message_id="",
                 role=Role.USER,
                 text="first",
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="first")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="first")],
             ),
             ParsedMessage(
                 provider_message_id="",
                 role=Role.ASSISTANT,
                 text="second",
                 is_active_leaf=True,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="second")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="second")],
             ),
         ],
     )
@@ -248,7 +248,7 @@ def test_archive_tiers_writer_preserves_session_profile_defaults_with_cost_upser
                 provider_message_id="m1",
                 role=Role.USER,
                 text="what's the cost?",
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="what's the cost?")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="what's the cost?")],
             )
         ],
     )
@@ -315,7 +315,7 @@ def test_archive_tiers_insight_materialization_upsert_refreshes_shared_state(tmp
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="insight state")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="insight state")],
             )
         ],
     )
@@ -367,12 +367,12 @@ def test_archive_tiers_timeline_insight_rows_have_deterministic_targets(tmp_path
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="implement the plan")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="implement the plan")],
             ),
             ParsedMessage(
                 provider_message_id="m2",
                 role=Role.ASSISTANT,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="plan implemented")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="plan implemented")],
             ),
         ],
     )
@@ -468,7 +468,7 @@ def test_archive_tiers_session_tags_upsert_normalizes_and_refreshes_scores(tmp_p
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="tag me")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="tag me")],
             )
         ],
     )
@@ -537,7 +537,7 @@ def test_archive_tiers_writer_materializes_paste_span_from_parser_evidence(tmp_p
                         boundary_state="whole_message_fallback",
                     )
                 ],
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="pasted body")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="pasted body")],
             )
         ],
     )
@@ -577,7 +577,7 @@ def test_archive_tiers_writer_materializes_supported_session_events(tmp_path: Pa
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.ASSISTANT,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="summary anchor")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="summary anchor")],
             )
         ],
         session_events=[
@@ -651,7 +651,7 @@ def test_archive_tiers_writer_records_unresolved_parent_session_link(tmp_path: P
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="child")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="child")],
             )
         ],
     )
@@ -691,7 +691,7 @@ def test_archive_tiers_writer_resolves_parent_link_when_parent_already_exists(tm
             ParsedMessage(
                 provider_message_id="p1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="parent")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="parent")],
             )
         ],
     )
@@ -705,7 +705,7 @@ def test_archive_tiers_writer_resolves_parent_link_when_parent_already_exists(tm
             ParsedMessage(
                 provider_message_id="c1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="child")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="child")],
             )
         ],
     )
@@ -756,7 +756,7 @@ def test_archive_tiers_writer_resolves_existing_child_link_when_parent_arrives_l
             ParsedMessage(
                 provider_message_id="c1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="child")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="child")],
             )
         ],
     )
@@ -768,7 +768,7 @@ def test_archive_tiers_writer_resolves_existing_child_link_when_parent_arrives_l
             ParsedMessage(
                 provider_message_id="p1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="parent")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="parent")],
             )
         ],
     )
@@ -824,7 +824,7 @@ def test_archive_tiers_writer_materializes_repo_and_commit_edges(tmp_path: Path)
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="repo edge")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="repo edge")],
             )
         ],
     )
@@ -894,7 +894,7 @@ def test_archive_tiers_writer_replacement_clears_old_projection_rows(tmp_path: P
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="with old projections")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="with old projections")],
             )
         ],
         attachments=[
@@ -922,7 +922,7 @@ def test_archive_tiers_writer_replacement_clears_old_projection_rows(tmp_path: P
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="replacement")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="replacement")],
             )
         ],
     )
@@ -971,7 +971,7 @@ def test_archive_tiers_writer_materializes_attachments_and_refs(tmp_path: Path) 
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="see attachment")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="see attachment")],
             )
         ],
         attachments=[
@@ -1079,7 +1079,7 @@ def test_instructions_text_roundtrip(tmp_path: Path) -> None:
                 role=Role.USER,
                 text="hello",
                 position=0,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="hello")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="hello")],
             ),
         ],
     )
@@ -1103,7 +1103,7 @@ def test_instructions_text_none_when_absent(tmp_path: Path) -> None:
                 role=Role.USER,
                 text="hi",
                 position=0,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="hi")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="hi")],
             ),
         ],
     )
@@ -1140,7 +1140,7 @@ def test_title_source_roundtrip(tmp_path: Path) -> None:
                     role=Role.USER,
                     text="x",
                     position=0,
-                    content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="x")],
+                    content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="x")],
                 ),
             ],
         )
@@ -1162,7 +1162,7 @@ def test_title_source_none_when_absent(tmp_path: Path) -> None:
                 role=Role.USER,
                 text="x",
                 position=0,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="x")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="x")],
             ),
         ],
     )
@@ -1190,7 +1190,7 @@ def test_agent_policy_roundtrip(tmp_path: Path) -> None:
                 role=Role.USER,
                 text="do it",
                 position=0,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="do it")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="do it")],
             ),
         ],
         session_events=[
@@ -1231,7 +1231,7 @@ def test_agent_policy_absent_when_no_events(tmp_path: Path) -> None:
                 role=Role.USER,
                 text="hi",
                 position=0,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="hi")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="hi")],
             ),
         ],
     )

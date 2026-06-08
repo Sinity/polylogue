@@ -16,7 +16,7 @@ from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.timestamps import parse_timestamp_pair
 from polylogue.logging import get_logger
 from polylogue.sources.providers.codex import CodexRecord
-from polylogue.types import ContentBlockType, Provider
+from polylogue.types import BlockType, Provider
 
 from .base import (
     ParsedContentBlock,
@@ -287,7 +287,7 @@ def _codex_tool_message(record: dict[str, object], *, index: int, position: int)
             is_active_path=True,
             content_blocks=[
                 ParsedContentBlock(
-                    type=ContentBlockType.TOOL_USE,
+                    type=BlockType.TOOL_USE,
                     tool_name=tool_name,
                     tool_id=str(tool_id) if tool_id else None,
                     tool_input=_tool_input_from_arguments(payload.get("arguments")),
@@ -310,7 +310,7 @@ def _codex_tool_message(record: dict[str, object], *, index: int, position: int)
             is_active_path=True,
             content_blocks=[
                 ParsedContentBlock(
-                    type=ContentBlockType.TOOL_RESULT,
+                    type=BlockType.TOOL_RESULT,
                     tool_id=str(tool_id) if tool_id else None,
                     text=output_text,
                 )
@@ -523,8 +523,7 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
 
             content_blocks = content_blocks_from_segments(content)
             has_structured = any(
-                cb.type in (ContentBlockType.TOOL_USE, ContentBlockType.TOOL_RESULT, ContentBlockType.THINKING)
-                for cb in content_blocks
+                cb.type in (BlockType.TOOL_USE, BlockType.TOOL_RESULT, BlockType.THINKING) for cb in content_blocks
             )
             if not raw_role or raw_role == "unknown":
                 continue
@@ -536,7 +535,7 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
             if not content_blocks and text:
                 from .base import ParsedContentBlock
 
-                content_blocks = [ParsedContentBlock(type=ContentBlockType.TEXT, text=text)]
+                content_blocks = [ParsedContentBlock(type=BlockType.TEXT, text=text)]
             token_usage = _token_usage(message_record)
             model_name = _string_field(message_record, "model", "model_name") or current_model_name
             model_effort = _string_field(message_record, "effort", "model_effort") or current_model_effort

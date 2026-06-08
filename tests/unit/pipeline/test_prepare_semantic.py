@@ -15,7 +15,7 @@ from polylogue.pipeline.semantic_capture import extract_subagent_spawns, parse_g
 from polylogue.pipeline.semantic_metadata import extract_tool_metadata
 from polylogue.sources.parsers.base_models import ParsedContentBlock
 from polylogue.storage.sqlite.archive_tiers.write import _semantic_type
-from polylogue.types import ContentBlockType
+from polylogue.types import BlockType
 
 
 def _payload(data: object) -> JSONDocument:
@@ -194,7 +194,7 @@ class TestSemanticTypeClassifier:
 
     def test_tool_use_git_block_classified_as_git(self) -> None:
         block = ParsedContentBlock(
-            type=ContentBlockType.TOOL_USE,
+            type=BlockType.TOOL_USE,
             tool_name="Bash",
             tool_id="t1",
             tool_input={"command": "git status"},
@@ -203,7 +203,7 @@ class TestSemanticTypeClassifier:
 
     def test_tool_use_file_read_block_classified_as_file_read(self) -> None:
         block = ParsedContentBlock(
-            type=ContentBlockType.TOOL_USE,
+            type=BlockType.TOOL_USE,
             tool_name="Read",
             tool_id="t2",
             tool_input={"file_path": "/tmp/x.py"},
@@ -212,7 +212,7 @@ class TestSemanticTypeClassifier:
 
     def test_tool_use_subagent_block_classified_as_subagent(self) -> None:
         block = ParsedContentBlock(
-            type=ContentBlockType.TOOL_USE,
+            type=BlockType.TOOL_USE,
             tool_name="Task",
             tool_id="t3",
             tool_input={"prompt": "do work"},
@@ -221,7 +221,7 @@ class TestSemanticTypeClassifier:
 
     def test_uncategorized_tool_use_block_has_no_semantic_type(self) -> None:
         block = ParsedContentBlock(
-            type=ContentBlockType.TOOL_USE,
+            type=BlockType.TOOL_USE,
             tool_name="UnknownTool",
             tool_id="t4",
             tool_input={},
@@ -231,11 +231,11 @@ class TestSemanticTypeClassifier:
     def test_thinking_block_has_no_semantic_type(self) -> None:
         # Thinking is carried by block_type=THINKING, not semantic_type; the
         # writer only assigns semantic_type to tool_use blocks.
-        block = ParsedContentBlock(type=ContentBlockType.THINKING, text="reasoning")
+        block = ParsedContentBlock(type=BlockType.THINKING, text="reasoning")
         assert _semantic_type(block) is None
 
     def test_text_block_has_no_semantic_type(self) -> None:
-        block = ParsedContentBlock(type=ContentBlockType.TEXT, text="hello")
+        block = ParsedContentBlock(type=BlockType.TEXT, text="hello")
         assert _semantic_type(block) is None
 
 

@@ -25,7 +25,7 @@ from polylogue.sources.parsers.base import (
     ParsedSessionEvent,
 )
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-from polylogue.types import ContentBlockType, Provider
+from polylogue.types import BlockType, Provider
 from tests.infra.live_ingest import ingest_session
 
 
@@ -335,13 +335,13 @@ async def test_persists_structured_blocks_in_order(async_backend: SQLiteBackend)
                 text=None,
                 timestamp="2024-01-01T00:00:00Z",
                 content_blocks=[
-                    ParsedContentBlock(type=ContentBlockType.TEXT, text="inline"),
+                    ParsedContentBlock(type=BlockType.TEXT, text="inline"),
                     ParsedContentBlock(
-                        type=ContentBlockType.CODE,
+                        type=BlockType.CODE,
                         text="print('ok')",
                         metadata={"language": "python"},
                     ),
-                    ParsedContentBlock(type=ContentBlockType.TOOL_RESULT, text="ok"),
+                    ParsedContentBlock(type=BlockType.TOOL_RESULT, text="ok"),
                 ],
             ),
             ParsedMessage(
@@ -349,7 +349,7 @@ async def test_persists_structured_blocks_in_order(async_backend: SQLiteBackend)
                 role=Role.ASSISTANT,
                 text=None,
                 timestamp="2024-01-01T00:00:01Z",
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.THINKING, text="reasoning")],
+                content_blocks=[ParsedContentBlock(type=BlockType.THINKING, text="reasoning")],
             ),
         ],
         attachments=[],

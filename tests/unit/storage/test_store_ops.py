@@ -38,7 +38,7 @@ from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import open_connection
 from polylogue.types import (
     AttachmentId,
-    ContentBlockType,
+    BlockType,
     ContentHash,
     MessageId,
     Provider,
@@ -146,7 +146,7 @@ def _content_block(
         message_id=_message_id(message_id),
         session_id=_session_id(session_id),
         block_index=block_index,
-        type=ContentBlockType.from_string(block_type),
+        type=BlockType.from_string(block_type),
         text=text,
         tool_name=tool_name,
         tool_id=tool_id,

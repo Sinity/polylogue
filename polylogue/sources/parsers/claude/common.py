@@ -6,7 +6,7 @@ import json
 from collections.abc import Mapping
 
 from polylogue.archive.message.roles import Role
-from polylogue.types import ContentBlockType
+from polylogue.types import BlockType
 
 from ..base import (
     ParsedAttachment,
@@ -88,7 +88,7 @@ def reclassify_tool_result_envelope(role: Role, content_blocks: list[ParsedConte
         return role
     if not content_blocks:
         return role
-    if all(block.type == ContentBlockType.TOOL_RESULT for block in content_blocks):
+    if all(block.type == BlockType.TOOL_RESULT for block in content_blocks):
         return Role.TOOL
     return role
 
@@ -175,7 +175,7 @@ def extract_messages_from_chat_messages(
         raw_content = item.get("content")
         content_blocks = content_blocks_from_segments(raw_content) if isinstance(raw_content, list) else []
         if not content_blocks and text:
-            content_blocks = [ParsedContentBlock(type=ContentBlockType.TEXT, text=text)]
+            content_blocks = [ParsedContentBlock(type=BlockType.TEXT, text=text)]
 
         role = reclassify_tool_result_envelope(role, content_blocks)
 

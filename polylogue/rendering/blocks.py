@@ -6,7 +6,7 @@ from collections.abc import Callable, Mapping, Sequence
 from html import escape
 
 from polylogue.rendering.block_models import RenderableBlock
-from polylogue.types import ContentBlockType
+from polylogue.types import BlockType
 
 # -------------------------------------------------------------------
 # Markdown rendering
@@ -247,27 +247,27 @@ def _render_block_plaintext(block: RenderableBlock) -> str:
 
 _MEDIA_BLOCK_TYPES = frozenset(
     {
-        ContentBlockType.IMAGE.value,
-        ContentBlockType.DOCUMENT.value,
+        BlockType.IMAGE.value,
+        BlockType.DOCUMENT.value,
         "file",
     }
 )
 
 
 _MARKDOWN_BLOCK_RENDERERS: dict[str, Callable[[RenderableBlock], str]] = {
-    ContentBlockType.THINKING.value: _render_thinking_markdown,
-    ContentBlockType.TOOL_USE.value: _render_tool_use_markdown,
-    ContentBlockType.TOOL_RESULT.value: _render_tool_result_markdown,
-    ContentBlockType.CODE.value: _render_code_markdown,
+    BlockType.THINKING.value: _render_thinking_markdown,
+    BlockType.TOOL_USE.value: _render_tool_use_markdown,
+    BlockType.TOOL_RESULT.value: _render_tool_result_markdown,
+    BlockType.CODE.value: _render_code_markdown,
     **dict.fromkeys(_MEDIA_BLOCK_TYPES, _render_media_markdown),
 }
 
 
 _HTML_BLOCK_RENDERERS: dict[str, Callable[[RenderableBlock], str]] = {
-    ContentBlockType.THINKING.value: _render_thinking_html,
-    ContentBlockType.TOOL_USE.value: _render_tool_use_html,
-    ContentBlockType.TOOL_RESULT.value: _render_tool_result_html,
-    ContentBlockType.CODE.value: _render_code_html,
+    BlockType.THINKING.value: _render_thinking_html,
+    BlockType.TOOL_USE.value: _render_tool_use_html,
+    BlockType.TOOL_RESULT.value: _render_tool_result_html,
+    BlockType.CODE.value: _render_code_html,
     **dict.fromkeys(_MEDIA_BLOCK_TYPES, _render_media_html),
 }
 
@@ -304,18 +304,18 @@ def _render_media_plaintext(block: RenderableBlock) -> str:
 
 
 _PLAIN_BLOCK_RENDERERS: dict[str, Callable[[RenderableBlock], str]] = {
-    ContentBlockType.THINKING.value: _render_thinking_plaintext,
-    ContentBlockType.TOOL_USE.value: _render_tool_use_plaintext,
-    ContentBlockType.TOOL_RESULT.value: _render_tool_result_plaintext,
+    BlockType.THINKING.value: _render_thinking_plaintext,
+    BlockType.TOOL_USE.value: _render_tool_use_plaintext,
+    BlockType.TOOL_RESULT.value: _render_tool_result_plaintext,
     **dict.fromkeys(_MEDIA_BLOCK_TYPES, _render_media_plaintext),
 }
 
 
 _STRUCTURED_BLOCK_TYPES = {
-    ContentBlockType.THINKING.value,
-    ContentBlockType.TOOL_USE.value,
-    ContentBlockType.TOOL_RESULT.value,
-    ContentBlockType.CODE.value,
+    BlockType.THINKING.value,
+    BlockType.TOOL_USE.value,
+    BlockType.TOOL_RESULT.value,
+    BlockType.CODE.value,
 } | set(_MEDIA_BLOCK_TYPES)
 
 

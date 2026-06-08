@@ -18,7 +18,7 @@ from urllib.request import Request, urlopen
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.json import JSONDocument, dumps_bytes, loads
-from polylogue.types import ContentBlockType, Provider
+from polylogue.types import BlockType, Provider
 
 from .base import ParsedContentBlock, ParsedMessage, ParsedSession
 
@@ -261,7 +261,7 @@ def parse_brain_metadata(payload: JSONDocument, source_path: Path, fallback_id: 
                 role=Role.ASSISTANT,
                 text=body,
                 timestamp=updated_at,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text=body)] if body else [],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text=body)] if body else [],
                 position=0,
                 variant_index=0,
                 is_active_path=True,
@@ -359,7 +359,7 @@ def _messages_from_markdown(markdown: str, cascade_id: str) -> list[ParsedMessag
                 provider_message_id=provider_message_id,
                 role=role,
                 text=text,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text=text)],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
                 position=len(messages),
                 variant_index=0,
                 is_active_path=True,
@@ -377,7 +377,7 @@ def _messages_from_markdown(markdown: str, cascade_id: str) -> list[ParsedMessag
             provider_message_id=f"{cascade_id}:0:export",
             role=Role.ASSISTANT,
             text=text,
-            content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text=text)],
+            content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
             position=0,
             variant_index=0,
             is_active_path=True,

@@ -14,7 +14,7 @@ from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, Pa
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import archive_tier_spec
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.types import ContentBlockType, Provider
+from polylogue.types import BlockType, Provider
 
 USER_STATE_SESSION_ID = "claude-code-session:conv-user-state"
 ARCHIVE_USER_STATE_SESSION_ID = "claude-code-session:conv-v1-user-state"
@@ -47,7 +47,7 @@ def _seed_user_state_session(
                         provider_message_id=message_native_id,
                         role=Role.USER,
                         text=text,
-                        content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text=text)],
+                        content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
                     )
                 ],
             )
@@ -199,7 +199,7 @@ async def test_user_state_target_resolution_reads_archive_file_set_from_archive_
                         provider_message_id="m1",
                         role=Role.USER,
                         text="mark me",
-                        content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="mark me")],
+                        content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="mark me")],
                     )
                 ],
             )

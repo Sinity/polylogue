@@ -27,7 +27,7 @@ from polylogue.storage.sqlite.queries.mappers_support import (
 )
 from polylogue.types import (
     ArtifactSupportStatus,
-    ContentBlockType,
+    BlockType,
     MessageId,
     SemanticBlockType,
     SessionId,
@@ -96,7 +96,7 @@ def _row_to_content_block(row: sqlite3.Row) -> ContentBlockRecord:
         message_id=MessageId(row["message_id"]),
         session_id=SessionId(row["session_id"]),
         block_index=row["block_index"],
-        type=ContentBlockType.from_string(row["type"]),
+        type=BlockType.from_string(row["type"]),
         text=_row_text(row, "text"),
         tool_name=_row_text(row, "tool_name"),
         tool_id=_row_text(row, "tool_id"),

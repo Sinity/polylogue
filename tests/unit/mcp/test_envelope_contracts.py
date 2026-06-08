@@ -524,7 +524,7 @@ class TestNativeReadSurfaceHonorsContract:
         from polylogue.archive.message.roles import Role
         from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-        from polylogue.types import ContentBlockType, Provider
+        from polylogue.types import BlockType, Provider
 
         with ArchiveStore(archive_root) as archive:
             return archive.write_parsed(
@@ -537,9 +537,7 @@ class TestNativeReadSurfaceHonorsContract:
                             provider_message_id="m1",
                             role=Role.USER,
                             text="needle contract evidence",
-                            content_blocks=[
-                                ParsedContentBlock(type=ContentBlockType.TEXT, text="needle contract evidence")
-                            ],
+                            content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="needle contract evidence")],
                         )
                     ],
                 )

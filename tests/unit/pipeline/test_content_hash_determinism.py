@@ -17,7 +17,7 @@ from polylogue.pipeline.ids import (
 )
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.sources.parsers.base_models import ParsedSessionEvent
-from polylogue.types import ContentBlockType, Provider
+from polylogue.types import BlockType, Provider
 
 
 def _msg(provider_id: str, role: str, text: str, timestamp: str | None = "2024-01-01T00:00:00Z") -> ParsedMessage:
@@ -145,7 +145,7 @@ def test_message_order_affects_session_hash() -> None:
 
 
 def _mk_block(
-    block_type: ContentBlockType = ContentBlockType.TOOL_USE,
+    block_type: BlockType = BlockType.TOOL_USE,
     tool_name: str | None = "Bash",
     tool_id: str | None = "tool-1",
     tool_input: dict[str, object] | None = None,
@@ -196,8 +196,8 @@ def test_content_block_tool_input_affects_hash() -> None:
 
 def test_content_block_type_affects_hash() -> None:
     """Different content block types should produce different session hashes."""
-    block_tool = _mk_block(block_type=ContentBlockType.TOOL_USE)
-    block_text = _mk_block(block_type=ContentBlockType.TEXT, tool_name=None, tool_id=None, tool_input=None)
+    block_tool = _mk_block(block_type=BlockType.TOOL_USE)
+    block_text = _mk_block(block_type=BlockType.TEXT, tool_name=None, tool_id=None, tool_input=None)
     msg_tool = ParsedMessage(
         provider_message_id="m1",
         role=Role.ASSISTANT,

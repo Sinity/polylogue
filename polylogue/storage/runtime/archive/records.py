@@ -16,7 +16,7 @@ from polylogue.core.security import sanitize_path as _sanitize_path_helper
 from polylogue.core.timestamps import canonical_timestamp_text
 from polylogue.types import (
     AttachmentId,
-    ContentBlockType,
+    BlockType,
     ContentHash,
     MessageId,
     SemanticBlockType,
@@ -96,7 +96,7 @@ class ContentBlockRecord(BaseModel):
     message_id: MessageId
     session_id: SessionId
     block_index: int
-    type: ContentBlockType
+    type: BlockType
     text: str | None = None
     tool_name: str | None = None
     tool_id: str | None = None
@@ -106,8 +106,8 @@ class ContentBlockRecord(BaseModel):
 
     @field_validator("type", mode="before")
     @classmethod
-    def coerce_block_type(cls, v: object) -> ContentBlockType:
-        return ContentBlockType.from_string(str(v))
+    def coerce_block_type(cls, v: object) -> BlockType:
+        return BlockType.from_string(str(v))
 
     @field_validator("semantic_type", mode="before")
     @classmethod
