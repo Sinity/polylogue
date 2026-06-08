@@ -514,7 +514,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         produces=("session_tags",),
         path_targets=("tag-mutation-loop",),
         code_refs=(
-            "polylogue.storage.repository.archive.repository_writes.RepositoryWriteMixin.remove_tag",
             "polylogue.api.archive.PolylogueArchiveMixin.remove_tag",
             "polylogue.mcp.server_mutation_tools.remove_tag",
         ),
@@ -530,10 +529,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         consumes=("session_tags",),
         produces=("session_tags",),
         path_targets=("tag-mutation-loop",),
-        code_refs=(
-            "polylogue.storage.repository.archive.repository_writes.RepositoryWriteMixin.bulk_add_tags",
-            "polylogue.mcp.server_mutation_tools.bulk_tag_sessions",
-        ),
+        code_refs=("polylogue.mcp.server_mutation_tools.bulk_tag_sessions",),
         surfaces=("mcp", "api"),
         mutates_state=True,
         idempotent=True,
@@ -563,10 +559,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         consumes=("session_metadata",),
         produces=("session_metadata",),
         path_targets=("metadata-mutation-loop",),
-        code_refs=(
-            "polylogue.storage.repository.archive.repository_writes.RepositoryWriteMixin.delete_metadata",
-            "polylogue.mcp.server_mutation_tools.delete_metadata",
-        ),
+        code_refs=("polylogue.mcp.server_mutation_tools.delete_metadata",),
         surfaces=("mcp", "api"),
         mutates_state=True,
         idempotent=True,

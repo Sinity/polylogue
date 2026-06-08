@@ -201,9 +201,10 @@ content-hash boundary by construction (#1131):
   - Library: `Polylogue.record_correction(...)`,
     `Polylogue.list_corrections(...)`,
     `Polylogue.delete_correction(...)`, `Polylogue.clear_corrections(...)`.
-- Storage backed by `polylogue/storage/insights/feedback/` (async SQL
-  helpers) and `RepositoryWriteMixin.record_correction` /
-  `list_corrections` / `delete_correction` / `clear_corrections`.
+- Storage backed by `polylogue/storage/sqlite/archive_tiers/archive.py`
+  (`ArchiveStore.record_correction` / `list_corrections` /
+  `delete_correction` / `clear_corrections`) and
+  `polylogue/storage/insights/feedback/` (async SQL helpers).
 
 ## Text Handling Contracts
 
