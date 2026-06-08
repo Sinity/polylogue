@@ -13,9 +13,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.hashing import hash_payload, hash_text
 from polylogue.pipeline.ids import (
     _normalize_for_hash,
-    message_content_hash,
     session_content_hash,
-    session_content_hashes,
 )
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.sources.parsers.base_models import ParsedSessionEvent
@@ -51,6 +49,12 @@ def _conv(
     )
 
 
+def _one(message: ParsedMessage) -> ParsedSession:
+    """Wrap a single message in a session so per-message contributions to the
+    session content hash can be asserted via the live ``session_content_hash``."""
+    return _conv("c1", "Test", [message])
+
+
 # ── NFC normalization invariance ──────────────────────────────────────
 
 
@@ -70,9 +74,14 @@ def test_content_hash_nfc_nfd_title_equivalence() -> None:
 
 
 def test_content_hash_nfc_nfd_message_text_equivalence() -> None:
-    """Messages with NFC vs NFD text should have identical message hashes."""
-    h1 = message_content_hash(_msg("m1", "user", "café"), "m1")
-    h2 = message_content_hash(_msg("m1", "user", "café"), "m1")
+    """Messages with NFC vs NFD text should produce identical session hashes."""
+    import unicodedata
+
+    nfc = unicodedata.normalize("NFC", "café")  # precomposed é
+    nfd = unicodedata.normalize("NFD", "café")  # decomposed e + combining accent
+    assert nfc != nfd, "Sanity: NFC and NFD are different strings"
+    h1 = session_content_hash(_one(_msg("m1", "user", nfc)))
+    h2 = session_content_hash(_one(_msg("m1", "user", nfd)))
     assert h1 == h2
 
 
@@ -151,7 +160,7 @@ def _mk_block(
     )
 
 
-def test_content_blocks_affect_message_hash() -> None:
+def test_content_blocks_affect_session_hash() -> None:
     """Messages with content blocks should differ from those without."""
     msg_plain = _msg("m1", "assistant", "ran a command")
     msg_with_block = ParsedMessage(
@@ -161,11 +170,11 @@ def test_content_blocks_affect_message_hash() -> None:
         timestamp="2024-01-01T00:00:00Z",
         content_blocks=[_mk_block()],
     )
-    assert message_content_hash(msg_plain, "m1") != message_content_hash(msg_with_block, "m1")
+    assert session_content_hash(_one(msg_plain)) != session_content_hash(_one(msg_with_block))
 
 
 def test_content_block_tool_input_affects_hash() -> None:
-    """Different tool inputs should produce different message hashes."""
+    """Different tool inputs should produce different session hashes."""
     block_a = _mk_block(tool_input={"command": "echo a"})
     block_b = _mk_block(tool_input={"command": "echo b"})
     msg_a = ParsedMessage(
@@ -182,11 +191,11 @@ def test_content_block_tool_input_affects_hash() -> None:
         timestamp="2024-01-01T00:00:00Z",
         content_blocks=[block_b],
     )
-    assert message_content_hash(msg_a, "m1") != message_content_hash(msg_b, "m1")
+    assert session_content_hash(_one(msg_a)) != session_content_hash(_one(msg_b))
 
 
 def test_content_block_type_affects_hash() -> None:
-    """Different content block types should produce different message hashes."""
+    """Different content block types should produce different session hashes."""
     block_tool = _mk_block(block_type=ContentBlockType.TOOL_USE)
     block_text = _mk_block(block_type=ContentBlockType.TEXT, tool_name=None, tool_id=None, tool_input=None)
     msg_tool = ParsedMessage(
@@ -203,7 +212,7 @@ def test_content_block_type_affects_hash() -> None:
         timestamp="2024-01-01T00:00:00Z",
         content_blocks=[block_text],
     )
-    assert message_content_hash(msg_tool, "m1") != message_content_hash(msg_text, "m1")
+    assert session_content_hash(_one(msg_tool)) != session_content_hash(_one(msg_text))
 
 
 # ── Attachments ───────────────────────────────────────────────────────
@@ -346,7 +355,7 @@ def test_content_hash_empty_session_is_valid() -> None:
 def test_content_hash_very_long_text_is_valid() -> None:
     """Very long message text should hash without issues."""
     long_text = "hello " * 10000
-    result = message_content_hash(_msg("m1", "user", long_text), "m1")
+    result = session_content_hash(_one(_msg("m1", "user", long_text)))
     assert len(result) == 64
 
 
@@ -361,36 +370,19 @@ def test_content_hash_unicode_surrogate_resistance() -> None:
         "zwj sequence 👨‍💻",
     ]
     for text in texts:
-        result = message_content_hash(_msg("m1", "user", text), "m1")
+        result = session_content_hash(_one(_msg("m1", "user", text)))
         assert len(result) == 64
 
 
-def test_session_content_hashes_per_message_dict() -> None:
-    """session_content_hashes returns per-message hash dict with correct keys."""
-    messages = [
-        _msg("m1", "user", "first"),
-        _msg("", "assistant", "second"),  # empty provider ID → auto-generated
-        _msg("m3", "user", "third"),
-    ]
-    conv = _conv("c1", "Test", messages)
-    conv_hash, msg_hashes = session_content_hashes(conv)
-    assert len(msg_hashes) == 3
-    assert "m1" in msg_hashes
-    assert "msg-2" in msg_hashes  # auto-generated for empty provider ID
-    assert "m3" in msg_hashes
-    assert all(len(h) == 64 for h in msg_hashes.values())
-    assert conv_hash == session_content_hash(conv)
-
-
-def test_message_hash_role_affects_hash() -> None:
-    """Different roles should produce different message hashes."""
-    assert message_content_hash(_msg("m1", "user", "hello"), "m1") != message_content_hash(
-        _msg("m1", "assistant", "hello"), "m1"
+def test_role_affects_session_hash() -> None:
+    """Different roles should produce different session hashes."""
+    assert session_content_hash(_one(_msg("m1", "user", "hello"))) != session_content_hash(
+        _one(_msg("m1", "assistant", "hello"))
     )
 
 
-def test_message_hash_timestamp_affects_hash() -> None:
-    """Different timestamps should produce different message hashes."""
-    assert message_content_hash(_msg("m1", "user", "hello", "2024-01-01"), "m1") != message_content_hash(
-        _msg("m1", "user", "hello", "2024-01-02"), "m1"
+def test_message_timestamp_affects_session_hash() -> None:
+    """Different timestamps should produce different session hashes."""
+    assert session_content_hash(_one(_msg("m1", "user", "hello", "2024-01-01"))) != session_content_hash(
+        _one(_msg("m1", "user", "hello", "2024-01-02"))
     )

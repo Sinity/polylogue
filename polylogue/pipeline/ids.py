@@ -2,16 +2,13 @@
 
 from __future__ import annotations
 
-import shutil
 import unicodedata
-from pathlib import Path
 from typing import TypeAlias
 
-from polylogue.assets import asset_path
-from polylogue.core.hashing import hash_file, hash_payload, hash_text
+from polylogue.core.hashing import hash_payload
 from polylogue.core.json import JSONValue
 from polylogue.core.sources import origin_from_provider
-from polylogue.sources import ParsedAttachment, ParsedMessage, ParsedSession
+from polylogue.sources import ParsedMessage, ParsedSession
 from polylogue.sources.parsers.base import ParsedContentBlock
 from polylogue.types import ContentHash, MessageId, Provider, SessionEventId, SessionId
 
@@ -19,45 +16,6 @@ from polylogue.types import ContentHash, MessageId, Provider, SessionEventId, Se
 _NULL_SENTINEL = "__POLYLOGUE_NULL__"
 _EMPTY_SENTINEL = "__POLYLOGUE_EMPTY__"
 HashScalar: TypeAlias = str | int | float | bool | None
-
-
-def move_attachment_to_archive(source: Path, dest: Path) -> None:
-    """Move attachment file to archive location.
-
-    Creates parent directories and moves the file atomically. Raises on failure.
-
-    Args:
-        source: Source file path.
-        dest: Destination file path.
-
-    Raises:
-        FileNotFoundError: If source file doesn't exist.
-        PermissionError: If move fails due to permissions.
-        OSError: For other filesystem errors.
-    """
-    if not source.exists():
-        raise FileNotFoundError(f"Source attachment not found: {source}")
-
-    # Create parent directories
-    dest.parent.mkdir(parents=True, exist_ok=True)
-
-    # Move file (will raise on failure)
-    shutil.move(str(source), str(dest))
-
-
-def materialize_attachment_path(source: Path, dest: Path) -> None:
-    """Ensure an attachment source is present at the archived destination path.
-
-    If the destination already exists, the duplicate source file is deleted.
-    Otherwise the source is moved into place.
-    """
-    if source == dest:
-        return
-    if dest.exists():
-        if source.exists():
-            source.unlink()
-        return
-    move_attachment_to_archive(source, dest)
 
 
 def _normalize_for_hash(value: HashScalar) -> JSONValue:
@@ -76,62 +34,6 @@ def _normalize_for_hash(value: HashScalar) -> JSONValue:
     if isinstance(value, str):
         return unicodedata.normalize("NFC", value)
     return value
-
-
-def attachment_seed(source_name: str, attachment: ParsedAttachment) -> str:
-    return "|".join(
-        str(value) if value is not None else "<null>"
-        for value in [
-            source_name,
-            attachment.provider_attachment_id,
-            attachment.message_provider_id,
-            attachment.name,
-            attachment.mime_type,
-            attachment.size_bytes,
-            attachment.path,
-        ]
-    )
-
-
-def attachment_content_id(
-    source_name: str,
-    attachment: ParsedAttachment,
-    *,
-    archive_root: Path,
-) -> tuple[str, dict[str, object] | None, str | None]:
-    """Compute attachment content ID and return updated metadata.
-
-    Returns:
-        Tuple of (attachment_id, updated_provider_meta, updated_path).
-        The caller is responsible for applying any updates or archive materialization.
-        This function does NOT mutate the attachment object or the filesystem.
-    """
-    meta = dict(attachment.provider_meta or {})
-
-    # Extract name from nested raw metadata if present (e.g., ChatGPT format)
-    if "raw" in meta and isinstance(meta["raw"], dict) and "name" in meta["raw"]:
-        meta.setdefault("name", meta["raw"]["name"])
-
-    # Preserve original name if already at top level
-    if attachment.name:
-        meta.setdefault("name", attachment.name)
-
-    updated_path = attachment.path
-    for key in ("sha256", "digest", "hash"):
-        value = meta.get(key)
-        if isinstance(value, str) and value:
-            return (value, meta, updated_path)
-    raw_path = attachment.path
-    if isinstance(raw_path, str) and raw_path:
-        path = Path(raw_path)
-        if path.exists() and path.is_file():
-            digest = hash_file(path)
-            meta.setdefault("sha256", digest)
-            target = asset_path(archive_root, digest)
-            updated_path = str(target if target != path else path)
-            return (digest, meta, updated_path)
-    seed = attachment_seed(source_name, attachment)
-    return (hash_text(seed), meta, updated_path)
 
 
 def session_id(source_name: str, provider_session_id: str) -> SessionId:
@@ -179,17 +81,17 @@ def _content_block_payload(block: ParsedContentBlock) -> dict[str, JSONValue]:
     return payload
 
 
-def message_content_hash(message: ParsedMessage, provider_message_id: str) -> ContentHash:
-    """Generate content hash for a message."""
+def _message_hash_payload(message: ParsedMessage, message_id: str) -> dict[str, JSONValue]:
+    """Build the hash-stable payload for a single message."""
     payload: dict[str, JSONValue] = {
-        "id": provider_message_id,
+        "id": message_id,
         "role": str(message.role),
         "text": _normalize_for_hash(message.text),
         "timestamp": _normalize_for_hash(message.timestamp),
     }
     if message.content_blocks:
         payload["content_blocks"] = [_content_block_payload(b) for b in message.content_blocks]
-    return ContentHash(hash_payload(payload))
+    return payload
 
 
 def _session_hash_payload(
@@ -219,32 +121,18 @@ def _session_hash_payload(
     }
 
 
-def session_content_hashes(convo: ParsedSession) -> tuple[ContentHash, dict[str, ContentHash]]:
-    """Generate session and per-message content hashes in one pass.
+def session_content_hash(convo: ParsedSession) -> ContentHash:
+    """Generate the content hash for a session.
 
-    Uses sentinel values to distinguish None from empty/missing fields.
-
-    Args:
-        convo: Parsed session object.
-
-    Returns:
-        Tuple of session content hash and message hashes keyed by effective
-        provider message ID.
+    Uses sentinel values to distinguish None from empty/missing fields. The
+    hash incorporates the per-message payload (id, role, text, timestamp,
+    content blocks), attachments, and session events, so any change to a
+    message also changes the session hash.
     """
-    messages_payload: list[dict[str, JSONValue]] = []
-    message_hashes: dict[str, ContentHash] = {}
-    for idx, msg in enumerate(convo.messages, start=1):
-        message_id = msg.provider_message_id or f"msg-{idx}"
-        msg_payload: dict[str, JSONValue] = {
-            "id": message_id,
-            "role": str(msg.role),
-            "text": _normalize_for_hash(msg.text),
-            "timestamp": _normalize_for_hash(msg.timestamp),
-        }
-        if msg.content_blocks:
-            msg_payload["content_blocks"] = [_content_block_payload(b) for b in msg.content_blocks]
-        messages_payload.append(msg_payload)
-        message_hashes[message_id] = ContentHash(hash_payload(msg_payload))
+    messages_payload = [
+        _message_hash_payload(msg, msg.provider_message_id or f"msg-{idx}")
+        for idx, msg in enumerate(convo.messages, start=1)
+    ]
     attachments_payload = [
         {
             "id": _normalize_for_hash(att.provider_attachment_id),
@@ -268,23 +156,15 @@ def session_content_hashes(convo: ParsedSession) -> tuple[ContentHash, dict[str,
         }
         for event_index, event in enumerate(convo.session_events)
     ]
-    return (
-        ContentHash(
-            hash_payload(
-                _session_hash_payload(
-                    title=convo.title,
-                    created_at=convo.created_at,
-                    updated_at=convo.updated_at,
-                    messages=messages_payload,
-                    attachments=attachments_payload,
-                    session_events=session_events_payload,
-                )
+    return ContentHash(
+        hash_payload(
+            _session_hash_payload(
+                title=convo.title,
+                created_at=convo.created_at,
+                updated_at=convo.updated_at,
+                messages=messages_payload,
+                attachments=attachments_payload,
+                session_events=session_events_payload,
             )
-        ),
-        message_hashes,
+        )
     )
-
-
-def session_content_hash(convo: ParsedSession) -> ContentHash:
-    """Generate content hash for session."""
-    return session_content_hashes(convo)[0]

@@ -32,7 +32,6 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.hashing import hash_text
 from polylogue.pipeline.ids import (
     _normalize_for_hash,
-    message_content_hash,
     session_content_hash,
 )
 from polylogue.sources.decoder_json import decode_json_bytes
@@ -172,20 +171,27 @@ class TestContentHashNormalization:
         nfc = unicodedata.normalize("NFC", original)
         assert hash_text(nfd) == hash_text(nfc) == hash_text(original)
 
-    def test_message_content_hash_normalizes_text(self) -> None:
-        nfc_msg = ParsedMessage(
-            provider_message_id="m1",
-            role=Role.USER,
-            text=NFC_CAFE,
-            timestamp="2026-01-01T00:00:00Z",
-        )
-        nfd_msg = ParsedMessage(
-            provider_message_id="m1",
-            role=Role.USER,
-            text=NFD_CAFE,
-            timestamp="2026-01-01T00:00:00Z",
-        )
-        assert message_content_hash(nfc_msg, "m1") == message_content_hash(nfd_msg, "m1")
+    def test_session_hash_normalizes_message_text(self) -> None:
+        # Isolate message-text normalization: title is constant ASCII, only the
+        # message text differs by NFC/NFD form. The session hash must collapse them.
+        def _build(text: str) -> ParsedSession:
+            return ParsedSession(
+                source_name=Provider.CHATGPT,
+                provider_session_id="conv-1",
+                title="constant",
+                created_at="2026-01-01T00:00:00Z",
+                updated_at="2026-01-01T00:00:00Z",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.USER,
+                        text=text,
+                        timestamp="2026-01-01T00:00:00Z",
+                    )
+                ],
+            )
+
+        assert session_content_hash(_build(NFC_CAFE)) == session_content_hash(_build(NFD_CAFE))
 
     def test_session_content_hash_normalizes_title_and_text(self) -> None:
         def _build(title: str, text: str) -> ParsedSession:

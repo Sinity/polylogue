@@ -1,23 +1,15 @@
-"""Focused tests for pipeline ID and attachment path helpers."""
+"""Focused tests for pipeline ID and session content-hash helpers."""
 
 from __future__ import annotations
-
-from pathlib import Path
 
 import pytest
 
 from polylogue.archive.message.roles import Role
-from polylogue.assets import asset_path
 from polylogue.pipeline.ids import (
-    attachment_content_id,
-    materialize_attachment_path,
-    message_content_hash,
-    move_attachment_to_archive,
     session_content_hash,
-    session_content_hashes,
     session_id,
 )
-from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
+from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.types import Provider
 
 
@@ -49,81 +41,6 @@ def _parsed_session(
     )
 
 
-def test_attachment_content_id_returns_target_path_without_moving(tmp_path: Path) -> None:
-    archive_root = tmp_path / "archive"
-    uploads = tmp_path / "uploads"
-    archive_root.mkdir()
-    uploads.mkdir()
-    source_file = uploads / "note.txt"
-    source_file.write_text("hello world", encoding="utf-8")
-
-    attachment = ParsedAttachment.model_construct(
-        provider_attachment_id="file-1",
-        message_provider_id="msg-1",
-        name="note.txt",
-        mime_type="text/plain",
-        size_bytes=11,
-        path=str(source_file),
-        provider_meta={},
-    )
-
-    digest, updated_meta, updated_path = attachment_content_id("chatgpt", attachment, archive_root=archive_root)
-    target = asset_path(archive_root, digest)
-
-    assert digest
-    assert updated_path == str(target)
-    assert updated_meta is not None and "sha256" in updated_meta
-    assert source_file.exists()
-    assert not target.exists()
-    assert attachment.provider_meta == {}
-
-
-def test_materialize_attachment_path_moves_file_into_assets(tmp_path: Path) -> None:
-    archive_root = tmp_path / "archive"
-    uploads = tmp_path / "uploads"
-    archive_root.mkdir()
-    uploads.mkdir()
-    source_file = uploads / "note.txt"
-    source_file.write_text("hello world", encoding="utf-8")
-    target = asset_path(archive_root, "abc123")
-
-    materialize_attachment_path(source_file, target)
-
-    assert not source_file.exists()
-    assert target.exists()
-
-
-class TestAttachmentPathMove:
-    def test_move_attachment_raises_on_missing_source(self, tmp_path: Path) -> None:
-        with pytest.raises(FileNotFoundError):
-            move_attachment_to_archive(tmp_path / "nonexistent.txt", tmp_path / "archive" / "dest.txt")
-
-    def test_move_attachment_raises_on_permission_error(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        import shutil
-
-        source = tmp_path / "source.txt"
-        source.write_text("content")
-        dest = tmp_path / "archive" / "dest.txt"
-
-        def failing_move(*args: object, **kwargs: object) -> None:
-            raise PermissionError("Access denied")
-
-        monkeypatch.setattr(shutil, "move", failing_move)
-        with pytest.raises(PermissionError):
-            move_attachment_to_archive(source, dest)
-
-    def test_move_attachment_creates_parent_dirs(self, tmp_path: Path) -> None:
-        source = tmp_path / "source.txt"
-        source.write_text("content")
-        dest = tmp_path / "deep" / "nested" / "archive" / "dest.txt"
-
-        move_attachment_to_archive(source, dest)
-
-        assert dest.exists()
-        assert dest.read_text() == "content"
-        assert not source.exists()
-
-
 class TestSessionIdValidation:
     def test_rejects_empty_provider(self) -> None:
         # provider→source_name rename: the empty-first-arg error now names source_name.
@@ -149,44 +66,54 @@ def test_session_content_hash_with_missing_message_ids() -> None:
     assert len(digest) == 64
 
 
-def test_message_hash_none_vs_empty_timestamp_distinguishable() -> None:
-    msg_with_none = _parsed_message("msg-1", "user", "hello", None)
-    msg_with_empty = _parsed_message("msg-1", "user", "hello", "")
+def test_message_none_vs_empty_timestamp_changes_session_hash() -> None:
+    none_ts = _parsed_session(
+        "conv-1",
+        "Test",
+        [_parsed_message("msg-1", "user", "hello", None)],
+        created_at="2024-01-01",
+        updated_at=None,
+    )
+    empty_ts = _parsed_session(
+        "conv-1",
+        "Test",
+        [_parsed_message("msg-1", "user", "hello", "")],
+        created_at="2024-01-01",
+        updated_at=None,
+    )
+    assert session_content_hash(none_ts) != session_content_hash(empty_ts)
 
-    assert message_content_hash(msg_with_none, "msg-1") != message_content_hash(msg_with_empty, "msg-1")
 
-
-def test_message_hash_empty_text_is_deterministic() -> None:
-    message = _parsed_message("msg-1", "user", "", "2024-01-01")
-    first = message_content_hash(message, "msg-1")
-    second = message_content_hash(message, "msg-1")
+def test_session_hash_is_deterministic() -> None:
+    session = _parsed_session(
+        "conv-1",
+        "Test",
+        [_parsed_message("msg-1", "user", "", "2024-01-01")],
+        created_at="2024-01-01",
+        updated_at=None,
+    )
+    first = session_content_hash(session)
+    second = session_content_hash(session)
     assert first == second
     assert len(first) == 64
 
 
-def test_message_hash_different_provider_id_produces_different_hash() -> None:
-    message = _parsed_message("msg-1", "user", "hello", "2024-01-01")
-    assert message_content_hash(message, "msg-1") != message_content_hash(message, "msg-2")
-
-
-def test_session_content_hashes_include_existing_message_hashes() -> None:
-    first = _parsed_message("m1", "user", "hi", "2024-01-01")
-    second = _parsed_message("", "assistant", "hello", None)
-    session = _parsed_session(
+def test_message_id_change_changes_session_hash() -> None:
+    a = _parsed_session(
         "conv-1",
         "Test",
-        [first, second],
+        [_parsed_message("msg-1", "user", "hello", "2024-01-01")],
         created_at="2024-01-01",
-        updated_at="2024-01-02",
+        updated_at=None,
     )
-
-    session_hash, message_hashes = session_content_hashes(session)
-
-    assert session_hash == session_content_hash(session)
-    assert message_hashes == {
-        "m1": message_content_hash(first, "m1"),
-        "msg-2": message_content_hash(second, "msg-2"),
-    }
+    b = _parsed_session(
+        "conv-1",
+        "Test",
+        [_parsed_message("msg-2", "user", "hello", "2024-01-01")],
+        created_at="2024-01-01",
+        updated_at=None,
+    )
+    assert session_content_hash(a) != session_content_hash(b)
 
 
 def test_session_hash_empty_messages_is_valid() -> None:
