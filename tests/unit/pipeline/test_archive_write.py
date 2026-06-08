@@ -1,16 +1,20 @@
-"""Focused prepare_records integration tests."""
+"""Archive write-path tests for ``write_parsed_session_to_archive``.
+
+These exercise the live writer the daemon uses (via the ``ingest_session``
+helper). Assertions read back actual archive rows — session/message/block/
+event/attachment state, content-hash idempotency, and content-change
+detection — rather than inspecting an intermediate counts envelope.
+"""
 
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from polylogue.archive.message.roles import Role
-from polylogue.pipeline.prepare import prepare_records
-from polylogue.pipeline.prepare_models import PersistedSessionResult
 from polylogue.pipeline.services.validation import ValidationService
 from polylogue.schemas import ValidationResult
 from polylogue.sources.parsers.base import (
@@ -20,13 +24,9 @@ from polylogue.sources.parsers.base import (
     ParsedSession,
     ParsedSessionEvent,
 )
-from polylogue.storage.repository import SessionRepository
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.types import ContentBlockType, Provider
-
-
-def _prepare_fields(result: PersistedSessionResult) -> tuple[str, dict[str, int], bool]:
-    return result.session_id, result.counts, result.content_changed
+from tests.infra.live_ingest import ingest_session
 
 
 @pytest.fixture
@@ -36,16 +36,31 @@ async def async_backend(test_db: Path) -> AsyncIterator[SQLiteBackend]:
     await backend.close()
 
 
-@pytest.fixture
-async def test_repository(async_backend: SQLiteBackend) -> SessionRepository:
-    return SessionRepository(backend=async_backend)
+async def _session_row(backend: SQLiteBackend, session_id: str) -> dict[str, object]:
+    async with backend.connection() as conn:
+        row = await (
+            await conn.execute(
+                "SELECT message_count, content_hash FROM sessions WHERE session_id = ?",
+                (session_id,),
+            )
+        ).fetchone()
+    assert row is not None, f"session {session_id} not written"
+    return {"message_count": row["message_count"], "content_hash": bytes(row["content_hash"])}
 
 
-async def test_prepare_records_new_session(
-    async_backend: SQLiteBackend,
-    test_repository: SessionRepository,
-    tmp_path: Path,
-) -> None:
+async def _count(backend: SQLiteBackend, sql: str, *params: object) -> int:
+    async with backend.connection() as conn:
+        row = await (await conn.execute(sql, params)).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+# ---------------------------------------------------------------------------
+# Core write behavior
+# ---------------------------------------------------------------------------
+
+
+async def test_writes_new_session_and_message_rows(async_backend: SQLiteBackend) -> None:
     session = ParsedSession(
         source_name=Provider.UNKNOWN,
         provider_session_id="new-conv-1",
@@ -63,28 +78,83 @@ async def test_prepare_records_new_session(
         attachments=[],
     )
 
-    session_id, counts, changed = _prepare_fields(
-        await prepare_records(
-            session,
-            "test-source",
-            archive_root=tmp_path / "archive",
-            backend=async_backend,
-            repository=test_repository,
-        )
+    session_id = await ingest_session(session, async_backend)
+
+    assert session_id == "unknown-export:new-conv-1"
+    assert await _count(async_backend, "SELECT COUNT(*) FROM sessions WHERE session_id = ?", session_id) == 1
+    assert await _count(async_backend, "SELECT COUNT(*) FROM messages WHERE session_id = ?", session_id) == 1
+
+
+async def test_idempotent_reingest_leaves_one_session_and_stable_hash(async_backend: SQLiteBackend) -> None:
+    session = ParsedSession(
+        source_name=Provider.UNKNOWN,
+        provider_session_id="conv-1",
+        title="Test Session",
+        created_at="2024-01-01T00:00:00Z",
+        updated_at="2024-01-01T00:00:00Z",
+        messages=[
+            ParsedMessage(
+                provider_message_id="msg-1",
+                role=Role.USER,
+                text="Hello",
+                timestamp="2024-01-01T00:00:00Z",
+            )
+        ],
+        attachments=[],
     )
 
-    assert counts["sessions"] == 1
-    assert counts["messages"] == 1
-    assert counts["skipped_sessions"] == 0
-    assert changed is False
-    assert session_id == "unknown-export:new-conv-1"
+    first_id = await ingest_session(session, async_backend)
+    first = await _session_row(async_backend, first_id)
+    second_id = await ingest_session(session, async_backend)
+    second = await _session_row(async_backend, second_id)
+
+    assert second_id == first_id
+    # Re-ingesting unchanged content must not duplicate rows nor change the hash.
+    assert await _count(async_backend, "SELECT COUNT(*) FROM sessions WHERE session_id = ?", first_id) == 1
+    assert await _count(async_backend, "SELECT COUNT(*) FROM messages WHERE session_id = ?", first_id) == 1
+    assert second["content_hash"] == first["content_hash"]
 
 
-async def test_prepare_records_persists_compaction_session_events(
-    async_backend: SQLiteBackend,
-    test_repository: SessionRepository,
-    tmp_path: Path,
-) -> None:
+async def test_changed_content_updates_hash_and_text(async_backend: SQLiteBackend) -> None:
+    def _make(text: str) -> ParsedSession:
+        return ParsedSession(
+            source_name=Provider.UNKNOWN,
+            provider_session_id="conv-1",
+            title="Test Session",
+            created_at="2024-01-01T00:00:00Z",
+            updated_at="2024-01-01T00:00:00Z",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="msg-1",
+                    role=Role.USER,
+                    text=text,
+                    timestamp="2024-01-01T00:00:00Z",
+                )
+            ],
+            attachments=[],
+        )
+
+    first_id = await ingest_session(_make("Original text"), async_backend)
+    first_hash = (await _session_row(async_backend, first_id))["content_hash"]
+    second_id = await ingest_session(_make("Modified text"), async_backend)
+    second_hash = (await _session_row(async_backend, second_id))["content_hash"]
+
+    assert second_id == first_id
+    assert second_hash != first_hash
+    # The stored block text reflects the latest ingest, not a duplicate row.
+    assert await _count(async_backend, "SELECT COUNT(*) FROM messages WHERE session_id = ?", first_id) == 1
+    async with async_backend.connection() as conn:
+        row = await (await conn.execute("SELECT text FROM blocks WHERE session_id = ?", (first_id,))).fetchone()
+    assert row is not None
+    assert row["text"] == "Modified text"
+
+
+# ---------------------------------------------------------------------------
+# Session events
+# ---------------------------------------------------------------------------
+
+
+async def test_persists_compaction_session_event_summary(async_backend: SQLiteBackend) -> None:
     session = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="conv-events",
@@ -110,40 +180,22 @@ async def test_prepare_records_persists_compaction_session_events(
         attachments=[],
     )
 
-    session_id, counts, _ = _prepare_fields(
-        await prepare_records(
-            session,
-            "test-source",
-            archive_root=tmp_path / "archive",
-            backend=async_backend,
-            repository=test_repository,
-        )
-    )
+    session_id = await ingest_session(session, async_backend)
 
-    assert counts["session_events"] == 1
-    archive_session_id = "codex-session:conv-events"
     async with async_backend.connection() as conn:
         row = await (
             await conn.execute(
-                """
-                SELECT event_type, summary, source_message_id
-                FROM session_events
-                WHERE session_id = ?
-                """,
-                (archive_session_id,),
+                "SELECT event_type, summary, source_message_id FROM session_events WHERE session_id = ?",
+                (session_id,),
             )
         ).fetchone()
     assert row is not None
     assert row["event_type"] == "compaction"
     assert row["summary"] == "Older turns compacted"
-    assert row["source_message_id"] == f"{archive_session_id}:msg-1"
+    assert row["source_message_id"] == f"{session_id}:msg-1"
 
 
-async def test_prepare_records_projects_agent_policy_events(
-    async_backend: SQLiteBackend,
-    test_repository: SessionRepository,
-    tmp_path: Path,
-) -> None:
+async def test_projects_agent_policy_event_into_typed_columns(async_backend: SQLiteBackend) -> None:
     session = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="conv-event-raw",
@@ -168,18 +220,8 @@ async def test_prepare_records_projects_agent_policy_events(
         ],
     )
 
-    session_id, counts, _ = _prepare_fields(
-        await prepare_records(
-            session,
-            "test-source",
-            archive_root=tmp_path / "archive",
-            backend=async_backend,
-            repository=test_repository,
-        )
-    )
+    session_id = await ingest_session(session, async_backend)
 
-    assert counts["session_events"] == 1
-    archive_session_id = "codex-session:conv-event-raw"
     async with async_backend.connection() as conn:
         row = await (
             await conn.execute(
@@ -188,139 +230,22 @@ async def test_prepare_records_projects_agent_policy_events(
                 FROM session_agent_policies
                 WHERE session_id = ?
                 """,
-                (archive_session_id,),
+                (session_id,),
             )
         ).fetchone()
-
     assert row is not None
     assert row["approval_policy"] == "on-request"
     assert row["sandbox_policy"] == "workspace-write"
     assert row["network_policy"] == "restricted"
-    assert row["source_message_id"] == f"{archive_session_id}:msg-1"
+    assert row["source_message_id"] == f"{session_id}:msg-1"
 
 
-async def test_prepare_records_unchanged_session_skips(
-    async_backend: SQLiteBackend,
-    test_repository: SessionRepository,
-    tmp_path: Path,
-) -> None:
-    session = ParsedSession(
-        source_name=Provider.UNKNOWN,
-        provider_session_id="conv-1",
-        title="Test Session",
-        created_at="2024-01-01T00:00:00Z",
-        updated_at="2024-01-01T00:00:00Z",
-        messages=[
-            ParsedMessage(
-                provider_message_id="msg-1",
-                role=Role.USER,
-                text="Hello",
-                timestamp="2024-01-01T00:00:00Z",
-            )
-        ],
-        attachments=[],
-    )
-
-    archive_root = tmp_path / "archive"
-    archive_root.mkdir()
-
-    first_id, first_counts, _ = _prepare_fields(
-        await prepare_records(
-            session,
-            "test-source",
-            archive_root=archive_root,
-            backend=async_backend,
-            repository=test_repository,
-        )
-    )
-    second_id, second_counts, changed = _prepare_fields(
-        await prepare_records(
-            session,
-            "test-source",
-            archive_root=archive_root,
-            backend=async_backend,
-            repository=test_repository,
-        )
-    )
-
-    assert first_counts["sessions"] == 1
-    assert second_id == first_id
-    # Idempotent re-ingest: archive content unchanged, but row_graph_hash
-    # may differ for cosmetic substrate fields (#943 cost columns), so the
-    # write-counter can be 0 (skipped) or 1 (rewrote same row).
-    assert second_counts["sessions"] in (0, 1)
-    assert changed is False
+# ---------------------------------------------------------------------------
+# Message / block / attachment structure
+# ---------------------------------------------------------------------------
 
 
-async def test_prepare_records_detects_changed_content(
-    async_backend: SQLiteBackend,
-    test_repository: SessionRepository,
-    tmp_path: Path,
-) -> None:
-    original = ParsedSession(
-        source_name=Provider.UNKNOWN,
-        provider_session_id="conv-1",
-        title="Test Session",
-        created_at="2024-01-01T00:00:00Z",
-        updated_at="2024-01-01T00:00:00Z",
-        messages=[
-            ParsedMessage(
-                provider_message_id="msg-1",
-                role=Role.USER,
-                text="Original text",
-                timestamp="2024-01-01T00:00:00Z",
-            )
-        ],
-        attachments=[],
-    )
-    modified = ParsedSession(
-        source_name=Provider.UNKNOWN,
-        provider_session_id="conv-1",
-        title="Test Session",
-        created_at="2024-01-01T00:00:00Z",
-        updated_at="2024-01-01T00:00:00Z",
-        messages=[
-            ParsedMessage(
-                provider_message_id="msg-1",
-                role=Role.USER,
-                text="Modified text",
-                timestamp="2024-01-01T00:00:00Z",
-            )
-        ],
-        attachments=[],
-    )
-
-    archive_root = tmp_path / "archive"
-    archive_root.mkdir()
-
-    first_id, _, _ = _prepare_fields(
-        await prepare_records(
-            original,
-            "test-source",
-            archive_root=archive_root,
-            backend=async_backend,
-            repository=test_repository,
-        )
-    )
-    second_id, _, changed = _prepare_fields(
-        await prepare_records(
-            modified,
-            "test-source",
-            archive_root=archive_root,
-            backend=async_backend,
-            repository=test_repository,
-        )
-    )
-
-    assert second_id == first_id
-    assert changed is True
-
-
-async def test_prepare_records_creates_message_records(
-    async_backend: SQLiteBackend,
-    test_repository: SessionRepository,
-    tmp_path: Path,
-) -> None:
+async def test_writes_one_message_row_per_parsed_message(async_backend: SQLiteBackend) -> None:
     session = ParsedSession(
         source_name=Provider.UNKNOWN,
         provider_session_id="conv-1",
@@ -336,21 +261,8 @@ async def test_prepare_records_creates_message_records(
         attachments=[],
     )
 
-    archive_root = tmp_path / "archive"
-    archive_root.mkdir()
+    session_id = await ingest_session(session, async_backend)
 
-    session_id, counts, _ = _prepare_fields(
-        await prepare_records(
-            session,
-            "test-source",
-            archive_root=archive_root,
-            backend=async_backend,
-            repository=test_repository,
-        )
-    )
-
-    assert counts["sessions"] == 1
-    assert counts["messages"] == 2
     async with async_backend.connection() as conn:
         rows = list(
             await (
@@ -360,11 +272,7 @@ async def test_prepare_records_creates_message_records(
     assert len(rows) == 2
 
 
-async def test_prepare_records_handles_empty_parser_message_ids(
-    async_backend: SQLiteBackend,
-    test_repository: SessionRepository,
-    tmp_path: Path,
-) -> None:
+async def test_preserves_empty_and_explicit_native_message_ids(async_backend: SQLiteBackend) -> None:
     session = ParsedSession(
         source_name=Provider.UNKNOWN,
         provider_session_id="conv-1",
@@ -380,20 +288,8 @@ async def test_prepare_records_handles_empty_parser_message_ids(
         attachments=[],
     )
 
-    archive_root = tmp_path / "archive"
-    archive_root.mkdir()
+    session_id = await ingest_session(session, async_backend)
 
-    session_id, counts, _ = _prepare_fields(
-        await prepare_records(
-            session,
-            "test-source",
-            archive_root=archive_root,
-            backend=async_backend,
-            repository=test_repository,
-        )
-    )
-
-    assert counts["messages"] == 2
     async with async_backend.connection() as conn:
         rows = await (
             await conn.execute(
@@ -406,12 +302,7 @@ async def test_prepare_records_handles_empty_parser_message_ids(
     assert "msg-explicit" in native_ids
 
 
-async def test_prepare_records_stores_typed_origin(
-    async_backend: SQLiteBackend,
-    test_repository: SessionRepository,
-    tmp_path: Path,
-) -> None:
-
+async def test_stores_typed_origin_on_session(async_backend: SQLiteBackend) -> None:
     session = ParsedSession(
         source_name=Provider.CHATGPT,
         provider_session_id="ext-1",
@@ -422,18 +313,7 @@ async def test_prepare_records_stores_typed_origin(
         attachments=[],
     )
 
-    archive_root = tmp_path / "archive"
-    archive_root.mkdir()
-
-    session_id, _, _ = _prepare_fields(
-        await prepare_records(
-            session,
-            "my-export",
-            archive_root=archive_root,
-            backend=async_backend,
-            repository=test_repository,
-        )
-    )
+    session_id = await ingest_session(session, async_backend)
 
     async with async_backend.connection() as conn:
         row = await (await conn.execute("SELECT origin FROM sessions WHERE session_id = ?", (session_id,))).fetchone()
@@ -441,11 +321,7 @@ async def test_prepare_records_stores_typed_origin(
     assert row["origin"] == "chatgpt-export"
 
 
-async def test_prepare_records_persists_structured_blocks(
-    async_backend: SQLiteBackend,
-    test_repository: SessionRepository,
-    tmp_path: Path,
-) -> None:
+async def test_persists_structured_blocks_in_order(async_backend: SQLiteBackend) -> None:
     session = ParsedSession(
         source_name=Provider.GEMINI,
         provider_session_id="gemini-structured-1",
@@ -479,20 +355,8 @@ async def test_prepare_records_persists_structured_blocks(
         attachments=[],
     )
 
-    archive_root = tmp_path / "archive"
-    archive_root.mkdir()
+    session_id = await ingest_session(session, async_backend)
 
-    session_id, counts, _ = _prepare_fields(
-        await prepare_records(
-            session,
-            "drive-export",
-            archive_root=archive_root,
-            backend=async_backend,
-            repository=test_repository,
-        )
-    )
-
-    assert counts["messages"] == 2
     async with async_backend.connection() as conn:
         block_rows = await (
             await conn.execute(
@@ -508,12 +372,7 @@ async def test_prepare_records_persists_structured_blocks(
         ).fetchall()
         message_rows = await (
             await conn.execute(
-                """
-                SELECT native_id, has_thinking
-                FROM messages
-                WHERE session_id = ?
-                ORDER BY position
-                """,
+                "SELECT native_id, has_thinking FROM messages WHERE session_id = ? ORDER BY position",
                 (session_id,),
             )
         ).fetchall()
@@ -530,11 +389,7 @@ async def test_prepare_records_persists_structured_blocks(
     ]
 
 
-async def test_prepare_records_multiple_messages_get_unique_hashes(
-    async_backend: SQLiteBackend,
-    test_repository: SessionRepository,
-    tmp_path: Path,
-) -> None:
+async def test_each_message_gets_a_distinct_content_hash(async_backend: SQLiteBackend) -> None:
     session = ParsedSession(
         source_name=Provider.UNKNOWN,
         provider_session_id="conv-1",
@@ -550,18 +405,7 @@ async def test_prepare_records_multiple_messages_get_unique_hashes(
         attachments=[],
     )
 
-    archive_root = tmp_path / "archive"
-    archive_root.mkdir()
-
-    session_id, _, _ = _prepare_fields(
-        await prepare_records(
-            session,
-            "test-source",
-            archive_root=archive_root,
-            backend=async_backend,
-            repository=test_repository,
-        )
-    )
+    session_id = await ingest_session(session, async_backend)
 
     async with async_backend.connection() as conn:
         rows = list(
@@ -576,11 +420,7 @@ async def test_prepare_records_multiple_messages_get_unique_hashes(
     assert rows[0]["content_hash"] != rows[1]["content_hash"]
 
 
-async def test_prepare_records_with_attachments(
-    async_backend: SQLiteBackend,
-    test_repository: SessionRepository,
-    tmp_path: Path,
-) -> None:
+async def test_writes_attachment_ref_with_media_type(async_backend: SQLiteBackend) -> None:
     session = ParsedSession(
         source_name=Provider.UNKNOWN,
         provider_session_id="conv-1",
@@ -603,20 +443,8 @@ async def test_prepare_records_with_attachments(
         ],
     )
 
-    archive_root = tmp_path / "archive"
-    archive_root.mkdir()
+    session_id = await ingest_session(session, async_backend)
 
-    session_id, counts, _ = _prepare_fields(
-        await prepare_records(
-            session,
-            "test-source",
-            archive_root=archive_root,
-            backend=async_backend,
-            repository=test_repository,
-        )
-    )
-
-    assert counts["attachments"] == 1
     async with async_backend.connection() as conn:
         attachment_refs = list(
             await (
@@ -632,95 +460,8 @@ async def test_prepare_records_with_attachments(
     assert attachment_refs[0]["media_type"] == "application/pdf"
 
 
-async def test_prepare_records_rolls_back_attachment_move_on_save_failure(
-    async_backend: SQLiteBackend,
-    test_repository: SessionRepository,
-    tmp_path: Path,
-) -> None:
-    uploads = tmp_path / "uploads"
-    uploads.mkdir()
-    source_file = uploads / "document.pdf"
-    source_file.write_bytes(b"pdf bytes")
-
-    session = ParsedSession(
-        source_name=Provider.UNKNOWN,
-        provider_session_id="conv-rollback",
-        title="Rollback",
-        created_at="2024-01-01T00:00:00Z",
-        updated_at="2024-01-01T00:00:00Z",
-        messages=[
-            ParsedMessage(
-                provider_message_id="m1", role=Role.USER, text="See attachment", timestamp="2024-01-01T00:00:00Z"
-            )
-        ],
-        attachments=[
-            ParsedAttachment(
-                provider_attachment_id="att-1",
-                message_provider_id="m1",
-                name="document.pdf",
-                mime_type="application/pdf",
-                size_bytes=len(b"pdf bytes"),
-                path=str(source_file),
-            )
-        ],
-    )
-
-    archive_root = tmp_path / "archive"
-    archive_root.mkdir()
-
-    with patch.object(test_repository, "save_parsed_session", new=AsyncMock(side_effect=RuntimeError("save failed"))):
-        with pytest.raises(RuntimeError, match="save failed"):
-            await prepare_records(
-                session,
-                "test-source",
-                archive_root=archive_root,
-                backend=async_backend,
-                repository=test_repository,
-            )
-
-    assert source_file.exists()
-    assert not any(path.is_file() for path in (archive_root / "assets").rglob("*"))
-
-
-async def test_prepare_records_returns_typed_result(
-    async_backend: SQLiteBackend,
-    test_repository: SessionRepository,
-    tmp_path: Path,
-) -> None:
-    session = ParsedSession(
-        source_name=Provider.UNKNOWN,
-        provider_session_id="conv-1",
-        title="Test",
-        created_at="2024-01-01T00:00:00Z",
-        updated_at="2024-01-01T00:00:00Z",
-        messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="Hi", timestamp="2024-01-01T00:00:00Z")],
-        attachments=[],
-    )
-
-    result = await prepare_records(
-        session,
-        "test-source",
-        archive_root=tmp_path / "archive",
-        backend=async_backend,
-        repository=test_repository,
-    )
-
-    assert isinstance(result.session_id, str)
-    assert isinstance(result.counts, dict)
-    assert isinstance(result.content_changed, bool)
-    required_keys = {
-        "sessions",
-        "messages",
-        "attachments",
-        "skipped_sessions",
-        "skipped_messages",
-        "skipped_attachments",
-    }
-    assert set(result.counts.keys()) >= required_keys
-
-
 # =====================================================================
-# Merged from test_validation_service.py (record preparation/validation)
+# Record validation (ValidationService) — independent of the writer path
 # =====================================================================
 
 
@@ -747,7 +488,7 @@ class TestValidationService:
 
         raw_record = MagicMock(
             raw_id=raw_id,
-            raw_content=raw_content,  # Keep for backwards compatibility in mocks
+            raw_content=raw_content,
             source_name="codex",
             source_path="/tmp/session.jsonl",
             blob_size=blob_size,
@@ -793,7 +534,7 @@ class TestValidationService:
 
         raw_record = MagicMock(
             raw_id=raw_id,
-            raw_content=raw_content,  # Keep for backwards compatibility in mocks
+            raw_content=raw_content,
             source_name="codex",
             source_path="/tmp/session.jsonl",
             blob_size=blob_size,
@@ -888,7 +629,7 @@ class TestValidationService:
 
         raw_record = MagicMock(
             raw_id=raw_id,
-            raw_content=raw_content,  # Keep for backwards compatibility in mocks
+            raw_content=raw_content,
             source_name="inbox-source",
             source_path="/tmp/sessions.json",
             payload_provider=None,
