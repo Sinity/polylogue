@@ -14,8 +14,6 @@ from polylogue.archive.session.branch_type import BranchType
 from polylogue.config import Source
 from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.sources import origin_from_provider
-from polylogue.pipeline.prepare import prepare_records
-from polylogue.pipeline.prepare_models import PersistedSessionResult
 from polylogue.sources import iter_source_sessions
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.repository import SessionRepository
@@ -23,6 +21,7 @@ from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import open_connection
 from polylogue.types import Provider
 from tests.infra.archive_scenarios import archive_for_scenario_db
+from tests.infra.live_ingest import ingest_session
 from tests.infra.storage_records import SessionBuilder, db_setup
 
 WorkspaceEnv = dict[str, Path]
@@ -32,10 +31,6 @@ ParsedAssertion = Callable[[ParsedSession], bool]
 
 def _make_repository(db_path: Path) -> SessionRepository:
     return SessionRepository(backend=SQLiteBackend(db_path=db_path))
-
-
-def _prepare_fields(result: PersistedSessionResult) -> tuple[str, dict[str, int], bool]:
-    return result.session_id, result.counts, result.content_changed
 
 
 def _write_payload(tmp_path: Path, filename: str, payload: object) -> Path:
@@ -332,12 +327,9 @@ class TestBranchPipelinePersistence:
                     },
                 ],
             )
-            await prepare_records(
+            await ingest_session(
                 _parse_single("codex", parent_path),
-                source_name="codex",
-                archive_root=tmp_path,
                 backend=repo.backend,
-                repository=repo,
             )
             parent_cid = _archive_session_id(Provider.CODEX, "parent-uuid")
 
@@ -346,12 +338,9 @@ class TestBranchPipelinePersistence:
                 "codex_child.json",
                 _codex_continuation_payload(child_id="child-uuid", parent_id="parent-uuid"),
             )
-            await prepare_records(
+            await ingest_session(
                 _parse_single("codex", child_path),
-                source_name="codex",
-                archive_root=tmp_path,
                 backend=repo.backend,
-                repository=repo,
             )
             child_cid = _archive_session_id(Provider.CODEX, "child-uuid")
             child = await repo.get(child_cid)
@@ -367,12 +356,9 @@ class TestBranchPipelinePersistence:
         async with _make_repository(db_path) as repo:
             source_path = _write_payload(tmp_path, "claude_code_sidechain.json", _claude_sidechain_payload())
             parsed = _parse_single("claude-code", source_path)
-            await prepare_records(
+            await ingest_session(
                 parsed,
-                source_name="claude-code",
-                archive_root=tmp_path,
                 backend=repo.backend,
-                repository=repo,
             )
             session_id = _archive_session_id(Provider.CLAUDE_CODE, parsed.provider_session_id)
             session = await repo.get(session_id)
@@ -392,12 +378,9 @@ class TestBranchPipelinePersistence:
             parsed = _parse_single(
                 "chatgpt", _write_payload(tmp_path, "chatgpt_branched.json", [_chatgpt_branch_payload()])
             )
-            await prepare_records(
+            await ingest_session(
                 parsed,
-                source_name="chatgpt",
-                archive_root=tmp_path,
                 backend=repo.backend,
-                repository=repo,
             )
             session_id = _archive_session_id(Provider.CHATGPT, parsed.provider_session_id)
             session = await repo.get(session_id)
@@ -417,20 +400,17 @@ class TestBranchPipelinePersistence:
     ) -> None:
         db_path = db_setup(workspace_env)
         async with _make_repository(db_path) as repo:
-            await prepare_records(
+            await ingest_session(
                 ParsedSession(
                     source_name=Provider.CODEX,
                     provider_session_id="parent-id",
                     title="Parent Session",
                     messages=[ParsedMessage(provider_message_id="pm1", role=Role.USER, text="Parent message")],
                 ),
-                source_name="codex",
-                archive_root=tmp_path,
                 backend=repo.backend,
-                repository=repo,
             )
             parent_id = _archive_session_id(Provider.CODEX, "parent-id")
-            await prepare_records(
+            await ingest_session(
                 ParsedSession(
                     source_name=Provider.CODEX,
                     provider_session_id="child-id",
@@ -439,13 +419,10 @@ class TestBranchPipelinePersistence:
                     parent_session_provider_id="parent-id",
                     branch_type=BranchType.CONTINUATION,
                 ),
-                source_name="codex",
-                archive_root=tmp_path,
                 backend=repo.backend,
-                repository=repo,
             )
             child_id = _archive_session_id(Provider.CODEX, "child-id")
-            await prepare_records(
+            await ingest_session(
                 ParsedSession(
                     source_name=Provider.CHATGPT,
                     provider_session_id="conv-1",
@@ -468,10 +445,7 @@ class TestBranchPipelinePersistence:
                         ),
                     ],
                 ),
-                source_name="chatgpt",
-                archive_root=tmp_path,
                 backend=repo.backend,
-                repository=repo,
             )
             branch_id = _archive_session_id(Provider.CHATGPT, "conv-1")
 

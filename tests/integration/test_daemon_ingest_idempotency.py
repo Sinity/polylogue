@@ -23,7 +23,6 @@ import pytest
 from polylogue.scenarios import build_default_corpus_specs
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.sources import iter_source_sessions
-from polylogue.storage.repository import SessionRepository
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import open_connection
@@ -58,10 +57,9 @@ def _write_corpus_files(providers: tuple[str, ...], count: int, seed: int, dest:
 async def _ingest_corpus(archive_root: Path, corpus_dir: Path, db_path: Path) -> None:
     """Ingest all corpus files into the given database."""
     from polylogue.config import Source
-    from polylogue.pipeline.prepare import prepare_records
+    from tests.infra.live_ingest import ingest_session
 
     backend = SQLiteBackend(db_path=db_path)
-    repository = SessionRepository(backend=backend)
 
     for provider_dir in sorted(corpus_dir.iterdir()):
         provider = provider_dir.name
@@ -82,12 +80,9 @@ async def _ingest_corpus(archive_root: Path, corpus_dir: Path, db_path: Path) ->
 
             source = Source(name=provider, path=file_path)
             for convo in iter_source_sessions(source):
-                await prepare_records(
+                await ingest_session(
                     convo,
-                    source_name=provider,
-                    archive_root=archive_root,
                     backend=backend,
-                    repository=repository,
                     raw_id=raw_id,
                 )
 

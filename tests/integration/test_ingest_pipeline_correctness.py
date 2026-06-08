@@ -1,7 +1,7 @@
 """Full-pipeline ingest correctness tests.
 
 Generate schema-conformant synthetic corpora for all providers, ingest through
-the full prepare_records pipeline, and assert end-to-end correctness of the
+the live archive writer, and assert end-to-end correctness of the
 resulting archive.
 
 Ref #1736.
@@ -17,14 +17,13 @@ from pathlib import Path
 import pytest
 
 from polylogue.config import Source
-from polylogue.pipeline.prepare import prepare_records
 from polylogue.scenarios import build_default_corpus_specs
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.sources import iter_source_sessions
-from polylogue.storage.repository import SessionRepository
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+from tests.infra.live_ingest import ingest_session
 
 pytestmark = [pytest.mark.slow, pytest.mark.integration]
 
@@ -80,7 +79,6 @@ def _write_corpus_files(
 async def _ingest_corpus(archive_root: Path, corpus_dir: Path, db_path: Path) -> int:
     """Ingest all corpus files into the given database.  Returns session count."""
     backend = SQLiteBackend(db_path=db_path)
-    repository = SessionRepository(backend=backend)
     session_count = 0
 
     for provider_dir in sorted(corpus_dir.iterdir()):
@@ -101,12 +99,9 @@ async def _ingest_corpus(archive_root: Path, corpus_dir: Path, db_path: Path) ->
 
             source = Source(name=provider, path=file_path)
             for convo in iter_source_sessions(source):
-                conv = await prepare_records(
+                conv = await ingest_session(
                     convo,
-                    source_name=provider,
-                    archive_root=archive_root,
                     backend=backend,
-                    repository=repository,
                     raw_id=raw_id,
                 )
                 if conv is not None:
@@ -209,9 +204,9 @@ def test_full_pipeline_replay_produces_correct_archive(
     assert snap1["blocks"] > 0, "No blocks in archive — content extraction failed"
 
     # session_profiles are materialized by the daemon convergence loop, not
-    # by prepare_records alone.  The prepare_records path stores the archive
+    # by the writer alone.  The archive write path stores the archive
     # rows but derived insights are not populated without daemon convergence.
-    assert snap1["session_profiles"] == 0, "session_profiles materialized by daemon convergence, not prepare_records"
+    assert snap1["session_profiles"] == 0, "session_profiles materialized by daemon convergence, not the writer"
 
     # ── FTS integrity ──
     assert snap1["fts_docsize"] == snap1["indexed_blocks"], (

@@ -35,13 +35,13 @@ from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.topology.edge import TopologyEdgeStatus, TopologyEdgeType
 from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.sources import origin_from_provider
-from polylogue.pipeline.prepare import prepare_records
 from polylogue.sources import iter_source_sessions
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import open_connection
 from polylogue.types import Provider
+from tests.infra.live_ingest import ingest_session
 from tests.infra.storage_records import db_setup
 
 WorkspaceEnv = dict[str, Path]
@@ -92,9 +92,7 @@ def _archive_session_id(provider: Provider, native_id: str) -> str:
 async def _ingest_synthetic_child(
     *,
     repo: SessionRepository,
-    tmp_path: Path,
     provider: Provider,
-    source_name: str,
     child_id: str,
     parent_id: str,
     branch_type: BranchType,
@@ -107,12 +105,9 @@ async def _ingest_synthetic_child(
         parent_session_provider_id=parent_id,
         branch_type=branch_type,
     )
-    await prepare_records(
+    await ingest_session(
         parsed,
-        source_name=source_name,
-        archive_root=tmp_path,
         backend=repo.backend,
-        repository=repo,
     )
     return _archive_session_id(provider, child_id)
 
@@ -130,9 +125,7 @@ class TestTopologyEdgeUnresolvedAC:
         async with _make_repository(db_path) as repo:
             await _ingest_synthetic_child(
                 repo=repo,
-                tmp_path=tmp_path,
                 provider=Provider.CLAUDE_CODE,
-                source_name="claude-code",
                 child_id="subagent-sess",
                 parent_id="missing-parent-sess",
                 branch_type=BranchType.SUBAGENT,
@@ -156,9 +149,7 @@ class TestTopologyEdgeUnresolvedAC:
         async with _make_repository(db_path) as repo:
             await _ingest_synthetic_child(
                 repo=repo,
-                tmp_path=tmp_path,
                 provider=Provider.CLAUDE_CODE,
-                source_name="claude-code",
                 child_id="side-child",
                 parent_id="missing-main-sess",
                 branch_type=BranchType.SIDECHAIN,
@@ -179,9 +170,7 @@ class TestTopologyEdgeUnresolvedAC:
         async with _make_repository(db_path) as repo:
             await _ingest_synthetic_child(
                 repo=repo,
-                tmp_path=tmp_path,
                 provider=Provider.CODEX,
-                source_name="codex",
                 child_id="cont-child",
                 parent_id="missing-codex-parent",
                 branch_type=BranchType.CONTINUATION,
@@ -209,12 +198,9 @@ class TestTopologyEdgeUnresolvedAC:
                 parent_session_provider_id="orig-chat",
                 branch_type=BranchType.FORK,
             )
-            await prepare_records(
+            await ingest_session(
                 parsed,
-                source_name="chatgpt",
-                archive_root=tmp_path,
                 backend=repo.backend,
-                repository=repo,
             )
 
         edges = _fetch_edges(db_path)
@@ -238,19 +224,14 @@ class TestTopologyEdgeFastPathPreserved:
                 title="Parent",
                 messages=[ParsedMessage(provider_message_id="pm1", role=Role.USER, text="p")],
             )
-            await prepare_records(
+            await ingest_session(
                 parent_parsed,
-                source_name="codex",
-                archive_root=tmp_path,
                 backend=repo.backend,
-                repository=repo,
             )
             parent_session_id = _archive_session_id(Provider.CODEX, "parent-id")
             child_cid = await _ingest_synthetic_child(
                 repo=repo,
-                tmp_path=tmp_path,
                 provider=Provider.CODEX,
-                source_name="codex",
                 child_id="child-id",
                 parent_id="parent-id",
                 branch_type=BranchType.CONTINUATION,
@@ -283,9 +264,7 @@ class TestTopologyEdgeOutOfOrderResolve:
             # Child ingested before parent → unresolved.
             child_cid = await _ingest_synthetic_child(
                 repo=repo,
-                tmp_path=tmp_path,
                 provider=Provider.CODEX,
-                source_name="codex",
                 child_id="ooo-child",
                 parent_id="ooo-parent",
                 branch_type=BranchType.CONTINUATION,
@@ -303,12 +282,9 @@ class TestTopologyEdgeOutOfOrderResolve:
                 title="Parent (late)",
                 messages=[ParsedMessage(provider_message_id="pm1", role=Role.USER, text="p")],
             )
-            await prepare_records(
+            await ingest_session(
                 parent_parsed,
-                source_name="codex",
-                archive_root=tmp_path,
                 backend=repo.backend,
-                repository=repo,
             )
             parent_session_id = _archive_session_id(Provider.CODEX, "ooo-parent")
 
@@ -344,9 +320,7 @@ class TestTopologyEdgeIdempotency:
             for _ in range(2):
                 await _ingest_synthetic_child(
                     repo=repo,
-                    tmp_path=tmp_path,
                     provider=Provider.CODEX,
-                    source_name="codex",
                     child_id="idem-child",
                     parent_id="idem-parent",
                     branch_type=BranchType.CONTINUATION,
@@ -385,9 +359,7 @@ class TestTopologyLateParentRepair:
         async with _make_repository(db_path) as repo:
             child_cid = await _ingest_synthetic_child(
                 repo=repo,
-                tmp_path=tmp_path,
                 provider=Provider.CODEX,
-                source_name="codex",
                 child_id="late-child",
                 parent_id="late-parent",
                 branch_type=BranchType.SIDECHAIN,
@@ -411,12 +383,9 @@ class TestTopologyLateParentRepair:
                 title="Late parent",
                 messages=[ParsedMessage(provider_message_id="pm1", role=Role.USER, text="p")],
             )
-            await prepare_records(
+            await ingest_session(
                 parent_parsed,
-                source_name="codex",
-                archive_root=tmp_path,
                 backend=repo.backend,
-                repository=repo,
             )
             parent_session_id = _archive_session_id(Provider.CODEX, "late-parent")
 
@@ -439,9 +408,7 @@ class TestTopologyLateParentRepair:
         async with _make_repository(db_path) as repo:
             child_cid = await _ingest_synthetic_child(
                 repo=repo,
-                tmp_path=tmp_path,
                 provider=Provider.CODEX,
-                source_name="codex",
                 child_id="idem-repair-child",
                 parent_id="idem-repair-parent",
                 branch_type=BranchType.SUBAGENT,
@@ -454,19 +421,13 @@ class TestTopologyLateParentRepair:
                 messages=[ParsedMessage(provider_message_id="pm1", role=Role.USER, text="p")],
             )
             # Ingest the parent twice.
-            await prepare_records(
+            await ingest_session(
                 parent_parsed,
-                source_name="codex",
-                archive_root=tmp_path,
                 backend=repo.backend,
-                repository=repo,
             )
-            await prepare_records(
+            await ingest_session(
                 parent_parsed,
-                source_name="codex",
-                archive_root=tmp_path,
                 backend=repo.backend,
-                repository=repo,
             )
             parent_session_id = _archive_session_id(Provider.CODEX, "idem-repair-parent")
 
@@ -494,9 +455,7 @@ class TestTopologyLateParentRepair:
         async with _make_repository(db_path) as repo:
             child_cid = await _ingest_synthetic_child(
                 repo=repo,
-                tmp_path=tmp_path,
                 provider=Provider.CODEX,
-                source_name="codex",
                 child_id="orphan-child",
                 parent_id="never-arrives",
                 branch_type=BranchType.CONTINUATION,
@@ -510,12 +469,9 @@ class TestTopologyLateParentRepair:
                 title="Unrelated",
                 messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="x")],
             )
-            await prepare_records(
+            await ingest_session(
                 unrelated,
-                source_name="codex",
-                archive_root=tmp_path,
                 backend=repo.backend,
-                repository=repo,
             )
 
         edges = _fetch_edges(db_path)
@@ -541,18 +497,14 @@ class TestTopologyLateParentRepair:
         async with _make_repository(db_path) as repo:
             child_a = await _ingest_synthetic_child(
                 repo=repo,
-                tmp_path=tmp_path,
                 provider=Provider.CODEX,
-                source_name="codex",
                 child_id="shared-parent-child-a",
                 parent_id="shared-parent",
                 branch_type=BranchType.SIDECHAIN,
             )
             child_b = await _ingest_synthetic_child(
                 repo=repo,
-                tmp_path=tmp_path,
                 provider=Provider.CODEX,
-                source_name="codex",
                 child_id="shared-parent-child-b",
                 parent_id="shared-parent",
                 branch_type=BranchType.SUBAGENT,
@@ -564,12 +516,9 @@ class TestTopologyLateParentRepair:
                 title="Shared parent",
                 messages=[ParsedMessage(provider_message_id="pm1", role=Role.USER, text="p")],
             )
-            await prepare_records(
+            await ingest_session(
                 parent_parsed,
-                source_name="codex",
-                archive_root=tmp_path,
                 backend=repo.backend,
-                repository=repo,
             )
             parent_session_id = _archive_session_id(Provider.CODEX, "shared-parent")
 
@@ -608,19 +557,14 @@ class TestTopologyLateParentRepair:
                 title="Parent",
                 messages=[ParsedMessage(provider_message_id="pm1", role=Role.USER, text="p")],
             )
-            await prepare_records(
+            await ingest_session(
                 parent_parsed,
-                source_name="codex",
-                archive_root=tmp_path,
                 backend=repo.backend,
-                repository=repo,
             )
             parent_session_id = _archive_session_id(Provider.CODEX, "preserve-parent")
             child_cid = await _ingest_synthetic_child(
                 repo=repo,
-                tmp_path=tmp_path,
                 provider=Provider.CODEX,
-                source_name="codex",
                 child_id="preserve-child",
                 parent_id="preserve-parent",
                 branch_type=BranchType.FORK,
@@ -628,12 +572,9 @@ class TestTopologyLateParentRepair:
 
             # Re-ingest the parent — repair pass must be a no-op on the
             # already-resolved child.
-            await prepare_records(
+            await ingest_session(
                 parent_parsed,
-                source_name="codex",
-                archive_root=tmp_path,
                 backend=repo.backend,
-                repository=repo,
             )
 
         with open_connection(db_path) as conn:
@@ -652,7 +593,7 @@ class TestTopologyLateParentRepair:
     ) -> None:
         """Concurrent ingest of parent + child must converge to a resolved edge.
 
-        SQLite serializes writes per connection, so the two ``prepare_records``
+        The two ``ingest_session`` coroutines below open independent connections, so
         coroutines below execute in some interleaved order. Regardless of which
         one wins the race, the post-condition is the same: the topology edge
         is resolved, ``dst_session_id`` points at the parent,
@@ -677,19 +618,13 @@ class TestTopologyLateParentRepair:
                 messages=[ParsedMessage(provider_message_id="pm1", role=Role.USER, text="p")],
             )
 
-            child_task = prepare_records(
+            child_task = ingest_session(
                 child_parsed,
-                source_name="codex",
-                archive_root=tmp_path,
                 backend=repo.backend,
-                repository=repo,
             )
-            parent_task = prepare_records(
+            parent_task = ingest_session(
                 parent_parsed,
-                source_name="codex",
-                archive_root=tmp_path,
                 backend=repo.backend,
-                repository=repo,
             )
             await asyncio.gather(child_task, parent_task)
             child_session_id = _archive_session_id(Provider.CODEX, "race-child")

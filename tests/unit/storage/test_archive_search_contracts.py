@@ -11,7 +11,6 @@ from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.session.domain_models import Session
 from polylogue.core.json import JSONDocument
 from polylogue.core.sources import origin_from_provider
-from polylogue.pipeline.prepare import prepare_records
 from polylogue.sources.parsers.drive import parse_chunked_prompt
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.repository.archive.search import RepositoryArchiveSearchMixin
@@ -29,6 +28,7 @@ from polylogue.storage.search_providers.hybrid_sessions import (
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.query_store import SQLiteQueryStore
 from polylogue.types import ContentHash, Provider, SessionId
+from tests.infra.live_ingest import ingest_session
 
 
 def _session_record(session_id: str, *, title: str, source_name: str = "chatgpt") -> SessionRecord:
@@ -334,12 +334,9 @@ async def test_gemini_drive_attachment_id_is_searchable_after_parse_and_prepare(
     repo = SessionRepository(backend=backend)
     try:
         parsed = parse_chunked_prompt("gemini", payload, "fallback-id")
-        await prepare_records(
+        await ingest_session(
             parsed,
-            "gemini",
-            archive_root=tmp_path / "archive",
             backend=backend,
-            repository=repo,
         )
 
         hits = await repo.search_summary_hits(query, limit=5, providers=["gemini"])

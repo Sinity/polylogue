@@ -775,14 +775,13 @@ def seeded_db(tmp_path_factory: pytest.TempPathFactory, worker_id: str) -> Path:
     from datetime import datetime, timezone
 
     from polylogue.config import Source
-    from polylogue.pipeline.prepare import prepare_records
     from polylogue.schemas.synthetic import SyntheticCorpus
     from polylogue.sources import iter_source_sessions
     from polylogue.storage.blob_store import BlobStore
-    from polylogue.storage.repository import SessionRepository
     from polylogue.storage.runtime import RawSessionRecord
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
     from polylogue.storage.sqlite.connection import open_connection
+    from tests.infra.live_ingest import ingest_session
 
     # Shared tmpfs location so all xdist workers reuse the same DB.
     # Falls back to the conventional tmp_path_factory when /dev/shm
@@ -832,7 +831,6 @@ def seeded_db(tmp_path_factory: pytest.TempPathFactory, worker_id: str) -> Path:
             pass
 
         backend = SQLiteBackend(db_path=db_path)
-        repository = SessionRepository(backend=backend)
 
         corpus_dir = tmp_dir / "corpus"
         corpus_dir.mkdir()
@@ -869,9 +867,6 @@ def seeded_db(tmp_path_factory: pytest.TempPathFactory, worker_id: str) -> Path:
 
                         warnings.warn(f"Failed to store raw {spec.provider}/{file_path.name}: {e}", stacklevel=2)
 
-            archive_root = tmp_dir / "archive"
-            archive_root.mkdir()
-
             for provider_dir in sorted(corpus_dir.iterdir()):
                 provider = provider_dir.name
                 for file_path in sorted(provider_dir.iterdir()):
@@ -879,12 +874,9 @@ def seeded_db(tmp_path_factory: pytest.TempPathFactory, worker_id: str) -> Path:
                         source = Source(name=provider, path=file_path)
                         raw_id = hashlib.sha256(file_path.read_bytes()).hexdigest()
                         for convo in iter_source_sessions(source):
-                            await prepare_records(
+                            await ingest_session(
                                 convo,
-                                source_name=provider,
-                                archive_root=archive_root,
                                 backend=backend,
-                                repository=repository,
                                 raw_id=raw_id,
                             )
                     except Exception as e:
