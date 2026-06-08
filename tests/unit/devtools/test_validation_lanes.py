@@ -221,7 +221,7 @@ class TestCommandConstruction:
         cmd = build_lane_command(LANES["semantic-stack"])
         assert cmd[0] == "pytest"
         assert "tests/unit/core/test_semantic_facts.py" in cmd
-        assert "tests/unit/sources/test_unified_semantic_laws.py" in cmd
+        assert "tests/unit/core/test_schema_semantic_inference.py" in cmd
 
     def test_source_provider_fidelity_lane_uses_source_governance_suite(self) -> None:
         cmd = build_lane_command(LANES["source-provider-fidelity"])
