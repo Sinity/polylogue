@@ -16,13 +16,11 @@ import pytest
 from polylogue.archive.viewport.viewports import classify_tool
 from polylogue.core.hashing import hash_payload, hash_text
 from polylogue.core.json import JSONDocument
-from polylogue.pipeline.prepare import PrepareCache
 from polylogue.pipeline.semantic_metadata import extract_tool_metadata
 from polylogue.storage.index import rebuild_index, update_index_for_sessions
 from tests.benchmarks.helpers import (
     BenchmarkFixture,
     benchmark_connection_call,
-    benchmark_store_call,
 )
 
 
@@ -114,15 +112,3 @@ def test_bench_hash_payload(benchmark: BenchmarkFixture, depth: int) -> None:
 
     payload = _make_nested_payload(depth)
     benchmark(lambda: hash_payload(payload))
-
-
-@pytest.mark.benchmark
-@pytest.mark.parametrize("n", [100, 500])
-def test_bench_prepare_cache_load(benchmark: BenchmarkFixture, bench_db_5k: Path, n: int) -> None:
-    """PrepareCache.load() — bulk-loads N existing sessions in 2 queries."""
-    cids = {f"bench-conv-{i:05d}" for i in range(n)}
-    benchmark_store_call(
-        benchmark,
-        bench_db_5k,
-        lambda store: PrepareCache.load(store.backend, cids),
-    )

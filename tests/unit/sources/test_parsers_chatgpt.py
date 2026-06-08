@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Mapping, Sequence
-from pathlib import Path
 from typing import Any, TypeAlias
 
 import pytest
@@ -411,18 +410,13 @@ def test_chatgpt_parse_synthetic_branching() -> None:
 # -----------------------------------------------------------------------------
 
 
-def test_chatgpt_metadata_roundtrip_parser_to_hydration(tmp_path: Path) -> None:
-    """ChatGPT message metadata survives parser → materialization → hydration.
+def test_chatgpt_metadata_extracted_into_content_blocks() -> None:
+    """ChatGPT message-level metadata is extracted into content-block metadata.
 
-    Proves that ChatGPT message-level metadata (model, author_name, recipient,
-    status, end_turn, citations, code_execution, user_context) reaches hydrated
-    Message.content_blocks[].metadata without depending on
-    Message.provider_meta.raw.
+    Proves the parser lifts ChatGPT message metadata (model, author_name,
+    recipient, status, end_turn, citations, code_execution, user_context) onto
+    ``ParsedContentBlock.metadata`` rather than an opaque provider_meta blob.
     """
-    from polylogue.pipeline.materialization_runtime import materialize_session
-    from polylogue.storage.hydrators import message_from_record
-    from polylogue.storage.runtime import ContentBlockRecord, MessageRecord
-
     # Build a ChatGPT mapping payload with rich message-level metadata.
     payload: dict[str, object] = {
         "title": "Metadata Roundtrip Test",
@@ -489,87 +483,6 @@ def test_chatgpt_metadata_roundtrip_parser_to_hydration(tmp_path: Path) -> None:
     # User message should NOT have tool-specific metadata.
     assert "chatgpt_author_name" not in user_block_meta
     assert "chatgpt_recipient" not in user_block_meta
-
-    # --- Stage 2: Materialize ---
-    materialized = materialize_session(
-        parsed,
-        source_name="test",
-        archive_root=tmp_path,
-    )
-    assert len(materialized.messages) >= 2
-
-    # Find the materialized assistant message and verify metadata_json.
-    mat_assistant = next(m for m in materialized.messages if m.role == "assistant")
-    assert len(mat_assistant.blocks) >= 1
-    import json as _json
-
-    assistant_meta_json = mat_assistant.blocks[0].metadata_json
-    assert assistant_meta_json is not None, "metadata_json should survive materialization"
-    assistant_meta = _json.loads(assistant_meta_json)
-    assert assistant_meta.get("chatgpt_model") == "gpt-4"
-    assert assistant_meta.get("chatgpt_author_name") == "dalle"
-    assert assistant_meta.get("chatgpt_recipient") == "dalle.text2im"
-    assert assistant_meta.get("chatgpt_status") == "finished_successfully"
-    assert assistant_meta.get("chatgpt_end_turn") is True
-    assert isinstance(assistant_meta.get("chatgpt_citations"), list)
-    assert isinstance(assistant_meta.get("chatgpt_code_execution"), dict)
-    assert isinstance(assistant_meta.get("chatgpt_user_context"), dict)
-
-    # --- Stage 3: Hydrate ---
-    # Simulate the storage→hydration path by constructing records from
-    # materialized output.
-    content_block_records = [
-        ContentBlockRecord(
-            block_id=b.block_id,
-            message_id=mat_assistant.message_id,
-            session_id=materialized.session_id,
-            block_index=b.block_index,
-            type=b.type,
-            text=b.text,
-            tool_name=b.tool_name,
-            tool_id=b.tool_id,
-            tool_input=b.tool_input_json,
-            metadata=b.metadata_json,
-            semantic_type=b.semantic_type,
-        )
-        for b in mat_assistant.blocks
-    ]
-    record = MessageRecord(
-        message_id=mat_assistant.message_id,
-        session_id=materialized.session_id,
-        provider_message_id=mat_assistant.provider_message_id,
-        role=mat_assistant.role,
-        text=mat_assistant.text,
-        sort_key=mat_assistant.sort_key,
-        content_hash=mat_assistant.content_hash,
-        parent_message_id=mat_assistant.parent_message_id,
-        branch_index=mat_assistant.branch_index,
-        content_blocks=content_block_records,
-        source_name="chatgpt",
-        word_count=mat_assistant.word_count,
-        has_tool_use=mat_assistant.has_tool_use,
-        has_thinking=mat_assistant.has_thinking,
-        has_paste=mat_assistant.has_paste,
-        message_type=mat_assistant.message_type,
-    )
-    hydrated = message_from_record(record, attachments=[], provider="chatgpt")
-
-    # Hydrated Message no longer carries provider_meta as a field (#1256);
-    # canonical metadata lives in content_blocks.
-    assert not hasattr(hydrated, "provider_meta")
-
-    # Metadata should be accessible via content_blocks.
-    assert len(hydrated.content_blocks) >= 1
-    hydrated_meta = hydrated.content_blocks[0].get("metadata")
-    assert isinstance(hydrated_meta, dict), f"Expected dict, got {type(hydrated_meta)}"
-    assert hydrated_meta.get("chatgpt_model") == "gpt-4"
-    assert hydrated_meta.get("chatgpt_author_name") == "dalle"
-    assert hydrated_meta.get("chatgpt_recipient") == "dalle.text2im"
-    assert hydrated_meta.get("chatgpt_status") == "finished_successfully"
-    assert hydrated_meta.get("chatgpt_end_turn") is True
-    assert isinstance(hydrated_meta.get("chatgpt_citations"), list)
-    assert isinstance(hydrated_meta.get("chatgpt_code_execution"), dict)
-    assert isinstance(hydrated_meta.get("chatgpt_user_context"), dict)
 
 
 # =============================================================================
@@ -730,78 +643,26 @@ def _build_chatgpt_message_metadata_payload(
 
 
 @pytest.mark.parametrize("meta_spec,desc,expected_fields", _METADATA_PERMUTATION_CASES)
-def test_chatgpt_metadata_permutation_roundtrip(
+def test_chatgpt_metadata_permutation_extracted_by_parser(
     meta_spec: dict[str, object],
     desc: str,
     expected_fields: dict[str, object],
-    tmp_path: Path,
 ) -> None:
-    """Catalog-driven: each metadata field permutation survives parser→materialize→hydrate."""
-    from polylogue.pipeline.materialization_runtime import materialize_session
-    from polylogue.storage.hydrators import message_from_record
-    from polylogue.storage.runtime import ContentBlockRecord, MessageRecord
-
+    """Catalog-driven: each metadata field permutation is extracted by the parser
+    onto the first content block's metadata."""
     payload = _build_chatgpt_message_metadata_payload(meta_spec)
 
-    # Stage 1: Parse
     parsed = chatgpt_parse(payload, "permutation-test")
     assert parsed.source_name == "chatgpt"
+    assert len(parsed.messages) >= 1
 
-    # Stage 2: Materialize
-    materialized = materialize_session(parsed, source_name="test", archive_root=tmp_path)
-    assert len(materialized.messages) >= 1
+    blocks = parsed.messages[0].content_blocks
+    assert len(blocks) >= 1
+    meta = blocks[0].metadata
+    assert isinstance(meta, dict), f"Expected dict metadata, got {type(meta)}: {desc}"
 
-    msg = materialized.messages[0]
-    assert len(msg.blocks) >= 1
-    meta_json = msg.blocks[0].metadata_json
-    assert meta_json is not None, f"metadata_json should survive materialization: {desc}"
-
-    # Stage 3: Hydrate
-    content_block_records = [
-        ContentBlockRecord(
-            block_id=b.block_id,
-            message_id=msg.message_id,
-            session_id=materialized.session_id,
-            block_index=b.block_index,
-            type=b.type,
-            text=b.text,
-            tool_name=b.tool_name,
-            tool_id=b.tool_id,
-            tool_input=b.tool_input_json,
-            metadata=b.metadata_json,
-            semantic_type=b.semantic_type,
-        )
-        for b in msg.blocks
-    ]
-    record = MessageRecord(
-        message_id=msg.message_id,
-        session_id=materialized.session_id,
-        provider_message_id=msg.provider_message_id,
-        role=msg.role,
-        text=msg.text,
-        sort_key=msg.sort_key,
-        content_hash=msg.content_hash,
-        parent_message_id=msg.parent_message_id,
-        branch_index=msg.branch_index,
-        content_blocks=content_block_records,
-        source_name="chatgpt",
-        word_count=msg.word_count,
-        has_tool_use=msg.has_tool_use,
-        has_thinking=msg.has_thinking,
-        has_paste=msg.has_paste,
-        message_type=msg.message_type,
-    )
-    hydrated = message_from_record(record, attachments=[], provider="chatgpt")
-
-    # Hydrated Message no longer has provider_meta (#1256).
-    assert not hasattr(hydrated, "provider_meta")
-    assert len(hydrated.content_blocks) >= 1
-    hydrated_meta = hydrated.content_blocks[0].get("metadata")
-    assert isinstance(hydrated_meta, dict), f"Expected dict, got {type(hydrated_meta)}: {desc}"
-
-    # Assert each expected field
     for field_name, expected_value in expected_fields.items():
-        actual = hydrated_meta.get(field_name)
+        actual = meta.get(field_name)
         if isinstance(expected_value, dict):
             assert isinstance(actual, dict), f"[{desc}] Expected dict for {field_name}, got {type(actual)}"
             for k, v in expected_value.items():

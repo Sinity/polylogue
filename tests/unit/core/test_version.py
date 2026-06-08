@@ -43,7 +43,7 @@ def test_lazy_import_unknown_raises_root() -> None:
 
 @pytest.mark.parametrize(
     "name",
-    ["HarmonizedMessage", "SchemaValidator", "ValidationResult", "validate_provider_export"],
+    ["SchemaValidator", "ValidationResult", "validate_provider_export"],
 )
 def test_runtime_schema_exports_are_narrow(name: str) -> None:
     import polylogue.schemas

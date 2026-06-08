@@ -18,7 +18,7 @@ from hypothesis import strategies as st
 from polylogue.core.sources import origin_from_provider
 from polylogue.schemas.synthetic.core import SyntheticCorpus
 from polylogue.types import Provider
-from tests.infra.pipeline_roundtrip import parse_and_transform_payload, save_transform_and_hydrate
+from tests.infra.pipeline_roundtrip import parse_payload_roundtrip, write_and_hydrate
 from tests.infra.storage_records import db_setup
 
 # ---------------------------------------------------------------------------
@@ -63,21 +63,6 @@ class TestMessageCountPreservation:
         suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture],
         deadline=None,
     )
-    def test_message_count_preserved(self: object, data: SyntheticPayload, workspace_env: dict[str, Path]) -> None:
-        source_name, raw_bytes, unique_id = data
-        roundtrip = parse_and_transform_payload(source_name, raw_bytes, workspace_env["archive_root"], unique_id)
-
-        assert len(roundtrip.transform.session.messages) == len(roundtrip.parsed.messages), (
-            f"Transform changed message count: {len(roundtrip.parsed.messages)} → "
-            f"{len(roundtrip.transform.session.messages)}"
-        )
-
-    @given(data=synthetic_payload())
-    @settings(
-        max_examples=20,
-        suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture],
-        deadline=None,
-    )
     def test_message_count_survives_save_hydrate(
         self: object, data: SyntheticPayload, workspace_env: dict[str, Path]
     ) -> None:
@@ -87,8 +72,8 @@ class TestMessageCountPreservation:
         from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(db_path) as conn:
-            roundtrip = parse_and_transform_payload(source_name, raw_bytes, workspace_env["archive_root"], unique_id)
-            hydrated = save_transform_and_hydrate(roundtrip.transform, conn)
+            roundtrip = parse_payload_roundtrip(source_name, raw_bytes, unique_id)
+            hydrated = write_and_hydrate(roundtrip, conn)
 
             assert len(list(hydrated.messages)) == len(roundtrip.parsed.messages), (
                 f"Hydration changed message count: {len(roundtrip.parsed.messages)} → {len(list(hydrated.messages))}"
@@ -114,8 +99,8 @@ class TestRolePreservation:
         from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(db_path) as conn:
-            roundtrip = parse_and_transform_payload(source_name, raw_bytes, workspace_env["archive_root"], unique_id)
-            hydrated = save_transform_and_hydrate(roundtrip.transform, conn)
+            roundtrip = parse_payload_roundtrip(source_name, raw_bytes, unique_id)
+            hydrated = write_and_hydrate(roundtrip, conn)
 
             parsed_roles = Counter(str(m.role) for m in roundtrip.parsed.messages)
             hydrated_roles = Counter(str(m.role) for m in hydrated.messages)
@@ -141,8 +126,8 @@ class TestTitleStability:
         from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(db_path) as conn:
-            roundtrip = parse_and_transform_payload(source_name, raw_bytes, workspace_env["archive_root"], unique_id)
-            hydrated = save_transform_and_hydrate(roundtrip.transform, conn)
+            roundtrip = parse_payload_roundtrip(source_name, raw_bytes, unique_id)
+            hydrated = write_and_hydrate(roundtrip, conn)
 
             assert hydrated.title == roundtrip.parsed.title, (
                 f"Title changed: {roundtrip.parsed.title!r} → {hydrated.title!r}"
@@ -161,10 +146,10 @@ class TestContentHashDeterminism:
         suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture],
         deadline=None,
     )
-    def test_same_payload_same_hash(self: object, data: SyntheticPayload, tmp_path: Path) -> None:
+    def test_same_payload_same_hash(self: object, data: SyntheticPayload) -> None:
         source_name, raw_bytes, unique_id = data
-        result1 = parse_and_transform_payload(source_name, raw_bytes, tmp_path, unique_id).transform
-        result2 = parse_and_transform_payload(source_name, raw_bytes, tmp_path, unique_id).transform
+        result1 = parse_payload_roundtrip(source_name, raw_bytes, unique_id)
+        result2 = parse_payload_roundtrip(source_name, raw_bytes, unique_id)
 
         assert result1.content_hash == result2.content_hash, "Same payload produced different content hashes"
 
@@ -189,17 +174,15 @@ class TestIdempotentReimport:
         from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(db_path) as conn:
-            result = parse_and_transform_payload(
-                source_name, raw_bytes, workspace_env["archive_root"], unique_id
-            ).transform
+            result = parse_payload_roundtrip(source_name, raw_bytes, unique_id)
 
-            session_id = write_parsed_session_to_archive(conn, result.session, content_hash=result.content_hash)
+            session_id = write_parsed_session_to_archive(conn, result.parsed, content_hash=result.content_hash)
             first_sessions = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
             first_messages = conn.execute(
                 "SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)
             ).fetchone()[0]
 
-            write_parsed_session_to_archive(conn, result.session, content_hash=result.content_hash)
+            write_parsed_session_to_archive(conn, result.parsed, content_hash=result.content_hash)
             second_sessions = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
             second_messages = conn.execute(
                 "SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)
@@ -228,8 +211,8 @@ class TestProviderIdentity:
         from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(db_path) as conn:
-            roundtrip = parse_and_transform_payload(source_name, raw_bytes, workspace_env["archive_root"], unique_id)
-            hydrated = save_transform_and_hydrate(roundtrip.transform, conn)
+            roundtrip = parse_payload_roundtrip(source_name, raw_bytes, unique_id)
+            hydrated = write_and_hydrate(roundtrip, conn)
 
             expected_origin = origin_from_provider(Provider.from_string(str(roundtrip.parsed.source_name))).value
             assert str(hydrated.origin) == expected_origin, (
@@ -249,12 +232,16 @@ class TestSessionIdDeterminism:
         suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture],
         deadline=None,
     )
-    def test_same_payload_same_cid(self: object, data: SyntheticPayload, tmp_path: Path) -> None:
-        source_name, raw_bytes, unique_id = data
-        result1 = parse_and_transform_payload(source_name, raw_bytes, tmp_path, unique_id).transform
-        result2 = parse_and_transform_payload(source_name, raw_bytes, tmp_path, unique_id).transform
+    def test_same_payload_same_cid(self: object, data: SyntheticPayload) -> None:
+        from polylogue.core.identity_law import session_id as archive_session_id
 
-        assert result1.candidate_cid == result2.candidate_cid, "Same payload produced different session IDs"
+        source_name, raw_bytes, unique_id = data
+        p1 = parse_payload_roundtrip(source_name, raw_bytes, unique_id).parsed
+        p2 = parse_payload_roundtrip(source_name, raw_bytes, unique_id).parsed
+
+        cid1 = archive_session_id(origin_from_provider(p1.source_name).value, p1.provider_session_id)
+        cid2 = archive_session_id(origin_from_provider(p2.source_name).value, p2.provider_session_id)
+        assert cid1 == cid2, "Same payload produced different session IDs"
 
 
 # ---------------------------------------------------------------------------
@@ -274,10 +261,8 @@ def test_provider_completes_full_roundtrip(source_name: str, workspace_env: dict
     from polylogue.storage.sqlite.connection import open_connection
 
     with open_connection(db_path) as conn:
-        roundtrip = parse_and_transform_payload(
-            source_name, raw_bytes, workspace_env["archive_root"], f"{source_name}-42"
-        )
-        hydrated = save_transform_and_hydrate(roundtrip.transform, conn)
+        roundtrip = parse_payload_roundtrip(source_name, raw_bytes, f"{source_name}-42")
+        hydrated = write_and_hydrate(roundtrip, conn)
 
         assert hydrated is not None
         assert len(list(hydrated.messages)) > 0

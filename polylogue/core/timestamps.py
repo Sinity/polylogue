@@ -111,4 +111,30 @@ def parse_timestamp_pair(
     return (parsed, format_timestamp(parsed))
 
 
-__all__ = ["canonical_timestamp_text", "parse_timestamp", "parse_timestamp_pair", "format_timestamp"]
+def _timestamp_sort_key(ts: str | None) -> float | None:
+    """Convert a timestamp string to a numeric sort key.
+
+    Handles epoch strings (with millisecond normalisation) and ISO-8601.
+    """
+    if ts is None:
+        return None
+    try:
+        value = float(ts)
+        if value > 32503680000:
+            value = value / 1000
+        return value
+    except (ValueError, TypeError):
+        pass
+    parsed = parse_timestamp(ts)
+    if parsed is not None:
+        return parsed.timestamp()
+    return None
+
+
+__all__ = [
+    "canonical_timestamp_text",
+    "format_timestamp",
+    "parse_timestamp",
+    "parse_timestamp_pair",
+    "_timestamp_sort_key",
+]

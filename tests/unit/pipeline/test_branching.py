@@ -393,7 +393,7 @@ class TestBranchPipelinePersistence:
         assert [message.text for message in session.mainline_messages()] == ["Question", "Answer 1"]
 
     @pytest.mark.asyncio
-    async def test_prepare_records_resolves_parent_session_and_message_ids(
+    async def test_ingest_resolves_parent_session_and_message_ids(
         self,
         workspace_env: WorkspaceEnv,
         tmp_path: Path,

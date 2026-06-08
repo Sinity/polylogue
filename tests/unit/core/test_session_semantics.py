@@ -205,9 +205,9 @@ class TestMessageSemanticProjection:
         assert tool.is_tool_use is True
 
     def test_context_wrappers_are_context_dumps(self) -> None:
-        # Stored message_type is the source of truth post-#839 AC #3;
-        # materialization (`pipeline/materialization_runtime.py`) classifies
-        # context markers and persists `message_type=CONTEXT`.
+        # Stored message_type is the source of truth post-#839 AC #3; the
+        # archive write path classifies context markers and persists
+        # `message_type=CONTEXT`.
         msg = make_msg(
             id="m1",
             role="user",

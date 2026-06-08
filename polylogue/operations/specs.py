@@ -155,9 +155,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         path_targets=("raw-archive-ingest-loop",),
         code_refs=(
             "polylogue.pipeline.services.parsing_workflow.parse_from_raw",
-            "polylogue.pipeline.prepare.prepare_records",
-            "polylogue.pipeline.prepare.persist_prepared_bundle",
-            "polylogue.storage.repository.archive.repository_writes.RepositoryWriteMixin.save_parsed_session",
+            "polylogue.storage.sqlite.archive_tiers.write.write_parsed_session_to_archive",
             "polylogue.storage.repository.raw.repository_raw.RepositoryRawMixin.mark_raw_validated",
             "polylogue.storage.repository.raw.repository_raw.RepositoryRawMixin.mark_raw_parsed",
         ),

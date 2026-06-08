@@ -1,12 +1,10 @@
-"""Tests for semantic classification in prepare_records.
+"""Tests for semantic classification of parsed blocks at ingest time.
 
 Covers:
-- tool_use blocks get semantic_type set at ingest time
-- git Bash commands get semantic_type='git' and metadata
-- thinking blocks get semantic_type='thinking'
-- code blocks get language detection in metadata
-- Task (subagent) blocks get semantic_type='subagent' and metadata
-- file operation blocks get semantic_type and path metadata
+- classify_tool / extract_tool_metadata helpers used during parsing
+- the live `_semantic_type` writer classifier: tool_use blocks are
+  categorized (git, file_read, subagent, ...) and all other block types
+  (thinking, text) carry no semantic_type
 """
 
 from __future__ import annotations
@@ -15,6 +13,9 @@ from polylogue.archive.viewport.viewports import ToolCategory, classify_tool
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.pipeline.semantic_capture import extract_subagent_spawns, parse_git_operation
 from polylogue.pipeline.semantic_metadata import extract_tool_metadata
+from polylogue.sources.parsers.base_models import ParsedContentBlock
+from polylogue.storage.sqlite.archive_tiers.write import _semantic_type
+from polylogue.types import ContentBlockType
 
 
 def _payload(data: object) -> JSONDocument:
@@ -182,32 +183,60 @@ class TestExtractToolMetadata:
 
 
 # =============================================================================
-# Tests for semantic_type values in ContentBlockRecord
+# Tests for the live block semantic_type classifier (write path)
 # =============================================================================
 
 
-class TestSemanticTypeValues:
-    """Verify that semantic_type values match ToolCategory enum values."""
+class TestSemanticTypeClassifier:
+    """`_semantic_type` is the function the archive writer runs over each parsed
+    block to fill `blocks.semantic_type`. It classifies tool_use blocks by tool
+    category and leaves every other block uncategorized."""
 
-    def test_semantic_type_for_file_read(self) -> None:
-        assert ToolCategory.FILE_READ.value == "file_read"
+    def test_tool_use_git_block_classified_as_git(self) -> None:
+        block = ParsedContentBlock(
+            type=ContentBlockType.TOOL_USE,
+            tool_name="Bash",
+            tool_id="t1",
+            tool_input={"command": "git status"},
+        )
+        assert _semantic_type(block) == ToolCategory.GIT.value
 
-    def test_semantic_type_for_git(self) -> None:
-        assert ToolCategory.GIT.value == "git"
+    def test_tool_use_file_read_block_classified_as_file_read(self) -> None:
+        block = ParsedContentBlock(
+            type=ContentBlockType.TOOL_USE,
+            tool_name="Read",
+            tool_id="t2",
+            tool_input={"file_path": "/tmp/x.py"},
+        )
+        assert _semantic_type(block) == ToolCategory.FILE_READ.value
 
-    def test_semantic_type_for_subagent(self) -> None:
-        assert ToolCategory.SUBAGENT.value == "subagent"
+    def test_tool_use_subagent_block_classified_as_subagent(self) -> None:
+        block = ParsedContentBlock(
+            type=ContentBlockType.TOOL_USE,
+            tool_name="Task",
+            tool_id="t3",
+            tool_input={"prompt": "do work"},
+        )
+        assert _semantic_type(block) == ToolCategory.SUBAGENT.value
 
-    def test_semantic_type_for_thinking(self) -> None:
-        # "thinking" is set directly (not from ToolCategory)
-        # Verify it's consistent with what prepare.py sets
-        from polylogue.archive.viewport.viewports import ToolCategory
+    def test_uncategorized_tool_use_block_has_no_semantic_type(self) -> None:
+        block = ParsedContentBlock(
+            type=ContentBlockType.TOOL_USE,
+            tool_name="UnknownTool",
+            tool_id="t4",
+            tool_input={},
+        )
+        assert _semantic_type(block) is None
 
-        assert "thinking" not in [c.value for c in ToolCategory]
+    def test_thinking_block_has_no_semantic_type(self) -> None:
+        # Thinking is carried by block_type=THINKING, not semantic_type; the
+        # writer only assigns semantic_type to tool_use blocks.
+        block = ParsedContentBlock(type=ContentBlockType.THINKING, text="reasoning")
+        assert _semantic_type(block) is None
 
-    def test_thinking_semantic_type_literal(self) -> None:
-        # prepare.py sets semantic_type = "thinking" for thinking blocks
-        assert "thinking" == "thinking"  # Documents the string literal used
+    def test_text_block_has_no_semantic_type(self) -> None:
+        block = ParsedContentBlock(type=ContentBlockType.TEXT, text="hello")
+        assert _semantic_type(block) is None
 
 
 # =============================================================================

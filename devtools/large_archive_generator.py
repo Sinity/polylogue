@@ -299,12 +299,15 @@ async def generate_archive(
     Returns:
         ArchiveMetrics with timing, size, and count data.
     """
+    import asyncio
+    import sqlite3 as _sqlite3
+
     from polylogue.config import Source
-    from polylogue.pipeline.prepare import prepare_records
     from polylogue.schemas.synthetic import SyntheticCorpus
     from polylogue.sources import iter_source_sessions
-    from polylogue.storage.repository import SessionRepository
+    from polylogue.sources.parsers.base import ParsedSession
     from polylogue.storage.runtime import RawSessionRecord
+    from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
     t0 = time.monotonic()
@@ -312,69 +315,62 @@ async def generate_archive(
 
     db_path = output_dir / "benchmark.db"
     corpus_dir = output_dir / "corpus"
-    archive_root = output_dir / "archive"
     corpus_dir.mkdir(parents=True, exist_ok=True)
-    archive_root.mkdir(parents=True, exist_ok=True)
 
     # Filter provider mix to only available providers
     provider_breakdown: dict[str, int] = {}
 
     backend = SQLiteBackend(db_path=db_path)
-    repository = SessionRepository(backend=backend)
+    index_db = backend.db_path  # path to index.db, initialized by SQLiteBackend.__init__
 
     session_count = 0
     message_count = 0
 
+    def _write_session_sync(session: ParsedSession, raw_id: str) -> None:
+        """Write one session to the archive index via the sync write path."""
+        with _sqlite3.connect(str(index_db)) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA foreign_keys=ON")
+            write_parsed_session_to_archive(conn, session, raw_id=raw_id)
+
     try:
-        async with backend.bulk_connection():
-            for corpus_scenario in spec.corpus_scenarios(
-                available_providers=_available_providers(),
-                corpus_source=corpus_source,
-            ):
-                provider = corpus_scenario.provider
-                provider_conv_count = 0
-                for corpus_spec in corpus_scenario.corpus_specs:
-                    provider_dir = corpus_dir / provider
-                    written = SyntheticCorpus.write_spec_artifacts(
-                        corpus_spec,
-                        provider_dir,
-                        prefix="synth",
-                        index_width=5,
+        for corpus_scenario in spec.corpus_scenarios(
+            available_providers=_available_providers(),
+            corpus_source=corpus_source,
+        ):
+            provider = corpus_scenario.provider
+            provider_conv_count = 0
+            for corpus_spec in corpus_scenario.corpus_specs:
+                provider_dir = corpus_dir / provider
+                written = SyntheticCorpus.write_spec_artifacts(
+                    corpus_spec,
+                    provider_dir,
+                    prefix="synth",
+                    index_width=5,
+                )
+
+                for file_path, artifact in zip(written.files, written.batch.artifacts, strict=True):
+                    raw_bytes = artifact.raw_bytes
+                    # Store raw record
+                    raw_id = hashlib.sha256(raw_bytes).hexdigest()
+                    raw_record = RawSessionRecord(
+                        raw_id=raw_id,
+                        source_name=provider,
+                        source_path=str(file_path),
+                        blob_size=len(raw_bytes),
+                        acquired_at=datetime.now(timezone.utc).isoformat(),
                     )
+                    await backend.save_raw_session(raw_record)
 
-                    for file_path, artifact in zip(written.files, written.batch.artifacts, strict=True):
-                        raw_bytes = artifact.raw_bytes
-                        # Store raw record
-                        raw_id = hashlib.sha256(raw_bytes).hexdigest()
-                        raw_record = RawSessionRecord(
-                            raw_id=raw_id,
-                            source_name=provider,
-                            source_path=str(file_path),
-                            blob_size=len(raw_bytes),
-                            acquired_at=datetime.now(timezone.utc).isoformat(),
-                        )
-                        await backend.save_raw_session(raw_record)
+                    # Parse and ingest via the live sync write path
+                    source = Source(name=provider, path=file_path)
+                    for convo in iter_source_sessions(source):
+                        await asyncio.to_thread(_write_session_sync, convo, raw_id)
+                        provider_conv_count += 1
+                        message_count += len(convo.messages)
 
-                        # Parse and ingest
-                        source = Source(name=provider, path=file_path)
-                        for convo in iter_source_sessions(source):
-                            await prepare_records(
-                                convo,
-                                source_name=provider,
-                                archive_root=archive_root,
-                                backend=backend,
-                                repository=repository,
-                                raw_id=raw_id,
-                            )
-                            provider_conv_count += 1
-                            message_count += len(convo.messages)
-
-                        # Periodic flush every 100 files
-                        if provider_conv_count > 0 and provider_conv_count % 100 == 0:
-                            await backend.bulk_flush()
-
-                provider_breakdown[provider] = provider_conv_count
-                session_count += provider_conv_count
+            provider_breakdown[provider] = provider_conv_count
+            session_count += provider_conv_count
     finally:
         await backend.close()
 

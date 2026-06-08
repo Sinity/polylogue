@@ -16,7 +16,7 @@ from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import Origin
 from polylogue.core.json import dumps, loads, require_json_document, require_json_value
 from polylogue.core.sources import origin_from_provider, provider_from_origin
-from polylogue.pipeline.prepare import _timestamp_sort_key
+from polylogue.core.timestamps import _timestamp_sort_key
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
     ParsedContentBlock,
