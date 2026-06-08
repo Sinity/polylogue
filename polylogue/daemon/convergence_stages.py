@@ -1250,10 +1250,13 @@ def _archive_stale_session_profile_ids(conn: sqlite3.Connection, session_ids: Se
         SELECT s.session_id
         FROM sessions AS s
         LEFT JOIN session_profiles AS sp ON sp.session_id = s.session_id
+        LEFT JOIN insight_materialization AS im
+          ON im.session_id = s.session_id AND im.insight_type = 'session_profile'
         WHERE s.session_id IN ({placeholders})
           AND (
               sp.session_id IS NULL
               OR sp.materializer_version != ?
+              OR im.materializer_version != ?
               OR (
                   s.sort_key_ms IS NOT NULL
                   AND ABS(COALESCE(sp.source_sort_key, 0.0) - (CAST(s.sort_key_ms AS REAL) / 1000.0)) > 0.000001
@@ -1266,7 +1269,7 @@ def _archive_stale_session_profile_ids(conn: sqlite3.Connection, session_ids: Se
           )
         ORDER BY s.session_id
         """,
-        unique_ids + (SESSION_INSIGHT_MATERIALIZER_VERSION,),
+        unique_ids + (SESSION_INSIGHT_MATERIALIZER_VERSION, SESSION_INSIGHT_MATERIALIZER_VERSION),
     ).fetchall()
     return [str(row[0]) for row in rows]
 

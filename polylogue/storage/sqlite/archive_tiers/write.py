@@ -334,6 +334,53 @@ def upsert_session_profile_costs(
         )
 
 
+def apply_insight_materialization(
+    conn: sqlite3.Connection,
+    *,
+    insight_type: str,
+    session_id: str,
+    materializer_version: int,
+    materialized_at_ms: int,
+    source_updated_at_ms: int | None = None,
+    source_sort_key_ms: int | None = None,
+    input_high_water_mark_ms: int | None = None,
+    input_row_count: int = 0,
+) -> None:
+    """Stamp one session-insight materialization row without committing.
+
+    The bulk insight rebuild (``rebuild_session_insights_sync``) materializes
+    every insight table inside one transaction so a SIGKILL mid-rebuild rolls
+    the WAL back to the prior insights. It therefore stamps materialization
+    through this no-commit primitive; the committing ``upsert_*`` wrapper below
+    is for callers that stamp a single insight as its own unit of work.
+    """
+    conn.execute(
+        """
+        INSERT INTO insight_materialization (
+            insight_type, session_id, materializer_version, materialized_at_ms,
+            source_updated_at_ms, source_sort_key_ms, input_high_water_mark_ms, input_row_count
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(insight_type, session_id) DO UPDATE SET
+            materializer_version = excluded.materializer_version,
+            materialized_at_ms = excluded.materialized_at_ms,
+            source_updated_at_ms = excluded.source_updated_at_ms,
+            source_sort_key_ms = excluded.source_sort_key_ms,
+            input_high_water_mark_ms = excluded.input_high_water_mark_ms,
+            input_row_count = excluded.input_row_count
+        """,
+        (
+            insight_type,
+            session_id,
+            materializer_version,
+            materialized_at_ms,
+            source_updated_at_ms,
+            source_sort_key_ms,
+            input_high_water_mark_ms,
+            input_row_count,
+        ),
+    )
+
+
 def upsert_insight_materialization(
     conn: sqlite3.Connection,
     *,
@@ -349,30 +396,16 @@ def upsert_insight_materialization(
     """Upsert the shared materialization state for one session insight."""
     conn.execute("PRAGMA foreign_keys = ON")
     with conn:
-        conn.execute(
-            """
-            INSERT INTO insight_materialization (
-                insight_type, session_id, materializer_version, materialized_at_ms,
-                source_updated_at_ms, source_sort_key_ms, input_high_water_mark_ms, input_row_count
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(insight_type, session_id) DO UPDATE SET
-                materializer_version = excluded.materializer_version,
-                materialized_at_ms = excluded.materialized_at_ms,
-                source_updated_at_ms = excluded.source_updated_at_ms,
-                source_sort_key_ms = excluded.source_sort_key_ms,
-                input_high_water_mark_ms = excluded.input_high_water_mark_ms,
-                input_row_count = excluded.input_row_count
-            """,
-            (
-                insight_type,
-                session_id,
-                materializer_version,
-                materialized_at_ms,
-                source_updated_at_ms,
-                source_sort_key_ms,
-                input_high_water_mark_ms,
-                input_row_count,
-            ),
+        apply_insight_materialization(
+            conn,
+            insight_type=insight_type,
+            session_id=session_id,
+            materializer_version=materializer_version,
+            materialized_at_ms=materialized_at_ms,
+            source_updated_at_ms=source_updated_at_ms,
+            source_sort_key_ms=source_sort_key_ms,
+            input_high_water_mark_ms=input_high_water_mark_ms,
+            input_row_count=input_row_count,
         )
     return read_insight_materialization(conn, insight_type, session_id)
 
@@ -1894,6 +1927,7 @@ __all__ = [
     "read_session_work_events",
     "rebuild_archive_messages_fts",
     "upsert_session_profile_costs",
+    "apply_insight_materialization",
     "upsert_insight_materialization",
     "upsert_session_phase",
     "upsert_session_tag",

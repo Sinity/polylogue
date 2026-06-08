@@ -36,6 +36,7 @@ from polylogue.storage.insights.session.profiles import (
 )
 from polylogue.storage.insights.session.runtime import SessionInsightCounts
 from polylogue.storage.insights.session.storage import (
+    _epoch_ms_or_none,
     replace_session_latency_profiles_bulk_sync,
     replace_session_phases_bulk_sync,
     replace_session_profiles_bulk_sync,
@@ -66,6 +67,7 @@ from polylogue.storage.runtime import (
     SessionRecord,
     SessionWorkEventRecord,
 )
+from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.queries.attachments import get_attachments_batch
 from polylogue.storage.sqlite.queries.mappers import (
     _json_object,
@@ -571,6 +573,43 @@ def build_session_insight_record_bundles(
     ]
 
 
+def _stamp_bundle_materialization(conn: sqlite3.Connection, bundle: SessionInsightRecordBundle) -> None:
+    """Stamp insight_materialization for one rebuilt session bundle.
+
+    The canonical bulk rebuild and the api archive rebuild both materialize the
+    same per-session insight bundle; stamping here keeps insight_materialization
+    populated on the daemon convergence path (not only the api path), so
+    materialization tracking is coherent regardless of which entrypoint ran.
+    Uses the no-commit primitive so the stamp participates in the rebuild's
+    single transaction.
+    """
+    from polylogue.storage.sqlite.archive_tiers.write import apply_insight_materialization
+
+    profile = bundle.profile_record
+    session_id = str(profile.session_id)
+    materialized_at_ms = _epoch_ms_or_none(profile.materialized_at) or 0
+    source_updated_at_ms = _epoch_ms_or_none(profile.source_updated_at)
+    source_sort_key_ms = int(profile.source_sort_key * 1000) if profile.source_sort_key is not None else None
+    input_high_water_mark_ms = _epoch_ms_or_none(profile.input_high_water_mark)
+    for insight_type, materializer_version, input_row_count in (
+        ("session_profile", profile.materializer_version, profile.input_row_count),
+        ("latency", profile.materializer_version, bundle.latency_profile_record.input_row_count),
+        ("work_events", SESSION_INSIGHT_MATERIALIZER_VERSION, len(bundle.work_event_records)),
+        ("phases", SESSION_INSIGHT_MATERIALIZER_VERSION, len(bundle.phase_records)),
+    ):
+        apply_insight_materialization(
+            conn,
+            insight_type=insight_type,
+            session_id=session_id,
+            materializer_version=materializer_version,
+            materialized_at_ms=materialized_at_ms,
+            source_updated_at_ms=source_updated_at_ms,
+            source_sort_key_ms=source_sort_key_ms,
+            input_high_water_mark_ms=input_high_water_mark_ms,
+            input_row_count=input_row_count,
+        )
+
+
 def _count_record_bundles(
     bundles: Sequence[SessionInsightRecordBundle],
 ) -> tuple[int, int, int]:
@@ -742,6 +781,7 @@ def rebuild_session_insights_sync(
             {bundle.session_id: bundle.phase_records for bundle in record_bundles},
         )
         for bundle in record_bundles:
+            _stamp_bundle_materialization(conn, bundle)
             group = profile_provider_day(bundle.profile_record)
             if group is not None:
                 refreshed_profile_groups.add(group)
