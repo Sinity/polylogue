@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeAlias
 
+from polylogue.core.enums import TitleSource
 from polylogue.logging import get_logger
 
 from ..base import ParsedSession
@@ -148,19 +149,21 @@ def enrich_session_from_index(
     index_entry: SessionIndexEntry,
 ) -> ParsedSession:
     title = conv.title
-    title_source = "original"
+    title_source: TitleSource = TitleSource.ORIGIN
     if (
         index_entry.summary
         and index_entry.summary != "User Exits CLI Session"
         and not _looks_like_git_branch(index_entry.summary)
     ):
         title = index_entry.summary
-        title_source = "session-index:summary"
+        # summary comes from the provider's session index: it IS the origin title
+        title_source = TitleSource.ORIGIN
     elif index_entry.first_prompt and index_entry.first_prompt != "No prompt":
         title = index_entry.first_prompt[:80]
         if len(index_entry.first_prompt) > 80:
             title += "..."
-        title_source = "session-index:first-prompt"
+        # first prompt is a fallback heuristic, not an explicit title field
+        title_source = TitleSource.HEURISTIC
 
     provider_meta = dict(conv.provider_meta) if conv.provider_meta else {}
     provider_meta.update(
@@ -170,12 +173,12 @@ def enrich_session_from_index(
             "isSidechain": index_entry.is_sidechain,
             "summary": index_entry.summary,
             "firstPrompt": index_entry.first_prompt,
-            "title_source": title_source,
         }
     )
 
     update: dict[str, object] = {
         "title": title,
+        "title_source": title_source,
         "created_at": index_entry.created or conv.created_at,
         "updated_at": index_entry.modified or conv.updated_at,
         "provider_meta": provider_meta,

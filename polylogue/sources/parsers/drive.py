@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from pydantic import ValidationError
 
 from polylogue.archive.message.roles import Role
+from polylogue.core.enums import TitleSource
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.logging import get_logger
 from polylogue.sources.providers.gemini import GeminiMessage
@@ -251,12 +252,12 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
         attachments.extend(chunk_attachments)
 
     title_val = payload.get("title")
-    title_source = "imported:title"
+    title_source: TitleSource = TitleSource.ORIGIN
     if not title_val:
         title_val = payload.get("displayName")
-        title_source = "imported:displayName" if title_val else "fallback:id"
+        title_source = TitleSource.ORIGIN if title_val else TitleSource.UNKNOWN
     title = str(title_val) if title_val else fallback_id
-    provider_meta: dict[str, object] = {"title_source": title_source}
+    provider_meta: dict[str, object] = {}
     create_time_str = (
         str(payload.get("createTime"))
         if payload.get("createTime")
@@ -279,12 +280,13 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
         source_name=runtime_provider,
         provider_session_id=str(payload.get("id") or fallback_id),
         title=title,
+        title_source=title_source,
         created_at=create_time_str,
         updated_at=update_time_str,
         messages=messages,
         active_leaf_message_provider_id=active_leaf_message_provider_id,
         attachments=attachments,
-        provider_meta=provider_meta,
+        provider_meta=provider_meta if provider_meta else None,
     )
 
 

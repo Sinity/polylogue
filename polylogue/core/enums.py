@@ -205,6 +205,16 @@ class SemanticBlockType(PolylogueStrEnum):
         return cls(str(value).strip().lower())
 
 
+class TitleSource(PolylogueStrEnum):
+    """Classification for how a session's title was derived."""
+
+    ORIGIN = "origin"
+    PATH = "path"
+    HEURISTIC = "heuristic"
+    USER = "user"
+    UNKNOWN = "unknown"
+
+
 class BranchType(PolylogueStrEnum):
     """Classification for how a session relates to its parent."""
 
@@ -340,6 +350,7 @@ __all__ = [
     "Provider",
     "Role",
     "SemanticBlockType",
+    "TitleSource",
     "TopologyEdgeStatus",
     "ValidationMode",
     "ValidationStatus",

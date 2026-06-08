@@ -6,6 +6,7 @@ import json
 from collections.abc import Mapping
 from pathlib import Path
 
+from polylogue.core.enums import TitleSource
 from polylogue.core.json import json_document
 from polylogue.logging import get_logger
 
@@ -83,18 +84,12 @@ class CodexAssemblySpec:
         if name and name != conv.title:
             provider_meta = dict(conv.provider_meta) if conv.provider_meta else {}
             provider_meta["thread_name"] = name
-            provider_meta["title_source"] = "session-index:thread-name"
-            return ParsedSession(
-                source_name=conv.source_name,
-                provider_session_id=conv.provider_session_id,
-                title=name,
-                created_at=conv.created_at,
-                updated_at=conv.updated_at,
-                messages=conv.messages,
-                attachments=conv.attachments,
-                provider_meta=provider_meta,
-                parent_session_provider_id=conv.parent_session_provider_id,
-                branch_type=conv.branch_type,
+            return conv.model_copy(
+                update={
+                    "title": name,
+                    "title_source": TitleSource.ORIGIN,
+                    "provider_meta": provider_meta,
+                }
             )
 
         # Fallback: use first user message as title if current title is just the session_id
@@ -104,19 +99,11 @@ class CodexAssemblySpec:
                     preview = msg.text.strip()[:80]
                     if len(msg.text.strip()) > 80:
                         preview += "..."
-                    provider_meta = dict(conv.provider_meta) if conv.provider_meta else {}
-                    provider_meta["title_source"] = "first-user-message"
-                    return ParsedSession(
-                        source_name=conv.source_name,
-                        provider_session_id=conv.provider_session_id,
-                        title=preview,
-                        created_at=conv.created_at,
-                        updated_at=conv.updated_at,
-                        messages=conv.messages,
-                        attachments=conv.attachments,
-                        provider_meta=provider_meta,
-                        parent_session_provider_id=conv.parent_session_provider_id,
-                        branch_type=conv.branch_type,
+                    return conv.model_copy(
+                        update={
+                            "title": preview,
+                            "title_source": TitleSource.HEURISTIC,
+                        }
                     )
 
         return conv
