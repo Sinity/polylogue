@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.json import JSONDocument, json_document
@@ -36,11 +36,6 @@ def parse_gemini_cli(payload: JSONDocument, fallback_id: str) -> ParsedSession:
         if parsed is not None:
             messages.append(parsed)
     messages = _mark_active_leaf(messages)
-    provider_meta = _session_meta(
-        payload,
-        keys=("kind", "projectHash", "summary"),
-        source_family="gemini-cli",
-    )
     return ParsedSession(
         source_name=Provider.GEMINI_CLI,
         provider_session_id=session_id,
@@ -49,7 +44,6 @@ def parse_gemini_cli(payload: JSONDocument, fallback_id: str) -> ParsedSession:
         updated_at=_string(payload.get("lastUpdated")),
         messages=messages,
         active_leaf_message_provider_id=messages[-1].provider_message_id if messages else None,
-        provider_meta=provider_meta,
     )
 
 
@@ -80,11 +74,6 @@ def parse_hermes(payload: JSONDocument, fallback_id: str) -> ParsedSession:
         if parsed is not None:
             messages.append(parsed)
     messages = _mark_active_leaf(messages)
-    provider_meta = _session_meta(
-        payload,
-        keys=("model", "base_url", "platform", "tools"),
-        source_family="hermes",
-    )
     return ParsedSession(
         source_name=Provider.HERMES,
         provider_session_id=session_id,
@@ -93,7 +82,6 @@ def parse_hermes(payload: JSONDocument, fallback_id: str) -> ParsedSession:
         updated_at=_string(payload.get("last_updated")),
         messages=messages,
         active_leaf_message_provider_id=messages[-1].provider_message_id if messages else None,
-        provider_meta=provider_meta,
     )
 
 
@@ -121,7 +109,6 @@ def _parse_gemini_message(item: object, *, index: int, position: int) -> ParsedM
         content_blocks.append(_tool_use_block(tool_record, fallback_id=f"tool-{index}-{tool_index}"))
     if not text and not content_blocks:
         return None
-    provider_meta = _message_meta(record, keys=("model", "tokens"))
     token_usage = _token_usage_fields(record)
     return ParsedMessage(
         provider_message_id=_string(record.get("id")) or f"msg-{index}",
@@ -132,7 +119,6 @@ def _parse_gemini_message(item: object, *, index: int, position: int) -> ParsedM
         position=position,
         variant_index=0,
         is_active_path=True,
-        provider_meta=provider_meta,
         model_name=_string(record.get("model")),
         input_tokens=token_usage["input_tokens"],
         output_tokens=token_usage["output_tokens"],
@@ -170,7 +156,6 @@ def _parse_hermes_message(
         content_blocks.append(ParsedContentBlock(type=ContentBlockType.TOOL_RESULT, tool_id=tool_call_id, text=text))
     if not text and not content_blocks:
         return None
-    provider_meta = _message_meta(record, keys=("finish_reason",))
     token_usage = _token_usage_fields(record)
     return ParsedMessage(
         provider_message_id=tool_call_id or f"msg-{index}",
@@ -181,7 +166,6 @@ def _parse_hermes_message(
         position=position,
         variant_index=0,
         is_active_path=True,
-        provider_meta=provider_meta,
         model_name=_string(record.get("model")) or fallback_model,
         input_tokens=token_usage["input_tokens"],
         output_tokens=token_usage["output_tokens"],
@@ -191,24 +175,6 @@ def _parse_hermes_message(
             record.get("durationMs") or record.get("duration_ms") or record.get("elapsed_ms")
         ),
     )
-
-
-def _session_meta(payload: JSONDocument, *, keys: Sequence[str], source_family: str) -> dict[str, object]:
-    meta: dict[str, object] = {"source_family": source_family}
-    for key in keys:
-        value = payload.get(key)
-        if value is not None:
-            meta[key] = value
-    return meta
-
-
-def _message_meta(record: JSONDocument, *, keys: Sequence[str]) -> dict[str, object] | None:
-    meta: dict[str, object] = {}
-    for key in keys:
-        value = record.get(key)
-        if value is not None:
-            meta[key] = value
-    return meta or None
 
 
 def _mark_active_leaf(messages: list[ParsedMessage]) -> list[ParsedMessage]:

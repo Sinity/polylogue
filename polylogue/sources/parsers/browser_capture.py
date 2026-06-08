@@ -12,22 +12,6 @@ def looks_like(payload: object) -> bool:
     return looks_like_browser_capture(payload)
 
 
-def _provider_meta(envelope: BrowserCaptureEnvelope) -> dict[str, object]:
-    meta: dict[str, object] = {
-        "source": envelope.source,
-        "capture_id": envelope.capture_id,
-        "browser_capture": True,
-        "provenance": envelope.provenance.model_dump(mode="json", exclude_none=True),
-    }
-    if envelope.session.model:
-        meta["model"] = envelope.session.model
-    if envelope.session.provider_meta:
-        meta["session"] = envelope.session.provider_meta
-    if envelope.provider_meta:
-        meta["capture"] = envelope.provider_meta
-    return meta
-
-
 def parse(payload: object, fallback_id: str) -> ParsedSession:
     """Parse a browser-capture envelope into the canonical parser contract."""
     envelope = BrowserCaptureEnvelope.model_validate(payload)
@@ -36,23 +20,16 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
     attachments: list[ParsedAttachment] = []
     message_position = 0
 
-    for index, turn in enumerate(envelope.session.turns):
+    for turn in envelope.session.turns:
         if turn.provider_turn_id in seen_turns:
             continue
         seen_turns.add(turn.provider_turn_id)
-        provider_meta: dict[str, object] = {
-            "browser_capture": True,
-            "ordinal": turn.ordinal if turn.ordinal else index,
-        }
-        if turn.provider_meta:
-            provider_meta.update(turn.provider_meta)
         messages.append(
             ParsedMessage(
                 provider_message_id=turn.provider_turn_id,
                 role=turn.role,
                 text=turn.text,
                 timestamp=turn.timestamp,
-                provider_meta=provider_meta,
                 parent_message_provider_id=turn.parent_turn_id,
                 position=message_position,
                 variant_index=0,
@@ -70,9 +47,7 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
                     mime_type=attachment.mime_type,
                     size_bytes=attachment.size_bytes,
                     path=None,
-                    provider_meta={**attachment.provider_meta, "url": attachment.url}
-                    if attachment.url
-                    else attachment.provider_meta or None,
+                    source_url=attachment.url if attachment.url else None,
                     upload_origin="url" if attachment.url else "oauth",
                 )
             )
@@ -86,9 +61,7 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
                 mime_type=attachment.mime_type,
                 size_bytes=attachment.size_bytes,
                 path=None,
-                provider_meta={**attachment.provider_meta, "url": attachment.url}
-                if attachment.url
-                else attachment.provider_meta or None,
+                source_url=attachment.url if attachment.url else None,
                 upload_origin="url" if attachment.url else "oauth",
             )
         )
@@ -111,7 +84,6 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
         messages=messages,
         active_leaf_message_provider_id=active_leaf_message_provider_id,
         attachments=attachments,
-        provider_meta=_provider_meta(envelope),
     )
 
 

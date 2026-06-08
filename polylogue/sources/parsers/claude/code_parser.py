@@ -59,7 +59,6 @@ def _detect_paste_spans(text: str | None) -> list[ParsedPasteEvidence]:
 
 
 ClaudeCodeContextCompaction: TypeAlias = dict[str, object]
-ClaudeCodeProviderMeta: TypeAlias = dict[str, object]
 
 
 def _clean_title_text(text: str) -> str:
@@ -313,8 +312,6 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedSe
     else:
         composed_session_id = session_id or fallback_id
 
-    provider_meta: ClaudeCodeProviderMeta = {}
-
     if is_subagent:
         branch_type: BranchType | None = BranchType.SUBAGENT
     elif has_sidechain:
@@ -350,7 +347,6 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedSe
         updated_at=updated_at,
         messages=messages,
         active_leaf_message_provider_id=active_leaf_message_provider_id,
-        provider_meta=provider_meta if provider_meta else None,
         session_events=session_events,
         parent_session_provider_id=parent_session_id,
         branch_type=branch_type,

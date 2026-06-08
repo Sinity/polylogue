@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from hashlib import sha256
 from pathlib import Path
 
+from polylogue.core.enums import PasteBoundary
 from polylogue.logging import get_logger
 
 from .assembly import (
@@ -11,7 +13,7 @@ from .assembly import (
     ClaudeCodeSessionIndex,
     SidecarData,
 )
-from .parsers.base import ParsedMessage, ParsedSession
+from .parsers.base import ParsedMessage, ParsedPasteEvidence, ParsedSession
 from .parsers.claude.history import HistoryEntry, build_session_paste_index
 from .parsers.claude.index import (
     SessionIndexEntry,
@@ -105,7 +107,7 @@ def _annotate_messages_with_history_paste(
     if not user_messages:
         return conv
 
-    marked_indices: set[int] = set()
+    marked: dict[int, HistoryEntry] = {}
     for entry in paste_entries:
         if entry.timestamp_ms is None:
             continue
@@ -134,19 +136,43 @@ def _annotate_messages_with_history_paste(
                     candidate_count=len(candidates),
                 )
             continue
-        marked_indices.add(candidates[0])
-    if not marked_indices:
+        marked[candidates[0]] = entry
+    if not marked:
         return conv
 
     new_messages: list[ParsedMessage] = []
     for idx, msg in enumerate(conv.messages):
-        if idx in marked_indices:
-            meta = dict(msg.provider_meta or {})
-            meta["claude_code_history_paste"] = True
-            new_messages.append(msg.model_copy(update={"provider_meta": meta}))
-        else:
+        matched = marked.get(idx)
+        if matched is None:
             new_messages.append(msg)
+            continue
+        new_messages.append(msg.model_copy(update={"paste_spans": _history_paste_spans(msg, matched)}))
     return conv.model_copy(update={"messages": new_messages})
+
+
+def _history_paste_spans(msg: ParsedMessage, entry: HistoryEntry) -> list[ParsedPasteEvidence]:
+    """Append history-derived paste evidence to a message's existing spans.
+
+    A ``history.jsonl`` row records that a paste occurred near this user
+    message but carries no in-message offsets, so each paste becomes a
+    ``hash_only`` span (the same boundary the live UserPromptSubmit hook uses
+    for captured pastes). When the row preserved the pasted text we stamp a
+    content hash; otherwise the span records only that a paste happened.
+    """
+    spans = list(msg.paste_spans)
+    base = len(spans)
+    for offset, paste in enumerate(entry.pastes):
+        content_hash = sha256(paste.content.encode("utf-8")).digest() if paste.has_content else None
+        spans.append(
+            ParsedPasteEvidence(
+                position=base + offset,
+                boundary_state=PasteBoundary.HASH_ONLY.value,
+                source_marker=paste.paste_id or None,
+                content_hash=content_hash,
+                observed_at_ms=entry.timestamp_ms,
+            )
+        )
+    return spans
 
 
 def _message_timestamp_ms(msg: ParsedMessage) -> int | None:

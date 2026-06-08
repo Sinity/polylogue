@@ -61,9 +61,6 @@ class ParsedMessage(BaseModel):
     occurred_at_ms: int | None = None
     content_blocks: list[ParsedContentBlock] = Field(default_factory=list)
     message_type: MessageType = MessageType.MESSAGE
-    # Optional transient parser metadata for direct parser consumers.
-    # Canonical persistence uses content_blocks for messages and provider_meta for sessions/attachments.
-    provider_meta: dict[str, object] | None = None
     parent_message_provider_id: str | None = None
     position: int | None = None
     branch_index: int = 0
@@ -118,14 +115,17 @@ class ParsedAttachment(BaseModel):
 
     Native identifiers used for lookups — `provider_attachment_id`,
     `provider_file_id`, `provider_drive_id` — and the origin classification
-    `upload_origin` are typed top-level fields. They live alongside
-    `provider_meta` for narrative content; downstream storage promotes them
-    into stored columns so attachment lookups never JSON-extract on the hot
-    path. See `polylogue/storage/sqlite/archive_tiers/index.py:attachments`.
+    `upload_origin` are typed top-level fields. Downstream storage promotes
+    them into stored columns so attachment lookups never JSON-extract on the
+    hot path. See `polylogue/storage/sqlite/archive_tiers/index.py:attachments`.
 
     `upload_origin` is a closed vocabulary ({"drive","paste","url","oauth"}
     or None); the attachment-library UI (#1199) groups by `(source_name,
     upload_origin)` without scanning JSON.
+
+    `attachment_kind` classifies non-downloadable attachment shapes
+    (`"inline_file"`, `"youtube_video"`); the Drive download path skips
+    acquisition for those kinds.
     """
 
     provider_attachment_id: str
@@ -134,10 +134,10 @@ class ParsedAttachment(BaseModel):
     mime_type: str | None = None
     size_bytes: int | None = None
     path: str | None = None
-    provider_meta: dict[str, object] | None = None
     provider_file_id: str | None = None
     provider_drive_id: str | None = None
     upload_origin: str | None = None
+    attachment_kind: str | None = None
     source_url: str | None = None
     caption: str | None = None
 
@@ -184,7 +184,6 @@ class ParsedSession(BaseModel):
     messages: list[ParsedMessage]
     active_leaf_message_provider_id: str | None = None
     attachments: list[ParsedAttachment] = Field(default_factory=list)
-    provider_meta: dict[str, object] | None = None
     session_events: list[ParsedSessionEvent] = Field(default_factory=list)
     parent_session_provider_id: str | None = None
     branch_type: BranchType | None = None

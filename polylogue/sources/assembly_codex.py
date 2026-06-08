@@ -82,13 +82,10 @@ class CodexAssemblySpec:
         # Try thread name from side index
         name = thread_names.get(cid)
         if name and name != conv.title:
-            provider_meta = dict(conv.provider_meta) if conv.provider_meta else {}
-            provider_meta["thread_name"] = name
             return conv.model_copy(
                 update={
                     "title": name,
                     "title_source": TitleSource.ORIGIN,
-                    "provider_meta": provider_meta,
                 }
             )
 

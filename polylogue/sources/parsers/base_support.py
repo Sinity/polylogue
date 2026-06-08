@@ -123,7 +123,6 @@ def attachment_from_meta(meta: object, message_id: str | None, index: int) -> Pa
         mime_type=mime_type if isinstance(mime_type, str) else None,
         size_bytes=size_bytes,
         path=None,
-        provider_meta=meta,
         provider_file_id=str(file_id_raw) if isinstance(file_id_raw, str) and file_id_raw else None,
         provider_drive_id=str(drive_id_raw) if isinstance(drive_id_raw, str) and drive_id_raw else None,
         upload_origin="oauth",

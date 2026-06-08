@@ -169,7 +169,6 @@ def extract_messages_from_mapping(
                                 size_bytes=int(attach["size"])
                                 if isinstance(attach.get("size"), (int, float))
                                 else None,
-                                provider_meta={"raw": attach},
                                 provider_file_id=str(file_id_raw)
                                 if isinstance(file_id_raw, str) and file_id_raw
                                 else None,
@@ -177,8 +176,6 @@ def extract_messages_from_mapping(
                             )
                         )
 
-        # Build provider_meta with structured content_blocks
-        meta: dict[str, object] = {"raw": msg}
         model_slug: object = None
         duration_raw: object = None
 
@@ -188,39 +185,8 @@ def extract_messages_from_mapping(
             duration_raw = msg_metadata.get("durationMs")
             if duration_raw is None:
                 duration_raw = msg_metadata.get("duration_ms")
-            if model_slug:
-                meta["model"] = model_slug
-            # Citations from web browsing
-            citations = msg_metadata.get("citations") or msg_metadata.get("_cite_metadata")
-            if isinstance(citations, (list, dict)) and citations:
-                meta["citations"] = citations
-            # Aggregate result from code interpreter
-            aggregate_result = msg_metadata.get("aggregate_result")
-            if isinstance(aggregate_result, dict) and aggregate_result:
-                meta["code_execution"] = aggregate_result
-            # User editable context (memory/instructions)
-            user_context = msg_metadata.get("user_context_message_data")
-            if isinstance(user_context, dict) and user_context:
-                meta["user_context"] = user_context
         model_name = str(model_slug) if isinstance(model_slug, str) and model_slug else None
         duration_ms = _non_negative_int(duration_raw)
-
-        # Author name (identifies tools like dalle, browser, python)
-        if isinstance(author, dict):
-            author_name = author.get("name")
-            if isinstance(author_name, str) and author_name:
-                meta["author_name"] = author_name
-        # Message recipient (e.g., "dalle.text2im", "browser", "python")
-        recipient_val = msg.get("recipient")
-        if isinstance(recipient_val, str) and recipient_val and recipient_val != "all":
-            meta["recipient"] = recipient_val
-        # Message status and end_turn
-        status = msg.get("status")
-        if isinstance(status, str) and status:
-            meta["status"] = status
-        end_turn = msg.get("end_turn")
-        if isinstance(end_turn, bool):
-            meta["end_turn"] = end_turn
 
         # Build structured content blocks
         content_blocks: list[ParsedContentBlock] = []
@@ -313,7 +279,6 @@ def extract_messages_from_mapping(
             branch_index=branch_index,
             variant_index=branch_index,
             is_active_path=node_id in active_path_id_set if active_path_ids else None,
-            provider_meta=meta,
             model_name=model_name,
             duration_ms=duration_ms,
         )
@@ -353,21 +318,6 @@ def parse(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
     title = payload.get("title") or payload.get("name") or fallback_id
     conv_id = payload.get("id") or payload.get("uuid") or payload.get("conversation_id")
 
-    # Build session-level provider_meta from rich fields
-    conv_meta: dict[str, object] = {}
-    default_model = payload.get("default_model_slug")
-    if isinstance(default_model, str) and default_model:
-        conv_meta["default_model"] = default_model
-    gizmo_id = payload.get("gizmo_id")
-    if isinstance(gizmo_id, str) and gizmo_id:
-        conv_meta["gizmo_id"] = gizmo_id
-    gizmo_type = payload.get("gizmo_type")
-    if isinstance(gizmo_type, str) and gizmo_type:
-        conv_meta["gizmo_type"] = gizmo_type
-    is_archived = payload.get("is_archived")
-    if isinstance(is_archived, bool) and is_archived:
-        conv_meta["is_archived"] = True
-
     return ParsedSession(
         source_name=Provider.CHATGPT,
         provider_session_id=str(conv_id or fallback_id),
@@ -380,5 +330,4 @@ def parse(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
             None,
         ),
         attachments=attachments,
-        provider_meta=conv_meta if conv_meta else None,
     )

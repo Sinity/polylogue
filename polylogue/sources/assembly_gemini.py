@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 from polylogue.archive.message.roles import Role
+from polylogue.core.enums import TitleSource
 
 from .assembly import SidecarData
 from .parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
@@ -32,7 +33,7 @@ class GeminiAssemblySpec:
         conv: ParsedSession,
         sidecar_data: SidecarData,
     ) -> ParsedSession:
-        """Add a display label for Gemini sessions whose imported title is weak."""
+        """Derive a stronger title for Gemini sessions whose imported title is weak."""
         del sidecar_data
         if not _weak_title(conv.title, conv.provider_session_id):
             return conv
@@ -41,11 +42,7 @@ class GeminiAssemblySpec:
         if label is None or source is None:
             return conv
 
-        provider_meta = dict(conv.provider_meta or {})
-        provider_meta["display_label"] = label
-        provider_meta["display_label_source"] = source
-        provider_meta.setdefault("display_label_reason", "weak-title")
-        return conv.model_copy(update={"provider_meta": provider_meta})
+        return conv.model_copy(update={"title": label, "title_source": TitleSource.HEURISTIC})
 
 
 def _compact_text(value: object) -> str | None:
@@ -98,11 +95,6 @@ def _first_attachment_name(attachments: list[ParsedAttachment]) -> str | None:
         text = _compact_text(attachment.name)
         if text:
             return text
-        if attachment.provider_meta:
-            for key in ("name", "title"):
-                text = _compact_text(attachment.provider_meta.get(key))
-                if text:
-                    return text
     return None
 
 

@@ -24,10 +24,6 @@ def _as_drive_payload(payload: object) -> DrivePayload | None:
     return payload if is_json_document(payload) else None
 
 
-def _as_document_metadata(document: JSONDocument) -> DriveDocMetadata:
-    return dict(document)
-
-
 def _collect_doc_fields(payload: DrivePayload) -> DrivePayloadSequence:
     docs: DrivePayloadSequence = []
     for key in ("driveDocument", "driveDocuments", "drive_document"):
@@ -84,7 +80,6 @@ def _int_or_none(value: object) -> int | None:
 def attachment_from_doc(doc: DriveDocSource, message_id: str | None) -> ParsedAttachment | None:
     if isinstance(doc, str):
         doc_id: str = doc
-        meta: DrivePayload = {"id": doc_id}
         return ParsedAttachment(
             provider_attachment_id=doc_id,
             message_provider_id=message_id,
@@ -92,7 +87,6 @@ def attachment_from_doc(doc: DriveDocSource, message_id: str | None) -> ParsedAt
             mime_type=None,
             size_bytes=None,
             path=None,
-            provider_meta=_as_document_metadata(meta),
             provider_file_id=doc_id,
             upload_origin="drive",
         )
@@ -106,7 +100,7 @@ def attachment_from_doc(doc: DriveDocSource, message_id: str | None) -> ParsedAt
     mime_val = _first_text(doc, "mimeType", "mime_type")
     # #1252: promote drive native IDs into typed fields. `id`/`fileId` is the
     # Drive file identifier; `driveId` (when present) is the shared-drive
-    # container. Both are mirrored in provider_meta for rendering fallbacks.
+    # container.
     file_id_val = _first_text(doc, "fileId", "id")
     drive_id_val = _first_text(doc, "driveId")
     return ParsedAttachment(
@@ -116,7 +110,6 @@ def attachment_from_doc(doc: DriveDocSource, message_id: str | None) -> ParsedAt
         mime_type=mime_val,
         size_bytes=size_bytes,
         path=None,
-        provider_meta=_as_document_metadata(doc),
         provider_file_id=file_id_val,
         provider_drive_id=drive_id_val,
         upload_origin="drive",
@@ -135,11 +128,6 @@ def attachment_from_inline_file(
     attachment_key = data if isinstance(data, str) and data else hash_payload(inline_file)
     attachment_id = f"inline-file-{hash_text_short(str(attachment_key), length=24)}"
     size_bytes = inline_file_size_bytes(data)
-    provider_meta: DriveDocMetadata = {"attachment_kind": "inline_file"}
-    if isinstance(mime_type, str) and mime_type:
-        provider_meta["mimeType"] = mime_type
-    if size_bytes is not None:
-        provider_meta["sizeBytes"] = size_bytes
     return ParsedAttachment(
         provider_attachment_id=attachment_id,
         message_provider_id=message_id,
@@ -147,7 +135,7 @@ def attachment_from_inline_file(
         mime_type=mime_type if isinstance(mime_type, str) else None,
         size_bytes=size_bytes,
         path=None,
-        provider_meta=provider_meta,
+        attachment_kind="inline_file",
         upload_origin="paste",
     )
 
@@ -166,10 +154,6 @@ def attachment_from_youtube_video(
     else:
         attachment_id = f"youtube-video-{hash_payload(video_dict)}"
         url = None
-    provider_meta: DriveDocMetadata = {"attachment_kind": "youtube_video"}
-    provider_meta.update(_as_document_metadata(video_dict))
-    if url is not None:
-        provider_meta["url"] = url
     return ParsedAttachment(
         provider_attachment_id=attachment_id,
         message_provider_id=message_id,
@@ -177,7 +161,8 @@ def attachment_from_youtube_video(
         mime_type="video/youtube",
         size_bytes=None,
         path=None,
-        provider_meta=provider_meta,
+        attachment_kind="youtube_video",
+        source_url=url,
         upload_origin="url",
     )
 
@@ -204,9 +189,21 @@ def attachment_block_payloads(attachments: list[ParsedAttachment]) -> list[Drive
     blocks: list[DriveDocMetadata] = []
 
     def _metadata_for_block(attachment: ParsedAttachment) -> DriveDocMetadata:
-        metadata: DriveDocMetadata = dict(attachment.provider_meta or {})
+        metadata: DriveDocMetadata = {}
         if attachment.name:
-            metadata.setdefault("name", attachment.name)
+            metadata["name"] = attachment.name
+        if attachment.provider_attachment_id:
+            metadata["id"] = attachment.provider_attachment_id
+        if attachment.provider_file_id:
+            metadata["fileId"] = attachment.provider_file_id
+        if attachment.provider_drive_id:
+            metadata["driveId"] = attachment.provider_drive_id
+        if attachment.mime_type:
+            metadata["mimeType"] = attachment.mime_type
+        if attachment.size_bytes is not None:
+            metadata["sizeBytes"] = attachment.size_bytes
+        if attachment.source_url:
+            metadata["url"] = attachment.source_url
         return metadata
 
     for attachment in attachments:

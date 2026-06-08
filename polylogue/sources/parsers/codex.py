@@ -569,16 +569,6 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
     parent_id = session_metas_seen[1] if len(session_metas_seen) > 1 else None
     branch_type = BranchType.CONTINUATION if parent_id else None
 
-    # Build session-level provider_meta with session context
-    conv_meta: dict[str, object] | None = None
-    if session_git or session_instructions or working_directories:
-        conv_meta = {}
-        if session_git:
-            conv_meta["git"] = session_git
-        if session_instructions:
-            conv_meta["instructions"] = session_instructions
-        if working_directories:
-            conv_meta["working_directories"] = sorted(working_directories)
     updated_at_pair = _newer_timestamp_pair(session_timestamp_pair, latest_message_timestamp)
 
     git_branch_typed: str | None = None
@@ -615,7 +605,6 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
         updated_at=updated_at_pair[1] if updated_at_pair is not None else None,
         messages=messages,
         active_leaf_message_provider_id=active_leaf_message_provider_id,
-        provider_meta=conv_meta,
         session_events=session_events,
         parent_session_provider_id=parent_id,
         branch_type=branch_type,

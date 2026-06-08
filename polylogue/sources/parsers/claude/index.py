@@ -165,23 +165,11 @@ def enrich_session_from_index(
         # first prompt is a fallback heuristic, not an explicit title field
         title_source = TitleSource.HEURISTIC
 
-    provider_meta = dict(conv.provider_meta) if conv.provider_meta else {}
-    provider_meta.update(
-        {
-            "gitBranch": index_entry.git_branch,
-            "projectPath": index_entry.project_path,
-            "isSidechain": index_entry.is_sidechain,
-            "summary": index_entry.summary,
-            "firstPrompt": index_entry.first_prompt,
-        }
-    )
-
     update: dict[str, object] = {
         "title": title,
         "title_source": title_source,
         "created_at": index_entry.created or conv.created_at,
         "updated_at": index_entry.modified or conv.updated_at,
-        "provider_meta": provider_meta,
     }
     if index_entry.git_branch and not conv.git_branch:
         update["git_branch"] = index_entry.git_branch

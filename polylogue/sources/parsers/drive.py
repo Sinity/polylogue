@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import cast
 
 from pydantic import ValidationError
 
@@ -64,57 +65,7 @@ def _gemini_content_block_payloads(message: GeminiMessage, text: str | None) -> 
     return [{"type": "thinking" if message.isThought else "text", "text": text}]
 
 
-def _typed_gemini_meta(chunk_obj: JSONDocument, message: GeminiMessage, text: str | None) -> dict[str, object]:
-    meta: dict[str, object] = {"raw": chunk_obj}
-
-    if message.isThought:
-        meta["isThought"] = True
-    if message.tokenCount is not None:
-        meta["tokenCount"] = message.tokenCount
-    if message.finishReason:
-        meta["finishReason"] = message.finishReason
-    if message.thinkingBudget is not None:
-        meta["thinkingBudget"] = message.thinkingBudget
-    if message.safetyRatings:
-        meta["safetyRatings"] = list(message.safetyRatings)
-    if message.grounding:
-        meta["grounding"] = (
-            message.grounding.model_dump() if hasattr(message.grounding, "model_dump") else message.grounding
-        )
-    if message.branchParent:
-        meta["branchParent"] = (
-            message.branchParent.model_dump() if hasattr(message.branchParent, "model_dump") else message.branchParent
-        )
-    if message.branchChildren:
-        meta["branchChildren"] = message.branchChildren
-    if message.executableCode:
-        meta["executableCode"] = message.executableCode
-    if message.codeExecutionResult:
-        meta["codeExecutionResult"] = message.codeExecutionResult
-    if message.errorMessage:
-        meta["errorMessage"] = message.errorMessage
-    if message.isEdited:
-        meta["isEdited"] = True
-
-    meta["content_blocks"] = _gemini_content_block_payloads(message, text)
-
-    reasoning_traces = message.extract_reasoning_traces()
-    if reasoning_traces:
-        meta["reasoning_traces"] = [
-            {"text": trace.text, "token_count": trace.token_count, "provider": trace.provider}
-            for trace in reasoning_traces
-        ]
-    return meta
-
-
-def _fallback_gemini_meta(chunk_obj: JSONDocument, text: str | None) -> dict[str, object]:
-    meta: dict[str, object] = {"raw": chunk_obj}
-    if chunk_obj.get("isThought"):
-        meta["isThought"] = True
-    token_count = chunk_obj.get("tokenCount")
-    if token_count:
-        meta["tokenCount"] = token_count
-
+def _fallback_gemini_content_blocks(chunk_obj: JSONDocument, text: str | None) -> list[JSONDocument]:
     fallback_content_blocks: list[JSONDocument] = []
     if text:
         block_type = "thinking" if chunk_obj.get("isThought") else "text"
@@ -122,14 +73,12 @@ def _fallback_gemini_meta(chunk_obj: JSONDocument, text: str | None) -> dict[str
 
     exec_code = chunk_obj.get("executableCode")
     if isinstance(exec_code, dict) and exec_code:
-        meta["executableCode"] = exec_code
         code = exec_code.get("code")
         if isinstance(code, str) and code:
             fallback_content_blocks.append({"type": "code", "text": code})
 
     exec_result = chunk_obj.get("codeExecutionResult")
     if isinstance(exec_result, dict) and exec_result:
-        meta["codeExecutionResult"] = exec_result
         output = exec_result.get("output")
         outcome = exec_result.get("outcome")
         if isinstance(output, str) and output:
@@ -137,21 +86,15 @@ def _fallback_gemini_meta(chunk_obj: JSONDocument, text: str | None) -> dict[str
         elif isinstance(outcome, str) and outcome:
             fallback_content_blocks.append({"type": "tool_result", "text": f"[{outcome}]"})
 
-    error_msg = chunk_obj.get("errorMessage")
-    if isinstance(error_msg, str) and error_msg:
-        meta["errorMessage"] = error_msg
-
-    meta["content_blocks"] = fallback_content_blocks
-    return meta
+    return fallback_content_blocks
 
 
-def _append_attachment_blocks(meta: dict[str, object], chunk_attachments: list[ParsedAttachment]) -> None:
-    meta_blocks = meta.get("content_blocks")
-    attachment_blocks = _attachment_block_payloads(chunk_attachments)
-    if isinstance(meta_blocks, list):
-        meta_blocks.extend(attachment_blocks)
-        return
-    meta["content_blocks"] = attachment_blocks
+def _append_attachment_blocks(
+    content_blocks: list[JSONDocument], chunk_attachments: list[ParsedAttachment]
+) -> list[JSONDocument]:
+    # Attachment block payloads carry only JSON-valued fields (name/ids/mime);
+    # cast bridges the DriveDocMetadata (dict[str, object]) alias to JSONDocument.
+    return content_blocks + cast("list[JSONDocument]", _attachment_block_payloads(chunk_attachments))
 
 
 def _string_field(payload: JSONDocument, *keys: str) -> str | None:
@@ -223,14 +166,14 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
         try:
             gemini_message = GeminiMessage.model_validate(chunk_obj)
             used_typed_model = True
-            meta = _typed_gemini_meta(chunk_obj, gemini_message, text)
+            content_block_payloads = _gemini_content_block_payloads(gemini_message, text)
         except (ValidationError, Exception):
-            meta = _fallback_gemini_meta(chunk_obj, text)
+            content_block_payloads = _fallback_gemini_content_blocks(chunk_obj, text)
 
         if chunk_attachments and not used_typed_model:
-            _append_attachment_blocks(meta, chunk_attachments)
+            content_block_payloads = _append_attachment_blocks(content_block_payloads, chunk_attachments)
 
-        if not text and not chunk_attachments and not meta.get("content_blocks"):
+        if not text and not chunk_attachments and not content_block_payloads:
             continue
 
         messages.append(
@@ -239,11 +182,10 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
                 role=role,
                 text=text,
                 timestamp=message_timestamp,
-                content_blocks=_parsed_content_blocks_from_meta(meta.get("content_blocks")),
+                content_blocks=_parsed_content_blocks_from_meta(content_block_payloads),
                 position=message_position,
                 variant_index=0,
                 is_active_path=True,
-                provider_meta=meta,
                 model_name=_string_field(chunk_obj, "model", "modelName", "model_name"),
                 duration_ms=_non_negative_int_field(chunk_obj, "durationMs", "duration_ms", "elapsed_ms"),
             )
@@ -257,7 +199,6 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
         title_val = payload.get("displayName")
         title_source = TitleSource.ORIGIN if title_val else TitleSource.UNKNOWN
     title = str(title_val) if title_val else fallback_id
-    provider_meta: dict[str, object] = {}
     create_time_str = (
         str(payload.get("createTime"))
         if payload.get("createTime")
@@ -286,7 +227,6 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
         messages=messages,
         active_leaf_message_provider_id=active_leaf_message_provider_id,
         attachments=attachments,
-        provider_meta=provider_meta if provider_meta else None,
     )
 
 

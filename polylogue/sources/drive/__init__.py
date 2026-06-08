@@ -142,11 +142,7 @@ def _apply_drive_attachments(
     for attachment in convo.attachments:
         if not attachment.provider_attachment_id:
             continue
-        attachment_kind = None
-        if isinstance(attachment.provider_meta, dict):
-            raw_kind = attachment.provider_meta.get("attachment_kind")
-            attachment_kind = raw_kind if isinstance(raw_kind, str) else None
-        if attachment_kind in {"inline_file", "youtube_video"}:
+        if attachment.attachment_kind in {"inline_file", "youtube_video"}:
             continue
         dest = asset_path(archive_root, attachment.provider_attachment_id)
         meta = client.download_to_path(attachment.provider_attachment_id, dest)
@@ -154,15 +150,6 @@ def _apply_drive_attachments(
         attachment.name = attachment.name or meta.name
         attachment.mime_type = attachment.mime_type or meta.mime_type
         attachment.size_bytes = attachment.size_bytes or meta.size_bytes
-        meta_payload = dict(attachment.provider_meta or {})
-        meta_payload.update(
-            {
-                "drive_id": attachment.provider_attachment_id,
-                "name": attachment.name,
-                "mime_type": attachment.mime_type,
-            }
-        )
-        attachment.provider_meta = meta_payload
 
 
 def iter_drive_sessions(

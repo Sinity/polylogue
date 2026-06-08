@@ -248,17 +248,6 @@ def parse_brain_metadata(payload: JSONDocument, source_path: Path, fallback_id: 
     body = _read_text(artifact_path) or _string(payload.get("summary")) or ""
     title = _title_for_artifact(artifact_path, payload, fallback_id)
     updated_at = _string(payload.get("updatedAt"))
-    provider_meta: dict[str, object] = {
-        "source_family": "antigravity",
-        "artifact_path": str(artifact_path),
-        "session_id": session_id,
-    }
-    if artifact_type := _string(payload.get("artifactType")):
-        provider_meta["artifact_type"] = artifact_type
-    if summary := _string(payload.get("summary")):
-        provider_meta["summary"] = summary
-    if not artifact_path.exists():
-        provider_meta["missing_markdown_body"] = True
 
     return ParsedSession(
         source_name=Provider.ANTIGRAVITY,
@@ -277,11 +266,9 @@ def parse_brain_metadata(payload: JSONDocument, source_path: Path, fallback_id: 
                 variant_index=0,
                 is_active_path=True,
                 is_active_leaf=True,
-                provider_meta={"artifact_name": artifact_name},
             )
         ],
         active_leaf_message_provider_id=f"{composed_session_id}:artifact",
-        provider_meta=provider_meta,
     )
 
 
@@ -290,16 +277,6 @@ def parse_markdown_export(
     summary: AntigravitySessionSummary,
 ) -> ParsedSession:
     messages = _mark_active_leaf(_messages_from_markdown(markdown, summary.cascade_id))
-    provider_meta: dict[str, object] = {
-        "source_family": "antigravity",
-        "source_format": "language_server_markdown_export",
-        "cascade_id": summary.cascade_id,
-        "degraded_fragmentation": True,
-    }
-    if summary.workspace_name:
-        provider_meta["workspace_name"] = summary.workspace_name
-    if summary.snippet:
-        provider_meta["snippet"] = summary.snippet
 
     return ParsedSession(
         source_name=Provider.ANTIGRAVITY,
@@ -309,7 +286,6 @@ def parse_markdown_export(
         updated_at=summary.last_modified_time,
         messages=messages,
         active_leaf_message_provider_id=messages[-1].provider_message_id if messages else None,
-        provider_meta=provider_meta,
     )
 
 
@@ -387,7 +363,6 @@ def _messages_from_markdown(markdown: str, cascade_id: str) -> list[ParsedMessag
                 position=len(messages),
                 variant_index=0,
                 is_active_path=True,
-                provider_meta={"antigravity_section": heading},
             )
         )
 
@@ -406,7 +381,6 @@ def _messages_from_markdown(markdown: str, cascade_id: str) -> list[ParsedMessag
             position=0,
             variant_index=0,
             is_active_path=True,
-            provider_meta={"antigravity_section": "Markdown Export"},
         )
     ]
 
