@@ -83,6 +83,10 @@ def initialize_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> None
     if tier is ArchiveTier.OPS:
         _ensure_ops_runtime_columns(conn)
         _ensure_ops_cursor_lag_sample_columns(conn)
+    if tier is ArchiveTier.INDEX:
+        from polylogue.storage.sqlite.archive_tiers.pricing_seed import seed_price_catalog
+
+        seed_price_catalog(conn)
     conn.execute(f"PRAGMA user_version = {spec.version}")
     conn.commit()
 

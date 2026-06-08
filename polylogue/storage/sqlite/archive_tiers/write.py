@@ -1466,6 +1466,114 @@ def _write_reported_costs(conn: sqlite3.Connection, session_id: str, session: Pa
             """,
             (session_id, model_name),
         )
+    _aggregate_message_tokens_into_model_usage(conn, session_id)
+
+
+def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session_id: str) -> None:
+    """Aggregate per-message token counts into session_model_usage and compute cost_usd.
+
+    Called after messages are written (and after skeleton model-usage rows exist).
+    Handles both full-write and merge-append paths: it always reads ALL messages
+    currently in the DB for the session, so the token sums stay consistent with
+    the full message set regardless of append ordering.
+
+    Models with no messages carrying token data keep DEFAULT 0 token counts.
+    Models with no catalog price entry get cost_usd = NULL / priced_with = NULL
+    (no fabrication).
+
+    Empty or NULL model_name values in the messages table are excluded from
+    aggregation (the model is unknown so pricing is impossible).
+    """
+    import time
+
+    from polylogue.archive.semantic.pricing import PRICING, _normalize_model, estimate_cost
+
+    # Aggregate token counts from the messages table for all known models.
+    token_rows = conn.execute(
+        """
+        SELECT model_name,
+               SUM(input_tokens)        AS sum_input,
+               SUM(output_tokens)       AS sum_output,
+               SUM(cache_read_tokens)   AS sum_cache_read,
+               SUM(cache_write_tokens)  AS sum_cache_write,
+               COUNT(*)                 AS msg_count
+        FROM messages
+        WHERE session_id = ?
+          AND model_name IS NOT NULL
+          AND model_name != ''
+        GROUP BY model_name
+        """,
+        (session_id,),
+    ).fetchall()
+
+    if not token_rows:
+        return
+
+    # Look up the active catalog_id once so FK can be set when we have a price.
+    catalog_row = conn.execute("SELECT catalog_id FROM price_catalogs LIMIT 1").fetchone()
+    active_catalog_id: str | None = str(catalog_row[0]) if catalog_row is not None else None
+    priced_at_ms = int(time.time() * 1000)
+
+    for row in token_rows:
+        model_name: str = str(row[0])
+        sum_input: int = int(row[1] or 0)
+        sum_output: int = int(row[2] or 0)
+        sum_cache_read: int = int(row[3] or 0)
+        sum_cache_write: int = int(row[4] or 0)
+        msg_count: int = int(row[5] or 0)
+
+        # Compute cost_usd from the curated catalog when a price entry exists.
+        # estimate_cost() reads the in-memory PRICING dict so the result always
+        # matches the DB-backed model_prices rows seeded from the same source.
+        normalized = _normalize_model(model_name)
+        billable = sum_input + sum_output + sum_cache_read + sum_cache_write
+        if normalized in PRICING and billable > 0:
+            cost_usd: float | None = estimate_cost(sum_input, sum_output, model_name, sum_cache_read, sum_cache_write)
+            priced_with: str | None = active_catalog_id
+            row_priced_at: int | None = priced_at_ms
+        else:
+            cost_usd = None
+            priced_with = None
+            row_priced_at = None
+
+        # UPSERT: the skeleton row was created by _write_reported_costs above.
+        # For models that somehow landed in messages but not in models_used/
+        # session.messages (edge case with merge_append + partial data), we
+        # INSERT a fresh row.  For normal cases this is an UPDATE on the
+        # existing skeleton row.
+        conn.execute(
+            """
+            INSERT INTO session_model_usage (
+                session_id, model_name,
+                input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+                message_count,
+                priced_with, priced_at_ms, cost_usd,
+                cost_provenance
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'priced')
+            ON CONFLICT(session_id, model_name) DO UPDATE SET
+                input_tokens       = excluded.input_tokens,
+                output_tokens      = excluded.output_tokens,
+                cache_read_tokens  = excluded.cache_read_tokens,
+                cache_write_tokens = excluded.cache_write_tokens,
+                message_count      = excluded.message_count,
+                priced_with        = excluded.priced_with,
+                priced_at_ms       = excluded.priced_at_ms,
+                cost_usd           = excluded.cost_usd,
+                cost_provenance    = excluded.cost_provenance
+            """,
+            (
+                session_id,
+                model_name,
+                sum_input,
+                sum_output,
+                sum_cache_read,
+                sum_cache_write,
+                msg_count,
+                priced_with,
+                row_priced_at,
+                cost_usd,
+            ),
+        )
 
 
 def _write_repo_edges(conn: sqlite3.Connection, session_id: str, session: ParsedSession) -> None:
