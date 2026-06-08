@@ -440,6 +440,32 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
                 if model_effort := _string_field(normalized_turn_context, "effort", "model_effort"):
                     current_model_effort = model_effort
                     tc_payload["effort"] = model_effort
+                # Emit agent_policy event when policy fields are present.
+                # Payload keys match what _write_session_events expects via
+                # _payload_string(event.payload, "approval_policy") etc.
+                approval_policy = _string_field(normalized_turn_context, "approval_policy")
+                sandbox_raw = normalized_turn_context.get("sandbox_policy")
+                if approval_policy or sandbox_raw is not None:
+                    policy_payload: dict[str, object] = {}
+                    if approval_policy:
+                        policy_payload["approval_policy"] = approval_policy
+                    if isinstance(sandbox_raw, dict):
+                        mode = _string_field(sandbox_raw, "mode")
+                        if mode:
+                            policy_payload["sandbox_policy"] = mode
+                        network_val = sandbox_raw.get("network_access")
+                        if network_val is not None:
+                            policy_payload["network_policy"] = str(network_val).lower()
+                    elif isinstance(sandbox_raw, str) and sandbox_raw:
+                        policy_payload["sandbox_policy"] = sandbox_raw
+                    if policy_payload:
+                        session_events.append(
+                            ParsedSessionEvent(
+                                event_type="agent_policy",
+                                timestamp=timestamp,
+                                payload=policy_payload,
+                            )
+                        )
             session_events.append(
                 ParsedSessionEvent(
                     event_type="turn_context",
@@ -593,6 +619,7 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
         session_events=session_events,
         parent_session_provider_id=parent_id,
         branch_type=branch_type,
+        instructions_text=session_instructions,
         working_directories=sorted(working_directories),
         git_branch=git_branch_typed,
         git_repository_url=git_repo_url_typed,

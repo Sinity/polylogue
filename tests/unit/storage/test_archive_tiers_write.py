@@ -6,6 +6,7 @@ from pathlib import Path
 
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
+from polylogue.core.enums import TitleSource
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
     ParsedContentBlock,
@@ -17,12 +18,14 @@ from polylogue.sources.parsers.base import (
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import (
+    ArchiveAgentPolicy,
     ArchiveInsightMaterialization,
     ArchiveSessionPhase,
     ArchiveSessionTag,
     ArchiveSessionWorkEvent,
     read_archive_session_envelope,
     read_insight_materialization,
+    read_session_agent_policies,
     read_session_phases,
     read_session_tags,
     read_session_work_events,
@@ -1054,3 +1057,183 @@ def test_archive_tiers_writer_materializes_attachments_and_refs(tmp_path: Path) 
         ("drive", "drive-1"),
         ("url", "https://example.test/report.pdf"),
     }
+
+
+# ---------------------------------------------------------------------------
+# ITEM 1: sessions.instructions_text round-trip
+# ---------------------------------------------------------------------------
+
+
+def test_instructions_text_roundtrip(tmp_path: Path) -> None:
+    """ParsedSession.instructions_text written by the writer and read back."""
+    conn = _connect(tmp_path / "index.db")
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="instr-session-1",
+        title="Instructions test",
+        created_at="2026-01-01T00:00:00+00:00",
+        instructions_text="Always reply in haiku.",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                text="hello",
+                position=0,
+                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="hello")],
+            ),
+        ],
+    )
+
+    session_id = write_parsed_session_to_archive(conn, session)
+    envelope = read_archive_session_envelope(conn, session_id)
+
+    assert envelope.instructions_text == "Always reply in haiku."
+
+
+def test_instructions_text_none_when_absent(tmp_path: Path) -> None:
+    """instructions_text is None for sessions that carry no instructions."""
+    conn = _connect(tmp_path / "index.db")
+    session = ParsedSession(
+        source_name=Provider.CHATGPT,
+        provider_session_id="no-instr-1",
+        title="No instructions",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                text="hi",
+                position=0,
+                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="hi")],
+            ),
+        ],
+    )
+
+    session_id = write_parsed_session_to_archive(conn, session)
+    envelope = read_archive_session_envelope(conn, session_id)
+
+    assert envelope.instructions_text is None
+
+
+# ---------------------------------------------------------------------------
+# ITEM 2: sessions.title_source round-trip
+# ---------------------------------------------------------------------------
+
+
+def test_title_source_roundtrip(tmp_path: Path) -> None:
+    """TitleSource enum values survive the write → read cycle unchanged."""
+    conn = _connect(tmp_path / "index.db")
+    for title_source, expected in (
+        (TitleSource.ORIGIN, "origin"),
+        (TitleSource.HEURISTIC, "heuristic"),
+        (TitleSource.UNKNOWN, "unknown"),
+        (TitleSource.PATH, "path"),
+        (TitleSource.USER, "user"),
+    ):
+        session = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id=f"ts-{expected}",
+            title=f"Title-{expected}",
+            title_source=title_source,
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.USER,
+                    text="x",
+                    position=0,
+                    content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="x")],
+                ),
+            ],
+        )
+        session_id = write_parsed_session_to_archive(conn, session)
+        envelope = read_archive_session_envelope(conn, session_id)
+        assert envelope.title_source == expected, f"expected title_source={expected!r}, got {envelope.title_source!r}"
+
+
+def test_title_source_none_when_absent(tmp_path: Path) -> None:
+    """title_source is NULL when no parser sets it."""
+    conn = _connect(tmp_path / "index.db")
+    session = ParsedSession(
+        source_name=Provider.CHATGPT,
+        provider_session_id="ts-none",
+        title="No source",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                text="x",
+                position=0,
+                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="x")],
+            ),
+        ],
+    )
+    session_id = write_parsed_session_to_archive(conn, session)
+    envelope = read_archive_session_envelope(conn, session_id)
+    assert envelope.title_source is None
+
+
+# ---------------------------------------------------------------------------
+# ITEM 3: session_agent_policies round-trip
+# ---------------------------------------------------------------------------
+
+
+def test_agent_policy_roundtrip(tmp_path: Path) -> None:
+    """agent_policy ParsedSessionEvent written by the writer and read back."""
+    conn = _connect(tmp_path / "index.db")
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="policy-session-1",
+        title="Policy test",
+        created_at="2026-01-01T00:00:00+00:00",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                text="do it",
+                position=0,
+                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="do it")],
+            ),
+        ],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="agent_policy",
+                timestamp="2026-01-01T00:00:01+00:00",
+                payload={
+                    "approval_policy": "never",
+                    "sandbox_policy": "danger-full-access",
+                    "network_policy": "true",
+                },
+            ),
+        ],
+    )
+
+    session_id = write_parsed_session_to_archive(conn, session)
+    policies = read_session_agent_policies(conn, session_id)
+
+    assert len(policies) == 1
+    policy = policies[0]
+    assert isinstance(policy, ArchiveAgentPolicy)
+    assert policy.approval_policy == "never"
+    assert policy.sandbox_policy == "danger-full-access"
+    assert policy.network_policy == "true"
+    assert policy.position == 0
+
+
+def test_agent_policy_absent_when_no_events(tmp_path: Path) -> None:
+    """read_session_agent_policies returns [] for sessions without policy events."""
+    conn = _connect(tmp_path / "index.db")
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="no-policy-session",
+        title="No policy",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                text="hi",
+                position=0,
+                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="hi")],
+            ),
+        ],
+    )
+    session_id = write_parsed_session_to_archive(conn, session)
+    assert read_session_agent_policies(conn, session_id) == []

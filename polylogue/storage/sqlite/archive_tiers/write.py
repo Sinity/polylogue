@@ -75,6 +75,18 @@ class ArchiveMessageRow:
 
 
 @dataclass(frozen=True, slots=True)
+class ArchiveAgentPolicy:
+    policy_id: str
+    session_id: str
+    position: int
+    approval_policy: str | None
+    sandbox_policy: str | None
+    network_policy: str | None
+    observed_at_ms: int | None
+    source_message_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class ArchiveSessionEnvelope:
     session_id: str
     native_id: str
@@ -85,6 +97,8 @@ class ArchiveSessionEnvelope:
     parent_session_id: str | None = None
     root_session_id: str | None = None
     branch_type: str | None = None
+    title_source: str | None = None
+    instructions_text: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
     working_directories: tuple[str, ...] = ()
@@ -178,12 +192,13 @@ def write_parsed_session_to_archive(
             """
             INSERT INTO sessions (
                 native_id, origin, raw_id, branch_type, active_leaf_message_id,
-                title, title_source, git_branch, git_repository_url, commit_hash, reported_duration_ms,
+                title, title_source, git_branch, git_repository_url, commit_hash,
+                instructions_text, reported_duration_ms,
                 message_count, word_count, tool_use_count, thinking_count,
                 paste_count, user_message_count, assistant_message_count, system_message_count,
                 tool_message_count, user_word_count, assistant_word_count,
                 content_hash, created_at_ms, updated_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(origin, native_id) DO UPDATE SET
                 raw_id = excluded.raw_id,
                 branch_type = excluded.branch_type,
@@ -193,6 +208,7 @@ def write_parsed_session_to_archive(
                 git_branch = excluded.git_branch,
                 git_repository_url = excluded.git_repository_url,
                 commit_hash = excluded.commit_hash,
+                instructions_text = COALESCE(excluded.instructions_text, sessions.instructions_text),
                 reported_duration_ms = excluded.reported_duration_ms,
                 content_hash = excluded.content_hash,
                 created_at_ms = COALESCE(sessions.created_at_ms, excluded.created_at_ms),
@@ -205,10 +221,11 @@ def write_parsed_session_to_archive(
                 _enum_value(session.branch_type),
                 active_leaf_message_id,
                 session.title,
-                session.title_source,
+                _enum_value(session.title_source),
                 session.git_branch,
                 session.git_repository_url,
                 session.git_commit_hash,
+                session.instructions_text,
                 session.reported_duration_ms,
                 len(messages),
                 sum(_word_count(message.text) for message in messages),
@@ -267,6 +284,7 @@ def _clear_session_projection_rows(conn: sqlite3.Connection, session_id: str) ->
     for table in (
         "attachment_refs",
         "session_events",
+        "session_agent_policies",
         "session_working_dirs",
         "session_repos",
         "session_commits",
@@ -682,6 +700,7 @@ def read_archive_session_envelope(conn: sqlite3.Connection, session_id: str) -> 
         """
         SELECT session_id, native_id, origin, title, active_leaf_message_id,
                parent_session_id, root_session_id, branch_type,
+               title_source, instructions_text,
                created_at_ms, updated_at_ms, git_branch, git_repository_url
         FROM sessions
         WHERE session_id = ?
@@ -798,6 +817,8 @@ def read_archive_session_envelope(conn: sqlite3.Connection, session_id: str) -> 
         parent_session_id=session["parent_session_id"],
         root_session_id=session["root_session_id"],
         branch_type=session["branch_type"],
+        title_source=session["title_source"],
+        instructions_text=session["instructions_text"],
         created_at=_iso_from_ms(session["created_at_ms"]),
         updated_at=_iso_from_ms(session["updated_at_ms"]),
         working_directories=working_directories,
@@ -805,6 +826,34 @@ def read_archive_session_envelope(conn: sqlite3.Connection, session_id: str) -> 
         git_repository_url=session["git_repository_url"],
         orphan_attachments=tuple(attachments_by_message.get(None, ())),
     )
+
+
+def read_session_agent_policies(conn: sqlite3.Connection, session_id: str) -> list[ArchiveAgentPolicy]:
+    """Read all agent-policy rows for a session, ordered by position."""
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        """
+        SELECT policy_id, session_id, position, approval_policy,
+               sandbox_policy, network_policy, observed_at_ms, source_message_id
+        FROM session_agent_policies
+        WHERE session_id = ?
+        ORDER BY position
+        """,
+        (session_id,),
+    ).fetchall()
+    return [
+        ArchiveAgentPolicy(
+            policy_id=str(row["policy_id"]),
+            session_id=str(row["session_id"]),
+            position=int(row["position"]),
+            approval_policy=row["approval_policy"],
+            sandbox_policy=row["sandbox_policy"],
+            network_policy=row["network_policy"],
+            observed_at_ms=row["observed_at_ms"],
+            source_message_id=row["source_message_id"],
+        )
+        for row in rows
+    ]
 
 
 def search_archive_blocks(conn: sqlite3.Connection, query: str) -> list[str]:
@@ -1722,6 +1771,7 @@ def _enum_value(value: object) -> str | None:
 
 
 __all__ = [
+    "ArchiveAgentPolicy",
     "ArchiveBlockRow",
     "ArchiveInsightMaterialization",
     "ArchiveMessageRow",
@@ -1730,6 +1780,7 @@ __all__ = [
     "ArchiveSessionEnvelope",
     "ArchiveSessionWorkEvent",
     "read_insight_materialization",
+    "read_session_agent_policies",
     "read_session_phases",
     "read_session_tags",
     "read_session_work_events",
