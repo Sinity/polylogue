@@ -29,8 +29,8 @@ from polylogue.sources.parsers.codex import looks_like as codex_looks_like
 from polylogue.sources.parsers.codex import parse as codex_parse
 from polylogue.storage.sqlite.connection import open_connection
 from tests.infra.pipeline_roundtrip import (
-    parse_and_transform_payload,
-    save_transform_and_hydrate,
+    parse_payload_roundtrip,
+    write_and_hydrate,
 )
 from tests.infra.storage_records import db_setup
 
@@ -289,8 +289,8 @@ def _assert_roundtrip(
     raw_bytes = ("\n".join(json.dumps(record) for record in payload) + "\n").encode("utf-8")
     db_path = db_setup(workspace_env)
     with open_connection(db_path) as conn:
-        roundtrip = parse_and_transform_payload("codex", raw_bytes, workspace_env["archive_root"], unique_id=label)
-        hydrated = save_transform_and_hydrate(roundtrip.transform, conn)
+        roundtrip = parse_payload_roundtrip("codex", raw_bytes, unique_id=label)
+        hydrated = write_and_hydrate(roundtrip, conn)
 
     # Session id from session_meta (or first-line id for direct format).
     expected_conv_id = expectations.get("conv_id")
@@ -316,7 +316,7 @@ def _assert_roundtrip(
     # Content-block kinds: assert at the materialization boundary
     # (``bundle.content_blocks``) — see test_parsers_claude_ai_catalog
     # for rationale.
-    observed_kinds = {str(b.type) for m in roundtrip.transform.session.messages for b in m.content_blocks}
+    observed_kinds = {str(b.type) for m in roundtrip.parsed.messages for b in m.content_blocks}
 
     block_types_any_of = expectations.get("block_types_any_of")
     if block_types_any_of is not None:

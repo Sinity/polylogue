@@ -150,22 +150,21 @@ class TestSyntheticRoundtripFactAgreement:
     ) -> None:
         from polylogue.schemas.synthetic.core import SyntheticCorpus
         from polylogue.storage.sqlite.connection import open_connection
-        from tests.infra.pipeline_roundtrip import parse_and_transform_payload, save_transform_and_hydrate
+        from tests.infra.pipeline_roundtrip import parse_payload_roundtrip, write_and_hydrate
         from tests.infra.storage_records import db_setup
 
         corpus = SyntheticCorpus.for_provider(source_name)
         raw_bytes = corpus.generate(count=1, seed=99)[0]
 
-        roundtrip = parse_and_transform_payload(
+        roundtrip = parse_payload_roundtrip(
             source_name,
             raw_bytes,
-            workspace_env["archive_root"],
             f"xsurf-{source_name}",
         )
 
         db_path = db_setup(workspace_env)
         with open_connection(db_path) as conn:
-            hydrated = save_transform_and_hydrate(roundtrip.transform, conn)
+            hydrated = write_and_hydrate(roundtrip, conn)
             hydrated_facts = SessionFacts.from_domain_session(hydrated)
 
             assert hydrated_facts.message_count == len(roundtrip.parsed.messages)

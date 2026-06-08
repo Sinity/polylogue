@@ -28,8 +28,8 @@ import pytest
 from polylogue.sources.parsers.drive import parse_chunked_prompt
 from polylogue.storage.sqlite.connection import open_connection
 from tests.infra.pipeline_roundtrip import (
-    parse_and_transform_payload,
-    save_transform_and_hydrate,
+    parse_payload_roundtrip,
+    write_and_hydrate,
 )
 from tests.infra.storage_records import db_setup
 
@@ -277,8 +277,8 @@ def _assert_roundtrip(
     raw_bytes = json.dumps(payload).encode("utf-8")
     db_path = db_setup(workspace_env)
     with open_connection(db_path) as conn:
-        roundtrip = parse_and_transform_payload("gemini", raw_bytes, workspace_env["archive_root"], unique_id=label)
-        hydrated = save_transform_and_hydrate(roundtrip.transform, conn)
+        roundtrip = parse_payload_roundtrip("gemini", raw_bytes, unique_id=label)
+        hydrated = write_and_hydrate(roundtrip, conn)
 
     # Title.
     expected_title = expectations.get("title")
@@ -302,12 +302,9 @@ def _assert_roundtrip(
     if expected_roles is not None:
         assert hydrated_roles == expected_roles, f"[{label}] roles expected {expected_roles}, got {hydrated_roles}"
 
-    # Content-block kinds: assert at the materialization boundary
-    # (``bundle.content_blocks``) rather than the hydrated Message, see
-    # ``_assert_roundtrip`` docstring in ``test_parsers_claude_ai_catalog``
-    # for the rationale (sync store_records does not yet propagate the
-    # bundle's block rows into MessageRecord.content_blocks).
-    observed_kinds = {str(b.type) for m in roundtrip.transform.session.messages for b in m.content_blocks}
+    # Content-block kinds are the parser's contract: assert on the parsed
+    # messages the parser emitted.
+    observed_kinds = {str(b.type) for m in roundtrip.parsed.messages for b in m.content_blocks}
 
     block_types_any_of = expectations.get("block_types_any_of")
     if block_types_any_of is not None:
@@ -328,7 +325,7 @@ def _assert_roundtrip(
     # Attachments.
     expected_min_attachments = expectations.get("min_attachments")
     if expected_min_attachments is not None:
-        attachments = list(roundtrip.transform.session.attachments)
+        attachments = list(roundtrip.parsed.attachments)
         assert len(attachments) >= expected_min_attachments, (
             f"[{label}] expected ≥{expected_min_attachments} attachments, got {len(attachments)}"
         )

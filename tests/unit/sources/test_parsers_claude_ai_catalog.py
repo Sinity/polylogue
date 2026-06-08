@@ -4,7 +4,7 @@ Mirrors the ``_METADATA_PERMUTATION_CASES`` pattern in
 ``tests/unit/sources/test_parsers_chatgpt.py``: each case is a
 ``(label, payload_factory, expectations)`` triple and runs the full
 parser → transform → save → hydrate pipeline using the shared
-``parse_and_transform_payload`` / ``save_transform_and_hydrate``
+``parse_payload_roundtrip`` / ``write_and_hydrate``
 helpers. The catalog covers the ``chat_messages`` shape from
 ``polylogue/sources/parsers/claude/ai_parser.py`` — model variants,
 tool-use blocks, thinking blocks, attachments, citations, and a
@@ -30,8 +30,8 @@ import pytest
 from polylogue.sources.parsers.claude import looks_like_ai, parse_ai
 from polylogue.storage.sqlite.connection import open_connection
 from tests.infra.pipeline_roundtrip import (
-    parse_and_transform_payload,
-    save_transform_and_hydrate,
+    parse_payload_roundtrip,
+    write_and_hydrate,
 )
 from tests.infra.storage_records import db_setup
 
@@ -360,23 +360,20 @@ def _assert_roundtrip(
     workspace_env: dict[str, Path],
     label: str,
 ) -> None:
-    """Run payload → parse → transform → save → hydrate and assert
-    contract expectations.
+    """Run payload → parse → archive-write → hydrate and assert contract
+    expectations.
 
-    Title, role normalization, and timestamp ordering are asserted at
-    the hydrated ``Session`` level. Content-block kinds are
-    asserted at the materialization boundary
-    (``roundtrip.transform.bundle.content_blocks``) because the shared
-    sync ``store_records`` helper does not currently propagate
-    block rows from the bundle into ``MessageRecord.content_blocks``;
-    the materialization output is the canonical block representation
-    the daemon write path persists.
+    Title, role normalization, and timestamp ordering are asserted at the
+    hydrated ``Session`` level. Content-block kinds and attachment counts are
+    asserted against the parser output (``roundtrip.parsed``): these are
+    parser catalog tests, so the parser's emitted blocks are the contract
+    under test.
     """
     raw_bytes = json.dumps(payload).encode("utf-8")
     db_path = db_setup(workspace_env)
     with open_connection(db_path) as conn:
-        roundtrip = parse_and_transform_payload(source_name, raw_bytes, workspace_env["archive_root"], unique_id=label)
-        hydrated = save_transform_and_hydrate(roundtrip.transform, conn)
+        roundtrip = parse_payload_roundtrip(source_name, raw_bytes, unique_id=label)
+        hydrated = write_and_hydrate(roundtrip, conn)
 
     # Title survives.
     expected_title = expectations.get("title")
@@ -401,14 +398,9 @@ def _assert_roundtrip(
     if expected_roles is not None:
         assert hydrated_roles == expected_roles, f"[{label}] roles expected {expected_roles}, got {hydrated_roles}"
 
-    # Content-block kinds survive at the materialization boundary
-    # (``bundle.content_blocks``). The current sync test helper writes
-    # messages but not their content_blocks rows, so hydrated
-    # ``Message.content_blocks`` is empty even when materialization
-    # produced blocks — we therefore assert on the bundle, which is the
-    # canonical materialized representation the daemon write path
-    # persists. See `_assert_roundtrip` docstring.
-    observed_kinds = {str(b.type) for m in roundtrip.transform.session.messages for b in m.content_blocks}
+    # Content-block kinds are the parser's contract: assert on the parsed
+    # messages the parser emitted.
+    observed_kinds = {str(b.type) for m in roundtrip.parsed.messages for b in m.content_blocks}
 
     block_types_any_of = expectations.get("block_types_any_of")
     if block_types_any_of is not None:
@@ -431,10 +423,7 @@ def _assert_roundtrip(
     # attachments at the session level).
     expected_min_attachments = expectations.get("min_attachments")
     if expected_min_attachments is not None:
-        # The transform result exposes attachments at the bundle level;
-        # use it directly to keep this assertion shape-independent of the
-        # public Session surface.
-        attachments = list(roundtrip.transform.session.attachments)
+        attachments = list(roundtrip.parsed.attachments)
         assert len(attachments) >= expected_min_attachments, (
             f"[{label}] expected at least {expected_min_attachments} attachments, got {len(attachments)}"
         )
