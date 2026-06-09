@@ -662,3 +662,164 @@ class TestLexicalSemanticShortcuts:
         assert spec.retrieval_lane == "auto"
         assert spec.similar_text is None
         assert spec.query_terms == ("foo",)
+
+
+# ---------------------------------------------------------------------------
+# Native auto -> hybrid retrieval elevation (#1780)
+# ---------------------------------------------------------------------------
+
+
+def _seed_searchable_archive(archive_root: Path) -> None:
+    from tests.infra.storage_records import SessionBuilder
+
+    (
+        SessionBuilder(archive_root / "index.db", "elev-1")
+        .provider("chatgpt")
+        .title("Python Error Handling")
+        .created_at("2026-04-01T09:00:00+00:00")
+        .updated_at("2026-04-01T09:10:00+00:00")
+        .add_message("m1", role="user", text="How to handle exceptions in Python?")
+        .add_message("m2", role="assistant", text="Use try-except blocks for Python error handling.")
+        .save()
+    )
+
+
+def _seed_embeddings_meta(archive_root: Path, *, needs_reindex: int) -> None:
+    """Write a single ``message_embeddings_meta`` row into ``embeddings.db``.
+
+    The freshness predicate reads this regular table (not the vec0 virtual
+    table), so the embedding extension is not required to drive elevation.
+    """
+    conn = sqlite3.connect(archive_root / "embeddings.db")
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS message_embeddings_meta (
+                message_id      TEXT PRIMARY KEY,
+                model           TEXT NOT NULL,
+                dimension       INTEGER NOT NULL,
+                content_hash    BLOB NOT NULL,
+                embedded_at_ms  INTEGER,
+                needs_reindex   INTEGER NOT NULL DEFAULT 0
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO message_embeddings_meta VALUES (?, ?, ?, ?, ?, ?)",
+            ("elev-1:m1", "voyage-4", 1024, b"\x00" * 32, 1, needs_reindex),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _run_native_search(archive_root: Path, state_dir: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    monkeypatch.setenv("XDG_STATE_HOME", str(state_dir))
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
+    monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+    from polylogue.cli import cli
+
+    result = CliRunner().invoke(cli, ["--plain", "Python", "-f", "json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert isinstance(payload, dict)
+    return payload
+
+
+class TestHybridAutoElevationPredicate:
+    """The freshness gate that decides whether auto may elevate."""
+
+    def test_missing_embeddings_db_is_not_ready(self, tmp_path: Path) -> None:
+        from polylogue.cli.archive_query import _archive_embeddings_retrieval_ready
+
+        assert _archive_embeddings_retrieval_ready(tmp_path / "embeddings.db") is False
+
+    def test_empty_meta_is_not_ready(self, tmp_path: Path) -> None:
+        from polylogue.cli.archive_query import _archive_embeddings_retrieval_ready
+
+        conn = sqlite3.connect(tmp_path / "embeddings.db")
+        conn.executescript(
+            "CREATE TABLE message_embeddings_meta (message_id TEXT PRIMARY KEY, model TEXT, "
+            "dimension INTEGER, content_hash BLOB, embedded_at_ms INTEGER, needs_reindex INTEGER);"
+        )
+        conn.commit()
+        conn.close()
+        assert _archive_embeddings_retrieval_ready(tmp_path / "embeddings.db") is False
+
+    def test_fresh_embeddings_are_ready(self, tmp_path: Path) -> None:
+        from polylogue.cli.archive_query import _archive_embeddings_retrieval_ready
+
+        _seed_embeddings_meta(tmp_path, needs_reindex=0)
+        assert _archive_embeddings_retrieval_ready(tmp_path / "embeddings.db") is True
+
+    def test_stale_embeddings_are_not_ready(self, tmp_path: Path) -> None:
+        from polylogue.cli.archive_query import _archive_embeddings_retrieval_ready
+
+        _seed_embeddings_meta(tmp_path, needs_reindex=1)
+        assert _archive_embeddings_retrieval_ready(tmp_path / "embeddings.db") is False
+
+
+class TestHybridAutoElevation:
+    """End-to-end native search elevation behavior driven via CliRunner."""
+
+    def test_auto_without_embeddings_stays_dialogue(
+        self, cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        archive_root = cli_workspace["archive_root"]
+        _seed_searchable_archive(archive_root)
+
+        payload = _run_native_search(archive_root, cli_workspace["state_dir"], monkeypatch)
+
+        assert payload["retrieval_lane"] == "dialogue"
+        assert payload["items"]
+
+    def test_auto_with_fresh_embeddings_elevates_to_hybrid(
+        self, cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        archive_root = cli_workspace["archive_root"]
+        _seed_searchable_archive(archive_root)
+        _seed_embeddings_meta(archive_root, needs_reindex=0)
+
+        fake_provider = MagicMock()
+        fake_provider.query = MagicMock(return_value=[])
+        with patch("polylogue.cli.archive_query.create_vector_provider", return_value=fake_provider):
+            payload = _run_native_search(archive_root, cli_workspace["state_dir"], monkeypatch)
+
+        assert payload["retrieval_lane"] == "hybrid"
+        # Hybrid fuses the lexical leg with the (empty) vector leg, so lexical
+        # matches still surface even though the stub provider returned nothing.
+        assert payload["items"]
+
+    def test_auto_with_stale_embeddings_stays_dialogue(
+        self, cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        archive_root = cli_workspace["archive_root"]
+        _seed_searchable_archive(archive_root)
+        _seed_embeddings_meta(archive_root, needs_reindex=1)
+
+        fake_provider = MagicMock()
+        fake_provider.query = MagicMock(return_value=[])
+        with patch("polylogue.cli.archive_query.create_vector_provider", return_value=fake_provider):
+            payload = _run_native_search(archive_root, cli_workspace["state_dir"], monkeypatch)
+
+        assert payload["retrieval_lane"] == "dialogue"
+
+    def test_lexical_flag_stays_dialogue_with_fresh_embeddings(
+        self, cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        archive_root = cli_workspace["archive_root"]
+        _seed_searchable_archive(archive_root)
+        _seed_embeddings_meta(archive_root, needs_reindex=0)
+
+        monkeypatch.setenv("XDG_STATE_HOME", str(cli_workspace["state_dir"]))
+        monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
+        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+        from polylogue.cli import cli
+
+        fake_provider = MagicMock()
+        fake_provider.query = MagicMock(return_value=[])
+        with patch("polylogue.cli.archive_query.create_vector_provider", return_value=fake_provider):
+            result = CliRunner().invoke(cli, ["--plain", "--lexical", "Python", "-f", "json"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["retrieval_lane"] == "dialogue"
