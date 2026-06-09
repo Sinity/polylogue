@@ -79,13 +79,14 @@ def _make_gc_db(path: Path) -> sqlite3.Connection:
             acquired_at_ms INTEGER NOT NULL,
             PRIMARY KEY (blob_hash, operation_id, ref_type, ref_id)
         );
-        -- gc_generations stays in the production run_blob_gc shape
-        -- (generation/completed_at/evidence); the split-file
-        -- generation_id/*_at_ms migration is pending (#1789).
+        -- gc_generations matches the split-file source.db DDL: typed reclaim
+        -- counters keyed by a TEXT generation_id (#1789).
         CREATE TABLE gc_generations (
-            generation INTEGER PRIMARY KEY,
-            completed_at INTEGER NOT NULL,
-            evidence TEXT
+            generation_id   TEXT PRIMARY KEY,
+            started_at_ms   INTEGER NOT NULL,
+            completed_at_ms INTEGER,
+            reclaimed_count INTEGER NOT NULL DEFAULT 0,
+            reclaimed_bytes INTEGER NOT NULL DEFAULT 0
         );
         """
     )
@@ -383,29 +384,31 @@ def test_gc_records_a_new_generation_when_it_runs(tmp_path: Path) -> None:
     to refuse blobs younger than the previous cycle.
 
     When GC has work to consider (candidates present) it must record a
-    new monotonically increasing generation row so the next cycle can
-    apply the age guard.
+    new generation row each cycle so the next cycle can apply the age
+    guard against the most-recent completion timestamp.
     """
     blob_root = tmp_path / "blobs"
     store = BlobStore(blob_root)
     db_path = tmp_path / "archive.db"
     _make_gc_db(db_path).close()
 
-    last_generation = 0
-    for _ in range(3):
+    for cycle in range(3):
         # Plant a fresh candidate blob for each cycle so the GC
         # codepath that records the generation row is exercised.
-        h, _ = store.write_from_bytes(f"candidate-{last_generation}".encode())
+        store.write_from_bytes(f"candidate-{cycle}".encode())
         _backdate_blobs(store)
 
         run_blob_gc(db_path, blob_root)
 
         conn = sqlite3.connect(str(db_path))
-        row = conn.execute("SELECT MAX(generation) FROM gc_generations").fetchone()
+        count = conn.execute("SELECT COUNT(*) FROM gc_generations").fetchone()[0]
+        latest = conn.execute(
+            "SELECT completed_at_ms FROM gc_generations ORDER BY completed_at_ms DESC LIMIT 1"
+        ).fetchone()
         conn.close()
-        assert row[0] is not None
-        assert row[0] > last_generation
-        last_generation = row[0]
+        # One durable generation row accumulates per executed cycle.
+        assert count == cycle + 1
+        assert latest[0] is not None
 
 
 def test_lease_predicate_and_reference_predicate_are_independent(tmp_path: Path) -> None:

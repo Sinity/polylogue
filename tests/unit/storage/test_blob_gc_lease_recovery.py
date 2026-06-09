@@ -165,9 +165,6 @@ def test_sweep_keeps_recent_lease(db_path: Path) -> None:
     assert _count_leases(db_path) == 1
 
 
-@pytest.mark.xfail(
-    reason="blob-GC generation tracking migration to gc_generations(*_at_ms) pending; see #1789", strict=False
-)
 def test_gc_age_gate_respects_previous_generation(db_path: Path, tmp_path: Path) -> None:
     """A blob younger than the previous generation's completion is not deleted.
 
@@ -181,12 +178,16 @@ def test_gc_age_gate_respects_previous_generation(db_path: Path, tmp_path: Path)
     blob_hash = "12" + "3" * 62
 
     now = int(time.time())
-    # Previous generation completed 1000s ago.
-    conn = sqlite3.connect(str(db_path))
+    # Previous generation completed 1000s ago. gc_generations lives in the
+    # attached source tier; open_connection resolves the unqualified name.
+    completed_at_ms = (now - 1000) * 1000
+    conn = open_connection(db_path)
     try:
         conn.execute(
-            "INSERT INTO gc_generations (generation, completed_at, evidence) VALUES (?, ?, ?)",
-            (1, now - 1000, "{}"),
+            "INSERT INTO gc_generations "
+            "(generation_id, started_at_ms, completed_at_ms, reclaimed_count, reclaimed_bytes) "
+            "VALUES (?, ?, ?, 0, 0)",
+            ("gen-seed", completed_at_ms, completed_at_ms),
         )
         conn.commit()
     finally:

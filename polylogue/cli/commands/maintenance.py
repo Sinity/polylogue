@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -701,14 +700,15 @@ def preview_command(
 )
 @click.pass_obj
 def gc_history_command(env: AppEnv, limit: int, output_format: str) -> None:
-    """Show recent blob-GC passes recorded in ``gc_generations.evidence``.
+    """Show recent blob-GC passes recorded in ``gc_generations``.
 
-    Surfaces per-pass evidence (inspected/skipped/deleted, skip reasons,
-    dry-run flag, batch bound) written by ``run_blob_gc`` so operators
-    can audit GC behaviour over time without bespoke SQLite tooling.
+    Surfaces the typed reclaim counters (``reclaimed_count`` /
+    ``reclaimed_bytes``) and start/completion timestamps written by
+    ``run_blob_gc`` so operators can audit GC reclamation over time
+    without bespoke SQLite tooling.
 
-    Pre-#1190 generations and crashed-mid-pass rows surface with
-    ``evidence: null`` so operators can see they happened.
+    A pass whose ``completed_at_ms`` is null crashed mid-run; the row is
+    still surfaced so operators can see it happened.
     """
     configure_logging()
     config = Config(
@@ -718,15 +718,21 @@ def gc_history_command(env: AppEnv, limit: int, output_format: str) -> None:
     )
     history = read_gc_history(config.db_path, limit=limit)
 
+    def _iso_ms(epoch_ms: int | None) -> str | None:
+        if epoch_ms is None:
+            return None
+        return datetime.fromtimestamp(epoch_ms / 1000, tz=UTC).isoformat()
+
     if output_format == "json":
         payload = [
             {
-                "generation": row.generation,
-                "completed_at": row.completed_at,
-                "completed_at_iso": (
-                    datetime.fromtimestamp(row.completed_at, tz=UTC).isoformat() if row.completed_at else None
-                ),
-                "evidence": asdict(row.evidence) if row.evidence else None,
+                "generation_id": row.generation_id,
+                "started_at_ms": row.started_at_ms,
+                "started_at_iso": _iso_ms(row.started_at_ms),
+                "completed_at_ms": row.completed_at_ms,
+                "completed_at_iso": _iso_ms(row.completed_at_ms),
+                "reclaimed_count": row.reclaimed_count,
+                "reclaimed_bytes": row.reclaimed_bytes,
             }
             for row in history
         ]
@@ -741,21 +747,12 @@ def gc_history_command(env: AppEnv, limit: int, output_format: str) -> None:
     click.echo("")
     for row in history:
         when = (
-            datetime.fromtimestamp(row.completed_at, tz=UTC).isoformat(timespec="seconds")
-            if row.completed_at
-            else "unknown"
+            datetime.fromtimestamp(row.completed_at_ms / 1000, tz=UTC).isoformat(timespec="seconds")
+            if row.completed_at_ms is not None
+            else "unknown (crashed mid-pass)"
         )
-        click.echo(f"  generation={row.generation:>6}  completed_at={when}")
-        ev = row.evidence
-        if ev is None:
-            click.echo("    (no evidence — pre-#1190 row or crashed pass)")
-            continue
-        dry = " [DRY-RUN]" if ev.dry_run else ""
-        click.echo(
-            f"    inspected={ev.inspected:>4}  deleted={ev.deleted:>4}{dry}  "
-            f"skipped_ref={ev.skipped_referenced} skipped_leased={ev.skipped_leased} "
-            f"skipped_missing={ev.skipped_missing} unlink_errors={ev.skipped_unlink_error}"
-        )
+        click.echo(f"  generation={row.generation_id}  completed_at={when}")
+        click.echo(f"    reclaimed_count={row.reclaimed_count}  reclaimed_bytes={row.reclaimed_bytes}")
 
 
 @maintenance_group.command("status")

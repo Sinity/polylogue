@@ -73,14 +73,15 @@ def _make_db(path: Path) -> sqlite3.Connection:
             PRIMARY KEY (blob_hash, operation_id, ref_type, ref_id)
         )"""
     )
-    # gc_generations stays in the production ``run_blob_gc`` shape
-    # (``generation``/``completed_at``/``evidence``); the split-file
-    # ``generation_id``/``*_at_ms`` migration is pending (#1789).
+    # gc_generations matches the split-file source.db DDL: typed reclaim
+    # counters keyed by a TEXT generation_id (#1789).
     conn.execute(
         """CREATE TABLE gc_generations (
-            generation INTEGER PRIMARY KEY,
-            completed_at INTEGER NOT NULL,
-            evidence TEXT
+            generation_id   TEXT PRIMARY KEY,
+            started_at_ms   INTEGER NOT NULL,
+            completed_at_ms INTEGER,
+            reclaimed_count INTEGER NOT NULL DEFAULT 0,
+            reclaimed_bytes INTEGER NOT NULL DEFAULT 0
         )"""
     )
     conn.commit()

@@ -12,9 +12,7 @@ import sqlite3
 from pathlib import Path
 
 from polylogue.storage.blob_gc import (
-    GCRunEvidence,
     _candidate_blobs,
-    _current_generation,
     _has_active_lease,
     _reference_surfaces,
     _still_referenced,
@@ -64,17 +62,16 @@ def _make_db(path: str | Path | None = None) -> sqlite3.Connection:
             PRIMARY KEY (blob_hash, operation_id, ref_type, ref_id)
         )"""
     )
-    # gc_generations is intentionally kept in the shape that production
-    # ``run_blob_gc`` / ``_current_generation`` read and write
-    # (``generation``/``completed_at``/``evidence``). The split-file source.db
-    # DDL has migrated this table to ``generation_id``/``*_at_ms``, but the
-    # production GC code has not (pending #1789), so the lease tests that drive
-    # ``run_blob_gc`` must mirror the columns the code actually uses.
+    # gc_generations carries the typed reclaim counters that production
+    # ``run_blob_gc`` writes and ``read_gc_history`` reads — matching the
+    # split-file source.db DDL (#1789).
     conn.execute(
         """CREATE TABLE gc_generations (
-            generation INTEGER PRIMARY KEY,
-            completed_at INTEGER NOT NULL,
-            evidence TEXT
+            generation_id   TEXT PRIMARY KEY,
+            started_at_ms   INTEGER NOT NULL,
+            completed_at_ms INTEGER,
+            reclaimed_count INTEGER NOT NULL DEFAULT 0,
+            reclaimed_bytes INTEGER NOT NULL DEFAULT 0
         )"""
     )
     conn.commit()
@@ -258,26 +255,6 @@ def test_has_active_lease_empty_table() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _current_generation
-# ---------------------------------------------------------------------------
-
-
-def test_current_generation_empty() -> None:
-    conn = _make_db()
-    assert _current_generation(conn) == 0
-    conn.close()
-
-
-def test_current_generation_returns_max() -> None:
-    conn = _make_db()
-    conn.execute("INSERT INTO gc_generations (generation, completed_at) VALUES (1, 100)")
-    conn.execute("INSERT INTO gc_generations (generation, completed_at) VALUES (5, 500)")
-    conn.commit()
-    assert _current_generation(conn) == 5
-    conn.close()
-
-
-# ---------------------------------------------------------------------------
 # run_blob_gc integration (lightweight)
 # ---------------------------------------------------------------------------
 
@@ -344,12 +321,11 @@ def test_run_blob_gc_preserves_archive_source_referenced_blobs(tmp_path: Path) -
 
     assert deleted == 0
     assert blob_store.exists(blob_hash)
+    # A pass ran but reclaimed nothing because sibling source.db references it.
     history = read_gc_history(str(index_db_path), limit=1)
     assert len(history) == 1
-    evidence = history[0].evidence
-    assert evidence is not None
-    assert evidence.skipped_referenced == 1
-    assert evidence.reference_surfaces == ["source.db.raw_sessions"]
+    assert history[0].reclaimed_count == 0
+    assert history[0].reclaimed_bytes == 0
 
 
 def test_run_blob_gc_max_batch_bound(tmp_path: Path) -> None:
@@ -382,9 +358,6 @@ def test_run_blob_gc_nonexistent_blob_dir(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # #1190 — sharded unlink path + accurate deleted counter
 # ---------------------------------------------------------------------------
-
-
-import json
 
 
 def _backdate(blob_store: BlobStore, blob_hash: str, *, seconds: float = 3600) -> None:
@@ -429,8 +402,8 @@ def test_run_blob_gc_unlinks_sharded_path_and_increments_counter(tmp_path: Path)
 def test_run_blob_gc_does_not_increment_when_file_already_missing(tmp_path: Path) -> None:
     """#1190 regression: when the candidate file has vanished between
     discovery and unlink (concurrent reclaimer, stale candidate, manual
-    cleanup), the ``deleted`` counter must NOT increment. The structured
-    evidence row should record this as ``skipped_missing``.
+    cleanup), the ``deleted`` counter must NOT increment and the recorded
+    generation row reclaims nothing.
     """
     db_path = tmp_path / "archive.db"
     blob_root = tmp_path / "blobs"
@@ -472,13 +445,11 @@ def test_run_blob_gc_does_not_increment_when_file_already_missing(tmp_path: Path
 
     assert deleted == 0, "counter must not bump when no file was actually unlinked"
 
-    # Evidence row attributes the skip correctly.
+    # The pass still recorded a generation row that reclaimed nothing.
     history = read_gc_history(str(db_path), limit=1)
     assert len(history) == 1
-    ev = history[0].evidence
-    assert ev is not None
-    assert ev.deleted == 0
-    assert ev.skipped_missing >= 1
+    assert history[0].reclaimed_count == 0
+    assert history[0].reclaimed_bytes == 0
 
 
 def test_run_blob_gc_dry_run_does_not_delete_or_record_generation(tmp_path: Path) -> None:
@@ -510,17 +481,18 @@ def test_run_blob_gc_dry_run_does_not_delete_or_record_generation(tmp_path: Path
     assert row[0] == 0, "dry-run must not consume a generation slot"
 
 
-def test_run_blob_gc_records_structured_evidence(tmp_path: Path) -> None:
-    """#1190 ambitious-expansion: each committed pass writes a JSON
-    evidence row capturing inspected/skipped/deleted counts plus the
-    list of deleted hashes — a self-describing audit trail.
+def test_run_blob_gc_records_reclaim_counters(tmp_path: Path) -> None:
+    """#1789: each committed pass writes a typed ``gc_generations`` row
+    capturing the reclaimed blob count and freed bytes — the durable
+    audit trail that replaced the JSON evidence column.
     """
     db_path = tmp_path / "archive.db"
     blob_root = tmp_path / "blobs"
     blob_store = BlobStore(blob_root)
 
     referenced_hash, _ = blob_store.write_from_bytes(b"keep me")
-    orphan_hash, _ = blob_store.write_from_bytes(b"delete me")
+    orphan_payload = b"delete me"
+    orphan_hash, _ = blob_store.write_from_bytes(orphan_payload)
     _backdate(blob_store, referenced_hash)
     _backdate(blob_store, orphan_hash)
 
@@ -536,25 +508,20 @@ def test_run_blob_gc_records_structured_evidence(tmp_path: Path) -> None:
     deleted = run_blob_gc(str(db_path), str(blob_root), max_batch=10)
     assert deleted == 1
 
-    conn = sqlite3.connect(str(db_path))
-    try:
-        row = conn.execute("SELECT generation, evidence FROM gc_generations").fetchone()
-    finally:
-        conn.close()
-    assert row is not None
-    payload = json.loads(row["evidence"]) if isinstance(row, sqlite3.Row) else json.loads(row[1])
-    ev = GCRunEvidence(**payload)
-    assert ev.inspected == 2
-    assert ev.deleted == 1
-    assert ev.skipped_referenced == 1
-    assert ev.dry_run is False
-    assert orphan_hash in ev.deleted_hashes
+    history = read_gc_history(str(db_path), limit=1)
+    assert len(history) == 1
+    row = history[0]
+    assert row.reclaimed_count == 1
+    assert row.reclaimed_bytes == len(orphan_payload)
+    assert row.generation_id.startswith("gc-")
+    assert row.completed_at_ms is not None
+    assert row.started_at_ms <= row.completed_at_ms
 
 
-def test_read_gc_history_returns_recent_passes_newest_first(tmp_path: Path) -> None:
-    """#1190 ambitious-expansion: ``read_gc_history`` surfaces evidence
-    rows in newest-first order, so a ``gc-history`` operator surface can
-    show recent GC behaviour without bespoke SQLite tooling.
+def test_read_gc_history_returns_recent_passes(tmp_path: Path) -> None:
+    """#1789: ``read_gc_history`` surfaces one typed row per committed pass,
+    so a ``gc-history`` operator surface can show recent reclamation without
+    bespoke SQLite tooling.
     """
     db_path = tmp_path / "archive.db"
     blob_root = tmp_path / "blobs"
@@ -567,7 +534,6 @@ def test_read_gc_history_returns_recent_passes_newest_first(tmp_path: Path) -> N
         run_blob_gc(str(db_path), str(blob_root), max_batch=10)
 
     history = read_gc_history(str(db_path), limit=10)
-    assert [row.generation for row in history] == [3, 2, 1]
-    for row in history:
-        assert row.evidence is not None
-        assert row.evidence.deleted >= 1
+    assert len(history) == 3
+    assert all(row.reclaimed_count == 1 for row in history)
+    assert all(row.generation_id.startswith("gc-") for row in history)

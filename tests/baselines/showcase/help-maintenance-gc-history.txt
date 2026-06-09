@@ -1,13 +1,14 @@
 Usage: polylogue maintenance gc-history [OPTIONS]
 
-  Show recent blob-GC passes recorded in ``gc_generations.evidence``.
+  Show recent blob-GC passes recorded in ``gc_generations``.
 
-  Surfaces per-pass evidence (inspected/skipped/deleted, skip reasons, dry-run
-  flag, batch bound) written by ``run_blob_gc`` so operators can audit GC
-  behaviour over time without bespoke SQLite tooling.
+  Surfaces the typed reclaim counters (``reclaimed_count`` /
+  ``reclaimed_bytes``) and start/completion timestamps written by
+  ``run_blob_gc`` so operators can audit GC reclamation over time without
+  bespoke SQLite tooling.
 
-  Pre-#1190 generations and crashed-mid-pass rows surface with ``evidence:
-  null`` so operators can see they happened.
+  A pass whose ``completed_at_ms`` is null crashed mid-run; the row is still
+  surfaced so operators can see it happened.
 
 Options:
   -l, --limit INTEGER           Maximum number of recent GC passes to display.

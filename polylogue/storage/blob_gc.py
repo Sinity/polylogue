@@ -18,13 +18,13 @@ Safety invariants
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import sqlite3
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
+from uuid import uuid4
 
 from polylogue.storage.sqlite.connection_profile import open_connection
 
@@ -33,11 +33,12 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class GCRunEvidence:
-    """Structured per-pass GC evidence persisted to ``gc_generations.evidence``.
+    """In-memory per-pass GC tally used for operator log lines.
 
-    Captures inspected/skipped/deleted counts plus per-skip reason tallies
-    so operators can reconstruct what a GC pass actually did. See
-    ``polylogue maintenance gc-history`` for the surface that reads it.
+    Aggregates inspected/skipped/deleted counts during a ``run_blob_gc`` pass
+    so the summary log line can describe what happened. The durable record is
+    the typed ``gc_generations`` row (``reclaimed_count`` / ``reclaimed_bytes``);
+    this tally is not persisted (#1789 — no JSON evidence escape hatch).
     """
 
     inspected: int = 0
@@ -48,21 +49,12 @@ class GCRunEvidence:
     skipped_unlink_error: int = 0
     dry_run: bool = False
     max_batch: int = 0
-    previous_generation: int = 0
-    reference_surfaces: list[str] = field(default_factory=list)
-    deleted_hashes: list[str] = field(default_factory=list)
-
-    def to_json(self) -> str:
-        return json.dumps(asdict(self), sort_keys=True)
 
 
 # Minimum age in seconds for a blob to be eligible for deletion.
 # Provides defense-in-depth against clockskew and delayed lease writes
 # beyond the lease-based safety mechanism.
 MIN_AGE_S = 60
-
-# GC generation constants
-_INITIAL_GENERATION = 0
 
 # Orphaned-lease sweep bound. A lease whose owning operation crashed before
 # release (see ``commit_archive_write_effects``) is reclaimed once it is older
@@ -72,24 +64,26 @@ _INITIAL_GENERATION = 0
 ORPHAN_LEASE_MAX_AGE_S = 3600
 
 
-def _current_generation(conn: sqlite3.Connection) -> int:
-    """Return the latest completed GC generation, or 0 if none."""
-    row = conn.execute("SELECT COALESCE(MAX(generation), 0) FROM gc_generations").fetchone()
-    return row[0] if row else 0
-
-
 def _previous_generation_completed_at(conn: sqlite3.Connection) -> int | None:
-    """Return ``completed_at`` of the latest completed GC generation, or None.
+    """Return the completion epoch (seconds) of the latest completed generation.
 
     Used by ``run_blob_gc`` to enforce safety invariant #3: a blob must be
     older than the previous generation's completion before it is eligible for
     deletion (defense-in-depth against clock skew and delayed lease writes).
+
+    The durable column is ``completed_at_ms``; this returns whole seconds so the
+    age gate can compare directly against ``time.time()``. In-progress
+    generations (``completed_at_ms IS NULL``) are ignored.
     """
-    row = conn.execute("SELECT completed_at FROM gc_generations ORDER BY generation DESC LIMIT 1").fetchone()
+    row = conn.execute(
+        "SELECT completed_at_ms FROM gc_generations "
+        "WHERE completed_at_ms IS NOT NULL "
+        "ORDER BY completed_at_ms DESC LIMIT 1"
+    ).fetchone()
     if row is None:
         return None
-    completed_at = row[0]
-    return int(completed_at) if completed_at is not None else None
+    completed_at_ms = row[0]
+    return int(completed_at_ms) // 1000 if completed_at_ms is not None else None
 
 
 def sweep_orphaned_blob_leases(
@@ -331,7 +325,7 @@ def run_blob_gc(
             except sqlite3.Error as exc:
                 logger.warning("Could not inspect archive source blob references in %s: %s", source_db_path, exc)
 
-        generation = _current_generation(conn)
+        started_at_ms = int(time.time() * 1000)
         # Safety invariant #3: a candidate must be older than BOTH the static
         # MIN_AGE_S floor AND the previous completed GC generation. The
         # generation high-water mark prevents a blob created during the same
@@ -347,12 +341,9 @@ def run_blob_gc(
         if not candidates:
             return 0
 
-        evidence = GCRunEvidence(
-            dry_run=dry_run,
-            max_batch=max_batch,
-            previous_generation=generation,
-        )
+        evidence = GCRunEvidence(dry_run=dry_run, max_batch=max_batch)
         deleted = 0
+        reclaimed_bytes = 0
         for blob_hash, _mtime in candidates:
             if deleted >= max_batch:
                 break
@@ -360,16 +351,12 @@ def run_blob_gc(
             evidence.inspected += 1
 
             # Safety check 1: still referenced in DB
-            reference_surfaces = _reference_surfaces(
+            if _reference_surfaces(
                 conn,
                 blob_hash,
                 source_db_path=source_db_path,
                 source_conn=source_conn,
-            )
-            for surface in reference_surfaces:
-                if surface not in evidence.reference_surfaces:
-                    evidence.reference_surfaces.append(surface)
-            if reference_surfaces:
+            ):
                 evidence.skipped_referenced += 1
                 continue
 
@@ -386,15 +373,19 @@ def run_blob_gc(
                 if target.is_file():
                     deleted += 1
                     evidence.deleted += 1
-                    evidence.deleted_hashes.append(blob_hash)
                 else:
                     evidence.skipped_missing += 1
                 continue
 
             # All checks passed — attempt the unlink at the sharded path.
-            # missing_ok=False so we observe whether a file actually went
-            # away; if it was already gone (concurrent GC, stale candidate)
-            # we record skipped_missing and do NOT count it as a deletion.
+            # Stat the size first so a successful unlink can attribute the freed
+            # bytes to reclaimed_bytes; missing_ok=False so we observe whether a
+            # file actually went away. If it was already gone (concurrent GC,
+            # stale candidate) we record skipped_missing and do NOT count it.
+            try:
+                freed_bytes = target.stat().st_size
+            except OSError:
+                freed_bytes = 0
             try:
                 target.unlink()
             except FileNotFoundError:
@@ -411,7 +402,7 @@ def run_blob_gc(
 
             deleted += 1
             evidence.deleted += 1
-            evidence.deleted_hashes.append(blob_hash)
+            reclaimed_bytes += freed_bytes
 
         if dry_run:
             # Dry run does not consume a generation slot — no row written,
@@ -426,16 +417,25 @@ def run_blob_gc(
             )
             return deleted
 
-        # Record the new generation marker with structured evidence.
-        new_generation = generation + 1
+        # Record the completed generation with typed reclaim counters. The
+        # per-skip tally stays an in-memory log aggregate; the durable record is
+        # reclaimed_count / reclaimed_bytes (#1789 — no JSON evidence column).
+        generation_id = f"gc-{uuid4().hex}"
         conn.execute(
-            "INSERT OR REPLACE INTO gc_generations (generation, completed_at, evidence) VALUES (?, ?, ?)",
-            (new_generation, int(time.time()), evidence.to_json()),
+            "INSERT INTO gc_generations "
+            "(generation_id, started_at_ms, completed_at_ms, reclaimed_count, reclaimed_bytes) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (generation_id, started_at_ms, int(time.time() * 1000), deleted, reclaimed_bytes),
         )
         conn.commit()
 
         if deleted:
-            logger.info("Blob GC: deleted %d blobs in generation %d", deleted, new_generation)
+            logger.info(
+                "Blob GC: deleted %d blob(s), reclaimed %d byte(s) in generation %s",
+                deleted,
+                reclaimed_bytes,
+                generation_id,
+            )
 
         return deleted
     except Exception:
@@ -451,50 +451,41 @@ def run_blob_gc(
 class GCHistoryRow:
     """One row of the ``gc-history`` surface — a single completed GC pass."""
 
-    generation: int
-    completed_at: int | None
-    evidence: GCRunEvidence | None
+    generation_id: str
+    started_at_ms: int
+    completed_at_ms: int | None
+    reclaimed_count: int
+    reclaimed_bytes: int
 
 
 def read_gc_history(db_path: str | Path, *, limit: int = 20) -> list[GCHistoryRow]:
     """Return the most-recent committed GC passes, newest first.
 
-    Rows missing structured evidence (pre-#1190 generations or runs that
-    crashed before evidence was attached) surface as ``evidence=None``;
-    operators can still see they happened.
+    Each row carries the typed reclaim counters (``reclaimed_count`` /
+    ``reclaimed_bytes``) recorded by ``run_blob_gc``. Per-skip diagnostics are
+    in-process log detail only and are not persisted (#1789).
     """
     conn = open_connection(db_path)
     conn.row_factory = sqlite3.Row
     try:
         rows = conn.execute(
-            "SELECT generation, completed_at, evidence FROM gc_generations ORDER BY generation DESC LIMIT ?",
+            "SELECT generation_id, started_at_ms, completed_at_ms, reclaimed_count, reclaimed_bytes "
+            "FROM gc_generations ORDER BY started_at_ms DESC LIMIT ?",
             (int(limit),),
         ).fetchall()
     finally:
         conn.close()
 
-    history: list[GCHistoryRow] = []
-    for row in rows:
-        raw_evidence = row["evidence"]
-        parsed_evidence: GCRunEvidence | None = None
-        if raw_evidence:
-            try:
-                payload = json.loads(raw_evidence)
-                parsed_evidence = GCRunEvidence(**payload)
-            except (json.JSONDecodeError, TypeError) as exc:
-                logger.warning(
-                    "gc_generations.evidence for generation %d unparseable: %s",
-                    row["generation"],
-                    exc,
-                )
-        history.append(
-            GCHistoryRow(
-                generation=int(row["generation"]),
-                completed_at=int(row["completed_at"]) if row["completed_at"] is not None else None,
-                evidence=parsed_evidence,
-            )
+    return [
+        GCHistoryRow(
+            generation_id=str(row["generation_id"]),
+            started_at_ms=int(row["started_at_ms"]),
+            completed_at_ms=int(row["completed_at_ms"]) if row["completed_at_ms"] is not None else None,
+            reclaimed_count=int(row["reclaimed_count"]),
+            reclaimed_bytes=int(row["reclaimed_bytes"]),
         )
-    return history
+        for row in rows
+    ]
 
 
 def acquire_blob_leases(
