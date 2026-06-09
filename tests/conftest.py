@@ -149,6 +149,11 @@ _HYPOTHESIS_DB = DirectoryBasedExampleDatabase(_HYPOTHESIS_HOME / "examples")
 settings.register_profile(
     "ci",
     max_examples=5 if os.environ.get("POLYLOGUE_CI") else 30,
+    # deadline=None: per-example wall time is dominated by xdist scheduling
+    # jitter under `-n 16`, not algorithmic cost, so a deadline only produces
+    # load-dependent flakes (#1775). Real perf regressions are caught by the
+    # dedicated TestPerformanceBudget / benchmark tests, not Hypothesis timing.
+    deadline=None,
     suppress_health_check=[HealthCheck.too_slow],
     database=_HYPOTHESIS_DB,
 )
@@ -157,7 +162,13 @@ settings.register_profile(
 settings.register_profile(
     "default",
     max_examples=100,
-    suppress_health_check=[HealthCheck.differing_executors],
+    # deadline=None + suppress too_slow: see the ci profile note (#1775). The
+    # property tests in test_schema_privacy / test_null_guard_properties /
+    # test_machine_contract have no per-test deadline override and previously
+    # inherited Hypothesis's 200ms default, which DB- and subprocess-touching
+    # examples blow past under full-suite worker contention.
+    deadline=None,
+    suppress_health_check=[HealthCheck.differing_executors, HealthCheck.too_slow],
     database=_HYPOTHESIS_DB,
 )
 # "verify" profile: fast bounded-example pass for routine devtools verify cycles.

@@ -56,6 +56,7 @@ def _timed_insert(conn: sqlite3.Connection, message_id: str, session_id: str, po
 
 
 @pytest.mark.slow
+@pytest.mark.load_sensitive
 def test_messages_fts_trigger_growth_is_subquadratic(tmp_path: Path) -> None:
     """Insert 200 blocks incrementally; per-block time must not grow linearly."""
     from tests.infra.storage_records import SessionBuilder
@@ -95,6 +96,7 @@ def test_messages_fts_trigger_growth_is_subquadratic(tmp_path: Path) -> None:
 
 
 @pytest.mark.slow
+@pytest.mark.load_sensitive
 def test_content_blocks_batch_insert_is_linear(tmp_path: Path) -> None:
     """Bulk-inserting N blocks scales linearly — comparison baseline."""
     from tests.infra.storage_records import SessionBuilder
