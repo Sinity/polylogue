@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import sqlite3
 import subprocess
@@ -118,7 +119,19 @@ def _find_prev_next(page: PageEntry, all_pages: list[PageEntry]) -> tuple[dict[s
 
 
 def _site_archive_stats() -> dict[str, Any]:
-    """Return cheap archive counts for the site hero without invoking the CLI."""
+    """Return cheap archive counts for the site hero without invoking the CLI.
+
+    The hero counts are read from the live archive and are therefore volatile:
+    in CI no archive exists (stats are empty), while a local dev archive — and
+    especially one mid re-ingest — changes second to second. Embedding those
+    counts in the built HTML made ``render-pages --check`` non-deterministic
+    (a fresh build never matched a `.cache/site` built moments earlier),
+    perma-failing the pre-push gate during any ingest. The site build is
+    therefore reproducible by default: live counts are read only when
+    ``POLYLOGUE_PAGES_LIVE_STATS`` is set (e.g. for a deliberate local preview).
+    """
+    if not os.environ.get("POLYLOGUE_PAGES_LIVE_STATS"):
+        return {}
     path = active_index_db_path()
     if not path.exists():
         return {}
