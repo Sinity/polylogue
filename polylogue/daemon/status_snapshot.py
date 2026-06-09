@@ -145,6 +145,20 @@ def refresh_status_snapshot(*, payload: JSONDocument | None = None) -> StatusSna
         _REFRESH_LOCK.release()
 
 
+def reset_status_snapshot() -> None:
+    """Drop the cached daemon status snapshot.
+
+    The process-wide ``_SNAPSHOT`` singleton is intentionally long-lived in a
+    running daemon. Tests that prime it via :func:`refresh_status_snapshot`
+    (e.g. with a deliberately minimal payload) must clear it afterwards so the
+    cached payload does not leak into unrelated status-surface tests in the same
+    process. Exposed for test teardown; not used in production.
+    """
+    global _SNAPSHOT
+    with _SNAPSHOT_LOCK:
+        _SNAPSHOT = None
+
+
 def snapshot_state_for_metrics() -> dict[str, Any]:
     """Return bounded snapshot metadata for metrics."""
     with _SNAPSHOT_LOCK:

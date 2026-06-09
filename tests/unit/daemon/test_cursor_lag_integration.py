@@ -10,6 +10,7 @@ issue #1349 are pinned here.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -42,8 +43,22 @@ pytestmark = pytest.mark.frozen_clock_modules(
 
 
 @pytest.fixture(autouse=True)
-def _reset_dedup_state() -> None:
-    """Independence: every test starts with empty dedup state."""
+def _reset_dedup_state() -> Iterator[None]:
+    """Independence: every test starts AND ends with empty dedup state.
+
+    These tests drive ``_check_cursor_lag_medium`` / the anomaly layer
+    against the process-wide ``_DEDUP_STATE`` singletons in
+    ``cursor_lag_alert`` and ``cursor_lag_anomaly``. Resetting only on
+    setup leaks the last test's stuck-family entries into whatever test
+    runs next in the randomized session order: a later ``_run_medium_checks``
+    then emits spurious ``cursor_lag[...]`` / ``cursor_lag_anomaly[...]``
+    resolution alerts for the leaked family, breaking the daemon
+    health-inventory and HTTP-contract pins. Reset on teardown too so the
+    singletons never escape this module.
+    """
+    reset_static_dedup()
+    reset_anomaly_dedup()
+    yield
     reset_static_dedup()
     reset_anomaly_dedup()
 

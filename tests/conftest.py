@@ -335,6 +335,28 @@ def _clear_polylogue_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
 
     reset_blob_store()
 
+    # Reset the MCP runtime-services singleton. It is lazily built and cached
+    # in ``polylogue.mcp.server_support._runtime_services`` the first time a
+    # tool resolves config/archive paths; the cached services capture the
+    # archive root that was active at build time. Tests that point
+    # ``POLYLOGUE_ARCHIVE_ROOT`` at a seeded temp archive (e.g.
+    # tests/integration/test_mcp.py) leave that cached services object behind,
+    # so a later MCP tool call reads the polluter's archive instead of the
+    # caller's isolated one. Resetting here forces a fresh build per test.
+    from polylogue.mcp.server_support import _set_runtime_services
+
+    _set_runtime_services(None)
+
+    # Drop the cached daemon status snapshot. ``polylogue.daemon.status_snapshot``
+    # holds a process-wide ``_SNAPSHOT`` singleton; tests that prime it via
+    # ``refresh_status_snapshot(payload=...)`` (e.g. with a deliberately minimal
+    # 3-key payload) otherwise leak it into later status-surface tests, whose
+    # ``GET /api/status`` then reads the stale payload and fails the
+    # required-keys / component_state contracts.
+    from polylogue.daemon.status_snapshot import reset_status_snapshot
+
+    reset_status_snapshot()
+
     # Strip every POLYLOGUE_* host env var so tests never inherit operator
     # configuration (archive root, daemon api host/port, validation mode,
     # notification webhook, etc.) from the developer host (#1325). A live

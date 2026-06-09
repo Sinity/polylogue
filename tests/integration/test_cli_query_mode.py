@@ -441,5 +441,10 @@ def test_cli_no_args_stats_surface_still_works(tmp_path: Path) -> None:
 
     assert result.exit_code == 0, result.output
     output = result.output.lower()
-    assert "archive:" in output or "daemon:" in output
-    assert "sources:" in output or "fts:" in output
+    # Bare invocation renders the status surface in one of two shapes: the live
+    # daemon summary ("Daemon: running") when a daemon answers, or the direct
+    # archive fallback ("Archive (daemon not running)") otherwise. CI has no
+    # daemon, so the fallback header is the path under test there.
+    assert "daemon: running" in output or "archive (daemon not running)" in output, result.output
+    # Both surfaces report FTS/index state for the archive.
+    assert "fts" in output, result.output
