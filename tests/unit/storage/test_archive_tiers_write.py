@@ -115,6 +115,41 @@ def test_archive_tiers_writer_materializes_codex_session(tmp_path: Path) -> None
     assert search_archive_blocks(conn, "focused") == ["codex-session:codex-session-1:u1:0"]
 
 
+def test_archive_tiers_writer_ingests_session_with_root_cwd_and_no_repo_name(tmp_path: Path) -> None:
+    """A session whose only working directory is "/" must still ingest.
+
+    ``_repo_name`` returns None when no name can be derived from the cwd (e.g.
+    "/" or "."), but ``repos.repo_name`` is ``NOT NULL``. Passing the None
+    through crashed the write with an IntegrityError, silently dropping the
+    session and retrying it forever. The writer must persist the empty-string
+    sentinel instead and keep the session.
+    """
+    conn = _connect(tmp_path / "index.db")
+    session = ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id="root-cwd-1",
+        title="Session started at filesystem root",
+        working_directories=["/"],
+        messages=[
+            ParsedMessage(
+                provider_message_id="u1",
+                role=Role.USER,
+                text="hello from root",
+                position=0,
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="hello from root")],
+            ),
+        ],
+    )
+
+    # Must not raise sqlite3.IntegrityError on repos.repo_name NOT NULL.
+    session_id = write_parsed_session_to_archive(conn, session)
+
+    repos = [dict(row) for row in conn.execute("SELECT root_path, repo_name FROM repos").fetchall()]
+    assert {"root_path": "/", "repo_name": ""} in repos
+    envelope = read_archive_session_envelope(conn, session_id)
+    assert len(envelope.messages) == 1
+
+
 def test_archive_tiers_writer_preserves_chatgpt_branch_variants(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     session = ParsedSession(

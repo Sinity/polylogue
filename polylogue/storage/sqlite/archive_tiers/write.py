@@ -1660,11 +1660,16 @@ def _write_repo_edges(conn: sqlite3.Connection, session_id: str, session: Parsed
             INSERT INTO repos (origin_url, root_path, repo_name, first_seen_at_ms, last_seen_at_ms)
             VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(origin_url, root_path) DO UPDATE SET
-                repo_name = COALESCE(excluded.repo_name, repos.repo_name),
+                repo_name = COALESCE(NULLIF(excluded.repo_name, ''), repos.repo_name),
                 first_seen_at_ms = MIN(repos.first_seen_at_ms, excluded.first_seen_at_ms),
                 last_seen_at_ms = MAX(repos.last_seen_at_ms, excluded.last_seen_at_ms)
             """,
-            (origin_url, root_path, repo_name, observed_at_ms or 0, observed_at_ms or 0),
+            # repos.repo_name is NOT NULL DEFAULT ''. _repo_name() returns None
+            # when no name can be derived (e.g. a session whose cwd is "/" or
+            # "."): insert the schema's empty-string sentinel instead of NULL so
+            # the session is not dropped, while the NULLIF above keeps a later
+            # re-ingest from clobbering a previously-derived name with ''.
+            (origin_url, root_path, repo_name or "", observed_at_ms or 0, observed_at_ms or 0),
         )
         conn.execute(
             """

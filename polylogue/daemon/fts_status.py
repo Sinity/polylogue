@@ -295,6 +295,17 @@ def _archive_readiness_payload(conn: sqlite3.Connection, *, exact: bool) -> dict
     if not _table_exists(conn, "blocks") and not _table_exists(conn, "messages_fts"):
         return None
     blocks = _archive_exact_blocks_surface(conn) if exact else _archive_blocks_surface(conn)
+    effective_exact = exact
+    if not exact and blocks.get("freshness_state") == UNKNOWN:
+        # The durable freshness cache is untrusted: the recorded state is
+        # "ready" but the counts are the poisoned 0/0 shape while the source
+        # actually has rows. This happens after a fresh-archive bootstrap, where
+        # daemon startup legitimately recorded ready|0|0 over an empty archive
+        # and trigger-maintained ingest then populated the index without ever
+        # triggering a rebuild that refreshes the counts. Recompute exact counts
+        # so coverage reflects the populated index instead of reporting 0%.
+        blocks = _archive_exact_blocks_surface(conn)
+        effective_exact = True
     block_source_rows = _payload_int(blocks, "source_rows")
     block_indexed_rows = _payload_int(blocks, "indexed_rows")
     invariant_ready = bool(blocks["ready"])
@@ -311,7 +322,7 @@ def _archive_readiness_payload(conn: sqlite3.Connection, *, exact: bool) -> dict
             if block_source_rows > 0
             else (100.0 if invariant_ready else 0.0)
         ),
-        "coverage_exact": exact,
+        "coverage_exact": effective_exact,
         "surfaces": {"messages_fts": blocks},
     }
 
