@@ -105,14 +105,6 @@ def _seed_degraded_session(db_path: Path) -> None:
     )
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Readiness gap (#1782): the archive readiness builder does not yet "
-        "compute the #1278 degraded/fallback taxonomy from the stored "
-        "enrichment fallback reasons; degraded_count is hardcoded to 0."
-    ),
-    strict=False,
-)
 @pytest.mark.asyncio
 async def test_readiness_report_classifies_fallback_rows_as_degraded(
     cli_workspace: dict[str, Path],
@@ -143,14 +135,6 @@ async def test_readiness_report_classifies_fallback_rows_as_degraded(
     assert report.aggregate_verdict == "degraded"
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Readiness gap (#1782): the archive readiness builder does not yet "
-        "derive incompatible/degraded verdicts (no materializer_version incompatibility "
-        "detection, degraded_count hardcoded to 0)."
-    ),
-    strict=False,
-)
 @pytest.mark.asyncio
 async def test_readiness_verdict_precedence_incompatible_outranks_degraded(
     cli_workspace: dict[str, Path],

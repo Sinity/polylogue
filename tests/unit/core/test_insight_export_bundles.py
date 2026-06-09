@@ -137,14 +137,6 @@ async def test_insight_export_bundle_protects_existing_targets(cli_workspace: di
     assert marker.read_text(encoding="utf-8") == "keep"
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Archive gap (#1782): the archive readiness builder does not yet "
-        "derive a stale verdict from the source high-water mark, so "
-        "the export bundle cannot record stale readiness."
-    ),
-    strict=False,
-)
 @pytest.mark.asyncio
 async def test_insight_export_bundle_records_stale_readiness(cli_workspace: dict[str, Path]) -> None:
     import sqlite3
@@ -153,8 +145,10 @@ async def test_insight_export_bundle_records_stale_readiness(cli_workspace: dict
     _seed_export_insights(db_path)
     await _rebuild_insights(db_path)
     with sqlite3.connect(db_path) as conn:
+        # sort_key_ms is generated from updated_at_ms/created_at_ms; advance the
+        # source timestamp so the materialized high-water mark goes stale.
         conn.execute(
-            "UPDATE sessions SET sort_key_ms = COALESCE(sort_key_ms, 0) + 1000 WHERE session_id = ?",
+            "UPDATE sessions SET updated_at_ms = COALESCE(updated_at_ms, created_at_ms, 0) + 1000 WHERE session_id = ?",
             (_native("codex-export", "codex-session"),),
         )
         conn.commit()

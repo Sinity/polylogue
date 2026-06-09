@@ -59,14 +59,6 @@ def _provider_native_id(token: str, origin: str = "claude-code-session") -> str:
     return f"{origin}:ext-{token}"
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Readiness gap (#1782): the archive readiness builder does not yet "
-        "compute the #1278 degraded/fallback taxonomy, so the sparse seed is "
-        "classified ready and the aggregate verdict diverges from degraded."
-    ),
-    strict=False,
-)
 @pytest.mark.asyncio
 async def test_insight_readiness_report_marks_rebuilt_insights_ready(cli_workspace: dict[str, Path]) -> None:
     db_path = cli_workspace["db_path"]
@@ -112,13 +104,6 @@ async def test_insight_readiness_report_marks_empty_insights(cli_workspace: dict
     assert profile.expected_row_count == 0
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Readiness gap (#1782): the archive readiness builder does not yet "
-        "derive partial/incompatible verdicts for session_profiles."
-    ),
-    strict=False,
-)
 @pytest.mark.asyncio
 async def test_insight_readiness_report_marks_partial_and_incompatible_insights(
     cli_workspace: dict[str, Path],
@@ -162,13 +147,6 @@ async def test_insight_readiness_report_marks_partial_and_incompatible_insights(
     assert profile.incompatible_count == 2
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Readiness gap (#1782): the archive readiness builder does not yet "
-        "derive a stale verdict from the source high-water mark."
-    ),
-    strict=False,
-)
 @pytest.mark.asyncio
 async def test_insight_readiness_report_marks_stale_insights(cli_workspace: dict[str, Path]) -> None:
     import sqlite3
@@ -177,8 +155,11 @@ async def test_insight_readiness_report_marks_stale_insights(cli_workspace: dict
     _seed_readiness_sessions(db_path)
     await _rebuild(db_path)
     with sqlite3.connect(db_path) as conn:
+        # sort_key_ms is a generated column (COALESCE(updated_at_ms, created_at_ms));
+        # bump the source updated_at_ms so the derived high-water mark advances past
+        # the value captured at materialization time.
         conn.execute(
-            "UPDATE sessions SET sort_key_ms = COALESCE(sort_key_ms, 0) + 1000 WHERE session_id = ?",
+            "UPDATE sessions SET updated_at_ms = COALESCE(updated_at_ms, created_at_ms, 0) + 1000 WHERE session_id = ?",
             (_provider_native_id("ready-root", "codex-session"),),
         )
         conn.commit()

@@ -56,6 +56,7 @@ from polylogue.insights.readiness import (
     InsightReadinessReport,
     InsightReadinessVerdict,
     InsightStorageArtifact,
+    InsightVersionCoverage,
     known_insight_readiness_names,
     normalize_insight_readiness_name,
 )
@@ -64,6 +65,7 @@ from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuer
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.storage.insights.session.records import SessionProfileRecord
 from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
+from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.search.query_support import normalize_fts5_query
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     initialize_active_archive_root,
@@ -2347,7 +2349,13 @@ class ArchiveStore:
             for name in selected
             if (
                 entry := self._insight_readiness_entry(
-                    name, status=status, total_sessions=total_sessions, provider_coverage=coverage
+                    name,
+                    status=status,
+                    total_sessions=total_sessions,
+                    provider_coverage=coverage,
+                    origin=origin_filter,
+                    since_ms=since_ms,
+                    until_ms=until_ms,
                 )
             )
             is not None
@@ -2418,6 +2426,128 @@ class ArchiveStore:
             for row in rows
         )
 
+    def _readiness_session_filter(
+        self, *, origin: str | None, since_ms: int | None, until_ms: int | None
+    ) -> tuple[str, list[object]]:
+        """Build a ``WHERE`` fragment over the joined ``sessions`` (alias ``s``)."""
+        clauses: list[str] = []
+        params: list[object] = []
+        if origin is not None:
+            clauses.append("s.origin = ?")
+            params.append(origin)
+        if since_ms is not None:
+            clauses.append("COALESCE(s.updated_at_ms, s.created_at_ms) >= ?")
+            params.append(since_ms)
+        if until_ms is not None:
+            clauses.append("COALESCE(s.updated_at_ms, s.created_at_ms) <= ?")
+            params.append(until_ms)
+        return (" AND " + " AND ".join(clauses)) if clauses else "", params
+
+    def _archive_materialization_signals(
+        self,
+        insight_type: str,
+        *,
+        origin: str | None,
+        since_ms: int | None,
+        until_ms: int | None,
+    ) -> tuple[tuple[InsightVersionCoverage, ...], int, int]:
+        """Derive version coverage, incompatible count, and native staleness.
+
+        Reads the ``insight_materialization`` high-water marks for ``insight_type``
+        joined to ``sessions``. A row is *incompatible* (legacy) when its
+        ``materializer_version`` is below ``SESSION_INSIGHT_MATERIALIZER_VERSION``;
+        it is *stale* when its captured ``source_sort_key_ms`` no longer matches the
+        live session ``sort_key_ms`` (the native source high-water mark). The
+        ``session_profiles.materializer_version``/``source_sort_key`` columns are not
+        used here: they are not reliably populated by the canonical rebuild path,
+        so the materialization ledger is the authoritative provenance source.
+        """
+        if not _table_exists(self._conn, "insight_materialization"):
+            return ((), 0, 0)
+        clause, params = self._readiness_session_filter(origin=origin, since_ms=since_ms, until_ms=until_ms)
+        version_rows = self._conn.execute(
+            "SELECT im.materializer_version AS version, COUNT(*) AS n "
+            "FROM insight_materialization AS im "
+            "JOIN sessions AS s ON s.session_id = im.session_id "
+            f"WHERE im.insight_type = ?{clause} "
+            "GROUP BY im.materializer_version ORDER BY im.materializer_version",
+            (insight_type, *params),
+        ).fetchall()
+        versions = {str(int(row["version"])): int(row["n"]) for row in version_rows}
+        incompatible_count = sum(
+            count for version, count in versions.items() if int(version) < SESSION_INSIGHT_MATERIALIZER_VERSION
+        )
+        version_coverage = (
+            (
+                InsightVersionCoverage(
+                    field="materializer_version",
+                    current_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
+                    versions=versions,
+                    incompatible_count=incompatible_count,
+                ),
+            )
+            if versions
+            else ()
+        )
+        stale_row = self._conn.execute(
+            "SELECT COUNT(*) AS n "
+            "FROM insight_materialization AS im "
+            "JOIN sessions AS s ON s.session_id = im.session_id "
+            f"WHERE im.insight_type = ?{clause} "
+            "AND COALESCE(im.source_sort_key_ms, -1) != COALESCE(s.sort_key_ms, -1)",
+            (insight_type, *params),
+        ).fetchone()
+        stale_count = int(stale_row["n"]) if stale_row is not None else 0
+        return (version_coverage, incompatible_count, stale_count)
+
+    def _archive_fallback_coverage(
+        self,
+        table_name: str,
+        column_paths: tuple[tuple[str, str], ...],
+        *,
+        origin: str | None,
+        since_ms: int | None,
+        until_ms: int | None,
+    ) -> tuple[int, dict[str, int]]:
+        """Count rows whose enrichment provenance carries fallback reasons.
+
+        Each insight row stores its fallback markers as JSON arrays under
+        ``$.fallback_reasons`` inside one or more payload columns (e.g.
+        ``inference_payload_json`` and ``enrichment_payload_json`` on
+        ``session_profiles``). A row is *degraded* when any declared
+        ``(column, path)`` holds a non-empty array; the row is counted at most
+        once regardless of how many columns flag it. ``reason_totals`` sums
+        occurrences per reason across every inspected column.
+        """
+        if not _table_exists(self._conn, table_name):
+            return (0, {})
+        clause, params = self._readiness_session_filter(origin=origin, since_ms=since_ms, until_ms=until_ms)
+        any_terms = " OR ".join(
+            f"json_array_length(COALESCE(json_extract(t.{column}, '{path}'), '[]')) > 0"
+            for column, path in column_paths
+        )
+        degraded_row = self._conn.execute(
+            f"SELECT COUNT(*) AS n FROM {table_name} AS t "
+            "JOIN sessions AS s ON s.session_id = t.session_id "
+            f"WHERE ({any_terms}){clause}",
+            tuple(params),
+        ).fetchone()
+        degraded_count = int(degraded_row["n"]) if degraded_row is not None else 0
+        reason_totals: dict[str, int] = {}
+        for column, path in column_paths:
+            rows = self._conn.execute(
+                "SELECT value AS reason, COUNT(*) AS occurrences "
+                f"FROM {table_name} AS t "
+                "JOIN sessions AS s ON s.session_id = t.session_id, "
+                f"json_each(COALESCE(json_extract(t.{column}, '{path}'), '[]')) "
+                f"WHERE 1=1{clause} GROUP BY value",
+                tuple(params),
+            ).fetchall()
+            for row in rows:
+                reason = str(row["reason"])
+                reason_totals[reason] = reason_totals.get(reason, 0) + int(row["occurrences"])
+        return (degraded_count, dict(sorted(reason_totals.items())))
+
     def _insight_readiness_entry(
         self,
         name: str,
@@ -2425,6 +2555,9 @@ class ArchiveStore:
         status: SessionInsightStatusSnapshot,
         total_sessions: int,
         provider_coverage: tuple[InsightProviderCoverage, ...] = (),
+        origin: str | None = None,
+        since_ms: int | None = None,
+        until_ms: int | None = None,
     ) -> InsightReadinessEntry | None:
         specs = {
             "session_profiles": (
@@ -2517,6 +2650,31 @@ class ArchiveStore:
             )
             for artifact in artifact_names
         )
+        # Provenance-backed insights (profiles, work events, phases) carry their
+        # materializer version and source high-water mark in the
+        # ``insight_materialization`` ledger; the #1278 fallback taxonomy lives in
+        # each session profile's ``provenance_json``. Threads/tags/coverage have no
+        # such ledger entry and keep the status-derived staleness only.
+        version_coverage: tuple[InsightVersionCoverage, ...] = ()
+        incompatible_count = 0
+        materialization_type = _INSIGHT_MATERIALIZATION_TYPE.get(name)
+        if materialization_type is not None and table_present:
+            version_coverage, incompatible_count, native_stale = self._archive_materialization_signals(
+                materialization_type, origin=origin, since_ms=since_ms, until_ms=until_ms
+            )
+            stale_count = native_stale
+        degraded_count = 0
+        fallback_reason_counts: dict[str, int] = {}
+        fallback = _INSIGHT_FALLBACK_PAYLOAD.get(name)
+        if fallback is not None and table_present:
+            fallback_table, fallback_column_paths = fallback
+            degraded_count, fallback_reason_counts = self._archive_fallback_coverage(
+                fallback_table,
+                fallback_column_paths,
+                origin=origin,
+                since_ms=since_ms,
+                until_ms=until_ms,
+            )
         verdict = _archive_insight_readiness_verdict(
             table_present=table_present,
             row_count=row_count,
@@ -2524,6 +2682,8 @@ class ArchiveStore:
             missing_count=missing_count,
             stale_count=stale_count,
             orphan_count=orphan_count,
+            incompatible_count=incompatible_count,
+            degraded_count=degraded_count,
             ready_flags=ready_flags,
             total_sessions=total_sessions,
         )
@@ -2536,15 +2696,22 @@ class ArchiveStore:
             missing_count=missing_count,
             stale_count=stale_count,
             orphan_count=orphan_count,
+            incompatible_count=incompatible_count,
+            degraded_count=degraded_count,
+            fallback_reason_counts=fallback_reason_counts,
             storage_artifacts=artifacts,
             ready_flags=ready_flags,
             provider_coverage=provider_coverage,
+            version_coverage=version_coverage,
             evidence=_archive_insight_readiness_evidence(
                 row_count=row_count,
                 expected_row_count=expected_row_count,
                 missing_count=missing_count,
                 stale_count=stale_count,
                 orphan_count=orphan_count,
+                incompatible_count=incompatible_count,
+                degraded_count=degraded_count,
+                fallback_reason_counts=fallback_reason_counts,
                 ready_flags=ready_flags,
             ),
         )
@@ -4287,6 +4454,30 @@ def _epoch_ms_from_iso(value: str | None) -> int | None:
     return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() * 1000)
 
 
+# Insights whose provenance is tracked in the ``insight_materialization`` ledger
+# (materializer version + source high-water mark). Threads use a separate version
+# namespace and are intentionally excluded from the version-compatibility check.
+_INSIGHT_MATERIALIZATION_TYPE: dict[str, str] = {
+    "session_profiles": "session_profile",
+    "session_work_events": "work_events",
+    "session_phases": "phases",
+}
+
+# Insights whose #1278 fallback markers are stored as JSON arrays inside payload
+# columns: (table_name, ((column, json_path), ...)). Session profiles carry the
+# inference and enrichment fallback reasons under ``$.fallback_reasons`` in their
+# respective ``inference_payload_json`` / ``enrichment_payload_json`` columns.
+_INSIGHT_FALLBACK_PAYLOAD: dict[str, tuple[str, tuple[tuple[str, str], ...]]] = {
+    "session_profiles": (
+        "session_profiles",
+        (
+            ("inference_payload_json", "$.fallback_reasons"),
+            ("enrichment_payload_json", "$.fallback_reasons"),
+        ),
+    ),
+}
+
+
 def _archive_insight_readiness_verdict(
     *,
     table_present: bool,
@@ -4295,11 +4486,15 @@ def _archive_insight_readiness_verdict(
     missing_count: int,
     stale_count: int,
     orphan_count: int,
+    incompatible_count: int,
+    degraded_count: int,
     ready_flags: dict[str, bool],
     total_sessions: int,
 ) -> InsightReadinessVerdict:
     if not table_present:
         return "missing"
+    if incompatible_count:
+        return "incompatible"
     if stale_count or orphan_count:
         return "stale"
     if missing_count or (expected_row_count is not None and row_count < expected_row_count):
@@ -4312,6 +4507,8 @@ def _archive_insight_readiness_verdict(
         if total_sessions > 0 and expected_row_count == 0:
             return "ready"
         return "empty"
+    if degraded_count:
+        return "degraded"
     if ready_flags and all(ready_flags.values()):
         return "ready"
     if not ready_flags:
@@ -4334,6 +4531,9 @@ def _archive_insight_readiness_evidence(
     missing_count: int,
     stale_count: int,
     orphan_count: int,
+    incompatible_count: int,
+    degraded_count: int,
+    fallback_reason_counts: dict[str, int],
     ready_flags: dict[str, bool],
 ) -> tuple[str, ...]:
     values = [f"rows={row_count}"]
@@ -4345,6 +4545,11 @@ def _archive_insight_readiness_evidence(
         values.append(f"stale={stale_count}")
     if orphan_count:
         values.append(f"orphan={orphan_count}")
+    if incompatible_count:
+        values.append(f"incompatible={incompatible_count}")
+    if degraded_count:
+        values.append(f"degraded={degraded_count}")
+    values.extend(f"fallback_reason={reason}={count}" for reason, count in fallback_reason_counts.items())
     values.extend(f"{key}={value}" for key, value in sorted(ready_flags.items()))
     return tuple(values)
 
