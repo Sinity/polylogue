@@ -1170,6 +1170,113 @@ async def test_live_full_ingest_expands_inbox_zip_members(
 
 
 @pytest.mark.asyncio
+async def test_live_full_ingest_records_transient_lock_as_retryable(
+    workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A write-lock loss is recorded as retryable, not a source-path dump (#18).
+
+    Insight/archive writes can lose the write-lock race to a concurrent bulk
+    write (``database is locked``). That path is self-healing — it is re-queued
+    and retried — so the attempt's ``error`` must classify it as retryable
+    rather than recording the opaque source-path list it used to store.
+    """
+    import polylogue.storage.sqlite.archive_tiers.archive as archive_mod
+
+    root = workspace_env["data_root"] / "claude-projects"
+    project = root / "project"
+    project.mkdir(parents=True)
+    source_path = project / "session.jsonl"
+    _write_jsonl(
+        source_path,
+        [
+            _claude_code_message(
+                session_id="lock-session",
+                uuid="m1",
+                role="user",
+                text="locked write",
+                timestamp="2026-05-01T00:00:00Z",
+            ),
+        ],
+    )
+    db_path = workspace_env["data_root"] / "lock-live.db"
+    archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
+    cursor = CursorStore(db_path)
+    processor = LiveBatchProcessor(
+        archive,
+        (WatchSource(name="claude-code", root=root),),
+        cursor=cursor,
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+
+    def _raise_locked(_self: object, *args: object, **kwargs: object) -> tuple[str, str]:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(archive_mod.ArchiveStore, "write_raw_and_parsed", _raise_locked)
+
+    try:
+        metrics = await processor.ingest_files([source_path], emit_event=False)
+        attempts = cursor.recent_ingest_attempts(limit=1)
+
+        assert metrics.succeeded_file_count == 0
+        assert metrics.failed_file_count == 1
+        assert attempts[0].error == "database is locked (retryable)"
+        assert str(source_path) not in (attempts[0].error or "")
+    finally:
+        await archive.close()
+
+
+@pytest.mark.asyncio
+async def test_live_full_ingest_records_real_error_text_not_paths(
+    workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A genuine write failure records the error text, not the source path (#18)."""
+    import polylogue.storage.sqlite.archive_tiers.archive as archive_mod
+
+    root = workspace_env["data_root"] / "claude-projects"
+    project = root / "project"
+    project.mkdir(parents=True)
+    source_path = project / "session.jsonl"
+    _write_jsonl(
+        source_path,
+        [
+            _claude_code_message(
+                session_id="error-session",
+                uuid="m1",
+                role="user",
+                text="failing write",
+                timestamp="2026-05-01T00:00:00Z",
+            ),
+        ],
+    )
+    db_path = workspace_env["data_root"] / "error-live.db"
+    archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
+    cursor = CursorStore(db_path)
+    processor = LiveBatchProcessor(
+        archive,
+        (WatchSource(name="claude-code", root=root),),
+        cursor=cursor,
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+
+    def _raise_value_error(_self: object, *args: object, **kwargs: object) -> tuple[str, str]:
+        raise ValueError("synthetic write failure")
+
+    monkeypatch.setattr(archive_mod.ArchiveStore, "write_raw_and_parsed", _raise_value_error)
+
+    try:
+        metrics = await processor.ingest_files([source_path], emit_event=False)
+        attempts = cursor.recent_ingest_attempts(limit=1)
+
+        assert metrics.failed_file_count == 1
+        assert attempts[0].error == "synthetic write failure"
+        assert str(source_path) not in (attempts[0].error or "")
+    finally:
+        await archive.close()
+
+
+@pytest.mark.asyncio
 async def test_live_full_ingest_detects_provider_when_source_name_is_not_provider(
     workspace_env: dict[str, Path],
 ) -> None:
