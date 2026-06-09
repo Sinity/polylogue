@@ -348,3 +348,55 @@ async def test_search_hits_for_plan_handles_empty_and_lexical_paths(tmp_path: Pa
     assert [hit.session_id for hit in lexical_hits] == [native_id]
     assert lexical_hits[0].retrieval_lane == "dialogue"
     assert "needle" in (lexical_hits[0].snippet or "")
+
+
+@pytest.mark.asyncio
+async def test_search_hits_for_plan_degrades_semantic_and_hybrid_without_embeddings(tmp_path: Path) -> None:
+    """Graceful-degradation contract (#1784).
+
+    A semantic or hybrid request against an archive that has no usable vector
+    backend (no ``embeddings.db``, sqlite-vec/Voyage unconfigured) yields an
+    empty result set rather than raising. This pins ``archive_search_hits`` /
+    ``_semantic_hits`` returning ``[]`` for both lanes over a seeded but
+    embeddings-less ``index.db``.
+    """
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir(parents=True, exist_ok=True)
+    render_root = tmp_path / "render"
+    render_root.mkdir(parents=True, exist_ok=True)
+    db_path = archive_root / "index.db"
+
+    (
+        SessionBuilder(db_path, "conv-semantic")
+        .provider(Provider.CHATGPT.value)
+        .title("Needle Doc")
+        .updated_at("2026-04-22T12:00:00+00:00")
+        .add_message("m1", role="user", text="needle in the haystack here")
+        .save()
+    )
+
+    # No vector provider is configured (no Voyage key / sqlite-vec backend), so
+    # create_vector_provider returns None for this archive regardless of whether
+    # an empty embeddings.db was bootstrapped alongside the index.
+    config = Config(
+        archive_root=archive_root,
+        render_root=render_root,
+        sources=[Source(name="test", path=tmp_path / "inbox")],
+        db_path=db_path,
+    )
+
+    # Pure-semantic request: no vector backend -> empty, never raises.
+    semantic_hits = await search_hits_for_plan(
+        SessionQueryPlan(similar_text="needle", retrieval_lane="semantic"),
+        config,
+    )
+    assert semantic_hits == []
+
+    # Hybrid request: the semantic leg degrades to empty, so no fused rows are
+    # produced; the call returns empty without raising rather than erroring on
+    # the missing vector backend.
+    hybrid_hits = await search_hits_for_plan(
+        SessionQueryPlan(query_terms=("needle",), retrieval_lane="hybrid"),
+        config,
+    )
+    assert hybrid_hits == []
