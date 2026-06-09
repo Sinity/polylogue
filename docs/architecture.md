@@ -186,7 +186,7 @@ back to the existing brain-artifact metadata walk. Both paths emit normalized
 
 | Abstraction | Location | Role |
 |-------------|----------|------|
-| `Polylogue` | `facade.py` | Async entry point. Wraps storage + search + pipeline. |
+| `Polylogue` | `api/__init__.py` | Async entry point. Wraps storage + search + pipeline. |
 | `SessionRepository` | `storage/repository/__init__.py` | Mixin-composed async repository (9 mixins: archive reads/writes, action reads, insight readers for profile/timeline/thread/summary, raw, vectors). |
 | `SearchProvider` protocol | `protocols.py` | FTS5 and Hybrid (RRF fusion) implementations. |
 | `SessionFilter` | `archive/filter/filters.py` | Fluent filter chain used by CLI, MCP, and facade. |
@@ -334,7 +334,6 @@ attachments, exports):
 - `daemon/` — daemon convergence, HTTP API, and web reader
 
 ### Verification (repo health)
-- `proof/` — verification catalog internals, subject discovery, claim catalog, witnesses
 - `devtools/` — operator tooling, lints, campaigns, rendering
 - `showcase/` — QA exercises, deterministic acceptance tests
 - `tests/` — pytest suite, property tests, integration tests
@@ -346,5 +345,3 @@ attachments, exports):
 ### Key rules
 - Surfaces may not import substrate internals directly (see layering.yaml).
 - New semantics go into substrate or insights first, then surfaces adapt.
-- Proof subjects and claims live in `proof/`; devtools commands that exercise
-  them live in `devtools/`.

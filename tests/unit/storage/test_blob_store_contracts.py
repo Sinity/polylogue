@@ -16,7 +16,7 @@ content-addressed store with no notion of grouping. The grouping the
 docs refer to ("``link_group_key`` groups related blobs, e.g. all
 blobs belonging to one session") is implemented in
 ``artifact_observations.link_group_key`` (see
-``polylogue/storage/sqlite/schema_ddl_aux.py`` and
+``polylogue/storage/sqlite/archive_tiers/source.py`` and
 ``polylogue/storage/artifacts/inspection.py``). This contract suite
 pins both layers — pure CAS *and* the artifact-observation grouping
 the docs describe.

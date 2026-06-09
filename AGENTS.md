@@ -769,7 +769,7 @@ back to the existing brain-artifact metadata walk. Both paths emit normalized
 
 | Abstraction | Location | Role |
 |-------------|----------|------|
-| `Polylogue` | `facade.py` | Async entry point. Wraps storage + search + pipeline. |
+| `Polylogue` | `api/__init__.py` | Async entry point. Wraps storage + search + pipeline. |
 | `SessionRepository` | `storage/repository/__init__.py` | Mixin-composed async repository (9 mixins: archive reads/writes, action reads, insight readers for profile/timeline/thread/summary, raw, vectors). |
 | `SearchProvider` protocol | `protocols.py` | FTS5 and Hybrid (RRF fusion) implementations. |
 | `SessionFilter` | `archive/filter/filters.py` | Fluent filter chain used by CLI, MCP, and facade. |
@@ -917,7 +917,6 @@ attachments, exports):
 - `daemon/` — daemon convergence, HTTP API, and web reader
 
 ### Verification (repo health)
-- `proof/` — verification catalog internals, subject discovery, claim catalog, witnesses
 - `devtools/` — operator tooling, lints, campaigns, rendering
 - `showcase/` — QA exercises, deterministic acceptance tests
 - `tests/` — pytest suite, property tests, integration tests
@@ -929,8 +928,6 @@ attachments, exports):
 ### Key rules
 - Surfaces may not import substrate internals directly (see layering.yaml).
 - New semantics go into substrate or insights first, then surfaces adapt.
-- Proof subjects and claims live in `proof/`; devtools commands that exercise
-  them live in `devtools/`.
 <!-- end include: docs/architecture.md -->
 <!-- begin include: docs/internals.md -->
 # Internals Reference
@@ -1459,7 +1456,7 @@ scripts and agents.
 repo readiness: generated-surface rendering, baseline verification, validation
 lane dispatch, package/build checks, and branch/PR readiness gates.
 
-Domain proof semantics belong in the verification-lab, proof, schema, scenario,
+Domain proof semantics belong in the verification-lab, schema, scenario,
 or insight modules first. A `devtools` command may expose them only as a thin
 operator entrypoint that delegates to the owning lab or insight implementation.
 
@@ -1468,7 +1465,7 @@ Routine command placement:
 - keep repo state, rendering, packaging, and PR-readiness orchestration in
   `devtools`;
 - keep archive/insight workflows in `polylogue` CLI/API surfaces;
-- keep proof/evidence/scenario behavior behind the verification-lab surface;
+- keep evidence/scenario behavior behind the verification-lab surface;
 - prefer validation lanes and `devtools verify --lab` to compose lab checks
   rather than duplicating domain checks inside `devtools verify`.
 
