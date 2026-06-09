@@ -115,6 +115,25 @@ def test_archive_tiers_writer_materializes_codex_session(tmp_path: Path) -> None
     assert search_archive_blocks(conn, "focused") == ["codex-session:codex-session-1:u1:0"]
 
 
+def test_archive_store_connection_applies_canonical_profile(tmp_path: Path) -> None:
+    """ArchiveStore must apply the write/read connection profile, not a bare connect.
+
+    A bare sqlite3.connect defaults to a 5s busy_timeout with no WAL tuning.
+    Under daemon write contention (live ingest vs convergence both writing
+    index.db) that window is exceeded and ingest fails with "database is
+    locked". The write profile raises busy_timeout to 30s so writers queue.
+    """
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    with ArchiveStore(tmp_path, initialize=True, read_only=False) as archive:
+        assert int(archive._conn.execute("PRAGMA busy_timeout").fetchone()[0]) == 30_000
+        assert str(archive._conn.execute("PRAGMA journal_mode").fetchone()[0]).lower() == "wal"
+
+    with ArchiveStore(tmp_path, initialize=False, read_only=True) as archive:
+        assert int(archive._conn.execute("PRAGMA busy_timeout").fetchone()[0]) == 1_000
+        assert int(archive._conn.execute("PRAGMA query_only").fetchone()[0]) == 1
+
+
 def test_archive_tiers_writer_ingests_session_with_root_cwd_and_no_repo_name(tmp_path: Path) -> None:
     """A session whose only working directory is "/" must still ingest.
 

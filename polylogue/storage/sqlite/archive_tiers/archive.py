@@ -96,6 +96,10 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     upsert_session_tag,
     write_parsed_session_to_archive,
 )
+from polylogue.storage.sqlite.connection_profile import (
+    READ_CONNECTION_PRAGMA_STATEMENTS,
+    WRITE_CONNECTION_PRAGMA_STATEMENTS,
+)
 from polylogue.storage.sqlite.queries.tool_usage import ToolUsageProviderCoverageRow, ToolUsageRow
 from polylogue.types import SessionId
 
@@ -155,10 +159,21 @@ class ArchiveStore:
             initialize_active_archive_root(archive_root)
         if read_only:
             self._conn = sqlite3.connect(f"file:{self.index_db_path}?mode=ro", uri=True)
+            pragma_statements = READ_CONNECTION_PRAGMA_STATEMENTS
         else:
             self._conn = sqlite3.connect(self.index_db_path)
+            pragma_statements = WRITE_CONNECTION_PRAGMA_STATEMENTS
         self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA foreign_keys = ON")
+        # Apply the canonical connection profile rather than a bare connection.
+        # A bare sqlite3.connect defaults to a 5s busy_timeout with no WAL
+        # tuning; under daemon write contention (live ingest and convergence
+        # stages both writing index.db) that window is exceeded and ingest
+        # writes fail with "database is locked", marking files failed and
+        # collapsing throughput. The write profile raises busy_timeout to 30s so
+        # writers queue instead of failing (docs/internals.md: SQLite tuning is
+        # profile-driven, not backend-local).
+        for statement in pragma_statements:
+            self._conn.execute(statement)
         self._user_tier_attached = False
         self._tags_relation = "session_tags"
         self._attach_user_tier_if_present()
