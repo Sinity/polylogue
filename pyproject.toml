@@ -140,6 +140,7 @@ markers = [
     "chaos: marks ingestion hostility, interruption, and chronology tests",
     "live: marks operator-run live archive validation lanes",
     "xdist_group(group_name): distribute parametrized tests within a file across workers (#1026)",
+    "load_sensitive: wall-clock-bound tests (timing budgets, loopback sockets) routed into the isolated single-process lane of `devtools verify --all` so xdist worker contention cannot flake them (#1775)",
 ]
 filterwarnings = [
     "ignore::DeprecationWarning:dateparser",  # dateparser strptime deprecation (external)

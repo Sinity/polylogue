@@ -1161,6 +1161,7 @@ class TestSharedQueryPayloads:
         assert d["time_range"]["min"] == "2024-01-01"
 
 
+@pytest.mark.load_sensitive
 class TestQueryNoResultsDiagnosticPath:
     """Cross-surface contract: one filtered query → diagnostics path."""
 

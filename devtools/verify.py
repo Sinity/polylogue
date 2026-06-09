@@ -438,18 +438,43 @@ def build_verify_steps(
             "--json-report-omit=collectors,log,streams,warnings",
             f"--json-report-file={PYTEST_REPORT_PATH}",
         ]
-        if skip_slow:
-            pytest_cmd.extend(["-m", f"not slow and {scale_marker_expr}"])
-        else:
-            pytest_cmd.extend(["-m", scale_marker_expr])
+        base_marker = f"not slow and {scale_marker_expr}" if skip_slow else scale_marker_expr
         if seed_testmon:
-            pytest_cmd.extend(["--testmon", "--testmon-noselect", *_pytest_worker_args(default="16")])
+            pytest_cmd.extend(
+                ["-m", base_marker, "--testmon", "--testmon-noselect", *_pytest_worker_args(default="16")]
+            )
             steps.append(("pytest seed-testmon", pytest_cmd))
         elif full_pytest:
-            pytest_cmd.extend(_pytest_worker_args(default="16"))
-            steps.append(("pytest full", pytest_cmd))
+            # #1775: the full diagnostic runs as two lanes. The bulk lane keeps
+            # xdist parallelism but deselects wall-clock-bound tests; the
+            # isolated lane reruns those (``load_sensitive``/``tui`` — timing
+            # budgets, loopback-socket timeouts, TUI render timing) single-
+            # process with a stable order, so worker contention can no longer
+            # flake them. Both lanes are correctness blockers; the split only
+            # removes the scheduling jitter that made ``--all`` an unreliable
+            # completion gate.
+            bulk_cmd = [
+                *pytest_cmd,
+                "-m",
+                f"({base_marker}) and not load_sensitive and not tui",
+                *_pytest_worker_args(default="16"),
+            ]
+            steps.append(("pytest full (parallel)", bulk_cmd))
+
+            def _isolated_report_arg(arg: str) -> str:
+                # Keep the bulk lane's canonical report artifacts intact for
+                # _compare_against_last; the isolated lane writes its own files.
+                if arg.startswith("--junitxml="):
+                    return f"--junitxml={_report_dir}/verify-latest-isolated.xml"
+                if arg.startswith("--json-report-file="):
+                    return f"--json-report-file={PYTEST_REPORT_DIR / 'last-pytest-isolated.json'}"
+                return arg
+
+            isolated_cmd = [_isolated_report_arg(arg) for arg in pytest_cmd]
+            isolated_cmd.extend(["-m", f"({base_marker}) and (load_sensitive or tui)", "-p", "no:randomly", "-n", "0"])
+            steps.append(("pytest load-sensitive (isolated)", isolated_cmd))
         else:
-            pytest_cmd.extend(["--testmon", *_pytest_worker_args(default="0")])
+            pytest_cmd.extend(["-m", base_marker, "--testmon", *_pytest_worker_args(default="0")])
             pytest_cmd.append("--testmon-forceselect")
             steps.append(("pytest testmon", pytest_cmd))
 

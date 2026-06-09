@@ -179,6 +179,7 @@ class TestLargeInputRoundTrip:
 
 
 @pytest.mark.slow
+@pytest.mark.load_sensitive
 class TestPerformanceBudget:
     """Performance budget tests — each asserts a timing SLA.
 
