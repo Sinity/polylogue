@@ -133,13 +133,6 @@ def _parse_archive_datetime(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
-def _archive_epoch_ms(value: str | None) -> int | None:
-    if value is None:
-        return None
-    parsed = _parse_archive_datetime(value)
-    return int(parsed.timestamp() * 1000) if parsed is not None else None
-
-
 def _archive_query_kwargs(spec: SessionQuerySpec, *, default_limit: int | None) -> dict[str, object]:
     limit = spec.limit if spec.limit is not None else default_limit
     kwargs: dict[str, object] = {
@@ -1004,168 +997,27 @@ def _rebuild_archive_session_insights(
     session_ids: Sequence[str] | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> SessionInsightCounts:
-    from polylogue.storage.insights.session.rebuild import build_session_insight_records
+    """Rebuild durable session insights via the canonical materializer.
+
+    This is a thin adapter over
+    ``polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync``
+    — the single rebuild stack shared with daemon convergence (#1743 P13). It
+    resolves any session-id aliases against the archive, then delegates the
+    whole rebuild (profiles, latency, work events, phases, threads +
+    thread_sessions + 'thread' markers, tag rollups, provider-day aggregates)
+    to the canonical path, which commits internally.
+    """
+    from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
     from polylogue.storage.insights.session.runtime import SessionInsightCounts
-    from polylogue.storage.insights.session.storage import (
-        replace_session_latency_profiles_bulk_sync,
-        replace_session_profiles_bulk_sync,
-    )
-    from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
-    from polylogue.storage.sqlite.archive_tiers.write import (
-        upsert_insight_materialization,
-        upsert_session_phase,
-        upsert_session_work_event,
-    )
 
-    conn = archive._conn
-    requested_ids = _archive_rebuild_session_ids(archive, session_ids)
-    if session_ids is not None and not requested_ids:
+    resolved_ids = _archive_rebuild_session_ids(archive, session_ids) if session_ids is not None else None
+    if session_ids is not None and not resolved_ids:
         return SessionInsightCounts()
-
-    if session_ids is None:
-        # #1607 parity: the full-rebuild DELETE phase holds the write lock
-        # while it clears every insight table. Emit a progress heartbeat per
-        # table so a long rebuild shows forward motion instead of hanging
-        # silently. The whole rebuild stays inside one transaction (the
-        # implicit tx opened by the first DELETE spans through the final
-        # commit), so a failure before commit rolls back to the prior state.
-        for table in (
-            "session_work_events",
-            "session_phases",
-            "session_latency_profiles",
-            "session_profiles",
-            "thread_sessions",
-            "threads",
-            "insight_materialization",
-        ):
-            cursor = conn.execute(f"DELETE FROM {table}")
-            if progress_callback is not None:
-                rowcount = getattr(cursor, "rowcount", 0) or 0
-                progress_callback(int(rowcount if rowcount > 0 else 0), desc=f"rebuild: cleared {table}")
-    else:
-        placeholders = ", ".join("?" for _ in requested_ids)
-        conn.execute(f"DELETE FROM session_work_events WHERE session_id IN ({placeholders})", requested_ids)
-        conn.execute(f"DELETE FROM session_phases WHERE session_id IN ({placeholders})", requested_ids)
-        conn.execute(f"DELETE FROM session_latency_profiles WHERE session_id IN ({placeholders})", requested_ids)
-        conn.execute(f"DELETE FROM session_profiles WHERE session_id IN ({placeholders})", requested_ids)
-        conn.execute(
-            f"""
-            DELETE FROM insight_materialization
-            WHERE session_id IN ({placeholders})
-              AND insight_type IN ('session_profile', 'work_events', 'phases', 'latency')
-            """,
-            requested_ids,
-        )
-
-    counts = SessionInsightCounts()
-    for session_id in requested_ids:
-        session = _archive_session_to_session(archive.read_session(session_id))
-        bundle = build_session_insight_records(
-            session,
-            logical_session_id=_archive_root_session_id(conn, session_id),
-        )
-        profile = bundle.profile_record
-        replace_session_profiles_bulk_sync(conn, [profile])
-        replace_session_latency_profiles_bulk_sync(conn, [bundle.latency_profile_record])
-        _archive_upsert_materialization(
-            conn,
-            upsert_insight_materialization,
-            insight_type="session_profile",
-            session_id=str(profile.session_id),
-            materializer_version=profile.materializer_version,
-            materialized_at=profile.materialized_at,
-            source_updated_at=profile.source_updated_at,
-            source_sort_key=profile.source_sort_key,
-            input_high_water_mark=profile.input_high_water_mark,
-            input_high_water_mark_source=profile.input_high_water_mark_source,
-            input_row_count=profile.input_row_count,
-        )
-        _archive_upsert_materialization(
-            conn,
-            upsert_insight_materialization,
-            insight_type="latency",
-            session_id=str(profile.session_id),
-            materializer_version=profile.materializer_version,
-            materialized_at=profile.materialized_at,
-            source_updated_at=profile.source_updated_at,
-            source_sort_key=profile.source_sort_key,
-            input_high_water_mark=profile.input_high_water_mark,
-            input_high_water_mark_source=profile.input_high_water_mark_source,
-            input_row_count=bundle.latency_profile_record.input_row_count,
-        )
-        for event in bundle.work_event_records:
-            upsert_session_work_event(
-                conn,
-                session_id=str(event.session_id),
-                position=event.event_index,
-                work_event_type=event.heuristic_label,
-                summary=event.summary,
-                confidence=event.confidence,
-                start_index=event.start_index,
-                end_index=event.end_index,
-                started_at_ms=_archive_epoch_ms(event.start_time),
-                ended_at_ms=_archive_epoch_ms(event.end_time),
-                duration_ms=event.duration_ms,
-                file_paths=tuple(event.file_paths),
-                tools_used=tuple(event.tools_used),
-                evidence=event.evidence_payload.model_dump(mode="json"),
-                inference=event.inference_payload.model_dump(mode="json"),
-                search_text=event.search_text,
-                input_high_water_mark=event.input_high_water_mark,
-                input_high_water_mark_source=event.input_high_water_mark_source,
-            )
-        _archive_upsert_materialization(
-            conn,
-            upsert_insight_materialization,
-            insight_type="work_events",
-            session_id=str(profile.session_id),
-            materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
-            materialized_at=profile.materialized_at,
-            source_updated_at=profile.source_updated_at,
-            source_sort_key=profile.source_sort_key,
-            input_high_water_mark=profile.input_high_water_mark,
-            input_high_water_mark_source=profile.input_high_water_mark_source,
-            input_row_count=len(bundle.work_event_records),
-        )
-        for phase in bundle.phase_records:
-            upsert_session_phase(
-                conn,
-                session_id=str(phase.session_id),
-                position=phase.phase_index,
-                phase_type=phase.kind,
-                confidence=phase.confidence,
-                start_index=phase.start_index,
-                end_index=phase.end_index,
-                started_at_ms=_archive_epoch_ms(phase.start_time),
-                ended_at_ms=_archive_epoch_ms(phase.end_time),
-                duration_ms=phase.duration_ms,
-                tool_counts=dict(phase.tool_counts),
-                word_count=phase.word_count,
-                evidence=phase.evidence_payload.model_dump(mode="json"),
-                inference=phase.inference_payload.model_dump(mode="json"),
-                search_text=phase.search_text,
-                input_high_water_mark=phase.input_high_water_mark,
-                input_high_water_mark_source=phase.input_high_water_mark_source,
-            )
-        _archive_upsert_materialization(
-            conn,
-            upsert_insight_materialization,
-            insight_type="phases",
-            session_id=str(profile.session_id),
-            materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
-            materialized_at=profile.materialized_at,
-            source_updated_at=profile.source_updated_at,
-            source_sort_key=profile.source_sort_key,
-            input_high_water_mark=profile.input_high_water_mark,
-            input_high_water_mark_source=profile.input_high_water_mark_source,
-            input_row_count=len(bundle.phase_records),
-        )
-        counts.add(profiles=1, work_events=len(bundle.work_event_records), phases=len(bundle.phase_records))
-
-    counts.threads = _archive_rebuild_threads(conn, upsert_insight_materialization)
-    counts.tag_rollups = int(conn.execute("SELECT COUNT(*) FROM session_tags").fetchone()[0] or 0)
-    conn.commit()
-    return counts
+    return rebuild_session_insights_sync(
+        archive._conn,
+        session_ids=resolved_ids,
+        progress_callback=progress_callback,
+    )
 
 
 def _archive_rebuild_session_ids(archive: Any, session_ids: Sequence[str] | None) -> tuple[str, ...]:
@@ -1176,90 +1028,6 @@ def _archive_rebuild_session_ids(archive: Any, session_ids: Sequence[str] | None
         with suppress(KeyError):
             resolved.append(archive.resolve_session_id(str(session_id)))
     return tuple(dict.fromkeys(resolved))
-
-
-def _archive_root_session_id(conn: Any, session_id: str) -> str:
-    row = conn.execute("SELECT COALESCE(root_session_id, session_id) FROM sessions WHERE session_id = ?", (session_id,))
-    fetched = row.fetchone()
-    return str(fetched[0]) if fetched is not None and fetched[0] is not None else session_id
-
-
-def _archive_upsert_materialization(
-    conn: Any,
-    upsert: Any,
-    *,
-    insight_type: str,
-    session_id: str,
-    materializer_version: int,
-    materialized_at: str,
-    source_updated_at: str | None,
-    source_sort_key: float | None,
-    input_high_water_mark: str | None,
-    input_high_water_mark_source: str | None,
-    input_row_count: int,
-) -> None:
-    source_sort_key_ms = int(source_sort_key * 1000) if source_sort_key is not None else None
-    upsert(
-        conn,
-        insight_type=insight_type,
-        session_id=session_id,
-        materializer_version=materializer_version,
-        materialized_at_ms=_archive_epoch_ms(materialized_at) or 0,
-        source_updated_at_ms=_archive_epoch_ms(source_updated_at),
-        source_sort_key_ms=source_sort_key_ms,
-        input_high_water_mark_ms=_archive_epoch_ms(input_high_water_mark),
-        input_high_water_mark_source=input_high_water_mark_source,
-        input_row_count=input_row_count,
-    )
-
-
-def _archive_rebuild_threads(conn: Any, upsert_materialization: Any) -> int:
-    from polylogue.storage.insights.session.storage import replace_threads_bulk_sync
-    from polylogue.storage.insights.session.threads import (
-        build_thread_records_for_roots_sync,
-        iter_root_id_pages_sync,
-    )
-
-    conn.execute("DELETE FROM thread_sessions")
-    conn.execute("DELETE FROM threads")
-    conn.execute("DELETE FROM insight_materialization WHERE insight_type = 'thread'")
-    materialized_at_ms = int(datetime.now().timestamp() * 1000)
-    total_threads = 0
-    for root_chunk in iter_root_id_pages_sync(conn):
-        records_by_root = build_thread_records_for_roots_sync(conn, root_chunk)
-        replace_threads_bulk_sync(conn, records_by_root)
-        # Populate the archive-specific thread_sessions join table and record a
-        # thread materialization marker for every session.  Readiness counts
-        # sessions lacking a 'thread' marker, so continuation members must
-        # carry one too or they are misreported as stale threads.
-        for root_id, record in records_by_root.items():
-            root_row = conn.execute(
-                "SELECT created_at_ms, updated_at_ms FROM sessions WHERE session_id = ?",
-                (root_id,),
-            ).fetchone()
-            updated_at_ms = int(root_row["updated_at_ms"] or 0) if root_row else 0
-            created_at_ms = int(root_row["created_at_ms"] or 0) if root_row else 0
-            for position, session_id in enumerate(record.session_ids):
-                conn.execute(
-                    "INSERT INTO thread_sessions (thread_id, session_id, position) VALUES (?, ?, ?)",
-                    (root_id, session_id, position),
-                )
-                upsert_materialization(
-                    conn,
-                    insight_type="thread",
-                    session_id=session_id,
-                    materializer_version=1,
-                    materialized_at_ms=materialized_at_ms,
-                    source_updated_at_ms=updated_at_ms or None,
-                    source_sort_key_ms=updated_at_ms or created_at_ms or None,
-                    input_high_water_mark_ms=updated_at_ms or created_at_ms or None,
-                    input_high_water_mark_source=(
-                        "provider_ts" if (updated_at_ms or created_at_ms) else "fallback_date"
-                    ),
-                    input_row_count=len(record.session_ids),
-                )
-        total_threads += len(records_by_root)
-    return total_threads
 
 
 def _archive_message_matches(

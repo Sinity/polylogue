@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections import defaultdict
-from collections.abc import AsyncIterator, Iterable, Iterator, Sequence
+from collections.abc import AsyncIterator, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 
 import aiosqlite
@@ -41,7 +41,6 @@ from polylogue.storage.insights.session.storage import (
     replace_session_phases_bulk_sync,
     replace_session_profiles_bulk_sync,
     replace_session_work_events_bulk_sync,
-    replace_thread_sync,
     replace_threads_bulk_sync,
 )
 from polylogue.storage.insights.session.threads import (
@@ -66,6 +65,7 @@ from polylogue.storage.runtime import (
     SessionProfileRecord,
     SessionRecord,
     SessionWorkEventRecord,
+    ThreadRecord,
 )
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.queries.attachments import get_attachments_batch
@@ -666,16 +666,77 @@ def _session_profile_records_for_session_ids_sync(
     return [_row_to_session_profile_record(row) for row in rows]
 
 
+def _materialize_thread_spine_sync(
+    conn: sqlite3.Connection,
+    records_by_root: Mapping[str, ThreadRecord | None],
+    *,
+    materialized_at_ms: int,
+) -> None:
+    """Restore the topology-owned thread spine and stamp readiness markers.
+
+    ``replace_threads_bulk_sync`` (the analytics writer) deliberately never
+    touches ``created_at_ms``/``session_count``/``depth`` or the
+    ``thread_sessions`` membership join (#1743 P13). This writer re-derives that
+    spine from the same evidence topology uses at ingest — the root session's
+    timestamps and the parent-chain membership in ``record.session_ids`` — so a
+    full insight rebuild (which clears the ``threads`` table) restores
+    everything topology would otherwise own, without depending on the
+    ``root_session_id`` column. It also stamps the per-member ``'thread'``
+    ``insight_materialization`` marker that readiness ``stale_thread_count``
+    counts: every session in every refreshed thread, not just the root.
+    """
+    from polylogue.storage.sqlite.archive_tiers.write import apply_insight_materialization
+
+    for root_id, record in records_by_root.items():
+        if record is None:
+            continue
+        root = str(root_id)
+        session_ids = [str(session_id) for session_id in record.session_ids]
+        root_row = conn.execute(
+            "SELECT created_at_ms, updated_at_ms FROM sessions WHERE session_id = ?",
+            (root,),
+        ).fetchone()
+        created_at_ms = int(root_row["created_at_ms"] or root_row["updated_at_ms"] or 0) if root_row else 0
+        updated_at_ms = int(root_row["updated_at_ms"] or 0) if root_row else 0
+        conn.execute(
+            "UPDATE threads SET created_at_ms = ?, session_count = ?, depth = ? WHERE thread_id = ?",
+            (created_at_ms, len(session_ids), record.depth, root),
+        )
+        conn.execute("DELETE FROM thread_sessions WHERE thread_id = ?", (root,))
+        hwm_ms = updated_at_ms or created_at_ms or None
+        for position, session_id in enumerate(session_ids):
+            conn.execute(
+                "INSERT INTO thread_sessions (thread_id, session_id, position) VALUES (?, ?, ?)",
+                (root, session_id, position),
+            )
+            apply_insight_materialization(
+                conn,
+                insight_type="thread",
+                session_id=session_id,
+                materializer_version=1,
+                materialized_at_ms=materialized_at_ms,
+                source_updated_at_ms=updated_at_ms or None,
+                source_sort_key_ms=hwm_ms,
+                input_high_water_mark_ms=hwm_ms,
+                input_high_water_mark_source="provider_ts" if hwm_ms else "fallback_date",
+                input_row_count=len(session_ids),
+            )
+
+
 def _refresh_thread_roots_sync(
     conn: sqlite3.Connection,
     root_ids: Sequence[str],
+    *,
+    materialized_at_ms: int,
 ) -> int:
     normalized_root_ids = tuple(dict.fromkeys(str(root_id) for root_id in root_ids if str(root_id)))
     if not normalized_root_ids:
         return 0
     records_by_root = build_thread_records_for_roots_sync(conn, normalized_root_ids)
-    replace_threads_bulk_sync(conn, {root_id: records_by_root.get(root_id) for root_id in normalized_root_ids})
-    return len(normalized_root_ids)
+    mapping: dict[str, ThreadRecord | None] = {root_id: records_by_root.get(root_id) for root_id in normalized_root_ids}
+    replace_threads_bulk_sync(conn, mapping)
+    _materialize_thread_spine_sync(conn, mapping, materialized_at_ms=materialized_at_ms)
+    return sum(1 for root_id in normalized_root_ids if records_by_root.get(root_id) is not None)
 
 
 def _delete_tables_with_progress_sync(
@@ -710,6 +771,7 @@ def rebuild_session_insights_sync(
 ) -> SessionInsightCounts:
     session_chunks: Iterable[Sequence[str]]
     previous_profile_groups: set[tuple[str, str]] = set()
+    thread_materialized_at_ms = _epoch_ms_or_none(now_iso()) or 0
     if session_ids is None:
         # #1607: the seven DELETEs hold the write lock for seconds-to-minutes
         # at archive scale and were previously silent. Emit a progress
@@ -720,6 +782,11 @@ def rebuild_session_insights_sync(
         # the final ``conn.commit()`` at the bottom of this function), so
         # a SIGKILL mid-rebuild rolls the WAL back to the prior state on
         # the next open — the prior insights are intact, not emptied.
+        # thread_sessions before threads keeps the FK cascade ordering explicit
+        # even if foreign_keys are off; both are repopulated per root in the
+        # thread-refresh phase below. The 'thread' materialization markers are
+        # cleared then re-stamped there so readiness stale_thread_count reflects
+        # exactly the rebuilt membership.
         _delete_tables_with_progress_sync(
             conn,
             tables=(
@@ -728,6 +795,8 @@ def rebuild_session_insights_sync(
                 "session_latency_profiles",
                 "session_profiles",
                 "session_tag_rollups",
+                "thread_sessions",
+                "threads",
             ),
             progress_callback=progress_callback,
         )
@@ -802,15 +871,21 @@ def rebuild_session_insights_sync(
             release_process_memory()
     if not saw_session_ids:
         if session_ids is None:
+            conn.execute("DELETE FROM thread_sessions")
             conn.execute("DELETE FROM threads")
             conn.execute("DELETE FROM session_phases")
             conn.execute("DELETE FROM session_tag_rollups")
+            conn.execute("DELETE FROM insight_materialization WHERE insight_type = 'thread'")
         conn.commit()
         return _empty_rebuild_counts()
 
     if session_ids is not None:
         affected_roots = tuple(thread_root_ids_sync(conn, session_ids).values())
-        thread_count = _refresh_thread_roots_sync(conn, affected_roots)
+        thread_count = _refresh_thread_roots_sync(
+            conn,
+            affected_roots,
+            materialized_at_ms=thread_materialized_at_ms,
+        )
         refresh_sync_provider_day_aggregates(
             conn,
             previous_profile_groups | refreshed_profile_groups,
@@ -825,16 +900,16 @@ def rebuild_session_insights_sync(
             tag_rollups=int(tag_rollup_count),
         )
 
-    conn.execute("DELETE FROM threads")
+    # threads / thread_sessions were cleared in the DELETE phase above; re-stamp
+    # the 'thread' markers so readiness reflects only the rebuilt membership.
+    conn.execute("DELETE FROM insight_materialization WHERE insight_type = 'thread'")
     thread_count = 0
     for root_chunk in iter_root_id_pages_sync(conn):
         records_by_root = build_thread_records_for_roots_sync(conn, root_chunk)
-        for root_id in root_chunk:
-            record = records_by_root.get(root_id)
-            if record is None:
-                continue
-            replace_thread_sync(conn, record.thread_id, record)
-            thread_count += 1
+        mapping: dict[str, ThreadRecord | None] = {root_id: records_by_root.get(root_id) for root_id in root_chunk}
+        replace_threads_bulk_sync(conn, mapping)
+        _materialize_thread_spine_sync(conn, mapping, materialized_at_ms=thread_materialized_at_ms)
+        thread_count += sum(1 for root_id in root_chunk if records_by_root.get(root_id) is not None)
     conn.execute("DELETE FROM session_tag_rollups")
     provider_day_groups = set(list_sync_provider_day_groups(conn))
     refresh_sync_provider_day_aggregates(conn, provider_day_groups)

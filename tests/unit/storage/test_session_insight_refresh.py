@@ -16,6 +16,8 @@ from polylogue.storage.insights.session.refresh import (
     _apply_session_insight_session_updates_async,
     _refresh_thread_roots_async,
 )
+from polylogue.storage.insights.session.repair_assessment import assess_session_insight_repairs
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import open_connection
@@ -686,6 +688,76 @@ def test_targeted_session_insight_rebuild_splits_large_message_batches(
 
     assert counts.profiles == 3
     assert chunk_profile_counts == [1, 2]
+
+
+def test_full_rebuild_restores_thread_spine_membership_and_markers(tmp_path: Path) -> None:
+    """A full canonical rebuild (session_ids=None) must leave the threads spine
+    intact: thread_sessions populated, created_at_ms not zeroed, and a 'thread'
+    materialization marker stamped for every member — not just the root — so
+    readiness row_debt reaches 0 on the daemon/repair convergence path (#1743
+    P13). This is the regression that the destructive replace_threads rewrite
+    used to leave broken (thread_sessions empty, created_at_ms = 0)."""
+    db_path = _current_index_db(tmp_path, "thread-spine-adversarial")
+    with open_connection(db_path) as conn:
+        store_records(
+            session=make_session(
+                "conv-root",
+                source_name="claude-code",
+                title="Root",
+                created_at="2026-05-01T10:00:00+00:00",
+                updated_at="2026-05-01T10:05:00+00:00",
+            ),
+            messages=[make_message("conv-root:msg-1", "conv-root", text="Root work")],
+            attachments=[],
+            conn=conn,
+        )
+        store_records(
+            session=make_session(
+                "conv-child",
+                source_name="claude-code",
+                title="Child",
+                parent_session_id="conv-root",
+                created_at="2026-05-01T11:00:00+00:00",
+                updated_at="2026-05-01T11:05:00+00:00",
+            ),
+            messages=[make_message("conv-child:msg-1", "conv-child", text="Continuation work")],
+            attachments=[],
+            conn=conn,
+        )
+        conn.commit()
+        rebuild_session_insights_sync(conn)
+
+    root_id = _sid("conv-root", "claude-code-session")
+    child_id = _sid("conv-child", "claude-code-session")
+    with open_connection(db_path) as conn:
+        thread_markers = {
+            str(row["session_id"])
+            for row in conn.execute(
+                "SELECT session_id FROM insight_materialization WHERE insight_type = 'thread'"
+            ).fetchall()
+        }
+        members = {
+            str(row["session_id"])
+            for row in conn.execute(
+                "SELECT session_id FROM thread_sessions WHERE thread_id = ?",
+                (root_id,),
+            ).fetchall()
+        }
+        created_at_ms = conn.execute(
+            "SELECT created_at_ms FROM threads WHERE thread_id = ?",
+            (root_id,),
+        ).fetchone()["created_at_ms"]
+
+    # (a) continuation member carries its own 'thread' marker, not only the root.
+    assert thread_markers == {root_id, child_id}
+    # (b) membership join repopulated and created_at_ms re-derived (not zeroed).
+    assert members == {root_id, child_id}
+    assert created_at_ms > 0
+    # Convergence: a full rebuild leaves zero readiness debt on the same reader
+    # the repair path uses (ArchiveStore.session_insight_status).
+    with ArchiveStore.open_existing(db_path.parent, read_only=False) as archive:
+        status = archive.session_insight_status()
+    assert assess_session_insight_repairs(status).row_debt == 0
 
 
 @pytest.mark.asyncio

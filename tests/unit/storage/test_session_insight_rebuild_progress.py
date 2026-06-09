@@ -131,9 +131,9 @@ def test_full_rebuild_emits_progress_for_each_deleted_table(
         "rebuild: cleared session_phases",
         "rebuild: cleared session_latency_profiles",
         "rebuild: cleared session_profiles",
+        "rebuild: cleared session_tag_rollups",
         "rebuild: cleared thread_sessions",
         "rebuild: cleared threads",
-        "rebuild: cleared insight_materialization",
     ]
 
 
