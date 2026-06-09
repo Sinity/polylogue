@@ -13,6 +13,7 @@ from polylogue.mcp.archive_support import (
     archive_search_payload,
     archive_session_list_payload,
     archive_summary_payload,
+    blackboard_note_payload,
 )
 from polylogue.mcp.payloads import (
     MCPArchiveSearchHitPayload,
@@ -21,6 +22,7 @@ from polylogue.mcp.payloads import (
     MCPArchiveSessionPayload,
     MCPArchiveSessionSummaryPayload,
     MCPArchiveStatsPayload,
+    MCPBlackboardNoteListPayload,
     MCPEmbeddingPreflightPayload,
     MCPEmbeddingStatusPayload,
     MCPRawArtifactPayload,
@@ -468,6 +470,32 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
 
 def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+    @mcp.tool()
+    async def blackboard_list(
+        kind: str | None = None,
+        scope_repo: str | None = None,
+        unresolved: bool = False,
+        limit: int = 20,
+    ) -> str:
+        """List persistent agent blackboard notes, newest first (#1697).
+
+        Filter by ``kind`` (finding/blocker/decision/handoff/question/observation),
+        by ``scope_repo``, or set ``unresolved=True`` for open blockers/questions.
+        """
+
+        async def run() -> str:
+            poly = hooks.get_polylogue()
+            notes = await poly.list_blackboard_notes(
+                kind=kind,
+                scope_repo=scope_repo,
+                unresolved=unresolved,
+                limit=limit,
+            )
+            items = tuple(blackboard_note_payload(note) for note in notes)
+            return hooks.json_payload(MCPBlackboardNoteListPayload(items=items, total=len(items)))
+
+        return await hooks.async_safe_call("blackboard_list", run)
+
     @mcp.tool()
     async def get_session_summary(id: str) -> str:
         async def run() -> str:

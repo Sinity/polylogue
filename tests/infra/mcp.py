@@ -16,6 +16,8 @@ EXPECTED_TOOL_NAMES = {
     "search",
     "list_sessions",
     "build_context_pack",
+    "blackboard_list",
+    "blackboard_post",
     "get_session",
     "neighbor_candidates",
     "stats",

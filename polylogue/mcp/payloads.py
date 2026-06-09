@@ -110,6 +110,28 @@ class MCPErrorPayload(SurfacePayloadModel):
     is_error: Literal[True] = True
 
 
+class MCPBlackboardNotePayload(SurfacePayloadModel):
+    """One decoded blackboard note (#1697)."""
+
+    note_id: str
+    kind: str
+    title: str
+    content: str
+    scope_repo: str | None = None
+    target_type: str | None = None
+    target_id: str | None = None
+    created_at_ms: int
+    updated_at_ms: int
+
+
+class MCPBlackboardNoteListPayload(SurfacePayloadModel):
+    """Envelope for ``blackboard_list`` — matches the registry-wide
+    ``{items, total}`` list shape rather than a bare array."""
+
+    items: tuple[MCPBlackboardNotePayload, ...]
+    total: int
+
+
 class MCPFencedCodeBlock(TypedDict):
     language: str
     code: str

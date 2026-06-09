@@ -13,9 +13,11 @@ from polylogue.surfaces.payloads import TargetRefPayload, reader_anchor
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from polylogue.archive.blackboard import BlackboardNote
     from polylogue.archive.query.spec import SessionQuerySpec
     from polylogue.config import Config
     from polylogue.mcp.payloads import (
+        MCPBlackboardNotePayload,
         MCPMessagePayload,
         MCPMessagesListPayload,
         MCPPaginatedQueryResultPayload,
@@ -131,6 +133,23 @@ def archive_summary_payload(summary: ArchiveSessionSummary) -> MCPSessionSummary
         anchor=reader_anchor("session", session_id),
         created_at=_parse_archive_datetime(summary.created_at),
         updated_at=_parse_archive_datetime(summary.updated_at),
+    )
+
+
+def blackboard_note_payload(note: BlackboardNote) -> MCPBlackboardNotePayload:
+    """Project a decoded blackboard note into its MCP payload shape (#1697)."""
+    from polylogue.mcp.payloads import MCPBlackboardNotePayload
+
+    return MCPBlackboardNotePayload(
+        note_id=note.note_id,
+        kind=note.kind,
+        title=note.title,
+        content=note.content,
+        scope_repo=note.scope_repo,
+        target_type=note.target_type,
+        target_id=note.target_id,
+        created_at_ms=note.created_at_ms,
+        updated_at_ms=note.updated_at_ms,
     )
 
 
@@ -313,4 +332,5 @@ __all__ = [
     "archive_search_hit_payload",
     "archive_search_payload",
     "archive_summary_payload",
+    "blackboard_note_payload",
 ]

@@ -27,6 +27,7 @@ _SYNTHETIC_CONV_ID = "test:conv-discovery-nonexistent"
 #: for an empty archive, etc.).
 _KNOWN_MINIMAL: dict[str, dict[str, object]] = {
     "search": {"query": "hello", "limit": 1},
+    "blackboard_list": {},
     "get_session": {"id": _SYNTHETIC_CONV_ID},
     "get_session_summary": {"id": _SYNTHETIC_CONV_ID},
     "get_messages": {"session_id": _SYNTHETIC_CONV_ID, "limit": 1},

@@ -76,7 +76,12 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     write_source_raw_session_blob_ref,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.user_write import upsert_annotation, upsert_mark
+from polylogue.storage.sqlite.archive_tiers.user_write import (
+    ArchiveBlackboardNoteEnvelope,
+    upsert_annotation,
+    upsert_blackboard_note,
+    upsert_mark,
+)
 from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveInsightMaterialization,
     ArchiveSessionEnvelope,
@@ -2114,6 +2119,67 @@ class ArchiveStore:
                     (resolved_session_id,),
                 )
                 return max(int(cursor.rowcount), 0)
+        finally:
+            user_conn.close()
+
+    def post_blackboard_note(
+        self,
+        body: str,
+        *,
+        target_type: str | None = None,
+        target_id: str | None = None,
+        note_id: str | None = None,
+    ) -> ArchiveBlackboardNoteEnvelope:
+        """Insert-or-update one blackboard note in archive user.db."""
+        initialize_archive_database(self.user_db_path, ArchiveTier.USER)
+        user_conn = sqlite3.connect(self.user_db_path)
+        try:
+            envelope = upsert_blackboard_note(
+                user_conn,
+                body,
+                target_type=target_type,
+                target_id=target_id,
+                note_id=note_id,
+            )
+            user_conn.commit()
+            return envelope
+        finally:
+            user_conn.close()
+
+    def list_blackboard_notes(self, *, limit: int | None = None) -> list[ArchiveBlackboardNoteEnvelope]:
+        """List blackboard notes from archive user.db, newest first.
+
+        Returns raw envelopes; structured-field decoding (kind/title/scope) is a
+        presentation concern handled by ``polylogue.archive.blackboard``.
+        """
+        if not self.user_db_path.exists():
+            return []
+        user_conn = sqlite3.connect(f"file:{self.user_db_path}?mode=ro", uri=True)
+        try:
+            row = user_conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='blackboard_notes' LIMIT 1"
+            ).fetchone()
+            if row is None:
+                return []
+            sql = (
+                "SELECT note_id, target_type, target_id, body, created_at_ms, updated_at_ms "
+                "FROM blackboard_notes ORDER BY created_at_ms DESC, note_id DESC"
+            )
+            params: tuple[object, ...] = ()
+            if limit is not None and limit > 0:
+                sql += " LIMIT ?"
+                params = (limit,)
+            return [
+                ArchiveBlackboardNoteEnvelope(
+                    note_id=str(record[0]),
+                    target_type=record[1],
+                    target_id=record[2],
+                    body=str(record[3]),
+                    created_at_ms=int(record[4]),
+                    updated_at_ms=int(record[5]),
+                )
+                for record in user_conn.execute(sql, params).fetchall()
+            ]
         finally:
             user_conn.close()
 

@@ -66,6 +66,9 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     "find_abandoned_sessions": ("envelope", frozenset({"items", "total"})),
     "find_stuck_sessions": ("envelope", frozenset({"items", "total"})),
     "find_resume_candidates": ("envelope", frozenset({"candidates", "total"})),
+    # ------- blackboard (#1697) -------
+    "blackboard_list": ("envelope", frozenset({"items", "total"})),
+    "blackboard_post": "operation_result",
     # ------- mutation list -------
     "list_tags": "stats_map",  # RootModel[dict[tag, count]]; small, by design
     "list_marks": ("envelope", frozenset({"items", "total"})),

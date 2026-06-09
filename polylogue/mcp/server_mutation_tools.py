@@ -7,6 +7,7 @@ from contextlib import suppress
 from hashlib import sha256
 from typing import TYPE_CHECKING
 
+from polylogue.mcp.archive_support import blackboard_note_payload
 from polylogue.mcp.payloads import (
     MCPMetadataPayload,
     MCPReaderWorkspaceListPayload,
@@ -134,6 +135,43 @@ def _annotation_payload(row: dict[str, str]) -> MCPUserAnnotationPayload:
 
 
 def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+    @mcp.tool()
+    async def blackboard_post(
+        kind: str,
+        title: str,
+        content: str,
+        scope_repo: str | None = None,
+        scope_session: str | None = None,
+        scope_issue: int | None = None,
+        scope_path: str | None = None,
+        related_sessions: list[str] | None = None,
+    ) -> str:
+        """Post a note to the persistent agent blackboard (#1697).
+
+        ``kind`` must be one of finding/blocker/decision/handoff/question/
+        observation. Optional scope fields (repo/session/issue/path) and
+        related session ids are recorded with the note.
+        """
+
+        async def run() -> str:
+            poly = hooks.get_polylogue()
+            try:
+                note = await poly.post_blackboard_note(
+                    kind=kind,
+                    title=title,
+                    content=content,
+                    scope_repo=scope_repo,
+                    scope_session=scope_session,
+                    scope_issue=scope_issue,
+                    scope_path=scope_path,
+                    related_sessions=tuple(related_sessions or ()),
+                )
+            except ValueError as exc:
+                return hooks.error_json(str(exc))
+            return hooks.json_payload(blackboard_note_payload(note))
+
+        return await hooks.async_safe_call("blackboard_post", run)
+
     @mcp.tool()
     async def add_tag(session_id: str, tag: str) -> str:
         async def run() -> str:

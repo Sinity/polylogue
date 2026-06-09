@@ -17,7 +17,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/archive.py
-    loc: 2962
+    loc: 3060
     target: polylogue/api/archive.py
     owner: stable
     cross_cut: { api: async }
@@ -160,6 +160,10 @@ files:
     target: polylogue/archive/attachment/models.py
     owner: archive-attachment
     reason: archive-domain semantics
+  - path: polylogue/archive/blackboard.py
+    loc: 142
+    target: polylogue/archive/blackboard.py
+    owner: stable
   - path: polylogue/archive/coverage.py
     loc: 127
     target: polylogue/archive/coverage.py
@@ -1480,7 +1484,7 @@ files:
     target: polylogue/mcp/__init__.py
     owner: stable
   - path: polylogue/mcp/archive_support.py
-    loc: 316
+    loc: 336
     target: polylogue/mcp/archive_support.py
     owner: stable
   - path: polylogue/mcp/cli.py
@@ -1496,7 +1500,7 @@ files:
     target: polylogue/mcp/insight_tool_contracts.py
     owner: stable
   - path: polylogue/mcp/payloads.py
-    loc: 940
+    loc: 958
     target: polylogue/mcp/payloads.py
     owner: stable
   - path: polylogue/mcp/query_contracts.py
@@ -1520,7 +1524,7 @@ files:
     target: polylogue/mcp/server_maintenance_tools.py
     owner: stable
   - path: polylogue/mcp/server_mutation_tools.py
-    loc: 822
+    loc: 860
     target: polylogue/mcp/server_mutation_tools.py
     owner: stable
   - path: polylogue/mcp/server_prompts.py
@@ -1536,7 +1540,7 @@ files:
     target: polylogue/mcp/server_support.py
     owner: stable
   - path: polylogue/mcp/server_tools.py
-    loc: 646
+    loc: 675
     target: polylogue/mcp/server_tools.py
     owner: stable
   - path: polylogue/operations/__init__.py
@@ -3140,7 +3144,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/__init__.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive.py
-    loc: 5094
+    loc: 5160
     target: polylogue/storage/sqlite/archive_tiers/archive.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive_init.py
