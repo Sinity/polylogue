@@ -154,7 +154,11 @@ def test_apply_common_filters_skips_sql_pushed_predicates_but_keeps_shared_ones(
             origins=("codex-session",),
             since=datetime(2026, 4, 25, tzinfo=timezone.utc),
             title="missing",
-            parent_id="other-parent",
+            # parent_id is never SQL-pushed (absent from _ArchiveFilterKwargs),
+            # so it is applied as a residual filter even when sql_pushed=True
+            # (#1743 follow-up). The matching parent keeps the child; the
+            # pushable origins/since/title predicates are the ones being skipped.
+            parent_id="chatgpt:root",
             excluded_tags=("missing",),
             root=False,
         ),

@@ -792,17 +792,29 @@ def _show_daemon_status(env: AppEnv, status: dict[str, Any], *, compact: bool = 
                 desc = comp.get("description", "")
                 env.ui.console.print(f"  [{state_color}]●[/{state_color}] {name}: {desc}")
 
-    # Live ingest
+    # Live ingest. The status payload carries LiveIngestAttemptSummary, which
+    # exposes running_count + per-attempt worker progress in `recent` — it has
+    # no top-level completed_count/total_count, so the previous keys always read
+    # 0 and this section never rendered (#1743 follow-up).
     live = status.get("live_ingest_attempts", {})
     if isinstance(live, dict):
-        completed = live.get("completed_count", 0)
-        total = live.get("total_count", 0)
-        in_flight = live.get("worker_in_flight_count", 0)
-        if total:
-            parts = [f"{completed}/{total} done"]
-            if in_flight:
-                parts.append(f"+{in_flight} in-flight")
-            env.ui.console.print(f"  Ingest: {', '.join(parts)}")
+        running = int(live.get("running_count", 0) or 0)
+        recent = live.get("recent", [])
+        recent_states = [r for r in recent if isinstance(r, dict)] if isinstance(recent, list) else []
+        files_done = sum(int(r.get("worker_completed_count") or 0) for r in recent_states)
+        files_total = sum(int(r.get("worker_total_count") or 0) for r in recent_states)
+        if running or files_total:
+            parts: list[str] = []
+            if running:
+                parts.append(f"{running} running")
+            if files_total:
+                parts.append(f"{files_done}/{files_total} files")
+            for label, key in (("stale", "stale_running_count"), ("stuck", "stuck_running_count")):
+                count = int(live.get(key, 0) or 0)
+                if count:
+                    parts.append(f"{count} {label}")
+            if parts:
+                env.ui.console.print(f"  Ingest: {', '.join(parts)}")
 
     # FTS
     fts = status.get("fts_readiness", {})

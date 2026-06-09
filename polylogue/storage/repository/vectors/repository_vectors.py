@@ -159,13 +159,13 @@ class RepositoryVectorMixin:
 
             cursor = await conn.execute(
                 """
-                SELECT source_name, COUNT(*) as count
+                SELECT origin, COUNT(*) as count
                 FROM sessions
-                GROUP BY source_name
+                GROUP BY origin
                 """
             )
             provider_rows = await cursor.fetchall()
-            providers = {row["source_name"]: row["count"] for row in provider_rows}
+            providers = {row["origin"]: row["count"] for row in provider_rows}
 
             embedding_stats = await read_embedding_stats_async(conn, include_retrieval_bands=False)
         finally:

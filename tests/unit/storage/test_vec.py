@@ -281,7 +281,7 @@ def test_upsert_persistence_contract(
     def capture_execute(sql: str, params: tuple[object, ...] | None = None) -> MagicMock:
         insert_calls.append((sql, params))
         cursor = MagicMock()
-        if "SELECT source_name FROM sessions" in sql:
+        if "SELECT origin FROM sessions" in sql:
             cursor.fetchone.return_value = (source_name,) if source_name is not None else None
         return cursor
 
