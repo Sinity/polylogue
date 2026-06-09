@@ -1902,7 +1902,15 @@ async def test_archive_tiers_api_threads_read_index_tier(tmp_path: Path) -> None
         assert manifest["query"]["insights"] == ["session_profiles", "threads"]
         assert {entry["insight_name"] for entry in manifest["insights"]} == {"session_profiles", "threads"}
         assert coverage["total_sessions"] == 2
-        assert exported_threads[0]["thread_id"] == parent_id
+        # The threads insight is materialized but stale (asserted above);
+        # the export bundle withholds stale/incompatible/missing insights
+        # (#1743 readiness taxonomy) rather than shipping divergent rows, so
+        # threads.jsonl is empty and the manifest records the withholding.
+        assert exported_threads == []
+        threads_summary = next(entry for entry in manifest["insights"] if entry["insight_name"] == "threads")
+        assert threads_summary["readiness_verdict"] == "stale"
+        assert threads_summary["row_count"] == 0
+        assert any("withheld" in error for error in threads_summary["errors"])
         assert (export_target / "schemas" / "threads.schema.json").exists()
         assert not (export_target / "README.md").exists()
         assert missing is None

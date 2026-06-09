@@ -51,6 +51,22 @@ _AUDITED_SITES: Final[dict[tuple[str, int], str]] = {
     ("polylogue/storage/repository/archive/sessions.py", 300): (
         "chunked IN-clause: literal scoped_sql template + '?,?' placeholders, values bound"
     ),
+    # #1743 readiness fallback coverage (_archive_fallback_coverage):
+    #   degraded_row = self._conn.execute(f"... FROM {table_name} ... WHERE ({any_terms}){clause}")
+    # ``table_name`` is a closed insight-table identifier; ``any_terms`` is built
+    # from the (column, path) pairs in the closed ``_INSIGHT_FALLBACK_PAYLOAD``
+    # constant; ``clause`` comes from ``_readiness_session_filter`` whose values
+    # flow through bound params. No user input enters the format string.
+    ("polylogue/storage/sqlite/archive_tiers/archive.py", 2529): (
+        "readiness fallback coverage: closed insight-table + _INSIGHT_FALLBACK_PAYLOAD column/path; values bound"
+    ),
+    # #1743 readiness fallback reason counts (_archive_fallback_coverage):
+    #   rows = self._conn.execute(f"... FROM {table_name} ... json_each(... '{path}') ...{clause}")
+    # ``table_name``/``column``/``path`` are the closed-constant identifiers
+    # above; ``clause`` values are bound. No user input enters the format string.
+    ("polylogue/storage/sqlite/archive_tiers/archive.py", 2538): (
+        "readiness fallback reason counts: closed insight-table + _INSIGHT_FALLBACK_PAYLOAD column/path; values bound"
+    ),
 }
 
 
