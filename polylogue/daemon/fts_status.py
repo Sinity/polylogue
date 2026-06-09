@@ -176,7 +176,12 @@ def _archive_exact_blocks_surface(conn: sqlite3.Connection) -> dict[str, int | b
             "ready": ready,
             "exact": True,
         }
-    source_rows = int(conn.execute("SELECT COUNT(*) FROM blocks WHERE text IS NOT NULL").fetchone()[0] or 0)
+    # A block is FTS-indexable iff search_text != '' — that is exactly the
+    # predicate messages_fts is populated from (storage/fts/sql.py). Counting
+    # `text IS NOT NULL` here instead undercounts the source (tool_use /
+    # tool_result blocks carry derived search_text but a NULL display text), so
+    # indexed/source could exceed 100%.
+    source_rows = int(conn.execute("SELECT COUNT(*) FROM blocks WHERE search_text != ''").fetchone()[0] or 0)
     docsize_exists = _table_exists(conn, "messages_fts_docsize")
     if not exists or not docsize_exists:
         return {
@@ -198,7 +203,7 @@ def _archive_exact_blocks_surface(conn: sqlite3.Connection) -> dict[str, int | b
             SELECT COUNT(*)
             FROM blocks b
             LEFT JOIN messages_fts_docsize d ON d.id = b.rowid
-            WHERE b.text IS NOT NULL
+            WHERE b.search_text != ''
               AND d.id IS NULL
             """
         ).fetchone()[0]
@@ -211,7 +216,7 @@ def _archive_exact_blocks_surface(conn: sqlite3.Connection) -> dict[str, int | b
             FROM messages_fts_docsize d
             LEFT JOIN blocks b ON b.rowid = d.id
             WHERE b.rowid IS NULL
-               OR b.text IS NULL
+               OR b.search_text = ''
             """
         ).fetchone()[0]
         or 0
