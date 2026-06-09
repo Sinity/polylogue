@@ -2,114 +2,139 @@
 
 # Data Model
 
+This page describes the **public Python domain models** returned by the library
+API, CLI, and MCP surfaces. These are read models hydrated from the archive;
+for the on-disk storage shape see [Schema](schema.md), and for the conceptual
+rings see [Architecture](architecture.md). The authoritative field definitions
+live in `polylogue/archive/session/domain_models.py`,
+`polylogue/archive/message/models.py`, and
+`polylogue/archive/attachment/models.py` — read those if a field here is
+ambiguous.
+
+## Origin, not provider
+
+Public read surfaces are keyed by **`origin`** (the `Origin` enum in
+`polylogue/core/enums.py`): `claude-code-session`, `claude-ai-export`,
+`chatgpt-export`, `codex-session`, `gemini-cli-session`, `aistudio-drive`,
+`hermes-session`, `antigravity-session`, `unknown-export`. The provider-wire
+`Provider` enum (`chatgpt`, `claude-code`, …) is retained only at the
+parsing/schema boundary and is not the public filter token. Filter and query
+surfaces use `origin`.
+
 ## Session
+
+`Session` (and its message-less sibling `SessionSummary`) is the primary read
+entity.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `id` | str | Unique ID (`provider:provider_id`) |
-| `provider` | str | Source provider (`chatgpt`, `claude-ai`, `claude-code`, `gemini`) |
-| `original_title` | str? | Provider's original title |
-| `created_at` | datetime? | Creation timestamp |
-| `updated_at` | datetime? | Last update timestamp |
-| `content_hash` | str | SHA-256 for deduplication |
-| `metadata` | dict | User metadata (k:v, see below) |
+| `id` | `SessionId` (str) | Composite ID, `origin:native_id` |
+| `origin` | `Origin` | Source-origin token (see above) |
+| `title` | `str?` | Parsed session title |
+| `created_at` | `datetime?` | Creation timestamp |
+| `updated_at` | `datetime?` | Last update timestamp |
+| `messages` | `MessageCollection` | Eagerly or lazily materialized messages (`Session` only) |
+| `metadata` | `dict[str, object]` | User-metadata overlay (see below) |
+| `tags_m2m` | `tuple[str, ...]` | Tags hydrated from the `session_tags` table |
+| `working_directories` | `tuple[str, ...]` | Working dirs observed for the session |
+| `git_branch` | `str?` | Git branch, when known |
+| `git_repository_url` | `str?` | Git remote URL, when known |
+| `parent_id` | `SessionId?` | Parent session (continuation/fork/sidechain/subagent) |
+| `branch_type` | `BranchType?` | `continuation`, `sidechain`, `fork`, `subagent` |
+| `session_events` | `tuple[SessionEvent, ...]` | Structured session events (e.g. compaction) — `Session` only |
+| `attachments` | `list[Attachment]` | Session-level attachments not bound to a message |
 
-**Metadata** (unified k:v storage):
+`SessionSummary` carries the same identity/metadata fields plus precomputed
+`message_count` and `dialogue_count`, but omits `messages`, `session_events`,
+and `attachments`.
 
-| Key | Type | Description |
-|-----|------|-------------|
-| `title` | str | User-set title (overrides original) |
-| `summary` | str | User or LLM-generated summary |
-| `tags` | list[str] | Tags (`important`, `repo:polylogue`) |
-| (custom) | str | Any user-defined key |
+### Metadata overlay and derived properties
 
-Display title precedence: `metadata.title` > `provider_meta.display_label` >
-`original_title` > truncated ID. Provider display labels are deterministic
-presentation labels, not replacements for the raw provider title.
+`metadata` is the user-owned key/value overlay (hydrated from `user.db`'s
+`session_metadata`). It holds the user title override, a user/LLM summary, and
+any custom keys. It is **excluded from the content hash**, so editing it never
+triggers re-import. Tags are not stored in this overlay — they come from the
+`session_tags` table via `tags_m2m`.
+
+Convenience properties resolve these:
+
+- `display_title` → `metadata["title"]` (user override) if set, else `title`, else `id[:8]`.
+- `tags` → `tags_m2m` when hydrated, else any tags in `metadata`.
+- `summary` → `metadata["summary"]`.
+- `is_continuation` → `branch_type == continuation`.
 
 ## Message
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `id` | str | Message ID |
-| `role` | str | `user`, `assistant`, `system`, `tool` |
-| `text` | str? | Message content |
-| `timestamp` | datetime? | Message timestamp |
-| `parent_id` | str? | Parent message (for branching) |
-| `provider_meta` | dict? | Provider-specific data (content_blocks, cost, duration, etc.) |
-| `attachments` | list | File attachments |
+| `id` | `str` | Message ID, `session_id:native_id` (or `session_id:position.variant`) |
+| `role` | `Role` | `user`, `assistant`, `system`, `tool`, `unknown` |
+| `text` | `str?` | Flattened message text |
+| `timestamp` | `datetime?` | Message timestamp |
+| `message_type` | `MessageType` | `message`, `summary`, `tool_use`, `tool_result`, `thinking`, `context`, `protocol` |
+| `provider` | `Provider?` | Provider-wire identity (parse-boundary only; prefer the session `origin`) |
+| `content_blocks` | `list[dict]` | Structured content blocks (text/thinking/tool_use/tool_result/image/code/document) |
+| `attachments` | `list[Attachment]` | File attachments referenced by the message |
+| `parent_id` | `str?` | Parent message, for branching |
+| `branch_index` | `int` | Branch position among sibling variants |
+| `has_tool_use` / `has_thinking` / `has_paste` | `bool` | Precomputed content flags projected from storage |
+| `input_tokens` / `output_tokens` | `int` | Token counts, when reported |
+| `cache_read_tokens` / `cache_write_tokens` | `int` | Cache token counts, when reported |
+| `duration_ms` | `int` | Reported generation duration |
+| `model_name` | `str?` | Model that produced the message |
 
-## Attachments
+Cost and per-model token rollups are **not** message-level properties. They are
+materialized at the session level in `session_model_usage`,
+`session_reported_costs`, and `session_profiles`, and surfaced through the
+session insight reads (e.g. `session_costs`, `cost_rollups`). See
+[Architecture § Derived Read Models](architecture.md#2-derived-read-models).
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | str | Attachment ID |
-| `name` | str? | Filename |
-| `mime_type` | str? | MIME type |
-| `size_bytes` | int? | File size |
-| `path` | str? | Local path (if downloaded) |
+### Semantic classification
 
-Attachments are stored as references. For Drive sources, attachments can be downloaded on demand.
-Drive/Gemini attachment lookup is limited to explicit identity fields that are
-already preserved at ingest: the provider attachment id stored as `provider_id`
-plus `id`, `fileId`, and `driveId` in attachment metadata. These identifiers are
-indexed for exact lookup and search results report the match as attachment
-evidence.
-
-## Branching
-
-Sessions may have branching structure (e.g., ChatGPT "edit and regenerate"). The `parent_id` field links messages to their parent, forming a tree.
-
-**Current behavior**: Messages are flattened to a list in creation order. Branch structure is preserved in `provider_meta` for future use.
-
-## Provider-Specific Metadata
-
-Some providers include additional metadata:
-
-**Claude Code**:
-
-- `cost_usd`: API cost in USD
-- `duration_ms`: Response generation time
-- `model`: Model used (e.g., `claude-3-opus`)
-
-**Gemini**:
-
-- `title_source`: raw title provenance (`imported:title`,
-  `imported:displayName`, or `fallback:id`)
-- `display_label`: deterministic fallback label for weak imported titles
-- `display_label_source`: evidence used for that label, such as
-  `first-user-message` or `attachment-name:first-user-message`
-
-Access via `message.provider_meta` or convenience properties:
-
-```python
-msg.cost_usd      # float or None
-msg.duration_ms   # int or None
-conv.total_cost_usd    # Sum of all message costs
-conv.total_duration_ms # Sum of all durations
-```
-
-## Semantic Classification
-
-Messages have classification properties derived from content and metadata:
+`Message` exposes derived boolean properties (in
+`polylogue/archive/message/model_runtime.py`):
 
 | Property | Meaning |
 |----------|---------|
-| `is_user` | From user |
-| `is_assistant` | From assistant |
-| `is_system` | System prompt |
+| `is_user` / `is_assistant` / `is_system` | Role-based |
+| `is_dialogue` | User or assistant turn |
 | `is_tool_use` | Tool call or result |
-| `is_thinking` | Reasoning/thinking trace |
-| `is_context_dump` | Pasted file content, context |
-| `is_noise` | Tool use, context dump, or system |
+| `is_thinking` | Reasoning/thinking content |
+| `is_context_dump` | Pasted file content / context dump |
+| `is_protocol_artifact` | Provider protocol noise |
+| `is_noise` | Tool use, context dump, protocol, or system |
 | `is_substantive` | Real dialogue (not noise, not thinking) |
+| `is_branch` | Has a parent message (non-linear) |
 
-**Provider-specific detection**:
+## Attachment
 
-- **ChatGPT**: Thinking detected via `content_type: "thoughts"` or `"reasoning_recap"` in metadata
-- **Claude Code**: Thinking via `content_blocks` with `type: "thinking"`; tool use via `type: "tool_use"` or `"tool_result"`
-- **Gemini**: Thinking via `isThought` marker in chunk metadata
-- **Claude (web)**: No structured thinking (simple text messages)
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `str` | Attachment ID |
+| `name` | `str?` | Filename / display name |
+| `mime_type` | `str?` | MIME type |
+| `size_bytes` | `int?` | Byte size |
+| `path` | `str?` | Local path, if downloaded |
+| `source_url` | `str?` | Upload/source URL, if known |
+| `caption` | `str?` | Caption, if provided |
+
+Attachments are content-addressed in the blob store and joined to messages
+through `attachment_refs`. For Drive/Gemini sources, attachment lookup keys on
+explicit identity fields preserved at ingest (the provider attachment id, plus
+`fileId`/`driveId`); those identifiers are indexed for exact lookup and search
+reports the match as attachment evidence.
+
+## Branching and topology
+
+Sessions form trees and cross-session lineages: continuations, forks,
+sidechains, and subagent sessions. Within a session, `Message.parent_id` links
+messages into a branch tree, while the materialized `messages.text` is the
+flattened active-path content. Across sessions, parent/child references are
+persisted as typed rows in `session_links` (even when the parent has not been
+ingested yet), and the resolved logical root is materialized as
+`session_profiles.logical_session_id`. See
+[Internals § Topology Edges](internals.md#topology-edges-1258) and
+[Internals § Logical Session Identity](internals.md#logical-session-identity-866).
 
 ## Tags
 
@@ -121,6 +146,10 @@ repo:polylogue         # Namespaced
 status:wip             # Namespaced
 ```
 
+User tags (the human-owned `session_tags` rows in `user.db`) and auto-tags (the
+heuristic `session_tags` rows in `index.db`) are kept distinct by their
+`tag_source`. The user side is irreplaceable; the auto side is rebuildable.
+
 ---
 
-**See also:** [Library API](library-api.md) · [CLI Reference](cli-reference.md) · [Configuration](configuration.md)
+**See also:** [Schema](schema.md) · [Library API](library-api.md) · [CLI Reference](cli-reference.md) · [Configuration](configuration.md)
