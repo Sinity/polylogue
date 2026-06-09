@@ -12,7 +12,7 @@ scripts and agents.
 repo readiness: generated-surface rendering, baseline verification, validation
 lane dispatch, package/build checks, and branch/PR readiness gates.
 
-Domain proof semantics belong in the verification-lab, proof, schema, scenario,
+Domain proof semantics belong in the verification-lab, schema, scenario,
 or insight modules first. A `devtools` command may expose them only as a thin
 operator entrypoint that delegates to the owning lab or insight implementation.
 
@@ -21,7 +21,7 @@ Routine command placement:
 - keep repo state, rendering, packaging, and PR-readiness orchestration in
   `devtools`;
 - keep archive/insight workflows in `polylogue` CLI/API surfaces;
-- keep proof/evidence/scenario behavior behind the verification-lab surface;
+- keep evidence/scenario behavior behind the verification-lab surface;
 - prefer validation lanes and `devtools verify --lab` to compose lab checks
   rather than duplicating domain checks inside `devtools verify`.
 
