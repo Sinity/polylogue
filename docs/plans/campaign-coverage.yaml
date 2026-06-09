@@ -14,10 +14,21 @@
 #                     Defaults to .local/mutation-campaigns/<name>/*.json when
 #                     unset. Resolved by mutmut_campaign.default_artifact_paths
 #                     and the freshness lint.
+#   min_kill_rate   — per-entry kill-rate floor (0..1) enforced by
+#                     verify-mutation-freshness --enforce-kill-rate against a
+#                     fresh campaign's latest artifact. Overrides the top-level
+#                     default_min_kill_rate below. Ratchet up as real run data
+#                     accrues; only fresh campaigns (with a recent artifact) are
+#                     checked, so the gate never fails on a campaign that simply
+#                     has not been run.
 #
-# Updated 2026-05-19 — mutation-campaign discipline scaffolding for #1304.
+# Updated 2026-06-09 — kill-rate threshold enforcement wired for #1733.
 
 description: Mutation and benchmark campaign registry with covered paths, test targets, and freshness budgets.
+
+# Conservative floor applied to every active campaign unless its entry overrides
+# it with min_kill_rate. Enforced by the weekly mutation CI job (#1733).
+default_min_kill_rate: 0.5
 
 mutation_campaigns:
   - name: cli-query

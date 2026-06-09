@@ -200,6 +200,7 @@ class MutationCampaignEntry(BaseModel):
     status: str = "active"
     freshness_days: int | None = None
     artifact_glob: str | None = None
+    min_kill_rate: float | None = None
 
     VALID_STATUSES: ClassVar[frozenset[str]] = frozenset({"active", "inactive", "draft", "archived"})
 
@@ -215,6 +216,13 @@ class MutationCampaignEntry(BaseModel):
     def _check_freshness(cls, v: int | None) -> int | None:
         if v is not None and v <= 0:
             raise ValueError(f"freshness_days must be positive, got {v!r}")
+        return v
+
+    @field_validator("min_kill_rate")
+    @classmethod
+    def _check_min_kill_rate(cls, v: float | None) -> float | None:
+        if v is not None and not (0.0 <= v <= 1.0):
+            raise ValueError(f"min_kill_rate must be within [0, 1], got {v!r}")
         return v
 
 
@@ -251,8 +259,16 @@ class CampaignCoverageManifest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     description: str | None = None
+    default_min_kill_rate: float | None = None
     mutation_campaigns: list[MutationCampaignEntry] = Field(default_factory=list)
     benchmark_campaigns: list[BenchmarkCampaignEntry] = Field(default_factory=list)
+
+    @field_validator("default_min_kill_rate")
+    @classmethod
+    def _check_default_min_kill_rate(cls, v: float | None) -> float | None:
+        if v is not None and not (0.0 <= v <= 1.0):
+            raise ValueError(f"default_min_kill_rate must be within [0, 1], got {v!r}")
+        return v
 
 
 # ──────────────────────────────────────────────────────────────────────

@@ -8,7 +8,7 @@ on:
 jobs:
   mutate:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v8.1.0
@@ -16,14 +16,45 @@ jobs:
           python-version: "3.13"
       - run: uv sync --extra dev --frozen
       - run: uv pip install mutmut
-      - name: Run rotating module subset
+      - name: Run rotating campaign group
+        # Rotate a curated core over four weekly groups so every group runs at
+        # least once per month (#1733 AC1/AC5). These are real campaign names
+        # from the authored scenario catalog (`devtools mutmut-campaign list`) —
+        # the previous job invoked `run --module <path>`, an interface that does
+        # not exist, so `|| true` silently swallowed the argparse error and the
+        # job ran no mutation testing at all.
+        #
+        # The run is best-effort: surviving mutants and timeouts are expected and
+        # must not fail the step (the kill-rate gate below is the hard contract).
+        # A fresh CI checkout has no prior artifacts, so each run only produces an
+        # artifact for its group's campaigns under .local/mutation-campaigns/.
+        continue-on-error: true
         run: |
-          modules=(
-            polylogue/core/hashing.py
-            polylogue/core/timestamps.py
-            polylogue/archive/message/paste_detection.py
-            polylogue/insights/confidence.py
+          groups=(
+            "json models schema-core schema-validation"
+            "filters fts5 hybrid cli-query"
+            "pipeline pipeline-services sources-parse source-detection"
+            "repository storage repair-core daemon-http"
           )
-          idx=$(( $(date +%U) % ${#modules[@]} ))
-          echo "Running mutation campaign for: ${modules[$idx]}"
-          uv run devtools mutmut-campaign run --module "${modules[$idx]}" || true
+          idx=$(( $(date +%U) % ${#groups[@]} ))
+          echo "Running mutation campaign group $idx: ${groups[$idx]}"
+          for campaign in ${groups[$idx]}; do
+            echo "::group::mutmut-campaign run $campaign"
+            uv run devtools mutmut-campaign run "$campaign" || echo "campaign $campaign exited non-zero (survivors/timeout)"
+            echo "::endgroup::"
+          done
+      - name: Enforce kill-rate thresholds on fresh campaigns
+        # Hard gate (#1733 AC3): every campaign that produced a fresh artifact
+        # above must clear its min_kill_rate floor (per-entry, else the manifest
+        # default_min_kill_rate). --enforce-kill-rate without --strict only checks
+        # fresh campaigns, so campaigns whose group did not run this week are
+        # ignored rather than flagged missing in the artifact-less CI checkout.
+        run: uv run python -m devtools.verify_mutation_freshness --enforce-kill-rate
+      - name: Upload campaign artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-campaign-artifacts
+          path: .local/mutation-campaigns/
+          if-no-files-found: ignore
+          retention-days: 90
