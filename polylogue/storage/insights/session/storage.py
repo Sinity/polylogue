@@ -212,6 +212,30 @@ def _compose_bindings(
     return tuple(values)
 
 
+# The denormalized native session_profiles columns (workflow_shape /
+# terminal_state + their confidences) are the authoritative ranking signals.
+# Both read paths (insights.archive.SessionProfileInsight.from_record and the
+# live _session_profile_components_from_archive_row) reconcile the inference
+# payload onto those columns, so persisting a second copy inside
+# inference_payload_json would only re-open a write/read drift surface (#14).
+# Strip them from the stored inference payload; the read paths repopulate them
+# from the native columns.
+_INFERENCE_NATIVE_MIRRORED_FIELDS: frozenset[str] = frozenset(
+    {
+        "workflow_shape",
+        "workflow_shape_confidence",
+        "terminal_state",
+        "terminal_state_confidence",
+    }
+)
+
+
+def _stored_inference_payload_json(record: SessionProfileRecord) -> str | None:
+    return _json_or_none(
+        record.inference_payload.model_dump(mode="json", exclude=set(_INFERENCE_NATIVE_MIRRORED_FIELDS))
+    )
+
+
 def _fallback_profile_payload_json(record: SessionProfileRecord) -> str | None:
     return _json_or_none(
         {
@@ -296,7 +320,7 @@ def session_profile_insert_values(
     ]
     payload_values: tuple[SqlValue, ...] = (
         _json_or_none(record.evidence_payload),
-        _json_or_none(record.inference_payload),
+        _stored_inference_payload_json(record),
         _json_or_none(record.enrichment_payload),
         record.search_text,
         record.evidence_search_text,

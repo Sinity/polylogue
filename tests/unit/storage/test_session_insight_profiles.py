@@ -196,6 +196,79 @@ def test_session_profile_record_exposes_shape_and_terminal_state() -> None:
     assert "clean_finish" in record.search_text
 
 
+def test_stored_inference_payload_json_omits_native_mirrored_fields() -> None:
+    """#14: inference_payload_json must not persist a second copy of the native
+    workflow_shape / terminal_state columns. The native session_profiles columns
+    are the single source of truth; the read paths reconcile onto them.
+    """
+    import json
+
+    from polylogue.storage.insights.session.storage import (
+        _INFERENCE_NATIVE_MIRRORED_FIELDS,
+        _stored_inference_payload_json,
+    )
+
+    profile = build_session_profile(_enrichment_session())
+    profile = profile.__class__.from_dict(
+        {
+            **profile.to_dict(),
+            "workflow_shape": "agentic_loop",
+            "workflow_shape_confidence": 0.86,
+            "terminal_state": "clean_finish",
+            "terminal_state_confidence": 0.68,
+        }
+    )
+    record = build_session_profile_record(profile)
+
+    stored = _stored_inference_payload_json(record)
+    assert stored is not None
+    payload = json.loads(stored)
+    for field in _INFERENCE_NATIVE_MIRRORED_FIELDS:
+        assert field not in payload, f"{field} must not be persisted in inference_payload_json"
+    # Non-mirrored inference fields are still persisted.
+    assert "inferred_topic_source" in payload
+
+
+def test_session_profile_insight_reads_native_columns_over_payload() -> None:
+    """#14: when the (stored-then-rehydrated) inference payload disagrees with the
+    authoritative native columns, the read insight returns the native value.
+    """
+    from polylogue.insights.archive import SessionProfileInsight
+
+    profile = build_session_profile(_enrichment_session())
+    profile = profile.__class__.from_dict(
+        {
+            **profile.to_dict(),
+            "workflow_shape": "agentic_loop",
+            "workflow_shape_confidence": 0.86,
+            "terminal_state": "clean_finish",
+            "terminal_state_confidence": 0.68,
+        }
+    )
+    record = build_session_profile_record(profile)
+    # Simulate the rehydrated state: inference_payload no longer carries the
+    # native-mirrored fields, so it parses back to the model defaults.
+    rehydrated = record.model_copy(
+        update={
+            "inference_payload": record.inference_payload.model_copy(
+                update={
+                    "workflow_shape": "unknown",
+                    "workflow_shape_confidence": 0.0,
+                    "terminal_state": "unknown",
+                    "terminal_state_confidence": 0.0,
+                }
+            )
+        }
+    )
+
+    insight = SessionProfileInsight.from_record(rehydrated)
+    assert insight.inference is not None
+    assert insight.inference.workflow_shape == "agentic_loop"
+    assert insight.inference.workflow_shape_confidence == 0.86
+    assert insight.inference.terminal_state == "clean_finish"
+    assert insight.inference.terminal_state_confidence == 0.68
+
+
 def test_session_profile_uses_session_timestamp_when_messages_are_untimestamped() -> None:
     session = make_conv(
         id="conv-fallback-time",
