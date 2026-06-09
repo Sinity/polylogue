@@ -39,6 +39,12 @@ ROOT = _get_root()
 MANIFEST = ROOT / "docs" / "plans" / "campaign-coverage.yaml"
 DEFAULT_FRESHNESS_DAYS = 60
 DEFAULT_ARTIFACT_GLOB = ".local/mutation-campaigns/{name}/*.json"
+# Conservative kill-rate floor (#1733 AC2/AC3). Mutation kill rates for
+# well-tested modules sit well above this; 0.5 flags a genuinely under-killed
+# module without false-alarming on a healthy campaign. Ratchet up per-entry in
+# the manifest as real run data accrues. Only enforced under --enforce-kill-rate
+# and only against fresh campaigns (those that actually have a recent artifact).
+DEFAULT_MIN_KILL_RATE = 0.5
 
 
 @dataclass(frozen=True)
@@ -52,6 +58,7 @@ class CampaignFreshness:
     newest_created_at: str | None
     newest_age_days: float | None
     kill_rate: float | None
+    min_kill_rate: float | None
     counts: dict[str, int]
     state: str  # "fresh" | "stale" | "missing" | "inactive"
 
@@ -63,6 +70,19 @@ def _coerce_int(value: object, default: int) -> int:
         return value
     if isinstance(value, str) and value.strip().isdigit():
         return int(value)
+    return default
+
+
+def _coerce_float(value: object, default: float | None) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return default
     return default
 
 
@@ -113,10 +133,12 @@ def assess_campaign(
     repo_root: Path,
     now: datetime,
     default_freshness_days: int,
+    default_min_kill_rate: float | None = None,
 ) -> CampaignFreshness:
     name = str(entry["name"])
     status = str(entry.get("status", "active"))
     freshness_days = _coerce_int(entry.get("freshness_days"), default_freshness_days)
+    min_kill_rate = _coerce_float(entry.get("min_kill_rate"), default_min_kill_rate)
     glob = _entry_glob(entry)
     artifacts = _resolve_artifacts(repo_root, glob)
     if status != "active":
@@ -130,6 +152,7 @@ def assess_campaign(
             newest_created_at=None,
             newest_age_days=None,
             kill_rate=None,
+            min_kill_rate=min_kill_rate,
             counts={},
             state="inactive",
         )
@@ -144,6 +167,7 @@ def assess_campaign(
             newest_created_at=None,
             newest_age_days=None,
             kill_rate=None,
+            min_kill_rate=min_kill_rate,
             counts={},
             state="missing",
         )
@@ -170,6 +194,7 @@ def assess_campaign(
         newest_created_at=created_at,
         newest_age_days=age,
         kill_rate=_kill_rate(counts),
+        min_kill_rate=min_kill_rate,
         counts=counts,
         state=state,
     )
@@ -216,6 +241,23 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Exit non-zero when any campaign is missing or stale. Default is soft (always exit 0).",
     )
+    parser.add_argument(
+        "--enforce-kill-rate",
+        action="store_true",
+        help=(
+            "Exit non-zero when a fresh campaign's kill rate is below its "
+            "min_kill_rate threshold (per-entry, else --default-min-kill-rate)."
+        ),
+    )
+    parser.add_argument(
+        "--default-min-kill-rate",
+        type=float,
+        default=None,
+        help=(
+            "Kill-rate floor for entries without min_kill_rate. Defaults to the "
+            f"manifest's top-level default_min_kill_rate, else {DEFAULT_MIN_KILL_RATE}."
+        ),
+    )
     parser.add_argument("--json", action="store_true", help="Emit a JSON report instead of human output.")
     args = parser.parse_args(argv)
 
@@ -225,6 +267,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{args.yaml}: missing or invalid mutation_campaigns list", file=sys.stderr)
         return 2
 
+    default_min_kill_rate = (
+        args.default_min_kill_rate
+        if args.default_min_kill_rate is not None
+        else _coerce_float(manifest.get("default_min_kill_rate"), DEFAULT_MIN_KILL_RATE)
+    )
+
     now = datetime.now(UTC)
     assessments = [
         assess_campaign(
@@ -232,6 +280,7 @@ def main(argv: list[str] | None = None) -> int:
             repo_root=ROOT,
             now=now,
             default_freshness_days=args.default_freshness_days,
+            default_min_kill_rate=default_min_kill_rate,
         )
         for entry in entries
         if isinstance(entry, dict) and "name" in entry
@@ -244,8 +293,11 @@ def main(argv: list[str] | None = None) -> int:
     stale = [a for a in assessments if a.state == "stale"]
     fresh = [a for a in assessments if a.state == "fresh"]
     inactive = [a for a in assessments if a.state == "inactive"]
+    below_threshold = [
+        a for a in fresh if a.kill_rate is not None and a.min_kill_rate is not None and a.kill_rate < a.min_kill_rate
+    ]
 
-    blocking = args.strict and (bool(missing) or bool(stale))
+    blocking = (args.strict and (bool(missing) or bool(stale))) or (args.enforce_kill_rate and bool(below_threshold))
 
     if args.json:
         json.dump(
@@ -253,15 +305,19 @@ def main(argv: list[str] | None = None) -> int:
                 "blocking": blocking,
                 "strict": bool(args.strict),
                 "default_freshness_days": args.default_freshness_days,
+                "enforce_kill_rate": bool(args.enforce_kill_rate),
+                "default_min_kill_rate": default_min_kill_rate,
                 "counts": {
                     "registered": len(assessments),
                     "fresh": len(fresh),
                     "stale": len(stale),
                     "missing": len(missing),
                     "inactive": len(inactive),
+                    "below_kill_threshold": len(below_threshold),
                     "orphan_artifact_names": len(orphan_names),
                 },
                 "campaigns": [a.__dict__ for a in assessments],
+                "below_kill_threshold": [a.name for a in below_threshold],
                 "orphan_artifact_names": orphan_names,
             },
             sys.stdout,
@@ -285,6 +341,13 @@ def main(argv: list[str] | None = None) -> int:
                 f"{prefix} stale: {a.name} "
                 f"newest={a.newest_artifact} "
                 f"age={a.newest_age_days:.1f}d (budget {a.freshness_days}d)"
+            )
+        kill_prefix = "[BLOCK]" if args.enforce_kill_rate else "[warn]"
+        for a in below_threshold:
+            assert a.kill_rate is not None and a.min_kill_rate is not None
+            print(
+                f"{kill_prefix} kill rate below threshold: {a.name} "
+                f"kill={a.kill_rate * 100:.1f}% (floor {a.min_kill_rate * 100:.1f}%)"
             )
         if orphan_names:
             print(f"[warn] orphan artifact directories (not in manifest): {len(orphan_names)}")

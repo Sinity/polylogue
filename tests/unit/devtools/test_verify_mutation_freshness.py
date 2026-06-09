@@ -163,6 +163,115 @@ def test_main_strict_passes_when_fresh(
     assert rc == 0
 
 
+def test_assess_campaign_carries_min_kill_rate_threshold(tmp_path: Path) -> None:
+    """A fresh campaign records its threshold (per-entry overrides the default)."""
+    now = datetime(2026, 5, 19, tzinfo=UTC)
+    _write_artifact(tmp_path, "filters", created_at=now - timedelta(days=1))
+    result = verify_mutation_freshness.assess_campaign(
+        {"name": "filters", "status": "active", "min_kill_rate": 0.8},
+        repo_root=tmp_path,
+        now=now,
+        default_freshness_days=60,
+        default_min_kill_rate=0.5,
+    )
+    assert result.min_kill_rate == pytest.approx(0.8)  # per-entry override wins
+    assert result.kill_rate == pytest.approx(0.7)
+
+
+def test_enforce_kill_rate_blocks_fresh_campaign_below_floor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """--enforce-kill-rate fails when a fresh campaign is below its floor."""
+    manifest = tmp_path / "campaign-coverage.yaml"
+    _write_manifest(
+        manifest,
+        [{"name": "filters", "status": "active", "min_kill_rate": 0.9}],
+    )
+    # kill rate 7/(7+3) = 0.70, below the 0.90 floor.
+    _write_artifact(tmp_path, "filters", created_at=datetime(2099, 1, 1, tzinfo=UTC))
+    monkeypatch.setattr(verify_mutation_freshness, "ROOT", tmp_path)
+    rc = verify_mutation_freshness.main(["--yaml", str(manifest), "--enforce-kill-rate"])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "[BLOCK] kill rate below threshold: filters" in out
+    assert "blocking=True" in out
+
+
+def test_enforce_kill_rate_passes_when_above_floor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--enforce-kill-rate passes when the fresh campaign clears its floor."""
+    manifest = tmp_path / "campaign-coverage.yaml"
+    _write_manifest(
+        manifest,
+        [{"name": "filters", "status": "active", "min_kill_rate": 0.5}],
+    )
+    _write_artifact(tmp_path, "filters", created_at=datetime(2099, 1, 1, tzinfo=UTC))
+    monkeypatch.setattr(verify_mutation_freshness, "ROOT", tmp_path)
+    rc = verify_mutation_freshness.main(["--yaml", str(manifest), "--enforce-kill-rate"])
+    assert rc == 0
+
+
+def test_enforce_kill_rate_ignores_missing_campaigns(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A campaign with no artifact is missing, not below-threshold — not blocked.
+
+    This is the CI contract: a fresh checkout has artifacts only for the
+    just-run group, so --enforce-kill-rate (without --strict) must not flag the
+    artifact-less campaigns.
+    """
+    manifest = tmp_path / "campaign-coverage.yaml"
+    _write_manifest(
+        manifest,
+        [
+            {"name": "filters", "status": "active", "min_kill_rate": 0.9},
+            {"name": "fts5", "status": "active", "min_kill_rate": 0.9},
+        ],
+    )
+    # Only filters has an artifact, and it clears the floor.
+    _write_artifact(
+        tmp_path,
+        "filters",
+        created_at=datetime(2099, 1, 1, tzinfo=UTC),
+        counts={"killed": 19, "survived": 1},
+    )
+    monkeypatch.setattr(verify_mutation_freshness, "ROOT", tmp_path)
+    rc = verify_mutation_freshness.main(["--yaml", str(manifest), "--enforce-kill-rate"])
+    assert rc == 0
+
+
+def test_enforce_kill_rate_uses_manifest_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A campaign without its own min_kill_rate inherits the manifest default."""
+    import yaml
+
+    manifest = tmp_path / "campaign-coverage.yaml"
+    manifest.write_text(
+        yaml.safe_dump(
+            {
+                "description": "test",
+                "default_min_kill_rate": 0.9,
+                "mutation_campaigns": [{"name": "filters", "status": "active"}],
+            },
+            sort_keys=False,
+        )
+    )
+    _write_artifact(tmp_path, "filters", created_at=datetime(2099, 1, 1, tzinfo=UTC))
+    monkeypatch.setattr(verify_mutation_freshness, "ROOT", tmp_path)
+    rc = verify_mutation_freshness.main(["--yaml", str(manifest), "--enforce-kill-rate"])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "kill rate below threshold: filters" in out
+
+
 def test_committed_manifest_lint_soft_is_clean() -> None:
     """The committed manifest passes the lint in soft mode."""
     rc = verify_mutation_freshness.main([])
