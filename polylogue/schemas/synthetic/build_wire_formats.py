@@ -139,12 +139,27 @@ def _ensure_wire_claude_ai(
     index: int,
     theme: SessionTheme | None,
 ) -> None:
-    data.setdefault("uuid", str(uuid.UUID(int=rng.getrandbits(128), version=4)))
-    data.setdefault("sender", role)
-    if not data.get("text"):
-        data["text"] = _text_for_role(rng, role, turn_index=index, theme=theme)
-    if "created_at" not in data:
-        data["created_at"] = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+    # A realistic claude.ai ``chat_messages`` entry is a compact turn: a sender
+    # plus text. ``_generate_from_schema`` instead fills every optional field
+    # (``content`` blocks, ``attachments``, ``files``), bloating each message so
+    # the conversation's discriminating ``chat_messages`` key falls outside the
+    # 8 KB acquisition detection prefix (``_DETECTION_PREFIX_SIZE``) and the
+    # bundle mis-detects → zero sessions imported. Reset the message to the
+    # realistic minimal shape, preserving a schema-generated uuid/created_at.
+    uuid_val = data.get("uuid") or str(uuid.UUID(int=rng.getrandbits(128), version=4))
+    text = data.get("text")
+    if not isinstance(text, str) or not text:
+        text = _text_for_role(rng, role, turn_index=index, theme=theme)
+    created_at = data.get("created_at")
+    data.clear()
+    data["uuid"] = uuid_val
+    data["sender"] = role
+    data["text"] = text
+    data["created_at"] = (
+        created_at
+        if isinstance(created_at, str) and created_at
+        else datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+    )
 
 
 def _ensure_wire_claude_code(

@@ -103,18 +103,10 @@ def gemini_sample_source(synthetic_source: SyntheticSourceFactory) -> Source:
     "provider",
     [
         "chatgpt",
-        pytest.param(
-            "claude-ai",
-            marks=pytest.mark.xfail(
-                reason="synthetic claude-ai mis-detects as unknown-export; see #1792", strict=False
-            ),
-        ),
+        "claude-ai",
         "claude-code",
         "codex",
-        pytest.param(
-            "gemini",
-            marks=pytest.mark.xfail(reason="synthetic gemini mis-detects as unknown-export; see #1792", strict=False),
-        ),
+        "gemini",
     ],
 )
 async def test_full_workflow_per_provider(
