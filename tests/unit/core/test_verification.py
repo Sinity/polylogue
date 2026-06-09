@@ -40,31 +40,26 @@ def _insert_raw_record(
     raw_content: bytes,
 ) -> str:
     """Insert a raw record, writing content to blob store. Returns actual raw_id (hash)."""
+    from polylogue.core.sources import origin_from_provider
     from polylogue.storage.blob_store import get_blob_store
+    from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session_blob_ref
+    from polylogue.types import Provider
 
     blob_store = get_blob_store()
     raw_id, blob_size = blob_store.write_from_bytes(raw_content)
+    origin = origin_from_provider(Provider.from_string(payload_provider or source_name))
 
     with open_connection(db_path) as conn:
-        conn.execute(
-            """
-            INSERT INTO raw_conversations (
-                raw_id, source_name, payload_provider, source_name, source_path, source_index,
-                blob_size, acquired_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                raw_id,
-                source_name,
-                payload_provider,
-                source_name,
-                source_path,
-                0,
-                blob_size,
-                datetime.now(tz=timezone.utc).isoformat(),
-            ),
+        write_source_raw_session_blob_ref(
+            conn,
+            origin=origin,
+            source_path=source_path,
+            source_index=0,
+            blob_hash=bytes.fromhex(raw_id),
+            blob_size=blob_size,
+            acquired_at_ms=int(datetime.now(tz=timezone.utc).timestamp() * 1000),
+            raw_id=raw_id,
         )
-        conn.commit()
     return raw_id
 
 
@@ -205,9 +200,9 @@ class TestProviderArtifactProof:
             recognized_non_parseable_records=1,
             unknown_records=1,
             decode_errors=1,
-            artifact_counts={"agent_sidecar_meta": 1, "subagent_conversation_stream": 1},
+            artifact_counts={"agent_sidecar_meta": 1, "subagent_session_stream": 1},
             package_versions={"v1": 1},
-            element_kinds={"conversation_record_stream": 1},
+            element_kinds={"session_record_stream": 1},
             resolution_reasons={"bundle_scope": 1},
             linked_sidecars=1,
             orphan_sidecars=0,
@@ -233,7 +228,7 @@ class TestArtifactProofReport:
                     total_records=1,
                     contract_backed_records=1,
                     package_versions={"v1": 1},
-                    element_kinds={"conversation_document": 1},
+                    element_kinds={"session_document": 1},
                     resolution_reasons={"exact_structure": 1},
                 ),
             },
@@ -246,7 +241,7 @@ class TestArtifactProofReport:
         assert data["record_limit"] == "all"
         assert data["summary"]["contract_backed_records"] == 1
         assert data["summary"]["package_versions"] == {"v1": 1}
-        assert data["summary"]["element_kinds"] == {"conversation_document": 1}
+        assert data["summary"]["element_kinds"] == {"session_document": 1}
         assert data["summary"]["resolution_reasons"] == {"exact_structure": 1}
         assert data["summary"]["clean"] is True
 
@@ -387,7 +382,7 @@ class TestProveRawArtifactCoverage:
     ) -> None:
         from polylogue.storage.sqlite.connection import open_connection
 
-        db_path = tmp_path / "proof.db"
+        db_path = tmp_path / "index.db"
         with open_connection(db_path):
             pass
 
@@ -433,15 +428,15 @@ class TestProveRawArtifactCoverage:
         package = SchemaVersionPackage(
             provider="chatgpt",
             version="v1",
-            anchor_kind="conversation_document",
-            default_element_kind="conversation_document",
+            anchor_kind="session_document",
+            default_element_kind="session_document",
             first_seen="2026-03-01T00:00:00+00:00",
             last_seen="2026-03-01T00:00:00+00:00",
             bundle_scope_count=1,
             sample_count=1,
             elements=[
                 SchemaElementManifest(
-                    element_kind="conversation_document",
+                    element_kind="session_document",
                     schema_file="chatgpt-v1.json",
                     sample_count=1,
                     artifact_count=1,
@@ -460,7 +455,7 @@ class TestProveRawArtifactCoverage:
                 return SchemaResolution(
                     provider="chatgpt",
                     package_version="v1",
-                    element_kind="conversation_document",
+                    element_kind="session_document",
                     exact_structure_id=None,
                     bundle_scope=None,
                     reason="exact_structure",
@@ -500,11 +495,11 @@ class TestProveRawArtifactCoverage:
 
         chatgpt_stats = report.providers["chatgpt"]
         assert chatgpt_stats.package_versions == {"v1": 1}
-        assert chatgpt_stats.element_kinds == {"conversation_document": 1}
+        assert chatgpt_stats.element_kinds == {"session_document": 1}
         assert chatgpt_stats.resolution_reasons == {"exact_structure": 1}
 
         with open_connection(db_path) as conn:
-            observation_count = conn.execute("SELECT COUNT(*) FROM artifact_observations").fetchone()[0]
+            observation_count = conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone()[0]
         assert observation_count == 5
 
     def test_refreshes_stale_existing_observation_resolution(
@@ -512,7 +507,7 @@ class TestProveRawArtifactCoverage:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        db_path = tmp_path / "stale-proof.db"
+        db_path = tmp_path / "index.db"
         with open_connection(db_path):
             pass
 
@@ -533,60 +528,44 @@ class TestProveRawArtifactCoverage:
         with open_connection(db_path) as conn:
             conn.execute(
                 """
-                INSERT INTO artifact_observations (
-                    observation_id,
+                INSERT INTO raw_artifacts (
+                    artifact_id,
                     raw_id,
-                    source_name,
-                    payload_provider,
-                    source_name,
+                    origin,
                     source_path,
                     source_index,
-                    file_mtime,
-                    wire_format,
                     artifact_kind,
-                    classification_reason,
-                    parse_as_conversation,
-                    schema_eligible,
                     support_status,
+                    classification_reason,
+                    parse_as_session,
+                    schema_eligible,
                     malformed_jsonl_lines,
                     decode_error,
-                    bundle_scope,
                     cohort_id,
-                    resolved_package_version,
-                    resolved_element_kind,
-                    resolution_reason,
                     link_group_key,
                     sidecar_agent_type,
-                    first_observed_at,
-                    last_observed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    first_observed_at_ms,
+                    last_observed_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     observation_id,
                     actual_raw_id,
-                    "chatgpt",
-                    "chatgpt",
-                    source_name,
+                    "chatgpt-export",
                     source_path,
                     0,
-                    None,
-                    "json",
-                    "conversation_document",
+                    "session_document",
+                    "unsupported_parseable",
                     "stale unsupported row",
                     1,
                     1,
-                    "unsupported_parseable",
                     0,
                     None,
-                    "chatgpt",
                     "stale-cohort",
                     None,
                     None,
-                    None,
-                    None,
-                    None,
-                    "2026-03-01T00:00:00+00:00",
-                    "2026-03-01T00:00:00+00:00",
+                    1740787200000,
+                    1740787200000,
                 ),
             )
             conn.commit()
@@ -594,15 +573,15 @@ class TestProveRawArtifactCoverage:
         package = SchemaVersionPackage(
             provider="chatgpt",
             version="v1",
-            anchor_kind="conversation_document",
-            default_element_kind="conversation_document",
+            anchor_kind="session_document",
+            default_element_kind="session_document",
             first_seen="2026-03-01T00:00:00+00:00",
             last_seen="2026-03-01T00:00:00+00:00",
             bundle_scope_count=1,
             sample_count=1,
             elements=[
                 SchemaElementManifest(
-                    element_kind="conversation_document",
+                    element_kind="session_document",
                     schema_file="chatgpt-v1.json",
                     sample_count=1,
                     artifact_count=1,
@@ -621,7 +600,7 @@ class TestProveRawArtifactCoverage:
                 return SchemaResolution(
                     provider="chatgpt",
                     package_version="v1",
-                    element_kind="conversation_document",
+                    element_kind="session_document",
                     exact_structure_id=None,
                     bundle_scope=None,
                     reason="exact_structure",
@@ -647,28 +626,31 @@ class TestProveRawArtifactCoverage:
 
         assert report.total_records == 1
         assert report.contract_backed_records == 1
+        # Resolved schema-package fidelity is recomputed on read (raw_artifacts
+        # does not store it) and surfaces through the proof report.
         assert report.providers["chatgpt"].package_versions == {"v1": 1}
+        assert report.providers["chatgpt"].element_kinds == {"session_document": 1}
+        assert report.providers["chatgpt"].resolution_reasons == {"exact_structure": 1}
 
+        # The durable raw_artifacts row is refreshed in place: its stale
+        # support_status flips from unsupported to supported on re-proof.
         with open_connection(db_path) as conn:
             refreshed = conn.execute(
                 """
-                SELECT support_status, resolved_package_version, resolved_element_kind, resolution_reason
-                FROM artifact_observations
-                WHERE observation_id = ?
+                SELECT support_status
+                FROM raw_artifacts
+                WHERE artifact_id = ?
                 """,
                 (observation_id,),
             ).fetchone()
         assert refreshed["support_status"] == "supported_parseable"
-        assert refreshed["resolved_package_version"] == "v1"
-        assert refreshed["resolved_element_kind"] == "conversation_document"
-        assert refreshed["resolution_reason"] == "exact_structure"
 
     def test_lists_artifact_rows_and_cohorts_from_durable_control_plane(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        db_path = tmp_path / "artifacts.db"
+        db_path = tmp_path / "index.db"
         with open_connection(db_path):
             pass
 
@@ -697,15 +679,15 @@ class TestProveRawArtifactCoverage:
         package = SchemaVersionPackage(
             provider="chatgpt",
             version="v1",
-            anchor_kind="conversation_document",
-            default_element_kind="conversation_document",
+            anchor_kind="session_document",
+            default_element_kind="session_document",
             first_seen="2026-03-01T00:00:00+00:00",
             last_seen="2026-03-01T00:00:00+00:00",
             bundle_scope_count=1,
             sample_count=1,
             elements=[
                 SchemaElementManifest(
-                    element_kind="conversation_document",
+                    element_kind="session_document",
                     schema_file="chatgpt-v1.json",
                     sample_count=1,
                     artifact_count=1,
@@ -724,7 +706,7 @@ class TestProveRawArtifactCoverage:
                 return SchemaResolution(
                     provider="chatgpt",
                     package_version="v1",
-                    element_kind="conversation_document",
+                    element_kind="session_document",
                     exact_structure_id=None,
                     bundle_scope=None,
                     reason="exact_structure",
@@ -749,9 +731,9 @@ class TestProveRawArtifactCoverage:
         )
         assert len(rows) == 3
         assert {row.artifact_kind for row in rows} == {
-            "conversation_document",
+            "session_document",
             "agent_sidecar_meta",
-            "subagent_conversation_stream",
+            "subagent_session_stream",
         }
 
         supported_rows = list_artifact_observation_rows(
@@ -777,7 +759,7 @@ class TestProveRawArtifactCoverage:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        db_path = tmp_path / "large-json-proof.db"
+        db_path = tmp_path / "index.db"
         with open_connection(db_path):
             pass
 
@@ -788,7 +770,7 @@ class TestProveRawArtifactCoverage:
             "attachments": [],
         }
         payload = {
-            "uuid": "claude-conversation",
+            "uuid": "claude-session",
             "name": "Large Claude export",
             "chat_messages": [message_template for _ in range(600)],
         }
@@ -804,15 +786,15 @@ class TestProveRawArtifactCoverage:
         package = SchemaVersionPackage(
             provider="claude-ai",
             version="v1",
-            anchor_kind="conversation_document",
-            default_element_kind="conversation_document",
+            anchor_kind="session_document",
+            default_element_kind="session_document",
             first_seen="2026-03-01T00:00:00+00:00",
             last_seen="2026-03-01T00:00:00+00:00",
             bundle_scope_count=1,
             sample_count=1,
             elements=[
                 SchemaElementManifest(
-                    element_kind="conversation_document",
+                    element_kind="session_document",
                     schema_file="claude-ai-v1.json",
                     sample_count=1,
                     artifact_count=1,
@@ -831,7 +813,7 @@ class TestProveRawArtifactCoverage:
                 return SchemaResolution(
                     provider="claude-ai",
                     package_version="v1",
-                    element_kind="conversation_document",
+                    element_kind="session_document",
                     exact_structure_id=None,
                     bundle_scope=None,
                     reason="package_default",
@@ -863,5 +845,5 @@ class TestProveRawArtifactCoverage:
             request=ArtifactObservationQuery(providers=["claude-ai"]),
         )[0]
         assert row.wire_format == "json"
-        assert row.artifact_kind == "conversation_document"
+        assert row.artifact_kind == "session_document"
         assert row.support_status.value == "supported_parseable"

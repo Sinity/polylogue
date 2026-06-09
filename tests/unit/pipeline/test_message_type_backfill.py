@@ -12,15 +12,20 @@ from polylogue.storage.message_type_backfill import (
     count_unclassified_message_type_sync,
 )
 from polylogue.storage.repair import repair_message_type_backfill
-from polylogue.storage.sqlite.connection import connection_context
-from tests.infra.storage_records import ConversationBuilder
+from tests.infra.archive_scenarios import open_index_db
+from tests.infra.storage_records import SessionBuilder, db_setup
+
+# Native ``messages.native_id`` keeps the provider-native message id verbatim
+# (the builder seeds ``provider_message_id = <message_id>``), so tests query
+# the native tree by ``native_id`` rather than the generated
+# ``<session_id>:<native_id>`` ``message_id``.
 
 
 def _make_db_with_messages(db_path: Path) -> str:
     """Create a database with test messages, return conv_id."""
     conv_id = "conv-backfill-1"
-    builder = ConversationBuilder(db_path, conv_id)
-    builder.title("Backfill Test")
+    builder = SessionBuilder(db_path, conv_id)
+    builder.provider("chatgpt").title("Backfill Test")
 
     # Context markers (#839 context set)
     builder.add_message(
@@ -99,21 +104,20 @@ class TestMessageTypeBackfill:
         self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Messages matching context markers get message_type = 'context'."""
-        db_path = Path(workspace_env["archive_root"]) / "polylogue.db"
+        db_path = db_setup(workspace_env)
         _make_db_with_messages(db_path)
 
         cfg = _make_config(workspace_env, db_path)
-        monkeypatch.setattr("polylogue.paths.db_path", lambda: db_path)
 
         result = repair_message_type_backfill(cfg, dry_run=False)
         assert result.success, result.detail
         assert result.repaired_count > 0
 
-        with connection_context(db_path) as conn:
+        with open_index_db(db_path) as conn:
             # Context messages classified
             for mid in ("ctx-1", "ctx-2", "ctx-3"):
                 row = conn.execute(
-                    "SELECT message_type FROM messages WHERE message_id = ?",
+                    "SELECT message_type FROM messages WHERE native_id = ?",
                     (f"{mid}",),
                 ).fetchone()
                 assert row is not None, f"Missing message {mid}"
@@ -122,7 +126,7 @@ class TestMessageTypeBackfill:
             # Protocol messages classified
             for mid in ("proto-1", "proto-2"):
                 row = conn.execute(
-                    "SELECT message_type FROM messages WHERE message_id = ?",
+                    "SELECT message_type FROM messages WHERE native_id = ?",
                     (f"{mid}",),
                 ).fetchone()
                 assert row is not None, f"Missing message {mid}"
@@ -131,7 +135,7 @@ class TestMessageTypeBackfill:
             # Plain messages unchanged
             for mid in ("plain-1", "plain-2"):
                 row = conn.execute(
-                    "SELECT message_type FROM messages WHERE message_id = ?",
+                    "SELECT message_type FROM messages WHERE native_id = ?",
                     (f"{mid}",),
                 ).fetchone()
                 assert row is not None, f"Missing message {mid}"
@@ -139,7 +143,7 @@ class TestMessageTypeBackfill:
 
             # Already-classified message unchanged
             row = conn.execute(
-                "SELECT message_type FROM messages WHERE message_id = ?",
+                "SELECT message_type FROM messages WHERE native_id = ?",
                 ("already-done",),
             ).fetchone()
             assert row is not None
@@ -147,11 +151,10 @@ class TestMessageTypeBackfill:
 
     def test_backfill_is_idempotent(self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> None:
         """A second run of the backfill is a no-op."""
-        db_path = Path(workspace_env["archive_root"]) / "polylogue.db"
+        db_path = db_setup(workspace_env)
         _make_db_with_messages(db_path)
 
         cfg = _make_config(workspace_env, db_path)
-        monkeypatch.setattr("polylogue.paths.db_path", lambda: db_path)
 
         # First run
         result1 = repair_message_type_backfill(cfg, dry_run=False)
@@ -196,18 +199,17 @@ class TestMessageTypeBackfill:
 
     def test_dry_run_does_not_mutate(self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> None:
         """Dry-run reports count but does not change any rows."""
-        db_path = Path(workspace_env["archive_root"]) / "polylogue.db"
+        db_path = db_setup(workspace_env)
         _make_db_with_messages(db_path)
 
         cfg = _make_config(workspace_env, db_path)
-        monkeypatch.setattr("polylogue.paths.db_path", lambda: db_path)
 
         result = repair_message_type_backfill(cfg, dry_run=True)
         assert result.success
         assert result.repaired_count > 0, "Dry-run should count candidate rows"
 
         # Verify no rows were mutated
-        with connection_context(db_path) as conn:
+        with open_index_db(db_path) as conn:
             count = conn.execute(
                 "SELECT COUNT(*) FROM messages WHERE message_type IN ('context', 'protocol')"
             ).fetchone()[0]
@@ -224,13 +226,12 @@ class TestMessageTypeBackfill:
         ``conn.total_changes`` (cumulative across the connection) on each
         UPDATE batch instead of the per-statement ``rowcount``.
         """
-        db_path = Path(workspace_env["archive_root"]) / "polylogue.db"
+        db_path = db_setup(workspace_env)
         _make_db_with_messages(db_path)
 
         cfg = _make_config(workspace_env, db_path)
-        monkeypatch.setattr("polylogue.paths.db_path", lambda: db_path)
 
-        with connection_context(db_path) as conn:
+        with open_index_db(db_path) as conn:
             before = count_messages_by_type_sync(conn)
             preview = count_unclassified_message_type_sync(conn)
         # Fixture has 3 context-marker rows + 2 protocol-marker rows + 2
@@ -246,7 +247,7 @@ class TestMessageTypeBackfill:
             f"repaired_count should equal classifier-positive rows, got {result.repaired_count}"
         )
 
-        with connection_context(db_path) as conn:
+        with open_index_db(db_path) as conn:
             after = count_messages_by_type_sync(conn)
         assert after == {"message": 2, "context": 4, "protocol": 2}
         assert after["context"] - before["context"] == 3
@@ -266,17 +267,15 @@ class TestMessageTypeBackfill:
         from polylogue.archive.message.model_runtime import MessageRuntimeMixin
         from polylogue.archive.message.types import MessageType
 
-        db_path = Path(workspace_env["archive_root"]) / "polylogue.db"
+        db_path = db_setup(workspace_env)
         _make_db_with_messages(db_path)
         cfg = _make_config(workspace_env, db_path)
-        monkeypatch.setattr("polylogue.paths.db_path", lambda: db_path)
 
         repair_message_type_backfill(cfg, dry_run=False)
 
-        with connection_context(db_path) as conn:
+        with open_index_db(db_path) as conn:
             rows = conn.execute(
-                "SELECT message_id, role, message_type FROM messages "
-                "WHERE message_id IN ('ctx-1', 'proto-1', 'plain-1')"
+                "SELECT native_id, role, message_type FROM messages WHERE native_id IN ('ctx-1', 'proto-1', 'plain-1')"
             ).fetchall()
         by_id = {row[0]: (row[1], row[2]) for row in rows}
         assert by_id["ctx-1"] == ("user", "context")

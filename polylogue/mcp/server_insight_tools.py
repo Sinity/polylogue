@@ -12,6 +12,8 @@ from datetime import date
 from math import ceil
 from typing import TYPE_CHECKING, Any, cast
 
+from polylogue.core.enums import Origin
+from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.insights.archive import (
     SessionLatencyProfileInsightQuery,
     SessionProfileInsight,
@@ -22,14 +24,41 @@ from polylogue.insights.registry import (
     InsightType,
     fetch_insights_async,
     insight_items_payload,
+    project_origin_payload,
 )
 from polylogue.mcp.insight_tool_contracts import InsightListToolSpec
 from polylogue.mcp.payloads import MCPRootPayload
+from polylogue.types import Provider
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
 
     from polylogue.mcp.server_support import ServerCallbacks
+
+
+_CANONICAL_ORIGIN_VALUES = frozenset(origin.value for origin in Origin)
+
+
+def _origin_to_provider_token(value: str | None) -> str | None:
+    if value is None or value == "":
+        return None
+    return provider_from_origin(Origin(value)).value
+
+
+def _source_name_origin(source_name: object) -> str:
+    value = str(source_name or "")
+    if not value:
+        return "unknown"
+    if value in _CANONICAL_ORIGIN_VALUES:
+        return value
+    try:
+        return origin_from_provider(Provider.from_string(value)).value
+    except ValueError:
+        return "unknown"
+
+
+def _project_origin_payload(value: object) -> object:
+    return project_origin_payload(value)
 
 
 def _register_list_tool(
@@ -45,7 +74,8 @@ def _register_list_tool(
             poly = hooks.get_polylogue()
             normalized_kwargs = spec.normalize_kwargs(hooks.clamp_limit, kwargs)
             insights = await fetch_insights_async(pt, poly, **normalized_kwargs)
-            return hooks.json_payload(MCPRootPayload(root=insight_items_payload(insights, pt, item_key="items")))
+            payload = insight_items_payload(insights, pt, item_key="items")
+            return hooks.json_payload(MCPRootPayload(root=cast(dict[str, object], _project_origin_payload(payload))))
 
         return await hooks.async_safe_call(pt.name, run)
 
@@ -80,7 +110,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     async def tool_call_latency_distribution(
         since: str | None = None,
         until: str | None = None,
-        provider: str | None = None,
+        origin: str | None = None,
         tool_category: str | None = None,
         limit: int = 500,
     ) -> str:
@@ -97,7 +127,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             poly = hooks.get_polylogue()
             insights = await poly.list_session_latency_profile_insights(
                 SessionLatencyProfileInsightQuery(
-                    provider=provider,
+                    provider=_origin_to_provider_token(origin),
                     since=since,
                     until=until,
                     limit=hooks.clamp_limit(limit),
@@ -134,19 +164,22 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         return await hooks.async_safe_call("tool_call_latency_distribution", run)
 
     @mcp.tool()
-    async def session_latency_profile(conversation_id: str) -> str:
-        """Get per-session latency profile by conversation ID."""
+    async def session_latency_profile(session_id: str) -> str:
+        """Get per-session latency profile by session ID."""
 
         async def run() -> str:
             poly = hooks.get_polylogue()
-            insight = await poly.get_session_latency_profile_insight(conversation_id)
+            insight = await poly.get_session_latency_profile_insight(session_id)
             if insight is None:
                 return hooks.error_json(
-                    "Conversation not found",
+                    "Session not found",
                     code="not_found",
-                    conversation_id=conversation_id,
+                    session_id=session_id,
                 )
-            return hooks.json_payload(insight, exclude_none=True)
+            return hooks.json_payload(
+                MCPRootPayload(root=cast(dict[str, object], _project_origin_payload(insight.model_dump(mode="json")))),
+                exclude_none=True,
+            )
 
         return await hooks.async_safe_call("session_latency_profile", run)
 
@@ -167,7 +200,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 MCPRootPayload(
                     root={
                         "total": len(insights),
-                        "items": [insight.model_dump(mode="json") for insight in insights],
+                        "items": [_project_origin_payload(insight.model_dump(mode="json")) for insight in insights],
                     }
                 ),
                 exclude_none=True,
@@ -180,26 +213,26 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         since: str | None = None,
         until: str | None = None,
         group_by: str = "week",
-        provider: str | None = None,
+        origin: str | None = None,
     ) -> str:
-        """Histogram session workflow shapes by week, provider, or project."""
+        """Histogram session workflow shapes by week, origin, or project."""
 
         async def run() -> str:
             poly = hooks.get_polylogue()
             profiles = await poly.list_session_profile_insights(
                 SessionProfileInsightQuery(
-                    provider=provider,
+                    provider=_origin_to_provider_token(origin),
                     since=since,
                     until=until,
                     limit=None,
                 )
             )
-            allowed_group_by = {"week", "provider", "project"}
+            allowed_group_by = {"week", "origin", "project"}
             if group_by not in allowed_group_by:
                 return hooks.error_json(
                     "Invalid group_by.",
                     code="invalid_argument",
-                    detail="group_by must be one of week, provider, project",
+                    detail="group_by must be one of week, origin, project",
                     tool="workflow_shape_distribution",
                 )
             buckets: dict[str, dict[str, int]] = {}
@@ -208,8 +241,8 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 inference = profile.inference
                 shape = inference.workflow_shape if inference is not None else "unknown"
                 keys: tuple[str, ...]
-                if group_by == "provider":
-                    keys = (profile.source_name,)
+                if group_by == "origin":
+                    keys = (_source_name_origin(profile.source_name),)
                 elif group_by == "project":
                     paths = evidence.cwd_paths if evidence is not None else ()
                     keys = tuple(paths) or ("unattributed",)
@@ -283,8 +316,8 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                     continue
                 items.append(
                     {
-                        "conversation_id": profile.conversation_id,
-                        "source_name": profile.source_name,
+                        "session_id": profile.session_id,
+                        "origin": _source_name_origin(profile.source_name),
                         "title": profile.title,
                         "terminal_state": state,
                         "terminal_state_confidence": (
@@ -309,23 +342,26 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         return await hooks.async_safe_call("find_abandoned_sessions", run)
 
     @mcp.tool()
-    async def session_profile(conversation_id: str, tier: str = "merged") -> str:
-        """Get a single session profile by conversation ID."""
+    async def session_profile(session_id: str, tier: str = "merged") -> str:
+        """Get a single session profile by session ID."""
 
         async def run() -> str:
             poly = hooks.get_polylogue()
             insight = await poly.get_session_profile_insight(
-                conversation_id,
+                session_id,
                 tier=tier,
             )
             if insight is None:
-                return hooks.error_json("Conversation not found", code="not_found", conversation_id=conversation_id)
-            return hooks.json_payload(insight, exclude_none=True)
+                return hooks.error_json("Session not found", code="not_found", session_id=session_id)
+            return hooks.json_payload(
+                MCPRootPayload(root=cast(dict[str, object], _project_origin_payload(insight.model_dump(mode="json")))),
+                exclude_none=True,
+            )
 
         return await hooks.async_safe_call("session_profile", run)
 
     @mcp.tool()
-    async def get_resume_brief(conversation_id: str, related_limit: int = 6) -> str:
+    async def get_resume_brief(session_id: str, related_limit: int = 6) -> str:
         """Get a typed resume brief for one archived session.
 
         The brief composes already-materialized session insights (profile,
@@ -336,9 +372,9 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
         async def run() -> str:
             poly = hooks.get_polylogue()
-            brief = await poly.resume_brief(conversation_id, related_limit=related_limit)
+            brief = await poly.resume_brief(session_id, related_limit=related_limit)
             if brief is None:
-                return hooks.error_json("Conversation not found", code="not_found", conversation_id=conversation_id)
+                return hooks.error_json("Session not found", code="not_found", session_id=session_id)
             return hooks.json_payload(brief, exclude_none=False)
 
         return await hooks.async_safe_call("get_resume_brief", run)
@@ -454,9 +490,9 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         group_by: str = "workflow_shape",
         since: str | None = None,
         until: str | None = None,
-        provider: str | None = None,
+        origin: str | None = None,
     ) -> str:
-        """Aggregate session counts by a dimension (workflow_shape, terminal_state, provider).
+        """Aggregate session counts by a dimension (workflow_shape, terminal_state, origin).
 
         #1691: programmatic session analysis primitives — GROUP BY over session profiles.
         """
@@ -465,7 +501,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             poly = hooks.get_polylogue()
             profiles = await poly.list_session_profile_insights(
                 SessionProfileInsightQuery(
-                    provider=provider,
+                    provider=_origin_to_provider_token(origin),
                     since=since,
                     until=until,
                     limit=hooks.clamp_limit(10000),
@@ -477,11 +513,11 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                     key = (p.inference.workflow_shape if p.inference else None) or "unknown"
                 elif group_by == "terminal_state":
                     key = (p.inference.terminal_state if p.inference else None) or "unknown"
-                elif group_by == "provider":
-                    key = p.source_name or "unknown"
+                elif group_by == "origin":
+                    key = _source_name_origin(p.source_name)
                 else:
                     return hooks.error_json(
-                        f"Unknown group_by: {group_by!r}. Supported: workflow_shape, terminal_state, provider.",
+                        f"Unknown group_by: {group_by!r}. Supported: workflow_shape, terminal_state, origin.",
                         code="invalid_argument",
                         tool="aggregate_sessions",
                     )
@@ -502,7 +538,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     async def compare_sessions(session_ids: str | None = None) -> str:
         """Compare multiple session profiles side-by-side.
 
-        Takes a comma-separated list of 2-10 conversation IDs, fetches
+        Takes a comma-separated list of 2-10 session IDs, fetches
         their merged-tier profiles, and returns a side-by-side comparison
         with highlighted differences.
 
@@ -514,7 +550,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 return hooks.error_json(
                     "No session_ids provided.",
                     code="invalid_argument",
-                    detail="session_ids must be a comma-separated list of 2-10 conversation IDs.",
+                    detail="session_ids must be a comma-separated list of 2-10 session IDs.",
                     tool="compare_sessions",
                 )
             ids = [s.strip() for s in session_ids.split(",") if s.strip()]
@@ -544,8 +580,8 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 inference = profile.inference
                 sessions.append(
                     {
-                        "id": profile.conversation_id,
-                        "source_name": profile.source_name,
+                        "id": profile.session_id,
+                        "origin": _source_name_origin(profile.source_name),
                         "title": profile.title,
                         "workflow_shape": inference.workflow_shape if inference else "unknown",
                         "terminal_state": inference.terminal_state if inference else "unknown",
@@ -561,7 +597,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
             # Collect per-key value sets across found sessions to surface differences.
             diff_keys = (
-                "source_name",
+                "origin",
                 "workflow_shape",
                 "terminal_state",
                 "message_count",
@@ -601,7 +637,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
         If embeddings are enabled, delegates to neighbor_candidates.
         Otherwise falls back to metadata similarity: same workflow_shape,
-        same source_name, similar time window, overlapping tags.
+        same origin, similar time window, overlapping tags.
 
         #1691: programmatic session analysis primitives.
         """
@@ -617,7 +653,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             if use_neighbor and getattr(poly.config, "embedding_enabled", False):
                 try:
                     neighbors = await poly.neighbor_candidates(
-                        conversation_id=session_id,
+                        session_id=session_id,
                         limit=capped_limit,
                     )
                     if neighbors:
@@ -628,7 +664,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                                     "method": "embedding",
                                     "similar": [
                                         {
-                                            "conversation_id": n.conversation_id,
+                                            "session_id": n.session_id,
                                             "score": n.score,
                                             "rank": n.rank,
                                             "reasons": [
@@ -636,7 +672,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                                                 for r in n.reasons
                                             ],
                                             "title": n.summary.title,
-                                            "source_name": n.summary.provider.value if n.summary.provider else None,
+                                            "origin": str(n.summary.origin) if n.summary.origin else None,
                                         }
                                         for n in neighbors
                                     ],
@@ -673,7 +709,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 return hooks.error_json(
                     "Session not found.",
                     code="not_found",
-                    conversation_id=session_id,
+                    session_id=session_id,
                     tool="find_similar_sessions",
                 )
 
@@ -681,6 +717,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             ref_inference = ref_profile.inference
             ref_shape = ref_inference.workflow_shape if ref_inference else None
             ref_source = ref_profile.source_name
+            ref_origin = _source_name_origin(ref_source)
             ref_date = ref_evidence.canonical_session_date if ref_evidence else None
             ref_tags = set(ref_evidence.tags) if ref_evidence else set()
 
@@ -693,7 +730,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
             scored: list[tuple[int, dict[str, object]]] = []
             for profile in candidates:
-                if profile.conversation_id == session_id:
+                if profile.session_id == session_id:
                     continue
                 evidence = profile.evidence
                 inference = profile.inference
@@ -708,7 +745,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 cand_source = profile.source_name
                 if ref_source and cand_source == ref_source:
                     score += 1
-                    reasons.append(f"same source: {ref_source}")
+                    reasons.append(f"same origin: {ref_origin}")
 
                 cand_date = evidence.canonical_session_date if evidence else None
                 if ref_date and cand_date:
@@ -736,9 +773,9 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                         (
                             -score,
                             {
-                                "conversation_id": profile.conversation_id,
+                                "session_id": profile.session_id,
                                 "title": profile.title,
-                                "source_name": profile.source_name,
+                                "origin": _source_name_origin(profile.source_name),
                                 "workflow_shape": cand_shape or "unknown",
                                 "terminal_state": inference.terminal_state if inference else "unknown",
                                 "canonical_session_date": cand_date,
@@ -768,7 +805,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     async def correlate_sessions(
         metric_x: str,
         metric_y: str,
-        provider: str | None = None,
+        origin: str | None = None,
         since: str | None = None,
         until: str | None = None,
     ) -> str:
@@ -819,7 +856,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             poly = hooks.get_polylogue()
             profiles = await poly.list_session_profile_insights(
                 SessionProfileInsightQuery(
-                    provider=provider,
+                    provider=_origin_to_provider_token(origin),
                     since=since,
                     until=until,
                     limit=hooks.clamp_limit(10000),
@@ -943,15 +980,15 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             )
 
             poly = hooks.get_polylogue()
-            conv = await poly.get_conversation(session_id)
+            conv = await poly.get_session(session_id)
             if conv is None:
                 return hooks.error_json(
-                    "Conversation not found",
+                    "Session not found",
                     code="not_found",
-                    conversation_id=session_id,
+                    session_id=session_id,
                 )
 
-            # Build messages list from the conversation
+            # Build messages list from the session
             messages: list[dict[str, object]] = []
             for msg in conv.messages:
                 if isinstance(msg, Message):
@@ -974,16 +1011,14 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                     }
                     messages.append(msg_dict)
 
-            # Determine repo path from metadata
-            meta: dict[str, object] = conv.provider_meta or {} if isinstance(conv.provider_meta, dict) else {}
             repo: str = repo_path or "."
             if not repo_path:
-                repo_url = meta.get("git_repository_url")
-                if repo_url and isinstance(repo_url, str):
+                repo_url = getattr(conv, "git_repository_url", None)
+                if isinstance(repo_url, str) and repo_url:
                     repo = repo_url
                 else:
-                    cwd = meta.get("cwd")
-                    repo = str(cwd) if cwd and isinstance(cwd, str) else "."
+                    directories = getattr(conv, "working_directories", ()) or ()
+                    repo = str(directories[0]) if directories else "."
 
             start = conv.created_at
             end = conv.updated_at
@@ -1020,18 +1055,18 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         async def run() -> str:
             # Verify the session exists
             poly = hooks.get_polylogue()
-            conv = await poly.get_conversation(session_id)
+            conv = await poly.get_session(session_id)
             if conv is None:
                 return hooks.error_json(
-                    "Conversation not found",
+                    "Session not found",
                     code="not_found",
-                    conversation_id=session_id,
+                    session_id=session_id,
                 )
 
             from polylogue.insights.otlp_correlation import get_session_tool_timing
-            from polylogue.paths import db_path
+            from polylogue.paths import active_index_db_path
 
-            timing = get_session_tool_timing(str(db_path()), session_id)
+            timing = get_session_tool_timing(str(active_index_db_path()), session_id)
             return hooks.json_payload(
                 MCPRootPayload(root=timing.as_dict()),
                 exclude_none=True,

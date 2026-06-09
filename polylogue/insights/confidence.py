@@ -115,7 +115,7 @@ def from_legacy(value: str | ConfidenceBand | None) -> ConfidenceBand:
     """Coerce a legacy string literal into a typed band.
 
     Accepts the existing wire values verbatim. Unknown strings collapse
-    to ``WEAK`` rather than raising — legacy databases and downstream
+    to ``WEAK`` rather than raising — older stored records and downstream
     consumers that stored ad-hoc spellings stay readable.
     """
 

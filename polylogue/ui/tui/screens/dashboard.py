@@ -1,7 +1,7 @@
-"""Enhanced dashboard screen with embedding stats and provider breakdown.
+"""Enhanced dashboard screen with embedding stats and origin breakdown.
 
-Routes stats through ``ArchiveOperations.storage_stats()``
-instead of calling the repository directly.
+Routes stats through the archive ``Polylogue.storage_stats()`` facade
+method instead of calling the repository directly.
 """
 
 from __future__ import annotations
@@ -18,39 +18,39 @@ from polylogue.ui.tui.widgets.stats import StatCard
 logger = get_logger(__name__)
 
 
-class ProviderBar(Static):
-    """A horizontal bar showing provider distribution using Rich Text.
+class OriginBar(Static):
+    """A horizontal bar showing origin distribution using Rich Text.
 
     Static widgets should render Rich content directly, not compose child widgets.
     This avoids NoActiveAppError when mounted dynamically.
     """
 
     DEFAULT_CSS = """
-    ProviderBar {
+    OriginBar {
         width: 100%;
         height: 1;
         margin-bottom: 0;
     }
     """
 
-    def __init__(self, provider: str, count: int, max_count: int) -> None:
+    def __init__(self, origin: str, count: int, max_count: int) -> None:
         super().__init__()
-        self.provider = provider
+        self.origin = origin
         self.count = count
         self.max_count = max_count
 
     def render(self) -> str:
-        """Render the provider bar as a simple text line."""
+        """Render the origin bar as a simple text line."""
         pct = (self.count / self.max_count * 100) if self.max_count > 0 else 0
         bar_width = 20
         filled = int(pct / 100 * bar_width)
         bar = chr(0x2588) * filled + chr(0x2591) * (bar_width - filled)
         # Format: "source_name    [bar]  123"
-        return f"{self.provider[:16]:<16} {bar} {self.count:>6}"
+        return f"{self.origin[:16]:<16} {bar} {self.count:>6}"
 
 
 class Dashboard(RepositoryBoundContainer):
-    """Enhanced dashboard widget with embedding stats and provider breakdown."""
+    """Enhanced dashboard widget with embedding stats and origin breakdown."""
 
     DEFAULT_CSS = """
     Dashboard {
@@ -66,14 +66,14 @@ class Dashboard(RepositoryBoundContainer):
         margin-bottom: 2;
     }
 
-    Dashboard > #providers-section {
+    Dashboard > #origins-section {
         height: auto;
         border: solid $accent;
         padding: 1;
         margin-top: 1;
     }
 
-    Dashboard > #providers-section > .section-title {
+    Dashboard > #origins-section > .section-title {
         text-style: bold;
         margin-bottom: 1;
     }
@@ -82,16 +82,16 @@ class Dashboard(RepositoryBoundContainer):
     def compose(self) -> ComposeResult:
         # Grid for stats
         with Grid(id="stats-grid"):
-            yield StatCard("Conversations", "Loading...", id="stat-conversations")
+            yield StatCard("Sessions", "Loading...", id="stat-sessions")
             yield StatCard("Messages", "Loading...", id="stat-messages")
             yield StatCard("Attachments", "Loading...", id="stat-attachments")
             yield StatCard("Embeddings", "Loading...", id="stat-embeddings")
             yield StatCard("Coverage", "Loading...", id="stat-coverage")
 
-        # Provider breakdown section
-        with Container(id="providers-section"):
-            yield Static("By Provider", classes="section-title")
-            yield Container(id="provider-bars")
+        # Origin breakdown section
+        with Container(id="origins-section"):
+            yield Static("By Origin", classes="section-title")
+            yield Container(id="origin-bars")
 
     def on_mount(self) -> None:
         """Load data when screen mounts."""
@@ -100,8 +100,8 @@ class Dashboard(RepositoryBoundContainer):
     async def _fetch_stats(self) -> None:
         """Fetch stats asynchronously, then update DOM."""
         try:
-            ops = self._get_ops("Dashboard")
-            stats = await ops.storage_stats()
+            facade = self._get_facade("Dashboard")
+            stats = await facade.storage_stats()
         except Exception as e:
             self.notify(f"Failed to load stats: {e}", severity="error")
             return
@@ -111,17 +111,17 @@ class Dashboard(RepositoryBoundContainer):
     def _apply_stats(self, stats: StorageArchiveStats) -> None:
         """Apply fetched stats to DOM widgets (runs on main thread)."""
 
-        self.query_one("#stat-conversations", StatCard).value = str(stats.total_conversations)
+        self.query_one("#stat-sessions", StatCard).value = str(stats.total_sessions)
         self.query_one("#stat-messages", StatCard).value = str(stats.total_messages)
         self.query_one("#stat-attachments", StatCard).value = str(stats.total_attachments)
         self.query_one("#stat-embeddings", StatCard).value = str(stats.embedded_messages)
         self.query_one("#stat-coverage", StatCard).value = f"{stats.embedding_coverage:.1f}%"
 
-        # Mount provider bars
-        bars_container = self.query_one("#provider-bars", Container)
-        sorted_providers = sorted(stats.providers.items(), key=lambda x: x[1], reverse=True)
-        max_count = sorted_providers[0][1] if sorted_providers else 1
+        # Mount origin bars
+        bars_container = self.query_one("#origin-bars", Container)
+        sorted_origins = sorted(stats.origins.items(), key=lambda x: x[1], reverse=True)
+        max_count = sorted_origins[0][1] if sorted_origins else 1
 
-        for provider, count in sorted_providers[:10]:
-            bar = ProviderBar(provider or "unknown", count, max_count)
+        for origin, count in sorted_origins[:10]:
+            bar = OriginBar(origin or "unknown", count, max_count)
             _ = bars_container.mount(bar)

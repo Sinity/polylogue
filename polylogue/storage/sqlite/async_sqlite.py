@@ -22,12 +22,11 @@ import aiosqlite
 import polylogue.paths as _paths
 from polylogue.errors import DatabaseError
 from polylogue.storage.runtime import (
-    ActionEventRecord,
     MessageRecord,
     SessionPhaseRecord,
     SessionProfileRecord,
     SessionWorkEventRecord,
-    WorkThreadRecord,
+    ThreadRecord,
 )
 from polylogue.storage.sqlite.async_sqlite_archive import SQLiteArchiveMixin
 from polylogue.storage.sqlite.async_sqlite_raw import SQLiteRawMixin
@@ -37,7 +36,6 @@ from polylogue.storage.sqlite.connection_profile import (
     READ_DB_TIMEOUT,
     WRITE_CONNECTION_PRAGMA_STATEMENTS,
 )
-from polylogue.storage.sqlite.queries import action_events as action_events_q
 from polylogue.storage.sqlite.queries import (
     session_insight_profile_writes as session_insight_profiles_q,
 )
@@ -57,6 +55,49 @@ async def _apply_pragma_statements_async(conn: aiosqlite.Connection, statements:
         await conn.execute(statement)
 
 
+# Sibling archive tiers attached to an ``index.db`` connection so that
+# cross-tier reads (e.g. ``raw_sessions`` in ``source.db`` joined against
+# ``sessions`` in ``index.db``) resolve with unqualified table names. The
+# write path for each tier still uses its own dedicated connection; this
+# only makes the index connection able to *read* sibling tables. SQLite
+# resolves unqualified names to ``main`` first, so index-tier tables are
+# unaffected; only tables that live solely in a sibling tier resolve to it.
+_SIBLING_TIER_ATTACHMENTS: tuple[tuple[str, str], ...] = (
+    ("source_tier", "source.db"),
+    ("user_tier", "user.db"),
+    ("embeddings", "embeddings.db"),
+    ("ops_tier", "ops.db"),
+)
+
+
+async def _attach_sibling_tiers(conn: aiosqlite.Connection) -> None:
+    """Attach sibling archive tiers to an ``index.db`` connection (idempotent)."""
+    cursor = await conn.execute("PRAGMA database_list")
+    rows = list(await cursor.fetchall())
+    main_path: str | None = None
+    attached: set[str] = set()
+    for row in rows:
+        schema_name = str(row[1])
+        if schema_name == "main":
+            main_path = str(row[2]) if row[2] else None
+        else:
+            attached.add(schema_name)
+    if not main_path:
+        return
+    from pathlib import Path as _Path
+
+    main = _Path(main_path)
+    if main.name != "index.db":
+        return
+    root = main.parent
+    for schema_name, filename in _SIBLING_TIER_ATTACHMENTS:
+        if schema_name in attached:
+            continue
+        sibling = root / filename
+        if sibling.exists():
+            await conn.execute(f"ATTACH DATABASE ? AS {schema_name}", (str(sibling),))
+
+
 async def configure_connection(conn: aiosqlite.Connection) -> None:
     """Apply canonical connection settings.
 
@@ -67,12 +108,14 @@ async def configure_connection(conn: aiosqlite.Connection) -> None:
     """
     conn.row_factory = aiosqlite.Row
     await _apply_pragma_statements_async(conn, WRITE_CONNECTION_PRAGMA_STATEMENTS)
+    await _attach_sibling_tiers(conn)
 
 
 async def configure_read_connection(conn: aiosqlite.Connection) -> None:
     """Apply read-safe settings without mutating database-wide state."""
     conn.row_factory = aiosqlite.Row
     await _apply_pragma_statements_async(conn, READ_CONNECTION_PRAGMA_STATEMENTS)
+    await _attach_sibling_tiers(conn)
 
 
 async def _read_schema_ready(backend: SQLiteBackend) -> bool:
@@ -87,8 +130,15 @@ async def _read_schema_ready(backend: SQLiteBackend) -> bool:
         if not row or row[0] <= 0:
             return False
 
-        cursor = await conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='conversations'")
+        cursor = await conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions'")
         return await cursor.fetchone() is not None
+
+
+def _is_initialized_archive_index(path: Path) -> bool:
+    if path.name != "index.db":
+        return False
+    root = path.parent
+    return all((root / filename).exists() for filename in ("source.db", "index.db", "user.db", "ops.db"))
 
 
 # ---------------------------------------------------------------------------
@@ -98,8 +148,15 @@ async def _read_schema_ready(backend: SQLiteBackend) -> bool:
 
 def initialize_backend_state(backend: SQLiteBackend, db_path: Path | None) -> None:
     """Initialize backend state and shared query accessors."""
-    backend._db_path = Path(db_path) if db_path is not None else _paths.db_path()
+    requested_path = Path(db_path) if db_path is not None else _paths.db_path()
+    archive_root = requested_path.parent
+    backend._db_path = requested_path if requested_path.name == "index.db" else archive_root / "index.db"
+    backend._source_db_path = archive_root / "source.db"
     backend._db_path.parent.mkdir(parents=True, exist_ok=True)
+    if not _is_initialized_archive_index(backend._db_path):
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+        initialize_active_archive_root(archive_root)
     if backend._db_path.exists():
         backend._db_path.chmod(0o600)
 
@@ -124,13 +181,13 @@ async def ensure_schema_once(backend: SQLiteBackend) -> None:
     async with backend._schema_lock:
         if backend._schema_ensured:
             return
+        if _is_initialized_archive_index(backend._db_path):
+            backend._schema_ensured = True
+            return
         async with aiosqlite.connect(backend._db_path, timeout=DB_TIMEOUT) as init_conn:
             os.chmod(backend._db_path, 0o600)
             await configure_connection(init_conn)
             await backend._ensure_schema(init_conn)
-        from polylogue.paths.archive_db_stub import ensure_canonical_archive_db_name
-
-        ensure_canonical_archive_db_name(backend._db_path)
         backend._schema_ensured = True
 
 
@@ -378,6 +435,7 @@ class SQLiteBackend(
     """
 
     _db_path: Path
+    _source_db_path: Path
     _write_lock: asyncio.Lock
     _schema_lock: asyncio.Lock
     _schema_ensured: bool
@@ -463,48 +521,70 @@ class SQLiteBackend(
 
     # -- Derived stats (formerly SQLiteDerivedStatsMixin) --------------------
 
-    async def upsert_conversation_stats(
+    async def upsert_session_stats(
         self,
-        conversation_id: str,
+        session_id: str,
         source_name: str,
         messages: list[MessageRecord],
     ) -> None:
-        """Upsert precomputed per-conversation aggregate stats."""
+        """Upsert precomputed per-session aggregate stats."""
         async with self._get_connection() as conn:
-            await stats_q.upsert_conversation_stats(
+            if _is_initialized_archive_index(self._db_path):
+                from polylogue.archive.message.roles import Role
+
+                message_count = len(messages)
+                word_count = sum(message.word_count for message in messages)
+                tool_use_count = sum(1 for message in messages if message.has_tool_use)
+                thinking_count = sum(1 for message in messages if message.has_thinking)
+                paste_count = sum(1 for message in messages if message.has_paste)
+                user_message_count = sum(1 for message in messages if message.role == Role.USER)
+                assistant_message_count = sum(1 for message in messages if message.role == Role.ASSISTANT)
+                system_message_count = sum(1 for message in messages if message.role == Role.SYSTEM)
+                tool_message_count = sum(1 for message in messages if message.role == Role.TOOL)
+                user_word_count = sum(message.word_count for message in messages if message.role == Role.USER)
+                assistant_word_count = sum(message.word_count for message in messages if message.role == Role.ASSISTANT)
+                await conn.execute(
+                    """
+                    UPDATE sessions
+                    SET message_count = ?,
+                        word_count = ?,
+                        tool_use_count = ?,
+                        thinking_count = ?,
+                        paste_count = ?,
+                        user_message_count = ?,
+                        assistant_message_count = ?,
+                        system_message_count = ?,
+                        tool_message_count = ?,
+                        user_word_count = ?,
+                        assistant_word_count = ?
+                    WHERE session_id = ? OR native_id = ?
+                    """,
+                    (
+                        message_count,
+                        word_count,
+                        tool_use_count,
+                        thinking_count,
+                        paste_count,
+                        user_message_count,
+                        assistant_message_count,
+                        system_message_count,
+                        tool_message_count,
+                        user_word_count,
+                        assistant_word_count,
+                        session_id,
+                        session_id,
+                    ),
+                )
+                if self._transaction_depth == 0:
+                    await conn.commit()
+                return
+            await stats_q.upsert_session_stats(
                 conn,
-                conversation_id,
+                session_id,
                 source_name,
                 messages,
                 self._transaction_depth,
             )
-
-    # -- Derived actions (formerly SQLiteDerivedActionsMixin) ----------------
-
-    async def replace_action_events(
-        self,
-        conversation_id: str,
-        records: list[ActionEventRecord],
-    ) -> None:
-        """Replace durable action-event rows for one conversation."""
-        async with self._get_connection() as conn:
-            await action_events_q.replace_action_events(
-                conn,
-                conversation_id,
-                records,
-                self._transaction_depth,
-            )
-
-    async def get_action_events(self, conversation_id: str) -> list[ActionEventRecord]:
-        """Get durable action-event rows for one conversation."""
-        return await self.queries.get_action_events(conversation_id)
-
-    async def get_action_events_batch(
-        self,
-        conversation_ids: list[str],
-    ) -> dict[str, list[ActionEventRecord]]:
-        """Get durable action-event rows for multiple conversations."""
-        return await self.queries.get_action_events_batch(conversation_ids)
 
     # -- Derived insights (formerly SQLiteDerivedInsightsMixin) --------------
 
@@ -522,40 +602,40 @@ class SQLiteBackend(
 
     async def replace_session_work_events(
         self,
-        conversation_id: str,
+        session_id: str,
         records: list[SessionWorkEventRecord],
     ) -> None:
-        """Replace durable work-event rows for one conversation."""
+        """Replace durable work-event rows for one session."""
         async with self._get_connection() as conn:
             await session_insight_timelines_q.replace_session_work_events(
                 conn,
-                conversation_id,
+                session_id,
                 records,
                 self._transaction_depth,
             )
 
     async def replace_session_phases(
         self,
-        conversation_id: str,
+        session_id: str,
         records: list[SessionPhaseRecord],
     ) -> None:
-        """Replace durable phase rows for one conversation."""
+        """Replace durable phase rows for one session."""
         async with self._get_connection() as conn:
             await session_insight_timelines_q.replace_session_phases(
                 conn,
-                conversation_id,
+                session_id,
                 records,
                 self._transaction_depth,
             )
 
-    async def replace_work_thread(
+    async def replace_thread(
         self,
         thread_id: str,
-        record: WorkThreadRecord | None,
+        record: ThreadRecord | None,
     ) -> None:
-        """Replace one durable work-thread row."""
+        """Replace one durable thread row."""
         async with self._get_connection() as conn:
-            await session_insight_threads_q.replace_work_thread(
+            await session_insight_threads_q.replace_thread(
                 conn,
                 thread_id,
                 record,

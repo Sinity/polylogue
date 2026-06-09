@@ -7,41 +7,43 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.archive.conversation import extraction as work_event_extraction
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.types import MessageType
-from polylogue.archive.models import Conversation as ConversationModel
-from polylogue.archive.models import ConversationSummary
+from polylogue.archive.models import Session as SessionModel
+from polylogue.archive.models import SessionSummary
 from polylogue.archive.phase.extraction import PHASE_IDLE_THRESHOLD_MS, SessionPhase
 from polylogue.archive.phase.extraction import extract_phases as phase_extract_phases
-from polylogue.archive.provider.events import ProviderEvent
 from polylogue.archive.semantic.facts import (
-    ConversationSemanticFacts,
-    build_conversation_semantic_facts,
+    SessionSemanticFacts,
     build_mcp_summary_semantic_facts,
     build_projection_semantic_facts,
+    build_session_semantic_facts,
 )
 from polylogue.archive.semantic.pricing import harmonize_session_cost
 from polylogue.archive.semantic.timing import compute_session_latency_profile
+from polylogue.archive.session import extraction as work_event_extraction
 from polylogue.archive.session import runtime as session_profile_runtime
+from polylogue.archive.session.events import SessionEvent
 from polylogue.archive.session.session_profile import build_session_profile
-from polylogue.storage.archive_views import ConversationRenderProjection
-from polylogue.types import ConversationId, Provider, ProviderEventId
+from polylogue.core.enums import Origin
+from polylogue.core.sources import origin_from_provider
+from polylogue.storage.archive_views import SessionRenderProjection
+from polylogue.types import Provider, SessionEventId, SessionId
 from tests.infra.builders import make_conv, make_msg
-from tests.infra.storage_records import make_attachment, make_conversation, make_message
+from tests.infra.storage_records import make_attachment, make_message, make_session
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 EXPECTED_REPO_NAME = REPO_ROOT.name
 README_PATH = REPO_ROOT / "README.md"
 ARCHIVE_SESSION_PATH = REPO_ROOT / "polylogue" / "archive" / "session"
-ARCHIVE_ACTION_EVENTS_PATH = REPO_ROOT / "polylogue" / "archive" / "action_event" / "events.py"
+ARCHIVE_ACTION_EVENTS_PATH = REPO_ROOT / "polylogue" / "archive" / "action" / "events.py"
 SHOWCASE_REPORT_PATH = REPO_ROOT / "polylogue" / "showcase" / "report.py"
 
 
-def _semantic_conversation() -> ConversationModel:
+def _semantic_session() -> SessionModel:
     return make_conv(
         id="conv-semantic-facts",
-        provider="claude-code",
+        origin="claude-code",
         title="Semantic Facts",
         created_at=datetime(2026, 3, 23, 9, 0, tzinfo=timezone.utc),
         updated_at=datetime(2026, 3, 23, 9, 5, tzinfo=timezone.utc),
@@ -50,14 +52,14 @@ def _semantic_conversation() -> ConversationModel:
                 make_msg(
                     id="u1",
                     role="user",
-                    provider="claude-code",
+                    origin="claude-code",
                     text="Please inspect README.md and summarize the result clearly.",
                     timestamp=datetime(2026, 3, 23, 9, 0, tzinfo=timezone.utc),
                 ),
                 make_msg(
                     id="a1",
                     role="assistant",
-                    provider="claude-code",
+                    origin="claude-code",
                     text="I will inspect the file",
                     timestamp=datetime(2026, 3, 23, 9, 1, tzinfo=timezone.utc),
                     content_blocks=[
@@ -73,7 +75,7 @@ def _semantic_conversation() -> ConversationModel:
                 make_msg(
                     id="a2",
                     role="assistant",
-                    provider="claude-code",
+                    origin="claude-code",
                     text="",
                     timestamp=datetime(2026, 3, 23, 9, 4, tzinfo=timezone.utc),
                     branch_index=1,
@@ -85,10 +87,10 @@ def _semantic_conversation() -> ConversationModel:
     )
 
 
-def _protocol_summary_conversation() -> ConversationModel:
+def _protocol_summary_session() -> SessionModel:
     return make_conv(
         id="conv-work-event-summary",
-        provider="claude-code",
+        origin="claude-code",
         title="Work Event Summary",
         created_at=datetime(2026, 3, 23, 10, 0, tzinfo=timezone.utc),
         updated_at=datetime(2026, 3, 23, 10, 5, tzinfo=timezone.utc),
@@ -97,7 +99,7 @@ def _protocol_summary_conversation() -> ConversationModel:
                 make_msg(
                     id="u1",
                     role="user",
-                    provider="claude-code",
+                    origin="claude-code",
                     text="<system-reminder>skip this</system-reminder>\n"
                     + (f"Please inspect {README_PATH} and summarize the findings clearly. " * 3),
                     timestamp=datetime(2026, 3, 23, 10, 0, tzinfo=timezone.utc),
@@ -105,7 +107,7 @@ def _protocol_summary_conversation() -> ConversationModel:
                 make_msg(
                     id="a1",
                     role="assistant",
-                    provider="claude-code",
+                    origin="claude-code",
                     text="I will inspect the file.",
                     timestamp=datetime(2026, 3, 23, 10, 1, tzinfo=timezone.utc),
                     content_blocks=[
@@ -121,7 +123,7 @@ def _protocol_summary_conversation() -> ConversationModel:
                 make_msg(
                     id="u2",
                     role="user",
-                    provider="claude-code",
+                    origin="claude-code",
                     text=(
                         "Second user summary that should still fit after cleanup. "
                         "It repeats a bit so we hit the summary truncation boundary."
@@ -131,7 +133,7 @@ def _protocol_summary_conversation() -> ConversationModel:
                 make_msg(
                     id="u3",
                     role="user",
-                    provider="claude-code",
+                    origin="claude-code",
                     text="This trailing note should be truncated away once the summary is already full.",
                     timestamp=datetime(2026, 3, 23, 10, 3, tzinfo=timezone.utc),
                 ),
@@ -141,18 +143,18 @@ def _protocol_summary_conversation() -> ConversationModel:
 
 
 def test_build_projection_semantic_facts_counts_renderable_and_empty_messages() -> None:
-    projection = ConversationRenderProjection(
-        conversation=make_conversation(
-            conversation_id="conv-projection",
+    projection = SessionRenderProjection(
+        session=make_session(
+            session_id="conv-projection",
             source_name="chatgpt",
-            provider_conversation_id="provider-conv-projection",
+            provider_session_id="provider-conv-projection",
             title="Projection Facts",
             content_hash="hash-projection",
         ),
         messages=[
             make_message(
                 message_id="m1",
-                conversation_id="conv-projection",
+                session_id="conv-projection",
                 role="user",
                 text="hello",
                 sort_key=1.0,
@@ -160,7 +162,7 @@ def test_build_projection_semantic_facts_counts_renderable_and_empty_messages() 
             ),
             make_message(
                 message_id="m2",
-                conversation_id="conv-projection",
+                session_id="conv-projection",
                 role="assistant",
                 text=None,
                 sort_key=2.0,
@@ -169,7 +171,7 @@ def test_build_projection_semantic_facts_counts_renderable_and_empty_messages() 
             ),
             make_message(
                 message_id="m3",
-                conversation_id="conv-projection",
+                session_id="conv-projection",
                 role="assistant",
                 text=None,
                 content_hash="hash-m3",
@@ -179,7 +181,7 @@ def test_build_projection_semantic_facts_counts_renderable_and_empty_messages() 
         attachments=[
             make_attachment(
                 attachment_id="att-m2",
-                conversation_id="conv-projection",
+                session_id="conv-projection",
                 message_id="m2",
                 path="/tmp/att-m2.txt",
             )
@@ -198,13 +200,13 @@ def test_build_projection_semantic_facts_counts_renderable_and_empty_messages() 
     assert facts.renderable_role_counts == {"assistant": 1, "user": 1}
 
 
-def test_build_conversation_semantic_facts_collects_semantic_counts() -> None:
-    conversation = _semantic_conversation()
+def test_build_session_semantic_facts_collects_semantic_counts() -> None:
+    session = _semantic_session()
 
-    facts = build_conversation_semantic_facts(conversation)
+    facts = build_session_semantic_facts(session)
 
-    assert facts.conversation_id == "conv-semantic-facts"
-    assert facts.provider == "claude-code"
+    assert facts.session_id == "conv-semantic-facts"
+    assert facts.origin == "claude-code-session"
     assert facts.total_messages == 3
     assert facts.substantive_messages == 1
     assert facts.text_messages == 2
@@ -222,18 +224,18 @@ def test_build_conversation_semantic_facts_collects_semantic_counts() -> None:
     assert facts.tool_category_counts == {"file_read": 1}
     assert facts.message_facts[1].tool_category_counts == {"file_read": 1}
     assert facts.message_facts[1].affected_paths == (str(README_PATH),)
-    assert len(facts.action_events) == 1
-    assert facts.action_events[0].kind.value == "file_read"
-    assert facts.action_events[0].affected_paths == (str(README_PATH),)
-    assert facts.action_events[0].message_id == "a1"
-    assert facts.action_events[0].sequence_index == 0
+    assert len(facts.actions) == 1
+    assert facts.actions[0].kind.value == "file_read"
+    assert facts.actions[0].affected_paths == (str(README_PATH),)
+    assert facts.actions[0].message_id == "a1"
+    assert facts.actions[0].sequence_index == 0
     assert facts.first_message_at == datetime(2026, 3, 23, 9, 0, tzinfo=timezone.utc)
     assert facts.last_message_at == datetime(2026, 3, 23, 9, 4, tzinfo=timezone.utc)
     assert facts.wall_duration_ms == 240000
 
 
 def test_build_session_profile_reuses_shared_semantic_facts() -> None:
-    profile = build_session_profile(_semantic_conversation())
+    profile = build_session_profile(_semantic_session())
 
     assert profile.message_count == 3
     assert profile.substantive_count == 1
@@ -257,28 +259,28 @@ def test_build_session_profile_reuses_shared_semantic_facts() -> None:
 def test_build_session_profile_sums_paired_provider_tool_windows() -> None:
     start = datetime(2026, 5, 24, 10, 0, tzinfo=timezone.utc)
     end = datetime(2026, 5, 24, 10, 12, tzinfo=timezone.utc)
-    conversation = make_conv(
+    session = make_conv(
         id="conv-tool-active",
-        provider=Provider.CODEX,
+        origin=Provider.CODEX,
         title="Tool active",
         messages=[
-            make_msg(id="u1", role="user", provider=Provider.CODEX, text="Run the long command", timestamp=start),
-            make_msg(id="a1", role="assistant", provider=Provider.CODEX, text="Done", timestamp=end),
+            make_msg(id="u1", role="user", origin=Provider.CODEX, text="Run the long command", timestamp=start),
+            make_msg(id="a1", role="assistant", origin=Provider.CODEX, text="Done", timestamp=end),
         ],
-        provider_events=(
-            ProviderEvent(
-                id=ProviderEventId("conv-tool-active:event-0"),
-                conversation_id=ConversationId("conv-tool-active"),
-                provider=Provider.CODEX,
+        session_events=(
+            SessionEvent(
+                id=SessionEventId("conv-tool-active:event-0"),
+                session_id=SessionId("conv-tool-active"),
+                origin=origin_from_provider(Provider.CODEX),
                 event_index=0,
                 event_type="function_call",
                 timestamp=start,
                 payload={"call_id": "call-1", "name": "exec_command"},
             ),
-            ProviderEvent(
-                id=ProviderEventId("conv-tool-active:event-1"),
-                conversation_id=ConversationId("conv-tool-active"),
-                provider=Provider.CODEX,
+            SessionEvent(
+                id=SessionEventId("conv-tool-active:event-1"),
+                session_id=SessionId("conv-tool-active"),
+                origin=origin_from_provider(Provider.CODEX),
                 event_index=1,
                 event_type="function_call_output",
                 timestamp=end,
@@ -287,7 +289,7 @@ def test_build_session_profile_sums_paired_provider_tool_windows() -> None:
         ),
     )
 
-    profile = build_session_profile(conversation)
+    profile = build_session_profile(session)
 
     assert profile.engaged_duration_ms == 0
     assert profile.tool_active_duration_ms == 720_000
@@ -297,39 +299,39 @@ def test_compute_session_latency_profile_aggregates_tool_and_turn_latencies() ->
     start = datetime(2026, 5, 24, 10, 0, tzinfo=timezone.utc)
     agent = datetime(2026, 5, 24, 10, 1, tzinfo=timezone.utc)
     followup = datetime(2026, 5, 24, 10, 3, tzinfo=timezone.utc)
-    conversation = make_conv(
+    session = make_conv(
         id="conv-latency-profile",
-        provider=Provider.CODEX,
+        origin=Provider.CODEX,
         title="Latency profile",
         messages=[
-            make_msg(id="u1", role="user", provider=Provider.CODEX, text="Run", timestamp=start),
-            make_msg(id="a1", role="assistant", provider=Provider.CODEX, text="Done", timestamp=agent),
-            make_msg(id="u2", role="user", provider=Provider.CODEX, text="Follow up", timestamp=followup),
+            make_msg(id="u1", role="user", origin=Provider.CODEX, text="Run", timestamp=start),
+            make_msg(id="a1", role="assistant", origin=Provider.CODEX, text="Done", timestamp=agent),
+            make_msg(id="u2", role="user", origin=Provider.CODEX, text="Follow up", timestamp=followup),
         ],
         updated_at=datetime(2026, 5, 24, 10, 12, tzinfo=timezone.utc),
-        provider_events=(
-            ProviderEvent(
-                id=ProviderEventId("conv-latency-profile:event-0"),
-                conversation_id=ConversationId("conv-latency-profile"),
-                provider=Provider.CODEX,
+        session_events=(
+            SessionEvent(
+                id=SessionEventId("conv-latency-profile:event-0"),
+                session_id=SessionId("conv-latency-profile"),
+                origin=origin_from_provider(Provider.CODEX),
                 event_index=0,
                 event_type="function_call",
                 timestamp=start,
                 payload={"call_id": "call-1", "name": "exec_command"},
             ),
-            ProviderEvent(
-                id=ProviderEventId("conv-latency-profile:event-1"),
-                conversation_id=ConversationId("conv-latency-profile"),
-                provider=Provider.CODEX,
+            SessionEvent(
+                id=SessionEventId("conv-latency-profile:event-1"),
+                session_id=SessionId("conv-latency-profile"),
+                origin=origin_from_provider(Provider.CODEX),
                 event_index=1,
                 event_type="function_call_output",
                 timestamp=datetime(2026, 5, 24, 10, 2, tzinfo=timezone.utc),
                 payload={"call_id": "call-1", "output_chars": 10},
             ),
-            ProviderEvent(
-                id=ProviderEventId("conv-latency-profile:event-2"),
-                conversation_id=ConversationId("conv-latency-profile"),
-                provider=Provider.CODEX,
+            SessionEvent(
+                id=SessionEventId("conv-latency-profile:event-2"),
+                session_id=SessionId("conv-latency-profile"),
+                origin=origin_from_provider(Provider.CODEX),
                 event_index=2,
                 event_type="function_call",
                 timestamp=datetime(2026, 5, 24, 10, 4, tzinfo=timezone.utc),
@@ -339,9 +341,9 @@ def test_compute_session_latency_profile_aggregates_tool_and_turn_latencies() ->
     )
 
     facts = compute_session_latency_profile(
-        list(conversation.messages),
-        conversation.provider_events,
-        session_end=conversation.updated_at,
+        list(session.messages),
+        session.session_events,
+        session_end=session.updated_at,
         tool_call_count_by_category={"shell": 2},
         stuck_threshold_ms=300_000,
     )
@@ -356,21 +358,21 @@ def test_compute_session_latency_profile_aggregates_tool_and_turn_latencies() ->
 
 
 def test_build_session_profile_classifies_workflow_shape_from_observable_features() -> None:
-    conversation = make_conv(
+    session = make_conv(
         id="conv-batch-review-shape",
-        provider=Provider.CLAUDE_CODE,
+        origin=Provider.CLAUDE_CODE,
         title="Batch review",
         messages=[
             make_msg(
                 id="u1",
                 role="user",
-                provider=Provider.CLAUDE_CODE,
+                origin=Provider.CLAUDE_CODE,
                 text="Review these files without editing.",
             ),
             make_msg(
                 id="a1",
                 role="assistant",
-                provider=Provider.CLAUDE_CODE,
+                origin=Provider.CLAUDE_CODE,
                 text="I inspected the files.",
                 content_blocks=[
                     {"type": "tool_use", "tool_name": "Read", "tool_input": {"file_path": str(README_PATH)}},
@@ -381,7 +383,7 @@ def test_build_session_profile_classifies_workflow_shape_from_observable_feature
         ],
     )
 
-    profile = build_session_profile(conversation)
+    profile = build_session_profile(session)
 
     assert profile.workflow_shape == "batch_review"
     assert profile.workflow_shape_confidence >= 0.8
@@ -390,16 +392,16 @@ def test_build_session_profile_classifies_workflow_shape_from_observable_feature
 
 
 def test_build_session_profile_classifies_subagent_dispatch_shape() -> None:
-    conversation = make_conv(
+    session = make_conv(
         id="conv-subagent-shape",
-        provider=Provider.CLAUDE_CODE,
+        origin=Provider.CLAUDE_CODE,
         title="Dispatch",
         messages=[
-            make_msg(id="u1", role="user", provider=Provider.CLAUDE_CODE, text="Split this up."),
+            make_msg(id="u1", role="user", origin=Provider.CLAUDE_CODE, text="Split this up."),
             make_msg(
                 id="a1",
                 role="assistant",
-                provider=Provider.CLAUDE_CODE,
+                origin=Provider.CLAUDE_CODE,
                 text="Launching a worker.",
                 content_blocks=[
                     {"type": "tool_use", "tool_name": "Task", "tool_input": {"description": "inspect storage"}}
@@ -408,24 +410,24 @@ def test_build_session_profile_classifies_subagent_dispatch_shape() -> None:
         ],
     )
 
-    profile = build_session_profile(conversation)
+    profile = build_session_profile(session)
 
     assert profile.workflow_shape == "subagent_dispatch"
     assert profile.workflow_shape_features["dispatch_count"] == 1
 
 
 def test_build_session_profile_terminal_state_detects_unanswered_user_turn() -> None:
-    conversation = make_conv(
+    session = make_conv(
         id="conv-question-left",
-        provider=Provider.CLAUDE_CODE,
+        origin=Provider.CLAUDE_CODE,
         title="Question left",
         messages=[
-            make_msg(id="a1", role="assistant", provider=Provider.CLAUDE_CODE, text="Here is the summary."),
-            make_msg(id="u1", role="user", provider=Provider.CLAUDE_CODE, text="Can you also check the tests?"),
+            make_msg(id="a1", role="assistant", origin=Provider.CLAUDE_CODE, text="Here is the summary."),
+            make_msg(id="u1", role="user", origin=Provider.CLAUDE_CODE, text="Can you also check the tests?"),
         ],
     )
 
-    profile = build_session_profile(conversation)
+    profile = build_session_profile(session)
 
     assert profile.terminal_state == "question_left"
     assert profile.terminal_state_evidence == {"message_id": "u1"}
@@ -433,16 +435,16 @@ def test_build_session_profile_terminal_state_detects_unanswered_user_turn() -> 
 
 def test_build_session_profile_terminal_state_detects_pending_tool() -> None:
     started_at = datetime(2026, 5, 24, 10, 0, tzinfo=timezone.utc)
-    conversation = make_conv(
+    session = make_conv(
         id="conv-tool-left",
-        provider=Provider.CODEX,
+        origin=Provider.CODEX,
         title="Tool left",
-        messages=[make_msg(id="u1", role="user", provider=Provider.CODEX, text="Run it", timestamp=started_at)],
-        provider_events=(
-            ProviderEvent(
-                id=ProviderEventId("conv-tool-left:event-0"),
-                conversation_id=ConversationId("conv-tool-left"),
-                provider=Provider.CODEX,
+        messages=[make_msg(id="u1", role="user", origin=Provider.CODEX, text="Run it", timestamp=started_at)],
+        session_events=(
+            SessionEvent(
+                id=SessionEventId("conv-tool-left:event-0"),
+                session_id=SessionId("conv-tool-left"),
+                origin=origin_from_provider(Provider.CODEX),
                 event_index=0,
                 event_type="function_call",
                 timestamp=started_at,
@@ -451,7 +453,7 @@ def test_build_session_profile_terminal_state_detects_pending_tool() -> None:
         ),
     )
 
-    profile = build_session_profile(conversation)
+    profile = build_session_profile(session)
 
     assert profile.terminal_state == "tool_left"
     assert profile.terminal_state_evidence == {"pending_tool_count": 1}
@@ -460,28 +462,28 @@ def test_build_session_profile_terminal_state_detects_pending_tool() -> None:
 def test_build_session_profile_terminal_state_detects_provider_error() -> None:
     started_at = datetime(2026, 5, 24, 10, 0, tzinfo=timezone.utc)
     ended_at = datetime(2026, 5, 24, 10, 1, tzinfo=timezone.utc)
-    conversation = make_conv(
+    session = make_conv(
         id="conv-error-left",
-        provider=Provider.CODEX,
+        origin=Provider.CODEX,
         title="Error left",
         messages=[
-            make_msg(id="u1", role="user", provider=Provider.CODEX, text="Run it", timestamp=started_at),
-            make_msg(id="a1", role="assistant", provider=Provider.CODEX, text="I hit an error.", timestamp=ended_at),
+            make_msg(id="u1", role="user", origin=Provider.CODEX, text="Run it", timestamp=started_at),
+            make_msg(id="a1", role="assistant", origin=Provider.CODEX, text="I hit an error.", timestamp=ended_at),
         ],
-        provider_events=(
-            ProviderEvent(
-                id=ProviderEventId("conv-error-left:event-0"),
-                conversation_id=ConversationId("conv-error-left"),
-                provider=Provider.CODEX,
+        session_events=(
+            SessionEvent(
+                id=SessionEventId("conv-error-left:event-0"),
+                session_id=SessionId("conv-error-left"),
+                origin=origin_from_provider(Provider.CODEX),
                 event_index=0,
                 event_type="function_call",
                 timestamp=started_at,
                 payload={"call_id": "call-1", "name": "exec_command"},
             ),
-            ProviderEvent(
-                id=ProviderEventId("conv-error-left:event-1"),
-                conversation_id=ConversationId("conv-error-left"),
-                provider=Provider.CODEX,
+            SessionEvent(
+                id=SessionEventId("conv-error-left:event-1"),
+                session_id=SessionId("conv-error-left"),
+                origin=origin_from_provider(Provider.CODEX),
                 event_index=1,
                 event_type="function_call_output",
                 timestamp=ended_at,
@@ -490,7 +492,7 @@ def test_build_session_profile_terminal_state_detects_provider_error() -> None:
         ),
     )
 
-    profile = build_session_profile(conversation)
+    profile = build_session_profile(session)
 
     assert profile.terminal_state == "error_left"
     assert profile.terminal_state_evidence == {"event_id": "conv-error-left:event-1"}
@@ -498,16 +500,16 @@ def test_build_session_profile_terminal_state_detects_provider_error() -> None:
 
 def test_build_session_profile_ignores_unpaired_tool_windows() -> None:
     started_at = datetime(2026, 5, 24, 10, 0, tzinfo=timezone.utc)
-    conversation = make_conv(
+    session = make_conv(
         id="conv-unpaired-tool",
-        provider=Provider.CODEX,
+        origin=Provider.CODEX,
         title="Unpaired tool",
-        messages=[make_msg(id="u1", role="user", provider=Provider.CODEX, text="Run", timestamp=started_at)],
-        provider_events=(
-            ProviderEvent(
-                id=ProviderEventId("conv-unpaired-tool:event-0"),
-                conversation_id=ConversationId("conv-unpaired-tool"),
-                provider=Provider.CODEX,
+        messages=[make_msg(id="u1", role="user", origin=Provider.CODEX, text="Run", timestamp=started_at)],
+        session_events=(
+            SessionEvent(
+                id=SessionEventId("conv-unpaired-tool:event-0"),
+                session_id=SessionId("conv-unpaired-tool"),
+                origin=origin_from_provider(Provider.CODEX),
                 event_index=0,
                 event_type="function_call",
                 timestamp=started_at,
@@ -516,15 +518,15 @@ def test_build_session_profile_ignores_unpaired_tool_windows() -> None:
         ),
     )
 
-    profile = build_session_profile(conversation)
+    profile = build_session_profile(session)
 
     assert profile.tool_active_duration_ms == 0
 
 
-def test_build_conversation_semantic_facts_marks_partial_timestamp_coverage() -> None:
-    conversation = make_conv(
+def test_build_session_semantic_facts_marks_partial_timestamp_coverage() -> None:
+    session = make_conv(
         id="conv-partial-timestamps",
-        provider="claude-code",
+        origin="claude-code",
         title="Partial Timestamps",
         created_at=datetime(2026, 3, 24, 9, 0, tzinfo=timezone.utc),
         updated_at=datetime(2026, 3, 24, 9, 10, tzinfo=timezone.utc),
@@ -533,21 +535,21 @@ def test_build_conversation_semantic_facts_marks_partial_timestamp_coverage() ->
                 make_msg(
                     id="u1",
                     role="user",
-                    provider="claude-code",
+                    origin="claude-code",
                     text="Start the task",
                     timestamp=datetime(2026, 3, 24, 9, 0, tzinfo=timezone.utc),
                 ),
                 make_msg(
                     id="a1",
                     role="assistant",
-                    provider="claude-code",
+                    origin="claude-code",
                     text="Working on it",
                     timestamp=None,
                 ),
                 make_msg(
                     id="a2",
                     role="assistant",
-                    provider="claude-code",
+                    origin="claude-code",
                     text="Finished",
                     timestamp=datetime(2026, 3, 24, 9, 7, tzinfo=timezone.utc),
                 ),
@@ -555,8 +557,8 @@ def test_build_conversation_semantic_facts_marks_partial_timestamp_coverage() ->
         ),
     )
 
-    facts = build_conversation_semantic_facts(conversation)
-    profile = build_session_profile(conversation)
+    facts = build_session_semantic_facts(session)
+    profile = build_session_profile(session)
 
     assert facts.timestamped_messages == 2
     assert facts.untimestamped_messages == 1
@@ -567,28 +569,28 @@ def test_build_conversation_semantic_facts_marks_partial_timestamp_coverage() ->
     assert profile.untimestamped_message_count == 1
 
 
-def test_build_conversation_semantic_facts_marks_missing_and_single_message_timestamp_cases() -> None:
+def test_build_session_semantic_facts_marks_missing_and_single_message_timestamp_cases() -> None:
     no_timestamp = make_conv(
         id="conv-no-timestamps",
-        provider="claude-code",
+        origin="claude-code",
         title="No Timestamps",
         messages=MessageCollection(
             messages=[
-                make_msg(id="u1", role="user", provider="claude-code", text="Hello", timestamp=None),
-                make_msg(id="a1", role="assistant", provider="claude-code", text="Hi", timestamp=None),
+                make_msg(id="u1", role="user", origin="claude-code", text="Hello", timestamp=None),
+                make_msg(id="a1", role="assistant", origin="claude-code", text="Hi", timestamp=None),
             ]
         ),
     )
     single_timestamp = make_conv(
         id="conv-single-timestamp",
-        provider="claude-code",
+        origin="claude-code",
         title="Single Timestamp",
         messages=MessageCollection(
             messages=[
                 make_msg(
                     id="u1",
                     role="user",
-                    provider="claude-code",
+                    origin="claude-code",
                     text="One message",
                     timestamp=datetime(2026, 3, 24, 10, 0, tzinfo=timezone.utc),
                 )
@@ -596,8 +598,8 @@ def test_build_conversation_semantic_facts_marks_missing_and_single_message_time
         ),
     )
 
-    no_timestamp_facts = build_conversation_semantic_facts(no_timestamp)
-    single_timestamp_facts = build_conversation_semantic_facts(single_timestamp)
+    no_timestamp_facts = build_session_semantic_facts(no_timestamp)
+    single_timestamp_facts = build_session_semantic_facts(single_timestamp)
 
     assert no_timestamp_facts.first_message_at is None
     assert no_timestamp_facts.last_message_at is None
@@ -615,24 +617,24 @@ def test_build_conversation_semantic_facts_marks_missing_and_single_message_time
 
 
 def test_build_session_analysis_reuses_precomputed_phases(monkeypatch: pytest.MonkeyPatch) -> None:
-    conversation = _semantic_conversation()
+    session = _semantic_session()
     original_extract_phases = phase_extract_phases
     runtime_phase_calls = 0
     work_event_phase_calls = 0
 
     def counting_runtime_extract_phases(
-        conv: ConversationModel,
+        conv: SessionModel,
         *,
-        facts: ConversationSemanticFacts | None = None,
+        facts: SessionSemanticFacts | None = None,
     ) -> list[SessionPhase]:
         nonlocal runtime_phase_calls
         runtime_phase_calls += 1
         return original_extract_phases(conv, facts=facts)
 
     def unexpected_work_event_extract_phases(
-        conv: ConversationModel,
+        conv: SessionModel,
         *,
-        facts: ConversationSemanticFacts | None = None,
+        facts: SessionSemanticFacts | None = None,
     ) -> list[SessionPhase]:
         nonlocal work_event_phase_calls
         work_event_phase_calls += 1
@@ -641,7 +643,7 @@ def test_build_session_analysis_reuses_precomputed_phases(monkeypatch: pytest.Mo
     monkeypatch.setattr(session_profile_runtime, "extract_phases", counting_runtime_extract_phases)
     monkeypatch.setattr(work_event_extraction, "extract_phases", unexpected_work_event_extract_phases)
 
-    analysis = session_profile_runtime.build_session_analysis(conversation)
+    analysis = session_profile_runtime.build_session_analysis(session)
 
     assert runtime_phase_calls == 1
     assert work_event_phase_calls == 0
@@ -650,7 +652,7 @@ def test_build_session_analysis_reuses_precomputed_phases(monkeypatch: pytest.Mo
 
 
 def test_extract_work_events_strips_protocol_noise_and_respects_summary_cap() -> None:
-    events = work_event_extraction.extract_work_events(_protocol_summary_conversation())
+    events = work_event_extraction.extract_work_events(_protocol_summary_session())
 
     assert events
     summary = events[0].summary
@@ -661,10 +663,10 @@ def test_extract_work_events_strips_protocol_noise_and_respects_summary_cap() ->
     assert len(summary) <= 200
 
 
-def test_build_conversation_semantic_facts_uses_canonical_db_content_blocks() -> None:
-    conversation = make_conv(
+def test_build_session_semantic_facts_uses_canonical_db_content_blocks() -> None:
+    session = make_conv(
         id="conv-db-semantic-facts",
-        provider="claude-code",
+        origin="claude-code",
         title="DB Semantic Facts",
         created_at=datetime(2026, 3, 23, 9, 0, tzinfo=timezone.utc),
         updated_at=datetime(2026, 3, 23, 9, 5, tzinfo=timezone.utc),
@@ -673,14 +675,14 @@ def test_build_conversation_semantic_facts_uses_canonical_db_content_blocks() ->
                 make_msg(
                     id="u1",
                     role="user",
-                    provider="claude-code",
+                    origin="claude-code",
                     text="Inspect README.md and summarize the result.",
                     timestamp=datetime(2026, 3, 23, 9, 0, tzinfo=timezone.utc),
                 ),
                 make_msg(
                     id="a1",
                     role="assistant",
-                    provider="claude-code",
+                    origin="claude-code",
                     text="I checked the file.",
                     timestamp=datetime(2026, 3, 23, 9, 1, tzinfo=timezone.utc),
                     content_blocks=[
@@ -703,8 +705,8 @@ def test_build_conversation_semantic_facts_uses_canonical_db_content_blocks() ->
         ),
     )
 
-    facts = build_conversation_semantic_facts(conversation)
-    profile = build_session_profile(conversation)
+    facts = build_session_semantic_facts(session)
+    profile = build_session_profile(session)
 
     assert facts.tool_category_counts == {"file_read": 1}
     assert facts.message_facts[1].tool_category_counts == {"file_read": 1}
@@ -714,16 +716,16 @@ def test_build_conversation_semantic_facts_uses_canonical_db_content_blocks() ->
     assert profile.repo_names == (EXPECTED_REPO_NAME,)
 
 
-def test_build_conversation_semantic_facts_preserves_tool_results_before_tool_use() -> None:
-    conversation = make_conv(
+def test_build_session_semantic_facts_preserves_tool_results_before_tool_use() -> None:
+    session = make_conv(
         id="conv-db-tool-result-before-use",
-        provider="claude-code",
+        origin="claude-code",
         messages=MessageCollection(
             messages=[
                 make_msg(
                     id="a1",
                     role="assistant",
-                    provider="claude-code",
+                    origin="claude-code",
                     text="I checked the file.",
                     content_blocks=[
                         {
@@ -744,28 +746,28 @@ def test_build_conversation_semantic_facts_preserves_tool_results_before_tool_us
         ),
     )
 
-    facts = build_conversation_semantic_facts(conversation)
+    facts = build_session_semantic_facts(session)
 
     assert facts.message_facts[0].tool_calls[0].output == "README contents"
 
 
-def test_build_conversation_semantic_facts_upgrades_stale_other_semantic_type() -> None:
-    conversation = make_conv(
+def test_build_session_semantic_facts_upgrades_stale_other_semantic_type() -> None:
+    session = make_conv(
         id="conv-db-upgrade-other",
-        provider="claude-code",
+        origin="claude-code",
         messages=MessageCollection(
             messages=[
                 make_msg(
                     id="u1",
                     role="user",
-                    provider="claude-code",
+                    origin="claude-code",
                     text="Use the edit tools.",
                     timestamp=datetime(2026, 3, 23, 9, 0, tzinfo=timezone.utc),
                 ),
                 make_msg(
                     id="a1",
                     role="assistant",
-                    provider="claude-code",
+                    origin="claude-code",
                     text="Applying edits.",
                     timestamp=datetime(2026, 3, 23, 9, 1, tzinfo=timezone.utc),
                     content_blocks=[
@@ -788,22 +790,22 @@ def test_build_conversation_semantic_facts_upgrades_stale_other_semantic_type() 
         ),
     )
 
-    facts = build_conversation_semantic_facts(conversation)
+    facts = build_session_semantic_facts(session)
 
     assert facts.tool_category_counts == {"agent": 1, "file_edit": 1}
     assert facts.message_facts[1].affected_paths == (str(README_PATH),)
 
 
-def test_action_events_capture_normalized_command_query_branch_and_cwd() -> None:
-    conversation = make_conv(
+def test_actions_capture_normalized_command_query_branch_and_cwd() -> None:
+    session = make_conv(
         id="conv-action-facts",
-        provider="claude-code",
+        origin="claude-code",
         messages=MessageCollection(
             messages=[
                 make_msg(
                     id="a1",
                     role="assistant",
-                    provider="claude-code",
+                    origin="claude-code",
                     text="Running git and search actions.",
                     timestamp=datetime(2026, 3, 23, 10, 0, tzinfo=timezone.utc),
                     content_blocks=[
@@ -831,12 +833,12 @@ def test_action_events_capture_normalized_command_query_branch_and_cwd() -> None
         ),
     )
 
-    facts = build_conversation_semantic_facts(conversation)
+    facts = build_session_semantic_facts(session)
 
     assert facts.tool_category_counts == {"git": 1, "search": 1}
-    git_action, search_action = facts.action_events
+    git_action, search_action = facts.actions
     assert git_action.kind.value == "git"
-    assert git_action.event_id.startswith("act-")
+    assert git_action.action_id.startswith("act-")
     assert git_action.command == "git checkout feature/action-facts"
     assert git_action.cwd_path == str(REPO_ROOT)
     assert git_action.branch_names == ("feature/action-facts",)
@@ -846,20 +848,20 @@ def test_action_events_capture_normalized_command_query_branch_and_cwd() -> None
     assert search_action.affected_paths == (str(ARCHIVE_SESSION_PATH),)
     assert str(ARCHIVE_SESSION_PATH) in search_action.search_text
 
-    profile = build_session_profile(conversation)
+    profile = build_session_profile(session)
     assert profile.repo_names == (EXPECTED_REPO_NAME,)
 
 
-def test_action_events_do_not_treat_checkout_pathspec_as_branch_or_commit_message_words_as_paths() -> None:
-    conversation = make_conv(
+def test_actions_do_not_treat_checkout_pathspec_as_branch_or_commit_message_words_as_paths() -> None:
+    session = make_conv(
         id="conv-action-noise-guard",
-        provider="claude-code",
+        origin="claude-code",
         messages=MessageCollection(
             messages=[
                 make_msg(
                     id="a1",
                     role="assistant",
-                    provider="claude-code",
+                    origin="claude-code",
                     text="Running git maintenance.",
                     timestamp=datetime(2026, 3, 23, 10, 0, tzinfo=timezone.utc),
                     content_blocks=[
@@ -901,35 +903,35 @@ def test_action_events_do_not_treat_checkout_pathspec_as_branch_or_commit_messag
         ),
     )
 
-    facts = build_conversation_semantic_facts(conversation)
+    facts = build_session_semantic_facts(session)
 
-    commit_action, checkout_action = facts.action_events
+    commit_action, checkout_action = facts.actions
     assert commit_action.affected_paths == ("modules/services/sinex/bridge.nix",)
     assert checkout_action.branch_names == ()
 
-    profile = build_session_profile(conversation)
+    profile = build_session_profile(session)
     assert profile.branch_names == ()
     assert profile.file_paths_touched == ("modules/services/sinex/bridge.nix",)
     assert profile.repo_names == (EXPECTED_REPO_NAME,)
 
 
 def test_build_session_profile_does_not_infer_repos_from_dialogue_paths() -> None:
-    conversation = make_conv(
+    session = make_conv(
         id="conv-user-paths",
-        provider="gemini",
+        origin="gemini",
         messages=MessageCollection(
             messages=[
                 make_msg(
                     id="u1",
                     role="user",
-                    provider="gemini",
+                    origin="gemini",
                     text=f"Please inspect {README_PATH} and summarize it.",
                     timestamp=datetime(2026, 3, 23, 9, 0, tzinfo=timezone.utc),
                 ),
                 make_msg(
                     id="a1",
                     role="assistant",
-                    provider="gemini",
+                    origin="gemini",
                     text="I can do that.",
                     timestamp=datetime(2026, 3, 23, 9, 1, tzinfo=timezone.utc),
                 ),
@@ -937,7 +939,7 @@ def test_build_session_profile_does_not_infer_repos_from_dialogue_paths() -> Non
         ),
     )
 
-    profile = build_session_profile(conversation)
+    profile = build_session_profile(session)
 
     assert profile.repo_names == ()
     assert profile.repo_paths == ()
@@ -945,16 +947,16 @@ def test_build_session_profile_does_not_infer_repos_from_dialogue_paths() -> Non
 
 
 def test_build_session_profile_ignores_persisted_output_paths_in_dialogue_text() -> None:
-    conversation = make_conv(
+    session = make_conv(
         id="conv-user-path-noise",
-        provider="claude-code",
-        provider_meta={"working_directories": [str(REPO_ROOT)]},
+        origin="claude-code",
+        working_directories=(str(REPO_ROOT),),
         messages=MessageCollection(
             messages=[
                 make_msg(
                     id="u1",
                     role="user",
-                    provider="claude-code",
+                    origin="claude-code",
                     text=(
                         "Output too large. Full output saved to: "
                         "/home/sinity/.claude/projects/-realm-project-polylogue/example/tool-results/toolu_123.txt"
@@ -964,7 +966,7 @@ def test_build_session_profile_ignores_persisted_output_paths_in_dialogue_text()
                 make_msg(
                     id="a1",
                     role="assistant",
-                    provider="claude-code",
+                    origin="claude-code",
                     text="I will inspect the concrete file.",
                     timestamp=datetime(2026, 3, 23, 9, 1, tzinfo=timezone.utc),
                 ),
@@ -972,23 +974,23 @@ def test_build_session_profile_ignores_persisted_output_paths_in_dialogue_text()
         ),
     )
 
-    profile = build_session_profile(conversation)
+    profile = build_session_profile(session)
 
     assert profile.repo_names == (EXPECTED_REPO_NAME,)
     assert profile.repo_paths == (str(REPO_ROOT),)
     assert profile.file_paths_touched == ()
 
 
-def test_build_session_profile_discards_shell_path_noise_from_action_events() -> None:
-    conversation = make_conv(
+def test_build_session_profile_discards_shell_path_noise_from_actions() -> None:
+    session = make_conv(
         id="conv-action-path-noise",
-        provider="claude-code",
+        origin="claude-code",
         messages=MessageCollection(
             messages=[
                 make_msg(
                     id="a1",
                     role="assistant",
-                    provider="claude-code",
+                    origin="claude-code",
                     text="Running a shell command.",
                     timestamp=datetime(2026, 3, 23, 9, 0, tzinfo=timezone.utc),
                     content_blocks=[
@@ -1009,7 +1011,7 @@ def test_build_session_profile_discards_shell_path_noise_from_action_events() ->
         ),
     )
 
-    profile = build_session_profile(conversation)
+    profile = build_session_profile(session)
 
     assert str(README_PATH) in profile.file_paths_touched
     assert str(ARCHIVE_ACTION_EVENTS_PATH) in profile.file_paths_touched
@@ -1021,29 +1023,25 @@ def test_build_session_profile_discards_shell_path_noise_from_action_events() ->
     assert "/DAG" not in profile.file_paths_touched
 
 
-def test_build_session_profile_uses_conversation_level_git_context() -> None:
-    conversation = make_conv(
+def test_build_session_profile_uses_session_level_git_context() -> None:
+    session = make_conv(
         id="conv-git-context",
-        provider="codex",
-        provider_meta={
-            "git": {
-                "branch": "feature/runtime-cleanup",
-                "repository_url": str(REPO_ROOT),
-            }
-        },
+        origin="codex",
+        git_branch="feature/runtime-cleanup",
+        git_repository_url=str(REPO_ROOT),
         messages=MessageCollection(
             messages=[
                 make_msg(
                     id="u1",
                     role="user",
-                    provider="codex",
+                    origin="codex",
                     text="Please continue.",
                     timestamp=datetime(2026, 3, 23, 9, 0, tzinfo=timezone.utc),
                 ),
                 make_msg(
                     id="a1",
                     role="assistant",
-                    provider="codex",
+                    origin="codex",
                     text="Continuing.",
                     timestamp=datetime(2026, 3, 23, 9, 1, tzinfo=timezone.utc),
                 ),
@@ -1051,22 +1049,22 @@ def test_build_session_profile_uses_conversation_level_git_context() -> None:
         ),
     )
 
-    profile = build_session_profile(conversation)
+    profile = build_session_profile(session)
 
     assert profile.branch_names == ("feature/runtime-cleanup",)
     assert profile.repo_names == (EXPECTED_REPO_NAME,)
 
 
 def test_build_session_profile_ignores_context_dump_wrappers_for_work_event_intent() -> None:
-    conversation = make_conv(
+    session = make_conv(
         id="conv-context-dump",
-        provider="codex",
+        origin="codex",
         messages=MessageCollection(
             messages=[
                 make_msg(
                     id="u0",
                     role="user",
-                    provider="codex",
+                    origin="codex",
                     text="<environment_context>\nerror: cached tool output\n</environment_context>",
                     timestamp=datetime(2026, 3, 23, 9, 0, tzinfo=timezone.utc),
                     message_type=MessageType.CONTEXT,
@@ -1074,14 +1072,14 @@ def test_build_session_profile_ignores_context_dump_wrappers_for_work_event_inte
                 make_msg(
                     id="u1",
                     role="user",
-                    provider="codex",
+                    origin="codex",
                     text="Please plan the refactor and lay out the implementation strategy.",
                     timestamp=datetime(2026, 3, 23, 9, 1, tzinfo=timezone.utc),
                 ),
                 make_msg(
                     id="a1",
                     role="assistant",
-                    provider="codex",
+                    origin="codex",
                     text="I will plan the refactor in detail.",
                     timestamp=datetime(2026, 3, 23, 9, 2, tzinfo=timezone.utc),
                 ),
@@ -1089,16 +1087,16 @@ def test_build_session_profile_ignores_context_dump_wrappers_for_work_event_inte
         ),
     )
 
-    profile = build_session_profile(conversation)
+    profile = build_session_profile(session)
 
     assert profile.work_events
     assert profile.work_events[0].heuristic_label.value == "planning"
 
 
 def test_build_mcp_summary_semantic_facts_uses_canonical_summary_shape() -> None:
-    summary = ConversationSummary(
-        id=ConversationId("conv-semantic-facts"),
-        provider=Provider.CLAUDE_CODE,
+    summary = SessionSummary(
+        id=SessionId("conv-semantic-facts"),
+        origin=Origin.CLAUDE_CODE_SESSION,
         title="Semantic Facts",
         created_at=datetime(2026, 3, 23, 9, 0, tzinfo=timezone.utc),
         updated_at=datetime(2026, 3, 23, 9, 5, tzinfo=timezone.utc),
@@ -1106,8 +1104,8 @@ def test_build_mcp_summary_semantic_facts_uses_canonical_summary_shape() -> None
 
     facts = build_mcp_summary_semantic_facts(summary, message_count=3)
 
-    assert facts.conversation_id == "conv-semantic-facts"
-    assert facts.provider == "claude-code"
+    assert facts.session_id == "conv-semantic-facts"
+    assert facts.origin == "claude-code-session"
     assert facts.title == "Semantic Facts"
     assert facts.messages == 3
     assert facts.created_at == "2026-03-23T09:00:00+00:00"
@@ -1117,31 +1115,28 @@ def test_build_mcp_summary_semantic_facts_uses_canonical_summary_shape() -> None
 
 
 def test_harmonize_session_cost_uses_canonical_harmonized_model_and_tokens() -> None:
-    # Per #1256, message-level provider_meta no longer exists; cost facts
-    # for hydrated conversations come from the conversation-level envelope.
-    conversation = make_conv(
+    # Per #1256/#1743, neither message- nor session-level provider_meta
+    # carries cost facts; the harmonized cost is computed from typed message
+    # token usage (model_name + input/output tokens) against the price map.
+    session = make_conv(
         id="conv-cost",
-        provider="chatgpt",
-        provider_meta={
-            "model": "gpt-4o",
-            "usage": {
-                "input_tokens": 1000,
-                "output_tokens": 500,
-            },
-        },
+        origin="chatgpt",
         messages=MessageCollection(
             messages=[
                 make_msg(
                     id="m1",
                     role="assistant",
-                    provider="chatgpt",
+                    origin="chatgpt",
                     text="Estimated response",
+                    model_name="gpt-4o",
+                    input_tokens=1000,
+                    output_tokens=500,
                 )
             ]
         ),
     )
 
-    cost_usd, is_estimated = harmonize_session_cost(conversation)
+    cost_usd, is_estimated = harmonize_session_cost(session)
 
     assert is_estimated is True
     assert cost_usd == pytest.approx(0.0075)

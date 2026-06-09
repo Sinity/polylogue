@@ -1,18 +1,18 @@
-"""Session topology read model — conversation lineage graph.
+"""Session topology read model — session lineage graph.
 
-Materializes the durable lineage graph that relates conversations through
+Materializes the durable lineage graph that relates sessions through
 resume/branch/subagent/sidechain forks. Built over the existing archive
-substrate (``conversations.parent_conversation_id`` + ``branch_type`` +
+substrate (``sessions.parent_session_id`` + ``branch_type`` +
 ``messages.parent_message_id``) rather than a new DDL bundle: the topology is
 derivable from the canonical parent edges already persisted at ingest time.
 
 The graph answers the classes of questions called out in issue #866:
 
-- parent and root membership for an arbitrary conversation;
+- parent and root membership for an arbitrary session;
 - ancestors / descendants / siblings;
 - edge classification (continuation, sidechain, fork, subagent);
-- unresolved native parent edges (provider-native parent IDs that did not
-  resolve to a stored conversation);
+- unresolved native parent edges from ``session_links`` rows that did not
+  resolve to a stored session;
 - cycle detection — a cycle is structurally invalid and is surfaced through
   ``SessionTopology.cycle_detected``.
 
@@ -27,8 +27,8 @@ from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from polylogue.archive.conversation.branch_type import BranchType
-from polylogue.types import ConversationId
+from polylogue.archive.session.branch_type import BranchType
+from polylogue.types import SessionId
 
 
 class TopologyEdgeKind(str, Enum):
@@ -37,11 +37,11 @@ class TopologyEdgeKind(str, Enum):
     Mirrors :class:`BranchType` for the resolved-parent case and adds two
     extra states that exist only at the topology layer:
 
-    - ``UNRESOLVED_NATIVE`` — a provider-native parent ID was observed on
-      the child (typically inside ``provider_meta``) but no conversation
-      with that ID is present in the archive. The edge is preserved so
-      late-arriving parents can be reconciled deterministically.
-    - ``UNKNOWN`` — a parent ID resolves to a stored conversation but the
+    - ``UNRESOLVED_NATIVE`` — a native parent ID was observed on the child
+      through ``session_links`` but no session with that ID is present in the
+      archive. The edge is preserved so late-arriving parents can be reconciled
+      deterministically.
+    - ``UNKNOWN`` — a parent ID resolves to a stored session but the
       child carries no ``branch_type``. Treated as a structural edge
       without semantic classification.
     """
@@ -62,12 +62,12 @@ class TopologyEdgeKind(str, Enum):
         return cls(branch_type.value)
 
 
-class ConversationRef(BaseModel):
-    """Typed reference to a conversation, returned by topology read APIs.
+class SessionRef(BaseModel):
+    """Typed reference to a session, returned by topology read APIs.
 
     Carries the minimal projection that lineage consumers need (id +
     provider + title + depth) without forcing them to hydrate the full
-    :class:`~polylogue.archive.conversation.models.Conversation`. Slice D
+    :class:`~polylogue.archive.session.domain_models.Session`. Slice D
     of #866: surfaces such as the MCP topology tool, future reader panes,
     and context packs consume this ref instead of re-walking parent
     pointers.
@@ -75,7 +75,7 @@ class ConversationRef(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    conversation_id: ConversationId
+    session_id: SessionId
     source_name: str = ""
     title: str | None = None
     depth: int = 0
@@ -83,11 +83,11 @@ class ConversationRef(BaseModel):
 
 
 class TopologyNode(BaseModel):
-    """One conversation in the topology graph."""
+    """One session in the topology graph."""
 
     model_config = ConfigDict(frozen=True)
 
-    conversation_id: ConversationId
+    session_id: SessionId
     source_name: str = ""
     title: str | None = None
     depth: int = 0
@@ -95,11 +95,11 @@ class TopologyNode(BaseModel):
 
     is_root: bool = False
 
-    def as_ref(self) -> ConversationRef:
-        """Project this node into a :class:`ConversationRef`."""
+    def as_ref(self) -> SessionRef:
+        """Project this node into a :class:`SessionRef`."""
 
-        return ConversationRef(
-            conversation_id=self.conversation_id,
+        return SessionRef(
+            session_id=self.session_id,
             source_name=self.source_name,
             title=self.title,
             depth=self.depth,
@@ -111,20 +111,20 @@ class TopologyEdge(BaseModel):
 
     For unresolved native edges, ``parent_id`` is ``None`` and
     ``parent_native_id`` carries the provider-native pointer that could not
-    be reconciled to a stored conversation.
+    be reconciled to a stored session.
     """
 
     model_config = ConfigDict(frozen=True)
 
-    child_id: ConversationId
-    parent_id: ConversationId | None = None
+    child_id: SessionId
+    parent_id: SessionId | None = None
     parent_native_id: str | None = None
     kind: TopologyEdgeKind
     resolved: bool = True
 
 
 class SessionTopology(BaseModel):
-    """Resolved lineage graph rooted at one conversation.
+    """Resolved lineage graph rooted at one session.
 
     The graph is always presented as a rooted tree-with-back-edges view: a
     ``root_id`` plus every descendant reachable through resolved
@@ -133,35 +133,35 @@ class SessionTopology(BaseModel):
     underlying tables.
 
     Attributes:
-        target_id: the conversation the topology was requested for.
+        target_id: the session the topology was requested for.
         root_id: the topology root (the ancestor with no resolved parent).
         nodes: every node in the rooted subtree, ordered by BFS from root.
         edges: resolved parent/child edges plus unresolved native edges
             observed inside this rooted subtree.
         cycle_detected: ``True`` when the ancestry walk revisited an
-            already-seen conversation. Cycles are surfaced rather than
+            already-seen session. Cycles are surfaced rather than
             silently broken so the operator can quarantine the archive
             slice (see #866 acceptance criteria).
     """
 
     model_config = ConfigDict(frozen=True)
 
-    target_id: ConversationId
-    root_id: ConversationId
+    target_id: SessionId
+    root_id: SessionId
     nodes: tuple[TopologyNode, ...] = Field(default_factory=tuple)
     edges: tuple[TopologyEdge, ...] = Field(default_factory=tuple)
     cycle_detected: bool = False
 
-    def node_ids(self) -> tuple[ConversationId, ...]:
-        return tuple(node.conversation_id for node in self.nodes)
+    def node_ids(self) -> tuple[SessionId, ...]:
+        return tuple(node.session_id for node in self.nodes)
 
-    def ancestors(self, conversation_id: str) -> tuple[ConversationId, ...]:
-        """Return ancestors of ``conversation_id`` ordered root → parent."""
+    def ancestors(self, session_id: str) -> tuple[SessionId, ...]:
+        """Return ancestors of ``session_id`` ordered root → parent."""
 
         parent_lookup = {edge.child_id: edge.parent_id for edge in self.edges if edge.resolved and edge.parent_id}
-        chain: list[ConversationId] = []
+        chain: list[SessionId] = []
         seen: set[str] = set()
-        current = ConversationId(str(conversation_id))
+        current = SessionId(str(session_id))
         while current in parent_lookup:
             parent = parent_lookup[current]
             if str(parent) in seen:
@@ -171,17 +171,17 @@ class SessionTopology(BaseModel):
             current = parent
         return tuple(reversed(chain))
 
-    def descendants(self, conversation_id: str) -> tuple[ConversationId, ...]:
-        """Return descendants of ``conversation_id`` in BFS order."""
+    def descendants(self, session_id: str) -> tuple[SessionId, ...]:
+        """Return descendants of ``session_id`` in BFS order."""
 
-        children_lookup: dict[str, list[ConversationId]] = {}
+        children_lookup: dict[str, list[SessionId]] = {}
         for edge in self.edges:
             if not edge.resolved or edge.parent_id is None:
                 continue
             children_lookup.setdefault(str(edge.parent_id), []).append(edge.child_id)
-        out: list[ConversationId] = []
-        queue: list[str] = [str(conversation_id)]
-        seen: set[str] = {str(conversation_id)}
+        out: list[SessionId] = []
+        queue: list[str] = [str(session_id)]
+        seen: set[str] = {str(session_id)}
         while queue:
             current = queue.pop(0)
             for child in children_lookup.get(current, ()):
@@ -193,12 +193,12 @@ class SessionTopology(BaseModel):
                 queue.append(child_key)
         return tuple(out)
 
-    def siblings(self, conversation_id: str) -> tuple[ConversationId, ...]:
-        """Return other children of ``conversation_id``'s resolved parent."""
+    def siblings(self, session_id: str) -> tuple[SessionId, ...]:
+        """Return other children of ``session_id``'s resolved parent."""
 
-        parent_of: ConversationId | None = None
+        parent_of: SessionId | None = None
         for edge in self.edges:
-            if str(edge.child_id) == str(conversation_id) and edge.resolved:
+            if str(edge.child_id) == str(session_id) and edge.resolved:
                 parent_of = edge.parent_id
                 break
         if parent_of is None:
@@ -209,7 +209,7 @@ class SessionTopology(BaseModel):
             if edge.resolved
             and edge.parent_id is not None
             and str(edge.parent_id) == str(parent_of)
-            and str(edge.child_id) != str(conversation_id)
+            and str(edge.child_id) != str(session_id)
         )
 
     def unresolved_edges(self) -> tuple[TopologyEdge, ...]:
@@ -220,59 +220,59 @@ class SessionTopology(BaseModel):
     # ------------------------------------------------------------------
     # Typed projection surface (#1261 / #866 slice D)
     #
-    # These methods return :class:`ConversationRef` lists rather than raw
-    # ``ConversationId`` tuples so callers (Python API, MCP, future reader
-    # panes) get title/provider context without re-fetching conversation
+    # These methods return :class:`SessionRef` lists rather than raw
+    # ``SessionId`` tuples so callers (Python API, MCP, future reader
+    # panes) get title/provider context without re-fetching session
     # rows. They are layered on top of the existing structural helpers so
     # ordering semantics stay identical.
     # ------------------------------------------------------------------
 
     def _node_index(self) -> dict[str, TopologyNode]:
-        return {str(node.conversation_id): node for node in self.nodes}
+        return {str(node.session_id): node for node in self.nodes}
 
-    def _refs_for(self, ids: tuple[ConversationId, ...]) -> list[ConversationRef]:
+    def _refs_for(self, ids: tuple[SessionId, ...]) -> list[SessionRef]:
         index = self._node_index()
-        refs: list[ConversationRef] = []
+        refs: list[SessionRef] = []
         for conv_id in ids:
             node = index.get(str(conv_id))
             if node is not None:
                 refs.append(node.as_ref())
         return refs
 
-    def ancestor_refs(self, conversation_id: str) -> list[ConversationRef]:
-        """Return ancestor :class:`ConversationRef`s ordered root → parent."""
+    def ancestor_refs(self, session_id: str) -> list[SessionRef]:
+        """Return ancestor :class:`SessionRef`s ordered root → parent."""
 
-        return self._refs_for(self.ancestors(conversation_id))
+        return self._refs_for(self.ancestors(session_id))
 
-    def descendant_refs(self, conversation_id: str) -> list[ConversationRef]:
-        """Return descendant :class:`ConversationRef`s in BFS order."""
+    def descendant_refs(self, session_id: str) -> list[SessionRef]:
+        """Return descendant :class:`SessionRef`s in BFS order."""
 
-        return self._refs_for(self.descendants(conversation_id))
+        return self._refs_for(self.descendants(session_id))
 
-    def sibling_refs(self, conversation_id: str) -> list[ConversationRef]:
-        """Return sibling :class:`ConversationRef`s (shared resolved parent)."""
+    def sibling_refs(self, session_id: str) -> list[SessionRef]:
+        """Return sibling :class:`SessionRef`s (shared resolved parent)."""
 
-        return self._refs_for(self.siblings(conversation_id))
+        return self._refs_for(self.siblings(session_id))
 
-    def thread_refs(self, conversation_id: str) -> list[ConversationRef]:
+    def thread_refs(self, session_id: str) -> list[SessionRef]:
         """Return the full lineage thread ordered ancestors → self → descendants.
 
         Use this when the consumer wants a single linearization of the
         whole sub-lineage rooted at the topology root and reaching every
-        descendant of ``conversation_id``. The self node is included
+        descendant of ``session_id``. The self node is included
         between the ancestors and the descendants — this preserves the
         topological order ancestors → self → descendants that
         chronological readers expect.
         """
 
         index = self._node_index()
-        target_node = index.get(str(conversation_id))
+        target_node = index.get(str(session_id))
         if target_node is None:
             return []
-        thread: list[ConversationRef] = []
-        thread.extend(self._refs_for(self.ancestors(conversation_id)))
+        thread: list[SessionRef] = []
+        thread.extend(self._refs_for(self.ancestors(session_id)))
         thread.append(target_node.as_ref())
-        thread.extend(self._refs_for(self.descendants(conversation_id)))
+        thread.extend(self._refs_for(self.descendants(session_id)))
         return thread
 
 
@@ -281,16 +281,16 @@ class LogicalSession(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    conversation_id: ConversationId
-    root_id: ConversationId
-    thread: tuple[ConversationRef, ...] = Field(default_factory=tuple)
-    siblings: tuple[ConversationRef, ...] = Field(default_factory=tuple)
-    descendants: tuple[ConversationRef, ...] = Field(default_factory=tuple)
+    session_id: SessionId
+    root_id: SessionId
+    thread: tuple[SessionRef, ...] = Field(default_factory=tuple)
+    siblings: tuple[SessionRef, ...] = Field(default_factory=tuple)
+    descendants: tuple[SessionRef, ...] = Field(default_factory=tuple)
     cycle_detected: bool = False
 
 
 __all__ = [
-    "ConversationRef",
+    "SessionRef",
     "LogicalSession",
     "SessionTopology",
     "TopologyEdge",

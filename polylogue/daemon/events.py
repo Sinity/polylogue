@@ -1,9 +1,4 @@
-"""Daemon event ledger — lightweight SQLite-backed event store for daemon telemetry.
-
-Events are written to a separate SQLite database (``daemon_events.db``) in the
-same directory as the main archive database. This keeps daemon operational
-events independent of the archive schema and avoids schema version coupling.
-"""
+"""Daemon event ledger backed by archive ops state."""
 
 from __future__ import annotations
 
@@ -13,7 +8,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from polylogue.paths import db_path
+from polylogue.paths import active_index_db_path
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_connection
 
 if TYPE_CHECKING:
@@ -22,29 +19,44 @@ if TYPE_CHECKING:
 _DAEMON_EVENTS_DDL = """
 CREATE TABLE IF NOT EXISTS daemon_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts TEXT NOT NULL,
+    ts_ms INTEGER NOT NULL,
     kind TEXT NOT NULL,
     operation_id TEXT,
     payload_json TEXT NOT NULL
-);
+ ) STRICT;
 CREATE INDEX IF NOT EXISTS idx_daemon_events_kind ON daemon_events(kind);
-CREATE INDEX IF NOT EXISTS idx_daemon_events_ts ON daemon_events(ts);
+CREATE INDEX IF NOT EXISTS idx_daemon_events_ts ON daemon_events(ts_ms);
 """
 
 
 def _events_db_path() -> Path:
     """Return the path to the daemon events SQLite database."""
-    dbf = db_path()
-    return dbf.parent / "daemon_events.db"
+    dbf = active_index_db_path()
+    return dbf.with_name("ops.db")
 
 
 def _ensure_events_db() -> sqlite3.Connection:
     """Open (creating if necessary) the daemon events database."""
     path = _events_db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    initialize_archive_database(path, ArchiveTier.OPS)
     conn = open_connection(path)
     conn.executescript(_DAEMON_EVENTS_DDL)
     return conn
+
+
+def _now_ms() -> int:
+    return int(datetime.now(UTC).timestamp() * 1000)
+
+
+def _iso_from_ms(value: object) -> str:
+    if isinstance(value, int):
+        resolved = value
+    elif isinstance(value, str | bytes | bytearray):
+        resolved = int(value)
+    else:
+        resolved = int(str(value))
+    return datetime.fromtimestamp(resolved / 1000, tz=UTC).isoformat()
 
 
 def emit_daemon_event(
@@ -57,9 +69,9 @@ def emit_daemon_event(
     conn = _ensure_events_db()
     try:
         conn.execute(
-            "INSERT INTO daemon_events (ts, kind, operation_id, payload_json) VALUES (?, ?, ?, ?)",
+            "INSERT INTO daemon_events (ts_ms, kind, operation_id, payload_json) VALUES (?, ?, ?, ?)",
             (
-                datetime.now(UTC).isoformat(),
+                _now_ms(),
                 kind,
                 operation_id,
                 json.dumps(payload or {}),
@@ -81,12 +93,12 @@ def query_daemon_events(
     try:
         if kind:
             rows = conn.execute(
-                "SELECT id, ts, kind, operation_id, payload_json FROM daemon_events WHERE kind = ? ORDER BY id DESC LIMIT ? OFFSET ?",
+                "SELECT id, ts_ms, kind, operation_id, payload_json FROM daemon_events WHERE kind = ? ORDER BY id DESC LIMIT ? OFFSET ?",
                 (kind, limit, offset),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT id, ts, kind, operation_id, payload_json FROM daemon_events ORDER BY id DESC LIMIT ? OFFSET ?",
+                "SELECT id, ts_ms, kind, operation_id, payload_json FROM daemon_events ORDER BY id DESC LIMIT ? OFFSET ?",
                 (limit, offset),
             ).fetchall()
         result = []
@@ -94,7 +106,7 @@ def query_daemon_events(
             result.append(
                 {
                     "id": row[0],
-                    "ts": row[1],
+                    "ts": _iso_from_ms(row[1]),
                     "kind": row[2],
                     "operation_id": row[3],
                     "payload": json.loads(row[4]),
@@ -122,14 +134,14 @@ def query_events_since(
         if kinds_tuple:
             placeholders = ",".join("?" for _ in kinds_tuple)
             sql = (
-                f"SELECT id, ts, kind, operation_id, payload_json "
+                f"SELECT id, ts_ms, kind, operation_id, payload_json "
                 f"FROM daemon_events WHERE id > ? AND kind IN ({placeholders}) "
                 f"ORDER BY id ASC LIMIT ?"
             )
             params: tuple[object, ...] = (last_id, *kinds_tuple, limit)
         else:
             sql = (
-                "SELECT id, ts, kind, operation_id, payload_json "
+                "SELECT id, ts_ms, kind, operation_id, payload_json "
                 "FROM daemon_events WHERE id > ? ORDER BY id ASC LIMIT ?"
             )
             params = (last_id, limit)
@@ -137,7 +149,7 @@ def query_events_since(
         return [
             {
                 "id": row[0],
-                "ts": row[1],
+                "ts": _iso_from_ms(row[1]),
                 "kind": row[2],
                 "operation_id": row[3],
                 "payload": json.loads(row[4]),
@@ -230,8 +242,8 @@ def emit_catch_up_cycle(
 # realtime channel so the reader can subscribe selectively by view and
 # animate just-appended rows without rerendering the full list.
 
-EVENT_CONVERSATION_APPENDED = "conversation.appended"
-EVENT_CONVERSATION_UPDATED = "conversation.updated"
+EVENT_SESSION_APPENDED = "session.appended"
+EVENT_SESSION_UPDATED = "session.updated"
 EVENT_MESSAGE_APPENDED = "message.appended"
 EVENT_INSIGHT_UPDATED = "insight.updated"
 EVENT_PROGRESS_UPDATE = "progress.update"
@@ -239,8 +251,8 @@ EVENT_PROGRESS_COMPLETE = "progress.complete"
 
 GRANULAR_EVENT_KINDS: frozenset[str] = frozenset(
     {
-        EVENT_CONVERSATION_APPENDED,
-        EVENT_CONVERSATION_UPDATED,
+        EVENT_SESSION_APPENDED,
+        EVENT_SESSION_UPDATED,
         EVENT_MESSAGE_APPENDED,
         EVENT_INSIGHT_UPDATED,
         EVENT_PROGRESS_UPDATE,
@@ -249,18 +261,18 @@ GRANULAR_EVENT_KINDS: frozenset[str] = frozenset(
 )
 
 
-def emit_conversation_appended(
+def emit_session_appended(
     *,
     source_name: str | None,
     succeeded_file_count: int,
     failed_file_count: int = 0,
     source_paths: Sequence[str] | None = None,
 ) -> None:
-    """Emit a ``conversation.appended`` event for newly-arrived conversations.
+    """Emit a ``session.appended`` event for newly-arrived sessions.
 
     Fired once per live-ingest batch summarising the touched source group.
     Carries enough for the reader to animate new rows without rerendering
-    the whole list; the reader still calls ``/api/conversations`` to
+    the whole list; the reader still calls ``/api/sessions`` to
     materialise the rows.
     """
     payload: dict[str, object] = {
@@ -270,12 +282,12 @@ def emit_conversation_appended(
     }
     if source_paths is not None:
         payload["source_paths"] = list(source_paths)
-    emit_daemon_event(EVENT_CONVERSATION_APPENDED, payload=payload)
+    emit_daemon_event(EVENT_SESSION_APPENDED, payload=payload)
 
 
 def emit_message_appended(
     *,
-    conversation_id: str | None,
+    session_id: str | None,
     source_name: str | None = None,
     appended_count: int = 0,
     source_path: str | None = None,
@@ -283,11 +295,11 @@ def emit_message_appended(
     """Emit a ``message.appended`` event for live-tail consumers.
 
     The reader subscribes to this topic only for the currently-open
-    conversation; subscription is encoded via ``?kinds=message.appended``
-    plus filtering by ``conversation_id`` on the client.
+    session; subscription is encoded via ``?kinds=message.appended``
+    plus filtering by ``session_id`` on the client.
     """
     payload: dict[str, object] = {
-        "conversation_id": conversation_id,
+        "session_id": session_id,
         "source_name": source_name,
         "appended_count": int(appended_count),
     }
@@ -299,12 +311,12 @@ def emit_message_appended(
 def emit_insight_updated(
     *,
     insight_kind: str,
-    conversation_id: str | None = None,
+    session_id: str | None = None,
 ) -> None:
     """Emit an ``insight.updated`` event when a derived insight rebuilds."""
     payload: dict[str, object] = {
         "insight_kind": insight_kind,
-        "conversation_id": conversation_id,
+        "session_id": session_id,
     }
     emit_daemon_event(EVENT_INSIGHT_UPDATED, payload=payload)
 
@@ -366,15 +378,15 @@ def get_daemon_event_counts() -> dict[str, int]:
 
 
 __all__ = [
-    "EVENT_CONVERSATION_APPENDED",
-    "EVENT_CONVERSATION_UPDATED",
+    "EVENT_SESSION_APPENDED",
+    "EVENT_SESSION_UPDATED",
     "EVENT_INSIGHT_UPDATED",
     "EVENT_MESSAGE_APPENDED",
     "EVENT_PROGRESS_COMPLETE",
     "EVENT_PROGRESS_UPDATE",
     "GRANULAR_EVENT_KINDS",
     "emit_catch_up_cycle",
-    "emit_conversation_appended",
+    "emit_session_appended",
     "emit_daemon_event",
     "emit_insight_updated",
     "emit_message_appended",

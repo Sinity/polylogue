@@ -44,8 +44,8 @@ def _package(*, version: str = "v1") -> SchemaVersionPackage:
     return SchemaVersionPackage(
         provider="chatgpt",
         version=version,
-        anchor_kind="conversation_document",
-        default_element_kind="conversation_document",
+        anchor_kind="session_document",
+        default_element_kind="session_document",
         first_seen="2026-04-01T00:00:00Z",
         last_seen="2026-04-02T00:00:00Z",
         bundle_scope_count=2,
@@ -54,8 +54,8 @@ def _package(*, version: str = "v1") -> SchemaVersionPackage:
         profile_family_ids=["cluster-a", "cluster-b"],
         elements=[
             SchemaElementManifest(
-                element_kind="conversation_document",
-                schema_file="conversation_document.schema.json",
+                element_kind="session_document",
+                schema_file="session_document.schema.json",
                 sample_count=12,
                 artifact_count=12,
                 bundle_scope_count=2,
@@ -72,7 +72,7 @@ def _manifest() -> ClusterManifest:
     return ClusterManifest(
         provider="chatgpt",
         default_version="v1",
-        artifact_counts={"conversation_document": 12},
+        artifact_counts={"session_document": 12},
         clusters=[
             SchemaCluster(
                 cluster_id="cluster-a",
@@ -83,7 +83,7 @@ def _manifest() -> ClusterManifest:
                 representative_paths=["/tmp/source.json"],
                 dominant_keys=["id", "messages"],
                 confidence=0.91,
-                artifact_kind="conversation_document",
+                artifact_kind="session_document",
                 promoted_package_version="v1",
             )
         ],
@@ -95,26 +95,26 @@ def _corpus_specs() -> tuple[CorpusSpec, ...]:
         CorpusSpec.for_provider(
             "chatgpt",
             package_version="v1",
-            element_kind="conversation_document",
+            element_kind="session_document",
             count=2,
             messages_min=3,
             messages_max=6,
             profile=CorpusProfile(
                 family_ids=("cluster-a",),
-                artifact_kind="conversation_document",
+                artifact_kind="session_document",
                 observed_sample_count=12,
             ),
         ),
         CorpusSpec.for_provider(
             "chatgpt",
             package_version="v1",
-            element_kind="conversation_document",
+            element_kind="session_document",
             count=3,
             messages_min=2,
             messages_max=5,
             profile=CorpusProfile(
                 family_ids=("cluster-b",),
-                artifact_kind="conversation_document",
+                artifact_kind="session_document",
                 observed_sample_count=7,
             ),
         ),
@@ -147,14 +147,14 @@ def _annotation_summary() -> SchemaAnnotationSummary:
 def _schema_payload() -> JSONDocument:
     return {
         "$id": "schema://chatgpt/v1",
-        "title": "ChatGPT Conversation",
+        "title": "ChatGPT Session",
         "description": "Observed ChatGPT payload schema",
         "x-polylogue-version": "v1",
         "x-polylogue-generated-at": "2026-04-01T00:00:00Z",
         "x-polylogue-registered-at": "2026-04-02T00:00:00Z",
         "x-polylogue-promoted-at": "2026-04-03T00:00:00Z",
         "x-polylogue-sample-count": 12,
-        "x-polylogue-sample-granularity": "conversation",
+        "x-polylogue-sample-granularity": "session",
         "x-polylogue-anchor-profile-family-id": "cluster-a",
         "x-polylogue-profile-family-ids": ["cluster-a", "cluster-b"],
         "x-polylogue-package-profile-family-ids": ["cluster-a", "cluster-b"],
@@ -182,7 +182,7 @@ def _explain_result(*, review_proof: SchemaReviewProof | None = None) -> SchemaE
     return SchemaExplainResult(
         provider="chatgpt",
         version="v1",
-        element_kind="conversation_document",
+        element_kind="session_document",
         package=_package(),
         schema=_schema_payload(),
         annotations=_annotation_summary(),
@@ -254,8 +254,8 @@ def test_render_schema_explain_result_json_and_verbose_text_paths() -> None:
         render_schema_explain_result(result=result, json_output=False, verbose=True)
 
     echoed = [call.args[0] for call in echo.call_args_list if call.args]
-    assert "Schema: chatgpt v1 [conversation_document]" in echoed
-    assert any("Package anchor=conversation_document" in line for line in echoed)
+    assert "Schema: chatgpt v1 [session_document]" in echoed
+    assert any("Package anchor=session_document" in line for line in echoed)
     assert any("Properties (2):" in line for line in echoed)
     assert any("role: string" in line for line in echoed)
     assert any("x-polylogue-foreign-keys:" in line for line in echoed)
@@ -275,7 +275,7 @@ def test_render_explain_verbose_and_review_proof_surfaces() -> None:
 
     proof_result = _explain_result(
         review_proof=SchemaReviewProof(
-            artifact_kind="conversation_document",
+            artifact_kind="session_document",
             eligible_roles=["message_role", "message_text"],
             ineligible_roles=["message_tokens"],
             roles=[
@@ -322,7 +322,7 @@ def test_render_schema_generate_result_covers_plain_and_json_paths(tmp_path: Pat
         package_count=2,
         versions=["v1", "v2"],
         default_version="v1",
-        artifact_counts={"conversation_document": 12},
+        artifact_counts={"session_document": 12},
         redaction_report=SchemaReport(
             provider="chatgpt",
             privacy_level="standard",

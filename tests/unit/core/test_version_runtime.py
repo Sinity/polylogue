@@ -268,7 +268,7 @@ def test_lazy_package_exports_cover_pipeline_services_storage_and_mcp() -> None:
 
     assert polylogue.mcp.server.__name__.endswith("server")
     assert polylogue.pipeline.services.ValidationService.__name__ == "ValidationService"
-    assert polylogue.storage.ConversationRepository.__name__ == "ConversationRepository"
+    assert polylogue.storage.SessionRepository.__name__ == "SessionRepository"
 
     with pytest.raises(AttributeError):
         _ = polylogue.mcp.missing

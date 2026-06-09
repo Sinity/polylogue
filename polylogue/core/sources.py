@@ -1,10 +1,8 @@
-"""Source-centered identity for conversation origins.
+"""Source-centered identity for session origins.
 
-This module introduces the ``Source`` family alongside the legacy
-``Provider`` enum (``polylogue/types.py``).  It does not rename any
-existing field, column, CLI flag, or MCP parameter — the two
-vocabularies coexist for a transition period documented in
-``docs/architecture.md`` ("Dual Vocabulary Period: Provider and Source").
+This module carries the ``Source`` family alongside the storage/provider
+schema vocabulary and the public ``Origin`` tokens.  The vocabulary split is
+documented in ``docs/architecture.md`` ("Provider and Origin Vocabulary").
 
 The shape encodes three distinct concepts that the historical
 ``provider`` token conflated:
@@ -26,7 +24,7 @@ A canonical ``Source`` exists for every ``Provider`` enum member and
 the mapping is exhaustive (verified by tests in
 ``tests/unit/core/test_sources.py``).  Helpers ``provider_to_source``
 and ``source_to_provider`` bridge the two vocabularies for code that
-needs to cross the boundary during the migration.
+needs to cross a provider-wire boundary.
 """
 
 from __future__ import annotations
@@ -34,13 +32,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Final
 
+from polylogue.core.enums import Origin
+from polylogue.core.provider_identity import CORE_SCHEMA_PROVIDERS
 from polylogue.types import Provider
 
 __all__ = [
     "ALL_SOURCES",
+    "CORE_SCHEMA_ORIGINS",
     "Lab",
     "Source",
     "SourceFamily",
+    "lab_of_origin",
+    "origin_from_provider",
+    "provider_from_origin",
     "provider_to_source",
     "source_for_family",
     "source_to_provider",
@@ -56,7 +60,7 @@ Lab = str
 
 @dataclass(frozen=True, slots=True)
 class Source:
-    """A typed description of a conversation source.
+    """A typed description of a session source.
 
     ``Source`` is immutable and hashable so it can be used as a dict
     key, set element, or cache lookup token.  It is intentionally a
@@ -192,3 +196,106 @@ def source_for_family(family: SourceFamily) -> Source | None:
     if provider is None:
         return None
     return _PROVIDER_TO_SOURCE[provider]
+
+
+# ---------------------------------------------------------------------------
+# Provider -> Origin bridge (#1743 axis 2: provider purge → origin)
+#
+# The archive ``Origin`` StrEnum (core/enums.py) is the canonical vocabulary
+# for "which product/surface produced this session" (``[product]-[kind]`` family
+# tokens). ``Provider`` is the provider-wire token retained for parser/schema
+# boundaries.
+# This is a SEMANTIC bridge, not a 1:1 rename: ``Provider`` conflates lab and
+# product identity, and three ``Source.family`` tokens predate the authoritative
+# ``Origin`` set (``gemini-export``/``drive-takeout``/``unknown`` vs Origin's
+# ``aistudio-drive``/``unknown-export``). Per #1743, ``Provider.GEMINI`` and
+# ``Provider.DRIVE`` both collapse to ``Origin.AISTUDIO_DRIVE`` (both are Google
+# AI-Studio/Drive exports routed through ``parsers/drive.py``).
+_PROVIDER_TO_ORIGIN: Final[dict[Provider, Origin]] = {
+    Provider.CHATGPT: Origin.CHATGPT_EXPORT,
+    Provider.CLAUDE_AI: Origin.CLAUDE_AI_EXPORT,
+    Provider.CLAUDE_CODE: Origin.CLAUDE_CODE_SESSION,
+    Provider.CODEX: Origin.CODEX_SESSION,
+    Provider.GEMINI: Origin.AISTUDIO_DRIVE,
+    Provider.GEMINI_CLI: Origin.GEMINI_CLI_SESSION,
+    Provider.HERMES: Origin.HERMES_SESSION,
+    Provider.ANTIGRAVITY: Origin.ANTIGRAVITY_SESSION,
+    Provider.DRIVE: Origin.AISTUDIO_DRIVE,
+    Provider.UNKNOWN: Origin.UNKNOWN_EXPORT,
+}
+
+
+# Origin -> lab. Lab is *derived* from origin, never stored (#1743 terminology).
+# Values mirror the ``originating_lab`` of each Provider's canonical Source so
+# the two vocabularies cannot drift (asserted in test_sources).
+_ORIGIN_TO_LAB: Final[dict[Origin, Lab]] = {
+    Origin.CLAUDE_CODE_SESSION: "anthropic",
+    Origin.CLAUDE_AI_EXPORT: "anthropic",
+    Origin.CHATGPT_EXPORT: "openai",
+    Origin.CODEX_SESSION: "openai",
+    Origin.GEMINI_CLI_SESSION: "google",
+    Origin.AISTUDIO_DRIVE: "google",
+    Origin.ANTIGRAVITY_SESSION: "google",
+    Origin.HERMES_SESSION: "nous",
+    Origin.UNKNOWN_EXPORT: "unknown",
+}
+
+
+def origin_from_provider(provider: Provider) -> Origin:
+    """Return the archive ``Origin`` for a provider-wire ``Provider`` enum value.
+
+    Total over ``Provider``. ``Provider.GEMINI`` and ``Provider.DRIVE`` both map
+    to ``Origin.AISTUDIO_DRIVE`` (see module note). Use this at boundaries that
+    still carry a ``Provider`` while their storage/wire side speaks
+    ``origin``; new code should take ``Origin`` directly.
+    """
+
+    return _PROVIDER_TO_ORIGIN[provider]
+
+
+def lab_of_origin(origin: Origin) -> Lab:
+    """Return the AI lab that produced sessions of a given ``Origin``.
+
+    Lab is derived, not stored (#1743). Total over ``Origin``.
+    """
+
+    return _ORIGIN_TO_LAB[origin]
+
+
+# Origin -> canonical Provider. The reverse of ``origin_from_provider`` is not
+# injective: ``Origin.AISTUDIO_DRIVE`` is produced by both ``Provider.GEMINI``
+# and ``Provider.DRIVE``; ``Provider.GEMINI`` is chosen as canonical so that a
+# Gemini session round-trips provider -> origin -> provider. Use this only at
+# boundaries that must project an origin back onto provider-wire vocabulary.
+_ORIGIN_TO_PROVIDER: Final[dict[Origin, Provider]] = {
+    Origin.CLAUDE_CODE_SESSION: Provider.CLAUDE_CODE,
+    Origin.CODEX_SESSION: Provider.CODEX,
+    Origin.GEMINI_CLI_SESSION: Provider.GEMINI_CLI,
+    Origin.HERMES_SESSION: Provider.HERMES,
+    Origin.ANTIGRAVITY_SESSION: Provider.ANTIGRAVITY,
+    Origin.CHATGPT_EXPORT: Provider.CHATGPT,
+    Origin.CLAUDE_AI_EXPORT: Provider.CLAUDE_AI,
+    Origin.AISTUDIO_DRIVE: Provider.GEMINI,
+    Origin.UNKNOWN_EXPORT: Provider.UNKNOWN,
+}
+
+
+def provider_from_origin(origin: Origin) -> Provider:
+    """Return the canonical provider-wire ``Provider`` for an archive ``Origin``.
+
+    Total over ``Origin``. Inverse of :func:`origin_from_provider` with a
+    canonical choice for the non-injective ``Origin.AISTUDIO_DRIVE``
+    (``Provider.GEMINI``). New code should consume ``Origin`` directly; this
+    exists only for boundaries that still speak provider tokens.
+    """
+
+    return _ORIGIN_TO_PROVIDER[origin]
+
+
+# User-facing origin tokens for CLI/MCP/completion choices. Derived from the
+# core schema providers so the surfaced set tracks the same products, excluding
+# the internal ``unknown-export`` origin. Order-preserving and deduplicated
+# (``gemini`` and ``drive`` both collapse onto ``aistudio-drive``).
+CORE_SCHEMA_ORIGINS: Final[tuple[str, ...]] = tuple(
+    dict.fromkeys(origin_from_provider(Provider.from_string(token)).value for token in CORE_SCHEMA_PROVIDERS)
+)

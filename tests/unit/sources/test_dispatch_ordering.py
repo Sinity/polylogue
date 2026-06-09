@@ -98,7 +98,7 @@ ADVERSARIAL_CATALOG.append(
 # ── gemini chunked-prompt vs antigravity markdown ─────────────────
 #
 # Gemini Takeout exports have "chunkedPrompt" with "chunks"; Antigravity
-# Markdown exports have "# Conversation with" headings.  A payload that
+# Markdown exports have "# Session with" headings.  A payload that
 # has neither is classified by the fallback path.  gemini checks
 # (_looks_like_gemini_mapping) run last, after antigravity checks.
 

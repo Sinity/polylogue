@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -10,13 +9,11 @@ from polylogue.cli.query_feedback import emit_no_results
 from polylogue.cli.query_stats import emit_structured_stats
 
 if TYPE_CHECKING:
-    from polylogue.archive.action_event.action_events import ActionEvent
-    from polylogue.archive.models import Conversation, ConversationSummary
-    from polylogue.archive.query.spec import ConversationQuerySpec
-    from polylogue.archive.semantic.facts import ConversationSemanticFacts
+    from polylogue.archive.actions.actions import Action
+    from polylogue.archive.models import SessionSummary
+    from polylogue.archive.query.spec import SessionQuerySpec
+    from polylogue.archive.semantic.facts import SessionSemanticFacts
     from polylogue.cli.shared.types import AppEnv
-    from polylogue.protocols import ConversationSemanticStatsStore
-    from polylogue.storage.runtime import AttachmentRecord
 
 
 # ---------------------------------------------------------------------------
@@ -34,7 +31,7 @@ class SemanticStatsSlice:
     excluded_tool_terms: tuple[str, ...] = ()
 
     @classmethod
-    def from_selection(cls, selection: ConversationQuerySpec | None) -> SemanticStatsSlice:
+    def from_selection(cls, selection: SessionQuerySpec | None) -> SemanticStatsSlice:
         if selection is None:
             return cls()
         return cls(
@@ -59,11 +56,11 @@ class SemanticStatsSlice:
         )
 
 
-def normalized_tool_name(action: ActionEvent) -> str:
+def normalized_tool_name(action: Action) -> str:
     return action.normalized_tool_name
 
 
-def referenced_path_matches_slice(action: ActionEvent, referenced_path: tuple[str, ...]) -> bool:
+def referenced_path_matches_slice(action: Action, referenced_path: tuple[str, ...]) -> bool:
     if not referenced_path:
         return True
     affected_paths = tuple(path.lower().replace("\\", "/") for path in action.affected_paths)
@@ -72,7 +69,7 @@ def referenced_path_matches_slice(action: ActionEvent, referenced_path: tuple[st
     return any(any(term.lower().replace("\\", "/") in path for path in affected_paths) for term in referenced_path)
 
 
-def action_matches_slice(action: ActionEvent, semantic_slice: SemanticStatsSlice) -> bool:
+def action_matches_slice(action: Action, semantic_slice: SemanticStatsSlice) -> bool:
     if not referenced_path_matches_slice(action, semantic_slice.referenced_path):
         return False
 
@@ -99,13 +96,13 @@ def action_matches_slice(action: ActionEvent, semantic_slice: SemanticStatsSlice
     return tool_name not in blocked_tool_terms
 
 
-def filtered_action_events(
-    facts: ConversationSemanticFacts,
+def filtered_actions(
+    facts: SessionSemanticFacts,
     semantic_slice: SemanticStatsSlice,
-) -> tuple[ActionEvent, ...]:
+) -> tuple[Action, ...]:
     if not semantic_slice.has_filters():
-        return facts.action_events
-    return tuple(action for action in facts.action_events if action_matches_slice(action, semantic_slice))
+        return facts.actions
+    return tuple(action for action in facts.actions if action_matches_slice(action, semantic_slice))
 
 
 # ---------------------------------------------------------------------------
@@ -113,56 +110,18 @@ def filtered_action_events(
 # ---------------------------------------------------------------------------
 
 
-async def _load_semantic_stats_conversations(
-    repo: ConversationSemanticStatsStore,
-    conversation_ids: list[str],
-) -> list[Conversation]:
-    if not conversation_ids:
-        return []
-
-    from polylogue.storage.hydrators import conversation_from_records
-
-    records = await repo.get_conversations_batch(conversation_ids)
-    messages_by_conversation = await repo.get_messages_batch(conversation_ids)
-
-    attachments_by_conversation: dict[str, list[AttachmentRecord]] = {}
-    attachments_result: Awaitable[dict[str, list[AttachmentRecord]]] | dict[str, list[AttachmentRecord]] | object
-    attachments_result = repo.get_attachments_batch(conversation_ids)
-    if isinstance(attachments_result, Awaitable):
-        attachments_by_conversation = await attachments_result
-    elif isinstance(attachments_result, dict):
-        attachments_by_conversation = attachments_result
-
-    records_by_id = {str(record.conversation_id): record for record in records}
-    hydrated: list[Conversation] = []
-    for conversation_id in conversation_ids:
-        record = records_by_id.get(conversation_id)
-        if record is None:
-            continue
-        hydrated.append(
-            conversation_from_records(
-                record,
-                messages_by_conversation.get(conversation_id, []),
-                attachments_by_conversation.get(conversation_id, []),
-            )
-        )
-    return hydrated
-
-
 async def output_stats_by_semantic_summaries(
     env: AppEnv,
-    summaries: list[ConversationSummary],
-    repo: ConversationSemanticStatsStore,
+    summaries: list[SessionSummary],
     dimension: str,
     *,
-    selection: ConversationQuerySpec | None = None,
+    selection: SessionQuerySpec | None = None,
     output_format: str = "text",
     batch_size: int = 50,
 ) -> None:
     await output_stats_by_semantic_ids(
         env,
         [str(summary.id) for summary in summaries],
-        repo,
         dimension,
         selection=selection,
         output_format=output_format,
@@ -172,18 +131,16 @@ async def output_stats_by_semantic_summaries(
 
 async def output_stats_by_semantic_query(
     env: AppEnv,
-    conversation_ids: list[str],
-    repo: ConversationSemanticStatsStore,
+    session_ids: list[str],
     dimension: str,
     *,
-    selection: ConversationQuerySpec | None = None,
+    selection: SessionQuerySpec | None = None,
     output_format: str = "text",
     batch_size: int = 50,
 ) -> None:
     await output_stats_by_semantic_ids(
         env,
-        conversation_ids,
-        repo,
+        session_ids,
         dimension,
         selection=selection,
         output_format=output_format,
@@ -193,11 +150,10 @@ async def output_stats_by_semantic_query(
 
 async def output_stats_by_semantic_ids(
     env: AppEnv,
-    conversation_ids: list[str],
-    repo: ConversationSemanticStatsStore,
+    session_ids: list[str],
     dimension: str,
     *,
-    selection: ConversationQuerySpec | None = None,
+    selection: SessionQuerySpec | None = None,
     output_format: str = "text",
     batch_size: int = 50,
 ) -> None:
@@ -207,7 +163,7 @@ async def output_stats_by_semantic_ids(
 
     if dimension not in {"action", "tool"}:
         raise ValueError(f"Unsupported semantic stats dimension: {dimension}")
-    if not conversation_ids:
+    if not session_ids:
         emit_no_results(env, selection=selection, output_format=output_format)
 
     semantic_slice = SemanticStatsSlice.from_selection(selection)
@@ -215,35 +171,23 @@ async def output_stats_by_semantic_ids(
     matched_facts = 0
     matched_messages = 0
     key_func = (lambda action: action.kind.value) if dimension == "action" else normalized_tool_name
-    action_read_model_ready = (await repo.get_action_event_artifact_state()).ready
 
-    for offset in range(0, len(conversation_ids), batch_size):
-        batch_ids = conversation_ids[offset : offset + batch_size]
-        if action_read_model_ready:
-            action_events_by_conversation = await repo.get_action_events_batch(batch_ids)
-            conversation_actions = {
-                conversation_id: tuple(
-                    action
-                    for action in action_events_by_conversation.get(conversation_id, ())
-                    if action_matches_slice(action, semantic_slice)
-                )
-                for conversation_id in batch_ids
-            }
-        else:
-            from polylogue.archive.semantic.facts import build_conversation_semantic_facts
+    poly = env.polylogue
+    for offset in range(0, len(session_ids), batch_size):
+        batch_ids = session_ids[offset : offset + batch_size]
+        # Actions are derived on read from each session's tool blocks.
+        actions_by_session = await poly.get_actions_batch(batch_ids)
+        session_actions = {
+            session_id: tuple(
+                action
+                for action in actions_by_session.get(session_id, ())
+                if action_matches_slice(action, semantic_slice)
+            )
+            for session_id in batch_ids
+        }
 
-            conversations = await _load_semantic_stats_conversations(repo, batch_ids)
-            conversation_actions = {
-                str(conversation.id): tuple(
-                    action
-                    for action in build_conversation_semantic_facts(conversation).action_events
-                    if action_matches_slice(action, semantic_slice)
-                )
-                for conversation in conversations
-            }
-
-        for conversation_id in batch_ids:
-            filtered_actions = conversation_actions.get(conversation_id, ())
+        for session_id in batch_ids:
+            filtered_actions = session_actions.get(session_id, ())
             group_counts = Counter(key_func(action) for action in filtered_actions)
             if not group_counts:
                 groups["none"]["convs"] += 1
@@ -263,7 +207,7 @@ async def output_stats_by_semantic_ids(
     rows = [
         {
             "group": key,
-            "conversations": stats["convs"],
+            "sessions": stats["convs"],
             "facts": stats["facts"],
             "messages": stats["msgs"],
         }
@@ -271,7 +215,7 @@ async def output_stats_by_semantic_ids(
     ]
     summary = {
         "group": "MATCHED",
-        "conversations": len(conversation_ids),
+        "sessions": len(session_ids),
         "facts": matched_facts,
         "messages": matched_messages,
     }
@@ -284,7 +228,7 @@ async def output_stats_by_semantic_ids(
     ):
         return
 
-    env.ui.console.print(f"\nMatched: {len(conversation_ids)} conversations (by {dimension})\n")
+    env.ui.console.print(f"\nMatched: {len(session_ids)} sessions (by {dimension})\n")
     table = Table(show_header=True, header_style="bold", box=None, pad_edge=False)
     table.add_column("Group", style="bold", min_width=12)
     table.add_column("Convs", justify="right")
@@ -293,25 +237,25 @@ async def output_stats_by_semantic_ids(
     for row in rows:
         table.add_row(
             str(row["group"]),
-            f"{row['conversations']:,}",
+            f"{row['sessions']:,}",
             f"{row['facts']:,}",
             f"{row['messages']:,}",
         )
     table.add_section()
     table.add_row(
         "[bold]MATCHED[/]",
-        f"[bold]{summary['conversations']:,}[/]",
+        f"[bold]{summary['sessions']:,}[/]",
         f"[bold]{summary['facts']:,}[/]",
         f"[bold]{summary['messages']:,}[/]",
     )
     env.ui.console.print(table)
-    env.ui.console.print(f"Note: conversations may appear in multiple {dimension} groups.")
+    env.ui.console.print(f"Note: sessions may appear in multiple {dimension} groups.")
 
 
 __all__ = [
     "SemanticStatsSlice",
     "action_matches_slice",
-    "filtered_action_events",
+    "filtered_actions",
     "normalized_tool_name",
     "output_stats_by_semantic_ids",
     "output_stats_by_semantic_query",

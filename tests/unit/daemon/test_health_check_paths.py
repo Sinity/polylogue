@@ -40,6 +40,7 @@ from polylogue.daemon.health import (
     _check_disk_space_fast,
     _check_embedding_coverage_expensive,
     _check_fts_readiness_medium,
+    _check_fts_trigger_drift_fast,
     _check_insight_freshness_medium,
     _check_raw_failures_medium,
     _check_repeated_stage_failures_medium,
@@ -49,8 +50,11 @@ from polylogue.daemon.health import (
     _check_wal_size_fast,
 )
 from polylogue.daemon.live_ingest_attempt_models import LiveIngestAttemptSummary
-from polylogue.paths import archive_root, db_path
+from polylogue.paths import archive_root, index_db_path
 from polylogue.storage.blob_integrity import BlobIntegrityFinding, BlobIntegrityReport
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.ops_write import record_ingest_attempt
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -65,24 +69,63 @@ def _reset_failure_counts() -> Iterator[None]:
     health_module._failure_counts.clear()
 
 
-def _init_messages_db(path: Path, *, fts_rows: int = 0, message_rows: int = 0) -> None:
-    """Create a minimal DB with ``messages`` and ``messages_fts``.
-
-    The FTS table is created without ``content=`` linkage so its row count
-    can drift independently of ``messages`` — that drift is what the
-    ``fts_readiness`` check measures.
-    """
+def _init_blocks_db(path: Path, *, fts_rows: int = 0, block_rows: int = 0) -> None:
+    """Seed current ``blocks`` / ``messages_fts`` rows for readiness checks."""
+    initialize_archive_database(path, ArchiveTier.INDEX)
     conn = sqlite3.connect(str(path))
     try:
-        conn.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY, text TEXT)")
-        conn.execute("CREATE VIRTUAL TABLE messages_fts USING fts5(text)")
-        conn.execute("CREATE TRIGGER messages_fts_ai AFTER INSERT ON messages BEGIN SELECT 1; END")
-        conn.execute("CREATE TRIGGER messages_fts_ad AFTER DELETE ON messages BEGIN SELECT 1; END")
-        conn.execute("CREATE TRIGGER messages_fts_au AFTER UPDATE ON messages BEGIN SELECT 1; END")
-        for i in range(message_rows):
-            conn.execute("INSERT INTO messages(id, text) VALUES (?, ?)", (i + 1, f"body {i}"))
-        for i in range(fts_rows):
-            conn.execute("INSERT INTO messages_fts(rowid, text) VALUES (?, ?)", (i + 1, f"body {i}"))
+        for trigger_name in ("messages_fts_ai", "messages_fts_ad", "messages_fts_au"):
+            conn.execute(f"DROP TRIGGER IF EXISTS {trigger_name}")
+        conn.execute("DELETE FROM blocks")
+        for i in range(block_rows):
+            conn.execute(
+                """
+                INSERT INTO blocks(message_id, session_id, position, block_type, text)
+                VALUES (?, ?, ?, 'text', ?)
+                """,
+                (f"m{i}", f"s{i}", 0, f"body {i}"),
+            )
+        for row in conn.execute(
+            "SELECT rowid, block_id, message_id, session_id, block_type, text FROM blocks ORDER BY rowid LIMIT ?",
+            (fts_rows,),
+        ):
+            conn.execute(
+                """
+                INSERT INTO messages_fts(rowid, block_id, message_id, session_id, block_type, text)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                tuple(row),
+            )
+        for i in range(block_rows, fts_rows):
+            conn.execute(
+                """
+                INSERT INTO messages_fts(rowid, block_id, message_id, session_id, block_type, text)
+                VALUES (?, ?, ?, ?, 'text', ?)
+                """,
+                (i + 1, f"stale-{i}", f"missing-m{i}", f"missing-s{i}", f"stale body {i}"),
+            )
+        conn.executescript(
+            """
+            CREATE TRIGGER messages_fts_ai
+            AFTER INSERT ON blocks WHEN new.search_text != '' BEGIN
+                INSERT INTO messages_fts(rowid, block_id, message_id, session_id, block_type, text)
+                VALUES (new.rowid, new.block_id, new.message_id, new.session_id, new.block_type, new.search_text);
+            END;
+
+            CREATE TRIGGER messages_fts_ad
+            AFTER DELETE ON blocks WHEN old.search_text != '' BEGIN
+                DELETE FROM messages_fts WHERE rowid = old.rowid;
+            END;
+
+            CREATE TRIGGER messages_fts_au
+            AFTER UPDATE ON blocks BEGIN
+                DELETE FROM messages_fts WHERE rowid = old.rowid;
+                INSERT INTO messages_fts(rowid, block_id, message_id, session_id, block_type, text)
+                SELECT new.rowid, new.block_id, new.message_id, new.session_id, new.block_type, new.search_text
+                WHERE new.search_text != '';
+            END;
+            """
+        )
         conn.commit()
     finally:
         conn.close()
@@ -172,7 +215,7 @@ def test_wal_size_ok_when_no_wal_file(
 def test_wal_size_error_when_oversized(
     workspace_env: dict[str, Path],
 ) -> None:
-    dbf = db_path()
+    dbf = index_db_path()
     dbf.parent.mkdir(parents=True, exist_ok=True)
     wal = dbf.with_suffix(".db-wal")
     # Use sparse write to allocate > 200 MB cheaply on tmpfs.
@@ -228,19 +271,16 @@ def test_source_availability_warning_when_missing(
 def test_schema_version_ok_when_db_absent(
     workspace_env: dict[str, Path],
 ) -> None:
-    # Fresh install: no DB yet — check should treat as OK (will bootstrap).
     alert = _check_schema_version_fast()
     assert alert.severity == HealthSeverity.OK
-    assert "no database yet" in alert.message
+    assert "archive tier layout matches runtime" in alert.message
 
 
-def test_schema_version_critical_on_incompatible_version(
+def test_schema_version_critical_when_archive_version_differs(
     workspace_env: dict[str, Path],
 ) -> None:
-    dbf = db_path()
+    dbf = index_db_path()
     dbf.parent.mkdir(parents=True, exist_ok=True)
-    # Write a DB whose user_version is far beyond runtime SCHEMA_VERSION,
-    # ensuring decide_schema_bootstrap classifies it as version_mismatch.
     conn = sqlite3.connect(str(dbf))
     try:
         conn.execute("PRAGMA user_version = 99999")
@@ -251,7 +291,8 @@ def test_schema_version_critical_on_incompatible_version(
     alert = _check_schema_version_fast()
     assert alert.severity == HealthSeverity.CRITICAL
     assert alert.consecutive_failures == 1
-    assert "incompatible" in alert.message.lower()
+    assert "tier user_version mismatch" in alert.message
+    assert "index.db:99999" in alert.message
 
 
 # ---------------------------------------------------------------------------
@@ -262,9 +303,9 @@ def test_schema_version_critical_on_incompatible_version(
 def test_fts_readiness_ok(
     workspace_env: dict[str, Path],
 ) -> None:
-    dbf = db_path()
+    dbf = index_db_path()
     dbf.parent.mkdir(parents=True, exist_ok=True)
-    _init_messages_db(dbf)
+    _init_blocks_db(dbf)
     alert = _check_fts_readiness_medium()
     assert alert.severity == HealthSeverity.OK
     assert "up to date" in alert.message
@@ -273,10 +314,9 @@ def test_fts_readiness_ok(
 def test_fts_readiness_error_when_large_gap(
     workspace_env: dict[str, Path],
 ) -> None:
-    dbf = db_path()
+    dbf = index_db_path()
     dbf.parent.mkdir(parents=True, exist_ok=True)
-    # 100 messages, 0 FTS rows → gap = 100 (100%), well above 10% ERROR threshold.
-    _init_messages_db(dbf, message_rows=100, fts_rows=0)
+    _init_blocks_db(dbf, block_rows=100, fts_rows=0)
     alert = _check_fts_readiness_medium()
     assert alert.severity == HealthSeverity.ERROR
     assert alert.consecutive_failures == 1
@@ -288,9 +328,9 @@ def test_fts_readiness_counts_docsize_not_virtual_table(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Production status must not count the FTS5 virtual table directly."""
-    dbf = db_path()
+    dbf = index_db_path()
     dbf.parent.mkdir(parents=True, exist_ok=True)
-    _init_messages_db(dbf, message_rows=3, fts_rows=3)
+    _init_blocks_db(dbf, block_rows=3, fts_rows=3)
 
     original_connect = sqlite3.connect
     queries: list[str] = []
@@ -323,21 +363,29 @@ def test_fts_readiness_counts_docsize_not_virtual_table(
     assert any("messages_fts_docsize" in query for query in queries)
 
 
+def test_fts_trigger_drift_checks_archive_blocks_triggers(
+    workspace_env: dict[str, Path],
+) -> None:
+    dbf = index_db_path()
+    dbf.parent.mkdir(parents=True, exist_ok=True)
+    initialize_archive_database(dbf, ArchiveTier.INDEX)
+    with sqlite3.connect(dbf) as conn:
+        conn.execute("DROP TRIGGER messages_fts_ad")
+        conn.commit()
+
+    alert = _check_fts_trigger_drift_fast()
+
+    assert alert.severity == HealthSeverity.CRITICAL
+    assert "messages_fts_ad" in alert.message
+
+
 def test_fts_readiness_does_not_accept_stats_when_messages_drift(
     workspace_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    dbf = db_path()
+    dbf = index_db_path()
     dbf.parent.mkdir(parents=True, exist_ok=True)
-    _init_messages_db(dbf, message_rows=999, fts_rows=3)
-    conn = sqlite3.connect(str(dbf))
-    try:
-        conn.execute("CREATE TABLE conversation_stats (conversation_id TEXT PRIMARY KEY, message_count INTEGER)")
-        conn.execute("INSERT INTO conversation_stats VALUES ('c1', 3)")
-        conn.commit()
-    finally:
-        conn.close()
-
+    _init_blocks_db(dbf, block_rows=999, fts_rows=3)
     original_connect = sqlite3.connect
     queries: list[str] = []
 
@@ -349,7 +397,7 @@ def test_fts_readiness_does_not_accept_stats_when_messages_drift(
             normalized = " ".join(sql.split()).lower()
             queries.append(normalized)
             if normalized == "select count(*) from messages":
-                raise AssertionError("health status must use conversation_stats when available")
+                raise AssertionError("health status must not route FTS readiness through messages")
             return self._inner.execute(sql, *args, **kwargs)
 
         def close(self) -> None:
@@ -373,17 +421,9 @@ def test_fts_readiness_does_not_accept_stats_when_messages_drift(
 def test_fts_readiness_flags_stale_extra_rows(
     workspace_env: dict[str, Path],
 ) -> None:
-    dbf = db_path()
+    dbf = index_db_path()
     dbf.parent.mkdir(parents=True, exist_ok=True)
-    _init_messages_db(dbf, message_rows=3, fts_rows=5)
-    conn = sqlite3.connect(str(dbf))
-    try:
-        conn.execute("CREATE TABLE conversation_stats (conversation_id TEXT PRIMARY KEY, message_count INTEGER)")
-        conn.execute("INSERT INTO conversation_stats VALUES ('c1', 3)")
-        conn.commit()
-    finally:
-        conn.close()
-
+    _init_blocks_db(dbf, block_rows=3, fts_rows=5)
     alert = _check_fts_readiness_medium()
 
     assert alert.severity == HealthSeverity.ERROR
@@ -520,7 +560,7 @@ def _init_live_ingest_attempt(dbf: Path, *, total: int, failed: int) -> None:
 def test_repeated_stage_failures_ok(
     workspace_env: dict[str, Path],
 ) -> None:
-    dbf = db_path()
+    dbf = index_db_path()
     dbf.parent.mkdir(parents=True, exist_ok=True)
     _init_live_ingest_attempt(dbf, total=5, failed=0)
     alert = _check_repeated_stage_failures_medium()
@@ -530,13 +570,63 @@ def test_repeated_stage_failures_ok(
 def test_repeated_stage_failures_error_when_many_recent_failures(
     workspace_env: dict[str, Path],
 ) -> None:
-    dbf = db_path()
+    dbf = index_db_path()
     dbf.parent.mkdir(parents=True, exist_ok=True)
     _init_live_ingest_attempt(dbf, total=10, failed=5)
     alert = _check_repeated_stage_failures_medium()
     assert alert.severity == HealthSeverity.ERROR
     assert alert.consecutive_failures == 1
     assert "recent attempts failed" in alert.message
+
+
+def test_repeated_stage_failures_reads_ops_tier_from_archive_tiers(
+    workspace_env: dict[str, Path],
+) -> None:
+    dbf = index_db_path()
+    ops_db = dbf.with_name("ops.db")
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
+    with sqlite3.connect(ops_db) as conn:
+        for i in range(5):
+            record_ingest_attempt(
+                conn,
+                attempt_id=f"failed-{i}",
+                status="failed",
+                phase="convergence",
+                started_at_ms=1_770_000_000_000 + i,
+                error_message="boom",
+            )
+
+    alert = _check_repeated_stage_failures_medium()
+
+    assert alert.severity == HealthSeverity.ERROR
+    assert "5/5 recent attempts failed" in alert.message
+    assert "phase=convergence: boom" in alert.message
+
+
+def test_repeated_stage_failures_prefers_populated_archive_ops(
+    workspace_env: dict[str, Path],
+) -> None:
+    dbf = index_db_path()
+    dbf.parent.mkdir(parents=True, exist_ok=True)
+    _init_live_ingest_attempt(dbf, total=5, failed=0)
+    ops_db = dbf.with_name("ops.db")
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
+    with sqlite3.connect(ops_db) as conn:
+        for i in range(3):
+            record_ingest_attempt(
+                conn,
+                attempt_id=f"failed-{i}",
+                status="failed",
+                phase="parse",
+                started_at_ms=1_770_000_000_000 + i,
+                error_message="v1 boom",
+            )
+
+    alert = _check_repeated_stage_failures_medium()
+
+    assert alert.severity == HealthSeverity.ERROR
+    assert "3/3 recent attempts failed" in alert.message
+    assert "v1 boom" in alert.message
 
 
 # ---------------------------------------------------------------------------
@@ -549,7 +639,7 @@ def test_db_integrity_ok_degraded_and_recovery(
     workspace_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    dbf = db_path()
+    dbf = index_db_path()
     dbf.parent.mkdir(parents=True, exist_ok=True)
     # Create a valid empty DB so the real PRAGMA integrity_check executes.
     sqlite3.connect(str(dbf)).close()

@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 def _xdg_path(env_var: str, fallback: Path) -> Path:
-    raw = os.environ.get(env_var, "").strip()  # XDG/legacy env kept for path bootstrapping
+    raw = os.environ.get(env_var, "").strip()
     if raw:
         return Path(raw).expanduser()
     return fallback
@@ -54,8 +54,49 @@ def state_home() -> Path:
 
 
 def db_path() -> Path:
-    """Default database path."""
-    return data_home() / "polylogue.db"
+    """Default archive index database path."""
+    return index_db_path()
+
+
+def source_db_path() -> Path:
+    """source-log database path."""
+    return archive_root() / "source.db"
+
+
+def index_db_path() -> Path:
+    """projection/index database path."""
+    return archive_root() / "index.db"
+
+
+def embeddings_db_path() -> Path:
+    """semantic-index database path."""
+    return archive_root() / "embeddings.db"
+
+
+def resolve_active_index_db_path(*, db_anchor: Path, index_db: Path) -> Path:
+    """Resolve the active query/index database path."""
+    if db_anchor.name == "index.db":
+        return db_anchor
+    return index_db
+
+
+def archive_file_set_index_available_for_paths(*, archive_root_path: Path, db_anchor: Path) -> bool:
+    """Return whether routing is active."""
+    del archive_root_path
+    del db_anchor
+    return True
+
+
+def archive_file_set_root_for_paths(*, archive_root_path: Path, db_anchor: Path) -> Path:
+    """Return the configured archive root."""
+    if db_anchor.name == "index.db":
+        return db_anchor.parent
+    return archive_root_path
+
+
+def active_index_db_path() -> Path:
+    """Currently active query/index database path."""
+    return index_db_path()
 
 
 def browser_capture_spool_root() -> Path:

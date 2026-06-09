@@ -26,18 +26,18 @@ surfaces:
     path: polylogue/storage/sqlite/connection.py
 
 operations:
-  - name: list_conversations
+  - name: list_sessions
     cli: true
     mcp: true
     api: true
     sync: true
-  - name: search_conversations
+  - name: search_sessions
     cli: true
     mcp: true
     api: true
     sync: true
     notes: "FTS5 + hybrid (RRF fusion)"
-  - name: get_conversation
+  - name: get_session
     cli: false
     mcp: true
     api: true
@@ -75,7 +75,7 @@ operations:
 
 parity_checks:
   filter_consistency:
-    description: "All surfaces apply the same filter chain (ConversationFilter)"
+    description: "All surfaces apply the same filter chain (SessionFilter)"
     status: established
     path: polylogue/archive/filter/filters.py
   error_normalization:

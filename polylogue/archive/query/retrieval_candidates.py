@@ -1,34 +1,32 @@
-"""Candidate selection and action-read-model readiness for query retrieval."""
+"""Candidate selection for query retrieval."""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Literal, overload
 
-from polylogue.archive.query.support import provider_values
+from polylogue.archive.query.support import _origins_as_provider_tokens
 
 if TYPE_CHECKING:
-    from polylogue.archive.models import Conversation, ConversationSummary
-    from polylogue.archive.query.plan import ConversationQueryPlan
-    from polylogue.protocols import ConversationQueryRuntimeStore
-    from polylogue.storage.action_events.artifacts import ActionEventArtifactState
-    from polylogue.storage.query_models import ConversationRecordQuery
+    from polylogue.archive.models import Session, SessionSummary
+    from polylogue.archive.query.plan import SessionQueryPlan
+    from polylogue.protocols import SessionQueryRuntimeStore
+    from polylogue.storage.query_models import SessionRecordQuery
 
 
-def candidate_record_query(plan: ConversationQueryPlan) -> tuple[ConversationRecordQuery, bool]:
+def candidate_record_query(plan: SessionQueryPlan) -> tuple[SessionRecordQuery, bool]:
     record_query = plan.record_query
     return record_query.without_unstable_semantic_filters(), plan.sql_pushed
 
 
 async def candidate_record_query_for(
-    plan: ConversationQueryPlan,
-    repository: ConversationQueryRuntimeStore,
-) -> tuple[ConversationRecordQuery, bool]:
-    if await action_event_rows_ready(plan, repository):
-        return plan.record_query, plan.sql_pushed
-    return plan.record_query.without_unstable_semantic_filters(), False
+    plan: SessionQueryPlan,
+    repository: SessionQueryRuntimeStore,
+) -> tuple[SessionRecordQuery, bool]:
+    del repository
+    return plan.record_query, plan.sql_pushed
 
 
-def uses_action_read_model(plan: ConversationQueryPlan) -> bool:
+def uses_actions(plan: SessionQueryPlan) -> bool:
     return bool(
         plan.referenced_path
         or plan.action_terms
@@ -40,66 +38,58 @@ def uses_action_read_model(plan: ConversationQueryPlan) -> bool:
     )
 
 
-async def _action_event_state(
-    plan: ConversationQueryPlan,
-    repository: ConversationQueryRuntimeStore,
-) -> ActionEventArtifactState | None:
-    if not uses_action_read_model(plan):
-        return None
-    return await repository.get_action_event_artifact_state()
-
-
-async def action_event_rows_ready(
-    plan: ConversationQueryPlan,
-    repository: ConversationQueryRuntimeStore,
+async def actions_ready(
+    plan: SessionQueryPlan,
+    repository: SessionQueryRuntimeStore,
 ) -> bool:
-    state = await _action_event_state(plan, repository)
-    return True if state is None else state.rows_ready
+    del plan, repository
+    return True
 
 
 async def action_search_ready(
-    plan: ConversationQueryPlan,
-    repository: ConversationQueryRuntimeStore,
+    plan: SessionQueryPlan,
+    repository: SessionQueryRuntimeStore,
 ) -> bool:
-    state = await _action_event_state(plan, repository)
-    return True if state is None else state.ready
+    del plan, repository
+    return True
 
 
-async def can_use_action_event_stats_with(
-    plan: ConversationQueryPlan,
-    repository: ConversationQueryRuntimeStore,
+async def can_use_action_stats_with(
+    plan: SessionQueryPlan,
+    repository: SessionQueryRuntimeStore,
 ) -> bool:
-    return plan.can_use_action_event_stats() and await action_event_rows_ready(plan, repository)
+    del repository
+    return plan.can_use_action_stats()
 
 
 async def fetch_record_query_for(
-    plan: ConversationQueryPlan,
-    repository: ConversationQueryRuntimeStore,
-) -> ConversationRecordQuery:
+    plan: SessionQueryPlan,
+    repository: SessionQueryRuntimeStore,
+) -> SessionRecordQuery:
     record_query, _ = await candidate_record_query_for(plan, repository)
     return record_query.with_limit(plan.effective_fetch_limit())
 
 
-def should_batch_post_filter_fetch(plan: ConversationQueryPlan) -> bool:
+def should_batch_post_filter_fetch(plan: SessionQueryPlan) -> bool:
     return bool(
         plan.limit is not None
         and plan.limit > 0
         and plan.has_post_filters()
         and not plan.fts_terms
-        and plan.conversation_id is None
+        and plan.session_id is None
         and plan.sample is None
         and plan.sort == "date"
         and not plan.reverse
     )
 
 
-def candidate_batch_limit(plan: ConversationQueryPlan) -> int:
+def candidate_batch_limit(plan: SessionQueryPlan) -> int:
     if plan.limit is None:
         return 100
     return min(max(plan.limit * 2, 100), 200)
 
 
-def search_limit(plan: ConversationQueryPlan) -> int:
+def search_limit(plan: SessionQueryPlan) -> int:
     # When no explicit --limit is set (e.g. the CLI query-first path with a
     # bare token), effective_fetch_limit() is None. Fall back to the shared
     # MAX_QUERY_LIMIT ceiling rather than an unbounded 10000 fetch (#1749).
@@ -111,64 +101,64 @@ def search_limit(plan: ConversationQueryPlan) -> int:
 
 @overload
 async def fetch_direct_id(
-    plan: ConversationQueryPlan,
-    repository: ConversationQueryRuntimeStore,
+    plan: SessionQueryPlan,
+    repository: SessionQueryRuntimeStore,
     *,
     summaries: Literal[False],
-) -> list[Conversation]: ...
+) -> list[Session]: ...
 
 
 @overload
 async def fetch_direct_id(
-    plan: ConversationQueryPlan,
-    repository: ConversationQueryRuntimeStore,
+    plan: SessionQueryPlan,
+    repository: SessionQueryRuntimeStore,
     *,
     summaries: Literal[True],
-) -> list[ConversationSummary]: ...
+) -> list[SessionSummary]: ...
 
 
 async def fetch_direct_id(
-    plan: ConversationQueryPlan,
-    repository: ConversationQueryRuntimeStore,
+    plan: SessionQueryPlan,
+    repository: SessionQueryRuntimeStore,
     *,
     summaries: bool,
-) -> list[Conversation] | list[ConversationSummary]:
-    if not plan.conversation_id or plan.fts_terms:
+) -> list[Session] | list[SessionSummary]:
+    if not plan.session_id or plan.fts_terms:
         return []
-    resolved_id = await repository.resolve_id(plan.conversation_id)
+    resolved_id = await repository.resolve_id(plan.session_id)
     if not resolved_id:
         return []
     if summaries:
         summary = await repository.get_summary(str(resolved_id))
         return [summary] if summary is not None else []
-    conversation = await repository.get(str(resolved_id))
-    return [conversation] if conversation is not None else []
+    session = await repository.get(str(resolved_id))
+    return [session] if session is not None else []
 
 
 @overload
 async def fetch_search_results(
-    plan: ConversationQueryPlan,
-    repository: ConversationQueryRuntimeStore,
+    plan: SessionQueryPlan,
+    repository: SessionQueryRuntimeStore,
     *,
     summaries: Literal[False],
-) -> tuple[bool, list[Conversation]]: ...
+) -> tuple[bool, list[Session]]: ...
 
 
 @overload
 async def fetch_search_results(
-    plan: ConversationQueryPlan,
-    repository: ConversationQueryRuntimeStore,
+    plan: SessionQueryPlan,
+    repository: SessionQueryRuntimeStore,
     *,
     summaries: Literal[True],
-) -> tuple[bool, list[ConversationSummary]]: ...
+) -> tuple[bool, list[SessionSummary]]: ...
 
 
 async def fetch_search_results(
-    plan: ConversationQueryPlan,
-    repository: ConversationQueryRuntimeStore,
+    plan: SessionQueryPlan,
+    repository: SessionQueryRuntimeStore,
     *,
     summaries: bool,
-) -> tuple[bool, list[Conversation] | list[ConversationSummary]]:
+) -> tuple[bool, list[Session] | list[SessionSummary]]:
     if not plan.fts_terms:
         return False, []
     if plan.retrieval_lane == "actions":
@@ -186,7 +176,12 @@ async def fetch_search_results(
         return True, results
 
     query = " ".join(plan.fts_terms)
-    source_names = list(provider_values(plan.providers)) or None
+    # Legacy repository search filters the `sessions.source_name` provider
+    # column; the archive path (archive_execution) filters `origin`. Until the
+    # source_name→origin reconciliation (#1743 Phase 2) moves this SQL onto the
+    # origin column, project the plan's origin tokens back to provider tokens
+    # for this leg.
+    source_names = _origins_as_provider_tokens(plan.origins)
     if summaries:
         summary_results = await repository.search_summaries(
             query,
@@ -194,38 +189,38 @@ async def fetch_search_results(
             providers=source_names,
         )
         return True, summary_results
-    conversation_results = await repository.search(
+    session_results = await repository.search(
         query,
         limit=search_limit(plan),
         providers=source_names,
     )
-    return True, conversation_results
+    return True, session_results
 
 
 @overload
 async def fetch_candidates(
-    plan: ConversationQueryPlan,
-    repository: ConversationQueryRuntimeStore,
+    plan: SessionQueryPlan,
+    repository: SessionQueryRuntimeStore,
     *,
     summaries: Literal[False],
-) -> tuple[list[Conversation], bool]: ...
+) -> tuple[list[Session], bool]: ...
 
 
 @overload
 async def fetch_candidates(
-    plan: ConversationQueryPlan,
-    repository: ConversationQueryRuntimeStore,
+    plan: SessionQueryPlan,
+    repository: SessionQueryRuntimeStore,
     *,
     summaries: Literal[True],
-) -> tuple[list[ConversationSummary], bool]: ...
+) -> tuple[list[SessionSummary], bool]: ...
 
 
 async def fetch_candidates(
-    plan: ConversationQueryPlan,
-    repository: ConversationQueryRuntimeStore,
+    plan: SessionQueryPlan,
+    repository: SessionQueryRuntimeStore,
     *,
     summaries: bool,
-) -> tuple[list[Conversation] | list[ConversationSummary], bool]:
+) -> tuple[list[Session] | list[SessionSummary], bool]:
     if summaries:
         direct_summaries = await fetch_direct_id(plan, repository, summaries=True)
         if direct_summaries:
@@ -238,13 +233,13 @@ async def fetch_candidates(
         request, sql_pushed = await candidate_record_query_for(plan, repository)
         request = request.with_limit(plan.effective_fetch_limit())
         return await repository.list_summaries_by_query(request), sql_pushed
-    direct_conversations = await fetch_direct_id(plan, repository, summaries=False)
-    if direct_conversations:
-        return direct_conversations, False
+    direct_sessions = await fetch_direct_id(plan, repository, summaries=False)
+    if direct_sessions:
+        return direct_sessions, False
 
-    used_search, conversation_search_results = await fetch_search_results(plan, repository, summaries=False)
+    used_search, session_search_results = await fetch_search_results(plan, repository, summaries=False)
     if used_search:
-        return conversation_search_results, False
+        return session_search_results, False
 
     request, sql_pushed = await candidate_record_query_for(plan, repository)
     request = request.with_limit(plan.effective_fetch_limit())
@@ -252,9 +247,9 @@ async def fetch_candidates(
 
 
 __all__ = [
-    "action_event_rows_ready",
     "action_search_ready",
-    "can_use_action_event_stats_with",
+    "actions_ready",
+    "can_use_action_stats_with",
     "candidate_batch_limit",
     "candidate_record_query",
     "candidate_record_query_for",
@@ -264,5 +259,5 @@ __all__ = [
     "fetch_search_results",
     "search_limit",
     "should_batch_post_filter_fetch",
-    "uses_action_read_model",
+    "uses_actions",
 ]

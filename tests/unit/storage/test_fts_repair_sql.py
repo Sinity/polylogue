@@ -6,52 +6,73 @@ import sqlite3
 
 from polylogue.storage.fts.fts_lifecycle import repair_message_fts_index_sync, restore_fts_triggers_sync
 from polylogue.storage.fts.sql import (
-    ACTION_FTS_REBUILD_SQL,
-    delete_action_rows_sql,
-    delete_conversation_rows_sql,
-    insert_action_rows_sql,
-    insert_conversation_rows_sql,
-    insert_missing_action_rows_sql,
+    delete_session_rows_sql,
+    insert_session_rows_sql,
 )
-from tests.infra.storage_records import make_conversation, make_message, store_records
 
 
-def test_incremental_fts_repair_deletes_via_base_rowid(test_conn: sqlite3.Connection) -> None:
-    """Incremental FTS repair must not filter FTS5 virtual tables by conversation_id."""
-    message_delete_sql = " ".join(delete_conversation_rows_sql(1).split())
-    action_delete_sql = " ".join(delete_action_rows_sql(1).split())
+def _seed_text_block(conn: sqlite3.Connection, *, native_session_id: str, native_message_id: str, text: str) -> str:
+    origin = "unknown-export"
+    session_id = f"{origin}:{native_session_id}"
+    message_id = f"{session_id}:{native_message_id}"
+    content_hash = b"x" * 32
+    conn.execute(
+        "INSERT INTO sessions (native_id, origin, title, content_hash) VALUES (?, ?, ?, ?)",
+        (native_session_id, origin, "Message repair", content_hash),
+    )
+    conn.execute(
+        """
+        INSERT INTO messages (session_id, native_id, position, role, message_type, content_hash)
+        VALUES (?, ?, 0, 'user', 'message', ?)
+        """,
+        (session_id, native_message_id, content_hash),
+    )
+    conn.execute(
+        """
+        INSERT INTO blocks (message_id, session_id, position, block_type, text)
+        VALUES (?, ?, 0, 'text', ?)
+        """,
+        (message_id, session_id, text),
+    )
+    return message_id
+
+
+def test_incremental_fts_repair_deletes_via_block_rowid(test_conn: sqlite3.Connection) -> None:
+    """Incremental FTS repair is keyed by canonical block rowids."""
+    message_delete_sql = " ".join(delete_session_rows_sql(1).split())
 
     assert "DELETE FROM messages_fts WHERE rowid IN" in message_delete_sql
-    assert "DELETE FROM messages_fts WHERE conversation_id" not in message_delete_sql
-    message_insert_sql = " ".join(insert_conversation_rows_sql(1).split())
-    assert "SELECT DISTINCT conversation_id FROM raw_target_conversations" in message_insert_sql
-    assert "DELETE FROM action_events_fts WHERE rowid IN" in action_delete_sql
-    assert "DELETE FROM action_events_fts WHERE conversation_id" not in action_delete_sql
-    assert "INSERT INTO action_events_fts (rowid," in " ".join(insert_action_rows_sql(1).split())
-    missing_action_sql = " ".join(insert_missing_action_rows_sql(1).split())
-    assert "LEFT JOIN action_events_fts_docsize" in missing_action_sql
-    assert "LEFT JOIN action_events_fts f" not in missing_action_sql
-    # External-content FTS5 rebuild uses the 'rebuild' control insert
-    # rather than re-projecting every column from action_events (#1241).
-    assert "VALUES('rebuild')" in " ".join(ACTION_FTS_REBUILD_SQL.split())
+    assert "DELETE FROM messages_fts WHERE session_id" not in message_delete_sql
+    assert "FROM blocks" in message_delete_sql
+    message_insert_sql = " ".join(insert_session_rows_sql(1).split())
+    assert "SELECT DISTINCT session_id FROM raw_target_sessions" in message_insert_sql
+    assert "INSERT INTO messages_fts (rowid, block_id, message_id, session_id, block_type, text)" in message_insert_sql
 
     plan = "\n".join(
-        row[3] for row in test_conn.execute(f"EXPLAIN QUERY PLAN {delete_conversation_rows_sql(1)}", ("conv1",))
+        row[3]
+        for row in test_conn.execute(
+            f"EXPLAIN QUERY PLAN {delete_session_rows_sql(1)}",
+            ("test:conv1",),
+        )
     )
-    assert "SEARCH messages USING" in plan
+    assert "SEARCH blocks USING" in plan
 
 
-def test_message_fts_repair_dedupes_duplicate_conversation_ids(test_conn: sqlite3.Connection) -> None:
+def test_message_fts_repair_dedupes_duplicate_session_ids(test_conn: sqlite3.Connection) -> None:
     restore_fts_triggers_sync(test_conn)
-    conv = make_conversation("conv-message-repair-dupe", title="Message repair")
-    msg = make_message("msg-message-repair-dupe", "conv-message-repair-dupe", text="repair duplicate needle")
-    store_records(conversation=conv, messages=[msg], attachments=[], conn=test_conn)
+    message_id = _seed_text_block(
+        test_conn,
+        native_session_id="conv-message-repair-dupe",
+        native_message_id="msg-message-repair-dupe",
+        text="repair duplicate needle",
+    )
+    session_id = "unknown-export:conv-message-repair-dupe"
 
     repair_message_fts_index_sync(
         test_conn,
         [
-            "conv-message-repair-dupe",
-            "conv-message-repair-dupe",
+            session_id,
+            session_id,
         ],
     )
 
@@ -59,52 +80,41 @@ def test_message_fts_repair_dedupes_duplicate_conversation_ids(test_conn: sqlite
         """
         SELECT COUNT(*)
         FROM messages_fts_docsize
-        WHERE id = (SELECT rowid FROM messages WHERE message_id = ?)
+        WHERE id = (SELECT rowid FROM blocks WHERE message_id = ?)
         """,
-        ("msg-message-repair-dupe",),
+        (message_id,),
     ).fetchone()
     assert row[0] == 1
 
 
-def test_action_fts_trigger_rowids_track_action_event_rowids(test_conn: sqlite3.Connection) -> None:
-    """Action-event FTS triggers use base-table rowids so rowid deletes are targeted."""
+def test_message_fts_trigger_rowids_track_block_rowids(test_conn: sqlite3.Connection) -> None:
+    """Message FTS triggers use block rowids so rowid deletes are targeted."""
     restore_fts_triggers_sync(test_conn)
-    conv = make_conversation("conv-action-rowid", title="Action rowid")
-    msg = make_message("msg-action-rowid", "conv-action-rowid", text="Ran command")
-    store_records(conversation=conv, messages=[msg], attachments=[], conn=test_conn)
-
-    test_conn.execute(
-        """
-        INSERT INTO action_events (
-            event_id, conversation_id, message_id, sequence_index,
-            action_kind, normalized_tool_name, search_text
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            "event-action-rowid",
-            "conv-action-rowid",
-            "msg-action-rowid",
-            0,
-            "shell",
-            "bash",
-            "pytest rowid needle",
-        ),
+    message_id = _seed_text_block(
+        test_conn,
+        native_session_id="conv-action-rowid",
+        native_message_id="msg-action-rowid",
+        text="Ran command",
     )
-    row = test_conn.execute(
-        """
-        SELECT ae.rowid AS action_rowid, f.rowid AS fts_rowid
-        FROM action_events ae
-        JOIN action_events_fts f ON f.event_id = ae.event_id
-        WHERE ae.event_id = ?
-        """,
-        ("event-action-rowid",),
-    ).fetchone()
-    assert row is not None
-    assert row["action_rowid"] == row["fts_rowid"]
 
-    test_conn.execute("DELETE FROM action_events WHERE event_id = ?", ("event-action-rowid",))
+    # ``messages_fts`` is a contentless FTS5 table (content=''), so its stored
+    # columns are not retrievable via plain SELECT — only the rowid and MATCH
+    # are. The trigger keys each FTS row by the block rowid; prove the tracking
+    # by matching the indexed text and comparing the matched FTS rowid to the
+    # canonical block rowid.
+    block_rowid = test_conn.execute(
+        "SELECT rowid FROM blocks WHERE message_id = ?",
+        (message_id,),
+    ).fetchone()["rowid"]
+    fts_rowid = test_conn.execute(
+        "SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?",
+        ("command",),
+    ).fetchone()["rowid"]
+    assert fts_rowid == block_rowid
+
+    test_conn.execute("DELETE FROM blocks WHERE message_id = ?", (message_id,))
     remaining = test_conn.execute(
-        "SELECT COUNT(*) FROM action_events_fts WHERE action_events_fts MATCH ?",
-        ("rowid",),
+        "SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH ?",
+        ("command",),
     ).fetchone()[0]
     assert remaining == 0

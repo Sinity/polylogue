@@ -6,7 +6,7 @@
   <a href="https://github.com/sinity/polylogue/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/sinity/polylogue/ci.yml?branch=master&label=ci" alt="CI status"></a>
 </p>
 
-**Polylogue is a local archive and search layer for your AI conversations.**
+**Polylogue is a local archive and search layer for your AI sessions.**
 
 It watches the directories where ChatGPT, Claude, Claude Code, Codex, Gemini,
 and other agents already drop session files, normalizes them into a single
@@ -29,8 +29,8 @@ machine, against your data.
 pip install polylogue                 # also installs polylogued, polylogue-mcp
 polylogue init                        # autodetect chat session roots
 polylogued run &                      # start the ingest daemon + web reader
-polylogue "rate limiter"              # search every provider at once
-polylogue --latest open               # open the most recent conversation
+polylogue "rate limiter"              # search every origin at once
+polylogue --latest open               # open the most recent session
 ```
 
 `polylogue init` scans your home for known session roots (Claude Code, Codex,
@@ -48,8 +48,8 @@ substrate.
 
 Polylogue is that substrate:
 
-- **Search across providers.** One FTS5 query covers every captured
-  session, with composable filters for provider, repo, date, tag, tool use,
+- **Search across origins.** One FTS5 query covers every captured
+  session, with composable filters for origin, repo, date, tag, tool use,
   thinking blocks, paste detection, and semantic actions.
 - **Insights computed once, read many.** Session profiles, work events,
   phases, threads, and day/week summaries are materialized into the same
@@ -58,8 +58,8 @@ Polylogue is that substrate:
 - **Hooks into agent runtimes.** Polylogue installs lifecycle hooks for
   Claude Code and Codex that ingest session events as they happen, instead
   of waiting for post-hoc JSONL discovery.
-- **Built to be inspected.** Schema is fresh-first (no migration chains to
-  guess at), blob storage is content-addressed, and every claim the docs
+- **Built to be inspected.** Schema is fresh-first (no in-place upgrade chain
+  to guess at), blob storage is content-addressed, and every claim the docs
   make is anchored to a verification subject under `proof/`.
 
 ## Architecture at a glance
@@ -97,13 +97,13 @@ The root command is **query-first** — any bare token is treated as a search
 query against your archive:
 
 ```bash
-polylogue "error handling"                       # FTS search across all providers
-polylogue -p claude-code --since "last week"     # filter chain
+polylogue "error handling"                       # FTS search across all origins
+polylogue --origin claude-code-session --since "last week"  # filter chain
 polylogue --has-tool-use --typed-only list       # precomputed analytics
 polylogue --action file_edit --tool bash list    # semantic action filters
 polylogue --similar "sqlite locking" --limit 5   # vector-similar (opt-in)
 polylogue --latest open                          # open most recent in browser
-polylogue stats --by provider                    # aggregates
+polylogue stats --by origin                      # aggregates
 ```
 
 Pipeline and maintenance verbs are explicit:
@@ -126,14 +126,14 @@ narrative first-run walkthrough.
 ### Daemon web reader
 
 `polylogued run` starts an HTTP reader at `127.0.0.1` (enabled by default; opt out with `--no-api`) that
-serves live archive search, conversation rendering, and session insight
+serves live archive search, session rendering, and session insight
 views. The reader uses the same query layer as the CLI, so any filter you
 construct on the command line works in the web UI.
 
 ### MCP bridge
 
 `polylogue-mcp --role read` exposes the archive as a Model Context Protocol
-server so AI assistants can search, list, and retrieve conversations from
+server so AI assistants can search, list, and retrieve sessions from
 their own sessions. See [docs/mcp-integration.md](docs/mcp-integration.md).
 
 ### Browser capture
@@ -141,7 +141,7 @@ their own sessions. See [docs/mcp-integration.md](docs/mcp-integration.md).
 For ChatGPT and Claude.ai web sessions that have no on-disk export,
 `polylogued browser-capture serve` runs a local receiver. The unpacked
 extension lives in [`browser-extension/`](browser-extension/) and POSTs
-captured conversations to the receiver as you browse. See
+captured sessions to the receiver as you browse. See
 [docs/browser-capture.md](docs/browser-capture.md).
 
 ### Python API
@@ -152,7 +152,7 @@ from polylogue import Polylogue
 async with Polylogue() as archive:
     convs = await (
         archive.filter()
-        .provider("claude-code")
+        .origin("claude-code-session")
         .contains("error handling")
         .limit(10)
         .list()

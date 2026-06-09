@@ -6,8 +6,19 @@ import inspect
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
+from polylogue.core.enums import Origin
+from polylogue.core.sources import provider_from_origin
 from polylogue.insights.registry import InsightType
 from polylogue.mcp.query_contracts import MCPToolLimit, MCPToolOffset
+
+
+def _origin_to_provider_token(value: object) -> str | None:
+    if value is None:
+        return None
+    origin = str(value)
+    if not origin:
+        return None
+    return provider_from_origin(Origin(origin)).value
 
 
 def _sanitize_offset(value: object) -> int:
@@ -44,6 +55,7 @@ class InsightListToolSpec:
         parameters: list[inspect.Parameter] = []
         for field_name in sorted(query_model.model_fields):
             field_info = query_model.model_fields[field_name]
+            public_name = "origin" if field_name == "provider" else field_name
             if field_name == "limit":
                 parameters.append(
                     inspect.Parameter(
@@ -57,7 +69,7 @@ class InsightListToolSpec:
             if field_name == "offset":
                 parameters.append(
                     inspect.Parameter(
-                        field_name,
+                        public_name,
                         inspect.Parameter.KEYWORD_ONLY,
                         default=0,
                         annotation=MCPToolOffset,
@@ -66,7 +78,7 @@ class InsightListToolSpec:
                 continue
             parameters.append(
                 inspect.Parameter(
-                    field_name,
+                    public_name,
                     inspect.Parameter.KEYWORD_ONLY,
                     default=None if field_info.is_required() else field_info.get_default(call_default_factory=True),
                     annotation=field_info.annotation if field_info.annotation is not None else object,
@@ -96,6 +108,10 @@ class InsightListToolSpec:
             normalized["limit"] = clamp_limit(normalized["limit"])
         if "offset" in normalized:
             normalized["offset"] = _sanitize_offset(normalized["offset"])
+        if "origin" in normalized:
+            normalized["provider"] = _origin_to_provider_token(normalized.pop("origin"))
+        if normalized.get("group_by") == "origin":
+            normalized["group_by"] = "provider"
         return normalized
 
 

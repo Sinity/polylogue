@@ -20,7 +20,7 @@ def extract_match_terms(query: str) -> tuple[str, ...]:
     highlighted in a hit. Preserves order, deduplicates case-insensitively,
     and lowercases for stable consumer comparisons.
 
-    Used by ``ConversationSearchHit.matched_terms`` to populate per-hit
+    Used by ``SessionSearchHit.matched_terms`` to populate per-hit
     why-this-matched evidence on lexical (FTS5) search paths (#1267).
     """
     if not query or not query.strip():

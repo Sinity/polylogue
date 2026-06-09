@@ -1,4 +1,4 @@
-"""Vector/search/stats method mixin for the conversation repository."""
+"""Vector/search/stats method mixin for the session repository."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from polylogue.storage.repository.repository_contracts import RepositoryBackendP
 if TYPE_CHECKING:
     import aiosqlite
 
-    from polylogue.archive.conversation.models import Conversation
+    from polylogue.archive.session.domain_models import Session
     from polylogue.archive.stats import ArchiveStats
     from polylogue.storage.sqlite.query_store import SQLiteQueryStore
 
@@ -39,14 +39,14 @@ class RepositoryVectorMixin:
         _backend: RepositoryBackendProtocol
         queries: SQLiteQueryStore
 
-        async def get_many(self, conversation_ids: builtins.list[str]) -> builtins.list[Conversation]: ...
+        async def get_many(self, session_ids: builtins.list[str]) -> builtins.list[Session]: ...
 
     async def search_similar(
         self,
         text: str,
         limit: int = 10,
         vector_provider: VectorProvider | None = None,
-    ) -> builtins.list[Conversation]:
+    ) -> builtins.list[Session]:
         if not vector_provider:
             raise ValueError("Semantic search requires a vector provider.")
 
@@ -59,7 +59,7 @@ class RepositoryVectorMixin:
             return []
 
         message_ids = [msg_id for msg_id, _ in results]
-        msg_to_conv = await self._get_message_conversation_mapping(message_ids)
+        msg_to_conv = await self._get_message_session_mapping(message_ids)
 
         conv_scores: dict[str, float] = {}
         for msg_id, distance in results:
@@ -69,27 +69,27 @@ class RepositoryVectorMixin:
 
         ranked_ids = sorted(
             conv_scores.keys(),
-            key=lambda conversation_id: conv_scores[conversation_id],
+            key=lambda session_id: conv_scores[session_id],
         )[:limit]
 
         return await self.get_many(ranked_ids)
 
-    async def _get_message_conversation_mapping(self, message_ids: builtins.list[str]) -> dict[str, str]:
+    async def _get_message_session_mapping(self, message_ids: builtins.list[str]) -> dict[str, str]:
         if not message_ids:
             return {}
 
         placeholders = ",".join("?" * len(message_ids))
-        query = f"SELECT message_id, conversation_id FROM messages WHERE message_id IN ({placeholders})"
+        query = f"SELECT message_id, session_id FROM messages WHERE message_id IN ({placeholders})"
 
         async with self._backend.read_connection() as conn:
             cursor = await conn.execute(query, message_ids)
             rows = await cursor.fetchall()
 
-        return {row["message_id"]: row["conversation_id"] for row in rows}
+        return {row["message_id"]: row["session_id"] for row in rows}
 
-    async def embed_conversation(
+    async def embed_session(
         self,
-        conversation_id: str,
+        session_id: str,
         vector_provider: VectorProvider | None = None,
     ) -> int:
         vector_provider = resolve_optional_vector_provider(vector_provider)
@@ -97,13 +97,13 @@ class RepositoryVectorMixin:
         if vector_provider is None:
             raise ValueError("No vector provider available. Set VOYAGE_API_KEY.")
 
-        messages = await self.queries.get_messages(conversation_id)
+        messages = await self.queries.get_messages(session_id)
         if not messages:
             return 0
 
         await asyncio.to_thread(
             vector_provider.upsert,
-            conversation_id,
+            session_id,
             messages,
         )
         return len(messages)
@@ -128,7 +128,7 @@ class RepositoryVectorMixin:
             return []
 
         message_ids = [msg_id for msg_id, _ in results]
-        msg_to_conv = await self._get_message_conversation_mapping(message_ids)
+        msg_to_conv = await self._get_message_session_mapping(message_ids)
 
         return [(msg_to_conv[msg_id], msg_id, distance) for msg_id, distance in results if msg_id in msg_to_conv]
 
@@ -145,7 +145,7 @@ class RepositoryVectorMixin:
             started_snapshot = True
 
         try:
-            cursor = await conn.execute("SELECT COUNT(*) FROM conversations")
+            cursor = await conn.execute("SELECT COUNT(*) FROM sessions")
             conv_row = await cursor.fetchone()
             conv_count = int(conv_row[0]) if conv_row is not None else 0
 
@@ -160,7 +160,7 @@ class RepositoryVectorMixin:
             cursor = await conn.execute(
                 """
                 SELECT source_name, COUNT(*) as count
-                FROM conversations
+                FROM sessions
                 GROUP BY source_name
                 """
             )
@@ -179,13 +179,13 @@ class RepositoryVectorMixin:
             logger.warning("DB size check failed: %s", exc)
 
         return ArchiveStats(
-            total_conversations=conv_count,
+            total_sessions=conv_count,
             total_messages=msg_count,
             total_attachments=att_count,
-            providers=providers,
-            embedded_conversations=embedding_stats.embedded_conversations,
+            origins=providers,
+            embedded_sessions=embedding_stats.embedded_sessions,
             embedded_messages=embedding_stats.embedded_messages,
-            pending_embedding_conversations=embedding_stats.pending_conversations,
+            pending_embedding_sessions=embedding_stats.pending_sessions,
             stale_embedding_messages=embedding_stats.stale_messages,
             messages_missing_embedding_provenance=embedding_stats.messages_missing_provenance,
             embedding_oldest_at=embedding_stats.oldest_embedded_at,

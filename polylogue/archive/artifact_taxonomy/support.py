@@ -26,7 +26,7 @@ _RECORDISH_KEYS = frozenset(
     }
 )
 _MESSAGE_KEYS = frozenset({"role", "content", "text", "parts", "author"})
-_RELATIONSHIP_INDEX_KEYS = frozenset({"conversation", "parent", "child", "type", "timestamp"})
+_RELATIONSHIP_INDEX_KEYS = frozenset({"session", "parent", "child", "type", "timestamp"})
 _HOOK_EVENT_KEYS = frozenset({"event_type", "session_id", "timestamp", "provider"})
 
 
@@ -43,7 +43,7 @@ def path_only_sidecar_reason(name: str) -> str | None:
     return None
 
 
-def looks_like_conversation_document(payload: JSONDocument) -> bool:
+def looks_like_session_document(payload: JSONDocument) -> bool:
     if payload.get("polylogue_capture_kind") == "browser_llm_session":
         return True
     if isinstance(payload.get("mapping"), dict):
@@ -117,7 +117,7 @@ def looks_metadataish_dict(payload: JSONDocument) -> bool:
         return False
     if looks_like_record_entry(payload):
         return False
-    if looks_like_conversation_document(payload):
+    if looks_like_session_document(payload):
         return False
     return all(is_scalarish(value) for value in payload.values())
 

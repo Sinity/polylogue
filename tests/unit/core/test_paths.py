@@ -133,6 +133,7 @@ class TestPathsPublicBoundary:
 
         assert set(paths.__all__) == {
             "GEMINI_DRIVE_FOLDER",
+            "active_index_db_path",
             "antigravity_path",
             "archive_root",
             "blob_store_root",
@@ -149,10 +150,16 @@ class TestPathsPublicBoundary:
             "drive_cache_path",
             "drive_credentials_path",
             "drive_token_path",
+            "embeddings_db_path",
             "gemini_cli_path",
             "hermes_sessions_path",
             "hooks_sidecar_dir",
+            "index_db_path",
             "render_root",
+            "resolve_active_index_db_path",
+            "archive_file_set_root_for_paths",
+            "archive_file_set_index_available_for_paths",
+            "source_db_path",
             "state_home",
             "state_root",
         }

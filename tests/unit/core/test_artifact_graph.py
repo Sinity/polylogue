@@ -24,23 +24,19 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
         "validation_backlog",
         "parse_backlog",
         "parse_quarantine",
-        "archive_conversation_rows",
+        "archive_session_rows",
         "message_source_rows",
         "message_fts",
         "embedding_metadata_rows",
         "embedding_status_rows",
         "message_embedding_vectors",
-        "tool_use_source_blocks",
-        "action_event_rows",
-        "action_event_fts",
-        "action_event_readiness",
-        "session_insight_source_conversations",
+        "session_insight_source_sessions",
         "session_profile_rows",
         "session_work_event_rows",
         "session_work_event_fts",
         "session_phase_rows",
-        "work_thread_rows",
-        "work_thread_fts",
+        "thread_rows",
+        "thread_fts",
         "session_tag_rollup_rows",
         "session_insight_rows",
         "session_insight_fts",
@@ -50,7 +46,7 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
         "session_profile_results",
         "session_work_event_results",
         "session_phase_results",
-        "work_thread_results",
+        "thread_results",
         "session_tag_rollup_results",
         "archive_coverage_results",
         "session_insight_status_results",
@@ -61,7 +57,7 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
         "inferred_corpus_scenarios",
         "schema_list_results",
         "schema_explanation_results",
-        "conversation_query_results",
+        "session_query_results",
         "archive_readiness",
     }
     assert nodes["configured_sources"].layer is ArtifactLayer.SOURCE
@@ -69,28 +65,23 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
     assert nodes["raw_validation_state"].layer is ArtifactLayer.DURABLE
     assert nodes["raw_validation_state"].depends_on == ("source_payload_stream",)
     assert nodes["artifact_observation_rows"].depends_on == ("raw_validation_state",)
-    assert nodes["archive_conversation_rows"].layer is ArtifactLayer.DURABLE
-    assert nodes["archive_conversation_rows"].depends_on == ("raw_validation_state",)
+    assert nodes["archive_session_rows"].layer is ArtifactLayer.DURABLE
+    assert nodes["archive_session_rows"].depends_on == ("raw_validation_state",)
     assert nodes["message_fts"].layer is ArtifactLayer.INDEX
-    assert nodes["message_source_rows"].depends_on == ("archive_conversation_rows",)
+    assert nodes["message_source_rows"].depends_on == ("archive_session_rows",)
     assert nodes["message_fts"].depends_on == ("message_source_rows",)
     assert nodes["message_fts"].repair_targets == ("dangling_fts",)
-    assert nodes["embedding_metadata_rows"].depends_on == ("archive_conversation_rows",)
-    assert nodes["embedding_status_rows"].depends_on == ("archive_conversation_rows",)
-    assert nodes["message_embedding_vectors"].depends_on == ("archive_conversation_rows",)
-    assert nodes["tool_use_source_blocks"].depends_on == ("archive_conversation_rows",)
-    assert nodes["action_event_fts"].layer is ArtifactLayer.INDEX
-    assert nodes["action_event_fts"].depends_on == ("action_event_rows",)
-    assert nodes["action_event_readiness"].depends_on == ("action_event_rows", "action_event_fts")
+    assert nodes["embedding_metadata_rows"].depends_on == ("archive_session_rows",)
+    assert nodes["embedding_status_rows"].depends_on == ("archive_session_rows",)
+    assert nodes["message_embedding_vectors"].depends_on == ("archive_session_rows",)
     assert nodes["session_work_event_fts"].depends_on == ("session_work_event_rows",)
-    assert nodes["work_thread_fts"].depends_on == ("work_thread_rows",)
+    assert nodes["thread_fts"].depends_on == ("thread_rows",)
     assert nodes["session_insight_fts"].layer is ArtifactLayer.INDEX
     assert nodes["session_insight_readiness"].depends_on == ("session_insight_rows", "session_insight_fts")
     assert nodes["retrieval_band_readiness"].depends_on == (
         "embedding_metadata_rows",
         "embedding_status_rows",
         "message_embedding_vectors",
-        "action_event_readiness",
         "session_insight_readiness",
     )
     assert nodes["embedding_status_results"].depends_on == (
@@ -100,10 +91,10 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
         "retrieval_band_readiness",
     )
     assert nodes["parse_quarantine"].depends_on == ("raw_validation_state",)
-    assert nodes["session_insight_source_conversations"].depends_on == ("archive_conversation_rows",)
-    assert nodes["conversation_query_results"].depends_on == ("message_fts",)
+    assert nodes["session_insight_source_sessions"].depends_on == ("archive_session_rows",)
+    assert nodes["session_query_results"].depends_on == ("message_fts",)
     assert nodes["session_profile_results"].depends_on == ("session_profile_rows",)
-    assert nodes["archive_coverage_results"].depends_on == ("archive_conversation_rows", "session_profile_rows")
+    assert nodes["archive_coverage_results"].depends_on == ("archive_session_rows", "session_profile_rows")
     assert nodes["inferred_corpus_specs"].depends_on == ("schema_packages", "schema_cluster_manifests")
     assert nodes["inferred_corpus_scenarios"].depends_on == ("inferred_corpus_specs",)
     assert nodes["schema_list_results"].depends_on == (
@@ -115,38 +106,34 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
     assert nodes["schema_explanation_results"].depends_on == ("schema_packages",)
     assert nodes["archive_readiness"].depends_on == (
         "message_fts",
-        "action_event_readiness",
         "session_insight_readiness",
         "retrieval_band_readiness",
     )
     assert nodes["archive_readiness"].repair_targets == (
         "dangling_fts",
-        "action_event_read_model",
         "session_insights",
     )
-    assert operations["acquire-raw-conversations"].produces == ("raw_validation_state", "artifact_observation_rows")
+    assert operations["acquire-raw-sessions"].produces == ("raw_validation_state", "artifact_observation_rows")
     assert operations["plan-validation-backlog"].produces == ("validation_backlog",)
     assert operations["plan-parse-backlog"].produces == ("parse_backlog", "parse_quarantine")
-    assert operations["ingest-archive-runtime"].produces == ("raw_validation_state", "archive_conversation_rows")
+    assert operations["ingest-archive-runtime"].produces == ("raw_validation_state", "archive_session_rows")
     assert operations["index-message-fts"].produces == ("message_fts",)
     assert operations["materialize-transcript-embeddings"].produces == (
         "embedding_metadata_rows",
         "embedding_status_rows",
         "message_embedding_vectors",
     )
-    assert operations["materialize-action-events"].produces == ("action_event_rows", "action_event_fts")
     assert operations["project-retrieval-band-readiness"].produces == ("retrieval_band_readiness",)
     assert operations["query-embedding-status"].produces == ("embedding_status_results",)
-    assert operations["query-conversations"].produces == ("conversation_query_results",)
-    assert operations["project-action-event-readiness"].consumes == ("action_event_rows", "action_event_fts")
+    assert operations["query-sessions"].produces == ("session_query_results",)
     assert "session_insight_rows" in operations["materialize-session-insights"].produces
     assert "session_profile_rows" in operations["materialize-session-insights"].produces
-    assert "work_thread_fts" in operations["materialize-session-insights"].produces
+    assert "thread_fts" in operations["materialize-session-insights"].produces
     assert operations["project-session-insight-readiness"].consumes == ("session_insight_rows", "session_insight_fts")
     assert operations["query-session-profiles"].produces == ("session_profile_results",)
     assert operations["query-session-work-events"].produces == ("session_work_event_results",)
     assert operations["query-session-phases"].produces == ("session_phase_results",)
-    assert operations["query-work-threads"].produces == ("work_thread_results",)
+    assert operations["query-threads"].produces == ("thread_results",)
     assert operations["query-session-tag-rollups"].produces == ("session_tag_rollup_results",)
     assert operations["query-archive-coverage"].produces == ("archive_coverage_results",)
     assert operations["query-session-insight-status"].produces == ("session_insight_status_results",)
@@ -157,7 +144,6 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
     assert operations["query-schema-explanations"].produces == ("schema_explanation_results",)
     assert operations["project-archive-readiness"].consumes == (
         "message_fts",
-        "action_event_readiness",
         "session_insight_readiness",
         "retrieval_band_readiness",
     )
@@ -168,8 +154,8 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
         "session_work_event_rows",
         "session_work_event_fts",
         "session_phase_rows",
-        "work_thread_rows",
-        "work_thread_fts",
+        "thread_rows",
+        "thread_fts",
         "session_tag_rollup_rows",
         "session_insight_rows",
         "session_insight_fts",
@@ -202,14 +188,13 @@ def test_artifact_graph_paths_reference_only_declared_nodes() -> None:
         "embedding-materialization-loop",
         "retrieval-band-readiness-loop",
         "embedding-status-query-loop",
-        "conversation-query-loop",
-        "action-event-repair-loop",
+        "session-query-loop",
         "session-insight-repair-loop",
         "raw-session-insight-repair-loop",
         "session-profile-query-loop",
         "session-work-event-query-loop",
         "session-phase-query-loop",
-        "work-thread-query-loop",
+        "thread-query-loop",
         "session-tag-rollup-query-loop",
         "archive-coverage-query-loop",
         "tool-usage-query-loop",
@@ -247,20 +232,20 @@ def test_artifact_graph_operations_reference_only_declared_nodes() -> None:
     graph = build_artifact_graph()
     node_names = set(graph.by_name())
     path_names = set(graph.path_names())
-    # Mutation operations reference conceptual artifacts (conversation_metadata,
+    # Mutation operations reference conceptual artifacts (session_metadata,
     # tag counts, etc.) that are not modelled as full graph nodes. The operation
     # catalog is the authority for their input/output contracts; the graph check
     # below only applies to materialization and query operations.
     node_names |= {
-        "conversation_metadata",
+        "session_metadata",
         "tag_counts",
         "metadata_keys",
-        "conversation_tags",
-        "conversation_list",
-        "archive_deleted_conversation",
+        "session_tags",
+        "session_list",
+        "archive_deleted_session",
     }
     # Mutation operations declare path targets that aren't full graph paths.
-    path_names |= {"tag-mutation-loop", "metadata-mutation-loop", "conversation-delete-loop"}
+    path_names |= {"tag-mutation-loop", "metadata-mutation-loop", "session-delete-loop"}
 
     for operation in graph.operations:
         assert set(operation.consumes).issubset(node_names), (
@@ -277,14 +262,14 @@ def test_artifact_graph_operations_reference_only_declared_nodes() -> None:
 def test_artifact_graph_resolves_runtime_targets() -> None:
     graph = build_artifact_graph()
 
-    assert "action_event_rows" in graph.artifact_names()
+    assert "session_insight_rows" in graph.artifact_names()
     assert "materialize-session-insights" in graph.operation_names()
-    assert tuple(artifact.name for artifact in graph.resolve_artifacts(("action_event_rows", "missing"))) == (
-        "action_event_rows",
+    assert tuple(artifact.name for artifact in graph.resolve_artifacts(("session_insight_rows", "missing"))) == (
+        "session_insight_rows",
     )
     assert tuple(
-        operation.name for operation in graph.resolve_operations(("project-action-event-readiness", "missing"))
-    ) == ("project-action-event-readiness",)
+        operation.name for operation in graph.resolve_operations(("project-session-insight-readiness", "missing"))
+    ) == ("project-session-insight-readiness",)
 
 
 def test_artifact_graph_lists_operations_for_each_runtime_path() -> None:
@@ -295,7 +280,7 @@ def test_artifact_graph_lists_operations_for_each_runtime_path() -> None:
         "plan-parse-backlog",
     )
     assert tuple(operation.name for operation in graph.operations_for_path("source-acquisition-loop")) == (
-        "acquire-raw-conversations",
+        "acquire-raw-sessions",
     )
     assert tuple(operation.name for operation in graph.operations_for_path("raw-archive-ingest-loop")) == (
         "plan-validation-backlog",
@@ -316,13 +301,9 @@ def test_artifact_graph_lists_operations_for_each_runtime_path() -> None:
     assert tuple(operation.name for operation in graph.operations_for_path("embedding-status-query-loop")) == (
         "query-embedding-status",
     )
-    assert tuple(operation.name for operation in graph.operations_for_path("conversation-query-loop")) == (
+    assert tuple(operation.name for operation in graph.operations_for_path("session-query-loop")) == (
         "index-message-fts",
-        "query-conversations",
-    )
-    assert tuple(operation.name for operation in graph.operations_for_path("action-event-repair-loop")) == (
-        "materialize-action-events",
-        "project-action-event-readiness",
+        "query-sessions",
     )
     assert tuple(operation.name for operation in graph.operations_for_path("session-insight-repair-loop")) == (
         "materialize-session-insights",
@@ -337,9 +318,7 @@ def test_artifact_graph_lists_operations_for_each_runtime_path() -> None:
     assert tuple(operation.name for operation in graph.operations_for_path("session-phase-query-loop")) == (
         "query-session-phases",
     )
-    assert tuple(operation.name for operation in graph.operations_for_path("work-thread-query-loop")) == (
-        "query-work-threads",
-    )
+    assert tuple(operation.name for operation in graph.operations_for_path("thread-query-loop")) == ("query-threads",)
     assert tuple(operation.name for operation in graph.operations_for_path("session-insight-status-query-loop")) == (
         "query-session-insight-status",
     )

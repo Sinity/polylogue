@@ -14,12 +14,13 @@ from polylogue.insights.archive import ArchiveCoverageInsight
 from polylogue.logging import get_logger
 from polylogue.readiness import ReadinessReport
 from polylogue.services import RuntimeServices
+from polylogue.storage.embeddings import embedding_status_payload
 from polylogue.ui.theme import provider_color
 
 logger = get_logger(__name__)
 
 
-class GetProviderCountsFn(Protocol):
+class GetOriginCountsFn(Protocol):
     def __call__(
         self,
         *,
@@ -44,17 +45,17 @@ def print_summary_impl(
     format_sources_summary_fn: Callable[[list[Source]], str],
     quick_readiness_summary_fn: Callable[[Path], str],
     get_readiness_fn: Callable[[Config], ReadinessReport],
-    get_provider_counts_fn: GetProviderCountsFn,
+    get_origin_counts_fn: GetOriginCountsFn,
     list_archive_coverage_insights_fn: ListArchiveCoverageInsightsFn,
 ) -> None:
     ui = env.ui
     config = load_effective_config(env)
-    archive_stats = None
+    embedding_stats = None
 
     try:
-        archive_stats = run_coroutine_sync(env.repository.get_archive_stats())
+        embedding_stats = embedding_status_payload(env)
     except Exception:
-        logger.warning("Archive stats computation failed; summary will omit stats", exc_info=True)
+        logger.warning("Embedding status computation failed; summary will omit stats", exc_info=True)
 
     lines = [
         f"Archive: {config.archive_root}",
@@ -62,28 +63,16 @@ def print_summary_impl(
         f"Sources: {format_sources_summary_fn(config.sources)}",
         "Ingestion: owned by polylogued",
     ]
-    if archive_stats is not None:
+    if embedding_stats is not None:
         embedding_line = (
-            f"Embeddings: {archive_stats.embedded_conversations:,}/{archive_stats.total_conversations:,} convs, "
-            f"{archive_stats.embedded_messages:,} msgs ({archive_stats.embedding_coverage:.1f}%)"
+            f"Embeddings: {embedding_stats['embedded_sessions']:,}/{embedding_stats['total_sessions']:,} convs, "
+            f"{embedding_stats['embedded_messages']:,} msgs ({embedding_stats['embedding_coverage_percent']:.1f}%)"
         )
-        pending_embedding_conversations = getattr(
-            archive_stats,
-            "pending_embedding_conversations",
-            0,
-        )
-        stale_embedding_messages = getattr(
-            archive_stats,
-            "stale_embedding_messages",
-            0,
-        )
-        missing_embedding_provenance = getattr(
-            archive_stats,
-            "messages_missing_embedding_provenance",
-            0,
-        )
-        if pending_embedding_conversations:
-            embedding_line += f", pending {pending_embedding_conversations:,}"
+        pending_embedding_sessions = embedding_stats["pending_sessions"]
+        stale_embedding_messages = embedding_stats["stale_messages"]
+        missing_embedding_provenance = embedding_stats["messages_missing_provenance"]
+        if pending_embedding_sessions:
+            embedding_line += f", pending {pending_embedding_sessions:,}"
         if stale_embedding_messages:
             embedding_line += f", stale {stale_embedding_messages:,}"
         if missing_embedding_provenance:
@@ -114,22 +103,22 @@ def print_summary_impl(
         if verbose:
             metrics = run_coroutine_sync(list_archive_coverage_insights_fn(services=env.services))
             counts: list[tuple[str, int]] = [
-                (metric.source_name or metric.bucket, metric.conversation_count) for metric in metrics
+                (metric.source_name or metric.bucket, metric.session_count) for metric in metrics
             ]
         else:
-            counts = run_coroutine_sync(get_provider_counts_fn(services=env.services))
+            counts = run_coroutine_sync(get_origin_counts_fn(services=env.services))
             metrics = []
 
         if counts:
             ui.console.print()
             total_convs = sum(count for _, count in counts)
-            ui.console.print(f"[bold]Archive:[/bold] {total_convs:,} conversations")
+            ui.console.print(f"[bold]Archive:[/bold] {total_convs:,} sessions")
 
             if total_convs == 0:
                 ui.console.print()
                 inbox = config.archive_root / "inbox"
                 ui.console.print(
-                    "[yellow]No conversations yet. Drop export files in[/yellow] "
+                    "[yellow]No sessions yet. Drop export files in[/yellow] "
                     f"[bold]{inbox}[/bold]"
                     " [yellow]and start[/yellow] [bold]polylogued run[/bold]"
                 )
@@ -158,7 +147,7 @@ def print_summary_impl(
                 for metric in metrics:
                     ui.console.print(f"[bold]{metric.source_name}[/bold]")
                     ui.console.print(
-                        f"  Messages: {metric.message_count:,} (avg {metric.avg_messages_per_conversation:.1f}/conv)"
+                        f"  Messages: {metric.message_count:,} (avg {metric.avg_messages_per_session:.1f}/conv)"
                     )
                     ui.console.print(
                         f"  Words: {int(metric.avg_user_words)} user / {int(metric.avg_assistant_words)} asst (avg)"

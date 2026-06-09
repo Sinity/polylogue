@@ -12,7 +12,7 @@ from polylogue.pipeline.services.process_pool import process_pool_executor
 from polylogue.pipeline.services.validation_runtime import _validate_record_sync, _ValidationOutcome
 from polylogue.pipeline.stage_models import ValidatedRawRecord, ValidateResult
 from polylogue.protocols import ProgressCallback, RawValidationStore
-from polylogue.storage.runtime import RawConversationRecord
+from polylogue.storage.runtime import RawSessionRecord
 from polylogue.types import Provider, ValidationMode, ValidationStatus
 
 logger = get_logger(__name__)
@@ -89,7 +89,7 @@ async def validate_raw_ids(
     result = ValidateResult()
     for batch_start in range(0, len(raw_ids), raw_batch_size):
         batch_ids = raw_ids[batch_start : batch_start + raw_batch_size]
-        raw_artifacts = await repository.get_raw_conversations_batch(batch_ids)
+        raw_artifacts = await repository.get_raw_sessions_batch(batch_ids)
         batch_result = await evaluate_raw_artifacts(
             repository=repository,
             raw_artifacts=raw_artifacts,
@@ -111,8 +111,8 @@ async def validate_raw_ids(
                     raw_id=raw_id,
                     parseable=False,
                     validation_status=ValidationStatus.FAILED,
-                    validation_error="Missing raw conversation record",
-                    parse_error="Missing raw conversation record",
+                    validation_error="Missing raw session record",
+                    parse_error="Missing raw session record",
                     canonical_provider=Provider.UNKNOWN,
                     payload_provider=None,
                 )
@@ -129,7 +129,7 @@ async def validate_raw_ids(
 async def evaluate_raw_artifacts(
     *,
     repository: RawValidationStore,
-    raw_artifacts: list[RawConversationRecord],
+    raw_artifacts: list[RawSessionRecord],
     progress_callback: ProgressCallback | None = None,
     persist: bool = False,
     mode: ValidationMode,

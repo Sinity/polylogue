@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import patch
@@ -11,6 +12,8 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.cli import cli
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.cli_subprocess import run_cli, setup_isolated_workspace
 
 # =============================================================================
@@ -18,11 +21,44 @@ from tests.infra.cli_subprocess import run_cli, setup_isolated_workspace
 # =============================================================================
 
 RESET_DELETION_CASES = [
-    ("--database", "db_path", "database"),
+    ("--database", "archive_db", "database"),
     ("--assets", "assets_dir", "assets"),
     ("--cache", "cache_dir", "cache"),
     ("--auth", "token_path", "auth token"),
 ]
+
+
+def _seed_archive_session(archive_root: Path, *, native_id: str, source_path: Path | None = None) -> str:
+    source_db = archive_root / "source.db"
+    index_db = archive_root / "index.db"
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    session_id = f"codex-session:{native_id}"
+    raw_id = f"raw-{native_id}"
+    with sqlite3.connect(source_db) as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms
+            )
+            VALUES (?, 'codex-session', ?, ?, zeroblob(32), 0, 1000)
+            """,
+            (raw_id, native_id, str(source_path or archive_root / f"{native_id}.jsonl")),
+        )
+    with sqlite3.connect(index_db) as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute(
+            """
+            INSERT INTO sessions (
+                native_id, origin, raw_id, title, content_hash, created_at_ms, updated_at_ms
+            )
+            VALUES (?, 'codex-session', ?, ?, zeroblob(32), 1000, 2000)
+            """,
+            (native_id, raw_id, f"Session {native_id}"),
+        )
+    return session_id
+
 
 # =============================================================================
 # SUBPROCESS INTEGRATION TESTS - RESET COMMAND
@@ -56,14 +92,14 @@ class TestResetCommandSubprocess:
 
     def test_reset_force_database(self, tmp_path: Path) -> None:
         """reset --database --yes deletes database."""
-        from tests.infra.source_builders import GenericConversationBuilder
+        from tests.infra.source_builders import GenericSessionBuilder
 
         workspace = setup_isolated_workspace(tmp_path)
         env = workspace["env"]
         inbox = workspace["paths"]["inbox"]
 
         # Create some data first
-        (GenericConversationBuilder("to-delete").add_user("will be deleted").write_to(inbox / "test.json"))
+        (GenericSessionBuilder("to-delete").add_user("will be deleted").write_to(inbox / "test.json"))
         run_cli(["--plain", "run", "parse"], env=env)
 
         # Now reset
@@ -107,7 +143,7 @@ class TestResetCommandValidation:
 
         # Create mock path constants for the test
         with (
-            patch("polylogue.cli.commands.reset.db_path", return_value=tmp_path / "nonexistent.db"),
+            patch("polylogue.cli.commands.reset.archive_root", return_value=tmp_path / "archive"),
             patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path / "data"),
             patch("polylogue.cli.commands.reset.cache_home", return_value=tmp_path / "cache"),
             patch("polylogue.cli.commands.reset.drive_token_path", return_value=tmp_path / "token.json"),
@@ -130,11 +166,13 @@ class TestResetCommandDeletion:
         monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
 
         # Set up appropriate paths based on path_attr
-        if path_attr == "db_path":
-            target_path = tmp_path / "polylogue.db"
+        if path_attr == "archive_db":
+            archive_root = tmp_path / "archive"
+            archive_root.mkdir()
+            target_path = archive_root / "index.db"
             target_path.write_text("test database", encoding="utf-8")
             patches = [
-                patch("polylogue.cli.commands.reset.db_path", return_value=target_path),
+                patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root),
                 patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path),
             ]
         elif path_attr == "assets_dir":
@@ -143,7 +181,7 @@ class TestResetCommandDeletion:
             target_path.mkdir(parents=True)
             (target_path / "test.png").write_bytes(b"test")
             patches = [
-                patch("polylogue.cli.commands.reset.db_path", return_value=tmp_path / "nonexistent.db"),
+                patch("polylogue.cli.commands.reset.archive_root", return_value=tmp_path / "archive"),
                 patch("polylogue.cli.commands.reset.data_home", return_value=data_home),
             ]
         elif path_attr == "cache_dir":
@@ -151,7 +189,7 @@ class TestResetCommandDeletion:
             target_path.mkdir(parents=True)
             (target_path / "index").write_text("index data", encoding="utf-8")
             patches = [
-                patch("polylogue.cli.commands.reset.db_path", return_value=tmp_path / "nonexistent.db"),
+                patch("polylogue.cli.commands.reset.archive_root", return_value=tmp_path / "archive"),
                 patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path),
                 patch("polylogue.cli.commands.reset.cache_home", return_value=target_path),
             ]
@@ -159,7 +197,7 @@ class TestResetCommandDeletion:
             target_path = tmp_path / "token.json"
             target_path.write_text(json.dumps({"token": "test"}), encoding="utf-8")
             patches = [
-                patch("polylogue.cli.commands.reset.db_path", return_value=tmp_path / "nonexistent.db"),
+                patch("polylogue.cli.commands.reset.archive_root", return_value=tmp_path / "archive"),
                 patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path),
                 patch("polylogue.cli.commands.reset.cache_home", return_value=tmp_path / "nonexistent"),
                 patch("polylogue.cli.commands.reset.drive_token_path", return_value=target_path),
@@ -182,8 +220,10 @@ class TestResetCommandDeletion:
         """Multiple flags delete specified targets."""
         monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
 
-        db_path = tmp_path / "polylogue.db"
-        db_path.write_text("test database", encoding="utf-8")
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        archive_db = archive_root / "index.db"
+        archive_db.write_text("test database", encoding="utf-8")
 
         data_home = tmp_path / "data"
         assets_dir = data_home / "assets"
@@ -191,15 +231,118 @@ class TestResetCommandDeletion:
         (assets_dir / "keep.png").write_bytes(b"keep")
 
         with (
-            patch("polylogue.cli.commands.reset.db_path", return_value=db_path),
+            patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root),
             patch("polylogue.cli.commands.reset.data_home", return_value=data_home),
         ):
             runner = CliRunner()
             result = runner.invoke(cli, ["reset", "--database", "--assets", "--yes"])
 
             assert result.exit_code == 0
-            assert not db_path.exists()
+            assert not archive_db.exists()
             assert not assets_dir.exists()
+
+    def test_reset_database_deletes_all_archive_tiers_and_sidecars(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Database reset targets all archive database tier files."""
+        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        paths = [
+            archive_root / "source.db",
+            archive_root / "source.db-wal",
+            archive_root / "source.db-shm",
+            archive_root / "index.db",
+            archive_root / "index.db-wal",
+            archive_root / "index.db-shm",
+            archive_root / "embeddings.db",
+            archive_root / "embeddings.db-wal",
+            archive_root / "embeddings.db-shm",
+            archive_root / "user.db",
+            archive_root / "ops.db",
+        ]
+        for path in paths:
+            path.write_text("test database", encoding="utf-8")
+
+        with (
+            patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root),
+            patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["reset", "--database", "--yes"])
+
+        assert result.exit_code == 0
+        assert all(not path.exists() for path in paths)
+
+    def test_reset_session_records_archive_suppression_and_deletes_archive_row(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Session tombstone is user-tier suppression plus archive-row deletion."""
+        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        session_id = _seed_archive_session(archive_root, native_id="reset-one")
+
+        with patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["reset", "--session", session_id])
+
+        assert result.exit_code == 0
+        assert "1 suppression" in result.output
+        assert "1 archive row" in result.output
+        with sqlite3.connect(archive_root / "index.db") as conn:
+            assert conn.execute("SELECT COUNT(*) FROM sessions WHERE session_id = ?", (session_id,)).fetchone()[0] == 0
+        with sqlite3.connect(archive_root / "user.db") as conn:
+            row = conn.execute(
+                "SELECT reason, mode FROM suppressions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        assert row == ("reset --session", "hide")
+
+    def test_reset_source_tombstones_matching_archive_sessions(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Source tombstone matches archive raw_sessions by path-component prefix."""
+        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        source_root = tmp_path / "sources" / "codex"
+        child_session_id = _seed_archive_session(
+            archive_root,
+            native_id="source-child",
+            source_path=source_root / "session.jsonl",
+        )
+        sibling_session_id = _seed_archive_session(
+            archive_root,
+            native_id="source-sibling",
+            source_path=tmp_path / "sources" / "codex-other.jsonl",
+        )
+
+        with patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["reset", "--source", str(source_root)])
+
+        assert result.exit_code == 0
+        assert "Tombstoned 1 session" in result.output
+        with sqlite3.connect(archive_root / "index.db") as conn:
+            assert (
+                conn.execute("SELECT COUNT(*) FROM sessions WHERE session_id = ?", (child_session_id,)).fetchone()[0]
+                == 0
+            )
+            assert (
+                conn.execute("SELECT COUNT(*) FROM sessions WHERE session_id = ?", (sibling_session_id,)).fetchone()[0]
+                == 1
+            )
+        with sqlite3.connect(archive_root / "user.db") as conn:
+            assert (
+                conn.execute("SELECT COUNT(*) FROM suppressions WHERE session_id = ?", (child_session_id,)).fetchone()[
+                    0
+                ]
+                == 1
+            )
 
 
 class TestResetConfirmation:
@@ -209,11 +352,13 @@ class TestResetConfirmation:
         """Without --yes in plain mode, shows message and skips."""
         monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
 
-        db_path = tmp_path / "polylogue.db"
-        db_path.write_text("test database", encoding="utf-8")
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        archive_db = archive_root / "index.db"
+        archive_db.write_text("test database", encoding="utf-8")
 
         with (
-            patch("polylogue.cli.commands.reset.db_path", return_value=db_path),
+            patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root),
             patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path),
         ):
             runner = CliRunner()
@@ -221,25 +366,27 @@ class TestResetConfirmation:
 
             # In plain mode without --yes, should not delete
             assert result.exit_code == 0
-            assert db_path.exists()
+            assert archive_db.exists()
             assert "force" in result.output.lower()
 
     def test_force_bypasses_confirmation(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """--yes bypasses confirmation prompt."""
         monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
 
-        db_path = tmp_path / "polylogue.db"
-        db_path.write_text("test database", encoding="utf-8")
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        archive_db = archive_root / "index.db"
+        archive_db.write_text("test database", encoding="utf-8")
 
         with (
-            patch("polylogue.cli.commands.reset.db_path", return_value=db_path),
+            patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root),
             patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path),
         ):
             runner = CliRunner()
             result = runner.invoke(cli, ["reset", "--database", "--yes"])
 
             assert result.exit_code == 0
-            assert not db_path.exists()
+            assert not archive_db.exists()
 
 
 class TestResetEmptyTargets:
@@ -250,7 +397,7 @@ class TestResetEmptyTargets:
         monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
 
         with (
-            patch("polylogue.cli.commands.reset.db_path", return_value=tmp_path / "nonexistent.db"),
+            patch("polylogue.cli.commands.reset.archive_root", return_value=tmp_path / "archive"),
             patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path / "nonexistent"),
             patch("polylogue.cli.commands.reset.cache_home", return_value=tmp_path / "nonexistent"),
             patch("polylogue.cli.commands.reset.drive_token_path", return_value=tmp_path / "nonexistent.json"),
@@ -265,18 +412,20 @@ class TestResetEmptyTargets:
         """Only deletes targets that exist."""
         monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
 
-        db_path = tmp_path / "polylogue.db"
-        db_path.write_text("test database", encoding="utf-8")
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        archive_db = archive_root / "index.db"
+        archive_db.write_text("test database", encoding="utf-8")
 
         with (
-            patch("polylogue.cli.commands.reset.db_path", return_value=db_path),
+            patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root),
             patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path / "nonexistent"),
         ):
             runner = CliRunner()
             result = runner.invoke(cli, ["reset", "--database", "--assets", "--yes"])
 
             assert result.exit_code == 0
-            assert not db_path.exists()
+            assert not archive_db.exists()
             assert "database" in result.output.lower()
 
 
@@ -287,11 +436,13 @@ class TestResetErrorHandling:
         """Deletion failure shows error but continues."""
         monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
 
-        db_path = tmp_path / "polylogue.db"
-        db_path.write_text("test", encoding="utf-8")
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        archive_db = archive_root / "index.db"
+        archive_db.write_text("test", encoding="utf-8")
 
         with (
-            patch("polylogue.cli.commands.reset.db_path", return_value=db_path),
+            patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root),
             patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path),
             patch("pathlib.Path.unlink") as mock_unlink,
         ):
@@ -307,8 +458,10 @@ class TestResetErrorHandling:
         """Shows summary of what will be deleted."""
         monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
 
-        db_path = tmp_path / "polylogue.db"
-        db_path.write_text("test", encoding="utf-8")
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        archive_db = archive_root / "index.db"
+        archive_db.write_text("test", encoding="utf-8")
 
         data_home = tmp_path / "data"
         assets_dir = data_home / "assets"
@@ -316,7 +469,7 @@ class TestResetErrorHandling:
         (assets_dir / "test.png").write_bytes(b"test")
 
         with (
-            patch("polylogue.cli.commands.reset.db_path", return_value=db_path),
+            patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root),
             patch("polylogue.cli.commands.reset.data_home", return_value=data_home),
         ):
             runner = CliRunner()

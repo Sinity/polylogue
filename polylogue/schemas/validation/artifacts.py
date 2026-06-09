@@ -5,12 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from polylogue.archive.artifact_taxonomy import ArtifactKind
-from polylogue.storage.artifacts.persistence import ensure_artifact_observations
+from polylogue.storage.artifacts.persistence import materialize_artifact_observations
 from polylogue.storage.artifacts.queries import (
-    list_artifact_cohorts as list_durable_artifact_cohorts,
-)
-from polylogue.storage.artifacts.queries import (
-    list_artifact_observations as list_durable_artifact_observations,
+    filter_artifact_observations,
+    summarize_artifact_cohorts,
 )
 from polylogue.storage.artifacts.views import ArtifactCohortSummary
 from polylogue.storage.query_models import ArtifactObservationListQuery
@@ -37,17 +35,17 @@ def list_artifact_observation_rows(
 
     bounded_limit, bounded_offset = bounded_window(request.record_limit, request.record_offset)
     with open_connection(db_path) as conn:
-        ensure_artifact_observations(conn, providers=request.providers, refresh_resolutions=True)
-        return list_durable_artifact_observations(
-            conn,
-            ArtifactObservationListQuery(
-                providers=tuple(request.providers or ()),
-                support_statuses=tuple(request.support_statuses or ()),
-                artifact_kinds=tuple(request.artifact_kinds or ()),
-                limit=bounded_limit,
-                offset=bounded_offset,
-            ),
-        )
+        records = materialize_artifact_observations(conn)
+    return filter_artifact_observations(
+        records,
+        ArtifactObservationListQuery(
+            providers=tuple(request.providers or ()),
+            support_statuses=tuple(request.support_statuses or ()),
+            artifact_kinds=tuple(request.artifact_kinds or ()),
+            limit=bounded_limit,
+            offset=bounded_offset,
+        ),
+    )
 
 
 def list_artifact_cohort_rows(
@@ -61,17 +59,17 @@ def list_artifact_cohort_rows(
 
     bounded_limit, bounded_offset = bounded_window(request.record_limit, request.record_offset)
     with open_connection(db_path) as conn:
-        ensure_artifact_observations(conn, providers=request.providers, refresh_resolutions=True)
-        return list_durable_artifact_cohorts(
-            conn,
-            ArtifactObservationListQuery(
-                providers=tuple(request.providers or ()),
-                support_statuses=tuple(request.support_statuses or ()),
-                artifact_kinds=tuple(request.artifact_kinds or ()),
-                limit=bounded_limit,
-                offset=bounded_offset,
-            ),
-        )
+        records = materialize_artifact_observations(conn)
+    return summarize_artifact_cohorts(
+        records,
+        ArtifactObservationListQuery(
+            providers=tuple(request.providers or ()),
+            support_statuses=tuple(request.support_statuses or ()),
+            artifact_kinds=tuple(request.artifact_kinds or ()),
+            limit=bounded_limit,
+            offset=bounded_offset,
+        ),
+    )
 
 
 def prove_raw_artifact_coverage(
@@ -116,7 +114,7 @@ def prove_raw_artifact_coverage(
                 state["sidecars"].add(observation.link_group_key)
                 if observation.sidecar_agent_type is not None:
                     _increment_count(stats.sidecar_agent_types, observation.sidecar_agent_type)
-            elif observation.artifact_kind == ArtifactKind.SUBAGENT_CONVERSATION_STREAM.value:
+            elif observation.artifact_kind == ArtifactKind.SUBAGENT_SESSION_STREAM.value:
                 state["streams"].add(observation.link_group_key)
 
         if observation.support_status is ArtifactSupportStatus.SUPPORTED_PARSEABLE:

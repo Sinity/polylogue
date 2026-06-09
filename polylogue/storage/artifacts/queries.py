@@ -1,23 +1,27 @@
-"""Read-model queries over durable artifact observations."""
+"""Read-model transforms over inspected artifact observations.
+
+These operate on in-memory ``ArtifactObservationRecord`` lists produced by
+:func:`polylogue.storage.artifacts.persistence.materialize_artifact_observations`
+so resolved schema-package and wire-format facts (not stored in
+``raw_artifacts``) remain visible to listing and cohort surfaces (#1743).
+"""
 
 from __future__ import annotations
 
-import sqlite3
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 from polylogue.archive.artifact_taxonomy import ArtifactKind
 from polylogue.storage.artifacts.views import ArtifactCohortSummary
 from polylogue.storage.query_models import ArtifactObservationListQuery
 from polylogue.storage.runtime import ArtifactObservationRecord
-from polylogue.storage.sqlite.queries.mappers import _row_to_artifact_observation
 from polylogue.types import ArtifactSupportStatus, Provider
 
-_EFFECTIVE_PROVIDER_SQL = "COALESCE(payload_provider, source_name)"
 _MAX_SAMPLE_PATHS = 5
 
 
 def _effective_provider(record: ArtifactObservationRecord) -> str:
-    return str(record.payload_provider or Provider.from_string(record.source_name))
+    return str(record.payload_provider or Provider.from_string(record.source_name or ""))
 
 
 @dataclass(slots=True)
@@ -40,65 +44,48 @@ class _ArtifactCohortBucket:
     linked_sidecar_count: int = 0
 
 
-def _append_observation_filters(
+def _matches_filters(
+    record: ArtifactObservationRecord,
     query: ArtifactObservationListQuery,
-    where_clauses: list[str],
-    params: list[object],
-) -> None:
-    if query.providers:
-        placeholders = ",".join("?" for _ in query.providers)
-        where_clauses.append(f"{_EFFECTIVE_PROVIDER_SQL} IN ({placeholders})")
-        params.extend(query.providers)
-    if query.support_statuses:
-        placeholders = ",".join("?" for _ in query.support_statuses)
-        where_clauses.append(f"support_status IN ({placeholders})")
-        params.extend(query.support_statuses)
-    if query.artifact_kinds:
-        placeholders = ",".join("?" for _ in query.artifact_kinds)
-        where_clauses.append(f"artifact_kind IN ({placeholders})")
-        params.extend(query.artifact_kinds)
+) -> bool:
+    if query.providers and _effective_provider(record) not in set(query.providers):
+        return False
+    if query.support_statuses and record.support_status.value not in set(query.support_statuses):
+        return False
+    return not (query.artifact_kinds and record.artifact_kind not in set(query.artifact_kinds))
 
 
-def list_artifact_observations(
-    conn: sqlite3.Connection,
+def filter_artifact_observations(
+    records: Iterable[ArtifactObservationRecord],
     query: ArtifactObservationListQuery,
 ) -> list[ArtifactObservationRecord]:
-    """Return durable artifact observations with optional filters."""
-    where_clauses: list[str] = []
-    params: list[object] = []
-    _append_observation_filters(query, where_clauses, params)
+    """Apply the durable-listing filters, ordering, and window in memory."""
+    filtered = [record for record in records if _matches_filters(record, query)]
+    filtered.sort(key=lambda r: r.source_index if r.source_index is not None else -1)
+    filtered.sort(key=lambda r: r.source_path)
+    filtered.sort(key=lambda r: r.last_observed_at or "", reverse=True)
 
-    sql = "SELECT * FROM artifact_observations"
-    if where_clauses:
-        sql += f" WHERE {' AND '.join(where_clauses)}"
-    sql += " ORDER BY last_observed_at DESC, source_path ASC, COALESCE(source_index, -1) ASC"
     if query.limit is not None:
-        sql += " LIMIT ?"
-        params.append(max(0, int(query.limit)))
-        if query.offset > 0:
-            sql += " OFFSET ?"
-            params.append(max(0, int(query.offset)))
-    elif query.offset > 0:
-        sql += " LIMIT -1 OFFSET ?"
-        params.append(max(0, int(query.offset)))
-
-    rows = conn.execute(sql, tuple(params)).fetchall()
-    return [_row_to_artifact_observation(row) for row in rows]
+        start = max(0, query.offset)
+        return filtered[start : start + max(0, int(query.limit))]
+    if query.offset > 0:
+        return filtered[max(0, query.offset) :]
+    return filtered
 
 
-def list_artifact_cohorts(
-    conn: sqlite3.Connection,
+def summarize_artifact_cohorts(
+    records: Iterable[ArtifactObservationRecord],
     query: ArtifactObservationListQuery,
 ) -> list[ArtifactCohortSummary]:
-    """Summarize durable artifact cohorts over the observation ledger."""
-    observations = list_artifact_observations(conn, query)
+    """Summarize artifact cohorts over the filtered observation set."""
+    observations = filter_artifact_observations(records, query)
     if not observations:
         return []
 
     stream_keys_by_provider: dict[str, set[str]] = {}
     for observation in observations:
         if (
-            observation.artifact_kind == ArtifactKind.SUBAGENT_CONVERSATION_STREAM.value
+            observation.artifact_kind == ArtifactKind.SUBAGENT_SESSION_STREAM.value
             and observation.link_group_key is not None
         ):
             stream_keys_by_provider.setdefault(_effective_provider(observation), set()).add(observation.link_group_key)
@@ -190,4 +177,4 @@ def list_artifact_cohorts(
     )
 
 
-__all__ = ["list_artifact_cohorts", "list_artifact_observations"]
+__all__ = ["filter_artifact_observations", "summarize_artifact_cohorts"]

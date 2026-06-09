@@ -11,7 +11,7 @@ def _build_archive_spec() -> ArchiveSpec:
         level=ScaleLevel.SMALL,
         provider_mix={"chatgpt": 0.75, "codex": 0.25, "missing": 1.0},
         message_count=1_000,
-        conversations=8,
+        sessions=8,
         avg_messages_per_conv=10,
         content_blocks_ratio=0.3,
         seed=9,
@@ -86,7 +86,7 @@ def test_archive_spec_can_scale_inferred_corpus_scenarios(monkeypatch: pytest.Mo
     )
 
     assert tuple(scenario.provider for scenario in corpus_scenarios) == ("chatgpt", "codex")
-    assert sum(spec.count for scenario in corpus_scenarios for spec in scenario.corpus_specs) == spec.conversations
+    assert sum(spec.count for scenario in corpus_scenarios for spec in scenario.corpus_specs) == spec.sessions
     assert all(
         spec.origin == "generated.large-archive" for scenario in corpus_scenarios for spec in scenario.corpus_specs
     )

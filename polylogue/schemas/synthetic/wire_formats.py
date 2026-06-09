@@ -33,7 +33,7 @@ class WireFormat:
 
 
 # Per-provider wire format configs — the only manual piece (~50 lines).
-# Describes HOW the format is structured, not WHAT conversations say.
+# Describes HOW the format is structured, not WHAT sessions say.
 PROVIDER_WIRE_FORMATS: dict[str, WireFormat] = {
     "chatgpt": WireFormat(
         encoding="json",

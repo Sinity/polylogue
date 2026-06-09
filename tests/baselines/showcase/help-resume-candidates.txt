@@ -1,0 +1,11 @@
+Usage: polylogue resume-candidates [OPTIONS]
+
+  Rank archived logical sessions for the current working context.
+
+Options:
+  --repo TEXT          Repository path to rank sessions against.  [required]
+  --cwd TEXT           Current working directory for prefix matching.
+  --recent TEXT        Recently touched file path. Repeatable.
+  --limit INTEGER      Maximum candidates to return.  [default: 10]
+  -f, --format [json]  Output format.
+  -h, --help           Show this message and exit.

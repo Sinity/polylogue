@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from polylogue.archive.query.spec import ConversationQuerySpec
+from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.surfaces.payloads import FacetsResponse
 from tests.infra.mcp import MCPServerUnderTest, invoke_surface_async, make_polylogue_mock
 
@@ -23,16 +23,16 @@ class TestMCPFacetsTool:
             raw = await invoke_surface_async(
                 mcp_server._tool_manager._tools["facets"].fn,
                 query="fts readiness",
-                provider="claude-code",
+                origin="claude-code-session",
             )
 
         parsed = json.loads(raw)
         assert parsed["scoped_to_query"] is True
         mock_poly.facets.assert_awaited_once()
         spec = mock_poly.facets.await_args.args[0]
-        assert isinstance(spec, ConversationQuerySpec)
+        assert isinstance(spec, SessionQuerySpec)
         assert spec.query_terms == ("fts readiness",)
-        assert tuple(str(provider) for provider in spec.providers) == ("claude-code",)
+        assert spec.origins == ("claude-code-session",)
 
     @pytest.mark.asyncio
     async def test_without_filters_requests_global_view(self, mcp_server: MCPServerUnderTest) -> None:

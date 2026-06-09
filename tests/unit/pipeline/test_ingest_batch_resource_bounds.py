@@ -4,18 +4,20 @@ from __future__ import annotations
 
 from concurrent.futures import Future
 from types import SimpleNamespace
-from typing import cast
 
 import pytest
 
 import polylogue.pipeline.services.ingest_batch._core as ingest_batch_core
+from polylogue.archive.message.roles import Role
 from polylogue.pipeline.services.ingest_batch import _IngestWorkerRequest, _iter_ingest_results_sync
-from polylogue.pipeline.services.ingest_worker import ConversationData, IngestRecordResult
-from polylogue.storage.runtime import RawConversationRecord
+from polylogue.pipeline.services.ingest_worker import IngestRecordResult, SessionWritePayload
+from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+from polylogue.storage.runtime import RawSessionRecord
+from polylogue.types import Provider
 
 
-def _large_raw_record() -> RawConversationRecord:
-    return RawConversationRecord(
+def _large_raw_record() -> RawSessionRecord:
+    return RawSessionRecord(
         raw_id="raw-large",
         source_name="codex",
         source_path="/tmp/raw-large.jsonl",
@@ -33,38 +35,22 @@ def _worker_request() -> _IngestWorkerRequest:
     )
 
 
-def _conversation_data_with_rows(*, conversation_id: str = "conv-large", messages: int = 0) -> ConversationData:
-    return cast(
-        ConversationData,
-        SimpleNamespace(
-            conversation_id=conversation_id,
-            conversation_tuple=(
-                conversation_id,
-                "codex",
-                conversation_id,
-                "Large",
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                1,
-                None,
-                None,
-                "raw-large",
-                "codex",
-                None,
-                None,
-                None,
-            ),
-            message_tuples=[object()] * messages,
-            block_tuples=[],
-            action_event_tuples=[],
-            provider_event_tuples=[],
-            attachment_tuples=[],
-            attachment_ref_tuples=[],
-        ),
+def _session_data_with_rows(*, session_id: str = "codex:conv-large", messages: int = 0) -> SessionWritePayload:
+    parsed_messages = [
+        ParsedMessage(provider_message_id=f"msg-{index}", role=Role.USER, text="payload") for index in range(messages)
+    ]
+    parsed = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id=session_id.split(":", 1)[-1],
+        title="Large",
+        messages=parsed_messages,
+    )
+    return SessionWritePayload(
+        session_id=session_id,
+        content_hash="0" * 64,
+        parsed_session=parsed,
+        message_count=messages,
+        raw_id="raw-large",
     )
 
 
@@ -84,7 +70,7 @@ def test_iter_ingest_results_sync_can_isolate_single_worker_in_process_pool(
         def submit(
             self,
             fn: object,
-            raw_record: RawConversationRecord,
+            raw_record: RawSessionRecord,
             request: _IngestWorkerRequest,
         ) -> Future[IngestRecordResult]:
             del fn, request
@@ -151,8 +137,8 @@ def test_consume_ingest_results_delays_write_transaction_until_parse_result(
 def test_consume_ingest_results_releases_large_result_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    cdata = _conversation_data_with_rows(messages=1001)
-    result = IngestRecordResult(raw_id="raw-large", conversations=[cdata])
+    cdata = _session_data_with_rows(messages=1001)
+    result = IngestRecordResult(raw_id="raw-large", sessions=[cdata])
     releases: list[str] = []
 
     class FakeConnection:
@@ -180,25 +166,25 @@ def test_consume_ingest_results_releases_large_result_payload(
     )
 
     assert transaction_started is True
-    assert result.conversations == []
+    assert result.sessions == []
     assert releases == ["release"]
     assert summary.max_current_rss_mb == 42.0
 
 
-def test_drain_ready_conversation_entries_drops_written_payload(
+def test_drain_ready_session_entries_drops_written_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    cdata = _conversation_data_with_rows(messages=3)
+    cdata = _session_data_with_rows(messages=3)
     writes: list[int] = []
 
     def fake_write(*args: object, **kwargs: object) -> bool:
         del args, kwargs
-        writes.append(len(cdata.message_tuples))
+        writes.append(cdata.message_count)
         return True
 
-    monkeypatch.setattr(ingest_batch_core, "_write_conversation_entry", fake_write)
+    monkeypatch.setattr(ingest_batch_core, "_write_session_entry", fake_write)
 
-    ingest_batch_core._drain_ready_conversation_entries(
+    ingest_batch_core._drain_ready_session_entries(
         object(),  # type: ignore[arg-type]
         [("raw-large", cdata)],
         summary=SimpleNamespace(),  # type: ignore[arg-type]
@@ -206,4 +192,4 @@ def test_drain_ready_conversation_entries_drops_written_payload(
     )
 
     assert writes == [3]
-    assert cdata.message_tuples == []
+    assert cdata.parsed_session.messages == []

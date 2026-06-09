@@ -20,6 +20,7 @@ from typing_extensions import TypedDict
 
 from polylogue.archive.message.roles import Role, normalize_role
 from polylogue.config import Source
+from polylogue.core.enums import TitleSource
 from polylogue.core.json import JSONDocument, JSONValue, is_json_value
 from polylogue.sources import decoders as decoders_module
 from polylogue.sources import dispatch as dispatch_module
@@ -50,23 +51,23 @@ from polylogue.sources.drive import (
     iter_drive_raw_data,
 )
 from polylogue.sources.drive.types import DriveFile
-from polylogue.sources.emitter import _ConversationEmitter
+from polylogue.sources.emitter import _SessionEmitter
 from polylogue.sources.parsers import chatgpt as chatgpt_parser
 from polylogue.sources.parsers import claude as claude_parser
 from polylogue.sources.parsers import drive as drive_parser
-from polylogue.sources.parsers.base import ParsedConversation, ParsedMessage
+from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.sources.parsers.claude import (
     SessionIndexEntry,
-    enrich_conversation_from_index,
+    enrich_session_from_index,
     find_sessions_index,
     parse_sessions_index,
 )
 from polylogue.sources.providers.chatgpt import (
     ChatGPTAuthor,
     ChatGPTContent,
-    ChatGPTConversation,
     ChatGPTMessage,
     ChatGPTNode,
+    ChatGPTSession,
 )
 from polylogue.sources.providers.claude_code import (
     ClaudeCodeThinkingBlock,
@@ -76,16 +77,15 @@ from polylogue.sources.providers.claude_code import (
 from polylogue.sources.source_acquisition import _iter_entry_payloads, iter_source_raw_data
 from polylogue.sources.source_acquisition_components import SplitPayloadBuffer
 from polylogue.sources.source_parsing import (
-    iter_source_conversations,
-    iter_source_conversations_with_raw,
+    iter_source_sessions,
+    iter_source_sessions_with_raw,
 )
 from polylogue.sources.source_walk import _has_supported_extension
 from polylogue.storage.blob_store import BlobStore, Heartbeat
 from polylogue.storage.cursor_state import CursorFailurePayload, CursorStatePayload
 from polylogue.types import Provider
-from tests.infra.source_builders import GenericConversationBuilder, make_claude_chat_message
+from tests.infra.source_builders import GenericSessionBuilder, make_claude_chat_message
 from tests.infra.strategies import (
-    conversations_wrapper_bytes_strategy,
     json_array_bytes_strategy,
     json_document_strategy,
     jsonl_bytes_strategy,
@@ -93,6 +93,7 @@ from tests.infra.strategies import (
     provider_payload_case_strategy,
     provider_payload_strategy,
     provider_source_case_strategy,
+    sessions_wrapper_bytes_strategy,
 )
 
 
@@ -135,24 +136,22 @@ def _parsed_message(
     )
 
 
-def _parsed_conversation(
+def _parsed_session(
     *,
     source_name: str | Provider,
-    provider_conversation_id: str,
+    provider_session_id: str,
     title: str | None,
     created_at: str | None,
     updated_at: str | None,
     messages: list[ParsedMessage],
-    provider_meta: dict[str, object] | None = None,
-) -> ParsedConversation:
-    return ParsedConversation(
+) -> ParsedSession:
+    return ParsedSession(
         source_name=Provider.from_string(source_name),
-        provider_conversation_id=provider_conversation_id,
+        provider_session_id=provider_session_id,
         title=title,
         created_at=created_at,
         updated_at=updated_at,
         messages=messages,
-        provider_meta=provider_meta,
     )
 
 
@@ -254,13 +253,13 @@ def test_entry_payload_detection_overrides_misleading_grouped_fallback_law(
 
 @given(provider_payload_case_strategy(_CANONICAL_PROVIDERS))
 @settings(max_examples=35, suppress_health_check=[HealthCheck.too_slow])
-def test_parse_payload_generated_exports_produce_source_named_conversations(case: tuple[str, object]) -> None:
-    """Runtime dispatch parses generated provider payloads into provider-owned conversations."""
+def test_parse_payload_generated_exports_produce_source_named_sessions(case: tuple[str, object]) -> None:
+    """Runtime dispatch parses generated provider payloads into provider-owned sessions."""
     provider, payload = case
-    conversations = parse_payload(provider, payload, "fallback-id")
-    assert conversations
-    assert all(str(conversation.source_name) == provider for conversation in conversations)
-    assert all(conversation.provider_conversation_id for conversation in conversations)
+    sessions = parse_payload(provider, payload, "fallback-id")
+    assert sessions
+    assert all(str(session.source_name) == provider for session in sessions)
+    assert all(session.provider_session_id for session in sessions)
 
 
 def test_parse_payload_accepts_provider_enum() -> None:
@@ -278,10 +277,10 @@ def test_parse_payload_accepts_provider_enum() -> None:
         "title": "Test",
     }
 
-    conversations = parse_payload(Provider.CHATGPT, payload, "fallback-id")
+    sessions = parse_payload(Provider.CHATGPT, payload, "fallback-id")
 
-    assert len(conversations) == 1
-    assert conversations[0].source_name is Provider.CHATGPT
+    assert len(sessions) == 1
+    assert sessions[0].source_name is Provider.CHATGPT
 
 
 @pytest.mark.parametrize(
@@ -292,7 +291,7 @@ def test_parse_payload_accepts_provider_enum() -> None:
         (Provider.GEMINI.value, False),
         (Provider.CHATGPT.value, True),
     ],
-    ids=["chatgpt-bundle", "claude-bundle", "gemini-bundle", "conversations-wrapper"],
+    ids=["chatgpt-bundle", "claude-bundle", "gemini-bundle", "sessions-wrapper"],
 )
 @given(data=st.data())
 @settings(deadline=None, max_examples=20, suppress_health_check=[HealthCheck.too_slow])
@@ -301,11 +300,11 @@ def test_parse_payload_bundle_cardinality_contract(
     wrapper: bool,
     data: st.DataObject,
 ) -> None:
-    """Bundle dispatch preserves one parsed conversation per bundled payload."""
+    """Bundle dispatch preserves one parsed session per bundled payload."""
     payloads = data.draw(st.lists(provider_payload_strategy(provider), min_size=1, max_size=4))
-    payload = {"conversations": payloads} if wrapper else payloads
-    conversations = parse_payload(provider, payload, "bundle")
-    assert len(conversations) == len(payloads)
+    payload = {"sessions": payloads} if wrapper else payloads
+    sessions = parse_payload(provider, payload, "bundle")
+    assert len(sessions) == len(payloads)
 
 
 @given(
@@ -329,12 +328,12 @@ def test_iter_json_stream_root_list_round_trips_documents(case: tuple[list[dict[
     assert list(_iter_json_stream(BytesIO(raw), "test.json")) == documents
 
 
-@given(conversations_wrapper_bytes_strategy())
+@given(sessions_wrapper_bytes_strategy())
 @settings(max_examples=30, suppress_health_check=[HealthCheck.too_slow])
-def test_iter_json_stream_conversations_wrapper_round_trips_documents(
+def test_iter_json_stream_sessions_wrapper_round_trips_documents(
     case: tuple[list[dict[str, object]], bytes],
 ) -> None:
-    """Streaming a `{\"conversations\": [...]}` object yields the wrapped items."""
+    """Streaming a `{\"sessions\": [...]}` object yields the wrapped items."""
     documents, raw = case
     assert list(_iter_json_stream(BytesIO(raw), "test.json")) == documents
 
@@ -394,11 +393,11 @@ def test_iter_json_stream_falls_back_to_full_json_load_when_streaming_fails(monk
 
     monkeypatch.setattr(ijson, "items", broken_items)
 
-    raw = b'{"conversations":[{"id":"one"},{"id":"two"}]}'
+    raw = b'{"sessions":[{"id":"one"},{"id":"two"}]}'
     items = list(_iter_json_stream(BytesIO(raw), "test.json"))
 
-    assert calls == ["item", "conversations.item"]
-    assert items == [{"conversations": [{"id": "one"}, {"id": "two"}]}]
+    assert calls == ["item", "sessions.item"]
+    assert items == [{"sessions": [{"id": "one"}, {"id": "two"}]}]
 
 
 def _materialize_generated_source(root: Path, *, hint_path: Path, raw: bytes, use_zip: bool) -> Source:
@@ -415,10 +414,10 @@ def _materialize_generated_source(root: Path, *, hint_path: Path, raw: bytes, us
     return Source(name="generated", path=payload_path)
 
 
-def _write_generic_conversation(path: Path, conversation_id: str, text: str = "hello") -> Path:
-    GenericConversationBuilder(conversation_id).title(conversation_id).add_message(
+def _write_generic_session(path: Path, session_id: str, text: str = "hello") -> Path:
+    GenericSessionBuilder(session_id).title(session_id).add_message(
         "user",
-        f"{conversation_id}-message",
+        f"{session_id}-message",
         text=text,
     ).write_to(path)
     return path
@@ -437,7 +436,7 @@ def _write_generic_conversation(path: Path, conversation_id: str, text: str = "h
     st.booleans(),
 )
 @settings(max_examples=30, deadline=None)
-def test_iter_source_conversations_round_trips_generated_exports(case: object, use_zip: bool) -> None:
+def test_iter_source_sessions_round_trips_generated_exports(case: object, use_zip: bool) -> None:
     """Generated provider exports should stay discoverable through file and ZIP iteration."""
     generated = _require_generated_source_case(case)
     with tempfile.TemporaryDirectory() as tmp:
@@ -447,10 +446,10 @@ def test_iter_source_conversations_round_trips_generated_exports(case: object, u
             raw=generated["raw"],
             use_zip=use_zip,
         )
-        conversations = list(iter_source_conversations(source))
+        sessions = list(iter_source_sessions(source))
 
-    assert conversations
-    assert all(str(conversation.source_name) == generated["provider"] for conversation in conversations)
+    assert sessions
+    assert all(str(session.source_name) == generated["provider"] for session in sessions)
 
 
 @given(
@@ -467,7 +466,7 @@ def test_iter_source_conversations_round_trips_generated_exports(case: object, u
     st.booleans(),
 )
 @settings(max_examples=30, deadline=None)
-def test_iter_source_conversations_with_raw_capture_contract(
+def test_iter_source_sessions_with_raw_capture_contract(
     case: object,
     use_zip: bool,
     capture_raw: bool,
@@ -481,10 +480,10 @@ def test_iter_source_conversations_with_raw_capture_contract(
             raw=generated["raw"],
             use_zip=use_zip,
         )
-        items = list(iter_source_conversations_with_raw(source, capture_raw=capture_raw))
+        items = list(iter_source_sessions_with_raw(source, capture_raw=capture_raw))
 
     assert items
-    assert all(str(conversation.source_name) == generated["provider"] for _, conversation in items)
+    assert all(str(session.source_name) == generated["provider"] for _, session in items)
     if capture_raw:
         assert all(raw_data is not None for raw_data, _ in items)
         assert all(raw_data.raw_bytes or raw_data.blob_hash for raw_data, _ in items if raw_data is not None)
@@ -503,16 +502,16 @@ def test_iter_source_conversations_with_raw_capture_contract(
     )
 )
 @settings(max_examples=20, deadline=None)
-def test_iter_source_conversations_accepts_grouped_json_extensions(case: tuple[str, bytes, str]) -> None:
+def test_iter_source_sessions_accepts_grouped_json_extensions(case: tuple[str, bytes, str]) -> None:
     """Grouped JSONL providers must remain discoverable through all supported session suffixes."""
     provider, raw, filename = case
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / filename
         path.write_bytes(raw)
-        conversations = list(iter_source_conversations(Source(name=provider, path=path)))
+        sessions = list(iter_source_sessions(Source(name=provider, path=path)))
 
-    assert conversations
-    assert all(str(conversation.source_name) == provider for conversation in conversations)
+    assert sessions
+    assert all(str(session.source_name) == provider for session in sessions)
 
 
 def test_parse_payload_depth_guard_contract() -> None:
@@ -533,41 +532,39 @@ def test_source_iteration_preserves_claude_attachment_metadata_contract(tmp_path
     source_file = tmp_path / "claude.json"
     source_file.write_text(json.dumps(payload), encoding="utf-8")
 
-    conversations = list(iter_source_conversations(Source(name="inbox", path=source_file)))
+    sessions = list(iter_source_sessions(Source(name="inbox", path=source_file)))
 
-    assert len(conversations) == 1
-    attachment = conversations[0].attachments[0]
+    assert len(sessions) == 1
+    attachment = sessions[0].attachments[0]
     assert attachment.provider_attachment_id == "file-1"
     assert attachment.name == "notes.txt"
 
 
-def test_iter_source_conversations_handles_empty_directories_contract(tmp_path: Path) -> None:
+def test_iter_source_sessions_handles_empty_directories_contract(tmp_path: Path) -> None:
     cursor_state: CursorStatePayload = _empty_cursor_state()
 
-    assert list(iter_source_conversations(Source(name="test", path=tmp_path), cursor_state=cursor_state)) == []
+    assert list(iter_source_sessions(Source(name="test", path=tmp_path), cursor_state=cursor_state)) == []
     assert cursor_state["file_count"] == 0
     assert cursor_state["failed_count"] == 0
 
 
 @pytest.mark.parametrize("iterator", ["parsed", "raw"], ids=["parsed", "raw"])
 def test_source_iteration_continues_after_invalid_json_contract(tmp_path: Path, iterator: str) -> None:
-    _write_generic_conversation(tmp_path / "valid1.json", "valid1", "hi")
+    _write_generic_session(tmp_path / "valid1.json", "valid1", "hi")
     (tmp_path / "invalid.json").write_text("{ broken json", encoding="utf-8")
-    _write_generic_conversation(tmp_path / "valid2.json", "valid2", "bye")
+    _write_generic_session(tmp_path / "valid2.json", "valid2", "bye")
 
     cursor_state: CursorStatePayload = _empty_cursor_state()
     if iterator == "parsed":
-        results = list(iter_source_conversations(Source(name="test", path=tmp_path), cursor_state=cursor_state))
-        conversation_ids = [conversation.provider_conversation_id for conversation in results]
+        results = list(iter_source_sessions(Source(name="test", path=tmp_path), cursor_state=cursor_state))
+        session_ids = [session.provider_session_id for session in results]
         raw_items = []
     else:
-        raw_items = list(
-            iter_source_conversations_with_raw(Source(name="test", path=tmp_path), cursor_state=cursor_state)
-        )
-        results = [conversation for _, conversation in raw_items]
-        conversation_ids = [conversation.provider_conversation_id for conversation in results]
+        raw_items = list(iter_source_sessions_with_raw(Source(name="test", path=tmp_path), cursor_state=cursor_state))
+        results = [session for _, session in raw_items]
+        session_ids = [session.provider_session_id for session in results]
 
-    assert conversation_ids == ["valid1", "valid2"]
+    assert session_ids == ["valid1", "valid2"]
     assert cursor_state["file_count"] == 3
     assert cursor_state["failed_count"] == 1
     assert any("invalid.json" in str(item["path"]) for item in _failed_files(cursor_state))
@@ -575,11 +572,11 @@ def test_source_iteration_continues_after_invalid_json_contract(tmp_path: Path, 
         assert all(raw_data is not None for raw_data, _ in raw_items)
 
 
-def test_iter_source_conversations_tracks_file_disappearance_contract(
+def test_iter_source_sessions_tracks_file_disappearance_contract(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    first = _write_generic_conversation(tmp_path / "first.json", "first")
-    second = _write_generic_conversation(tmp_path / "second.json", "second")
+    first = _write_generic_session(tmp_path / "first.json", "first")
+    second = _write_generic_session(tmp_path / "second.json", "second")
     cursor_state: CursorStatePayload = _empty_cursor_state()
     original_open = Path.open
 
@@ -604,9 +601,9 @@ def test_iter_source_conversations_tracks_file_disappearance_contract(
 
     monkeypatch.setattr(Path, "open", flaky_open)
 
-    conversations = list(iter_source_conversations(Source(name="test", path=tmp_path), cursor_state=cursor_state))
+    sessions = list(iter_source_sessions(Source(name="test", path=tmp_path), cursor_state=cursor_state))
 
-    assert [conversation.provider_conversation_id for conversation in conversations] == ["first"]
+    assert [session.provider_session_id for session in sessions] == ["first"]
     assert cursor_state["failed_count"] == 1
     assert any("second.json" in str(item["path"]) for item in _failed_files(cursor_state))
     assert first.exists()
@@ -616,16 +613,16 @@ def test_iter_source_conversations_tracks_file_disappearance_contract(
 def test_source_iteration_prunes_skip_dirs_contract(tmp_path: Path, skip_dir_name: str) -> None:
     skip_dir = tmp_path / skip_dir_name
     skip_dir.mkdir()
-    _write_generic_conversation(skip_dir / "skipped.json", "skipped")
+    _write_generic_session(skip_dir / "skipped.json", "skipped")
 
-    assert list(iter_source_conversations(Source(name="test", path=tmp_path))) == []
-    assert list(iter_source_conversations_with_raw(Source(name="test", path=tmp_path))) == []
+    assert list(iter_source_sessions(Source(name="test", path=tmp_path))) == []
+    assert list(iter_source_sessions_with_raw(Source(name="test", path=tmp_path))) == []
 
 
 def test_source_iteration_follows_symlinked_directories_contract(tmp_path: Path) -> None:
     subdir = tmp_path / "subdir"
     subdir.mkdir()
-    _write_generic_conversation(subdir / "linked.json", "linked")
+    _write_generic_session(subdir / "linked.json", "linked")
 
     link = tmp_path / "link"
     try:
@@ -633,23 +630,23 @@ def test_source_iteration_follows_symlinked_directories_contract(tmp_path: Path)
     except (OSError, NotImplementedError):
         pytest.skip("Symlinks not supported on this system")
 
-    parsed = list(iter_source_conversations(Source(name="test", path=link)))
-    raw = list(iter_source_conversations_with_raw(Source(name="test", path=link)))
+    parsed = list(iter_source_sessions(Source(name="test", path=link)))
+    raw = list(iter_source_sessions_with_raw(Source(name="test", path=link)))
 
-    assert [conversation.provider_conversation_id for conversation in parsed] == ["linked"]
-    assert [conversation.provider_conversation_id for _, conversation in raw] == ["linked"]
+    assert [session.provider_session_id for session in parsed] == ["linked"]
+    assert [session.provider_session_id for _, session in raw] == ["linked"]
 
 
-def test_iter_source_conversations_with_raw_accepts_single_file_sources_contract(tmp_path: Path) -> None:
-    source_file = _write_generic_conversation(tmp_path / "single.json", "single")
+def test_iter_source_sessions_with_raw_accepts_single_file_sources_contract(tmp_path: Path) -> None:
+    source_file = _write_generic_session(tmp_path / "single.json", "single")
 
-    items = list(iter_source_conversations_with_raw(Source(name="test", path=source_file)))
+    items = list(iter_source_sessions_with_raw(Source(name="test", path=source_file)))
 
     assert len(items) == 1
-    raw_data, conversation = items[0]
+    raw_data, session = items[0]
     assert raw_data is not None
     assert raw_data.source_path == str(source_file)
-    assert conversation.provider_conversation_id == "single"
+    assert session.provider_session_id == "single"
 
 
 @pytest.mark.parametrize(
@@ -660,7 +657,7 @@ def test_iter_source_conversations_with_raw_accepts_single_file_sources_contract
     ],
     ids=["plain-jsonl", "zip-jsonl"],
 )
-def test_iter_source_conversations_with_raw_preserves_grouped_bytes_contract(
+def test_iter_source_sessions_with_raw_preserves_grouped_bytes_contract(
     tmp_path: Path,
     source_name: str,
     filename: str,
@@ -683,20 +680,20 @@ def test_iter_source_conversations_with_raw_preserves_grouped_bytes_contract(
         source_path = tmp_path / filename
         source_path.write_text(content, encoding="utf-8")
 
-    items = list(iter_source_conversations_with_raw(Source(name=source_name, path=source_path)))
+    items = list(iter_source_sessions_with_raw(Source(name=source_name, path=source_path)))
 
     assert len(items) == 1
-    raw_data, conversation = items[0]
+    raw_data, session = items[0]
     assert raw_data is not None
     assert raw_data.source_index is None
     raw_bytes = raw_data.raw_bytes
     if not raw_bytes and raw_data.blob_hash is not None:
         raw_bytes = get_blob_store().read_all(raw_data.blob_hash)
     assert needle in raw_bytes
-    assert conversation.source_name == Provider.CLAUDE_CODE
+    assert session.source_name == Provider.CLAUDE_CODE
 
 
-def test_iter_source_conversations_with_raw_streams_plain_grouped_capture_to_blob_store(
+def test_iter_source_sessions_with_raw_streams_plain_grouped_capture_to_blob_store(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -717,18 +714,18 @@ def test_iter_source_conversations_with_raw_streams_plain_grouped_capture_to_blo
 
     monkeypatch.setattr(Path, "read_bytes", fail_read_bytes)
 
-    items = list(iter_source_conversations_with_raw(Source(name="claude-code", path=source_path)))
+    items = list(iter_source_sessions_with_raw(Source(name="claude-code", path=source_path)))
 
     assert len(items) == 1
-    raw_data, conversation = items[0]
+    raw_data, session = items[0]
     assert raw_data is not None
     assert raw_data.blob_hash is not None
     assert raw_data.raw_bytes == b""
     assert get_blob_store().read_all(raw_data.blob_hash) == content.encode("utf-8")
-    assert conversation.source_name == Provider.CLAUDE_CODE
+    assert session.source_name == Provider.CLAUDE_CODE
 
 
-def test_iter_source_conversations_with_raw_streams_grouped_zip_capture_to_blob_store(
+def test_iter_source_sessions_with_raw_streams_grouped_zip_capture_to_blob_store(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -752,19 +749,19 @@ def test_iter_source_conversations_with_raw_streams_grouped_zip_capture_to_blob_
 
     monkeypatch.setattr(BlobStore, "write_from_fileobj", tracking_write_from_fileobj)
 
-    items = list(iter_source_conversations_with_raw(Source(name="claude-code", path=archive_path)))
+    items = list(iter_source_sessions_with_raw(Source(name="claude-code", path=archive_path)))
 
     assert write_calls == 1
     assert len(items) == 1
-    raw_data, conversation = items[0]
+    raw_data, session = items[0]
     assert raw_data is not None
     assert raw_data.blob_hash is not None
     assert raw_data.raw_bytes == b""
     assert get_blob_store().read_all(raw_data.blob_hash) == content.encode("utf-8")
-    assert conversation.source_name == Provider.CLAUDE_CODE
+    assert session.source_name == Provider.CLAUDE_CODE
 
 
-def test_iter_source_conversations_with_raw_assigns_source_indexes_for_multi_conversation_zip_contract(
+def test_iter_source_sessions_with_raw_assigns_source_indexes_for_multi_session_zip_contract(
     tmp_path: Path,
 ) -> None:
     archive_path = tmp_path / "multi.zip"
@@ -779,20 +776,20 @@ def test_iter_source_conversations_with_raw_assigns_source_indexes_for_multi_con
             ),
         )
 
-    results = list(iter_source_conversations_with_raw(Source(name="test", path=archive_path)))
+    results = list(iter_source_sessions_with_raw(Source(name="test", path=archive_path)))
 
     assert len(results) == 2
     assert [raw_data.source_index for raw_data, _ in results if raw_data is not None] == [0, 1]
 
 
-def test_iter_source_conversations_with_raw_tracks_unicode_decode_failures_contract(
+def test_iter_source_sessions_with_raw_tracks_unicode_decode_failures_contract(
     tmp_path: Path,
 ) -> None:
     bad_file = tmp_path / "bad_encoding.json"
     bad_file.write_bytes(b"\xff\xfe invalid utf-8 { bad json")
 
     cursor_state: CursorStatePayload = _empty_cursor_state()
-    results = list(iter_source_conversations_with_raw(Source(name="test", path=tmp_path), cursor_state=cursor_state))
+    results = list(iter_source_sessions_with_raw(Source(name="test", path=tmp_path), cursor_state=cursor_state))
 
     assert results == []
     assert cursor_state["failed_count"] == 1
@@ -805,7 +802,7 @@ def test_source_iteration_ignores_stat_failures_for_optional_mtime_contract(
 ) -> None:
     source_dir = tmp_path / "source"
     source_dir.mkdir()
-    source_file = _write_generic_conversation(source_dir / "conv.json", "conv")
+    source_file = _write_generic_session(source_dir / "conv.json", "conv")
     original_stat = Path.stat
 
     def flaky_stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
@@ -816,12 +813,12 @@ def test_source_iteration_ignores_stat_failures_for_optional_mtime_contract(
     monkeypatch.setattr(Path, "stat", flaky_stat)
 
     parsed_cursor: CursorStatePayload = _empty_cursor_state()
-    raw_items = list(iter_source_conversations_with_raw(Source(name="test", path=source_dir), capture_raw=True))
-    parsed_items = list(iter_source_conversations(Source(name="test", path=source_dir), cursor_state=parsed_cursor))
+    raw_items = list(iter_source_sessions_with_raw(Source(name="test", path=source_dir), capture_raw=True))
+    parsed_items = list(iter_source_sessions(Source(name="test", path=source_dir), cursor_state=parsed_cursor))
 
     assert len(raw_items) == 1
     assert raw_items[0][0] is not None and raw_items[0][0].file_mtime is None
-    assert [conversation.provider_conversation_id for conversation in parsed_items] == ["conv"]
+    assert [session.provider_session_id for session in parsed_items] == ["conv"]
     assert parsed_cursor["file_count"] == 1
     assert "latest_mtime" not in parsed_cursor
 
@@ -855,9 +852,9 @@ def test_parse_drive_payload_contract(
     expected_provider: str,
     expected_count: int,
 ) -> None:
-    conversations = parse_drive_payload(provider, payload, "fallback")
-    assert len(conversations) >= expected_count
-    assert all(conversation.source_name == expected_provider for conversation in conversations)
+    sessions = parse_drive_payload(provider, payload, "fallback")
+    assert len(sessions) >= expected_count
+    assert all(session.source_name == expected_provider for session in sessions)
 
 
 def test_parse_payload_generic_messages_contract(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -865,27 +862,27 @@ def test_parse_payload_generic_messages_contract(monkeypatch: pytest.MonkeyPatch
 
     monkeypatch.setattr(dispatch_module, "extract_messages_from_list", lambda messages: sentinel_messages)
 
-    conversations = parse_payload(
+    sessions = parse_payload(
         Provider.DRIVE.value,
         {"id": "conv-1", "name": "Named", "messages": [{"ignored": True}]},
         "fallback",
     )
 
-    assert len(conversations) == 1
-    assert conversations[0].source_name == Provider.DRIVE
-    assert conversations[0].provider_conversation_id == "conv-1"
-    assert conversations[0].title == "Named"
-    assert conversations[0].messages == sentinel_messages
+    assert len(sessions) == 1
+    assert sessions[0].source_name == Provider.DRIVE
+    assert sessions[0].provider_session_id == "conv-1"
+    assert sessions[0].title == "Named"
+    assert sessions[0].messages == sentinel_messages
 
 
 def test_parse_payload_dispatches_chatgpt_bundle_items_exactly(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[object, str]] = []
 
-    def fake_parse(payload: object, fallback_id: str) -> ParsedConversation:
+    def fake_parse(payload: object, fallback_id: str) -> ParsedSession:
         calls.append((payload, fallback_id))
-        return _parsed_conversation(
+        return _parsed_session(
             source_name=Provider.CHATGPT,
-            provider_conversation_id=fallback_id,
+            provider_session_id=fallback_id,
             title=fallback_id,
             created_at=None,
             updated_at=None,
@@ -895,20 +892,20 @@ def test_parse_payload_dispatches_chatgpt_bundle_items_exactly(monkeypatch: pyte
     monkeypatch.setattr(chatgpt_parser, "parse", fake_parse)
     payloads = [{"id": "one"}, {"id": "two"}]
 
-    conversations = parse_payload(Provider.CHATGPT.value, payloads, "bundle")
+    sessions = parse_payload(Provider.CHATGPT.value, payloads, "bundle")
 
-    assert [conversation.provider_conversation_id for conversation in conversations] == ["bundle-0", "bundle-1"]
+    assert [session.provider_session_id for session in sessions] == ["bundle-0", "bundle-1"]
     assert calls == [(payloads[0], "bundle-0"), (payloads[1], "bundle-1")]
 
 
 def test_parse_payload_dispatches_claude_code_messages_and_single_records(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[object, str]] = []
 
-    def fake_parse_code(payload: object, fallback_id: str) -> ParsedConversation:
+    def fake_parse_code(payload: object, fallback_id: str) -> ParsedSession:
         calls.append((payload, fallback_id))
-        return _parsed_conversation(
+        return _parsed_session(
             source_name=Provider.CLAUDE_CODE,
-            provider_conversation_id=fallback_id,
+            provider_session_id=fallback_id,
             title=fallback_id,
             created_at=None,
             updated_at=None,
@@ -928,8 +925,8 @@ def test_parse_payload_dispatches_claude_code_messages_and_single_records(monkey
         "single",
     )
 
-    assert [conversation.provider_conversation_id for conversation in from_messages] == ["session"]
-    assert [conversation.provider_conversation_id for conversation in from_single] == ["single"]
+    assert [session.provider_session_id for session in from_messages] == ["session"]
+    assert [session.provider_session_id for session in from_single] == ["single"]
     assert calls == [
         ([{"type": "user"}, {"type": "assistant"}], "session"),
         ([{"type": "assistant", "message": {"content": "hi"}}], "single"),
@@ -940,11 +937,11 @@ def test_parse_drive_payload_recurses_lists_and_detected_payloads(monkeypatch: p
     drive_calls: list[tuple[str, object, str]] = []
     parse_calls: list[tuple[str, object, str]] = []
 
-    def fake_chunked(provider: str, payload: object, fallback_id: str) -> ParsedConversation:
+    def fake_chunked(provider: str, payload: object, fallback_id: str) -> ParsedSession:
         drive_calls.append((provider, payload, fallback_id))
-        return _parsed_conversation(
+        return _parsed_session(
             source_name=provider,
-            provider_conversation_id=fallback_id,
+            provider_session_id=fallback_id,
             title=fallback_id,
             created_at=None,
             updated_at=None,
@@ -956,12 +953,12 @@ def test_parse_drive_payload_recurses_lists_and_detected_payloads(monkeypatch: p
         payload: object,
         fallback_id: str,
         _depth: int = 0,
-    ) -> list[ParsedConversation]:
+    ) -> list[ParsedSession]:
         parse_calls.append((provider, payload, fallback_id))
         return [
-            _parsed_conversation(
+            _parsed_session(
                 source_name=provider,
-                provider_conversation_id=fallback_id,
+                provider_session_id=fallback_id,
                 title=fallback_id,
                 created_at=None,
                 updated_at=None,
@@ -976,9 +973,9 @@ def test_parse_drive_payload_recurses_lists_and_detected_payloads(monkeypatch: p
     chunked = parse_drive_payload("gemini", [{"role": "user", "text": "hello"}], "chunks")
     recursive = parse_drive_payload("drive", [{"mapping": {}, "id": "chatgpt-ish"}], "wrapped")
 
-    assert [conversation.provider_conversation_id for conversation in chunked] == ["chunks"]
+    assert [session.provider_session_id for session in chunked] == ["chunks"]
     assert drive_calls == [("gemini", {"chunks": [{"role": "user", "text": "hello"}]}, "chunks")]
-    assert [conversation.provider_conversation_id for conversation in recursive] == ["wrapped-0"]
+    assert [session.provider_session_id for session in recursive] == ["wrapped-0"]
     assert parse_calls == [("chatgpt", {"mapping": {}, "id": "chatgpt-ish"}, "wrapped-0")]
 
 
@@ -1005,7 +1002,7 @@ def test_decode_json_bytes_cleaning_contract(raw: bytes, expected: dict[str, obj
         ("CHATGPT.JSON", True),
         ("Export.JSONL", True),
         ("data.jsonl.txt", True),
-        ("conversation.ndjson", True),
+        ("session.ndjson", True),
         ("notes.txt", False),
     ],
 )
@@ -1123,14 +1120,13 @@ def test_find_sessions_index_and_enrichment_contract(tmp_path: Path) -> None:
 
     assert find_sessions_index(session_file) == index_file
 
-    conversation = _parsed_conversation(
+    session = _parsed_session(
         source_name=Provider.CLAUDE_CODE,
-        provider_conversation_id="session-1",
+        provider_session_id="session-1",
         title="session-1",
         created_at="2025-01-01T00:00:00Z",
         updated_at="2025-01-01T00:00:00Z",
         messages=[_parsed_message("m1", role="user", text="hello")],
-        provider_meta={"raw": True},
     )
     entry = SessionIndexEntry(
         session_id="session-1",
@@ -1145,20 +1141,13 @@ def test_find_sessions_index_and_enrichment_contract(tmp_path: Path) -> None:
         is_sidechain=True,
     )
 
-    enriched = enrich_conversation_from_index(conversation, entry)
+    enriched = enrich_session_from_index(session, entry)
 
     assert enriched.title == "Investigate parser contracts"
     assert enriched.created_at == "2025-01-02T00:00:00Z"
     assert enriched.updated_at == "2025-01-03T00:00:00Z"
-    assert enriched.provider_meta == {
-        "raw": True,
-        "gitBranch": "main",
-        "projectPath": "/tmp/project",
-        "isSidechain": True,
-        "summary": "Investigate parser contracts",
-        "firstPrompt": "Summarize this repo",
-        "title_source": "session-index:summary",
-    }
+    assert enriched.git_branch == "main"
+    assert enriched.title_source == "origin"
 
 
 def test_parse_sessions_index_contract(tmp_path: Path) -> None:
@@ -1205,15 +1194,15 @@ def test_parse_sessions_index_contract(tmp_path: Path) -> None:
     )
 
 
-def test_iter_source_conversations_skips_agent_meta_sidecars(tmp_path: Path) -> None:
+def test_iter_source_sessions_skips_agent_meta_sidecars(tmp_path: Path) -> None:
     source_dir = tmp_path / "claude-ai"
     source_dir.mkdir()
     (source_dir / "agent-a123.meta.json").write_text('{"agentType":"general-purpose"}', encoding="utf-8")
 
-    conversations = list(iter_source_conversations(Source(name="claude-code", path=source_dir)))
+    sessions = list(iter_source_sessions(Source(name="claude-code", path=source_dir)))
     raw_items = list(iter_source_raw_data(Source(name="claude-code", path=source_dir)))
 
-    assert conversations == []
+    assert sessions == []
     assert len(raw_items) == 1
     assert raw_items[0].source_path.endswith("agent-a123.meta.json")
 
@@ -1349,7 +1338,7 @@ def _parse_context(
     ],
     ids=lambda value: value if isinstance(value, str) else None,
 )
-def test_conversation_emitter_contract_matrix(
+def test_session_emitter_contract_matrix(
     label: str,
     ctx: _ParseContext,
     filename: str,
@@ -1362,7 +1351,7 @@ def test_conversation_emitter_contract_matrix(
     expected_message_count: int | None,
 ) -> None:
     emitted = list(
-        _ConversationEmitter(ctx).emit(
+        _SessionEmitter(ctx).emit(
             BytesIO(raw),
             filename,
             pre_read_bytes=raw if pre_read_bytes is not None else None,
@@ -1373,17 +1362,17 @@ def test_conversation_emitter_contract_matrix(
     assert [raw_data.source_index for raw_data, _ in emitted if raw_data is not None] == expected_indexes
     assert all(raw_data is not None for raw_data, _ in emitted)
     assert all(raw_data.provider_hint == expected_provider_hint for raw_data, _ in emitted if raw_data is not None)
-    assert all(conversation.source_name == expected_source_name for _, conversation in emitted)
+    assert all(session.source_name == expected_source_name for _, session in emitted)
     if expected_ids is not None:
-        assert [conversation.provider_conversation_id for _, conversation in emitted] == expected_ids
+        assert [session.provider_session_id for _, session in emitted] == expected_ids
     if expected_message_count is not None:
         assert len(emitted[0][1].messages) == expected_message_count
     if label.startswith("grouped"):
         assert emitted[0][0] is not None and emitted[0][0].raw_bytes == raw
 
 
-def test_conversation_emitter_resolves_schema_for_payloads(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Conversation emitter should pass SchemaResolution into parse_payload."""
+def test_session_emitter_resolves_schema_for_payloads(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Session emitter should pass SchemaResolution into parse_payload."""
     ctx = _parse_context(
         Provider.CHATGPT.value,
         should_group=False,
@@ -1395,15 +1384,15 @@ def test_conversation_emitter_resolves_schema_for_payloads(monkeypatch: pytest.M
     fake_registry.resolve_payload.return_value = object()
     fake_parse = MagicMock()
     fake_message = _parsed_message("m1", role="user", text="hello")
-    fake_conversation = _parsed_conversation(
+    fake_session = _parsed_session(
         source_name=Provider.CLAUDE_CODE,
-        provider_conversation_id="session",
+        provider_session_id="session",
         title="session",
         created_at=None,
         updated_at=None,
         messages=[fake_message],
     )
-    fake_parse.return_value = [fake_conversation]
+    fake_parse.return_value = [fake_session]
 
     def fake_parse_payload(
         provider: object,
@@ -1413,10 +1402,10 @@ def test_conversation_emitter_resolves_schema_for_payloads(monkeypatch: pytest.M
         *,
         schema_resolution: object | None = None,
         source_path: str | None = None,
-    ) -> list[ParsedConversation]:
+    ) -> list[ParsedSession]:
         del source_path
         fake_parse(provider=provider, payload=payload, fallback_id=fallback_id, schema_resolution=schema_resolution)
-        return [fake_conversation]
+        return [fake_session]
 
     monkeypatch.setattr("polylogue.sources.emitter._schema_registry_factory", lambda: fake_registry)
     monkeypatch.setattr("polylogue.sources.emitter.parse_payload", fake_parse_payload)
@@ -1426,7 +1415,7 @@ def test_conversation_emitter_resolves_schema_for_payloads(monkeypatch: pytest.M
         b'{"mapping":{"r1":{"message":{"author":{"role":"assistant"},"content":{"content_type":"text","parts":["second"]}}}}}\n'
     )
 
-    emitted = list(_ConversationEmitter(ctx).emit(BytesIO(raw), "session.jsonl"))
+    emitted = list(_SessionEmitter(ctx).emit(BytesIO(raw), "session.jsonl"))
 
     assert emitted
     assert fake_parse.call_count == 2
@@ -1435,7 +1424,7 @@ def test_conversation_emitter_resolves_schema_for_payloads(monkeypatch: pytest.M
     assert resolved_arg is fake_registry.resolve_payload.return_value
 
 
-def test_conversation_emitter_reuses_jsonl_sniff_payloads_for_grouped_detection(
+def test_session_emitter_reuses_jsonl_sniff_payloads_for_grouped_detection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ctx = _ParseContext(
@@ -1465,7 +1454,7 @@ def test_conversation_emitter_reuses_jsonl_sniff_payloads_for_grouped_detection(
 
     monkeypatch.setattr("polylogue.sources.emitter._iter_json_stream", tracking_iter_json_stream)
 
-    emitted = list(_ConversationEmitter(ctx).emit(BytesIO(raw), "session.jsonl"))
+    emitted = list(_SessionEmitter(ctx).emit(BytesIO(raw), "session.jsonl"))
 
     assert emitted
     assert parse_calls == 1
@@ -1474,7 +1463,7 @@ def test_conversation_emitter_reuses_jsonl_sniff_payloads_for_grouped_detection(
     assert len(emitted[0][1].messages) == 2
 
 
-def test_conversation_emitter_reuses_jsonl_sniff_payloads_for_individual_detection(
+def test_session_emitter_reuses_jsonl_sniff_payloads_for_individual_detection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class NoWholeReadBytesIO(BytesIO):
@@ -1510,16 +1499,16 @@ def test_conversation_emitter_reuses_jsonl_sniff_payloads_for_individual_detecti
 
     monkeypatch.setattr("polylogue.sources.emitter._iter_json_stream", tracking_iter_json_stream)
 
-    emitted = list(_ConversationEmitter(ctx).emit(NoWholeReadBytesIO(raw), "session.jsonl"))
+    emitted = list(_SessionEmitter(ctx).emit(NoWholeReadBytesIO(raw), "session.jsonl"))
 
     assert emitted
     assert parse_calls == 1
     assert [raw_data.source_index for raw_data, _ in emitted if raw_data is not None] == [0, 1]
     assert all(raw_data is not None for raw_data, _ in emitted)
-    assert all(conversation.source_name == Provider.CHATGPT for _, conversation in emitted)
+    assert all(session.source_name == Provider.CHATGPT for _, session in emitted)
 
 
-def test_conversation_emitter_detects_individual_jsonl_provider_from_payloads(
+def test_session_emitter_detects_individual_jsonl_provider_from_payloads(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class NoWholeReadBytesIO(BytesIO):
@@ -1550,15 +1539,15 @@ def test_conversation_emitter_detects_individual_jsonl_provider_from_payloads(
 
     monkeypatch.setattr("polylogue.sources.emitter.detect_provider", tracking_detect_provider)
 
-    emitted = list(_ConversationEmitter(ctx).emit(NoWholeReadBytesIO(raw), "session.jsonl"))
+    emitted = list(_SessionEmitter(ctx).emit(NoWholeReadBytesIO(raw), "session.jsonl"))
 
     assert emitted
     assert [raw_data.source_index for raw_data, _ in emitted if raw_data is not None] == [0, 1]
     assert all(raw_data is not None for raw_data, _ in emitted)
-    assert all(conversation.source_name == Provider.CHATGPT for _, conversation in emitted)
+    assert all(session.source_name == Provider.CHATGPT for _, session in emitted)
 
 
-def test_conversation_emitter_only_enriches_matching_claude_code_sessions_contract() -> None:
+def test_session_emitter_only_enriches_matching_claude_code_sessions_contract() -> None:
     entry = SessionIndexEntry(
         session_id="session-1",
         full_path="/tmp/session.jsonl",
@@ -1580,18 +1569,18 @@ def test_conversation_emitter_only_enriches_matching_claude_code_sessions_contra
         capture_raw=False,
         sidecar_data={"session_index": {"session-1": entry}},
     )
-    emitter = _ConversationEmitter(ctx)
-    matching = _parsed_conversation(
+    emitter = _SessionEmitter(ctx)
+    matching = _parsed_session(
         source_name=Provider.CLAUDE_CODE,
-        provider_conversation_id="session-1",
+        provider_session_id="session-1",
         title="session-1",
         created_at=None,
         updated_at=None,
         messages=[_parsed_message("m1", role="user", text="hello")],
     )
-    other = _parsed_conversation(
+    other = _parsed_session(
         source_name=Provider.CHATGPT,
-        provider_conversation_id="session-2",
+        provider_session_id="session-2",
         title="untouched",
         created_at=None,
         updated_at=None,
@@ -1605,7 +1594,7 @@ def test_conversation_emitter_only_enriches_matching_claude_code_sessions_contra
     assert untouched.title == "untouched"
 
 
-def test_conversation_emitter_enriches_gemini_display_labels_contract() -> None:
+def test_session_emitter_enriches_gemini_display_labels_contract() -> None:
     ctx = _ParseContext(
         provider_hint=Provider.GEMINI,
         should_group=False,
@@ -1615,23 +1604,23 @@ def test_conversation_emitter_enriches_gemini_display_labels_contract() -> None:
         capture_raw=False,
         sidecar_data={},
     )
-    emitter = _ConversationEmitter(ctx)
-    conversation = _parsed_conversation(
+    emitter = _SessionEmitter(ctx)
+    session = _parsed_session(
         source_name=Provider.GEMINI,
-        provider_conversation_id="gemini-20250422-1234",
+        provider_session_id="gemini-20250422-1234",
         title="gemini-20250422-1234",
         created_at=None,
         updated_at=None,
         messages=[_parsed_message("m1", role="user", text="Summarize the roadmap")],
-        provider_meta={"title_source": "fallback:id"},
     )
 
-    enriched = emitter._maybe_enrich(conversation)
+    enriched = emitter._maybe_enrich(session)
 
-    assert enriched.title == "gemini-20250422-1234"
-    assert enriched.provider_meta is not None
-    assert enriched.provider_meta["display_label"] == "Summarize the roadmap"
-    assert enriched.provider_meta["display_label_source"] == "first-user-message"
+    # ID-based title is weak, so Gemini assembly promotes the first user
+    # message text to title (typed replacement for the old provider_meta
+    # display_label enrichment).
+    assert enriched.title == "Summarize the roadmap"
+    assert enriched.title_source == TitleSource.HEURISTIC
 
 
 def _zip_entry(name: str, *, size: int = 100, compressed: int = 50) -> zipfile.ZipInfo:
@@ -1646,36 +1635,36 @@ def _zip_entry(name: str, *, size: int = 100, compressed: int = 50) -> zipfile.Z
     [
         (
             "claude-ai",
-            [_zip_entry("nested/conversations.json"), _zip_entry("nested/other.json")],
-            ["nested/conversations.json", "nested/other.json"],
+            [_zip_entry("nested/sessions.json"), _zip_entry("nested/other.json")],
+            ["nested/sessions.json", "nested/other.json"],
             0,
             None,
         ),
         (
             "chatgpt",
             [
-                _zip_entry("nested/conversations.json"),
+                _zip_entry("nested/sessions.json"),
                 _zip_entry("nested/other.json"),
-                _zip_entry("nested/conversations.jsonl", size=2_000_000, compressed=1),
+                _zip_entry("nested/sessions.jsonl", size=2_000_000, compressed=1),
                 _zip_entry("nested/readme.txt"),
             ],
-            ["nested/conversations.json", "nested/other.json"],
+            ["nested/sessions.json", "nested/other.json"],
             1,
-            "nested/conversations.jsonl",
+            "nested/sessions.jsonl",
         ),
         (
             "chatgpt",
             [
-                _zip_entry("nested/conversations.json"),
-                _zip_entry("nested/conversations.jsonl"),
-                _zip_entry("nested/conversations.ndjson"),
-                _zip_entry("nested/conversations.jsonl.txt"),
+                _zip_entry("nested/sessions.json"),
+                _zip_entry("nested/sessions.jsonl"),
+                _zip_entry("nested/sessions.ndjson"),
+                _zip_entry("nested/sessions.jsonl.txt"),
             ],
             [
-                "nested/conversations.json",
-                "nested/conversations.jsonl",
-                "nested/conversations.ndjson",
-                "nested/conversations.jsonl.txt",
+                "nested/sessions.json",
+                "nested/sessions.jsonl",
+                "nested/sessions.ndjson",
+                "nested/sessions.jsonl.txt",
             ],
             0,
             None,
@@ -1929,7 +1918,7 @@ def test_iter_source_raw_data_streams_grouped_zip_entries_into_blob_store(
     ("entry_name", "payload_bytes", "expected_provider", "id_field", "expected_ids"),
     [
         (
-            "conversations.json",
+            "sessions.json",
             json.dumps(
                 [
                     {"id": "chatgpt-1", "mapping": {}},
@@ -1941,7 +1930,7 @@ def test_iter_source_raw_data_streams_grouped_zip_entries_into_blob_store(
             ["chatgpt-1", "chatgpt-2"],
         ),
         (
-            "claude-conversations.json",
+            "claude-sessions.json",
             json.dumps(
                 [
                     {"uuid": "claude-1", "name": "one", "chat_messages": []},
@@ -1954,7 +1943,7 @@ def test_iter_source_raw_data_streams_grouped_zip_entries_into_blob_store(
         ),
     ],
 )
-def test_iter_source_raw_data_splits_multi_conversation_zip_entries_for_non_grouped_providers(
+def test_iter_source_raw_data_splits_multi_session_zip_entries_for_non_grouped_providers(
     tmp_path: Path,
     entry_name: str,
     payload_bytes: bytes,
@@ -1988,7 +1977,7 @@ def test_iter_source_raw_data_avoids_whole_blob_provider_detection_for_zip_entri
     archive_path = tmp_path / "bundle.zip"
     with zipfile.ZipFile(archive_path, "w") as zf:
         zf.writestr(
-            "nested/conversations.json",
+            "nested/sessions.json",
             json.dumps(
                 [
                     {"id": "chatgpt-1", "mapping": {}},
@@ -2056,7 +2045,7 @@ def test_iter_source_raw_data_reports_split_payload_observations(tmp_path: Path)
     archive_path = tmp_path / "bundle.zip"
     with zipfile.ZipFile(archive_path, "w") as zf:
         zf.writestr(
-            "nested/conversations.json",
+            "nested/sessions.json",
             json.dumps(
                 [
                     {"id": "chatgpt-1", "mapping": {}},
@@ -2078,7 +2067,7 @@ def test_iter_source_raw_data_reports_split_payload_observations(tmp_path: Path)
     assert observations
     peak = max(observations, key=lambda observation: _numeric_observation_value(observation, "peak_rss_self_mb"))
     assert peak["phase"] == "zip-entry-split-payload-serialized"
-    assert peak["source_path"] == f"{archive_path}:nested/conversations.json"
+    assert peak["source_path"] == f"{archive_path}:nested/sessions.json"
     assert peak["provider_hint"] == Provider.CHATGPT.value
     assert peak["source_index"] in {0, 1}
     assert _numeric_observation_value(peak, "blob_size") > 0
@@ -2089,7 +2078,7 @@ def test_iter_source_raw_data_reports_split_payload_observations(tmp_path: Path)
     assert _numeric_observation_value(peak, "peak_rss_self_mb") > 0.0
 
 
-def test_split_payload_buffer_waits_until_zip_entry_is_multi_conversation() -> None:
+def test_split_payload_buffer_waits_until_zip_entry_is_multi_session() -> None:
     buffer = SplitPayloadBuffer()
 
     assert buffer.pending_index == 0
@@ -2158,7 +2147,7 @@ def test_iter_entry_payloads_locks_provider_after_first_detected_payload(
     items = list(
         _iter_entry_payloads(
             BytesIO(json.dumps(payloads).encode("utf-8")),
-            stream_name="conversations.json",
+            stream_name="sessions.json",
             provider_hint=Provider.UNKNOWN,
         )
     )
@@ -2489,9 +2478,9 @@ def test_chatgpt_iter_user_assistant_pairs_contract(
             ),
         )
 
-    conversation = ChatGPTConversation(
+    session = ChatGPTSession(
         id="conv-pairs",
-        conversation_id="conv-pairs",
+        session_id="conv-pairs",
         title="pairs",
         create_time=1700000000.0,
         update_time=1700000100.0,
@@ -2499,7 +2488,7 @@ def test_chatgpt_iter_user_assistant_pairs_contract(
         current_node=f"node-{len(roles) - 1}" if roles else "root",
     )
 
-    assert [(user.id, assistant.id) for user, assistant in conversation.iter_user_assistant_pairs()] == expected_pairs
+    assert [(user.id, assistant.id) for user, assistant in session.iter_user_assistant_pairs()] == expected_pairs
 
 
 def test_claude_code_helper_conversion_contracts() -> None:

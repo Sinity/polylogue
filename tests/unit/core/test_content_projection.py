@@ -12,7 +12,7 @@ from tests.infra.builders import make_conv, make_msg
 
 
 def test_projection_removes_only_file_read_payloads_when_requested() -> None:
-    conversation = make_conv(
+    session = make_conv(
         messages=[
             make_msg(
                 id="a1",
@@ -51,7 +51,7 @@ def test_projection_removes_only_file_read_payloads_when_requested() -> None:
         ]
     )
 
-    projected = conversation.with_content_projection(ContentProjectionSpec.from_params({"no_file_reads": True}))
+    projected = session.with_content_projection(ContentProjectionSpec.from_params({"no_file_reads": True}))
 
     assert [message.id for message in projected.messages] == ["a1", "t2"]
     texts = [message.text or "" for message in projected.messages]
@@ -61,7 +61,7 @@ def test_projection_removes_only_file_read_payloads_when_requested() -> None:
 
 
 def test_prose_only_uses_text_fallback_and_preserves_order() -> None:
-    conversation = make_conv(
+    session = make_conv(
         messages=[
             make_msg(
                 id="fallback",
@@ -71,7 +71,7 @@ def test_prose_only_uses_text_fallback_and_preserves_order() -> None:
         ]
     )
 
-    projected = conversation.with_content_projection(ContentProjectionSpec.prose_only())
+    projected = session.with_content_projection(ContentProjectionSpec.prose_only())
 
     assert len(projected.messages) == 1
     message = next(iter(projected.messages))
@@ -79,7 +79,7 @@ def test_prose_only_uses_text_fallback_and_preserves_order() -> None:
 
 
 def test_projection_filters_structured_code_and_tool_outputs_without_losing_prose() -> None:
-    conversation = make_conv(
+    session = make_conv(
         messages=[
             make_msg(
                 id="mixed",
@@ -101,7 +101,7 @@ def test_projection_filters_structured_code_and_tool_outputs_without_losing_pros
         ]
     )
 
-    projected = conversation.with_content_projection(
+    projected = session.with_content_projection(
         ContentProjectionSpec.from_params(
             {
                 "no_code_blocks": True,
@@ -116,7 +116,7 @@ def test_projection_filters_structured_code_and_tool_outputs_without_losing_pros
 
 
 def test_prose_only_drops_attachment_only_messages() -> None:
-    conversation = make_conv(
+    session = make_conv(
         messages=[
             make_msg(
                 id="attachment-only",
@@ -127,7 +127,7 @@ def test_prose_only_drops_attachment_only_messages() -> None:
         ]
     )
 
-    projected = conversation.with_content_projection(ContentProjectionSpec.prose_only())
+    projected = session.with_content_projection(ContentProjectionSpec.prose_only())
 
     assert list(projected.messages) == []
 

@@ -10,7 +10,7 @@ from typing import Protocol, TypeAlias
 from polylogue.archive.raw_payload.decode import JSONValue
 from polylogue.schemas.synthetic.models import SchemaRecord, SchemaValue
 from polylogue.schemas.synthetic.semantic_values import SemanticValueGenerator
-from polylogue.schemas.synthetic.showcase import ConversationTheme
+from polylogue.schemas.synthetic.showcase import SessionTheme
 from polylogue.schemas.synthetic.wire_formats import WireFormat
 
 SyntheticRecord: TypeAlias = dict[str, JSONValue]
@@ -40,7 +40,7 @@ class _WireFormatContext(Protocol):
         rng: random.Random,
         index: int,
         base_ts: float,
-        theme: ConversationTheme | None = ...,
+        theme: SessionTheme | None = ...,
     ) -> None: ...
 
     def _role_cycle(self) -> list[str]: ...
@@ -71,7 +71,7 @@ def _reset_semantic_generator(
     self: _WireFormatContext,
     *,
     rng: random.Random,
-    theme: ConversationTheme | None,
+    theme: SessionTheme | None,
     base_ts: float,
     roles: Sequence[str],
 ) -> None:
@@ -96,7 +96,7 @@ def _advance_semantic_turn(self: _WireFormatContext) -> None:
 
 
 def _generate_tree_json(
-    self: _WireFormatContext, n_messages: int, rng: random.Random, *, theme: ConversationTheme | None = None
+    self: _WireFormatContext, n_messages: int, rng: random.Random, *, theme: SessionTheme | None = None
 ) -> SyntheticRecord:
     tree_cfg = self.wire_format.tree
     assert tree_cfg is not None and tree_cfg.container_path is not None
@@ -156,7 +156,7 @@ def _generate_tree_json(
 
 
 def _generate_linear_json(
-    self: _WireFormatContext, n_messages: int, rng: random.Random, *, theme: ConversationTheme | None = None
+    self: _WireFormatContext, n_messages: int, rng: random.Random, *, theme: SessionTheme | None = None
 ) -> SyntheticRecord:
     msgs_path = self.wire_format.messages_path
     assert msgs_path is not None
@@ -202,7 +202,7 @@ def _generate_linear_json(
 
 
 def _generate_jsonl_records(
-    self: _WireFormatContext, n_messages: int, rng: random.Random, *, theme: ConversationTheme | None = None
+    self: _WireFormatContext, n_messages: int, rng: random.Random, *, theme: SessionTheme | None = None
 ) -> list[SyntheticRecord]:
     tree_cfg = self.wire_format.tree
     records: list[SyntheticRecord] = []

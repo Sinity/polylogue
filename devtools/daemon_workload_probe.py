@@ -16,43 +16,135 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from polylogue.paths import db_path as default_db_path
-from polylogue.storage.fts.fts_lifecycle import FTS_TRIGGER_NAMES as _EXPECTED_FTS_TRIGGERS
+from polylogue.paths import active_index_db_path
+from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 # Bumped when the JSON shape gains new top-level keys or changes a field type.
 # The compare path uses this to refuse incompatible inputs loudly.
-REPORT_VERSION = 3  # v3 adds top-level `topology_quarantine_state` (#1260)
+REPORT_VERSION = 10  # v10 renames archive readiness payloads to archive terms.
+
+_EXPECTED_FTS_TRIGGERS: tuple[str, ...] = ("messages_fts_ai", "messages_fts_ad", "messages_fts_au")
+
+_KNOWN_STORAGE_ROUTES: frozenset[str] = frozenset(
+    {
+        "archive_full",
+        "archive_append",
+        "archive_file_set",
+        "unsupported_polylogue_batch",
+        "unknown",
+    }
+)
 
 # Tables whose row counts form the convergence "boundary" — daemon work moves
 # rows into and out of these tables, so the deltas describe convergence shape.
 _BOUNDARY_TABLES: tuple[str, ...] = (
-    "raw_conversations",
-    "conversations",
+    "raw_sessions",
+    "sessions",
     "messages",
-    "content_blocks",
     "artifact_observations",
     "messages_fts_docsize",
-    "action_events",
-    "action_events_fts_docsize",
     "message_embeddings",
-    "session_profile",
+    "session_profiles",
     "live_ingest_attempt",
-    "live_convergence_debt",
+    "convergence_debt",
     "pending_blob_refs",
-    "topology_edges",
-    "repo_identities",
-    "conversation_repo_observations",
+    "repos",
+    "session_repos",
+    "session_commits",
+    "blocks",
+    "messages_fts_data",
+    "session_events",
+    "session_links",
 )
+
+_OPS_BOUNDARY_TABLES: tuple[str, ...] = (
+    "ingest_attempts",
+    "convergence_debt",
+    "cursor_lag_samples",
+    "daemon_stage_events",
+    "daemon_events",
+    "otlp_telemetry",
+)
+
+_ARCHIVE_OBSERVABILITY_TABLES: dict[ArchiveTier, tuple[str, ...]] = {
+    ArchiveTier.SOURCE: (
+        "raw_sessions",
+        "blob_refs",
+        "raw_artifacts",
+        "raw_hook_events",
+        "history_sidecars",
+    ),
+    ArchiveTier.INDEX: (
+        "sessions",
+        "messages",
+        "blocks",
+        "messages_fts_data",
+        "session_events",
+        "session_links",
+        "threads",
+        "thread_sessions",
+        "session_working_dirs",
+        "repos",
+        "session_repos",
+        "session_commits",
+        "attachments",
+        "attachment_refs",
+        "paste_spans",
+        "session_tags",
+        "insight_materialization",
+        "session_work_events",
+        "session_phases",
+        "session_profiles",
+    ),
+    ArchiveTier.EMBEDDINGS: (
+        "message_embeddings",
+        "embeddings_meta",
+        "embedding_status",
+    ),
+    ArchiveTier.USER: (
+        "marks",
+        "annotations",
+        "corrections",
+        "suppressions",
+        "session_tags",
+        "session_metadata",
+        "saved_views",
+        "recall_packs",
+        "workspaces",
+        "blackboard_notes",
+    ),
+    ArchiveTier.OPS: (
+        "ingest_cursor",
+        "ingest_attempts",
+        "convergence_debt",
+        "cursor_lag_samples",
+        "daemon_stage_events",
+        "daemon_events",
+        "embedding_catchup_runs",
+        "otlp_spans",
+        "otlp_telemetry",
+    ),
+}
 
 
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     row = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
+        (table,),
+    ).fetchone()
+    return row is not None
+
+
+def _attached_table_exists(conn: sqlite3.Connection, schema: str, table: str) -> bool:
+    row = conn.execute(
+        f"SELECT 1 FROM {schema}.sqlite_master WHERE type='table' AND name=? LIMIT 1",
         (table,),
     ).fetchone()
     return row is not None
@@ -75,9 +167,12 @@ def _scalar_int(conn: sqlite3.Connection, sql: str, params: tuple[object, ...] =
     return int(row[0] or 0) if row is not None else 0
 
 
-def _recent_attempts(conn: sqlite3.Connection, *, limit: int) -> list[dict[str, Any]]:
+def _recent_attempts(conn: sqlite3.Connection, *, limit: int, ops_db: Path | None = None) -> list[dict[str, Any]]:
+    ops_attempts = _ops_recent_attempts(ops_db, limit=limit)
+    if ops_attempts:
+        return ops_attempts
     if not _table_exists(conn, "live_ingest_attempt"):
-        return []
+        return ops_attempts
     columns = _columns(conn, "live_ingest_attempt")
     stale_expr = "stale_cursor_write_count" if "stale_cursor_write_count" in columns else "0"
     source_paths_expr = "source_paths_json" if "source_paths_json" in columns else "'[]'"
@@ -137,7 +232,169 @@ def _recent_attempts(conn: sqlite3.Connection, *, limit: int) -> list[dict[str, 
     return attempts
 
 
-def _attempt_counts(conn: sqlite3.Connection) -> dict[str, Any]:
+def _ops_recent_attempts(ops_db: Path | None, *, limit: int) -> list[dict[str, Any]]:
+    if ops_db is None or not ops_db.exists():
+        return []
+    try:
+        conn = open_readonly_connection(ops_db)
+        try:
+            if not _table_exists(conn, "ingest_attempts"):
+                return []
+            rows = conn.execute(
+                """
+                SELECT attempt_id, started_at_ms, heartbeat_at_ms, finished_at_ms,
+                       status, phase, parsed_raw_count, materialized_count,
+                       error_message, source_paths_json
+                FROM ingest_attempts
+                ORDER BY COALESCE(heartbeat_at_ms, finished_at_ms, started_at_ms) DESC,
+                         started_at_ms DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            payloads = _ops_stage_payloads(conn, [str(row[0]) for row in rows])
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return []
+
+    attempts: list[dict[str, Any]] = []
+    for row in rows:
+        attempt_id = str(row[0])
+        payload = payloads.get(attempt_id, {})
+        input_bytes = _payload_int(payload, "input_bytes")
+        source_payload_read_bytes = _payload_int(payload, "source_payload_read_bytes")
+        cursor_fingerprint_read_bytes = _payload_int(payload, "cursor_fingerprint_read_bytes")
+        total_read_bytes = source_payload_read_bytes + cursor_fingerprint_read_bytes
+        source_paths = _json_list(row[9])
+        attempts.append(
+            {
+                "attempt_id": attempt_id,
+                "started_at": _iso_from_epoch_ms(row[1]),
+                "updated_at": _iso_from_epoch_ms(row[2] or row[3] or row[1]),
+                "completed_at": _iso_from_epoch_ms(row[3]),
+                "status": row[4],
+                "phase": row[5],
+                "queued_file_count": _payload_int(payload, "queued_file_count", default=len(source_paths)),
+                "needed_file_count": _payload_int(payload, "needed_file_count", default=len(source_paths)),
+                "succeeded_file_count": int(row[7] or 0),
+                "failed_file_count": 1 if row[4] == "failed" else 0,
+                "input_bytes": input_bytes,
+                "source_payload_read_bytes": source_payload_read_bytes,
+                "cursor_fingerprint_read_bytes": cursor_fingerprint_read_bytes,
+                "total_read_bytes": total_read_bytes,
+                "read_amplification": round(total_read_bytes / input_bytes, 3) if input_bytes > 0 else 0.0,
+                "parse_time_s": _payload_float(payload, "parse_time_s"),
+                "convergence_time_s": _payload_float(payload, "convergence_time_s"),
+                "stale_cursor_write_count": _payload_int(payload, "stale_cursor_write_count"),
+                "storage_route": _normalise_storage_route(payload.get("storage_route")),
+                "source_paths": source_paths,
+            }
+        )
+    return attempts
+
+
+def _ops_stage_payloads(conn: sqlite3.Connection, attempt_ids: list[str]) -> dict[str, dict[str, Any]]:
+    if not attempt_ids or not _table_exists(conn, "daemon_stage_events"):
+        return {}
+    placeholders = ",".join("?" for _ in attempt_ids)
+    rows = conn.execute(
+        f"""
+        SELECT attempt_id, payload_json
+        FROM daemon_stage_events
+        WHERE attempt_id IN ({placeholders})
+        ORDER BY observed_at_ms DESC, rowid DESC
+        """,
+        tuple(attempt_ids),
+    ).fetchall()
+    payloads: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        attempt_id = str(row[0])
+        try:
+            decoded = json.loads(str(row[1] or "{}"))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(decoded, dict):
+            merged = payloads.setdefault(attempt_id, {})
+            for key, value in decoded.items():
+                merged.setdefault(key, value)
+    return payloads
+
+
+def _payload_int(payload: dict[str, Any], key: str, *, default: int = 0) -> int:
+    value = payload.get(key)
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return default
+    return int(value)
+
+
+def _payload_float(payload: dict[str, Any], key: str) -> float:
+    value = payload.get(key)
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return 0.0
+    return float(value)
+
+
+def _payload_str(payload: dict[str, Any], key: str, *, default: str = "") -> str:
+    value = payload.get(key)
+    return value if isinstance(value, str) else default
+
+
+def _normalise_storage_route(value: object) -> str:
+    if not isinstance(value, str) or not value:
+        return "unknown"
+    return value if value in _KNOWN_STORAGE_ROUTES else "other"
+
+
+def _storage_route_counts(conn: sqlite3.Connection, *, ops_db: Path | None = None) -> dict[str, int]:
+    ops_counts = _ops_storage_route_counts(ops_db)
+    if ops_counts is not None:
+        return ops_counts
+
+    counts = dict.fromkeys(sorted(_KNOWN_STORAGE_ROUTES), 0)
+    counts["other"] = 0
+    if not _table_exists(conn, "live_ingest_attempt"):
+        return counts
+    columns = _columns(conn, "live_ingest_attempt")
+    if "storage_route" not in columns:
+        counts["unknown"] = _scalar_int(conn, "SELECT COUNT(*) FROM live_ingest_attempt")
+        return counts
+    rows = conn.execute("SELECT storage_route, COUNT(*) FROM live_ingest_attempt GROUP BY storage_route").fetchall()
+    for row in rows:
+        route = _normalise_storage_route(row[0])
+        counts[route] = counts.get(route, 0) + int(row[1] or 0)
+    return counts
+
+
+def _ops_storage_route_counts(ops_db: Path | None) -> dict[str, int] | None:
+    if ops_db is None or not ops_db.exists():
+        return None
+    try:
+        conn = open_readonly_connection(ops_db)
+        try:
+            if not _table_exists(conn, "ingest_attempts"):
+                return None
+            rows = conn.execute("SELECT attempt_id FROM ingest_attempts").fetchall()
+            attempt_ids = [str(row[0]) for row in rows]
+            if not attempt_ids:
+                return None
+            payloads = _ops_stage_payloads(conn, attempt_ids)
+            counts = dict.fromkeys(sorted(_KNOWN_STORAGE_ROUTES), 0)
+            counts["other"] = 0
+            for attempt_id in attempt_ids:
+                route = _normalise_storage_route(payloads.get(attempt_id, {}).get("storage_route"))
+                counts[route] = counts.get(route, 0) + 1
+            return counts
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+
+
+def _attempt_counts(conn: sqlite3.Connection, *, ops_db: Path | None = None) -> dict[str, Any]:
+    ops_counts = _ops_attempt_counts(ops_db)
+    if ops_counts is not None and (ops_counts["total"] > 0 or not _table_exists(conn, "live_ingest_attempt")):
+        return ops_counts
     if not _table_exists(conn, "live_ingest_attempt"):
         return {
             "total": 0,
@@ -179,15 +436,62 @@ def _attempt_counts(conn: sqlite3.Connection) -> dict[str, Any]:
     }
 
 
-def _source_path_churn(conn: sqlite3.Connection, *, attempts: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
-    if not _table_exists(conn, "raw_conversations"):
+def _ops_attempt_counts(ops_db: Path | None) -> dict[str, Any] | None:
+    if ops_db is None or not ops_db.exists():
+        return None
+    try:
+        conn = open_readonly_connection(ops_db)
+        try:
+            if not _table_exists(conn, "ingest_attempts"):
+                return None
+            rows = conn.execute(
+                """
+                SELECT source_paths_json
+                FROM ingest_attempts
+                WHERE status = 'running'
+                """
+            ).fetchall()
+            path_counts: dict[str, int] = {}
+            for row in rows:
+                for path in _json_list(row[0]):
+                    path_counts[path] = path_counts.get(path, 0) + 1
+            overlapping = [
+                {"source_path": path, "running_attempt_count": count}
+                for path, count in sorted(path_counts.items())
+                if count > 1
+            ]
+            return {
+                "total": _scalar_int(conn, "SELECT COUNT(*) FROM ingest_attempts"),
+                "running": _scalar_int(conn, "SELECT COUNT(*) FROM ingest_attempts WHERE status = 'running'"),
+                "completed": _scalar_int(conn, "SELECT COUNT(*) FROM ingest_attempts WHERE status = 'completed'"),
+                "failed": _scalar_int(conn, "SELECT COUNT(*) FROM ingest_attempts WHERE status = 'failed'"),
+                "stale_cursor_writes": 0,
+                "overlapping_source_paths": overlapping[:20],
+            }
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+
+
+def _source_path_churn(
+    conn: sqlite3.Connection,
+    *,
+    attempts: list[dict[str, Any]],
+    limit: int,
+    db: Path,
+) -> list[dict[str, Any]]:
+    archive_churn = _archive_source_path_churn(db.parent, attempts=attempts, limit=limit)
+    if archive_churn:
+        return archive_churn
+    if not _table_exists(conn, "raw_sessions"):
         return []
     source_paths = sorted({path for attempt in attempts for path in attempt.get("source_paths", []) if path})
     if not source_paths:
         return []
-    has_conversations = _table_exists(conn, "conversations")
-    join = "LEFT JOIN conversations AS c ON c.raw_id = r.raw_id" if has_conversations else ""
-    conversation_count = "COUNT(DISTINCT c.conversation_id)" if has_conversations else "0"
+    has_sessions = _table_exists(conn, "sessions")
+    join = "LEFT JOIN sessions AS c ON c.raw_id = r.raw_id" if has_sessions else ""
+    session_count = "COUNT(DISTINCT c.session_id)" if has_sessions else "0"
     placeholders = ",".join("?" for _ in source_paths)
     rows = conn.execute(
         f"""
@@ -196,10 +500,10 @@ def _source_path_churn(conn: sqlite3.Connection, *, attempts: list[dict[str, Any
             COUNT(*) AS raw_count,
             SUM(CASE WHEN COALESCE(r.source_index, 0) >= 0 THEN 1 ELSE 0 END) AS full_raw_count,
             SUM(CASE WHEN r.source_index = -1 THEN 1 ELSE 0 END) AS append_raw_count,
-            {conversation_count} AS conversation_count,
+            {session_count} AS session_count,
             SUM(COALESCE(r.blob_size, 0)) AS total_blob_bytes,
             MAX(r.acquired_at) AS latest_acquired_at
-        FROM raw_conversations AS r
+        FROM raw_sessions AS r
         {join}
         WHERE r.source_path IN ({placeholders})
         GROUP BY r.source_path
@@ -212,15 +516,15 @@ def _source_path_churn(conn: sqlite3.Connection, *, attempts: list[dict[str, Any
     items: list[dict[str, Any]] = []
     for row in rows:
         raw_count = int(row[1] or 0)
-        conversation_count_value = int(row[4] or 0)
+        session_count_value = int(row[4] or 0)
         items.append(
             {
                 "source_path": row[0],
                 "raw_count": raw_count,
                 "full_raw_count": int(row[2] or 0),
                 "append_raw_count": int(row[3] or 0),
-                "conversation_count": conversation_count_value,
-                "orphan_raw_count": max(0, raw_count - conversation_count_value),
+                "session_count": session_count_value,
+                "orphan_raw_count": max(0, raw_count - session_count_value),
                 "total_blob_bytes": int(row[5] or 0),
                 "latest_acquired_at": row[6],
             }
@@ -228,15 +532,87 @@ def _source_path_churn(conn: sqlite3.Connection, *, attempts: list[dict[str, Any
     return items
 
 
-def _cursor_lag_baselines(conn: sqlite3.Connection) -> dict[str, Any]:
+def _archive_source_path_churn(
+    root: Path,
+    *,
+    attempts: list[dict[str, Any]],
+    limit: int,
+) -> list[dict[str, Any]]:
+    source_db = root / ARCHIVE_TIER_SPECS[ArchiveTier.SOURCE].filename
+    index_db = root / ARCHIVE_TIER_SPECS[ArchiveTier.INDEX].filename
+    if not source_db.exists() or not index_db.exists():
+        return []
+    source_paths = sorted({path for attempt in attempts for path in attempt.get("source_paths", []) if path})
+    if not source_paths:
+        return []
+
+    placeholders = ",".join("?" for _ in source_paths)
+    try:
+        conn = open_readonly_connection(index_db)
+        try:
+            conn.execute("ATTACH DATABASE ? AS source_tier", (f"file:{source_db}?mode=ro",))
+            if not _table_exists(conn, "sessions") or not _attached_table_exists(conn, "source_tier", "raw_sessions"):
+                return []
+            rows = conn.execute(
+                f"""
+                SELECT
+                    r.source_path,
+                    COUNT(*) AS raw_count,
+                    SUM(CASE WHEN COALESCE(r.source_index, 0) >= 0 THEN 1 ELSE 0 END) AS full_raw_count,
+                    SUM(CASE WHEN r.source_index = -1 THEN 1 ELSE 0 END) AS append_raw_count,
+                    COUNT(DISTINCT s.session_id) AS session_count,
+                    COUNT(DISTINCT CASE WHEN s.session_id IS NOT NULL THEN r.raw_id END) AS materialized_raw_count,
+                    SUM(COALESCE(r.blob_size, 0)) AS total_blob_bytes,
+                    MAX(r.acquired_at_ms) AS latest_acquired_at_ms
+                FROM source_tier.raw_sessions AS r
+                LEFT JOIN sessions AS s ON s.raw_id = r.raw_id
+                WHERE r.source_path IN ({placeholders})
+                GROUP BY r.source_path
+                HAVING raw_count > 1
+                ORDER BY raw_count DESC, total_blob_bytes DESC, r.source_path
+                LIMIT ?
+                """,
+                (*source_paths, limit),
+            ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return []
+
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        raw_count = int(row[1] or 0)
+        materialized_raw_count = int(row[5] or 0)
+        items.append(
+            {
+                "source_path": row[0],
+                "storage_route": "archive_file_set",
+                "raw_count": raw_count,
+                "full_raw_count": int(row[2] or 0),
+                "append_raw_count": int(row[3] or 0),
+                "session_count": int(row[4] or 0),
+                "materialized_raw_count": materialized_raw_count,
+                "orphan_raw_count": max(0, raw_count - materialized_raw_count),
+                "total_blob_bytes": int(row[6] or 0),
+                "latest_acquired_at": _iso_from_epoch_ms(row[7]),
+            }
+        )
+    return items
+
+
+def _cursor_lag_baselines(conn: sqlite3.Connection, *, ops_db: Path | None = None) -> dict[str, Any]:
     """Rolling-window cursor-lag baseline state per source family (#1349).
 
-    Reads ``live_cursor_lag_sample`` and returns the same per-family
-    snapshot the anomaly check uses: sample-count, time range, p50, p95.
+    Prefer ``ops.db`` ``cursor_lag_samples`` and fall back to single-file
+    ``live_cursor_lag_sample``. Returns the same per-family snapshot the
+    anomaly check uses: sample-count, time range, p50, p95.
     Stable JSON shape so before/after probes can detect baseline drift in
     convergence proofs (e.g. *"after this run, claude-code-session's
     rolling p95 dropped from 600s to 12s — convergence is healthy"*).
     """
+    ops_baselines = _ops_cursor_lag_baselines(ops_db)
+    if ops_baselines is not None:
+        return ops_baselines
     if not _table_exists(conn, "live_cursor_lag_sample"):
         return {"table_present": False, "family_count": 0, "total_sample_count": 0, "families": []}
     rows = conn.execute(
@@ -289,6 +665,78 @@ def _cursor_lag_baselines(conn: sqlite3.Connection) -> dict[str, Any]:
     }
 
 
+def _ops_cursor_lag_baselines(ops_db: Path | None) -> dict[str, Any] | None:
+    if ops_db is None or not ops_db.exists():
+        return None
+    try:
+        conn = open_readonly_connection(ops_db)
+        try:
+            if not _table_exists(conn, "cursor_lag_samples"):
+                return None
+            columns = _columns(conn, "cursor_lag_samples")
+            if "family" not in columns:
+                return None
+            rows = conn.execute(
+                """
+                SELECT family,
+                       COUNT(*),
+                       MIN(sampled_at_ms),
+                       MAX(sampled_at_ms),
+                       MAX(lag_ms),
+                       AVG(lag_ms),
+                       SUM(stuck_file_count)
+                FROM cursor_lag_samples
+                GROUP BY family
+                ORDER BY COUNT(*) DESC, family
+                """
+            ).fetchall()
+            families: list[dict[str, Any]] = []
+            for row in rows:
+                family = str(row[0])
+                sample_count = int(row[1] or 0)
+                per_family = [
+                    float(r[0]) / 1000.0
+                    for r in conn.execute(
+                        "SELECT lag_ms FROM cursor_lag_samples WHERE family = ? ORDER BY lag_ms",
+                        (family,),
+                    ).fetchall()
+                ]
+                families.append(
+                    {
+                        "family": family,
+                        "sample_count": sample_count,
+                        "first_observed_at": _iso_from_epoch_ms(row[2]),
+                        "last_observed_at": _iso_from_epoch_ms(row[3]),
+                        "max_lag_s_seen": round(float(row[4] or 0.0) / 1000.0, 3),
+                        "mean_lag_s": round(float(row[5] or 0.0) / 1000.0, 3),
+                        "stuck_file_total": int(row[6] or 0),
+                        "p50_lag_s": round(_percentile_from_sorted(per_family, 0.5), 3),
+                        "p95_lag_s": round(_percentile_from_sorted(per_family, 0.95), 3),
+                    }
+                )
+            return {
+                "table_present": True,
+                "family_count": len(families),
+                "total_sample_count": sum(f["sample_count"] for f in families),
+                "families": families,
+            }
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+
+
+def _iso_from_epoch_ms(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, int | float | str | bytes | bytearray):
+        return None
+    try:
+        return datetime.fromtimestamp(int(value) / 1000, tz=UTC).isoformat()
+    except (TypeError, ValueError, OSError):
+        return None
+
+
 def _percentile_from_sorted(sorted_values: list[float], q: float) -> float:
     if not sorted_values:
         return 0.0
@@ -305,7 +753,13 @@ def _percentile_from_sorted(sorted_values: list[float], q: float) -> float:
     return float(sorted_values[lo]) * (1.0 - frac) + float(sorted_values[hi]) * frac
 
 
-def _convergence_debt(conn: sqlite3.Connection) -> dict[str, Any]:
+def _convergence_debt(conn: sqlite3.Connection, *, ops_db: Path | None = None) -> dict[str, Any]:
+    ops_rows = _ops_convergence_debt_rows(ops_db)
+    if ops_rows:
+        return {
+            "failed_count": sum(count for _stage, count in ops_rows),
+            "by_stage": [{"stage": stage, "failed_count": count} for stage, count in ops_rows],
+        }
     if not _table_exists(conn, "live_convergence_debt"):
         return {"failed_count": 0, "by_stage": []}
     rows = conn.execute(
@@ -323,27 +777,654 @@ def _convergence_debt(conn: sqlite3.Connection) -> dict[str, Any]:
     }
 
 
-def _boundary_table_counts(conn: sqlite3.Connection) -> dict[str, int]:
+def _ops_convergence_debt_rows(ops_db: Path | None) -> list[tuple[str, int]]:
+    if ops_db is None or not ops_db.exists():
+        return []
+    try:
+        conn = open_readonly_connection(ops_db)
+        try:
+            if not _table_exists(conn, "convergence_debt"):
+                return []
+            rows = conn.execute(
+                """
+                SELECT stage, COUNT(*) AS failed_count
+                FROM convergence_debt
+                GROUP BY stage
+                ORDER BY failed_count DESC, stage
+                """
+            ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return []
+    return [(str(row[0] or "unknown"), int(row[1] or 0)) for row in rows]
+
+
+def _boundary_table_counts(
+    conn: sqlite3.Connection,
+    *,
+    ops_db: Path | None = None,
+    source_db: Path | None = None,
+) -> dict[str, int]:
     counts: dict[str, int] = {}
     for table in _BOUNDARY_TABLES:
         if _table_exists(conn, table):
             counts[table] = _scalar_int(conn, f"SELECT COUNT(*) FROM {table}")
         else:
             counts[table] = -1
+    if source_db is not None and source_db.exists():
+        try:
+            source_conn = open_readonly_connection(source_db)
+            try:
+                for table in ("raw_sessions",):
+                    counts[table] = (
+                        _scalar_int(source_conn, f"SELECT COUNT(*) FROM {table}")
+                        if _table_exists(source_conn, table)
+                        else -1
+                    )
+            finally:
+                source_conn.close()
+        except sqlite3.Error:
+            counts.setdefault("raw_sessions", -1)
+    if ops_db is not None and ops_db.exists():
+        try:
+            ops_conn = open_readonly_connection(ops_db)
+            try:
+                for table in _OPS_BOUNDARY_TABLES:
+                    if _table_exists(ops_conn, table):
+                        counts[table] = _scalar_int(ops_conn, f"SELECT COUNT(*) FROM {table}")
+                    else:
+                        counts[table] = -1
+            finally:
+                ops_conn.close()
+        except sqlite3.Error:
+            for table in _OPS_BOUNDARY_TABLES:
+                counts.setdefault(table, -1)
     return counts
 
 
+def _archive_tier_state(anchor_db: Path, *, observed_db: Path | None = None) -> dict[str, Any]:
+    """Report the archive database files around an archive root."""
+
+    root = anchor_db.parent
+    tiers: dict[str, Any] = {}
+    present_count = 0
+    complete = True
+    schema_mismatches: list[str] = []
+    missing_backup_required: list[str] = []
+    observed_tier: str | None = None
+    if observed_db is not None:
+        for tier, spec in ARCHIVE_TIER_SPECS.items():
+            if observed_db == root / spec.filename:
+                observed_tier = tier.value
+                break
+
+    for tier, spec in ARCHIVE_TIER_SPECS.items():
+        path = root / spec.filename
+        tier_payload = _archive_single_tier_state(path, tier)
+        tier_payload.update(
+            {
+                "tier": tier.value,
+                "filename": spec.filename,
+                "durability": spec.durability,
+                "backup_required": spec.backup_required,
+                "expected_user_version": spec.version,
+                "observed_by_probe": observed_db == path if observed_db is not None else False,
+            }
+        )
+        if tier_payload["exists"]:
+            present_count += 1
+            if tier_payload.get("user_version") != spec.version:
+                schema_mismatches.append(tier.value)
+        else:
+            complete = False
+            if spec.backup_required:
+                missing_backup_required.append(tier.value)
+        tiers[tier.value] = tier_payload
+
+    derived_readiness = _archive_derived_readiness(root)
+    user_overlay_orphans = _archive_user_overlay_orphans(root)
+    layout_readiness = _archive_layout_readiness(
+        present_count=present_count,
+        complete=complete,
+        schema_mismatches=schema_mismatches,
+        missing_backup_required=missing_backup_required,
+        derived_readiness=derived_readiness,
+        user_overlay_orphans=user_overlay_orphans,
+    )
+
+    return {
+        "root": str(root),
+        "present": present_count > 0,
+        "complete": complete,
+        "present_count": present_count,
+        "expected_count": len(ARCHIVE_TIER_SPECS),
+        "observed_tier": observed_tier,
+        "schema_mismatches": schema_mismatches,
+        "missing_backup_required": missing_backup_required,
+        "layout_readiness": layout_readiness,
+        "derived_readiness": derived_readiness,
+        "user_overlay_orphans": user_overlay_orphans,
+        "tiers": tiers,
+    }
+
+
+def _archive_layout_readiness(
+    *,
+    present_count: int,
+    complete: bool,
+    schema_mismatches: list[str],
+    missing_backup_required: list[str],
+    derived_readiness: dict[str, Any],
+    user_overlay_orphans: dict[str, Any],
+) -> dict[str, Any]:
+    """Project tier/detail state into one archive layout operator verdict."""
+
+    blockers: list[str] = []
+    if present_count == 0:
+        blockers.append("no_archive_tiers_present")
+    if not complete:
+        blockers.append("missing_archive_tiers")
+    blockers.extend(f"schema_mismatch:{tier}" for tier in schema_mismatches)
+    blockers.extend(f"missing_backup_required_tier:{tier}" for tier in missing_backup_required)
+    derived_checked = bool(derived_readiness.get("checked"))
+    surface_readiness = derived_readiness.get("surface_readiness") or {}
+    if not derived_checked:
+        reason = derived_readiness.get("reason") or "unknown"
+        blockers.append(f"derived_readiness_unchecked:{reason}")
+    else:
+        if not derived_readiness.get("source_check_available"):
+            blockers.append("source_tier_not_attached_to_index")
+        for surface_name, info in sorted(surface_readiness.items()):
+            if info.get("ready") is True:
+                continue
+            surface_blockers = info.get("blockers") or ["not_ready"]
+            for blocker in surface_blockers:
+                blockers.append(f"surface:{surface_name}:{blocker}")
+
+    overlay_checked = bool(user_overlay_orphans.get("checked"))
+    overlay_orphans = int(user_overlay_orphans.get("total_orphan_session_references") or 0)
+    if not overlay_checked:
+        reason = user_overlay_orphans.get("reason") or "unknown"
+        blockers.append(f"user_overlay_unchecked:{reason}")
+    elif overlay_orphans:
+        blockers.append("user_overlay_orphan_session_references")
+
+    return {
+        "state": "archive_ready" if not blockers else "not_archive_ready",
+        "archive_ready": not blockers,
+        "blockers": blockers,
+        "evidence": {
+            "present_count": present_count,
+            "expected_count": len(ARCHIVE_TIER_SPECS),
+            "complete": complete,
+            "schema_mismatch_count": len(schema_mismatches),
+            "missing_backup_required_count": len(missing_backup_required),
+            "derived_readiness_checked": derived_checked,
+            "derived_surface_count": len(surface_readiness),
+            "blocked_surface_count": sum(1 for info in surface_readiness.values() if info.get("ready") is not True),
+            "user_overlay_checked": overlay_checked,
+            "user_overlay_orphan_session_references": overlay_orphans,
+        },
+    }
+
+
+def _archive_single_tier_state(path: Path, tier: ArchiveTier) -> dict[str, Any]:
+    if not path.exists():
+        return {
+            "path": str(path),
+            "exists": False,
+            "size_bytes": None,
+            "user_version": None,
+            "integrity": "missing",
+            "table_counts": {},
+            "error": None,
+        }
+    payload: dict[str, Any] = {
+        "path": str(path),
+        "exists": True,
+        "size_bytes": path.stat().st_size,
+        "user_version": None,
+        "integrity": "unknown",
+        "table_counts": {},
+        "error": None,
+    }
+    try:
+        conn = open_readonly_connection(path)
+        try:
+            version_row = conn.execute("PRAGMA user_version").fetchone()
+            payload["user_version"] = int(version_row[0] or 0) if version_row is not None else 0
+            integrity_row = conn.execute("PRAGMA quick_check").fetchone()
+            payload["integrity"] = str(integrity_row[0]) if integrity_row is not None else "unknown"
+            payload["table_counts"] = {
+                table: _scalar_int(conn, f"SELECT COUNT(*) FROM {table}") if _table_exists(conn, table) else -1
+                for table in _ARCHIVE_OBSERVABILITY_TABLES[tier]
+            }
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        payload["integrity"] = "error"
+        payload["error"] = str(exc)
+    return payload
+
+
+def _archive_derived_readiness(root: Path) -> dict[str, Any]:
+    """Report cross-table readiness for derived surfaces."""
+
+    index_db = root / ARCHIVE_TIER_SPECS[ArchiveTier.INDEX].filename
+    source_db = root / ARCHIVE_TIER_SPECS[ArchiveTier.SOURCE].filename
+    if not index_db.exists():
+        return {
+            "checked": False,
+            "reason": "missing_index_tier",
+            "counts": {},
+            "materialization_counts": {},
+            "missing_materialization_counts": {},
+            "ready": {},
+        }
+
+    conn = open_readonly_connection(index_db)
+    source_attached = False
+    source_check_available = False
+    try:
+        if source_db.exists():
+            conn.execute("ATTACH DATABASE ? AS source_tier", (f"file:{source_db}?mode=ro",))
+            source_attached = True
+            source_check_available = _attached_table_exists(conn, "source_tier", "raw_sessions")
+        counts = _archive_derived_counts(conn, source_check_available=source_check_available)
+        materialization_counts = _archive_materialization_counts(conn)
+        missing_materialization_counts = _archive_missing_materialization_counts(conn)
+        ready = {
+            "raw_links_ready": counts["missing_raw_session_count"] == 0 if source_check_available else None,
+            "messages_fts_ready": counts["text_block_count"] == counts["messages_fts_count"],
+            "profile_rows_ready": counts["missing_profile_row_count"] == 0 and counts["orphan_profile_row_count"] == 0,
+            "profile_counts_ready": (
+                counts["profile_work_event_count_mismatch"] == 0 and counts["profile_phase_count_mismatch"] == 0
+            ),
+            "profile_materialization_ready": missing_materialization_counts["session_profile"] == 0,
+            "work_event_materialization_ready": missing_materialization_counts["work_events"] == 0,
+            "phase_materialization_ready": missing_materialization_counts["phases"] == 0,
+            "thread_materialization_ready": missing_materialization_counts["thread"] == 0,
+            "latency_materialization_ready": missing_materialization_counts["latency"] == 0,
+        }
+        surface_readiness = _archive_surface_readiness(
+            counts,
+            missing_materialization_counts=missing_materialization_counts,
+            source_check_available=source_check_available,
+        )
+        return {
+            "checked": True,
+            "reason": None,
+            "source_check_available": source_check_available,
+            "counts": counts,
+            "materialization_counts": materialization_counts,
+            "missing_materialization_counts": missing_materialization_counts,
+            "ready": ready,
+            "surface_readiness": surface_readiness,
+        }
+    except sqlite3.Error as exc:
+        return {
+            "checked": False,
+            "reason": str(exc),
+            "counts": {},
+            "materialization_counts": {},
+            "missing_materialization_counts": {},
+            "ready": {},
+            "surface_readiness": {},
+        }
+    finally:
+        if source_attached:
+            with suppress(sqlite3.Error):
+                conn.execute("DETACH DATABASE source_tier")
+        conn.close()
+
+
+def _archive_derived_counts(conn: sqlite3.Connection, *, source_check_available: bool) -> dict[str, int]:
+    missing_raw = 0
+    if source_check_available:
+        missing_raw = _scalar_int(
+            conn,
+            """
+            SELECT COUNT(*)
+            FROM sessions AS s
+            WHERE s.raw_id IS NOT NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM source_tier.raw_sessions AS r WHERE r.raw_id = s.raw_id
+              )
+            """,
+        )
+    return {
+        "session_count": _scalar_int(conn, "SELECT COUNT(*) FROM sessions"),
+        "raw_link_count": _scalar_int(conn, "SELECT COUNT(*) FROM sessions WHERE raw_id IS NOT NULL"),
+        "missing_raw_session_count": missing_raw,
+        "message_count": _scalar_int(conn, "SELECT COUNT(*) FROM messages"),
+        "text_block_count": _scalar_int(conn, "SELECT COUNT(*) FROM blocks WHERE search_text != ''"),
+        "messages_fts_count": _scalar_int(conn, "SELECT COUNT(*) FROM messages_fts"),
+        "profile_row_count": _scalar_int(conn, "SELECT COUNT(*) FROM session_profiles"),
+        "missing_profile_row_count": _scalar_int(
+            conn,
+            """
+            SELECT COUNT(*)
+            FROM sessions AS s
+            WHERE NOT EXISTS (
+                SELECT 1 FROM session_profiles AS p WHERE p.session_id = s.session_id
+            )
+            """,
+        ),
+        "orphan_profile_row_count": _scalar_int(
+            conn,
+            """
+            SELECT COUNT(*)
+            FROM session_profiles AS p
+            WHERE NOT EXISTS (
+                SELECT 1 FROM sessions AS s WHERE s.session_id = p.session_id
+            )
+            """,
+        ),
+        "work_event_row_count": _scalar_int(conn, "SELECT COUNT(*) FROM session_work_events"),
+        "phase_row_count": _scalar_int(conn, "SELECT COUNT(*) FROM session_phases"),
+        "thread_count": _scalar_int(conn, "SELECT COUNT(*) FROM threads"),
+        "thread_session_count": _scalar_int(conn, "SELECT COUNT(*) FROM thread_sessions"),
+        "session_tag_count": _scalar_int(conn, "SELECT COUNT(*) FROM session_tags"),
+        "action_count": _scalar_int(conn, "SELECT COUNT(*) FROM actions"),
+        "cost_profile_count": _scalar_int(
+            conn,
+            """
+            SELECT COUNT(*)
+            FROM session_profiles
+            WHERE cost_usd IS NOT NULL OR cost_credits IS NOT NULL
+            """,
+        ),
+        "profile_work_event_count_mismatch": _scalar_int(
+            conn,
+            """
+            SELECT COUNT(*)
+            FROM session_profiles AS p
+            WHERE p.work_event_count != (
+                SELECT COUNT(*) FROM session_work_events AS e WHERE e.session_id = p.session_id
+            )
+            """,
+        ),
+        "profile_phase_count_mismatch": _scalar_int(
+            conn,
+            """
+            SELECT COUNT(*)
+            FROM session_profiles AS p
+            WHERE p.phase_count != (
+                SELECT COUNT(*) FROM session_phases AS ph WHERE ph.session_id = p.session_id
+            )
+            """,
+        ),
+    }
+
+
+def _archive_surface_readiness(
+    counts: dict[str, int],
+    *,
+    missing_materialization_counts: dict[str, int],
+    source_check_available: bool,
+) -> dict[str, Any]:
+    """Project low-level archive counters into operator-facing surface verdicts."""
+
+    def surface(
+        *,
+        ready: bool | None,
+        blockers: list[str],
+        evidence: dict[str, int | bool | None],
+    ) -> dict[str, Any]:
+        return {
+            "ready": ready,
+            "blockers": blockers,
+            "evidence": evidence,
+        }
+
+    def materialization_surface(insight_type: str) -> tuple[bool, list[str]]:
+        missing = missing_materialization_counts.get(insight_type, 0)
+        if missing == 0:
+            return True, []
+        return False, [f"missing_{insight_type}_materialization"]
+
+    raw_ready: bool | None
+    raw_blockers: list[str] = []
+    if not source_check_available:
+        raw_ready = None
+        raw_blockers.append("source_tier_unavailable")
+    elif counts["missing_raw_session_count"] == 0:
+        raw_ready = True
+    else:
+        raw_ready = False
+        raw_blockers.append("missing_source_raw_sessions")
+
+    search_blockers: list[str] = []
+    if counts["text_block_count"] != counts["messages_fts_count"]:
+        search_blockers.append("messages_fts_row_mismatch")
+
+    profile_ready = (
+        counts["missing_profile_row_count"] == 0
+        and counts["orphan_profile_row_count"] == 0
+        and counts["profile_work_event_count_mismatch"] == 0
+        and counts["profile_phase_count_mismatch"] == 0
+        and missing_materialization_counts["session_profile"] == 0
+    )
+    profile_blockers: list[str] = []
+    if counts["missing_profile_row_count"]:
+        profile_blockers.append("missing_profile_rows")
+    if counts["orphan_profile_row_count"]:
+        profile_blockers.append("orphan_profile_rows")
+    if counts["profile_work_event_count_mismatch"]:
+        profile_blockers.append("profile_work_event_count_mismatch")
+    if counts["profile_phase_count_mismatch"]:
+        profile_blockers.append("profile_phase_count_mismatch")
+    if missing_materialization_counts["session_profile"]:
+        profile_blockers.append("missing_session_profile_materialization")
+
+    work_events_ready, work_events_blockers = materialization_surface("work_events")
+    phases_ready, phases_blockers = materialization_surface("phases")
+    thread_ready, thread_blockers = materialization_surface("thread")
+    latency_ready, latency_blockers = materialization_surface("latency")
+
+    return {
+        "archive_sessions": surface(
+            ready=True,
+            blockers=[],
+            evidence={
+                "session_count": counts["session_count"],
+                "message_count": counts["message_count"],
+                "text_block_count": counts["text_block_count"],
+            },
+        ),
+        "raw_artifacts": surface(
+            ready=raw_ready,
+            blockers=raw_blockers,
+            evidence={
+                "source_check_available": source_check_available,
+                "raw_link_count": counts["raw_link_count"],
+                "missing_raw_session_count": counts["missing_raw_session_count"],
+            },
+        ),
+        "search": surface(
+            ready=not search_blockers,
+            blockers=search_blockers,
+            evidence={
+                "text_block_count": counts["text_block_count"],
+                "messages_fts_count": counts["messages_fts_count"],
+            },
+        ),
+        "session_profiles": surface(
+            ready=profile_ready,
+            blockers=profile_blockers,
+            evidence={
+                "profile_row_count": counts["profile_row_count"],
+                "missing_profile_row_count": counts["missing_profile_row_count"],
+                "orphan_profile_row_count": counts["orphan_profile_row_count"],
+                "missing_materialization_count": missing_materialization_counts["session_profile"],
+            },
+        ),
+        "timeline_work_events": surface(
+            ready=work_events_ready,
+            blockers=work_events_blockers,
+            evidence={
+                "work_event_row_count": counts["work_event_row_count"],
+                "missing_materialization_count": missing_materialization_counts["work_events"],
+            },
+        ),
+        "timeline_phases": surface(
+            ready=phases_ready,
+            blockers=phases_blockers,
+            evidence={
+                "phase_row_count": counts["phase_row_count"],
+                "missing_materialization_count": missing_materialization_counts["phases"],
+            },
+        ),
+        "threads": surface(
+            ready=thread_ready,
+            blockers=thread_blockers,
+            evidence={
+                "thread_count": counts["thread_count"],
+                "thread_session_count": counts["thread_session_count"],
+                "missing_materialization_count": missing_materialization_counts["thread"],
+            },
+        ),
+        "tag_rollups": surface(
+            ready=True,
+            blockers=[],
+            evidence={"session_tag_count": counts["session_tag_count"]},
+        ),
+        "tool_usage": surface(
+            ready=True,
+            blockers=[],
+            evidence={"action_count": counts["action_count"]},
+        ),
+        "session_costs": surface(
+            ready=profile_ready,
+            blockers=list(profile_blockers),
+            evidence={
+                "cost_profile_count": counts["cost_profile_count"],
+                "missing_profile_row_count": counts["missing_profile_row_count"],
+                "missing_materialization_count": missing_materialization_counts["session_profile"],
+            },
+        ),
+        "latency_profiles": surface(
+            ready=latency_ready,
+            blockers=latency_blockers,
+            evidence={"missing_materialization_count": missing_materialization_counts["latency"]},
+        ),
+    }
+
+
+def _archive_materialization_counts(conn: sqlite3.Connection) -> dict[str, int]:
+    keys = ("session_profile", "work_events", "phases", "latency", "thread")
+    rows = conn.execute(
+        """
+        SELECT insight_type, COUNT(*)
+        FROM insight_materialization
+        GROUP BY insight_type
+        """
+    ).fetchall()
+    counts = dict.fromkeys(keys, 0)
+    counts.update({str(row[0]): int(row[1] or 0) for row in rows})
+    return counts
+
+
+def _archive_missing_materialization_counts(conn: sqlite3.Connection) -> dict[str, int]:
+    keys = ("session_profile", "work_events", "phases", "latency", "thread")
+    return {
+        key: _scalar_int(
+            conn,
+            """
+            SELECT COUNT(*)
+            FROM sessions AS s
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM insight_materialization AS m
+                WHERE m.insight_type = ? AND m.session_id = s.session_id
+            )
+            """,
+            (key,),
+        )
+        for key in keys
+    }
+
+
+def _archive_user_overlay_orphans(root: Path) -> dict[str, Any]:
+    """Count user-tier rows that point at sessions absent from index.db."""
+
+    user_db = root / ARCHIVE_TIER_SPECS[ArchiveTier.USER].filename
+    index_db = root / ARCHIVE_TIER_SPECS[ArchiveTier.INDEX].filename
+    if not user_db.exists() or not index_db.exists():
+        return {
+            "checked": False,
+            "reason": "missing_user_or_index_tier",
+            "orphan_session_reference_counts": {},
+            "total_orphan_session_references": 0,
+        }
+    conn = open_readonly_connection(user_db)
+    try:
+        conn.execute("ATTACH DATABASE ? AS index_tier", (f"file:{index_db}?mode=ro",))
+        checks = {
+            "marks": (
+                "SELECT COUNT(*) FROM marks AS u "
+                "WHERE u.target_type = 'session' "
+                "AND NOT EXISTS (SELECT 1 FROM index_tier.sessions AS s WHERE s.session_id = u.target_id)"
+            ),
+            "annotations": (
+                "SELECT COUNT(*) FROM annotations AS u "
+                "WHERE u.target_type = 'session' "
+                "AND NOT EXISTS (SELECT 1 FROM index_tier.sessions AS s WHERE s.session_id = u.target_id)"
+            ),
+            "corrections": (
+                "SELECT COUNT(*) FROM corrections AS u "
+                "WHERE u.target_type = 'session' "
+                "AND NOT EXISTS (SELECT 1 FROM index_tier.sessions AS s WHERE s.session_id = u.target_id)"
+            ),
+            "suppressions": (
+                "SELECT COUNT(*) FROM suppressions AS u "
+                "WHERE NOT EXISTS (SELECT 1 FROM index_tier.sessions AS s WHERE s.session_id = u.session_id)"
+            ),
+            "session_tags": (
+                "SELECT COUNT(*) FROM session_tags AS u "
+                "WHERE NOT EXISTS (SELECT 1 FROM index_tier.sessions AS s WHERE s.session_id = u.session_id)"
+            ),
+            "session_metadata": (
+                "SELECT COUNT(*) FROM session_metadata AS u "
+                "WHERE NOT EXISTS (SELECT 1 FROM index_tier.sessions AS s WHERE s.session_id = u.session_id)"
+            ),
+            "blackboard_notes": (
+                "SELECT COUNT(*) FROM blackboard_notes AS u "
+                "WHERE u.target_type = 'session' "
+                "AND NOT EXISTS (SELECT 1 FROM index_tier.sessions AS s WHERE s.session_id = u.target_id)"
+            ),
+        }
+        counts = {table: _scalar_int(conn, sql) if _table_exists(conn, table) else -1 for table, sql in checks.items()}
+        total = sum(count for count in counts.values() if count > 0)
+        return {
+            "checked": True,
+            "reason": None,
+            "orphan_session_reference_counts": counts,
+            "total_orphan_session_references": total,
+        }
+    except sqlite3.Error as exc:
+        return {
+            "checked": False,
+            "reason": str(exc),
+            "orphan_session_reference_counts": {},
+            "total_orphan_session_references": 0,
+        }
+    finally:
+        conn.close()
+
+
 def _topology_quarantine_state(conn: sqlite3.Connection) -> dict[str, Any]:
-    """Report the state of the topology-edge cycle quarantine (#1260).
+    """Report the state of the session-link cycle quarantine (#1260).
 
     Surfaces:
-    - ``table_present`` — is ``topology_edges`` materialized in the database
-    - ``unresolved_count`` — edges still awaiting their parent
-    - ``resolved_count`` — edges whose parent has been ingested
-    - ``quarantined_count`` — edges rejected because they would create a
-      cycle in ``conversations.parent_conversation_id``
-    - ``oldest_quarantined_at`` — oldest ``resolved_at`` timestamp on a
-      quarantined edge (the field is repurposed as the
+    - ``table_present`` — is ``session_links`` materialized in the database
+    - ``unresolved_count`` — links still awaiting their parent
+    - ``resolved_count`` — links whose parent has been ingested
+    - ``quarantined_count`` — links rejected because they would create a
+      cycle in ``sessions.parent_session_id``
+    - ``oldest_quarantined_at`` — oldest ``resolved_at_ms`` timestamp on a
+      quarantined link (the field is repurposed as the
       "decision-recorded-at" timestamp for non-resolved terminal states)
 
     Operators monitor ``quarantined_count`` as a health indicator — a
@@ -351,7 +1432,7 @@ def _topology_quarantine_state(conn: sqlite3.Connection) -> dict[str, Any]:
     fast-path graph was prevented from entering it.
     """
 
-    if not _table_exists(conn, "topology_edges"):
+    if not _table_exists(conn, "session_links"):
         return {
             "table_present": False,
             "unresolved_count": 0,
@@ -359,9 +1440,20 @@ def _topology_quarantine_state(conn: sqlite3.Connection) -> dict[str, Any]:
             "quarantined_count": 0,
             "oldest_quarantined_at": None,
         }
-    rows = conn.execute("SELECT status, COUNT(*) AS n FROM topology_edges GROUP BY status").fetchall()
+    rows = conn.execute(
+        """
+        SELECT CASE
+                   WHEN status IS NOT NULL THEN status
+                   WHEN resolved_dst_session_id IS NOT NULL THEN 'resolved'
+                   ELSE 'unresolved'
+               END AS link_state,
+               COUNT(*) AS n
+          FROM session_links
+         GROUP BY link_state
+        """
+    ).fetchall()
     status_counts = {str(row[0]): int(row[1]) for row in rows}
-    oldest_row = conn.execute("SELECT MIN(resolved_at) FROM topology_edges WHERE status = 'quarantined'").fetchone()
+    oldest_row = conn.execute("SELECT MIN(resolved_at_ms) FROM session_links WHERE status = 'quarantined'").fetchone()
     return {
         "table_present": True,
         "unresolved_count": int(status_counts.get("unresolved", 0)),
@@ -381,7 +1473,7 @@ def _blob_lease_state(conn: sqlite3.Connection) -> dict[str, Any]:
         }
     pending = _scalar_int(conn, "SELECT COUNT(*) FROM pending_blob_refs")
     operations = _scalar_int(conn, "SELECT COUNT(DISTINCT operation_id) FROM pending_blob_refs")
-    oldest_row = conn.execute("SELECT MIN(acquired_at) FROM pending_blob_refs").fetchone()
+    oldest_row = conn.execute("SELECT MIN(acquired_at_ms) FROM pending_blob_refs").fetchone()
     oldest = int(oldest_row[0]) if oldest_row is not None and oldest_row[0] is not None else None
     return {
         "table_present": True,
@@ -402,7 +1494,7 @@ def _gc_state(conn: sqlite3.Connection) -> dict[str, Any]:
     row = conn.execute(
         """
         SELECT
-            COALESCE(MAX(generation), 0) AS high_water,
+            COALESCE(MAX(CAST(generation_id AS INTEGER)), 0) AS high_water,
             COUNT(*) AS generation_count
         FROM gc_generations
         """
@@ -410,8 +1502,8 @@ def _gc_state(conn: sqlite3.Connection) -> dict[str, Any]:
     high_water = int(row[0] or 0) if row is not None else 0
     generation_count = int(row[1] or 0) if row is not None else 0
     completed_row = conn.execute(
-        "SELECT completed_at FROM gc_generations WHERE generation = ? LIMIT 1",
-        (high_water,),
+        "SELECT completed_at_ms FROM gc_generations WHERE generation_id = ? LIMIT 1",
+        (str(high_water),),
     ).fetchone()
     completed_at = int(completed_row[0]) if completed_row is not None and completed_row[0] is not None else None
     return {
@@ -420,6 +1512,19 @@ def _gc_state(conn: sqlite3.Connection) -> dict[str, Any]:
         "last_completed_at": completed_at,
         "generation_count": generation_count,
     }
+
+
+def _tier_state_or_current(conn: sqlite3.Connection, tier_db: Path, reader: Any) -> dict[str, Any]:
+    if tier_db.exists():
+        try:
+            tier_conn = open_readonly_connection(tier_db)
+            try:
+                return dict(reader(tier_conn))
+            finally:
+                tier_conn.close()
+        except sqlite3.Error:
+            pass
+    return dict(reader(conn))
 
 
 def _fts_trigger_state(conn: sqlite3.Connection) -> dict[str, Any]:
@@ -530,13 +1635,21 @@ def _summary_stat(values: list[float]) -> dict[str, float]:
     }
 
 
-def _daemon_resource_signal(attempts: list[dict[str, Any]], conn: sqlite3.Connection) -> dict[str, Any]:
+def _daemon_resource_signal(
+    attempts: list[dict[str, Any]],
+    conn: sqlite3.Connection,
+    *,
+    ops_db: Path | None = None,
+) -> dict[str, Any]:
     """Read the most recent RSS / cgroup snapshot from `live_ingest_attempt`.
 
     These are the only daemon-RSS signals the probe can read without IPC.
     The probe is intentionally read-only.
     """
 
+    ops_signal = _ops_daemon_resource_signal(ops_db)
+    if ops_signal is not None:
+        return ops_signal
     if not _table_exists(conn, "live_ingest_attempt"):
         return {"available": False}
     columns = _columns(conn, "live_ingest_attempt")
@@ -571,6 +1684,55 @@ def _daemon_resource_signal(attempts: list[dict[str, Any]], conn: sqlite3.Connec
     return {"available": True, **{col: row[idx] for idx, col in enumerate(available_columns)}}
 
 
+def _ops_daemon_resource_signal(ops_db: Path | None) -> dict[str, Any] | None:
+    if ops_db is None or not ops_db.exists():
+        return None
+    try:
+        conn = open_readonly_connection(ops_db)
+        try:
+            if not _table_exists(conn, "daemon_stage_events"):
+                return None
+            row = conn.execute(
+                """
+                SELECT payload_json
+                FROM daemon_stage_events
+                ORDER BY observed_at_ms DESC, rowid DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+    if row is None:
+        return None
+    try:
+        payload = json.loads(str(row[0] or "{}"))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    fields = {
+        key: payload[key]
+        for key in (
+            "rss_current_mb",
+            "rss_peak_self_mb",
+            "rss_peak_children_mb",
+            "cgroup_memory_current_mb",
+            "cgroup_memory_peak_mb",
+            "cgroup_memory_swap_current_mb",
+            "cgroup_memory_anon_mb",
+            "cgroup_memory_file_mb",
+            "cgroup_memory_inactive_file_mb",
+            "worker_in_flight_count",
+            "worker_completed_count",
+            "worker_total_count",
+        )
+        if key in payload
+    }
+    return {"available": bool(fields), **fields}
+
+
 def _explain(conn: sqlite3.Connection, sql: str, params: tuple[object, ...]) -> list[str]:
     try:
         return [str(row[3]) for row in conn.execute(f"EXPLAIN QUERY PLAN {sql}", params).fetchall()]
@@ -578,30 +1740,31 @@ def _explain(conn: sqlite3.Connection, sql: str, params: tuple[object, ...]) -> 
         return [f"unavailable: {exc}"]
 
 
-def _query_plans(conn: sqlite3.Connection) -> dict[str, Any]:
-    plans: dict[str, Any] = {}
-    if _table_exists(conn, "raw_conversations") and _table_exists(conn, "conversations"):
+def _query_plans(conn: sqlite3.Connection, *, db: Path) -> dict[str, Any]:
+    plans: dict[str, Any] = _archive_query_plans(db.parent)
+    if _table_exists(conn, "raw_sessions") and _table_exists(conn, "sessions"):
         source_row = conn.execute(
-            "SELECT source_path FROM raw_conversations WHERE source_path IS NOT NULL LIMIT 1"
+            "SELECT source_path FROM raw_sessions WHERE source_path IS NOT NULL LIMIT 1"
         ).fetchone()
         if source_row is not None:
             plan = _explain(
                 conn,
                 """
-                SELECT DISTINCT r.source_path, c.conversation_id
-                FROM raw_conversations AS r
-                JOIN conversations AS c ON c.raw_id = r.raw_id
+                SELECT DISTINCT r.source_path, c.session_id
+                FROM raw_sessions AS r
+                JOIN sessions AS c ON c.raw_id = r.raw_id
                 WHERE r.source_path IN (?)
-                ORDER BY r.source_path, c.conversation_id
+                ORDER BY r.source_path, c.session_id
                 """,
                 (source_row[0],),
             )
             plans["source_path_lookup"] = {
                 "plan": plan,
                 "hazards": [item for item in plan if "SCAN c" in item],
+                "storage_route": "archive_file_set",
             }
     if _table_exists(conn, "messages") and _table_exists(conn, "messages_fts_docsize"):
-        conv_row = conn.execute("SELECT conversation_id FROM messages LIMIT 1").fetchone()
+        conv_row = conn.execute("SELECT session_id FROM messages LIMIT 1").fetchone()
         if conv_row is not None:
             plan = _explain(
                 conn,
@@ -610,7 +1773,7 @@ def _query_plans(conn: sqlite3.Connection) -> dict[str, Any]:
                 FROM messages AS m
                 LEFT JOIN messages_fts_docsize AS d ON d.id = m.rowid
                 WHERE m.text IS NOT NULL
-                  AND m.conversation_id IN (?)
+                  AND m.session_id IN (?)
                   AND d.id IS NULL
                 """,
                 (conv_row[0],),
@@ -619,29 +1782,51 @@ def _query_plans(conn: sqlite3.Connection) -> dict[str, Any]:
                 "plan": plan,
                 "hazards": [item for item in plan if "messages_fts " in item],
             }
-    if _table_exists(conn, "action_events") and _table_exists(conn, "action_events_fts_docsize"):
-        conv_row = conn.execute("SELECT conversation_id FROM action_events LIMIT 1").fetchone()
-        if conv_row is not None:
-            plan = _explain(
-                conn,
-                """
-                SELECT COUNT(*)
-                FROM action_events AS ae
-                LEFT JOIN action_events_fts_docsize AS d ON d.id = ae.rowid
-                WHERE ae.conversation_id IN (?)
-                  AND d.id IS NULL
-                """,
-                (conv_row[0],),
-            )
-            plans["action_fts_gap_probe"] = {
-                "plan": plan,
-                "hazards": [item for item in plan if "action_events_fts " in item],
-            }
+    return plans
+
+
+def _archive_query_plans(root: Path) -> dict[str, Any]:
+    source_db = root / ARCHIVE_TIER_SPECS[ArchiveTier.SOURCE].filename
+    index_db = root / ARCHIVE_TIER_SPECS[ArchiveTier.INDEX].filename
+    if not source_db.exists() or not index_db.exists():
+        return {}
+    plans: dict[str, Any] = {}
+    try:
+        conn = open_readonly_connection(index_db)
+        try:
+            conn.execute("ATTACH DATABASE ? AS source_tier", (f"file:{source_db}?mode=ro",))
+            if _table_exists(conn, "sessions") and _attached_table_exists(conn, "source_tier", "raw_sessions"):
+                source_row = conn.execute(
+                    "SELECT source_path FROM source_tier.raw_sessions WHERE source_path IS NOT NULL LIMIT 1"
+                ).fetchone()
+                if source_row is not None:
+                    plan = _explain(
+                        conn,
+                        """
+                        SELECT DISTINCT r.source_path, s.session_id
+                        FROM source_tier.raw_sessions AS r
+                        JOIN sessions AS s ON s.raw_id = r.raw_id
+                        WHERE r.source_path IN (?)
+                        ORDER BY r.source_path, s.session_id
+                        """,
+                        (source_row[0],),
+                    )
+                    plans["source_path_lookup"] = {
+                        "plan": plan,
+                        "hazards": [item for item in plan if "SCAN s" in item],
+                        "storage_route": "archive_file_set",
+                    }
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return {}
     return plans
 
 
 def probe(db: Path, *, limit: int = 5) -> dict[str, Any]:
-    if not db.exists():
+    ops_db = db.with_name("ops.db")
+    index_db = db.with_name("index.db")
+    if not db.exists() and not index_db.exists() and not ops_db.exists():
         return {
             "ok": False,
             "report_version": REPORT_VERSION,
@@ -649,27 +1834,38 @@ def probe(db: Path, *, limit: int = 5) -> dict[str, Any]:
             "db_path": str(db),
             "error": "database does not exist",
         }
-    conn = open_readonly_connection(db)
+    observed_db: Path | None
+    if db.exists():
+        observed_db = db
+        conn = open_readonly_connection(db)
+    elif index_db.exists():
+        observed_db = index_db
+        conn = open_readonly_connection(index_db)
+    else:
+        observed_db = None
+        conn = sqlite3.connect(":memory:")
     try:
-        recent_attempts = _recent_attempts(conn, limit=limit)
+        recent_attempts = _recent_attempts(conn, limit=limit, ops_db=ops_db)
         return {
             "ok": True,
             "report_version": REPORT_VERSION,
             "captured_at": _now_iso(),
             "db_path": str(db),
-            "attempt_counts": _attempt_counts(conn),
+            "attempt_counts": _attempt_counts(conn, ops_db=ops_db),
             "recent_attempts": recent_attempts,
+            "storage_route_counts": _storage_route_counts(conn, ops_db=ops_db),
             "convergence_stage_timings": _convergence_stage_timings(recent_attempts, conn),
-            "boundary_table_counts": _boundary_table_counts(conn),
+            "boundary_table_counts": _boundary_table_counts(conn, ops_db=ops_db, source_db=db.with_name("source.db")),
+            "archive_tiers": _archive_tier_state(db, observed_db=observed_db),
             "topology_quarantine_state": _topology_quarantine_state(conn),
-            "blob_lease_state": _blob_lease_state(conn),
-            "gc_state": _gc_state(conn),
+            "blob_lease_state": _tier_state_or_current(conn, db.with_name("source.db"), _blob_lease_state),
+            "gc_state": _tier_state_or_current(conn, db.with_name("source.db"), _gc_state),
             "fts_trigger_state": _fts_trigger_state(conn),
-            "daemon_resource_signal": _daemon_resource_signal(recent_attempts, conn),
-            "source_path_churn": _source_path_churn(conn, attempts=recent_attempts, limit=limit),
-            "convergence_debt": _convergence_debt(conn),
-            "cursor_lag_baselines": _cursor_lag_baselines(conn),
-            "query_plans": _query_plans(conn),
+            "daemon_resource_signal": _daemon_resource_signal(recent_attempts, conn, ops_db=ops_db),
+            "source_path_churn": _source_path_churn(conn, attempts=recent_attempts, limit=limit, db=db),
+            "convergence_debt": _convergence_debt(conn, ops_db=ops_db),
+            "cursor_lag_baselines": _cursor_lag_baselines(conn, ops_db=ops_db),
+            "query_plans": _query_plans(conn, db=db),
         }
     finally:
         conn.close()
@@ -728,6 +1924,10 @@ def compare(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
         }
         for key in sorted(set(before_tables) | set(after_tables))
     }
+
+    before_routes = _coerce_int_map(before.get("storage_route_counts") or {})
+    after_routes = _coerce_int_map(after.get("storage_route_counts") or {})
+    route_delta = _int_map_delta(before_routes, after_routes)
 
     before_leases = before.get("blob_lease_state") or {}
     after_leases = after.get("blob_lease_state") or {}
@@ -812,7 +2012,10 @@ def compare(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
         "before_db_path": before.get("db_path"),
         "after_db_path": after.get("db_path"),
         "attempt_counts": attempt_delta,
+        "storage_route_counts": route_delta,
         "boundary_table_counts": table_delta,
+        "archive_tiers": _archive_tier_delta(before, after),
+        "source_path_churn": _source_path_churn_delta(before, after),
         "blob_lease_state": lease_delta,
         "gc_state": gc_delta,
         "fts_trigger_state": fts_delta,
@@ -839,6 +2042,207 @@ def _coerce_int_map(source: dict[str, Any]) -> dict[str, int]:
     return out
 
 
+def _archive_tier_delta(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
+    before_state = before.get("archive_tiers") or {}
+    after_state = after.get("archive_tiers") or {}
+    before_tiers = before_state.get("tiers") or {}
+    after_tiers = after_state.get("tiers") or {}
+    tier_names = sorted(set(before_tiers) | set(after_tiers))
+    tiers: dict[str, Any] = {}
+    for tier in tier_names:
+        before_tier = before_tiers.get(tier) or {}
+        after_tier = after_tiers.get(tier) or {}
+        before_counts = _coerce_int_map(before_tier.get("table_counts") or {})
+        after_counts = _coerce_int_map(after_tier.get("table_counts") or {})
+        table_deltas = {
+            table: {
+                "before": before_counts.get(table, 0),
+                "after": after_counts.get(table, 0),
+                "delta": after_counts.get(table, 0) - before_counts.get(table, 0),
+            }
+            for table in sorted(set(before_counts) | set(after_counts))
+        }
+        tiers[tier] = {
+            "exists_before": bool(before_tier.get("exists")),
+            "exists_after": bool(after_tier.get("exists")),
+            "user_version_before": before_tier.get("user_version"),
+            "user_version_after": after_tier.get("user_version"),
+            "integrity_before": before_tier.get("integrity"),
+            "integrity_after": after_tier.get("integrity"),
+            "size_bytes_before": before_tier.get("size_bytes"),
+            "size_bytes_after": after_tier.get("size_bytes"),
+            "table_counts": table_deltas,
+        }
+    return {
+        "present_before": bool(before_state.get("present")),
+        "present_after": bool(after_state.get("present")),
+        "complete_before": bool(before_state.get("complete")),
+        "complete_after": bool(after_state.get("complete")),
+        "present_count_before": int(before_state.get("present_count") or 0),
+        "present_count_after": int(after_state.get("present_count") or 0),
+        "observed_tier_before": before_state.get("observed_tier"),
+        "observed_tier_after": after_state.get("observed_tier"),
+        "schema_mismatches_before": list(before_state.get("schema_mismatches") or []),
+        "schema_mismatches_after": list(after_state.get("schema_mismatches") or []),
+        "missing_backup_required_before": list(before_state.get("missing_backup_required") or []),
+        "missing_backup_required_after": list(after_state.get("missing_backup_required") or []),
+        "layout_readiness": _archive_layout_readiness_delta(before_state, after_state),
+        "derived_readiness": _archive_derived_readiness_delta(before_state, after_state),
+        "user_overlay_orphans": _archive_user_overlay_orphan_delta(before_state, after_state),
+        "tiers": tiers,
+    }
+
+
+def _archive_layout_readiness_delta(before_state: dict[str, Any], after_state: dict[str, Any]) -> dict[str, Any]:
+    before = before_state.get("layout_readiness") or {}
+    after = after_state.get("layout_readiness") or {}
+    before_blockers = list(before.get("blockers") or [])
+    after_blockers = list(after.get("blockers") or [])
+    return {
+        "state_before": before.get("state"),
+        "state_after": after.get("state"),
+        "archive_ready_before": bool(before.get("archive_ready")),
+        "archive_ready_after": bool(after.get("archive_ready")),
+        "blockers_before": before_blockers,
+        "blockers_after": after_blockers,
+        "introduced_blockers": sorted(set(after_blockers) - set(before_blockers)),
+        "resolved_blockers": sorted(set(before_blockers) - set(after_blockers)),
+        "evidence": _int_map_delta(
+            _coerce_int_map(before.get("evidence") or {}),
+            _coerce_int_map(after.get("evidence") or {}),
+        ),
+    }
+
+
+def _archive_derived_readiness_delta(before_state: dict[str, Any], after_state: dict[str, Any]) -> dict[str, Any]:
+    before_readiness = before_state.get("derived_readiness") or {}
+    after_readiness = after_state.get("derived_readiness") or {}
+    before_counts = _coerce_int_map(before_readiness.get("counts") or {})
+    after_counts = _coerce_int_map(after_readiness.get("counts") or {})
+    before_materialized = _coerce_int_map(before_readiness.get("materialization_counts") or {})
+    after_materialized = _coerce_int_map(after_readiness.get("materialization_counts") or {})
+    before_missing = _coerce_int_map(before_readiness.get("missing_materialization_counts") or {})
+    after_missing = _coerce_int_map(after_readiness.get("missing_materialization_counts") or {})
+    before_surfaces = before_readiness.get("surface_readiness") or {}
+    after_surfaces = after_readiness.get("surface_readiness") or {}
+    return {
+        "checked_before": bool(before_readiness.get("checked")),
+        "checked_after": bool(after_readiness.get("checked")),
+        "source_check_available_before": bool(before_readiness.get("source_check_available")),
+        "source_check_available_after": bool(after_readiness.get("source_check_available")),
+        "counts": _int_map_delta(before_counts, after_counts),
+        "materialization_counts": _int_map_delta(before_materialized, after_materialized),
+        "missing_materialization_counts": _int_map_delta(before_missing, after_missing),
+        "ready_before": dict(before_readiness.get("ready") or {}),
+        "ready_after": dict(after_readiness.get("ready") or {}),
+        "surface_readiness": _archive_surface_readiness_delta(before_surfaces, after_surfaces),
+    }
+
+
+def _archive_surface_readiness_delta(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
+    surfaces: dict[str, Any] = {}
+    for surface_name in sorted(set(before) | set(after)):
+        before_surface = before.get(surface_name) or {}
+        after_surface = after.get(surface_name) or {}
+        surfaces[surface_name] = {
+            "ready_before": before_surface.get("ready"),
+            "ready_after": after_surface.get("ready"),
+            "blockers_before": list(before_surface.get("blockers") or []),
+            "blockers_after": list(after_surface.get("blockers") or []),
+            "evidence": _int_map_delta(
+                _coerce_int_map(before_surface.get("evidence") or {}),
+                _coerce_int_map(after_surface.get("evidence") or {}),
+            ),
+        }
+    return surfaces
+
+
+def _int_map_delta(before: dict[str, int], after: dict[str, int]) -> dict[str, dict[str, int]]:
+    return {
+        key: {
+            "before": before.get(key, 0),
+            "after": after.get(key, 0),
+            "delta": after.get(key, 0) - before.get(key, 0),
+        }
+        for key in sorted(set(before) | set(after))
+    }
+
+
+def _source_path_churn_delta(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
+    before_items = _source_path_churn_by_path(before.get("source_path_churn") or [])
+    after_items = _source_path_churn_by_path(after.get("source_path_churn") or [])
+    fields = (
+        "raw_count",
+        "full_raw_count",
+        "append_raw_count",
+        "session_count",
+        "materialized_raw_count",
+        "orphan_raw_count",
+        "total_blob_bytes",
+    )
+    paths: dict[str, Any] = {}
+    for source_path in sorted(set(before_items) | set(after_items)):
+        before_item = before_items.get(source_path) or {}
+        after_item = after_items.get(source_path) or {}
+        paths[source_path] = {
+            "storage_route_before": before_item.get("storage_route"),
+            "storage_route_after": after_item.get("storage_route"),
+            "latest_acquired_at_before": before_item.get("latest_acquired_at"),
+            "latest_acquired_at_after": after_item.get("latest_acquired_at"),
+            "counts": {
+                field: {
+                    "before": int(before_item.get(field) or 0),
+                    "after": int(after_item.get(field) or 0),
+                    "delta": int(after_item.get(field) or 0) - int(before_item.get(field) or 0),
+                }
+                for field in fields
+            },
+        }
+    return {
+        "path_count_before": len(before_items),
+        "path_count_after": len(after_items),
+        "paths": paths,
+    }
+
+
+def _source_path_churn_by_path(items: object) -> dict[str, dict[str, Any]]:
+    if not isinstance(items, list):
+        return {}
+    by_path: dict[str, dict[str, Any]] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        source_path = item.get("source_path")
+        if isinstance(source_path, str) and source_path:
+            by_path[source_path] = item
+    return by_path
+
+
+def _archive_user_overlay_orphan_delta(before_state: dict[str, Any], after_state: dict[str, Any]) -> dict[str, Any]:
+    before_orphans = before_state.get("user_overlay_orphans") or {}
+    after_orphans = after_state.get("user_overlay_orphans") or {}
+    before_counts = _coerce_int_map(before_orphans.get("orphan_session_reference_counts") or {})
+    after_counts = _coerce_int_map(after_orphans.get("orphan_session_reference_counts") or {})
+    table_deltas = {
+        table: {
+            "before": before_counts.get(table, 0),
+            "after": after_counts.get(table, 0),
+            "delta": after_counts.get(table, 0) - before_counts.get(table, 0),
+        }
+        for table in sorted(set(before_counts) | set(after_counts))
+    }
+    before_total = int(before_orphans.get("total_orphan_session_references") or 0)
+    after_total = int(after_orphans.get("total_orphan_session_references") or 0)
+    return {
+        "checked_before": bool(before_orphans.get("checked")),
+        "checked_after": bool(after_orphans.get("checked")),
+        "reason_before": before_orphans.get("reason"),
+        "reason_after": after_orphans.get("reason"),
+        "total": {"before": before_total, "after": after_total, "delta": after_total - before_total},
+        "tables": table_deltas,
+    }
+
+
 def _format_compare_human(diff: dict[str, Any]) -> str:
     if not diff.get("ok"):
         return f"compare failed: {diff.get('error')}"
@@ -854,6 +2258,56 @@ def _format_compare_human(diff: dict[str, Any]) -> str:
     lines.append("Boundary table counts:")
     for key, entry in diff["boundary_table_counts"].items():
         lines.append(f"  {key}: {entry['before']} -> {entry['after']} (Δ {entry['delta']:+d})")
+    archive_tiers = diff.get("archive_tiers") or {}
+    lines.append("")
+    lines.append(
+        "Archive tiers: "
+        f"{archive_tiers.get('present_count_before', 0)} -> {archive_tiers.get('present_count_after', 0)} present, "
+        f"complete {archive_tiers.get('complete_before')} -> {archive_tiers.get('complete_after')}, "
+        f"observed {archive_tiers.get('observed_tier_before')} -> {archive_tiers.get('observed_tier_after')}"
+    )
+    mismatches = archive_tiers.get("schema_mismatches_after") or []
+    missing_required = archive_tiers.get("missing_backup_required_after") or []
+    if mismatches:
+        lines.append(f"  schema mismatches after: {', '.join(mismatches)}")
+    if missing_required:
+        lines.append(f"  missing backup-required tiers after: {', '.join(missing_required)}")
+    layout = archive_tiers.get("layout_readiness") or {}
+    if layout:
+        blockers_after = layout.get("blockers_after") or []
+        lines.append(
+            "  archive layout: "
+            f"{layout.get('state_before')} -> {layout.get('state_after')}; "
+            f"ready {layout.get('archive_ready_before')} -> {layout.get('archive_ready_after')}"
+        )
+        if blockers_after:
+            lines.append(f"  archive layout blockers after: {', '.join(blockers_after[:8])}")
+    readiness = archive_tiers.get("derived_readiness") or {}
+    surface_deltas = readiness.get("surface_readiness") or {}
+    changed_surfaces = [
+        name
+        for name, info in surface_deltas.items()
+        if info.get("ready_before") != info.get("ready_after")
+        or info.get("blockers_before") != info.get("blockers_after")
+    ]
+    if changed_surfaces:
+        lines.append("  surface readiness changes:")
+        for name in changed_surfaces:
+            info = surface_deltas[name]
+            blockers = info.get("blockers_after") or []
+            blocker_text = ", ".join(blockers) if blockers else "none"
+            lines.append(
+                f"    {name}: ready {info.get('ready_before')} -> {info.get('ready_after')}; "
+                f"blockers after: {blocker_text}"
+            )
+    for tier, info in (archive_tiers.get("tiers") or {}).items():
+        if info.get("exists_before") != info.get("exists_after") or info.get("user_version_before") != info.get(
+            "user_version_after"
+        ):
+            lines.append(
+                f"  {tier}: exists {info.get('exists_before')} -> {info.get('exists_after')}, "
+                f"user_version {info.get('user_version_before')} -> {info.get('user_version_after')}"
+            )
     leases = diff["blob_lease_state"]
     lines.append("")
     lines.append("Blob lease state:")
@@ -889,6 +2343,32 @@ def _format_compare_human(diff: dict[str, Any]) -> str:
         max_ = entry["max"]
         lines.append(f"  {field}.mean: {mean['before']:.3f} -> {mean['after']:.3f} (Δ {mean['delta']:+.3f})")
         lines.append(f"  {field}.max:  {max_['before']:.3f} -> {max_['after']:.3f} (Δ {max_['delta']:+.3f})")
+    churn = diff.get("source_path_churn") or {}
+    churn_paths = churn.get("paths") or {}
+    lines.append("")
+    lines.append(
+        f"Source path churn: {churn.get('path_count_before', 0)} -> {churn.get('path_count_after', 0)} hot paths"
+    )
+    changed_churn = [
+        (path, info)
+        for path, info in churn_paths.items()
+        if any((entry.get("delta") or 0) != 0 for entry in (info.get("counts") or {}).values())
+    ]
+    for path, info in sorted(
+        changed_churn,
+        key=lambda item: abs(int(((item[1].get("counts") or {}).get("orphan_raw_count") or {}).get("delta") or 0)),
+        reverse=True,
+    )[:5]:
+        counts = info.get("counts") or {}
+        raw = counts.get("raw_count") or {}
+        orphan = counts.get("orphan_raw_count") or {}
+        materialized = counts.get("materialized_raw_count") or {}
+        lines.append(
+            f"  {path}: raw {raw.get('before', 0)} -> {raw.get('after', 0)} (Δ {raw.get('delta', 0):+d}), "
+            f"materialized {materialized.get('before', 0)} -> {materialized.get('after', 0)} "
+            f"(Δ {materialized.get('delta', 0):+d}), "
+            f"orphan {orphan.get('before', 0)} -> {orphan.get('after', 0)} (Δ {orphan.get('delta', 0):+d})"
+        )
     return "\n".join(lines)
 
 
@@ -930,7 +2410,7 @@ def main(argv: list[str] | None = None) -> int:
             print(_format_compare_human(diff))
         return 0 if diff.get("ok") else 1
 
-    payload = probe(args.db or default_db_path(), limit=max(1, args.limit))
+    payload = probe(args.db or active_index_db_path(), limit=max(1, args.limit))
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 0 if payload.get("ok") else 1
@@ -951,6 +2431,51 @@ def main(argv: list[str] | None = None) -> int:
         for table, count in table_counts.items():
             shown = "missing" if count < 0 else str(count)
             print(f"    {table}: {shown}")
+    archive_tiers = payload.get("archive_tiers") or {}
+    if archive_tiers.get("present"):
+        observed = archive_tiers.get("observed_tier") or "none"
+        print(
+            "  archive tiers: "
+            f"{archive_tiers.get('present_count', 0)}/{archive_tiers.get('expected_count', 0)} present, "
+            f"complete={archive_tiers.get('complete')}, observed={observed}"
+        )
+        layout = archive_tiers.get("layout_readiness") or {}
+        if layout:
+            blockers = layout.get("blockers") or []
+            print(f"    archive layout: {layout.get('state')} ({len(blockers)} blocker(s))")
+            for blocker in blockers[:8]:
+                print(f"      - {blocker}")
+        orphans = archive_tiers.get("user_overlay_orphans") or {}
+        if orphans.get("checked"):
+            print(f"    user overlay orphans: {orphans.get('total_orphan_session_references', 0)} session references")
+        readiness = archive_tiers.get("derived_readiness") or {}
+        if readiness.get("checked"):
+            counts = readiness.get("counts") or {}
+            ready = readiness.get("ready") or {}
+            print(
+                "    derived readiness: "
+                f"sessions={counts.get('session_count', 0)} "
+                f"missing_profiles={counts.get('missing_profile_row_count', 0)} "
+                f"missing_raw={counts.get('missing_raw_session_count', 0)} "
+                f"messages_fts_ready={ready.get('messages_fts_ready')}"
+            )
+            blocked_surfaces = {
+                name: info
+                for name, info in (readiness.get("surface_readiness") or {}).items()
+                if info.get("ready") is not True
+            }
+            if blocked_surfaces:
+                print("    blocked archive surfaces:")
+                for name, info in blocked_surfaces.items():
+                    blockers = ", ".join(info.get("blockers") or ["unknown"])
+                    print(f"      {name}: ready={info.get('ready')} blockers={blockers}")
+        for tier, info in (archive_tiers.get("tiers") or {}).items():
+            if not info.get("exists"):
+                continue
+            print(
+                f"    {tier}: user_version={info.get('user_version')} "
+                f"integrity={info.get('integrity')} size={info.get('size_bytes')} bytes"
+            )
     leases = payload.get("blob_lease_state") or {}
     print(
         "  blob leases: "

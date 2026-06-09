@@ -11,7 +11,7 @@ from polylogue.schemas.observation import derive_bundle_scope, schema_cluster_id
 from polylogue.schemas.packages import SchemaResolution
 from polylogue.schemas.runtime_registry import SchemaRegistry
 from polylogue.storage.blob_store import get_blob_store
-from polylogue.storage.runtime import ArtifactObservationRecord, RawConversationRecord
+from polylogue.storage.runtime import ArtifactObservationRecord, RawSessionRecord
 from polylogue.types import ArtifactSupportStatus, Provider
 
 _SCHEMA_REGISTRY = SchemaRegistry()
@@ -43,7 +43,7 @@ def _link_group_key(source_path: str | None) -> str | None:
 
 def _build_payload_envelope(
     raw_content: bytes,
-    record: RawConversationRecord,
+    record: RawSessionRecord,
 ) -> RawPayloadEnvelope:
     return build_raw_payload_envelope(
         raw_content,
@@ -54,7 +54,7 @@ def _build_payload_envelope(
     )
 
 
-def _normalize_payload_provider_hint(record: RawConversationRecord) -> str | None:
+def _normalize_payload_provider_hint(record: RawSessionRecord) -> str | None:
     hint = record.payload_provider or record.source_name
     if not isinstance(hint, str):
         return None
@@ -84,7 +84,7 @@ def _resolve_payload_support(
     return resolution, True
 
 
-def _inspect_payload_envelope(record: RawConversationRecord) -> RawPayloadEnvelope:
+def _inspect_payload_envelope(record: RawSessionRecord) -> RawPayloadEnvelope:
     blob_store = get_blob_store()
     prefix = _inspection_prefix(record)
     try:
@@ -114,7 +114,7 @@ def _sidecar_agent_type(payload: JSONValue) -> str | None:
 
 def _support_status(
     *,
-    parse_as_conversation: bool,
+    parse_as_session: bool,
     schema_eligible: bool,
     malformed_jsonl_lines: int,
     artifact_kind: str,
@@ -132,7 +132,7 @@ def _support_status(
         return ArtifactSupportStatus.PARTIAL_DECODE if partial_decode else ArtifactSupportStatus.DECODE_FAILED
     if artifact_kind == ArtifactKind.UNKNOWN.value:
         return ArtifactSupportStatus.UNKNOWN
-    if not parse_as_conversation or not schema_eligible:
+    if not parse_as_session or not schema_eligible:
         return ArtifactSupportStatus.RECOGNIZED_UNPARSED
     if has_supported_resolution:
         return ArtifactSupportStatus.SUPPORTED_PARSEABLE
@@ -156,7 +156,7 @@ def _inspection_prefix_from_bytes(raw_content: bytes, source_path: str | None) -
     return raw_content[:_INSPECTION_PREFIX_BYTES]
 
 
-def _inspection_prefix(record: RawConversationRecord) -> bytes:
+def _inspection_prefix(record: RawSessionRecord) -> bytes:
     """Extract a small prefix of raw content sufficient for classification.
 
     Reads only the first 64 KB from the blob store — multi-GB files are
@@ -178,17 +178,17 @@ def _prefers_json_stream(source_path: str | None) -> bool:
     return normalized.endswith((".jsonl", ".jsonl.txt", ".ndjson"))
 
 
-def _full_json_inspection_allowed(record: RawConversationRecord) -> bool:
+def _full_json_inspection_allowed(record: RawSessionRecord) -> bool:
     if _prefers_json_stream(record.source_path):
         return False
     return record.blob_size <= _FULL_JSON_INSPECTION_MAX_BYTES
 
 
-def _should_retry_full_json_inspection(record: RawConversationRecord, *, wire_format: str | None) -> bool:
+def _should_retry_full_json_inspection(record: RawSessionRecord, *, wire_format: str | None) -> bool:
     return _full_json_inspection_allowed(record) and wire_format == "jsonl"
 
 
-def _full_scan_malformed_jsonl(record: RawConversationRecord) -> tuple[int, bool]:
+def _full_scan_malformed_jsonl(record: RawSessionRecord) -> tuple[int, bool]:
     """Stream the entire blob to count malformed JSONL lines.
 
     The prefix-based classification only inspects the first 64 KB, so malformed
@@ -219,7 +219,7 @@ def _full_scan_malformed_jsonl(record: RawConversationRecord) -> tuple[int, bool
 
 
 def _stream_loss_accounting(
-    record: RawConversationRecord,
+    record: RawSessionRecord,
     *,
     wire_format: str | None,
     prefix_malformed_lines: int,
@@ -249,7 +249,7 @@ def _stream_loss_accounting(
     return malformed_lines, had_valid_records
 
 
-def inspect_raw_artifact(record: RawConversationRecord) -> ArtifactObservationRecord:
+def inspect_raw_artifact(record: RawSessionRecord) -> ArtifactObservationRecord:
     """Inspect one raw record into a durable artifact observation.
 
     Uses only a small prefix of raw_content for classification — never
@@ -282,7 +282,7 @@ def inspect_raw_artifact(record: RawConversationRecord) -> ArtifactObservationRe
             prefix_malformed_lines=envelope.malformed_jsonl_lines,
         )
 
-        if envelope.artifact.parse_as_conversation and envelope.artifact.schema_eligible and malformed_jsonl_lines == 0:
+        if envelope.artifact.parse_as_session and envelope.artifact.schema_eligible and malformed_jsonl_lines == 0:
             resolution, has_supported_resolution = _resolve_payload_support(
                 registry=registry,
                 payload_provider=payload_provider,
@@ -294,7 +294,7 @@ def inspect_raw_artifact(record: RawConversationRecord) -> ArtifactObservationRe
         resolution_reason = resolution.reason if resolution is not None else None
 
         support_status = _support_status(
-            parse_as_conversation=envelope.artifact.parse_as_conversation,
+            parse_as_session=envelope.artifact.parse_as_session,
             schema_eligible=envelope.artifact.schema_eligible,
             malformed_jsonl_lines=malformed_jsonl_lines,
             artifact_kind=envelope.artifact.kind.value,
@@ -314,7 +314,7 @@ def inspect_raw_artifact(record: RawConversationRecord) -> ArtifactObservationRe
             wire_format=envelope.wire_format,
             artifact_kind=envelope.artifact.kind.value,
             classification_reason=envelope.artifact.reason,
-            parse_as_conversation=envelope.artifact.parse_as_conversation,
+            parse_as_session=envelope.artifact.parse_as_session,
             schema_eligible=envelope.artifact.schema_eligible,
             support_status=support_status,
             malformed_jsonl_lines=malformed_jsonl_lines,
@@ -352,10 +352,10 @@ def inspect_raw_artifact(record: RawConversationRecord) -> ArtifactObservationRe
             wire_format=None,
             artifact_kind=artifact_kind,
             classification_reason=classification_reason,
-            parse_as_conversation=path_classification.parse_as_conversation if path_classification else False,
+            parse_as_session=path_classification.parse_as_session if path_classification else False,
             schema_eligible=path_classification.schema_eligible if path_classification else False,
             support_status=_support_status(
-                parse_as_conversation=path_classification.parse_as_conversation if path_classification else False,
+                parse_as_session=path_classification.parse_as_session if path_classification else False,
                 schema_eligible=path_classification.schema_eligible if path_classification else False,
                 malformed_jsonl_lines=0,
                 artifact_kind=artifact_kind,

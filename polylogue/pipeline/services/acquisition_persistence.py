@@ -6,20 +6,20 @@ from polylogue.logging import get_logger
 from polylogue.pipeline.stage_models import AcquireResult
 from polylogue.protocols import RawPersistenceStore
 from polylogue.storage.artifacts.inspection import inspect_raw_artifact
-from polylogue.storage.runtime import RawConversationRecord
+from polylogue.storage.runtime import RawSessionRecord
 
 logger = get_logger(__name__)
 
 
 async def persist_raw_record(
     repository: RawPersistenceStore,
-    record: RawConversationRecord,
+    record: RawSessionRecord,
     *,
     result: AcquireResult,
 ) -> None:
     """Persist one raw record and update acquisition counters."""
     try:
-        inserted = await repository.save_raw_conversation(record)
+        inserted = await repository.save_raw_session(record)
         observation = inspect_raw_artifact(record)
         await repository.save_artifact_observation(observation)
         if inserted:
@@ -29,7 +29,7 @@ async def persist_raw_record(
             result.skipped += 1
     except Exception as exc:
         logger.error(
-            "Failed to store raw conversation",
+            "Failed to store raw session",
             source=record.source_name,
             path=record.source_path,
             error=str(exc),

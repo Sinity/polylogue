@@ -7,11 +7,11 @@ from pathlib import Path
 from polylogue.archive.artifact_taxonomy.models import ArtifactClassification, ArtifactKind
 from polylogue.archive.artifact_taxonomy.support import (
     is_subagent_path,
-    looks_like_conversation_document,
     looks_like_hook_event,
     looks_like_hook_event_stream,
     looks_like_record_entry,
     looks_like_record_stream,
+    looks_like_session_document,
     looks_metadataish_dict,
     looks_metadataish_list,
     normalize_source_path,
@@ -40,7 +40,7 @@ def classify_artifact_path(
             return ArtifactClassification(
                 provider=provider_token,
                 kind=ArtifactKind.METADATA_DOCUMENT,
-                parse_as_conversation=False,
+                parse_as_session=False,
                 schema_eligible=False,
                 default_priority=0,
                 reason="Antigravity opaque or resolved sidecar",
@@ -55,7 +55,7 @@ def classify_artifact_path(
             return ArtifactClassification(
                 provider=provider_token,
                 kind=ArtifactKind.METADATA_DOCUMENT,
-                parse_as_conversation=False,
+                parse_as_session=False,
                 schema_eligible=False,
                 default_priority=0,
                 reason="Antigravity configuration sidecar",
@@ -65,7 +65,7 @@ def classify_artifact_path(
         return ArtifactClassification(
             provider=provider_token,
             kind=kind,
-            parse_as_conversation=False,
+            parse_as_session=False,
             schema_eligible=False,
             default_priority=0,
             reason=sidecar_reason,
@@ -75,7 +75,7 @@ def classify_artifact_path(
         return ArtifactClassification(
             provider=provider_token,
             kind=ArtifactKind.AGENT_SIDECAR_META,
-            parse_as_conversation=False,
+            parse_as_session=False,
             schema_eligible=False,
             default_priority=0,
             reason="agent sidecar metadata path",
@@ -90,7 +90,7 @@ def classify_artifact(
     provider: str | Provider,
     source_path: str | Path | None = None,
 ) -> ArtifactClassification:
-    """Classify a payload/document into a conversation or sidecar cohort."""
+    """Classify a payload/document into a session or sidecar cohort."""
     provider_token = Provider.from_string(provider)
     explicit = classify_artifact_path(source_path, provider=provider_token)
     if explicit is not None:
@@ -103,7 +103,7 @@ def classify_artifact(
     return ArtifactClassification(
         provider=provider_token,
         kind=ArtifactKind.UNKNOWN,
-        parse_as_conversation=False,
+        parse_as_session=False,
         schema_eligible=False,
         default_priority=0,
         reason="non-object payload",
@@ -122,7 +122,7 @@ def _classify_list(
         return ArtifactClassification(
             provider=provider,
             kind=ArtifactKind.METADATA_DOCUMENT,
-            parse_as_conversation=False,
+            parse_as_session=False,
             schema_eligible=False,
             default_priority=0,
             reason="empty list payload",
@@ -132,7 +132,7 @@ def _classify_list(
         return ArtifactClassification(
             provider=provider,
             kind=ArtifactKind.HOOK_EVENT,
-            parse_as_conversation=False,
+            parse_as_session=False,
             schema_eligible=False,
             default_priority=100,
             reason="hook event stream",
@@ -140,31 +140,31 @@ def _classify_list(
 
     if dict_items and looks_like_record_stream(dict_items):
         subagent = is_subagent_path(source_path)
-        kind = ArtifactKind.SUBAGENT_CONVERSATION_STREAM if subagent else ArtifactKind.CONVERSATION_RECORD_STREAM
+        kind = ArtifactKind.SUBAGENT_SESSION_STREAM if subagent else ArtifactKind.SESSION_RECORD_STREAM
         return ArtifactClassification(
             provider=provider,
             kind=kind,
-            parse_as_conversation=True,
+            parse_as_session=True,
             schema_eligible=True,
             default_priority=90 if subagent else 120,
             reason="record-like JSONL stream",
         )
 
-    if dict_items and any(looks_like_conversation_document(item) for item in dict_items):
+    if dict_items and any(looks_like_session_document(item) for item in dict_items):
         return ArtifactClassification(
             provider=provider,
-            kind=ArtifactKind.CONVERSATION_DOCUMENT,
-            parse_as_conversation=True,
+            kind=ArtifactKind.SESSION_DOCUMENT,
+            parse_as_session=True,
             schema_eligible=True,
             default_priority=120,
-            reason="bundle of conversation documents",
+            reason="bundle of session documents",
         )
 
     if looks_metadataish_list(payload):
         return ArtifactClassification(
             provider=provider,
             kind=ArtifactKind.METADATA_DOCUMENT,
-            parse_as_conversation=False,
+            parse_as_session=False,
             schema_eligible=False,
             default_priority=0,
             reason="metadata-oriented list payload",
@@ -173,7 +173,7 @@ def _classify_list(
     return ArtifactClassification(
         provider=provider,
         kind=ArtifactKind.UNKNOWN,
-        parse_as_conversation=False,
+        parse_as_session=False,
         schema_eligible=False,
         default_priority=0,
         reason="unrecognized list payload",
@@ -189,8 +189,8 @@ def _classify_dict(
     if provider is Provider.ANTIGRAVITY and _is_antigravity_markdown_export(payload):
         return ArtifactClassification(
             provider=provider,
-            kind=ArtifactKind.CONVERSATION_DOCUMENT,
-            parse_as_conversation=True,
+            kind=ArtifactKind.SESSION_DOCUMENT,
+            parse_as_session=True,
             schema_eligible=True,
             default_priority=120,
             reason="Antigravity language-server Markdown export",
@@ -199,8 +199,8 @@ def _classify_dict(
     if provider is Provider.ANTIGRAVITY and _is_antigravity_brain_metadata(payload, source_path):
         return ArtifactClassification(
             provider=provider,
-            kind=ArtifactKind.CONVERSATION_DOCUMENT,
-            parse_as_conversation=True,
+            kind=ArtifactKind.SESSION_DOCUMENT,
+            parse_as_session=True,
             schema_eligible=True,
             default_priority=100,
             reason="Antigravity brain artifact metadata with sibling Markdown",
@@ -210,27 +210,27 @@ def _classify_dict(
         return ArtifactClassification(
             provider=provider,
             kind=ArtifactKind.HOOK_EVENT,
-            parse_as_conversation=False,
+            parse_as_session=False,
             schema_eligible=False,
             default_priority=100,
             reason="hook event record",
         )
 
-    if looks_like_conversation_document(payload):
+    if looks_like_session_document(payload):
         return ArtifactClassification(
             provider=provider,
-            kind=ArtifactKind.CONVERSATION_DOCUMENT,
-            parse_as_conversation=True,
+            kind=ArtifactKind.SESSION_DOCUMENT,
+            parse_as_session=True,
             schema_eligible=True,
             default_priority=120,
-            reason="conversation-bearing document",
+            reason="session-bearing document",
         )
 
     if is_subagent_path(source_path) and looks_like_record_entry(payload):
         return ArtifactClassification(
             provider=provider,
-            kind=ArtifactKind.SUBAGENT_CONVERSATION_STREAM,
-            parse_as_conversation=True,
+            kind=ArtifactKind.SUBAGENT_SESSION_STREAM,
+            parse_as_session=True,
             schema_eligible=True,
             default_priority=90,
             reason="subagent record payload",
@@ -240,7 +240,7 @@ def _classify_dict(
         return ArtifactClassification(
             provider=provider,
             kind=ArtifactKind.METADATA_DOCUMENT,
-            parse_as_conversation=False,
+            parse_as_session=False,
             schema_eligible=False,
             default_priority=0,
             reason="metadata-oriented document",
@@ -249,7 +249,7 @@ def _classify_dict(
     return ArtifactClassification(
         provider=provider,
         kind=ArtifactKind.UNKNOWN,
-        parse_as_conversation=False,
+        parse_as_session=False,
         schema_eligible=False,
         default_priority=0,
         reason="unrecognized document payload",

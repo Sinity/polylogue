@@ -7,33 +7,33 @@ from dataclasses import replace
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from polylogue.archive.conversation.models import Conversation, ConversationSummary
-    from polylogue.archive.query.search_hits import ConversationSearchHit
-    from polylogue.storage.runtime import ConversationRecord
-    from polylogue.storage.search.models import ConversationSearchEvidenceRow, ConversationSearchResult
+    from polylogue.archive.query.search_hits import SessionSearchHit
+    from polylogue.archive.session.domain_models import Session, SessionSummary
+    from polylogue.storage.runtime import SessionRecord
+    from polylogue.storage.search.models import SessionSearchEvidenceRow, SessionSearchResult
     from polylogue.storage.sqlite.query_store import SQLiteQueryStore
 
 
 def _rerank_evidence_hits(
-    hits: builtins.list[ConversationSearchEvidenceRow],
-) -> builtins.list[ConversationSearchEvidenceRow]:
+    hits: builtins.list[SessionSearchEvidenceRow],
+) -> builtins.list[SessionSearchEvidenceRow]:
     return [replace(hit, rank=rank) for rank, hit in enumerate(hits, start=1)]
 
 
 def _merge_evidence_hits(
     *,
-    attachment_hits: builtins.list[ConversationSearchEvidenceRow],
-    message_hits: builtins.list[ConversationSearchEvidenceRow],
+    attachment_hits: builtins.list[SessionSearchEvidenceRow],
+    message_hits: builtins.list[SessionSearchEvidenceRow],
     limit: int,
-) -> builtins.list[ConversationSearchEvidenceRow]:
+) -> builtins.list[SessionSearchEvidenceRow]:
     if limit <= 0:
         return []
-    merged: builtins.list[ConversationSearchEvidenceRow] = []
+    merged: builtins.list[SessionSearchEvidenceRow] = []
     seen: set[str] = set()
     for hit in (*attachment_hits, *message_hits):
-        if hit.conversation_id in seen:
+        if hit.session_id in seen:
             continue
-        seen.add(hit.conversation_id)
+        seen.add(hit.session_id)
         merged.append(hit)
         if len(merged) >= limit:
             break
@@ -44,33 +44,31 @@ class RepositoryArchiveSearchMixin:
     if TYPE_CHECKING:
         queries: SQLiteQueryStore
 
-        async def _hydrate_conversations(
+        async def _hydrate_sessions(
             self,
-            conversation_records: builtins.list[ConversationRecord],
+            session_records: builtins.list[SessionRecord],
             *,
             ordered_ids: builtins.list[str] | None = None,
-        ) -> builtins.list[Conversation]: ...
+        ) -> builtins.list[Session]: ...
 
     async def search_summaries(
         self,
         query: str,
         limit: int = 20,
         providers: builtins.list[str] | None = None,
-    ) -> builtins.list[ConversationSummary]:
-        from polylogue.storage.hydrators import conversation_summary_from_record
+    ) -> builtins.list[SessionSummary]:
+        from polylogue.storage.hydrators import session_summary_from_record
 
         hits, records = await self._search_records(query, limit=limit, providers=providers)
         if not hits.hits:
             return []
-        # #1630: hydrate message_count from conversation_stats so the
-        # daemon HTTP /api/conversations search path and any other
-        # ``search_summaries`` caller see a real total instead of None.
-        ids = [str(record.conversation_id) for record in records]
+        # Hydrate message_count from the current sessions aggregate.
+        ids = [str(record.session_id) for record in records]
         counts_by_id = await self.queries.get_message_counts_batch(ids)
         return [
-            conversation_summary_from_record(
+            session_summary_from_record(
                 record,
-                message_count=counts_by_id.get(str(record.conversation_id)),
+                message_count=counts_by_id.get(str(record.session_id)),
             )
             for record in records
         ]
@@ -81,10 +79,10 @@ class RepositoryArchiveSearchMixin:
         limit: int = 20,
         providers: builtins.list[str] | None = None,
         since: str | None = None,
-    ) -> builtins.list[ConversationSearchHit]:
-        from polylogue.archive.query.search_hits import conversation_search_hit_from_summary
+    ) -> builtins.list[SessionSearchHit]:
+        from polylogue.archive.query.search_hits import session_search_hit_from_summary
         from polylogue.errors import DatabaseError
-        from polylogue.storage.hydrators import conversation_summary_from_record
+        from polylogue.storage.hydrators import session_summary_from_record
 
         attachment_hits = await self.queries.search_attachment_identity_evidence_hits(
             query,
@@ -93,15 +91,13 @@ class RepositoryArchiveSearchMixin:
             since=since,
         )
         try:
-            message_hits = await self.queries.search_conversation_evidence_hits(
+            message_hits = await self.queries.search_session_evidence_hits(
                 query,
                 limit=limit,
                 providers=providers,
                 since=since,
             )
         except DatabaseError:
-            if not attachment_hits:
-                raise
             message_hits = []
 
         evidence_hits = _merge_evidence_hits(
@@ -112,20 +108,19 @@ class RepositoryArchiveSearchMixin:
         if not evidence_hits:
             return []
 
-        records = await self.queries.get_conversations_batch([hit.conversation_id for hit in evidence_hits])
-        # #1630: hydrate message_count from conversation_stats so search
-        # hit summaries carry a real total instead of None.
-        ids = [str(record.conversation_id) for record in records]
+        records = await self.queries.get_sessions_batch([hit.session_id for hit in evidence_hits])
+        # Hydrate message_count from the current sessions aggregate.
+        ids = [str(record.session_id) for record in records]
         counts_by_id = await self.queries.get_message_counts_batch(ids) if ids else {}
         summaries_by_id = {
-            str(record.conversation_id): conversation_summary_from_record(
-                record, message_count=counts_by_id.get(str(record.conversation_id))
+            str(record.session_id): session_summary_from_record(
+                record, message_count=counts_by_id.get(str(record.session_id))
             )
             for record in records
         }
         return [
-            conversation_search_hit_from_summary(
-                summaries_by_id[hit.conversation_id],
+            session_search_hit_from_summary(
+                summaries_by_id[hit.session_id],
                 rank=hit.rank,
                 retrieval_lane=hit.retrieval_lane,
                 match_surface=hit.match_surface,
@@ -140,7 +135,7 @@ class RepositoryArchiveSearchMixin:
                 raw_score=hit.raw_score,
             )
             for hit in evidence_hits
-            if hit.conversation_id in summaries_by_id
+            if hit.session_id in summaries_by_id
         ]
 
     async def search(
@@ -148,18 +143,18 @@ class RepositoryArchiveSearchMixin:
         query: str,
         limit: int = 20,
         providers: builtins.list[str] | None = None,
-    ) -> builtins.list[Conversation]:
+    ) -> builtins.list[Session]:
         hits, records = await self._search_records(query, limit=limit, providers=providers)
-        return await self._hydrate_conversations(records, ordered_ids=hits.conversation_ids())
+        return await self._hydrate_sessions(records, ordered_ids=hits.session_ids())
 
     async def search_actions(
         self,
         query: str,
         limit: int = 20,
         providers: builtins.list[str] | None = None,
-    ) -> builtins.list[Conversation]:
+    ) -> builtins.list[Session]:
         hits, records = await self._search_action_records(query, limit=limit, providers=providers)
-        return await self._hydrate_conversations(records, ordered_ids=hits.conversation_ids())
+        return await self._hydrate_sessions(records, ordered_ids=hits.session_ids())
 
     async def _search_records(
         self,
@@ -167,11 +162,11 @@ class RepositoryArchiveSearchMixin:
         *,
         limit: int,
         providers: builtins.list[str] | None,
-    ) -> tuple[ConversationSearchResult, builtins.list[ConversationRecord]]:
-        hits = await self.queries.search_conversation_hits(query, limit=limit, providers=providers)
+    ) -> tuple[SessionSearchResult, builtins.list[SessionRecord]]:
+        hits = await self.queries.search_session_hits(query, limit=limit, providers=providers)
         if not hits.hits:
             return hits, []
-        records = await self.queries.get_conversations_batch(hits.conversation_ids())
+        records = await self.queries.get_sessions_batch(hits.session_ids())
         return hits, records
 
     async def _search_action_records(
@@ -180,11 +175,11 @@ class RepositoryArchiveSearchMixin:
         *,
         limit: int,
         providers: builtins.list[str] | None,
-    ) -> tuple[ConversationSearchResult, builtins.list[ConversationRecord]]:
-        hits = await self.queries.search_action_conversation_hits(query, limit=limit, providers=providers)
+    ) -> tuple[SessionSearchResult, builtins.list[SessionRecord]]:
+        hits = await self.queries.search_action_session_hits(query, limit=limit, providers=providers)
         if not hits.hits:
             return hits, []
-        records = await self.queries.get_conversations_batch(hits.conversation_ids())
+        records = await self.queries.get_sessions_batch(hits.session_ids())
         return hits, records
 
 

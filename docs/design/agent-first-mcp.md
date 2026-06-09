@@ -26,9 +26,9 @@ From the audit (U8 agent), 8 tool gaps:
 |-----|--------------|-----|
 | Help tool | No `get_help` or tool descriptions via MCP | Add `polylogue_help` tool returning tool schemas |
 | Auth | `--role` flag, self-declared, no enforcement | Per-role tool visibility; write tools require token |
-| Pagination | `list_conversations` returns bare arrays | Add `total`/`limit`/`offset` to all list responses |
-| Chaining | Tool outputs use different ID formats | Standardize on `conversation_id` across all tools |
-| Count | No way to count without fetching all | Add `count_conversations` / `count_messages` tools |
+| Pagination | `list_sessions` returns bare arrays | Add `total`/`limit`/`offset` to all list responses |
+| Chaining | Tool outputs use different ID formats | Standardize on `session_id` across all tools |
+| Count | No way to count without fetching all | Add `count_sessions` / `count_messages` tools |
 | Projection | All fields returned, no field selection | Add `fields` parameter to list/search tools |
 | Graceful shutdown | MCP server has no shutdown handshake | Add `polylogue_shutdown` tool with flush guarantee |
 | Export fidelity | #811 — content_blocks dropped from exports | Fix export to include all message content |
@@ -39,24 +39,24 @@ From the audit (U8 agent), 8 tool gaps:
 
 | Tool | Purpose | Chaining |
 |------|---------|----------|
-| `polylogue_search` | Full-text + filter search | Returns `conversation_ids[]` → feed to `polylogue_get_conversation` |
-| `polylogue_list_conversations` | Paginated list with filters | Returns `conversation_ids[]` |
-| `polylogue_get_conversation` | Single conversation with messages | Accepts `conversation_id` from search/list |
-| `polylogue_get_messages` | Messages for a conversation | Accepts `conversation_id`, optional `role`/`limit` filter |
-| `polylogue_get_session_profile` | Profile for a session | Accepts `conversation_id`, returns structured profile |
+| `polylogue_search` | Full-text + filter search | Returns `session_ids[]` → feed to `polylogue_get_session` |
+| `polylogue_list_sessions` | Paginated list with filters | Returns `session_ids[]` |
+| `polylogue_get_session` | Single session with messages | Accepts `session_id` from search/list |
+| `polylogue_get_messages` | Messages for a session | Accepts `session_id`, optional `role`/`limit` filter |
+| `polylogue_get_session_profile` | Profile for a session | Accepts `session_id`, returns structured profile |
 | `polylogue_get_project_memory` | Project memory entries | Accepts `project_path`, optional `kind` filter |
 | `polylogue_search_project_memory` | FTS5 over project memory | Returns `entry_ids[]` |
 | `polylogue_get_stats` | Archive statistics | No input needed |
-| `polylogue_get_cost` | Cost breakdown | Accepts `conversation_id` or `--since` filter |
-| `polylogue_count` | Count conversations/messages matching filters | Same filter params as search |
+| `polylogue_get_cost` | Cost breakdown | Accepts `session_id` or `--since` filter |
+| `polylogue_count` | Count sessions/messages matching filters | Same filter params as search |
 
 ### Write tools (require write role + auth)
 
 | Tool | Purpose |
 |------|---------|
-| `polylogue_tag_conversation` | Add/remove tags |
+| `polylogue_tag_session` | Add/remove tags |
 | `polylogue_record_project_memory` | Create a project memory entry |
-| `polylogue_update_metadata` | Update conversation metadata |
+| `polylogue_update_metadata` | Update session metadata |
 | `polylogue_reset` | Re-ingest a source |
 
 ### Admin tools (require admin role + auth)
@@ -91,7 +91,7 @@ Error responses:
   "ok": false,
   "error": {
     "code": "ARCHIVE_EMPTY",
-    "message": "No conversations match the query.",
+    "message": "No sessions match the query.",
     "retryable": false,
     "hint": "Try broadening your filters or check that ingestion is running."
   }
@@ -113,7 +113,7 @@ tool calls needed. The hook runs before the agent's first message.
 Agent searches for relevant past sessions, reads the top 3, extracts relevant
 patterns. 3 MCP calls, each <500ms:
 1. `polylogue_search("error: foreign key constraint", project_path=...)`
-2. `polylogue_get_conversation(top_result_id, prose_only=true)`
+2. `polylogue_get_session(top_result_id, prose_only=true)`
 3. `polylogue_get_session_profile(top_result_id)`
 
 ### Pattern 3: Self-audit (post-session)
@@ -126,7 +126,7 @@ Agent reviews its own session for patterns:
 ### Pattern 4: Decision support (during implementation)
 
 Agent checks project memory before making architectural choices:
-1. `polylogue_search_project_memory("schema migration")`
+1. `polylogue_search_project_memory("schema rebuild")`
 2. If results found, read the relevant Decisions
 3. Apply or consciously deviate
 

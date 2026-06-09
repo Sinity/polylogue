@@ -1,4 +1,4 @@
-"""Filter mixin for conversation projections."""
+"""Filter mixin for session projections."""
 
 from __future__ import annotations
 

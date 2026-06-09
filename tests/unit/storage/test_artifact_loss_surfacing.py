@@ -18,7 +18,7 @@ from polylogue.storage.artifacts.inspection import (
     inspect_raw_artifact,
 )
 from polylogue.storage.blob_store import BlobStore, reset_blob_store
-from polylogue.storage.runtime import RawConversationRecord
+from polylogue.storage.runtime import RawSessionRecord
 from polylogue.types import ArtifactSupportStatus, Provider
 
 
@@ -41,9 +41,9 @@ def _write_record(
     content: bytes,
     source_path: str,
     source_name: str = "claude-code",
-) -> RawConversationRecord:
+) -> RawSessionRecord:
     raw_id, blob_size = store.write_from_bytes(content)
-    return RawConversationRecord(
+    return RawSessionRecord(
         raw_id=raw_id,
         source_name=source_name,
         source_path=source_path,

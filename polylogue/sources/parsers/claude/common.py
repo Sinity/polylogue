@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 
 from polylogue.archive.message.roles import Role
-from polylogue.types import ContentBlockType
+from polylogue.types import BlockType
 
 from ..base import (
     ParsedAttachment,
@@ -14,6 +15,61 @@ from ..base import (
     attachment_from_meta,
     content_blocks_from_segments,
 )
+
+
+def _optional_non_negative_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float):
+        return int(value) if value >= 0 else None
+    if isinstance(value, str):
+        try:
+            parsed = int(float(value))
+        except ValueError:
+            return None
+        return parsed if parsed >= 0 else None
+    return None
+
+
+def _metadata_mapping(item: Mapping[str, object]) -> Mapping[str, object]:
+    metadata = item.get("metadata")
+    return metadata if isinstance(metadata, Mapping) else {}
+
+
+def _first_string_field(item: Mapping[str, object], *keys: str) -> str | None:
+    for key in keys:
+        value = item.get(key)
+        if isinstance(value, str) and value:
+            return value
+    metadata = _metadata_mapping(item)
+    for key in keys:
+        value = metadata.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _message_model_name(item: Mapping[str, object]) -> str | None:
+    return _first_string_field(item, "model", "model_name", "modelName", "model_slug")
+
+
+def _message_model_effort(item: Mapping[str, object]) -> str | None:
+    return _first_string_field(item, "effort", "model_effort", "modelEffort")
+
+
+def _message_duration_ms(item: Mapping[str, object]) -> int | None:
+    for key in ("durationMs", "duration_ms", "elapsed_ms"):
+        value = item.get(key)
+        if value is not None:
+            return _optional_non_negative_int(value)
+    metadata = _metadata_mapping(item)
+    for key in ("durationMs", "duration_ms", "elapsed_ms"):
+        value = metadata.get(key)
+        if value is not None:
+            return _optional_non_negative_int(value)
+    return None
 
 
 def reclassify_tool_result_envelope(role: Role, content_blocks: list[ParsedContentBlock]) -> Role:
@@ -32,7 +88,7 @@ def reclassify_tool_result_envelope(role: Role, content_blocks: list[ParsedConte
         return role
     if not content_blocks:
         return role
-    if all(block.type == ContentBlockType.TOOL_RESULT for block in content_blocks):
+    if all(block.type == BlockType.TOOL_RESULT for block in content_blocks):
         return Role.TOOL
     return role
 
@@ -92,6 +148,7 @@ def extract_messages_from_chat_messages(
 ) -> tuple[list[ParsedMessage], list[ParsedAttachment]]:
     messages: list[ParsedMessage] = []
     attachments: list[ParsedAttachment] = []
+    message_position = 0
     for idx, item in enumerate(chat_messages, start=1):
         if not isinstance(item, dict):
             continue
@@ -118,7 +175,7 @@ def extract_messages_from_chat_messages(
         raw_content = item.get("content")
         content_blocks = content_blocks_from_segments(raw_content) if isinstance(raw_content, list) else []
         if not content_blocks and text:
-            content_blocks = [ParsedContentBlock(type=ContentBlockType.TEXT, text=text)]
+            content_blocks = [ParsedContentBlock(type=BlockType.TEXT, text=text)]
 
         role = reclassify_tool_result_envelope(role, content_blocks)
 
@@ -130,12 +187,27 @@ def extract_messages_from_chat_messages(
                     text=text,
                     timestamp=timestamp,
                     content_blocks=content_blocks,
+                    position=message_position,
+                    variant_index=0,
+                    is_active_path=True,
+                    model_name=_message_model_name(item),
+                    model_effort=_message_model_effort(item),
+                    duration_ms=_message_duration_ms(item),
                 )
             )
+            message_position += 1
         for att_idx, meta in enumerate(item.get("attachments") or item.get("files") or [], start=1):
             attachment = attachment_from_meta(meta, message_id, att_idx)
             if attachment:
                 attachments.append(attachment)
+    if messages:
+        active_leaf_message_provider_id = messages[-1].provider_message_id
+        messages = [
+            message.model_copy(
+                update={"is_active_leaf": message.provider_message_id == active_leaf_message_provider_id}
+            )
+            for message in messages
+        ]
     return messages, attachments
 
 

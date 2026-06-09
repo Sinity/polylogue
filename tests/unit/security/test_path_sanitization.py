@@ -56,8 +56,8 @@ class TestSanitizePathTraversal:
         "raw_path,checks",
         [
             (
-                "conversations/chatgpt/export.json",
-                ("conversations", "chatgpt"),
+                "sessions/chatgpt/export.json",
+                ("sessions", "chatgpt"),
             ),
         ],
     )
@@ -71,7 +71,7 @@ class TestSanitizePathTraversal:
         "raw_path",
         [
             "/etc/passwd",
-            "/home/user/conversations/export.json",
+            "/home/user/sessions/export.json",
             "/",
         ],
     )

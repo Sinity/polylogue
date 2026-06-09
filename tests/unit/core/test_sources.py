@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import pytest
 
+from polylogue.core.enums import Origin
 from polylogue.core.sources import (
     ALL_SOURCES,
     Source,
+    lab_of_origin,
+    origin_from_provider,
     provider_to_source,
     source_for_family,
     source_to_provider,
@@ -194,3 +197,44 @@ def test_source_family_separability_in_filters() -> None:
         assert source_for_family(family) is source
         # The reverse lookup must match
         assert source_to_provider(source) is provider
+
+
+# ---------------------------------------------------------------------------
+# Provider -> Origin bridge (#1743 axis 2)
+# ---------------------------------------------------------------------------
+
+
+def test_origin_from_provider_is_total() -> None:
+    """Every Provider maps to a valid archive Origin."""
+    for provider in Provider:
+        origin = origin_from_provider(provider)
+        assert isinstance(origin, Origin)
+
+
+def test_gemini_and_drive_collapse_to_aistudio_drive() -> None:
+    """Per #1743 both Gemini and Drive providers map to the single AISTUDIO_DRIVE origin."""
+    assert origin_from_provider(Provider.GEMINI) is Origin.AISTUDIO_DRIVE
+    assert origin_from_provider(Provider.DRIVE) is Origin.AISTUDIO_DRIVE
+
+
+def test_gemini_cli_origin_is_distinct_from_aistudio() -> None:
+    """The Gemini CLI session origin stays distinct from AI-Studio/Drive exports."""
+    assert origin_from_provider(Provider.GEMINI_CLI) is Origin.GEMINI_CLI_SESSION
+    assert origin_from_provider(Provider.GEMINI_CLI) is not origin_from_provider(Provider.GEMINI)
+
+
+def test_lab_of_origin_is_total() -> None:
+    """Every Origin has a derived lab."""
+    for origin in Origin:
+        assert lab_of_origin(origin), f"Origin {origin!r} has no lab"
+
+
+def test_lab_derivation_agrees_with_source_attribution() -> None:
+    """lab_of_origin(origin_from_provider(p)) must equal the provider's Source lab.
+
+    This is the anti-drift contract: the derived origin→lab map cannot diverge
+    from the canonical Source.originating_lab attribution.
+    """
+    for provider in Provider:
+        derived = lab_of_origin(origin_from_provider(provider))
+        assert derived == provider_to_source(provider).originating_lab

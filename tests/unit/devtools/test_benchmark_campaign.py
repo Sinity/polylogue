@@ -200,8 +200,8 @@ def test_campaign_result_round_trips_path_targets_from_artifact(tmp_path: Path) 
         worst_regression_pct=None,
         origin="generated.search-filters",
         path_targets=["search-filter-loop"],
-        artifact_targets=["conversation_query_results"],
-        operation_targets=["query-conversations", "benchmark.query.search-filters"],
+        artifact_targets=["session_query_results"],
+        operation_targets=["query-sessions", "benchmark.query.search-filters"],
         tags=["benchmark", "search"],
     )
     artifact = tmp_path / "artifact.json"
@@ -215,24 +215,24 @@ def test_campaign_result_round_trips_path_targets_from_artifact(tmp_path: Path) 
 
 def test_benchmark_entry_exposes_tests_from_execution() -> None:
     scenario = BenchmarkCampaignEntry(
-        name="action-events",
-        description="action-event repair benchmark",
-        execution=pytest_execution("tests/benchmarks/test_action_events.py"),
+        name="pipeline",
+        description="pipeline helper benchmark",
+        execution=pytest_execution("tests/benchmarks/test_pipeline.py"),
         assertion=AssertionSpec(benchmark_warn_pct=10.0, benchmark_fail_pct=20.0),
-        notes=("Tracks action-event repair throughput.",),
-        origin="generated.action-events",
-        artifact_targets=("action_event_rows", "action_event_fts"),
-        operation_targets=("benchmark.repair.action-events",),
-        tags=("benchmark", "action-events"),
+        notes=("Tracks pipeline helper throughput.",),
+        origin="generated.pipeline",
+        artifact_targets=("index_state", "pipeline_helpers"),
+        operation_targets=("benchmark.pipeline.index-and-helpers",),
+        tags=("benchmark", "pipeline"),
     )
 
-    assert scenario.tests == ("tests/benchmarks/test_action_events.py",)
+    assert scenario.tests == ("tests/benchmarks/test_pipeline.py",)
     assert scenario.warn_pct == 10.0
     assert scenario.fail_pct == 20.0
-    assert scenario.origin == "generated.action-events"
-    assert scenario.artifact_targets == ("action_event_rows", "action_event_fts")
-    assert scenario.operation_targets == ("benchmark.repair.action-events",)
-    assert scenario.tags == ("benchmark", "action-events")
+    assert scenario.origin == "generated.pipeline"
+    assert scenario.artifact_targets == ("index_state", "pipeline_helpers")
+    assert scenario.operation_targets == ("benchmark.pipeline.index-and-helpers",)
+    assert scenario.tags == ("benchmark", "pipeline")
 
 
 def test_compile_benchmark_campaigns_indexes_by_name() -> None:

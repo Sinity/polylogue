@@ -1,8 +1,8 @@
-Usage: polylogue diagnostics pace [OPTIONS] [CONVERSATION_ID]
+Usage: polylogue diagnostics pace [OPTIONS] [SESSION_ID]
 
-  Show inter-turn gap analysis for one or more conversations.
+  Show inter-turn gap analysis for one or more sessions.
 
 Options:
-  -n, --limit INTEGER  Number of recent conversations to analyze
-  --threshold INTEGER  Gap threshold in seconds for classification
-  -h, --help           Show this message and exit.
+  -l, -n, --limit INTEGER  Number of recent sessions to analyze
+  --threshold INTEGER      Gap threshold in seconds for classification
+  -h, --help               Show this message and exit.

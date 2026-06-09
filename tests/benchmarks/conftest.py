@@ -13,7 +13,6 @@ Usage:
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import random
@@ -23,10 +22,10 @@ from pathlib import Path
 import pytest
 
 from polylogue.storage.index import rebuild_index
-from polylogue.storage.runtime import ContentBlockRecord, ConversationRecord, MessageRecord
+from polylogue.storage.runtime import ContentBlockRecord, MessageRecord, SessionRecord
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import open_connection
-from tests.infra.storage_records import make_content_block, make_conversation, make_message
+from tests.infra.storage_records import make_content_block, make_message, make_session, store_records
 
 # ---------------------------------------------------------------------------
 # Real archive distribution (from actual data analysis):
@@ -45,14 +44,14 @@ PROVIDERS = ["chatgpt", "claude-ai", "claude-code", "codex", "gemini"]
 PROVIDER_WEIGHTS = [0.02, 0.01, 0.80, 0.15, 0.02]
 
 # Message count ranges matching real distribution
-_CONVERSATION_PROFILES = [
+_SESSION_PROFILES = [
     # (message_range, proportion)
     (range(2, 11), 0.49),
     (range(11, 51), 0.32),
     (range(51, 201), 0.08),
     (range(201, 501), 0.05),  # cap at 500 for benchmarks (real goes to 1000)
     (range(501, 2001), 0.04),  # cap at 2000 (real goes to 5000)
-    (range(2001, 5001), 0.02),  # small fraction of large conversations
+    (range(2001, 5001), 0.02),  # small fraction of large sessions
 ]
 
 # Realistic tool names and content
@@ -90,7 +89,7 @@ def _pick_message_count(rng: random.Random) -> int:
     """Pick a message count matching the real archive distribution."""
     r = rng.random()
     cumulative = 0.0
-    for msg_range, proportion in _CONVERSATION_PROFILES:
+    for msg_range, proportion in _SESSION_PROFILES:
         cumulative += proportion
         if r <= cumulative:
             return rng.choice(msg_range)
@@ -182,7 +181,7 @@ def _make_content_block(rng: random.Random, msg_id: str, conv_id: str, block_ind
         if rng.random() < 0.15:
             return make_content_block(
                 message_id=msg_id,
-                conversation_id=conv_id,
+                session_id=conv_id,
                 block_index=block_index,
                 block_type="thinking",
                 text=_generate_realistic_text(rng, "assistant", block_index)[:200],
@@ -192,7 +191,7 @@ def _make_content_block(rng: random.Random, msg_id: str, conv_id: str, block_ind
     tool_name = rng.choice(_TOOL_NAMES)
     return make_content_block(
         message_id=msg_id,
-        conversation_id=conv_id,
+        session_id=conv_id,
         block_index=block_index,
         block_type="tool_use",
         tool_name=tool_name,
@@ -203,18 +202,19 @@ def _make_content_block(rng: random.Random, msg_id: str, conv_id: str, block_ind
     )
 
 
-async def _seed_realistic_db(db_path: Path, target_messages: int, seed: int = 42) -> dict[str, int]:
+def _seed_realistic_db(db_path: Path, target_messages: int, seed: int = 42) -> dict[str, int]:
     """Seed benchmark DB with realistic distribution data.
 
     Returns stats dict for verification.
     """
     rng = random.Random(seed)
-    backend = SQLiteBackend(db_path=db_path)
+    # Ensure the split archive file set exists before the writer touches it.
+    SQLiteBackend(db_path=db_path)
 
-    conv_records: list[ConversationRecord] = []
-    all_msgs: list[MessageRecord] = []
-    all_blocks: list[ContentBlockRecord] = []
+    conv_records: list[SessionRecord] = []
+    msgs_by_conv: dict[str, list[MessageRecord]] = defaultdict(list)
     total_msgs = 0
+    total_blocks = 0
 
     conv_index = 0
     while total_msgs < target_messages:
@@ -226,10 +226,10 @@ async def _seed_realistic_db(db_path: Path, target_messages: int, seed: int = 42
 
         conv_id = f"bench-conv-{conv_index:05d}"
         conv_records.append(
-            make_conversation(
-                conversation_id=conv_id,
+            make_session(
+                session_id=conv_id,
                 source_name=provider,
-                provider_conversation_id=f"prov-{conv_index:05d}",
+                provider_session_id=conv_id,
                 title=f"Session {conv_index}: {_generate_realistic_text(rng, 'user', 0)[:60]}",
                 created_at=f"2025-{rng.randint(1, 12):02d}-{rng.randint(1, 28):02d}T{rng.randint(0, 23):02d}:00:00Z",
                 updated_at=f"2025-{rng.randint(1, 12):02d}-{rng.randint(1, 28):02d}T{rng.randint(0, 23):02d}:00:00Z",
@@ -241,67 +241,53 @@ async def _seed_realistic_db(db_path: Path, target_messages: int, seed: int = 42
             role = "user" if j % 2 == 0 else "assistant"
             msg_id = f"{conv_id}-m{j}"
             text = _generate_realistic_text(rng, role, j)
-            has_tool = 0
-            has_think = 0
 
-            # Generate content blocks for assistant messages
+            # Generate content blocks for assistant messages. Blocks are folded
+            # into the message so the production writer derives has_tool_use /
+            # has_thinking and the per-session stat columns in one pass.
+            blocks: list[ContentBlockRecord] = []
             if role == "assistant" and rng.random() < 0.67:
                 block_count = rng.randint(1, 4)
                 for bi in range(block_count):
                     block = _make_content_block(rng, msg_id, conv_id, bi)
                     if block is not None:
-                        all_blocks.append(block)
-                        if block.type == "tool_use":
-                            has_tool = 1
-                        elif block.type == "thinking":
-                            has_think = 1
+                        blocks.append(block)
+            total_blocks += len(blocks)
 
-            all_msgs.append(
+            msgs_by_conv[conv_id].append(
                 make_message(
                     message_id=msg_id,
-                    conversation_id=conv_id,
+                    session_id=conv_id,
                     role=role,
                     text=text,
                     timestamp=f"2025-01-01T{(j * 3) % 24:02d}:{(j * 7) % 60:02d}:00Z",
                     content_hash=_make_content_hash(f"msg-{conv_index}-{j}"),
                     source_name=provider,
                     word_count=len(text.split()),
-                    has_tool_use=has_tool,
-                    has_thinking=has_think,
+                    content_blocks=blocks,
                 )
             )
             total_msgs += 1
 
         conv_index += 1
 
-    # Populate DB
-    msgs_by_conv: dict[str, list[MessageRecord]] = defaultdict(list)
-    for msg in all_msgs:
-        msgs_by_conv[msg.conversation_id].append(msg)
-
-    provider_by_cid = {str(r.conversation_id): r.source_name for r in conv_records}
-
-    async with backend.bulk_connection():
-        for i, record in enumerate(conv_records, start=1):
-            await backend.save_conversation_record(record)
-            if i % 500 == 0:
-                await backend.bulk_flush()
-
-        await backend.save_messages(all_msgs)
-        await backend.save_content_blocks(all_blocks)
-
-        for i, (cid, msgs) in enumerate(msgs_by_conv.items(), start=1):
-            await backend.upsert_conversation_stats(cid, provider_by_cid[cid], msgs)
-            if i % 500 == 0:
-                await backend.bulk_flush()
-
-    with open_connection(db_path) as conn:
+    # Populate the archive through the single production writer, reusing one
+    # connection across all sessions for bulk-seeding throughput.
+    index_db_path = db_path if db_path.name == "index.db" else db_path.parent / "index.db"
+    with open_connection(index_db_path) as conn:
+        for record in conv_records:
+            store_records(
+                session=record,
+                messages=msgs_by_conv[str(record.session_id)],
+                attachments=[],
+                conn=conn,
+            )
         rebuild_index(conn)
 
     return {
-        "conversations": len(conv_records),
+        "sessions": len(conv_records),
         "messages": total_msgs,
-        "content_blocks": len(all_blocks),
+        "content_blocks": total_blocks,
     }
 
 
@@ -314,7 +300,7 @@ async def _seed_realistic_db(db_path: Path, target_messages: int, seed: int = 42
 def bench_db_1k(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """~1K messages: matches real distribution (many small, few large convs)."""
     db_path = tmp_path_factory.mktemp("bench") / "bench_1k.db"
-    stats = asyncio.run(_seed_realistic_db(db_path, target_messages=1000))
+    stats = _seed_realistic_db(db_path, target_messages=1000)
     print(f"\nbench_db_1k: {stats}")
     return db_path
 
@@ -323,7 +309,7 @@ def bench_db_1k(tmp_path_factory: pytest.TempPathFactory) -> Path:
 def bench_db_5k(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """~5K messages: medium-scale with realistic distribution."""
     db_path = tmp_path_factory.mktemp("bench") / "bench_5k.db"
-    stats = asyncio.run(_seed_realistic_db(db_path, target_messages=5000))
+    stats = _seed_realistic_db(db_path, target_messages=5000)
     print(f"\nbench_db_5k: {stats}")
     return db_path
 
@@ -332,7 +318,7 @@ def bench_db_5k(tmp_path_factory: pytest.TempPathFactory) -> Path:
 def bench_db_10k(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """~10K messages: large-scale with realistic distribution."""
     db_path = tmp_path_factory.mktemp("bench") / "bench_10k.db"
-    stats = asyncio.run(_seed_realistic_db(db_path, target_messages=10000))
+    stats = _seed_realistic_db(db_path, target_messages=10000)
     print(f"\nbench_db_10k: {stats}")
     return db_path
 
@@ -341,6 +327,6 @@ def bench_db_10k(tmp_path_factory: pytest.TempPathFactory) -> Path:
 def bench_db_50k(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """~50K messages: stress-scale with realistic distribution."""
     db_path = tmp_path_factory.mktemp("bench") / "bench_50k.db"
-    stats = asyncio.run(_seed_realistic_db(db_path, target_messages=50000))
+    stats = _seed_realistic_db(db_path, target_messages=50000)
     print(f"\nbench_db_50k: {stats}")
     return db_path

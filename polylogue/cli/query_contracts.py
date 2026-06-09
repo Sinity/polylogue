@@ -10,16 +10,16 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypeAlias
 
 from polylogue.archive.message.roles import MessageRoleFilter, Role, normalize_message_roles
-from polylogue.archive.query.spec import ConversationQuerySpec
+from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.errors import PolylogueError
 
 if TYPE_CHECKING:
-    from polylogue.archive.models import Conversation, ConversationSummary
+    from polylogue.archive.models import Session, SessionSummary
 
 QueryParams: TypeAlias = dict[str, object]
-QueryParamSource: TypeAlias = Mapping[str, object] | ConversationQuerySpec
-QueryResult: TypeAlias = "Conversation | ConversationSummary"
+QueryParamSource: TypeAlias = Mapping[str, object] | SessionQuerySpec
+QueryResult: TypeAlias = "Session | SessionSummary"
 
 QueryOutputFormat: TypeAlias = str
 QueryTransform: TypeAlias = str | None
@@ -37,11 +37,11 @@ def coerce_query_terms(value: object) -> tuple[str, ...]:
     return (str(value),)
 
 
-def coerce_query_spec(params: QueryParamSource) -> ConversationQuerySpec:
+def coerce_query_spec(params: QueryParamSource) -> SessionQuerySpec:
     """Build a query spec from raw params or pass through an existing one."""
-    if isinstance(params, ConversationQuerySpec):
+    if isinstance(params, SessionQuerySpec):
         return params
-    return ConversationQuerySpec.from_params(params)
+    return SessionQuerySpec.from_params(params)
 
 
 def describe_query_filters(params: QueryParamSource) -> list[str]:
@@ -191,7 +191,7 @@ class QueryRoute(str, Enum):
 class QueryExecutionPlan:
     """Fully typed CLI execution plan for a query request."""
 
-    selection: ConversationQuerySpec
+    selection: SessionQuerySpec
     action: QueryAction
     output: QueryOutputSpec
     mutation: QueryMutationSpec
@@ -199,7 +199,7 @@ class QueryExecutionPlan:
 
     @classmethod
     def from_params(cls, params: Mapping[str, object]) -> QueryExecutionPlan:
-        selection = ConversationQuerySpec.from_params(dict(params))
+        selection = SessionQuerySpec.from_params(dict(params))
         output = QueryOutputSpec.from_params(params)
         mutation = QueryMutationSpec.from_params(params)
         stats_dimension = str(params["stats_by"]) if params.get("stats_by") else None
@@ -244,7 +244,7 @@ class QueryExecutionPlan:
         )
 
     def prefers_summary_stats(self) -> bool:
-        return self.action == QueryAction.STATS_BY and self.stats_dimension in {"provider", "month", "year", "day"}
+        return self.action == QueryAction.STATS_BY and self.stats_dimension in {"origin", "month", "year", "day"}
 
     def prefers_summary_mutation(self) -> bool:
         return self.action in {QueryAction.MODIFY, QueryAction.DELETE}
@@ -286,8 +286,8 @@ def result_id(result: QueryResult) -> str:
     return str(result.id)
 
 
-def result_provider(result: QueryResult) -> str:
-    return str(result.provider)
+def result_origin(result: QueryResult) -> str:
+    return str(result.origin)
 
 
 def result_title(result: QueryResult) -> str:
@@ -351,6 +351,6 @@ __all__ = [
     "resolve_query_route",
     "result_date",
     "result_id",
-    "result_provider",
+    "result_origin",
     "result_title",
 ]

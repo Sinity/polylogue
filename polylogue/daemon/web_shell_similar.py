@@ -5,7 +5,7 @@ single-page shell stays under its file-size budget. The fragment is
 interpolated into ``WEB_SHELL_HTML`` at module import time. It owns:
 
 - the inspector "Similar" tab rendering,
-- the ``/api/conversations/{id}/similar`` fetch call,
+- the ``/api/sessions/{id}/similar`` fetch call,
 - the four explicit visual states the endpoint contract defines
   (``ready`` / ``disabled`` / ``unavailable`` / ``not_embedded``).
 
@@ -22,7 +22,7 @@ from __future__ import annotations
 SIMILAR_JS = r"""
 function loadSimilarPanel(id) {
   state.similarPanels = state.similarPanels || {};
-  fetchJSON('/api/conversations/' + encodeURIComponent(id) + '/similar?limit=10')
+  fetchJSON('/api/sessions/' + encodeURIComponent(id) + '/similar?limit=10')
     .then(function(data) {
       state.similarPanels[id] = data;
       if (state.selected && state.selected.id === id && state.inspectorTab === 'similar') {
@@ -47,18 +47,18 @@ function similarConfidenceChip(tag) {
 function renderSimilarReadyResults(data) {
   if (!data.results || !data.results.length) {
     return '<div class="inspector-empty" style="padding-top:8px">'
-      + 'No similar conversations found yet. Embedding coverage may still be growing.'
+      + 'No similar sessions found yet. Embedding coverage may still be growing.'
       + '</div>';
   }
   var html = '<div class="inspector-section"><h4>Top matches</h4>';
   data.results.forEach(function(hit) {
-    var title = hit.title || hit.conversation_id;
+    var title = hit.title || hit.session_id;
     var scoreStr = (hit.score != null ? hit.score.toFixed(3) : '0.000');
     var matched = hit.matched_message_count || 0;
     var providerStr = hit.source_name ? esc(hit.source_name) : '\u2014';
     html += '<div class="similar-hit" style="padding:6px 0;border-bottom:1px solid var(--border)">'
       + '<div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline">'
-      +   '<a href="#" onclick="openSimilarHit(\'' + escAttr(hit.conversation_id) + '\');return false;" '
+      +   '<a href="#" onclick="openSimilarHit(\'' + escAttr(hit.session_id) + '\');return false;" '
       +     'style="color:var(--accent);font-size:var(--small);text-decoration:none;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
       +     esc(String(title))
       +   '</a>'
@@ -72,7 +72,7 @@ function renderSimilarReadyResults(data) {
   });
   html += '</div>';
   html += '<div style="font-size:10px;color:var(--text-dim);margin-top:8px">'
-    + 'Source conversation has ' + (data.source_embedded_messages || 0)
+    + 'Source session has ' + (data.source_embedded_messages || 0)
     + ' embedded message' + ((data.source_embedded_messages || 0) === 1 ? '' : 's')
     + '.</div>';
   return html;
@@ -110,7 +110,7 @@ function renderSimilarUnavailableState(data) {
 function renderSimilarNotEmbeddedState() {
   return '<div class="inspector-section"><h4>Not yet embedded</h4>'
     + '<div style="font-size:var(--small);color:var(--text-muted);line-height:1.5">'
-    +   'This conversation has no stored message vectors. The daemon will populate them when the embedding stage catches up.'
+    +   'This session has no stored message vectors. The daemon will populate them when the embedding stage catches up.'
     + '</div>'
     + '</div>';
 }
@@ -119,12 +119,12 @@ function renderInspectorSimilar(el, c) {
   state.similarPanels = state.similarPanels || {};
   var data = state.similarPanels[c.id];
   if (data === undefined) {
-    el.innerHTML = '<div class="inspector-empty">Loading similar conversations...</div>';
+    el.innerHTML = '<div class="inspector-empty">Loading similar sessions...</div>';
     loadSimilarPanel(c.id);
     return;
   }
   if (data && data.error) {
-    el.innerHTML = '<div class="inspector-empty">Similar conversations unavailable</div>';
+    el.innerHTML = '<div class="inspector-empty">Similar sessions unavailable</div>';
     return;
   }
   var status = data.status || 'unknown';
@@ -143,17 +143,17 @@ function renderInspectorSimilar(el, c) {
   el.innerHTML = html;
 }
 
-function openSimilarHit(conversationId) {
-  // Replace the selected conversation with the clicked similar hit by
-  // navigating through the existing single-conversation route. The
+function openSimilarHit(sessionId) {
+  // Replace the selected session with the clicked similar hit by
+  // navigating through the existing single-session route. The
   // inspector re-renders against the new selection and re-issues a
   // similarity lookup if the operator opens this tab again.
-  if (!conversationId) return;
+  if (!sessionId) return;
   if (typeof loadWorkspaceRoute === 'function') {
-    loadWorkspaceRoute({mode: 'single', id: conversationId}, true).catch(function() {});
+    loadWorkspaceRoute({mode: 'single', id: sessionId}, true).catch(function() {});
     return;
   }
-  window.location.hash = '#/c/' + encodeURIComponent(conversationId);
+  window.location.hash = '#/c/' + encodeURIComponent(sessionId);
 }
 """
 

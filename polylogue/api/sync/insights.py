@@ -22,8 +22,8 @@ from polylogue.insights.archive import (
     SessionTagRollupQuery,
     SessionWorkEventInsight,
     SessionWorkEventInsightQuery,
-    WorkThreadInsight,
-    WorkThreadInsightQuery,
+    ThreadInsight,
+    ThreadInsightQuery,
 )
 from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery
 from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
@@ -43,11 +43,11 @@ class SyncInsightQueriesMixin:
 
     def get_session_profile_insight(
         self,
-        conversation_id: str,
+        session_id: str,
         *,
         tier: str = "merged",
     ) -> SessionProfileInsight | None:
-        return run_coroutine_sync(self._facade.get_session_profile_insight(conversation_id, tier=tier))
+        return run_coroutine_sync(self._facade.get_session_profile_insight(session_id, tier=tier))
 
     def list_session_profile_insights(
         self,
@@ -61,8 +61,8 @@ class SyncInsightQueriesMixin:
     ) -> list[SessionTagRollupInsight]:
         return run_coroutine_sync(self._facade.list_session_tag_rollup_insights(query))
 
-    def get_session_work_event_insights(self, conversation_id: str) -> list[SessionWorkEventInsight]:
-        return run_coroutine_sync(self._facade.get_session_work_event_insights(conversation_id))
+    def get_session_work_event_insights(self, session_id: str) -> list[SessionWorkEventInsight]:
+        return run_coroutine_sync(self._facade.get_session_work_event_insights(session_id))
 
     def list_session_work_event_insights(
         self,
@@ -70,8 +70,8 @@ class SyncInsightQueriesMixin:
     ) -> list[SessionWorkEventInsight]:
         return run_coroutine_sync(self._facade.list_session_work_event_insights(query))
 
-    def get_session_phase_insights(self, conversation_id: str) -> list[SessionPhaseInsight]:
-        return run_coroutine_sync(self._facade.get_session_phase_insights(conversation_id))
+    def get_session_phase_insights(self, session_id: str) -> list[SessionPhaseInsight]:
+        return run_coroutine_sync(self._facade.get_session_phase_insights(session_id))
 
     def list_session_phase_insights(
         self,
@@ -79,14 +79,14 @@ class SyncInsightQueriesMixin:
     ) -> list[SessionPhaseInsight]:
         return run_coroutine_sync(self._facade.list_session_phase_insights(query))
 
-    def get_work_thread_insight(self, thread_id: str) -> WorkThreadInsight | None:
-        return run_coroutine_sync(self._facade.get_work_thread_insight(thread_id))
+    def get_thread_insight(self, thread_id: str) -> ThreadInsight | None:
+        return run_coroutine_sync(self._facade.get_thread_insight(thread_id))
 
-    def list_work_thread_insights(
+    def list_thread_insights(
         self,
-        query: WorkThreadInsightQuery | None = None,
-    ) -> list[WorkThreadInsight]:
-        return run_coroutine_sync(self._facade.list_work_thread_insights(query))
+        query: ThreadInsightQuery | None = None,
+    ) -> list[ThreadInsight]:
+        return run_coroutine_sync(self._facade.list_thread_insights(query))
 
     def list_archive_coverage_insights(
         self,

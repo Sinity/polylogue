@@ -1,7 +1,7 @@
 """Tiered scale tests demonstrating the small/medium/large fixture contract.
 
 Each test exercises a measured surface (FTS5 search, hybrid RRF search,
-list_conversations) against the corresponding scale fixture and asserts
+list_sessions) against the corresponding scale fixture and asserts
 basic shape so a regression in the seeder or query path surfaces even
 when ``--benchmark-disable`` is in effect.
 
@@ -52,7 +52,7 @@ def test_scale_small_fts_search_returns_results(tier_small_db: Path) -> None:
 
 
 @pytest.mark.scale_small
-def test_scale_small_list_conversations(tier_small_db: Path) -> None:
+def test_scale_small_list_sessions(tier_small_db: Path) -> None:
     """``list_summaries`` returns up to ``limit`` entries from the small tier."""
     rows = _list_query(tier_small_db, limit=10)
     assert 0 < rows <= 10
@@ -70,7 +70,7 @@ def test_scale_medium_fts_search_returns_results(tier_medium_db: Path) -> None:
 
 
 @pytest.mark.scale_medium
-def test_scale_medium_list_conversations(tier_medium_db: Path) -> None:
+def test_scale_medium_list_sessions(tier_medium_db: Path) -> None:
     rows = _list_query(tier_medium_db, limit=20)
     assert 0 < rows <= 20
 
@@ -93,6 +93,6 @@ def test_scale_large_fts_search_returns_results(tier_large_db: Path) -> None:
 
 
 @pytest.mark.scale_large
-def test_scale_large_list_conversations(tier_large_db: Path) -> None:
+def test_scale_large_list_sessions(tier_large_db: Path) -> None:
     rows = _list_query(tier_large_db, limit=50)
     assert 0 < rows <= 50

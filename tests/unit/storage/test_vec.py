@@ -15,7 +15,7 @@ import pytest
 from polylogue.archive.message.roles import Role
 from polylogue.storage.runtime import MessageRecord
 from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
-from polylogue.types import ContentHash, ConversationId, MessageId
+from polylogue.types import ContentHash, MessageId, SessionId
 
 Embedding: TypeAlias = list[float]
 
@@ -33,7 +33,7 @@ class MutableSqliteVecProvider(SqliteVecProvider):
 
 def make_message(
     message_id: str = "msg-1",
-    conversation_id: str = "conv-1",
+    session_id: str = "conv-1",
     role: str = "user",
     text: str = "This is a sufficiently long test message for embedding.",
     content_hash: str = "hash-1",
@@ -41,7 +41,7 @@ def make_message(
 ) -> MessageRecord:
     return MessageRecord(
         message_id=MessageId(message_id),
-        conversation_id=ConversationId(conversation_id),
+        session_id=SessionId(session_id),
         role=Role.normalize(role),
         text=text,
         content_hash=ContentHash(content_hash),
@@ -281,7 +281,7 @@ def test_upsert_persistence_contract(
     def capture_execute(sql: str, params: tuple[object, ...] | None = None) -> MagicMock:
         insert_calls.append((sql, params))
         cursor = MagicMock()
-        if "SELECT source_name FROM conversations" in sql:
+        if "SELECT source_name FROM sessions" in sql:
             cursor.fetchone.return_value = (source_name,) if source_name is not None else None
         return cursor
 
@@ -398,7 +398,7 @@ def test_get_embedding_stats_contract(
         del params
         if operational_error:
             raise sqlite3.OperationalError("Table not found")
-        if "sqlite_master" in sql and "conversations" in sql:
+        if "sqlite_master" in sql and "sessions" in sql:
             return MagicMock(fetchone=MagicMock(return_value=None))
         if "message_embeddings" in sql:
             return MagicMock(fetchone=MagicMock(return_value=[msg_count]))
@@ -412,7 +412,7 @@ def test_get_embedding_stats_contract(
 
     stats = mock_provider.get_embedding_stats()
 
-    assert stats == {"embedded_messages": msg_count, "pending_conversations": pending}
+    assert stats == {"embedded_messages": msg_count, "pending_sessions": pending}
     assert connection.close.called
 
 

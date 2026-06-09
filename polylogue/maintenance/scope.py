@@ -8,13 +8,13 @@ scope dimensions.
 
 The filter dimensions match the ones #996 AC #1 names explicitly:
 
-* ``conversation_ids`` — restrict to a specific set of session ids;
+* ``session_ids`` — restrict to a specific set of session ids;
 * ``provider`` — restrict to one provider name (e.g. ``"claude"``);
 * ``source_family`` — restrict to one source family (e.g.
   ``"claude-code-session"``);
 * ``source_root`` — restrict to artifacts acquired under one runtime
   root (e.g. ``~/.claude/projects``);
-* ``raw_artifact_id`` — restrict to one raw-conversation id;
+* ``raw_artifact_id`` — restrict to one raw-session id;
 * ``time_range`` — inclusive ``(since, until)`` ISO-8601 window;
 * ``failure_kind`` — restrict to attempts that failed with one kind;
 * ``parser_version`` — restrict to one parser/materializer version.
@@ -58,7 +58,7 @@ class MaintenanceScopeFilter(SurfacePayloadModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    conversation_ids: tuple[str, ...] | None = None
+    session_ids: tuple[str, ...] | None = None
     provider: str | None = None
     source_family: str | None = None
     source_root: Path | None = None
@@ -67,9 +67,9 @@ class MaintenanceScopeFilter(SurfacePayloadModel):
     failure_kind: str | None = None
     parser_version: str | None = None
 
-    @field_validator("conversation_ids", mode="before")
+    @field_validator("session_ids", mode="before")
     @classmethod
-    def _coerce_conversation_ids(cls, value: Any) -> Any:
+    def _coerce_session_ids(cls, value: Any) -> Any:
         if value is None:
             return None
         if isinstance(value, str):
@@ -100,7 +100,7 @@ class MaintenanceScopeFilter(SurfacePayloadModel):
     def is_empty(self) -> bool:
         """True when no scope dimension is set (full-scope request)."""
         return (
-            self.conversation_ids is None
+            self.session_ids is None
             and self.provider is None
             and self.source_family is None
             and self.source_root is None

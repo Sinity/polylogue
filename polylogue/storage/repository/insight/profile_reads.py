@@ -22,11 +22,11 @@ class RepositoryInsightProfileReadMixin:
     if TYPE_CHECKING:
         queries: SQLiteQueryStore
 
-    async def get_session_profile_record(self, conversation_id: str) -> SessionProfileRecord | None:
-        return await self.queries.get_session_profile(conversation_id)
+    async def get_session_profile_record(self, session_id: str) -> SessionProfileRecord | None:
+        return await self.queries.get_session_profile(session_id)
 
-    async def get_session_latency_profile_record(self, conversation_id: str) -> SessionLatencyProfileRecord | None:
-        return await self.queries.get_session_latency_profile(conversation_id)
+    async def get_session_latency_profile_record(self, session_id: str) -> SessionLatencyProfileRecord | None:
+        return await self.queries.get_session_latency_profile(session_id)
 
     async def find_stuck_session_latency_profile_records(
         self,
@@ -51,21 +51,21 @@ class RepositoryInsightProfileReadMixin:
             limit=limit,
         )
 
-    async def get_session_profile(self, conversation_id: str) -> SessionProfile | None:
-        record = await self.get_session_profile_record(conversation_id)
+    async def get_session_profile(self, session_id: str) -> SessionProfile | None:
+        record = await self.get_session_profile_record(session_id)
         return hydrate_optional(record, hydrate_session_profile)
 
     async def get_session_profile_records_batch(
         self,
-        conversation_ids: list[str],
+        session_ids: list[str],
     ) -> dict[str, SessionProfileRecord]:
-        return await self.queries.get_session_profiles_batch(conversation_ids)
+        return await self.queries.get_session_profiles_batch(session_ids)
 
     async def get_session_profiles_batch(
         self,
-        conversation_ids: list[str],
+        session_ids: list[str],
     ) -> dict[str, SessionProfile]:
-        records = await self.get_session_profile_records_batch(conversation_ids)
+        records = await self.get_session_profile_records_batch(session_ids)
         return hydrate_mapping(records, hydrate_session_profile)
 
     async def _list_session_profile_records_query(
@@ -157,8 +157,8 @@ class RepositoryInsightProfileReadMixin:
             )
         )
 
-    async def get_session_enrichment_record(self, conversation_id: str) -> SessionProfileRecord | None:
-        return await self.queries.get_session_profile(conversation_id)
+    async def get_session_enrichment_record(self, session_id: str) -> SessionProfileRecord | None:
+        return await self.queries.get_session_profile(session_id)
 
     async def list_session_enrichment_records(
         self,

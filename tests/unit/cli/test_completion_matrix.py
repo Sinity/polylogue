@@ -47,7 +47,7 @@ STATIC_COMPLETERS: tuple[tuple[str, list[str]], ...] = (
 )
 
 DYNAMIC_COMPLETERS: tuple[tuple[str, list[str]], ...] = (
-    ("conversation_id", ["--id"]),
+    ("session_id", ["--id"]),
     ("tag", ["--tag"]),
     ("repo", ["--repo"]),
     ("cwd_prefix", ["--cwd-prefix"]),
@@ -150,24 +150,22 @@ def test_dynamic_completers_seeded_archive_per_shell(
     """With a seeded archive, every dynamic completer returns at least one item on every shell.
 
     This is the core coverage claim of #1271 — providers/source-families,
-    conversation IDs, tags, repos, actions, tools all complete in all
+    session IDs, tags, repos, actions, tools all complete in all
     three shells. Repos/tags/cwd may legitimately yield zero from the
-    default synthetic corpus, so we only require conversation_id and
+    default synthetic corpus, so we only require session_id and
     tool (which are always populated) to be non-empty, while still
     asserting the call itself succeeds for all completers.
     """
-    seeded_db = corpus_seeded_db(providers=("chatgpt", "claude-ai"), count=3, seed=1271)
-    # The completer resolves db via paths.db_path() == XDG_DATA_HOME/polylogue/polylogue.db.
-    # Stage the seeded DB at that exact location for an isolated read.
-    fake_data_home = seeded_db.parent / "xdg-data"
-    (fake_data_home / "polylogue").mkdir(parents=True)
-    (fake_data_home / "polylogue" / "polylogue.db").symlink_to(seeded_db)
-    monkeypatch.setenv("XDG_DATA_HOME", str(fake_data_home))
+    # ``corpus_seeded_db`` ingests through the archive pipeline and points
+    # ``POLYLOGUE_ARCHIVE_ROOT`` at the archive root that holds the seeded
+    # ``index.db`` — exactly the store ``active_index_db_path()`` resolves
+    # for the completers, so no extra staging is required.
+    corpus_seeded_db(providers=("chatgpt", "claude-ai"), count=3, seed=1271)
 
     items = _run_completion(shell, comp_cls, cwords)
     # The call must succeed for every completer.
     assert isinstance(items, list)
-    # Guarantee: completers whose values come from messages/conversations
+    # Guarantee: completers whose values come from messages/sessions
     # always have data in a seeded archive.
-    if label in {"conversation_id"}:
+    if label in {"session_id"}:
         assert items, f"{label} returned no items on seeded archive ({shell})"

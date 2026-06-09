@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from polylogue.paths import db_path as archive_db_path
+from polylogue.paths import db_path as index_db_path
 from polylogue.schemas.generation.models import GenerationResult, _ProviderBundle
 from polylogue.schemas.generation.provider_bundle import _build_provider_bundle
 from polylogue.schemas.generation.schema_builder import generate_schema_from_samples
@@ -35,10 +35,10 @@ def persist_generated_provider_bundle(output_dir: Path, provider: str, bundle: _
     )
     registry.save_cluster_manifest(bundle.manifest)
 
-    for legacy_name in (f"{provider}.schema.json.gz", f"{provider}.schema.json"):
-        legacy_path = output_dir / legacy_name
-        if legacy_path.exists():
-            legacy_path.unlink()
+    for old_name in (f"{provider}.schema.json.gz", f"{provider}.schema.json"):
+        old_path = output_dir / old_name
+        if old_path.exists():
+            old_path.unlink()
 
 
 def generate_provider_schema(
@@ -67,7 +67,7 @@ def generate_all_schemas(
 ) -> list[GenerationResult]:
     """Generate versioned schemas for all providers."""
     if db_path is None:
-        db_path = archive_db_path()
+        db_path = index_db_path()
     output_dir.mkdir(parents=True, exist_ok=True)
 
     provider_list = providers or list(PROVIDERS.keys())

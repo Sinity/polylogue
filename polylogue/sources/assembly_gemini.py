@@ -6,9 +6,10 @@ import re
 from pathlib import Path
 
 from polylogue.archive.message.roles import Role
+from polylogue.core.enums import TitleSource
 
 from .assembly import SidecarData
-from .parsers.base import ParsedAttachment, ParsedConversation, ParsedMessage
+from .parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
 
 _DISPLAY_LABEL_LIMIT = 96
 _ID_CHARS = re.compile(r"[A-Za-z0-9_.:-]+")
@@ -27,25 +28,21 @@ class GeminiAssemblySpec:
         del source_paths
         return {}
 
-    def enrich_conversation(
+    def enrich_session(
         self,
-        conv: ParsedConversation,
+        conv: ParsedSession,
         sidecar_data: SidecarData,
-    ) -> ParsedConversation:
-        """Add a display label for Gemini conversations whose imported title is weak."""
+    ) -> ParsedSession:
+        """Derive a stronger title for Gemini sessions whose imported title is weak."""
         del sidecar_data
-        if not _weak_title(conv.title, conv.provider_conversation_id):
+        if not _weak_title(conv.title, conv.provider_session_id):
             return conv
 
         label, source = _derive_display_label(conv.messages, conv.attachments)
         if label is None or source is None:
             return conv
 
-        provider_meta = dict(conv.provider_meta or {})
-        provider_meta["display_label"] = label
-        provider_meta["display_label_source"] = source
-        provider_meta.setdefault("display_label_reason", "weak-title")
-        return conv.model_copy(update={"provider_meta": provider_meta})
+        return conv.model_copy(update={"title": label, "title_source": TitleSource.HEURISTIC})
 
 
 def _compact_text(value: object) -> str | None:
@@ -74,11 +71,11 @@ def _looks_like_identifier(value: str) -> bool:
     return digit_count >= 4 or separator_count >= 2
 
 
-def _weak_title(title: str | None, provider_conversation_id: str) -> bool:
+def _weak_title(title: str | None, provider_session_id: str) -> bool:
     text = _compact_text(title)
     if text is None:
         return True
-    if text == provider_conversation_id or text == f"gemini:{provider_conversation_id}":
+    if text == provider_session_id or text == f"gemini:{provider_session_id}":
         return True
     return _looks_like_identifier(text)
 
@@ -98,11 +95,6 @@ def _first_attachment_name(attachments: list[ParsedAttachment]) -> str | None:
         text = _compact_text(attachment.name)
         if text:
             return text
-        if attachment.provider_meta:
-            for key in ("name", "title"):
-                text = _compact_text(attachment.provider_meta.get(key))
-                if text:
-                    return text
     return None
 
 

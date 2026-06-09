@@ -8,7 +8,7 @@ Pins:
 * the planner contract — :func:`preview_backfill` and
   :func:`execute_replay` accept the typed filter, surface it on the
   returned :class:`BackfillOperation.scope`, and shrink
-  ``affected_rows`` when ``conversation_ids`` narrows the scope;
+  ``affected_rows`` when ``session_ids`` narrows the scope;
 * cross-surface parity — CLI ``polylogue maintenance plan``, daemon
   ``POST /api/maintenance/plan``, and MCP ``maintenance_preview``
   all serialize an equivalent filter into the same envelope payload.
@@ -46,13 +46,13 @@ class TestMaintenanceScopeFilterShape:
     def test_default_filter_is_empty(self) -> None:
         f = MaintenanceScopeFilter()
         assert f.is_empty()
-        assert f.conversation_ids is None
+        assert f.session_ids is None
         assert f.provider is None
         assert f.source_root is None
         assert f.time_range is None
 
     def test_filter_is_frozen(self) -> None:
-        f = MaintenanceScopeFilter(provider="claude")
+        f = MaintenanceScopeFilter(provider="claude-code")
         with pytest.raises(ValidationError):
             f.provider = "chatgpt"
 
@@ -60,13 +60,13 @@ class TestMaintenanceScopeFilterShape:
         with pytest.raises(ValidationError):
             MaintenanceScopeFilter(unknown_dimension="boom")  # type: ignore[call-arg]
 
-    def test_conversation_ids_coerce_list_to_tuple(self) -> None:
-        f = MaintenanceScopeFilter(conversation_ids=["c1", "c2"])  # type: ignore[arg-type]
-        assert f.conversation_ids == ("c1", "c2")
+    def test_session_ids_coerce_list_to_tuple(self) -> None:
+        f = MaintenanceScopeFilter(session_ids=["c1", "c2"])  # type: ignore[arg-type]
+        assert f.session_ids == ("c1", "c2")
 
-    def test_conversation_ids_coerce_single_string(self) -> None:
-        f = MaintenanceScopeFilter(conversation_ids="c1")  # type: ignore[arg-type]
-        assert f.conversation_ids == ("c1",)
+    def test_session_ids_coerce_single_string(self) -> None:
+        f = MaintenanceScopeFilter(session_ids="c1")  # type: ignore[arg-type]
+        assert f.session_ids == ("c1",)
 
     def test_time_range_accepts_iso_strings(self) -> None:
         f = MaintenanceScopeFilter(time_range=("2026-01-01T00:00:00Z", "2026-02-01T00:00:00Z"))  # type: ignore[arg-type]
@@ -91,9 +91,9 @@ class TestMaintenanceScopeFilterRoundTrip:
         "filter_kwargs",
         [
             {},
-            {"conversation_ids": ("c1",)},
-            {"conversation_ids": ("c1", "c2", "c3")},
-            {"provider": "claude"},
+            {"session_ids": ("c1",)},
+            {"session_ids": ("c1", "c2", "c3")},
+            {"provider": "claude-code"},
             {"source_family": "claude-code-session"},
             {"source_root": Path("/data/claude")},
             {"raw_artifact_id": "raw-abc"},
@@ -101,8 +101,8 @@ class TestMaintenanceScopeFilterRoundTrip:
             {"failure_kind": "ValidationError"},
             {"parser_version": "v3"},
             {
-                "conversation_ids": ("c1",),
-                "provider": "claude",
+                "session_ids": ("c1",),
+                "provider": "claude-code",
                 "source_family": "claude-code-session",
                 "raw_artifact_id": "raw-1",
             },
@@ -113,7 +113,7 @@ class TestMaintenanceScopeFilterRoundTrip:
         payload = original.to_dict()
         # Payload must be a plain dict with every known dimension.
         assert isinstance(payload, dict)
-        assert "conversation_ids" in payload
+        assert "session_ids" in payload
         assert "time_range" in payload
         recovered = MaintenanceScopeFilter.from_dict(payload)
         assert recovered == original
@@ -125,9 +125,9 @@ class TestMaintenanceScopeFilterRoundTrip:
         assert MaintenanceScopeFilter.from_dict({}).is_empty()
 
     def test_from_dict_ignores_absent_dimensions(self) -> None:
-        f = MaintenanceScopeFilter.from_dict({"provider": "claude"})
-        assert f.provider == "claude"
-        assert f.conversation_ids is None
+        f = MaintenanceScopeFilter.from_dict({"provider": "claude-code"})
+        assert f.provider == "claude-code"
+        assert f.session_ids is None
 
 
 class TestPlannerHonorsFilter:
@@ -135,17 +135,17 @@ class TestPlannerHonorsFilter:
 
     def test_preview_attaches_filter_to_scope(self, tmp_path: Path) -> None:
         config = _make_config(tmp_path)
-        scope_filter = MaintenanceScopeFilter(conversation_ids=("c1", "c2"))
+        scope_filter = MaintenanceScopeFilter(session_ids=("c1", "c2"))
         op = preview_backfill(config, targets=("session_insights",), scope_filter=scope_filter)
         assert op.scope is not None
         assert op.scope.filter == scope_filter
 
-    def test_preview_narrows_affected_rows_for_conversation_ids(self, tmp_path: Path) -> None:
+    def test_preview_narrows_affected_rows_for_session_ids(self, tmp_path: Path) -> None:
         from polylogue.maintenance.models import DerivedModelStatus
 
         config = _make_config(tmp_path)
         # Patch the debt collector to advertise 1000 pending insights;
-        # a one-conversation filter must clamp that down to 1.
+        # a one-session filter must clamp that down to 1.
         fake_status = DerivedModelStatus(
             name="session_insights",
             ready=False,
@@ -170,13 +170,13 @@ class TestPlannerHonorsFilter:
             narrow = preview_backfill(
                 config,
                 targets=("session_insights",),
-                scope_filter=MaintenanceScopeFilter(conversation_ids=("only-one",)),
+                scope_filter=MaintenanceScopeFilter(session_ids=("only-one",)),
             )
 
         assert broad.affected_rows == 1000
         assert narrow.affected_rows == 1
         assert narrow.scope is not None
-        assert narrow.scope.filter.conversation_ids == ("only-one",)
+        assert narrow.scope.filter.session_ids == ("only-one",)
 
 
 class TestCrossSurfaceFilterParity:
@@ -185,8 +185,8 @@ class TestCrossSurfaceFilterParity:
     def test_filter_serializes_identically_across_surfaces(self, tmp_path: Path) -> None:
         operation = _example_operation_with_filter(
             MaintenanceScopeFilter(
-                conversation_ids=("c1", "c2"),
-                provider="claude",
+                session_ids=("c1", "c2"),
+                provider="claude-code",
                 source_family="claude-code-session",
             )
         )
@@ -208,8 +208,8 @@ class TestCrossSurfaceFilterParity:
         mcp_filter = mcp_payload["scope"]["filter"]
 
         assert cli_filter == daemon_filter == mcp_filter
-        assert cli_filter["conversation_ids"] == ["c1", "c2"]
-        assert cli_filter["provider"] == "claude"
+        assert cli_filter["session_ids"] == ["c1", "c2"]
+        assert cli_filter["provider"] == "claude-code"
         assert cli_filter["source_family"] == "claude-code-session"
 
     def test_daemon_http_parses_filter_body(self) -> None:
@@ -235,8 +235,8 @@ class TestCrossSurfaceFilterParity:
 
         body = {
             "targets": ["session_insights"],
-            "conversation_ids": ["c1", "c2"],
-            "provider": "claude",
+            "session_ids": ["c1", "c2"],
+            "provider": "claude-code",
             "source_family": "claude-code-session",
         }
         body_raw = json.dumps(body).encode("utf-8")
@@ -250,8 +250,8 @@ class TestCrossSurfaceFilterParity:
         ):
             handler._handle_maintenance_plan()
 
-        assert captured["filter"].conversation_ids == ("c1", "c2")
-        assert captured["filter"].provider == "claude"
+        assert captured["filter"].session_ids == ("c1", "c2")
+        assert captured["filter"].provider == "claude-code"
         assert captured["filter"].source_family == "claude-code-session"
 
 
@@ -303,12 +303,12 @@ def _capture_cli_preview(operation: BackfillOperation, tmp_path: Path) -> dict[s
                 "plan",
                 "--target",
                 "session_insights",
-                "--conversation-id",
+                "--session-id",
                 "c1",
-                "--conversation-id",
+                "--session-id",
                 "c2",
-                "--provider",
-                "claude",
+                "--origin",
+                "claude-code-session",
                 "--source-family",
                 "claude-code-session",
                 "--output-format",
@@ -331,8 +331,8 @@ def _capture_mcp_preview(operation: BackfillOperation) -> dict[str, Any]:
     with patch("polylogue.maintenance.planner.preview_backfill", return_value=operation):
         result = asyncio.run(
             fn(
-                conversation_ids=["c1", "c2"],
-                provider="claude",
+                session_ids=["c1", "c2"],
+                origin="claude-code-session",
                 source_family="claude-code-session",
             )
         )

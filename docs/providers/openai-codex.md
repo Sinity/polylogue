@@ -24,7 +24,7 @@ Codex supports three format generations (auto-detected):
 - Normalizes role across all formats via effective_role property
 - Extracts text content via text_content property
 - Captures git context and system instructions from session metadata
-- Builds conversation-level provider_meta with git/instructions
+- Builds session-level provider_meta with git/instructions
 
 ## Limitations
 

@@ -6,9 +6,9 @@ branch tracking, git context, and edge cases.
 
 from __future__ import annotations
 
-from polylogue.archive.conversation.branch_type import BranchType
 from polylogue.archive.message.types import MessageType
-from polylogue.sources.parsers.base import ParsedConversation
+from polylogue.archive.session.branch_type import BranchType
+from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.parsers.codex import looks_like as _looks_like_impl
 from polylogue.sources.parsers.codex import parse as _parse_impl
 from polylogue.sources.parsers.codex import parse_stream
@@ -20,20 +20,9 @@ def looks_like(payload: object) -> bool:
     return _looks_like_impl(payload)
 
 
-def parse(payload: object, fallback_id: str) -> ParsedConversation:
+def parse(payload: object, fallback_id: str) -> ParsedSession:
     assert isinstance(payload, list)
     return _parse_impl(payload, fallback_id)
-
-
-def _provider_meta(conversation: ParsedConversation) -> dict[str, object]:
-    assert conversation.provider_meta is not None
-    return conversation.provider_meta
-
-
-def _nested_meta(conversation: ParsedConversation, key: str) -> dict[str, object]:
-    value = _provider_meta(conversation).get(key)
-    assert isinstance(value, dict)
-    return dict(value)
 
 
 # =============================================================================
@@ -89,7 +78,7 @@ class TestLooksLike:
 
 
 class TestSessionMetadata:
-    def test_first_session_meta_sets_conversation_id(self) -> None:
+    def test_first_session_meta_sets_session_id(self) -> None:
         payload = [
             {"type": "session_meta", "payload": {"id": "conv-abc", "timestamp": "2024-01-01"}},
             {
@@ -102,7 +91,7 @@ class TestSessionMetadata:
             },
         ]
         result = parse(payload, "fallback")
-        assert result.provider_conversation_id == "conv-abc"
+        assert result.provider_session_id == "conv-abc"
 
     def test_second_session_meta_sets_parent(self) -> None:
         payload = [
@@ -118,8 +107,8 @@ class TestSessionMetadata:
             },
         ]
         result = parse(payload, "fallback")
-        assert result.provider_conversation_id == "conv-abc"
-        assert result.parent_conversation_provider_id == "parent-xyz"
+        assert result.provider_session_id == "conv-abc"
+        assert result.parent_session_provider_id == "parent-xyz"
         assert result.branch_type == BranchType.CONTINUATION
 
     def test_no_session_meta_uses_fallback(self) -> None:
@@ -134,8 +123,8 @@ class TestSessionMetadata:
             },
         ]
         result = parse(payload, "my-fallback")
-        assert result.provider_conversation_id == "my-fallback"
-        assert result.parent_conversation_provider_id is None
+        assert result.provider_session_id == "my-fallback"
+        assert result.parent_session_provider_id is None
         assert result.branch_type is None
 
     def test_duplicate_session_meta_id_not_counted_twice(self) -> None:
@@ -144,8 +133,8 @@ class TestSessionMetadata:
             {"type": "session_meta", "payload": {"id": "same-id", "timestamp": "2024-01-01"}},
         ]
         result = parse(payload, "fallback")
-        assert result.provider_conversation_id == "same-id"
-        assert result.parent_conversation_provider_id is None
+        assert result.provider_session_id == "same-id"
+        assert result.parent_session_provider_id is None
         assert result.branch_type is None
 
     def test_intermediate_format_metadata(self) -> None:
@@ -155,7 +144,7 @@ class TestSessionMetadata:
             {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}]},
         ]
         result = parse(payload, "fallback")
-        assert result.provider_conversation_id == "conv-xyz"
+        assert result.provider_session_id == "conv-xyz"
 
 
 # =============================================================================
@@ -286,7 +275,8 @@ class TestMessageParsing:
         result = parse(payload, "fallback")
 
         assert len(result.messages) == 2
-        assert all(message.provider_meta is None for message in result.messages)
+        # provider_meta is gone from ParsedMessage — the typed contract enforces
+        # this at the model level; no escape-hatch dict can exist.
 
     def test_parse_stream_matches_list_parse(self) -> None:
         payload = [
@@ -352,6 +342,62 @@ class TestMessageParsing:
             MessageType.MESSAGE,
         ]
 
+    def test_archive_tiers_contract_fields_from_turn_context_and_messages(self) -> None:
+        payload = [
+            {"type": "turn_context", "payload": {"cwd": "/repo/polylogue", "model": "gpt-5-codex", "effort": "high"}},
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "timestamp": "2026-01-01T00:00:00Z",
+                    "content": [{"type": "input_text", "text": "run checks"}],
+                    "usage": {
+                        "input_tokens": 10,
+                        "output_tokens": 2,
+                        "cache_read_input_tokens": 3,
+                        "cache_creation_input_tokens": 4,
+                    },
+                    "duration_ms": 1250,
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "id": "assistant-1",
+                    "role": "assistant",
+                    "timestamp": "2026-01-01T00:00:01Z",
+                    "content": [{"type": "output_text", "text": "passed"}],
+                    "model": "gpt-5-codex-mini",
+                    "model_effort": "medium",
+                    "tokens": {"input_tokens": 1, "output_tokens": 20},
+                    "durationMs": "750",
+                },
+            },
+        ]
+
+        result = parse(payload, "fallback")
+
+        assert result.active_leaf_message_provider_id == "assistant-1"
+        assert [message.position for message in result.messages] == [0, 1]
+        assert [message.variant_index for message in result.messages] == [0, 0]
+        assert [message.is_active_path for message in result.messages] == [True, True]
+        assert [message.is_active_leaf for message in result.messages] == [False, True]
+        assert result.messages[0].occurred_at_ms == 1_767_225_600_000
+        assert result.messages[0].model_name == "gpt-5-codex"
+        assert result.messages[0].model_effort == "high"
+        assert result.messages[0].input_tokens == 10
+        assert result.messages[0].output_tokens == 2
+        assert result.messages[0].cache_read_tokens == 3
+        assert result.messages[0].cache_write_tokens == 4
+        assert result.messages[0].duration_ms == 1250
+        assert result.messages[1].model_name == "gpt-5-codex-mini"
+        assert result.messages[1].model_effort == "medium"
+        assert result.messages[1].input_tokens == 1
+        assert result.messages[1].output_tokens == 20
+        assert result.messages[1].duration_ms == 750
+
 
 # =============================================================================
 # Git Context and Instructions
@@ -366,7 +412,7 @@ class TestGitContextAndInstructions:
                 "payload": {
                     "id": "s1",
                     "timestamp": "2024-01-01",
-                    "git": {"branch": "main", "commit": "abc123"},
+                    "git": {"branch": "main", "commit_hash": "abc123"},
                 },
             },
             {
@@ -379,9 +425,8 @@ class TestGitContextAndInstructions:
             },
         ]
         result = parse(payload, "fallback")
-        git_meta = _nested_meta(result, "git")
-        assert git_meta["branch"] == "main"
-        assert git_meta["commit"] == "abc123"
+        assert result.git_branch == "main"
+        assert result.git_commit_hash == "abc123"
 
     def test_instructions_from_session_meta(self) -> None:
         payload = [
@@ -403,7 +448,7 @@ class TestGitContextAndInstructions:
             },
         ]
         result = parse(payload, "fallback")
-        assert _provider_meta(result)["instructions"] == "You are a helpful assistant."
+        assert result.instructions_text == "You are a helpful assistant."
 
     def test_git_context_from_intermediate_metadata(self) -> None:
         """Intermediate format: git context on first line."""
@@ -416,7 +461,7 @@ class TestGitContextAndInstructions:
             {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}]},
         ]
         result = parse(payload, "fallback")
-        assert _nested_meta(result, "git")["branch"] == "develop"
+        assert result.git_branch == "develop"
 
     def test_git_and_instructions_combined(self) -> None:
         payload = [
@@ -431,8 +476,8 @@ class TestGitContextAndInstructions:
             },
         ]
         result = parse(payload, "fallback")
-        assert _nested_meta(result, "git")["branch"] == "feature"
-        assert _provider_meta(result)["instructions"] == "Be concise."
+        assert result.git_branch == "feature"
+        assert result.instructions_text == "Be concise."
 
     def test_turn_context_cwd_feeds_working_directories(self) -> None:
         payload = [
@@ -442,10 +487,10 @@ class TestGitContextAndInstructions:
 
         result = parse(payload, "fallback")
 
-        assert _provider_meta(result)["working_directories"] == ["/repo/other", "/repo/polylogue"]
-        assert result.provider_events[0].payload["cwd"] == "/repo/polylogue"
+        assert result.working_directories == ["/repo/other", "/repo/polylogue"]
+        assert result.session_events[0].payload["cwd"] == "/repo/polylogue"
 
-    def test_provider_events_keep_compact_provenance_not_raw_payloads(self) -> None:
+    def test_session_events_keep_compact_provenance_not_raw_payloads(self) -> None:
         payload = [
             {
                 "type": "compacted",
@@ -468,28 +513,28 @@ class TestGitContextAndInstructions:
 
         result = parse(payload, "fallback")
 
-        assert [event.event_type for event in result.provider_events] == [
+        assert [event.event_type for event in result.session_events] == [
             "compaction",
             "turn_context",
             "function_call_output",
         ]
-        assert result.provider_events[0].payload == {
+        assert result.session_events[0].payload == {
             "source_index": 1,
             "summary": "summary",
             "replacement_history_count": 1,
         }
-        assert result.provider_events[1].payload == {
+        assert result.session_events[1].payload == {
             "source_index": 2,
             "cwd": "/repo/polylogue",
         }
-        assert result.provider_events[2].payload == {
+        assert result.session_events[2].payload == {
             "source_index": 3,
             "type": "function_call_output",
             "id": "evt-1",
             "call_id": "call-1",
             "output_chars": len("large command output" * 1024),
         }
-        assert all("raw" not in event.payload for event in result.provider_events)
+        assert all("raw" not in event.payload for event in result.session_events)
 
 
 # =============================================================================
@@ -500,7 +545,7 @@ class TestGitContextAndInstructions:
 class TestEdgeCases:
     def test_empty_payload(self) -> None:
         result = parse([], "fallback")
-        assert result.provider_conversation_id == "fallback"
+        assert result.provider_session_id == "fallback"
         assert result.messages == []
         assert result.source_name == "codex"
 
@@ -559,7 +604,7 @@ class TestEdgeCases:
         assert len(result.messages) == 1
         assert result.messages[0].timestamp == "2024-01-15T09:50:00+00:00"
 
-    def test_conversation_updated_at_uses_latest_message_timestamp(self) -> None:
+    def test_session_updated_at_uses_latest_message_timestamp(self) -> None:
         payload = [
             {"type": "session_meta", "payload": {"id": "conv-1", "timestamp": "2024-03-15T10:00:00Z"}},
             {
@@ -615,7 +660,7 @@ class TestEdgeCases:
                 "payload": {
                     "id": "prod-session-001",
                     "timestamp": "2024-03-15T14:30:00Z",
-                    "git": {"branch": "main", "commit": "f1e2d3c"},
+                    "git": {"branch": "main", "commit_hash": "f1e2d3c"},
                     "instructions": "You are an expert Python developer.",
                 },
             },
@@ -646,10 +691,10 @@ class TestEdgeCases:
             },
         ]
         result = parse(payload, "fallback")
-        assert result.provider_conversation_id == "prod-session-001"
+        assert result.provider_session_id == "prod-session-001"
         assert len(result.messages) == 3
-        assert _nested_meta(result, "git")["commit"] == "f1e2d3c"
-        assert _provider_meta(result)["instructions"] == "You are an expert Python developer."
+        assert result.git_commit_hash == "f1e2d3c"
+        assert result.instructions_text == "You are an expert Python developer."
         assert result.messages[0].role == "user"
         assert result.messages[1].role == "assistant"
         assert result.messages[2].role == "user"
@@ -682,12 +727,14 @@ class TestEdgeCases:
 
         result = parse(payload, "fallback")
 
-        assert [event.event_type for event in result.provider_events] == [
+        assert [event.event_type for event in result.session_events] == [
             "function_call",
             "function_call_output",
             "token_count",
         ]
         assert len(result.messages) == 2
+        assert [message.position for message in result.messages] == [0, 1]
+        assert result.active_leaf_message_provider_id == "call_1"
         assert result.messages[0].content_blocks[0].type == "tool_use"
         assert result.messages[0].content_blocks[0].tool_name == "exec_command"
         assert result.messages[0].content_blocks[0].tool_input == {"cmd": "git status"}

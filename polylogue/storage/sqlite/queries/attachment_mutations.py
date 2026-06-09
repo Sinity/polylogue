@@ -4,83 +4,10 @@ from __future__ import annotations
 
 import aiosqlite
 
-from polylogue.core.common import (
-    SQL_ATTACHMENT_REF_INSERT as _ATTACHMENT_REF_INSERT_SQL,
-)
-from polylogue.core.common import (
-    SQL_ATTACHMENT_UPSERT as _ATTACHMENT_UPSERT_SQL,
-)
-from polylogue.storage.runtime import AttachmentRecord, _json_or_none, _make_ref_id
-
-
-async def save_attachments(
-    conn: aiosqlite.Connection,
-    records: list[AttachmentRecord],
-    transaction_depth: int,
-) -> None:
-    """Persist attachment records with reference counting."""
-    if not records:
-        return
-    await conn.executemany(
-        _ATTACHMENT_UPSERT_SQL,
-        [
-            (
-                record.attachment_id,
-                record.mime_type,
-                record.size_bytes,
-                record.path,
-                0,
-                _json_or_none(record.provider_meta),
-                record.provider_attachment_id,
-                record.provider_file_id,
-                record.provider_drive_id,
-                record.upload_origin,
-            )
-            for record in records
-        ],
-    )
-
-    ref_data = []
-    for record in records:
-        ref_data.append(
-            (
-                _make_ref_id(record.attachment_id, record.conversation_id, record.message_id),
-                record.attachment_id,
-                record.conversation_id,
-                record.message_id,
-                _json_or_none(record.provider_meta),
-                record.provider_attachment_id,
-                record.provider_file_id,
-                record.provider_drive_id,
-                record.upload_origin,
-            )
-        )
-    await conn.executemany(
-        _ATTACHMENT_REF_INSERT_SQL,
-        ref_data,
-    )
-
-    affected_ids = tuple({record.attachment_id for record in records})
-    placeholders = ", ".join("?" for _ in affected_ids)
-    await conn.execute(
-        f"""
-        UPDATE attachments
-        SET ref_count = (
-            SELECT COUNT(*)
-            FROM attachment_refs
-            WHERE attachment_refs.attachment_id = attachments.attachment_id
-        )
-        WHERE attachment_id IN ({placeholders})
-        """,
-        affected_ids,
-    )
-    if transaction_depth == 0:
-        await conn.commit()
-
 
 async def prune_attachments(
     conn: aiosqlite.Connection,
-    conversation_id: str,
+    session_id: str,
     keep_attachment_ids: set[str],
     transaction_depth: int,
 ) -> None:
@@ -90,15 +17,15 @@ async def prune_attachments(
         cursor = await conn.execute(
             f"""
             SELECT attachment_id FROM attachment_refs
-            WHERE conversation_id = ? AND attachment_id NOT IN ({placeholders})
+            WHERE session_id = ? AND attachment_id NOT IN ({placeholders})
             """,
-            (conversation_id, *keep_attachment_ids),
+            (session_id, *keep_attachment_ids),
         )
         refs_to_remove = list(await cursor.fetchall())
     else:
         cursor = await conn.execute(
-            "SELECT attachment_id FROM attachment_refs WHERE conversation_id = ?",
-            (conversation_id,),
+            "SELECT attachment_id FROM attachment_refs WHERE session_id = ?",
+            (session_id,),
         )
         refs_to_remove = list(await cursor.fetchall())
 
@@ -109,13 +36,13 @@ async def prune_attachments(
     if keep_attachment_ids:
         placeholders = ",".join("?" * len(keep_attachment_ids))
         await conn.execute(
-            f"DELETE FROM attachment_refs WHERE conversation_id = ? AND attachment_id NOT IN ({placeholders})",
-            (conversation_id, *keep_attachment_ids),
+            f"DELETE FROM attachment_refs WHERE session_id = ? AND attachment_id NOT IN ({placeholders})",
+            (session_id, *keep_attachment_ids),
         )
     else:
         await conn.execute(
-            "DELETE FROM attachment_refs WHERE conversation_id = ?",
-            (conversation_id,),
+            "DELETE FROM attachment_refs WHERE session_id = ?",
+            (session_id,),
         )
 
     aids_list = list(attachment_ids_to_check)
@@ -140,5 +67,4 @@ async def prune_attachments(
 
 __all__ = [
     "prune_attachments",
-    "save_attachments",
 ]

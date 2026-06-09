@@ -185,7 +185,7 @@ def collect_cluster_analysis(
             _update_cluster_reservoir(
                 final_acc,
                 sample,
-                membership.unit.conversation_id,
+                membership.unit.session_id,
                 reservoir_size=reservoir_size,
             )
 

@@ -30,14 +30,14 @@ from polylogue.insights.registry import CliOption, InsightQueryError, InsightTyp
 def _root_context(
     *,
     output_format: str | None = None,
-    provider: str | None = None,
+    origin: str | None = None,
     since: str | None = "2026-04-01",
     until: str | None = "2026-04-30",
 ) -> click.Context:
     root = click.Context(click.Command("polylogue"))
     root.params = {
         "output_format": output_format,
-        "provider": provider,
+        "origin": origin,
         "since": since,
         "until": until,
     }
@@ -48,13 +48,13 @@ def _status_context(
     env: object,
     *,
     output_format: str | None = None,
-    provider: str | None = None,
+    origin: str | None = None,
     since: str | None = "2026-04-01",
     until: str | None = "2026-04-30",
 ) -> click.Context:
     ctx = click.Context(
         insights_module.insights_status_command,
-        parent=_root_context(output_format=output_format, provider=provider, since=since, until=until),
+        parent=_root_context(output_format=output_format, origin=origin, since=since, until=until),
     )
     ctx.obj = env
     return ctx
@@ -64,13 +64,13 @@ def _export_context(
     env: object,
     *,
     output_format: str | None = None,
-    provider: str | None = None,
+    origin: str | None = None,
     since: str | None = "2026-04-01",
     until: str | None = "2026-04-30",
 ) -> click.Context:
     ctx = click.Context(
         insights_module.insights_export_command,
-        parent=_root_context(output_format=output_format, provider=provider, since=since, until=until),
+        parent=_root_context(output_format=output_format, origin=origin, since=since, until=until),
     )
     ctx.obj = env
     return ctx
@@ -86,7 +86,7 @@ def _status_report() -> InsightReadinessReport:
     return InsightReadinessReport(
         checked_at="2026-04-23T00:00:00+00:00",
         aggregate_verdict="partial",
-        total_conversations=10,
+        total_sessions=10,
         provider="codex",
         since="2026-04-01",
         until="2026-04-30",
@@ -100,7 +100,7 @@ def _status_report() -> InsightReadinessReport:
                 missing_count=1,
                 stale_count=2,
                 orphan_count=3,
-                legacy_incompatible_count=4,
+                incompatible_count=4,
                 ready_flags={"fts": True},
                 provider_coverage=(InsightProviderCoverage(source_name="codex", row_count=7),),
                 version_coverage=(
@@ -121,7 +121,7 @@ def _export_result(tmp_path: Path) -> InsightExportBundleResult:
             generated_at="2026-04-23T00:00:00+00:00",
             polylogue_version="1.0.0",
             archive_root="/tmp/archive",
-            database_path="/tmp/archive/polylogue.db",
+            database_path="/tmp/archive/index.db",
             query={"provider": "codex"},
             insights=(
                 InsightExportFileSummary(
@@ -159,7 +159,7 @@ def test_build_click_params_and_insight_command_cover_dynamic_registration() -> 
 def test_make_callback_renders_insights_and_surfaces_query_errors() -> None:
     callback = insights_module._make_callback(get_insight_type("session_profiles"))
     raw_callback = getattr(callback, "__wrapped__", callback)
-    env = SimpleNamespace(operations=MagicMock())
+    env = SimpleNamespace(polylogue=MagicMock())
     ctx = click.Context(click.Command("profiles"))
     ctx.obj = env
 
@@ -194,11 +194,11 @@ def test_render_status_plain_and_export_plain_cover_optional_sections(
 
     output = capsys.readouterr().out
     assert "Insight Readiness: partial" in output
-    assert "Scope: provider=codex since=2026-04-01 until=2026-04-30" in output
+    assert "Scope: origin=codex-session since=2026-04-01 until=2026-04-30" in output
     assert "session_profiles: partial rows=7 expected=10" in output
-    assert "missing=1 stale=2 orphan=3 legacy=4" in output
+    assert "missing=1 stale=2 orphan=3 incompatible=4" in output
     assert "flags: fts=True" in output
-    assert "providers: codex=7" in output
+    assert "origins: codex-session=7" in output
     assert "versions: materializer_version={'4': 7}" in output
     assert "schema: missing field" in output
     assert "Insight export bundle:" in output
@@ -213,14 +213,14 @@ def test_insights_status_command_emits_json_and_inherits_root_filters(tmp_path: 
         captured["query"] = query
         return _status_report()
 
-    env = SimpleNamespace(operations=SimpleNamespace(get_insight_readiness_report=get_report))
+    env = SimpleNamespace(polylogue=SimpleNamespace(insight_readiness_report=get_report))
     raw_callback = _command_callback(insights_module.insights_status_command)
     with patch("polylogue.cli.commands.insights.run_coroutine_sync", side_effect=lambda coro: asyncio.run(coro)):
         with patch("polylogue.cli.commands.insights.emit_success") as emit_success:
             raw_callback(
-                _status_context(env, output_format="json", provider="codex"),
+                _status_context(env, output_format="json", origin="codex-session"),
                 insights=("profiles",),
-                provider=None,
+                origin=None,
                 since=None,
                 until=None,
                 output_format=None,
@@ -235,14 +235,14 @@ def test_insights_status_command_emits_json_and_inherits_root_filters(tmp_path: 
 
 
 def test_insights_status_command_rejects_inherited_provider_csv() -> None:
-    env = SimpleNamespace(operations=SimpleNamespace(get_insight_readiness_report=MagicMock()))
+    env = SimpleNamespace(polylogue=SimpleNamespace(insight_readiness_report=MagicMock()))
     raw_callback = _command_callback(insights_module.insights_status_command)
 
-    with pytest.raises(SystemExit, match="insights commands accept one provider"):
+    with pytest.raises(SystemExit, match="insights commands accept one origin"):
         raw_callback(
-            _status_context(env, provider="codex,chatgpt"),
+            _status_context(env, origin="codex-session,chatgpt-export"),
             insights=(),
-            provider=None,
+            origin=None,
             since=None,
             until=None,
             output_format=None,
@@ -250,7 +250,7 @@ def test_insights_status_command_rejects_inherited_provider_csv() -> None:
 
 
 def test_insights_status_command_reports_invalid_insight_names() -> None:
-    env = SimpleNamespace(operations=SimpleNamespace(get_insight_readiness_report=MagicMock()))
+    env = SimpleNamespace(polylogue=SimpleNamespace(insight_readiness_report=MagicMock()))
     raw_callback = _command_callback(insights_module.insights_status_command)
 
     with patch("polylogue.cli.commands.insights.run_coroutine_sync", side_effect=ValueError("Unknown insight")):
@@ -258,7 +258,7 @@ def test_insights_status_command_reports_invalid_insight_names() -> None:
             raw_callback(
                 _status_context(env),
                 insights=("not-an-insight",),
-                provider=None,
+                origin=None,
                 since=None,
                 until=None,
                 output_format=None,
@@ -272,7 +272,7 @@ def test_insights_export_command_covers_json_plain_and_error_paths(tmp_path: Pat
         captured["request"] = request
         return _export_result(tmp_path)
 
-    env = SimpleNamespace(operations=SimpleNamespace(export_insight_bundle=export_bundle))
+    env = SimpleNamespace(polylogue=SimpleNamespace(export_insight_bundle=export_bundle))
     raw_callback = _command_callback(insights_module.insights_export_command)
 
     with pytest.raises(SystemExit, match="insights export: unsupported export format: csv"):
@@ -280,7 +280,7 @@ def test_insights_export_command_covers_json_plain_and_error_paths(tmp_path: Pat
             _export_context(env),
             output_path=tmp_path / "bundle",
             insights=("profiles",),
-            provider=None,
+            origin=None,
             since=None,
             until=None,
             bundle_format="csv",
@@ -291,10 +291,10 @@ def test_insights_export_command_covers_json_plain_and_error_paths(tmp_path: Pat
     with patch("polylogue.cli.commands.insights.run_coroutine_sync", side_effect=lambda coro: asyncio.run(coro)):
         with patch("polylogue.cli.commands.insights.emit_success") as emit_success:
             raw_callback(
-                _export_context(env, output_format="json", provider="codex"),
+                _export_context(env, output_format="json", origin="codex-session"),
                 output_path=tmp_path / "bundle",
                 insights=("profiles",),
-                provider=None,
+                origin=None,
                 since=None,
                 until=None,
                 bundle_format="jsonl",
@@ -315,14 +315,14 @@ def test_insights_export_command_covers_json_plain_and_error_paths(tmp_path: Pat
         del request
         raise InsightExportBundleError("cannot write bundle")
 
-    env = SimpleNamespace(operations=SimpleNamespace(export_insight_bundle=broken_export))
+    env = SimpleNamespace(polylogue=SimpleNamespace(export_insight_bundle=broken_export))
     with patch("polylogue.cli.commands.insights.run_coroutine_sync", side_effect=lambda coro: asyncio.run(coro)):
         with pytest.raises(SystemExit, match="insights export: cannot write bundle"):
             raw_callback(
                 _export_context(env),
                 output_path=tmp_path / "bundle",
                 insights=("profiles",),
-                provider=None,
+                origin=None,
                 since=None,
                 until=None,
                 bundle_format="jsonl",

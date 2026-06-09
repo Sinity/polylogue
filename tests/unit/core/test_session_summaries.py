@@ -2,15 +2,15 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from polylogue.archive.conversation.extraction import WorkEvent, WorkEventHeuristicLabel
+from polylogue.archive.session.extraction import WorkEvent, WorkEventHeuristicLabel
 from polylogue.archive.session.session_profile import SessionProfile
 from polylogue.archive.session.session_summaries import summarize_day, summarize_days, summarize_week, summarize_weeks
 
 
 def _profile(
-    conversation_id: str,
+    session_id: str,
     *,
-    provider: str,
+    origin: str,
     created_at: datetime | None,
     first_message_at: datetime | None,
     canonical_session_date: date | None,
@@ -25,8 +25,8 @@ def _profile(
     word_count: int = 0,
 ) -> SessionProfile:
     return SessionProfile(
-        conversation_id=conversation_id,
-        provider=provider,
+        session_id=session_id,
+        origin=origin,
         title=None,
         created_at=created_at,
         updated_at=created_at,
@@ -72,7 +72,7 @@ def _work_event(heuristic_label: WorkEventHeuristicLabel, index: int) -> WorkEve
 def test_summarize_day_aggregates_cost_duration_words_and_repos() -> None:
     profile = _profile(
         "conv-1",
-        provider="claude-code",
+        origin="claude-code-session",
         created_at=datetime(2026, 4, 23, 8, 0),
         first_message_at=None,
         canonical_session_date=date(2026, 4, 23),
@@ -95,13 +95,13 @@ def test_summarize_day_aggregates_cost_duration_words_and_repos() -> None:
     assert summary.total_tool_active_duration_ms == 600
     assert summary.work_event_breakdown == {"testing": 1, "research": 1}
     assert summary.repos_active == ("polylogue",)
-    assert summary.providers == {"claude-code": 1}
+    assert summary.providers == {"claude-code-session": 1}
 
 
 def test_summarize_days_and_weeks_use_profile_date_fallbacks_and_sort_descending() -> None:
     first = _profile(
         "conv-first",
-        provider="chatgpt",
+        origin="chatgpt-export",
         created_at=datetime(2026, 4, 21, 9, 0),
         first_message_at=datetime(2026, 4, 22, 9, 0),
         canonical_session_date=None,
@@ -111,7 +111,7 @@ def test_summarize_days_and_weeks_use_profile_date_fallbacks_and_sort_descending
     )
     second = _profile(
         "conv-second",
-        provider="codex",
+        origin="codex-session",
         created_at=datetime(2026, 4, 23, 9, 0),
         first_message_at=None,
         canonical_session_date=None,
@@ -121,7 +121,7 @@ def test_summarize_days_and_weeks_use_profile_date_fallbacks_and_sort_descending
     )
     ignored = _profile(
         "conv-ignored",
-        provider="claude-ai",
+        origin="claude-ai-export",
         created_at=None,
         first_message_at=None,
         canonical_session_date=None,

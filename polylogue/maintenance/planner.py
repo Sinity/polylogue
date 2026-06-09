@@ -9,7 +9,7 @@ internals:
 * identity — ``operation_id`` plus a typed ``kind``;
 * scope — a typed :class:`MaintenanceScope` (target names + optional
   filter) instead of a bare tuple, so future surfaces can attach
-  conversation-id filters, time windows, source roots, etc. without
+  session-id filters, time windows, source roots, etc. without
   changing the signature again;
 * reason — a typed :class:`~polylogue.maintenance.invalidation.InvalidationReason`
   recording *why* the planner scheduled the work;
@@ -34,8 +34,12 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
+from typing import TYPE_CHECKING
 
 from polylogue.config import Config
+
+if TYPE_CHECKING:
+    from polylogue.storage.repair import ArchiveDebtStatus
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.logging import get_logger
 from polylogue.maintenance.invalidation import InvalidationReason
@@ -94,13 +98,12 @@ class BackfillKind(str, Enum):
     """What kind of maintenance operation this is.
 
     The values map to the typed-operation taxonomy the rest of the
-    maintenance cluster expects (see #1144). The legacy aliases
+    maintenance cluster expects (see #1144). The compatibility aliases
     (``REBUILD``, ``REINDEX``, ``RESET``, ``BACKFILL``) are retained as
-    compatibility shims for callers that haven't migrated yet.
+    compatibility shims for callers that have not moved yet.
     """
 
     # Typed taxonomy (issue #1144).
-    SOURCE_REPLAY = "source-replay"
     ARCHIVE_SUBSET = "archive-subset"
     DERIVED_REBUILD = "derived-rebuild"
     INDEX_REPAIR = "index-repair"
@@ -381,6 +384,32 @@ class BackfillOperation:
         )
 
 
+def _collect_archive_debt_statuses(config: Config, *, include_expensive: bool) -> dict[str, ArchiveDebtStatus]:
+    """Collect archive-debt statuses over ``index.db``.
+
+    Returns an empty mapping when ``index.db`` does not yet exist (fresh
+    archive before first ingest), mirroring the staleness-inventory contract.
+    """
+    from contextlib import closing
+
+    from polylogue.paths import archive_file_set_root_for_paths
+    from polylogue.storage.repair import collect_archive_debt_statuses_sync
+    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+    index_db = (
+        archive_file_set_root_for_paths(archive_root_path=config.archive_root, db_anchor=config.db_path) / "index.db"
+    )
+    if not index_db.exists():
+        return {}
+    with closing(open_readonly_connection(index_db)) as conn:
+        return collect_archive_debt_statuses_sync(
+            conn,
+            db_path=index_db,
+            include_expensive=include_expensive,
+            probe_only=False,
+        )
+
+
 def preview_backfill(
     config: Config,
     targets: tuple[str, ...],
@@ -394,10 +423,8 @@ def preview_backfill(
     No mutations are performed.
     """
     from polylogue.storage.repair import (
-        collect_archive_debt_statuses_sync,
         preview_counts_from_archive_debt,
     )
-    from polylogue.storage.sqlite.connection import open_read_connection
 
     operation_id = str(uuid.uuid4())
     catalog = build_maintenance_target_catalog()
@@ -437,12 +464,7 @@ def preview_backfill(
     # call ignored ``config.db_path`` entirely, which made the planner
     # behave inconsistently in tests and multi-archive runtimes.
     include_expensive = any(spec.archive_readiness_requires_deep for spec in resolved)
-    with open_read_connection(config.db_path) as conn:
-        debt_statuses = collect_archive_debt_statuses_sync(
-            conn,
-            include_expensive=include_expensive,
-            probe_only=False,
-        )
+    debt_statuses = _collect_archive_debt_statuses(config, include_expensive=include_expensive)
 
     preview = preview_counts_from_archive_debt(debt_statuses)
 
@@ -452,7 +474,7 @@ def preview_backfill(
         total_rows += preview.get(name, 0)
 
     # Rough estimate: ~50 rows/s for complex rebuilds (session insights,
-    # action events), ~500 rows/s for simple repairs (FTS, WAL).
+    # actions), ~500 rows/s for simple repairs (FTS, WAL).
     estimated_time_s = total_rows / 50.0 if total_rows > 0 else 0.0
 
     # Build per-target preview results from debt statuses
@@ -465,11 +487,11 @@ def preview_backfill(
             if reason is None:
                 reason = _derive_invalidation_reason(status)
 
-    # When the caller narrows by conversation_ids, the affected-rows
-    # estimate must shrink to match: a one-conversation scope cannot
+    # When the caller narrows by session_ids, the affected-rows
+    # estimate must shrink to match: a one-session scope cannot
     # legitimately advertise the full archive's debt as its plan.
-    if effective_filter.conversation_ids is not None:
-        scope_size = len(effective_filter.conversation_ids)
+    if effective_filter.session_ids is not None:
+        scope_size = len(effective_filter.session_ids)
         total_rows = min(total_rows, scope_size) if total_rows > 0 else 0
         estimated_time_s = total_rows / 50.0 if total_rows > 0 else 0.0
 
@@ -499,11 +521,9 @@ def execute_backfill(
     run_selected_maintenance. Progress is reported via structured logging.
     """
     from polylogue.storage.repair import (
-        collect_archive_debt_statuses_sync,
         preview_counts_from_archive_debt,
         run_selected_maintenance,
     )
-    from polylogue.storage.sqlite.connection import open_read_connection
 
     operation_id = str(uuid.uuid4())
     catalog = build_maintenance_target_catalog()
@@ -530,12 +550,7 @@ def execute_backfill(
 
     # Thread the caller's archive db_path through the planner instead of
     # relying on ambient defaults. See ``preview_backfill`` above.
-    with open_read_connection(config.db_path) as conn:
-        debt_statuses = collect_archive_debt_statuses_sync(
-            conn,
-            include_expensive=False,
-            probe_only=False,
-        )
+    debt_statuses = _collect_archive_debt_statuses(config, include_expensive=False)
     preview = preview_counts_from_archive_debt(debt_statuses)
 
     reason: InvalidationReason | None = None

@@ -85,7 +85,7 @@ def test_route_failure_sample_infers_target_from_locator(tmp_path: Path) -> None
     config = _make_config(tmp_path)
     sample = FailureSample(
         kind="ValueError",
-        locator="target:source_replay:source:claude-code:artifact:0:rel/path",
+        locator="target:session_insights:session:abc123",
         message="oops",
     )
     record = route_failure_sample(
@@ -93,14 +93,14 @@ def test_route_failure_sample_infers_target_from_locator(tmp_path: Path) -> None
         operation_id="op-xyz",
         archive_root=Path(config.archive_root),
     )
-    assert record.target == "source_replay"
+    assert record.target == "session_insights"
 
 
 def test_route_failure_sample_redacts_absolute_paths_in_message(tmp_path: Path) -> None:
     config = _make_config(tmp_path)
     sample = FailureSample(
         kind="OSError",
-        locator="target:source_replay",
+        locator="target:dangling_fts",
         message="Failed to read /home/operator/data/secret.json: permission denied",
     )
     record = route_failure_sample(
@@ -117,7 +117,7 @@ def test_route_failure_sample_redacts_absolute_paths_in_locator(tmp_path: Path) 
     config = _make_config(tmp_path)
     sample = FailureSample(
         kind="ValueError",
-        locator="target:source_replay:source:claude-code:artifact:0:/home/operator/data.json",
+        locator="target:session_insights:session:c1:/home/operator/data.json",
         message="bad",
     )
     record = route_failure_sample(
@@ -159,7 +159,7 @@ def test_route_failure_sample_never_writes_raw_paths_to_disk(tmp_path: Path) -> 
     config = _make_config(tmp_path)
     sample = FailureSample(
         kind="OSError",
-        locator="target:source_replay:source:claude-code:artifact:0:/home/op/secret.json",
+        locator="target:session_insights:session:c1:/home/op/secret.json",
         message="Failed at /home/op/secret.json",
     )
     route_failure_sample(
@@ -298,7 +298,7 @@ def test_execute_replay_routes_repair_failure(tmp_path: Path, monkeypatch: pytes
     from polylogue.storage.repair import RepairResult as RepairResultT
 
     def _bad_repair(_config: ConfigT, _dry_run: bool) -> RepairResultT:
-        raise RuntimeError("session insight rebuild failed: /tmp/path/conversation_42")
+        raise RuntimeError("session insight rebuild failed: /tmp/path/session_42")
 
     monkeypatch.setitem(replay_mod._REPLAY_DISPATCH, "session_insights", _bad_repair)
 
@@ -316,7 +316,7 @@ def test_execute_replay_routes_repair_failure(tmp_path: Path, monkeypatch: pytes
     assert persisted[0].target == "session_insights"
     assert persisted[0].kind == "RuntimeError"
     # Path is redacted at routing time.
-    assert "/tmp/path/conversation_42" not in persisted[0].message
+    assert "/tmp/path/session_42" not in persisted[0].message
 
 
 def test_execute_replay_routes_repair_reported_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

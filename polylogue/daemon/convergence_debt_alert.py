@@ -195,10 +195,10 @@ def source_family_for_subject(subject_type: str, subject_id: str) -> str:
     """Infer the source-family token from a debt subject.
 
     For ``source_path`` subjects, the subject id is the filesystem path
-    and is matched against ``default_sources()``. For ``conversation_id``
+    and is matched against ``default_sources()``. For ``session_id``
     subjects, source-family attribution requires a DB lookup and is
     currently treated as ``"unknown"`` — those rows fall under the global
-    default threshold. Improving conversation-id attribution is tracked
+    default threshold. Improving session-id attribution is tracked
     as follow-up work.
     """
     if subject_type == "source_path":

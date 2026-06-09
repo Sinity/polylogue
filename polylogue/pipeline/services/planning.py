@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from polylogue.config import Config, Source
 from polylogue.protocols import ProgressCallback
-from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.repository import SessionRepository
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 from .planning_backlog import collect_parse_backlog, collect_validation_backlog
@@ -17,19 +17,19 @@ class PlanningService:
 
     def __init__(self, backend: SQLiteBackend, config: Config):
         self.backend = backend
-        self.repository = ConversationRepository(backend=backend)
+        self.repository = SessionRepository(backend=backend)
         self.config = config
 
     async def collect_validation_backlog(
         self,
         *,
-        source_names: list[str] | None,
+        source_paths: list[str] | None,
         exclude_raw_ids: list[str] | None = None,
         force_reparse: bool = False,
     ) -> list[str]:
         return await collect_validation_backlog(
             self.backend,
-            source_names=source_names,
+            source_paths=source_paths,
             exclude_raw_ids=exclude_raw_ids,
             force_reparse=force_reparse,
         )
@@ -37,13 +37,13 @@ class PlanningService:
     async def collect_parse_backlog(
         self,
         *,
-        source_names: list[str] | None,
+        source_paths: list[str] | None,
         exclude_raw_ids: list[str] | None = None,
         force_reparse: bool = False,
     ) -> list[str]:
         return await collect_parse_backlog(
             self.backend,
-            source_names=source_names,
+            source_paths=source_paths,
             exclude_raw_ids=exclude_raw_ids,
             force_reparse=force_reparse,
         )

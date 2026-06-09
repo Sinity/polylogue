@@ -1,11 +1,11 @@
 """Embedding storage, materialization, and readiness helpers."""
 
 from polylogue.storage.embeddings.materialization import (
-    EmbedConversationOutcome,
+    EmbedSessionOutcome,
     EmbedSingleStatus,
-    PendingConversation,
-    embed_conversation_sync,
-    iter_pending_conversations,
+    PendingSession,
+    embed_session_sync,
+    iter_pending_sessions,
 )
 from polylogue.storage.embeddings.status_payload import (
     EmbeddingStatusPayload,
@@ -14,12 +14,12 @@ from polylogue.storage.embeddings.status_payload import (
 )
 
 __all__ = [
-    "EmbedConversationOutcome",
+    "EmbedSessionOutcome",
     "EmbedSingleStatus",
     "EmbeddingStatusPayload",
-    "PendingConversation",
+    "PendingSession",
     "RetrievalBandPayload",
-    "embed_conversation_sync",
+    "embed_session_sync",
     "embedding_status_payload",
-    "iter_pending_conversations",
+    "iter_pending_sessions",
 ]

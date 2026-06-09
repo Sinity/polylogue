@@ -52,9 +52,9 @@ areas:
     implemented: true
     controls:
       - cross_conv_threshold: >
-          FieldStats.value_conversation_ids tracks per-value
-          conversation IDs; values seen in fewer than 3
-          conversations are suppressed
+          FieldStats.value_session_ids tracks per-value
+          session IDs; values seen in fewer than 3
+          sessions are suppressed
       - key_denylist: >
           _CONTENT_FIELD_NAMES blocks body, message, input,
           output, text, prompt, summary, query fields

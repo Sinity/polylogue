@@ -6,8 +6,10 @@ import asyncio
 import sqlite3
 import time
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from hashlib import sha256
+from io import BytesIO
 from json import dumps as json_dumps
 from json import loads as json_loads
 from pathlib import Path
@@ -25,15 +27,12 @@ from polylogue.core.metrics import (
     read_peak_rss_self_mb,
 )
 from polylogue.core.provider_identity import canonical_acquisition_provider
-from polylogue.errors import DatabaseError, SchemaIncompatibleError
+from polylogue.errors import DatabaseError, SchemaVersionMismatchError
 from polylogue.logging import get_logger
 from polylogue.paths import blob_store_root
-from polylogue.pipeline.services.ingest_batch._core import (
-    _INGEST_RESULT_CHUNK_SIZE,
-    _process_ingest_batch_sync,
-)
 from polylogue.pipeline.services.ingest_batch._models import _IngestBatchSummary
-from polylogue.sources.dispatch import _detect_provider_from_raw_bytes
+from polylogue.sources.decoders import _iter_json_stream
+from polylogue.sources.dispatch import _detect_provider_from_raw_bytes, parse_payload
 from polylogue.sources.live.append_ingest import ingest_append_plans
 from polylogue.sources.live.batch_observability import (
     record_attempt_progress,
@@ -54,9 +53,9 @@ from polylogue.sources.live.batch_support import (
     _full_parse_progress_groups,
     _FullIngestHeartbeat,
     _FullIngestResult,
-    _jsonl_provider_and_conversation_artifact,
-    _parse_path_as_conversation_artifact,
-    _parse_payload_as_conversation_artifact,
+    _jsonl_provider_and_session_artifact,
+    _parse_path_as_session_artifact,
+    _parse_payload_as_session_artifact,
     _path_size,
     _throttled_phase_heartbeat,
     cursor_state_after_full_ingest,
@@ -80,14 +79,20 @@ from polylogue.sources.live.convergence_debt import (
     debt_by_path,
 )
 from polylogue.sources.live.convergence_outcome import record_convergence_outcome
-from polylogue.sources.live.conversation_convergence import converge_known_conversations
 from polylogue.sources.live.cursor import CursorRecord, CursorStore
-from polylogue.sources.live.dedup import handle_schema_incompatible, handle_structural_database_error
+from polylogue.sources.live.dedup import handle_schema_version_mismatch, handle_structural_database_error
 from polylogue.sources.live.deferred_cursor import record_deferred_append_cursor
 from polylogue.sources.live.metrics import LiveBatchMetrics, LiveFullIngestAggregate
+from polylogue.sources.live.session_convergence import converge_known_sessions
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.runtime import RawConversationRecord
+from polylogue.storage.runtime import RawSessionRecord
+from polylogue.storage.sqlite.archive_tiers.bootstrap import (
+    ARCHIVE_TIER_SPECS,
+)
+from polylogue.storage.sqlite.archive_tiers.bootstrap import (
+    initialize_active_archive_root as initialize_archive_root,
+)
 from polylogue.types import Provider
 
 if TYPE_CHECKING:
@@ -96,7 +101,20 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 LiveBatchEventEmitter = Callable[[str, dict[str, object]], None]
-_FULL_INGEST_SUSPEND_FTS_TRIGGER_BYTES = _STREAMING_FULL_INGEST_BYTES
+_ARCHIVE_RUNTIME_TIERS = ",".join(spec.tier.value for spec in ARCHIVE_TIER_SPECS.values())
+_ARCHIVE_NATIVE_WRITE_TIERS = "source,index"
+
+
+def _iso_to_epoch_ms(value: str) -> int:
+    return int(datetime.fromisoformat(value).timestamp() * 1000)
+
+
+@dataclass(slots=True)
+class _ArchiveFullWriteResult:
+    raw_ids: dict[str, str] = field(default_factory=dict)
+    session_ids: list[str] = field(default_factory=list)
+    session_count: int = 0
+    message_count: int = 0
 
 
 class LiveBatchProcessor:
@@ -202,8 +220,8 @@ class LiveBatchProcessor:
             t0 = time.perf_counter()
             try:
                 append_result = await asyncio.to_thread(self._ingest_append_plans, plans)
-            except SchemaIncompatibleError as exc:
-                handle_schema_incompatible(plans[0].source_name, exc)
+            except SchemaVersionMismatchError as exc:
+                handle_schema_version_mismatch(plans[0].source_name, exc)
                 for plan in plans:
                     failed_paths.append(str(plan.path))
                 # Use an empty result so the per-plan cleanup loop below
@@ -318,8 +336,8 @@ class LiveBatchProcessor:
                     )
                     ingest_worker_count_max = max(ingest_worker_count_max, full_result.worker_count)
                     full_ingest_aggregate.add(full_result)
-                except SchemaIncompatibleError as exc:
-                    handle_schema_incompatible(source_name, exc)
+                except SchemaVersionMismatchError as exc:
+                    handle_schema_version_mismatch(source_name, exc)
                     # Account for every queued path in this source group, not
                     # only the current progress chunk — later chunks would
                     # hit the same structural error with no information gain.
@@ -556,6 +574,7 @@ class LiveBatchProcessor:
             *,
             current_path_override: Path | None = None,
             payload_read_bytes: int | None = None,
+            stage_payload: dict[str, object] | None = None,
         ) -> None:
             self._record_attempt_progress(
                 attempt_id,
@@ -570,6 +589,7 @@ class LiveBatchProcessor:
                 convergence_time_s=convergence_time_s,
                 current_source=source_name,
                 current_path=current_path if current_path_override is None else current_path_override,
+                stage_payload=stage_payload,
             )
 
         return _throttled_phase_heartbeat(emit)
@@ -650,7 +670,8 @@ class LiveBatchProcessor:
         return bytes_read
 
     def _record_convergence_outcome(self, path: Path, debts: Iterable[ConvergenceDebt]) -> None:
-        record_convergence_outcome(self._cursor, path, debts)
+        archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
+        record_convergence_outcome(self._cursor, path, debts, archive_root=archive_root)
 
     def _converge_paths(
         self, paths: Iterable[Path]
@@ -663,11 +684,15 @@ class LiveBatchProcessor:
 
         started = time.perf_counter()
         try:
-            conversation_result = converge_known_conversations(
-                cursor=self._cursor, converger=self._converger, paths=unique_paths, started=started
+            session_result = converge_known_sessions(
+                cursor=self._cursor,
+                converger=self._converger,
+                paths=unique_paths,
+                started=started,
+                archive_root=Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent)),
             )
-            if conversation_result is not None:
-                return conversation_result
+            if session_result is not None:
+                return session_result
 
             converge_batch = getattr(self._converger, "converge_batch", None)
             if callable(converge_batch):
@@ -716,20 +741,29 @@ class LiveBatchProcessor:
             )
 
     def _latest_raw_fingerprint(self, path: Path) -> str | None:
+        return self._latest_archive_tiers_raw_fingerprint(path)
+
+    def _latest_archive_tiers_raw_fingerprint(self, path: Path) -> str | None:
+        source_db = self._cursor._db_path.with_name("source.db")
+        if not source_db.exists():
+            return None
         try:
-            with self._cursor._connect() as conn:
+            conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+            try:
                 row = conn.execute(
                     """
                     SELECT raw_id
-                    FROM raw_conversations
+                    FROM raw_sessions
                     WHERE source_path = ?
                       AND COALESCE(source_index, 0) >= 0
-                    ORDER BY acquired_at DESC, raw_id DESC
+                    ORDER BY acquired_at_ms DESC, raw_id DESC
                     LIMIT 1
                     """,
                     (str(path),),
                 ).fetchone()
-        except Exception:
+            finally:
+                conn.close()
+        except sqlite3.Error:
             return None
         if row is None:
             return None
@@ -780,15 +814,31 @@ class LiveBatchProcessor:
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
         blob_root = blob_store_root()
         blob_store = BlobStore(blob_root)
-        raw_records: list[RawConversationRecord] = []
+        raw_records: list[RawSessionRecord] = []
         raw_by_id: dict[str, Path] = {}
         raw_byte_sizes: dict[Path, int] = {}
+        raw_payloads: dict[str, bytes] = {}
         failed: list[Path] = []
         ingested: list[Path] = []
         source_payload_read_bytes = 0
         fallback_provider = Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
 
-        self._assert_writable_archive_layout()
+        archive_bootstrapped = not self._archive_active(archive_root)
+        if archive_bootstrapped:
+            initialize_archive_root(archive_root)
+        archive_active = self._archive_active(archive_root)
+        if heartbeat is not None:
+            heartbeat(
+                "full_archive_storage_probe",
+                current_path=paths[0],
+                source_payload_read_bytes=0,
+                stage_payload=self._archive_storage_probe_payload(
+                    archive_root,
+                    archive_active=archive_active,
+                    archive_bootstrapped=archive_bootstrapped,
+                ),
+                force=True,
+            )
 
         for path in paths:
             try:
@@ -804,9 +854,9 @@ class LiveBatchProcessor:
                 )
             jsonl_like = path.suffix.lower() == ".jsonl"
             if jsonl_like:
-                provider, parse_as_conversation = _jsonl_provider_and_conversation_artifact(path, fallback_provider)
+                provider, parse_as_session = _jsonl_provider_and_session_artifact(path, fallback_provider)
                 source_name = provider.value
-                if not parse_as_conversation:
+                if not parse_as_session:
                     self._mark_excluded_cursor(path, stat, source_name=source_name)
                     continue
                 if stat.st_size >= _STREAMING_FULL_INGEST_BYTES:
@@ -842,6 +892,7 @@ class LiveBatchProcessor:
                         failed.append(path)
                         continue
                     raw_id, blob_size = blob_store.write_from_bytes(payload)
+                    raw_payloads[raw_id] = payload
                     source_payload_read_bytes += len(payload)
                     if heartbeat is not None:
                         heartbeat(
@@ -852,7 +903,7 @@ class LiveBatchProcessor:
             elif stat.st_size >= _STREAMING_FULL_INGEST_BYTES:
                 provider = _detect_provider_from_path_sample(path, fallback_provider)
                 source_name = provider.value
-                if not _parse_path_as_conversation_artifact(path, provider=provider):
+                if not _parse_path_as_session_artifact(path, provider=provider):
                     self._mark_excluded_cursor(path, stat, source_name=source_name)
                     continue
                 try:
@@ -888,10 +939,11 @@ class LiveBatchProcessor:
                     continue
                 provider = _detect_provider_from_raw_bytes(payload, path.name, fallback_provider)
                 source_name = provider.value
-                if not _parse_payload_as_conversation_artifact(path, provider=provider, payload=payload):
+                if not _parse_payload_as_session_artifact(path, provider=provider, payload=payload):
                     self._mark_excluded_cursor(path, stat, source_name=source_name)
                     continue
                 raw_id, blob_size = blob_store.write_from_bytes(payload)
+                raw_payloads[raw_id] = payload
                 source_payload_read_bytes += len(payload)
                 if heartbeat is not None:
                     heartbeat(
@@ -902,7 +954,7 @@ class LiveBatchProcessor:
             ingested.append(path)
             raw_byte_sizes[path] = stat.st_size
             raw_records.append(
-                RawConversationRecord(
+                RawSessionRecord(
                     raw_id=raw_id,
                     payload_provider=provider,
                     source_name=source_name,
@@ -917,50 +969,50 @@ class LiveBatchProcessor:
 
         summary: _IngestBatchSummary | None = None
         if raw_records:
-            self._persist_raw_records(raw_records)
-            suspend_fts_triggers = any(
-                record.blob_size >= _FULL_INGEST_SUSPEND_FTS_TRIGGER_BYTES for record in raw_records
-            )
+            available_records = [record for record in raw_records if record.raw_id in raw_payloads]
+            missing_payload_records = [record for record in raw_records if record.raw_id not in raw_payloads]
             if heartbeat is not None:
                 heartbeat(
-                    "full_worker_wait",
+                    "full_archive_write",
                     current_path=ingested[-1] if ingested else None,
                     source_payload_read_bytes=source_payload_read_bytes,
+                    stage_payload={
+                        "storage_route": "archive_full",
+                        "storage_tiers": _ARCHIVE_RUNTIME_TIERS,
+                        "storage_write_tiers": _ARCHIVE_NATIVE_WRITE_TIERS,
+                        "input_file_count": len(raw_records),
+                        "payload_available_file_count": len(available_records),
+                        "payload_unavailable_file_count": len(missing_payload_records),
+                        "payload_replayed_from_blob_file_count": len(missing_payload_records),
+                    },
                     force=True,
                 )
-            summary = _process_ingest_batch_sync(
-                raw_records,
-                db_path=self._cursor._db_path,
-                archive_root_str=str(archive_root),
-                blob_root_str=str(blob_root),
-                validation_mode=str(getattr(getattr(self._polylogue, "config", None), "validation_mode", "advisory")),
-                ingest_workers=_full_ingest_worker_count(raw_records),
-                measure_ingest_result_size=False,
-                repair_message_fts=True,
-                repair_action_fts=True,
-                ingest_result_chunk_size=_INGEST_RESULT_CHUNK_SIZE,
-                suspend_fts_triggers=suspend_fts_triggers,
-                force_process_pool=True,
-                heartbeat=None
-                if heartbeat is None
-                else lambda: heartbeat(
-                    "full_worker_wait",
+            archive_write = self._ingest_full_records_archive(raw_records, raw_payloads, blob_store)
+            failed.extend(raw_by_id[raw_id] for raw_id in raw_by_id if raw_id not in archive_write.raw_ids)
+            raw_by_id = {archive_write.raw_ids.get(raw_id, raw_id): path for raw_id, path in raw_by_id.items()}
+            if heartbeat is not None:
+                heartbeat(
+                    "full_archive_write_completed",
                     current_path=ingested[-1] if ingested else None,
                     source_payload_read_bytes=source_payload_read_bytes,
-                ),
-            )
-            failed.extend(raw_by_id[raw_id] for raw_id in summary.failed_raw_ids if raw_id in raw_by_id)
-            if summary.parse_failures and not summary.failed_raw_ids:
-                failed.extend(raw_by_id.values())
-            if attempt_id is not None and summary.worker_progress_total > 0:
-                self._cursor.update_ingest_attempt(
-                    attempt_id,
-                    phase="full_worker_wait",
-                    status="running",
-                    worker_in_flight_count=summary.worker_progress_in_flight,
-                    worker_completed_count=summary.worker_progress_completed,
-                    worker_total_count=summary.worker_progress_total,
+                    stage_payload={
+                        "storage_route": "archive_full",
+                        "storage_tiers": _ARCHIVE_RUNTIME_TIERS,
+                        "storage_write_tiers": _ARCHIVE_NATIVE_WRITE_TIERS,
+                        "written_raw_count": len(archive_write.raw_ids),
+                        "ingested_session_count": archive_write.session_count,
+                        "ingested_message_count": archive_write.message_count,
+                        "payload_unavailable_file_count": len(missing_payload_records),
+                        "payload_replayed_from_blob_file_count": len(missing_payload_records),
+                    },
+                    force=True,
                 )
+            summary = _IngestBatchSummary(
+                worker_count=1,
+                total_convos=archive_write.session_count,
+                total_msgs=archive_write.message_count,
+                changed_session_ids=archive_write.session_ids,
+            )
 
         failed_set = set(failed)
         raw_fingerprints = {path: raw_id for raw_id, path in raw_by_id.items()}
@@ -976,16 +1028,97 @@ class LiveBatchProcessor:
         raw_by_id.clear()
         return result
 
-    def _assert_writable_archive_layout(self) -> None:
-        from contextlib import closing
+    def _archive_active(self, archive_root: Path) -> bool:
+        return (archive_root / "index.db").exists() and (archive_root / "source.db").exists()
 
-        from polylogue.storage.sqlite.connection_profile import open_connection
-        from polylogue.storage.sqlite.schema import assert_supported_archive_layout
+    def _archive_storage_probe_payload(
+        self,
+        archive_root: Path,
+        *,
+        archive_active: bool,
+        archive_bootstrapped: bool,
+    ) -> dict[str, object]:
+        tier_paths = {spec.tier.value: archive_root / spec.filename for spec in ARCHIVE_TIER_SPECS.values()}
+        present = [tier for tier, path in tier_paths.items() if path.exists()]
+        missing = [tier for tier, path in tier_paths.items() if not path.exists()]
+        user_versions: dict[str, int | None] = {}
+        for tier, path in tier_paths.items():
+            if not path.exists():
+                user_versions[tier] = None
+                continue
+            try:
+                conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+                try:
+                    user_versions[tier] = int(conn.execute("PRAGMA user_version").fetchone()[0])
+                finally:
+                    conn.close()
+            except sqlite3.Error:
+                user_versions[tier] = -1
+        return {
+            "storage_route": "archive_full",
+            "storage_tiers": _ARCHIVE_RUNTIME_TIERS,
+            "storage_write_tiers": _ARCHIVE_NATIVE_WRITE_TIERS,
+            "archive_active": archive_active,
+            "archive_bootstrapped": archive_bootstrapped,
+            "archive_present_tiers": ",".join(present),
+            "archive_missing_tiers": ",".join(missing),
+            "archive_tier_user_versions_json": json_dumps(user_versions, sort_keys=True),
+        }
 
-        # ``open_connection`` hands back a connection the caller must close;
-        # ``with conn`` alone only commits. ``closing`` guarantees the close.
-        with closing(open_connection(self._cursor._db_path, timeout=10.0)) as conn:
-            assert_supported_archive_layout(conn)
+    def _ingest_full_records_archive(
+        self,
+        records: list[RawSessionRecord],
+        raw_payloads: dict[str, bytes],
+        blob_store: BlobStore,
+    ) -> _ArchiveFullWriteResult:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+        archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
+        result = _ArchiveFullWriteResult()
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            for record in records:
+                try:
+                    provider = record.payload_provider or Provider.from_string(record.source_name)
+                    payload = raw_payloads.get(record.raw_id)
+                    if payload is None:
+                        with blob_store.open(record.raw_id) as payload_handle:
+                            payloads = list(_iter_json_stream(payload_handle, Path(record.source_path).name))
+                    else:
+                        payloads = list(_iter_json_stream(BytesIO(payload), Path(record.source_path).name))
+                    sessions = parse_payload(
+                        provider,
+                        payloads,
+                        Path(record.source_path).stem,
+                        source_path=record.source_path,
+                    )
+                    if not sessions:
+                        continue
+                    acquired_at_ms = _iso_to_epoch_ms(record.acquired_at)
+                    for session in sessions:
+                        if payload is None:
+                            raw_id, session_id = archive.write_raw_blob_and_parsed(
+                                session,
+                                blob_hash_hex=record.raw_id,
+                                blob_size=record.blob_size,
+                                source_path=record.source_path,
+                                source_index=record.source_index or 0,
+                                acquired_at_ms=acquired_at_ms,
+                            )
+                        else:
+                            raw_id, session_id = archive.write_raw_and_parsed(
+                                session,
+                                payload=payload,
+                                source_path=record.source_path,
+                                source_index=record.source_index or 0,
+                                acquired_at_ms=acquired_at_ms,
+                            )
+                        result.raw_ids[record.raw_id] = raw_id
+                        result.session_ids.append(session_id)
+                        result.session_count += 1
+                        result.message_count += len(session.messages)
+                except Exception:
+                    logger.warning("live.watcher: archive full ingest failed for %s", record.source_path, exc_info=True)
+        return result
 
     def _mark_excluded_cursor(self, path: Path, stat: object, *, source_name: str) -> None:
         st_size = int(getattr(stat, "st_size", 0))
@@ -1051,7 +1184,7 @@ class LiveBatchProcessor:
     def _append_payload_for_provider(self, path: Path, source_name: str, payload: bytes) -> bytes | None:
         provider = Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
         if provider is Provider.CODEX:
-            identity = self._existing_provider_conversation_id(path)
+            identity = self._existing_provider_session_id(path)
             if identity is None:
                 return None
             session_meta = json_dumps(
@@ -1063,26 +1196,42 @@ class LiveBatchProcessor:
             return None
         return payload
 
-    def _existing_provider_conversation_id(self, path: Path) -> str | None:
-        with self._cursor._connect() as conn:
-            row = conn.execute(
-                """
-                SELECT c.provider_conversation_id
-                FROM conversations AS c
-                JOIN raw_conversations AS r ON r.raw_id = c.raw_id
-                WHERE r.source_path = ?
-                ORDER BY c.updated_at DESC, c.created_at DESC, c.conversation_id DESC
-                LIMIT 1
-                """,
-                (str(path),),
-            ).fetchone()
+    def _existing_provider_session_id(self, path: Path) -> str | None:
+        return self._existing_archive_session_native_id(path)
+
+    def _existing_archive_session_native_id(self, path: Path) -> str | None:
+        archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
+        index_db = archive_root / "index.db"
+        source_db = archive_root / "source.db"
+        if not index_db.exists() or not source_db.exists():
+            return None
+        try:
+            conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
+            try:
+                conn.execute("ATTACH DATABASE ? AS source_tier", (f"file:{source_db}?mode=ro",))
+                row = conn.execute(
+                    """
+                    SELECT s.native_id
+                    FROM sessions AS s
+                    JOIN source_tier.raw_sessions AS r ON r.raw_id = s.raw_id
+                    WHERE r.source_path = ?
+                    ORDER BY s.sort_key_ms DESC, s.created_at_ms DESC, s.session_id DESC
+                    LIMIT 1
+                    """,
+                    (str(path),),
+                ).fetchone()
+                conn.execute("DETACH DATABASE source_tier")
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            return None
         if row is None:
             return None
         value = row[0]
         return value if isinstance(value, str) and value.strip() else None
 
     def _claude_code_tail_matches_existing_identity(self, path: Path, payload: bytes) -> bool:
-        existing_id = self._existing_provider_conversation_id(path)
+        existing_id = self._existing_provider_session_id(path)
         if existing_id is None:
             return False
         session_ids: set[str] = set()
@@ -1105,52 +1254,16 @@ class LiveBatchProcessor:
     def _ingest_append_plans(self, plans: list[_AppendPlan]) -> _AppendResult:
         return ingest_append_plans(self, plans)
 
-    def _persist_raw_records(self, records: list[RawConversationRecord]) -> None:
-        if not records:
-            return
-        with self._cursor._connect() as conn:
-            from polylogue.storage.sqlite.schema import _ensure_schema
-
-            _ensure_schema(conn)
-            conn.executemany(
-                """
-                INSERT OR IGNORE INTO raw_conversations (
-                    raw_id,
-                    source_name,
-                    payload_provider,
-                    source_name,
-                    source_path,
-                    source_index,
-                    blob_size,
-                    acquired_at,
-                    file_mtime
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    (
-                        record.raw_id,
-                        record.source_name,
-                        record.payload_provider,
-                        record.source_name,
-                        record.source_path,
-                        record.source_index,
-                        record.blob_size,
-                        record.acquired_at,
-                        record.file_mtime,
-                    )
-                    for record in records
-                ],
-            )
-            conn.commit()
-
     def _compact_superseded_raw_snapshots(self, paths: list[Path]) -> None:
         if not paths:
             return
-        with self._cursor._connect() as conn:
-            from polylogue.storage.raw_retention import compact_paths_superseded_raw_snapshots
-            from polylogue.storage.sqlite.schema import _ensure_schema
+        from polylogue.storage.raw_retention import compact_paths_superseded_raw_snapshots
 
-            _ensure_schema(conn)
+        source_db = self._cursor._db_path.with_name("source.db")
+        if not source_db.exists():
+            return
+        with sqlite3.connect(source_db) as conn:
+            conn.row_factory = sqlite3.Row
             result = compact_paths_superseded_raw_snapshots(
                 conn, paths, limit_per_path=25, min_acquired_at=self._raw_compaction_min_acquired_at
             )

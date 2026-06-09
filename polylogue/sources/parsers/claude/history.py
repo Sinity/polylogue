@@ -11,7 +11,7 @@ appear:
   from this sidecar.
 
 The session-level ``sessionId`` is the only reliable join key back into the
-archived conversation; project + timestamp proximity is the fallback for
+archived session; project + timestamp proximity is the fallback for
 older rows that predate sessionId capture (#1583 scope explicitly defers
 fuzzy matching to a follow-up — this parser only emits typed rows; matching
 strategy is the caller's job).
@@ -124,7 +124,7 @@ def build_session_paste_index(history_path: Path) -> dict[str, list[HistoryEntry
 
     Only rows that actually carry paste evidence (``entry.has_paste``) and a
     ``sessionId`` are indexed; the rest are dropped — they cannot be matched
-    back to an archived conversation by the strong-identity path and would
+    back to an archived session by the strong-identity path and would
     inflate memory for nothing.
     """
     index: dict[str, list[HistoryEntry]] = {}

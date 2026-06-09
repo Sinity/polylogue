@@ -15,31 +15,29 @@ from polylogue.storage.insights.aggregate.records import (
 from polylogue.storage.insights.session.records import (
     SessionLatencyProfileRecord,
     SessionProfileRecord,
-    WorkThreadRecord,
+    ThreadRecord,
 )
 from polylogue.storage.insights.timeline.records import SessionPhaseRecord, SessionWorkEventRecord
-from polylogue.storage.runtime.action.records import ActionEventRecord
 from polylogue.storage.runtime.archive.records import (
     AttachmentRecord,
     ContentBlockRecord,
-    ConversationRecord,
     MessageRecord,
-    ProviderEventRecord,
+    SessionEventRecord,
+    SessionRecord,
 )
 from polylogue.storage.runtime.raw.records import (
     ArtifactObservationRecord,
-    RawConversationRecord,
+    RawSessionRecord,
 )
 from polylogue.storage.runtime.store_constants import (
-    ACTION_EVENT_MATERIALIZER_VERSION,
-    PROVIDER_EVENT_MATERIALIZER_VERSION,
     SESSION_ENRICHMENT_FAMILY,
     SESSION_ENRICHMENT_VERSION,
+    SESSION_EVENT_MATERIALIZER_VERSION,
     SESSION_INFERENCE_FAMILY,
     SESSION_INFERENCE_VERSION,
     SESSION_INSIGHT_MATERIALIZER_VERSION,
 )
-from polylogue.types import AttachmentId, ConversationId, MessageId
+from polylogue.types import AttachmentId, MessageId, SessionId
 
 
 def _json_or_none(value: BaseModel | Mapping[str, object] | None) -> str | None:
@@ -56,24 +54,22 @@ def _json_array_or_none(value: tuple[str, ...] | list[str] | None) -> str | None
     return json_dumps(list(value))
 
 
-def _make_ref_id(attachment_id: AttachmentId, conversation_id: ConversationId, message_id: MessageId | None) -> str:
-    seed = f"{attachment_id}:{conversation_id}:{message_id or ''}"
+def _make_ref_id(attachment_id: AttachmentId, session_id: SessionId, message_id: MessageId | None) -> str:
+    seed = f"{attachment_id}:{session_id}:{message_id or ''}"
     digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
     return f"ref-{digest}"
 
 
 __all__ = [
-    "ACTION_EVENT_MATERIALIZER_VERSION",
-    "ActionEventRecord",
     "AttachmentRecord",
     "ArtifactObservationRecord",
     "ContentBlockRecord",
-    "ConversationRecord",
+    "SessionRecord",
     "DaySessionSummaryRecord",
     "MessageRecord",
-    "PROVIDER_EVENT_MATERIALIZER_VERSION",
-    "ProviderEventRecord",
-    "RawConversationRecord",
+    "SESSION_EVENT_MATERIALIZER_VERSION",
+    "SessionEventRecord",
+    "RawSessionRecord",
     "SESSION_ENRICHMENT_FAMILY",
     "SESSION_ENRICHMENT_VERSION",
     "SESSION_INFERENCE_FAMILY",
@@ -84,7 +80,7 @@ __all__ = [
     "SessionProfileRecord",
     "SessionTagRollupRecord",
     "SessionWorkEventRecord",
-    "WorkThreadRecord",
+    "ThreadRecord",
     "_json_array_or_none",
     "_json_or_none",
     "_make_ref_id",

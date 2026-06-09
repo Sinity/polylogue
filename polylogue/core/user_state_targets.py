@@ -2,7 +2,7 @@
 
 User-state targets identify the unit that a mark, annotation, recall-pack
 item, or workspace open-target points at. The original #867 implementation
-admitted only ``conversation`` and ``message``; this module is the
+admitted only ``session`` and ``message``; this module is the
 authoritative registry of the additional kinds added by #1113.
 
 Each kind declares:
@@ -11,9 +11,9 @@ Each kind declares:
   (CLI, MCP, daemon HTTP, recall-pack items).
 - ``unit``: human-readable role of the ``target_id`` for that kind.
 - ``requires_message_id``: whether the kind stores ``message_id`` alongside
-  ``conversation_id``. Only ``message`` and ``content_block`` do.
+  ``session_id``. Only ``message`` and ``content_block`` do.
 - ``identity_template``: format string for ``identity_key`` in recall packs
-  and workspace open-targets; receives keyword args ``conversation_id``,
+  and workspace open-targets; receives keyword args ``session_id``,
   ``target_id``, ``message_id``.
 
 Kinds that still require external work to gain stable identity (currently
@@ -39,32 +39,26 @@ class TargetKind:
 
 _KINDS: Final[tuple[TargetKind, ...]] = (
     TargetKind(
-        name="conversation",
-        unit="conversation_id",
+        name="session",
+        unit="session_id",
         requires_message_id=False,
-        identity_template="conversation:{target_id}",
+        identity_template="session:{target_id}",
     ),
     TargetKind(
         name="message",
         unit="message_id",
         requires_message_id=True,
-        identity_template="message:{conversation_id}:{target_id}",
-    ),
-    TargetKind(
-        name="session",
-        unit="conversation_id (session root)",
-        requires_message_id=False,
-        identity_template="session:{target_id}",
+        identity_template="message:{session_id}:{target_id}",
     ),
     TargetKind(
         name="work_event",
         unit="event_id from session_work_events",
         requires_message_id=False,
-        identity_template="work_event:{conversation_id}:{target_id}",
+        identity_template="work_event:{session_id}:{target_id}",
     ),
     TargetKind(
         name="thread",
-        unit="thread_id from work_threads",
+        unit="thread_id from threads",
         requires_message_id=False,
         identity_template="thread:{target_id}",
     ),
@@ -72,19 +66,19 @@ _KINDS: Final[tuple[TargetKind, ...]] = (
         name="content_block",
         unit="message_id:block_index",
         requires_message_id=True,
-        identity_template="content_block:{conversation_id}:{target_id}",
+        identity_template="content_block:{session_id}:{target_id}",
     ),
     TargetKind(
         name="attachment",
         unit="attachment_id",
         requires_message_id=False,
-        identity_template="attachment:{conversation_id}:{target_id}",
+        identity_template="attachment:{session_id}:{target_id}",
     ),
     TargetKind(
         name="paste_span",
         unit="paste_id",
         requires_message_id=False,
-        identity_template="paste_span:{conversation_id}:{target_id}",
+        identity_template="paste_span:{session_id}:{target_id}",
     ),
 )
 
@@ -114,7 +108,7 @@ def get_kind(name: str) -> TargetKind:
 def identity_key(
     kind_name: str,
     *,
-    conversation_id: str,
+    session_id: str,
     target_id: str,
     message_id: str | None = None,
 ) -> str:
@@ -122,7 +116,7 @@ def identity_key(
 
     kind = get_kind(kind_name)
     return kind.identity_template.format(
-        conversation_id=conversation_id,
+        session_id=session_id,
         target_id=target_id,
         message_id=message_id or "",
     )

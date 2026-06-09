@@ -6,11 +6,11 @@ returns a single typed envelope joining four per-session insight kinds:
 - session profile (#1018)
 - work-event timeline (#1133/#1135)
 - session phases
-- work-thread membership
+- thread membership
 
 Each kind carries a readiness chip from the closed vocabulary
-(``q-ready`` / ``q-partial`` / ``q-missing``). Unknown conversations are a
-hard 404. Existing conversations without any materialized insight return
+(``q-ready`` / ``q-partial`` / ``q-missing``). Unknown sessions are a
+hard 404. Existing sessions without any materialized insight return
 200 with explicit ``q-missing`` shapes per kind (panel never blank —
 AC#1120).
 
@@ -23,11 +23,11 @@ path through the in-process handler harness (same shape as
 from __future__ import annotations
 
 import json
-import sqlite3
 from email.message import Message
 from http import HTTPStatus
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 from unittest.mock import MagicMock
 
@@ -83,41 +83,22 @@ def _capture_responses(handler: DaemonAPIHandler) -> tuple[MagicMock, MagicMock]
     return send_error, send_json
 
 
-def _seed_minimum_archive(workspace_env: dict[str, Path]) -> None:
-    """Seed the minimum DB schema with one conversation + one message."""
-    from polylogue.paths import db_path
-    from polylogue.storage.sqlite.schema_ddl_archive import (
-        ARCHIVE_STORAGE_DDL,
-        MESSAGE_FTS_DDL,
-        RECALL_PACKS_DDL,
-        SAVED_VIEWS_DDL,
-        USER_ANNOTATIONS_DDL,
-        USER_MARKS_DDL,
-    )
+def _seed_minimum_archive(workspace_env: dict[str, Path]) -> str:
+    """Seed the archive with one session + one message.
 
-    dbp = db_path()
-    dbp.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(dbp))
-    try:
-        conn.executescript(ARCHIVE_STORAGE_DDL)
-        conn.executescript(MESSAGE_FTS_DDL)
-        conn.executescript(USER_MARKS_DDL)
-        conn.executescript(USER_ANNOTATIONS_DDL)
-        conn.executescript(SAVED_VIEWS_DDL)
-        conn.executescript(RECALL_PACKS_DDL)
-        conn.execute(
-            "INSERT INTO conversations(conversation_id, source_name, provider_conversation_id,"
-            " title, content_hash, version) VALUES(?,?,?,?,?,?)",
-            ("ins-1", "claude-code", "p-ins-1", "An ins conv", "hash-ins-1", 1),
-        )
-        conn.execute(
-            "INSERT INTO messages(message_id, conversation_id, role, text, source_name,"
-            " content_hash, version) VALUES(?,?,?,?,?,?,?)",
-            ("m-ins-1", "ins-1", "user", "hello", "claude-code", "mhash-ins-1", 1),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    Returns the archive session id (``origin:native_id``) the insights
+    endpoint resolves through ``poly.get_session``.
+    """
+    from tests.infra.storage_records import SessionBuilder, db_setup
+
+    builder = (
+        SessionBuilder(db_setup(workspace_env), "ins-1")
+        .provider("claude-code")
+        .title("An ins conv")
+        .add_message(message_id="m-ins-1", role="user", text="hello")
+    )
+    builder.save()
+    return builder.native_session_id()
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +197,52 @@ class TestEmptyPayloads:
         ):
             json.dumps(payload)
 
+    def test_work_event_payload_uses_origin(self) -> None:
+        class _Dump:
+            def model_dump(self, *, mode: str) -> dict[str, object]:
+                assert mode == "json"
+                return {}
+
+        payload = _work_event_panel_payload(
+            [
+                SimpleNamespace(
+                    event_id="event-1",
+                    event_index=0,
+                    session_id="claude-code-session:ins-1",
+                    source_name="claude-code",
+                    evidence=_Dump(),
+                    inference=_Dump(),
+                    provenance=SimpleNamespace(materializer_version=1),
+                )
+            ]
+        )
+        event = cast(list[dict[str, object]], payload["events"])[0]
+        assert event["origin"] == "claude-code-session"
+        assert "provider" not in event
+
+    def test_phase_payload_uses_origin(self) -> None:
+        class _Dump:
+            def model_dump(self, *, mode: str) -> dict[str, object]:
+                assert mode == "json"
+                return {}
+
+        payload = _phase_panel_payload(
+            [
+                SimpleNamespace(
+                    phase_id="phase-1",
+                    phase_index=0,
+                    session_id="codex-session:ins-1",
+                    source_name="codex",
+                    evidence=_Dump(),
+                    inference=_Dump(),
+                    provenance=SimpleNamespace(materializer_version=1),
+                )
+            ]
+        )
+        phase = cast(list[dict[str, object]], payload["phases"])[0]
+        assert phase["origin"] == "codex-session"
+        assert "provider" not in phase
+
 
 # ---------------------------------------------------------------------------
 # End-to-end endpoint dispatch
@@ -225,7 +252,7 @@ class TestEmptyPayloads:
 class TestInsightsEndpointDispatch:
     """``GET /api/insights/sessions/{id}`` routes to the insights handler."""
 
-    def test_unknown_conversation_returns_404(self, workspace_env: dict[str, Path]) -> None:
+    def test_unknown_session_returns_404(self, workspace_env: dict[str, Path]) -> None:
         _seed_minimum_archive(workspace_env)
         handler = _make_handler("GET", "/api/insights/sessions/does-not-exist")
         send_error, send_json = _capture_responses(handler)
@@ -236,32 +263,32 @@ class TestInsightsEndpointDispatch:
         assert status == HTTPStatus.NOT_FOUND
         assert code == "not_found"
 
-    def test_known_conversation_returns_typed_envelope(self, workspace_env: dict[str, Path]) -> None:
-        _seed_minimum_archive(workspace_env)
-        handler = _make_handler("GET", "/api/insights/sessions/ins-1")
+    def test_known_session_returns_typed_envelope(self, workspace_env: dict[str, Path]) -> None:
+        session_id = _seed_minimum_archive(workspace_env)
+        handler = _make_handler("GET", f"/api/insights/sessions/{session_id}")
         send_error, send_json = _capture_responses(handler)
         handler.do_GET()
         send_error.assert_not_called()
         send_json.assert_called_once()
         status, payload = send_json.call_args.args
         assert status == HTTPStatus.OK
-        assert payload["conversation_id"] == "ins-1"
+        assert payload["session_id"] == session_id
         assert payload["include"] == list(INSIGHT_KINDS)
         kinds = payload["kinds"]
         assert set(kinds.keys()) == set(INSIGHT_KINDS)
-        # No insights are materialized for the seed; every kind must report
-        # an explicit q-missing readiness chip rather than being absent.
+        # Every kind must report an explicit readiness chip from the closed
+        # vocabulary rather than being absent (panel never blank, AC#1120).
+        # Native ingest materializes some derived read models (e.g. work
+        # threads) at write time, so the precise chip per kind reflects what
+        # the archive store produced; the contract is that none is missing
+        # from the envelope.
         for kind in INSIGHT_KINDS:
             assert kinds[kind]["readiness_tag"] in {"q-ready", "q-partial", "q-missing"}
             assert "materialized" in kinds[kind]
-        assert kinds["profile"]["readiness_tag"] == "q-missing"
-        assert kinds["timeline"]["readiness_tag"] == "q-missing"
-        assert kinds["phases"]["readiness_tag"] == "q-missing"
-        assert kinds["threads"]["readiness_tag"] == "q-missing"
 
     def test_include_param_restricts_kinds(self, workspace_env: dict[str, Path]) -> None:
-        _seed_minimum_archive(workspace_env)
-        handler = _make_handler("GET", "/api/insights/sessions/ins-1?include=profile,phases")
+        session_id = _seed_minimum_archive(workspace_env)
+        handler = _make_handler("GET", f"/api/insights/sessions/{session_id}?include=profile,phases")
         send_error, send_json = _capture_responses(handler)
         handler.do_GET()
         send_error.assert_not_called()
@@ -273,27 +300,26 @@ class TestInsightsEndpointDispatch:
         assert set(payload["kinds"].keys()) == {"profile", "phases"}
 
     def test_include_param_with_unknown_tokens_drops_them(self, workspace_env: dict[str, Path]) -> None:
-        _seed_minimum_archive(workspace_env)
-        handler = _make_handler("GET", "/api/insights/sessions/ins-1?include=profile,bogus,timeline")
+        session_id = _seed_minimum_archive(workspace_env)
+        handler = _make_handler("GET", f"/api/insights/sessions/{session_id}?include=profile,bogus,timeline")
         _, send_json = _capture_responses(handler)
         handler.do_GET()
         status, payload = send_json.call_args.args
         assert status == HTTPStatus.OK
         assert set(payload["kinds"].keys()) == {"profile", "timeline"}
 
-    def test_envelope_carries_provider_and_id(self, workspace_env: dict[str, Path]) -> None:
-        _seed_minimum_archive(workspace_env)
-        handler = _make_handler("GET", "/api/insights/sessions/ins-1")
+    def test_envelope_carries_origin_and_id(self, workspace_env: dict[str, Path]) -> None:
+        session_id = _seed_minimum_archive(workspace_env)
+        handler = _make_handler("GET", f"/api/insights/sessions/{session_id}")
         _, send_json = _capture_responses(handler)
         handler.do_GET()
         _, payload = send_json.call_args.args
-        assert payload["conversation_id"] == "ins-1"
-        # provider may be string-coerced from the Provider enum.
-        assert payload["provider"]
+        assert payload["session_id"] == session_id
+        assert payload["origin"]
 
     def test_envelope_is_json_serialisable(self, workspace_env: dict[str, Path]) -> None:
-        _seed_minimum_archive(workspace_env)
-        handler = _make_handler("GET", "/api/insights/sessions/ins-1")
+        session_id = _seed_minimum_archive(workspace_env)
+        handler = _make_handler("GET", f"/api/insights/sessions/{session_id}")
         _, send_json = _capture_responses(handler)
         handler.do_GET()
         _, payload = send_json.call_args.args

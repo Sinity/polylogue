@@ -18,26 +18,23 @@ Findings addressed:
 from __future__ import annotations
 
 import inspect
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
-from polylogue.protocols import OutputRenderer, SearchProvider, VectorProvider
-from polylogue.rendering.renderers.html import HTMLRenderer
-from polylogue.rendering.renderers.markdown import MarkdownRenderer
+from polylogue.protocols import SearchProvider, VectorProvider
 from polylogue.storage.runtime import MessageRecord
 from polylogue.storage.search_providers.fts5 import FTS5Provider
 from polylogue.storage.search_providers.hybrid import HybridSearchProvider
 from polylogue.ui.facade import ConsoleLike, PlainConsole
-from tests.infra.storage_records import make_conversation, make_message, upsert_conversation, upsert_message
 
 
 class _VectorStub:
     model = "stub"
 
-    def upsert(self, conversation_id: str, messages: list[MessageRecord]) -> None:
-        del conversation_id, messages
+    def upsert(self, session_id: str, messages: list[MessageRecord]) -> None:
+        del session_id, messages
 
     def query(self, text: str, limit: int = 10) -> list[tuple[str, float]]:
         del text, limit
@@ -120,106 +117,6 @@ class TestVectorProviderConformance:
 
 
 # ---------------------------------------------------------------------------
-# OutputRenderer (Finding 1)
-# ---------------------------------------------------------------------------
-
-
-class TestOutputRendererConformance:
-    """MarkdownRenderer and HTMLRenderer must satisfy the OutputRenderer protocol."""
-
-    @pytest.mark.parametrize(
-        "cls,expected_format",
-        [(MarkdownRenderer, "markdown"), (HTMLRenderer, "html")],
-        ids=["markdown", "html"],
-    )
-    def test_isinstance(
-        self,
-        cls: type[MarkdownRenderer] | type[HTMLRenderer],
-        expected_format: str,
-        tmp_path: Path,
-    ) -> None:
-        renderer = cls(archive_root=tmp_path)
-        assert isinstance(renderer, OutputRenderer)
-
-    @pytest.mark.parametrize(
-        "cls,expected_format",
-        [(MarkdownRenderer, "markdown"), (HTMLRenderer, "html")],
-        ids=["markdown", "html"],
-    )
-    def test_supports_format(
-        self,
-        cls: type[MarkdownRenderer] | type[HTMLRenderer],
-        expected_format: str,
-        tmp_path: Path,
-    ) -> None:
-        assert cls(archive_root=tmp_path).supports_format() == expected_format
-
-    @pytest.mark.parametrize("cls", [MarkdownRenderer, HTMLRenderer], ids=["markdown", "html"])
-    def test_render_returns_awaitable(self, cls: type[MarkdownRenderer] | type[HTMLRenderer], tmp_path: Path) -> None:
-        """OutputRenderer.render() must return an awaitable when called."""
-        renderer = cls(archive_root=tmp_path)
-        result = renderer.render("test-conv", tmp_path)
-        assert inspect.isawaitable(result)
-        inspect_result = result
-        assert isinstance(inspect_result, Coroutine)
-        inspect_result.close()
-
-    @pytest.mark.parametrize("cls", [MarkdownRenderer, HTMLRenderer], ids=["markdown", "html"])
-    async def test_render_produces_output(
-        self, cls: type[MarkdownRenderer] | type[HTMLRenderer], tmp_path: Path
-    ) -> None:
-        """render() must write a non-empty output file for a seeded conversation."""
-        from polylogue.storage.sqlite.connection import open_connection
-
-        db_path = tmp_path / "test.db"
-        conv_id = "smoke-conv-0001"
-
-        with open_connection(db_path) as conn:
-            upsert_conversation(
-                conn,
-                make_conversation(
-                    conversation_id=conv_id,
-                    source_name="chatgpt",
-                    provider_conversation_id=conv_id,
-                    title="Smoke Test Conversation",
-                    content_hash="hash-smoke-001",
-                ),
-            )
-            upsert_message(
-                conn,
-                make_message(
-                    message_id="smoke-msg-001",
-                    conversation_id=conv_id,
-                    role="user",
-                    text="Hello world",
-                    content_hash="hash-smoke-msg-001",
-                ),
-            )
-            upsert_message(
-                conn,
-                make_message(
-                    message_id="smoke-msg-002",
-                    conversation_id=conv_id,
-                    role="assistant",
-                    text="Hi there!",
-                    content_hash="hash-smoke-msg-002",
-                ),
-            )
-            conn.commit()
-
-        output_dir = tmp_path / "out"
-        if cls is HTMLRenderer:
-            renderer: OutputRenderer = HTMLRenderer(archive_root=output_dir, db_path=db_path)
-        else:
-            renderer = MarkdownRenderer(archive_root=output_dir, db_path=db_path)
-
-        result_path = await renderer.render(conv_id, output_dir)
-
-        assert result_path.exists()
-        assert result_path.stat().st_size > 0
-
-
-# ---------------------------------------------------------------------------
 # ConsoleLike (Finding 3)
 # ---------------------------------------------------------------------------
 
@@ -293,15 +190,15 @@ class TestParserModuleInterface:
                 f"{fn.__qualname__} is missing a return type annotation"
             )
 
-    def test_parse_functions_return_parsed_conversation(self) -> None:
-        """Each parse function with a minimal valid payload must return ParsedConversation."""
+    def test_parse_functions_return_parsed_session(self) -> None:
+        """Each parse function with a minimal valid payload must return ParsedSession."""
         import polylogue.sources.parsers.chatgpt as chatgpt
         import polylogue.sources.parsers.claude as claude
         import polylogue.sources.parsers.codex as codex
         import polylogue.sources.parsers.drive as drive
-        from polylogue.sources.parsers.base import ParsedConversation
+        from polylogue.sources.parsers.base import ParsedSession
 
-        cases: list[tuple[Callable[..., ParsedConversation], tuple[object, ...]]] = [
+        cases: list[tuple[Callable[..., ParsedSession], tuple[object, ...]]] = [
             (chatgpt.parse, ({"mapping": {}}, "fallback-id")),
             (codex.parse, ([], "fallback-id")),
             (claude.parse_code, ([], "fallback-id")),
@@ -310,6 +207,6 @@ class TestParserModuleInterface:
         ]
         for fn, args in cases:
             result = fn(*args)
-            assert isinstance(result, ParsedConversation), (
-                f"{fn.__qualname__} returned {type(result).__name__!r}, expected ParsedConversation"
+            assert isinstance(result, ParsedSession), (
+                f"{fn.__qualname__} returned {type(result).__name__!r}, expected ParsedSession"
             )

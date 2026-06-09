@@ -325,9 +325,9 @@ def _check(name: str, status: str, detail: str) -> SimpleNamespace:
 
 def _metric(
     source_name: str,
-    conversation_count: int,
+    session_count: int,
     message_count: int = 0,
-    avg_messages_per_conversation: float = 0.0,
+    avg_messages_per_session: float = 0.0,
     avg_user_words: float = 0.0,
     avg_assistant_words: float = 0.0,
     tool_use_count: int = 0,
@@ -337,9 +337,9 @@ def _metric(
 ) -> SimpleNamespace:
     return SimpleNamespace(
         source_name=source_name,
-        conversation_count=conversation_count,
+        session_count=session_count,
         message_count=message_count,
-        avg_messages_per_conversation=avg_messages_per_conversation,
+        avg_messages_per_session=avg_messages_per_session,
         avg_user_words=avg_user_words,
         avg_assistant_words=avg_assistant_words,
         tool_use_count=tool_use_count,
@@ -358,23 +358,23 @@ def _run_summary(
     health: SimpleNamespace | None = None,
     counts: list[tuple[str, int]] | None = None,
     metrics: list[SimpleNamespace] | None = None,
-    archive_stats: SimpleNamespace | None = None,
+    embedding_stats: dict[str, object] | None = None,
     analytics_error: Exception | None = None,
 ) -> SummaryResult:
     from polylogue.cli.shared.helpers import print_summary
 
     env, buffer, ui = _make_env(config, plain=plain)
-    total_conversations = sum(count for _, count in counts or [])
-    if archive_stats is None:
-        archive_stats = SimpleNamespace(
-            total_conversations=total_conversations,
-            embedded_conversations=0,
-            embedded_messages=0,
-            pending_embedding_conversations=0,
-            stale_embedding_messages=0,
-            messages_missing_embedding_provenance=0,
-            embedding_coverage=0.0,
-        )
+    total_sessions = sum(count for _, count in counts or [])
+    if embedding_stats is None:
+        embedding_stats = {
+            "total_sessions": total_sessions,
+            "embedded_sessions": 0,
+            "embedded_messages": 0,
+            "pending_sessions": 0,
+            "stale_messages": 0,
+            "messages_missing_provenance": 0,
+            "embedding_coverage_percent": 0.0,
+        }
     metrics_mock = AsyncMock(return_value=metrics)
     counts_mock = AsyncMock(return_value=counts)
     if analytics_error is not None:
@@ -382,12 +382,12 @@ def _run_summary(
         counts_mock = AsyncMock(side_effect=analytics_error)
 
     with (
-        patch.object(env.repository, "get_archive_stats", new=AsyncMock(return_value=archive_stats)),
+        patch("polylogue.cli.shared.helper_summary.embedding_status_payload", return_value=embedding_stats),
         patch("polylogue.cli.shared.helpers.quick_readiness_summary", return_value=quick_health) as mock_quick,
         patch("polylogue.cli.shared.helpers.get_readiness", return_value=health) as mock_get_readiness,
         patch("polylogue.cli.shared.helpers.format_sources_summary", return_value="inbox"),
         patch("polylogue.cli.shared.helpers.list_archive_coverage_insights", metrics_mock),
-        patch("polylogue.cli.shared.helpers.get_provider_counts", counts_mock),
+        patch("polylogue.cli.shared.helpers.get_origin_counts", counts_mock),
     ):
         print_summary(env, verbose=verbose)
 
@@ -419,7 +419,7 @@ def test_print_summary_basic_contract(config: Config) -> None:
         "Readiness: OK",
     ]
     assert "Archive:" in result["console"]
-    assert "10 conversations" in result["console"]
+    assert "10 sessions" in result["console"]
     assert "claude-ai:" in result["console"]
     result["mock_quick"].assert_called_once()
     result["mock_get_readiness"].assert_not_called()
@@ -460,7 +460,7 @@ def test_print_summary_verbose_analytics_deep_dive_contract(config: Config) -> N
             "claude-ai",
             7,
             message_count=70,
-            avg_messages_per_conversation=10.0,
+            avg_messages_per_session=10.0,
             avg_user_words=15,
             avg_assistant_words=20,
             tool_use_count=5,
@@ -472,7 +472,7 @@ def test_print_summary_verbose_analytics_deep_dive_contract(config: Config) -> N
             "chatgpt",
             3,
             message_count=21,
-            avg_messages_per_conversation=7.0,
+            avg_messages_per_session=7.0,
             avg_user_words=9,
             avg_assistant_words=13,
         ),
@@ -489,7 +489,7 @@ def test_print_summary_verbose_analytics_deep_dive_contract(config: Config) -> N
     assert result["lines"][4] == "Embeddings: 0/10 convs, 0 msgs (0.0%)"
     assert result["lines"][5] == "Readiness (source=live)"
     assert "Archive:" in result["console"]
-    assert "10 conversations" in result["console"]
+    assert "10 sessions" in result["console"]
     assert "Deep Dive:" in result["console"]
     assert "claude-ai" in result["console"]
     assert "Messages: 70" in result["console"]
@@ -518,7 +518,7 @@ def test_print_summary_omits_deep_dive_when_no_verbose_metrics(config: Config) -
         verbose=False,
         plain=True,
         counts=[("claude-ai", 1)],
-        metrics=[_metric("claude-ai", 1, message_count=2, avg_messages_per_conversation=2.0)],
+        metrics=[_metric("claude-ai", 1, message_count=2, avg_messages_per_session=2.0)],
     )
 
     assert "Archive:" in result["console"]
@@ -531,15 +531,15 @@ def test_print_summary_shows_pending_embeddings(config: Config) -> None:
         verbose=False,
         plain=True,
         counts=[("claude-ai", 7), ("chatgpt", 3)],
-        archive_stats=SimpleNamespace(
-            total_conversations=10,
-            embedded_conversations=4,
-            embedded_messages=120,
-            pending_embedding_conversations=6,
-            stale_embedding_messages=0,
-            messages_missing_embedding_provenance=0,
-            embedding_coverage=40.0,
-        ),
+        embedding_stats={
+            "total_sessions": 10,
+            "embedded_sessions": 4,
+            "embedded_messages": 120,
+            "pending_sessions": 6,
+            "stale_messages": 0,
+            "messages_missing_provenance": 0,
+            "embedding_coverage_percent": 40.0,
+        },
     )
 
     assert "Embeddings: 4/10 convs, 120 msgs (40.0%), pending 6" in result["lines"]

@@ -197,13 +197,13 @@ function _polySplitCodeBlocks(text) {
   return parts;
 }
 
-function _polyActionRailHtml(m, conversationId) {
+function _polyActionRailHtml(m, sessionId) {
   // Five actions per #1202: copy text, copy link, open raw, view
   // provenance, jump-to-anchor. Each carries data attributes the
   // keyboard handler reads when it needs to operate on the focused
   // message card.
   var anchor = m.anchor || ('message-' + (m.id || ''));
-  var rawHref = '/api/conversations/' + encodeURIComponent(conversationId) + '/raw';
+  var rawHref = '/api/sessions/' + encodeURIComponent(sessionId) + '/raw';
   return ''
     + '<div class="msg-actions" data-anchor="' + escAttr(anchor) + '">'
     +   '<button class="act-btn" data-act="copy-text" title="Copy message text (c)" '
@@ -211,13 +211,13 @@ function _polyActionRailHtml(m, conversationId) {
     +   '<button class="act-btn" data-act="copy-link" title="Copy anchor link" '
     +           'onclick="copyMessageLink(\'' + escAttr(anchor) + '\')">link</button>'
     +   '<a class="act-btn" data-act="open-raw" target="_blank" rel="noopener" '
-    +     'title="Open raw conversation JSON" href="' + escAttr(rawHref) + '">raw</a>'
+    +     'title="Open raw session JSON" href="' + escAttr(rawHref) + '">raw</a>'
     +   '<button class="act-btn" data-act="view-provenance" title="View provenance (Raw tab)" '
     +           'onclick="openProvenanceTab()">prov</button>'
     +   '<button class="act-btn" data-act="jump-anchor" title="Jump to anchor in URL" '
     +           'onclick="jumpToAnchor(\'' + escAttr(anchor) + '\')">#</button>'
     +   '<button class="act-btn" data-act="continue-thread" title="Continue this thread in another agent (#1203)" '
-    +           'onclick="openThreadContinueMenu(\'' + escAttr(conversationId) + '\', \'' + escAttr(String(m.id || '')) + '\', this)">continue</button>'
+    +           'onclick="openThreadContinueMenu(\'' + escAttr(sessionId) + '\', \'' + escAttr(String(m.id || '')) + '\', this)">continue</button>'
     +   (typeof _polyCopyActionRailHtml === 'function' ? _polyCopyActionRailHtml(m) : '')
     + '</div>';
 }
@@ -244,12 +244,12 @@ async function ensureThreadContinueTemplates() {
   return _threadContinueLoading;
 }
 
-function _threadContinueFillTemplate(template, prompt, conversationId, messageId) {
+function _threadContinueFillTemplate(template, prompt, sessionId, messageId) {
   var encoded = encodeURIComponent(prompt);
   return (template || '')
     .replace(/\{prompt\}/g, encoded)
     .replace(/\{prompt_plain\}/g, prompt)
-    .replace(/\{conversation_id\}/g, encodeURIComponent(conversationId || ''))
+    .replace(/\{session_id\}/g, encodeURIComponent(sessionId || ''))
     .replace(/\{message_id\}/g, encodeURIComponent(messageId || ''));
 }
 
@@ -265,7 +265,7 @@ function _threadContinuePromptForMessage(messageId) {
   return (msg && (msg.text || '')) || '';
 }
 
-async function openThreadContinueMenu(conversationId, messageId, anchorEl) {
+async function openThreadContinueMenu(sessionId, messageId, anchorEl) {
   var templates = await ensureThreadContinueTemplates();
   // Clear any existing menu before opening a new one.
   var existing = document.getElementById('thread-continue-menu');
@@ -278,7 +278,7 @@ async function openThreadContinueMenu(conversationId, messageId, anchorEl) {
     + 'border:1px solid var(--border-strong);border-radius:4px;padding:4px;'
     + 'box-shadow:0 4px 12px rgba(0,0,0,0.5);min-width:180px;font-size:var(--small)';
   menu.innerHTML = templates.map(function(t) {
-    var url = _threadContinueFillTemplate(t.url_template, prompt, conversationId, messageId);
+    var url = _threadContinueFillTemplate(t.url_template, prompt, sessionId, messageId);
     return '<button class="act-btn" style="display:block;width:100%;text-align:left;margin:2px 0" '
       + 'data-agent-id="' + escAttr(t.agent_id) + '" '
       + 'data-resolved-url="' + escAttr(url) + '" '
@@ -630,9 +630,9 @@ function _polyHandleCopyFocused() {
   return false;
 }
 
-function _polyHandleOpenConversation() {
-  // ``o`` opens the focused conversation in the sidebar. When the
-  // operator is already inside a conversation but the sidebar still
+function _polyHandleOpenSession() {
+  // ``o`` opens the focused session in the sidebar. When the
+  // operator is already inside a session but the sidebar still
   // has selection, this re-loads the highlighted entry — matches
   // existing j/k semantics on the sidebar.
   var sel = document.querySelector('.conv-item.selected') || document.querySelector('.conv-item');
@@ -680,24 +680,24 @@ function installDensityToggle() {
 function installReaderShortcuts() {
   // The base handler in web_shell.py owns ``/``, ``?``, ``Esc``, ``n/p`` and
   // delegates ``j/k`` to a hook so this slice can switch between sidebar
-  // navigation (no conversation open) and message-card navigation
-  // (conversation open). We attach a capture-phase handler so we can
+  // navigation (no session open) and message-card navigation
+  // (session open). We attach a capture-phase handler so we can
   // suppress the base behavior when we drive messages.
   document.addEventListener('keydown', function(e) {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
     if (e.metaKey || e.ctrlKey || e.altKey) return;
-    var hasConversation = !!(state.selected && state.selected.messages && state.selected.messages.length);
-    if (e.key === 'j' && hasConversation) {
+    var hasSession = !!(state.selected && state.selected.messages && state.selected.messages.length);
+    if (e.key === 'j' && hasSession) {
       if (_polyHandleNavigateMessages(1)) { e.preventDefault(); e.stopPropagation(); }
-    } else if (e.key === 'k' && hasConversation) {
+    } else if (e.key === 'k' && hasSession) {
       if (_polyHandleNavigateMessages(-1)) { e.preventDefault(); e.stopPropagation(); }
     } else if (e.key === 'c') {
       if (_polyHandleCopyFocused()) { e.preventDefault(); e.stopPropagation(); }
     } else if (e.key === 'o') {
-      if (_polyHandleOpenConversation()) { e.preventDefault(); e.stopPropagation(); }
+      if (_polyHandleOpenSession()) { e.preventDefault(); e.stopPropagation(); }
     }
     // g g — scroll to top of message list (#1518 slice 1d)
-    if (e.key === 'g' && !e.shiftKey && hasConversation) {
+    if (e.key === 'g' && !e.shiftKey && hasSession) {
       var now = Date.now();
       if (now - _doubleGtimer < 500) {
         var msgList = document.getElementById('msg-list');
@@ -710,7 +710,7 @@ function installReaderShortcuts() {
       return;
     }
     // G (shift-g) — scroll to bottom of message list (#1518 slice 1d)
-    if (e.key === 'G' && hasConversation) {
+    if (e.key === 'G' && hasSession) {
       _doubleGtimer = 0;
       var msgList2 = document.getElementById('msg-list');
       if (msgList2) {
@@ -721,7 +721,7 @@ function installReaderShortcuts() {
   }, true);
 
   // After a fresh render of the message list the focus index is stale.
-  // Reset it so j/k start from the top of the new conversation.
+  // Reset it so j/k start from the top of the new session.
   var msgList = document.getElementById('msg-list');
   if (msgList && typeof MutationObserver !== 'undefined') {
     var obs = new MutationObserver(function() { state._focusedMessageIndex = -1; });
@@ -757,7 +757,7 @@ if (document.readyState === 'loading') {
 # operator can discover the new ``c`` / ``o`` bindings and the message-
 # navigation reinterpretation of ``j`` / ``k``.
 READER_HELP_HTML = r"""
-      <kbd>o</kbd><span>Open focused conversation</span>
+      <kbd>o</kbd><span>Open focused session</span>
       <kbd>c</kbd><span>Copy focused message text</span>
       <kbd>g g</kbd><span>Scroll to top of messages</span>
       <kbd>G</kbd><span>Scroll to bottom of messages</span>

@@ -1,4 +1,4 @@
-"""Schema-driven synthetic conversation generator."""
+"""Schema-driven synthetic session generator."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ from polylogue.schemas.synthetic.wire_formats import WireFormat
 
 if TYPE_CHECKING:
     from polylogue.archive.raw_payload.decode import JSONValue
-    from polylogue.schemas.synthetic.showcase import ConversationTheme
+    from polylogue.schemas.synthetic.showcase import SessionTheme
 
 
 class SyntheticCorpus:
@@ -96,7 +96,7 @@ class SyntheticCorpus:
         corpus = cls.from_spec(spec)
         return corpus.generate_batch(
             count=spec.count,
-            messages_per_conversation=spec.messages_per_conversation,
+            messages_per_session=spec.messages_per_session,
             seed=spec.seed,
             style=spec.style,
         )
@@ -156,14 +156,14 @@ class SyntheticCorpus:
     def generate_batch(
         self,
         count: int = 5,
-        messages_per_conversation: range = range(3, 15),
+        messages_per_session: range = range(3, 15),
         seed: int | None = None,
         style: str = "default",
     ) -> SyntheticGenerationBatch:
         return synthetic_builders.generate_batch(
             self,
             count=count,
-            messages_per_conversation=messages_per_conversation,
+            messages_per_session=messages_per_session,
             seed=seed,
             style=style,
         )
@@ -171,13 +171,13 @@ class SyntheticCorpus:
     def generate(
         self,
         count: int = 5,
-        messages_per_conversation: range = range(3, 15),
+        messages_per_session: range = range(3, 15),
         seed: int | None = None,
         style: str = "default",
     ) -> list[bytes]:
         return self.generate_batch(
             count=count,
-            messages_per_conversation=messages_per_conversation,
+            messages_per_session=messages_per_session,
             seed=seed,
             style=style,
         ).raw_items
@@ -207,7 +207,7 @@ class SyntheticCorpus:
         ts: float,
         *,
         index: int,
-        theme: ConversationTheme | None,
+        theme: SessionTheme | None,
     ) -> None:
         synthetic_builders._ensure_wire_chatgpt(self, data, role, rng, ts, index=index, theme=theme)
 
@@ -219,7 +219,7 @@ class SyntheticCorpus:
         ts: float,
         *,
         index: int,
-        theme: ConversationTheme | None,
+        theme: SessionTheme | None,
     ) -> None:
         synthetic_builders._ensure_wire_claude_ai(self, data, role, rng, ts, index=index, theme=theme)
 
@@ -231,7 +231,7 @@ class SyntheticCorpus:
         ts: float,
         *,
         index: int,
-        theme: ConversationTheme | None,
+        theme: SessionTheme | None,
     ) -> None:
         synthetic_builders._ensure_wire_claude_code(self, data, role, rng, ts, index=index, theme=theme)
 
@@ -243,7 +243,7 @@ class SyntheticCorpus:
         ts: float,
         *,
         index: int,
-        theme: ConversationTheme | None,
+        theme: SessionTheme | None,
     ) -> None:
         synthetic_builders._ensure_wire_codex(self, data, role, rng, ts, index=index, theme=theme)
 
@@ -254,7 +254,7 @@ class SyntheticCorpus:
         rng: random.Random,
         index: int,
         base_ts: float = 1700000000.0,
-        theme: ConversationTheme | None = None,
+        theme: SessionTheme | None = None,
     ) -> None:
         synthetic_builders._ensure_wire_format(self, data, role, rng, index, base_ts=base_ts, theme=theme)
 
@@ -265,7 +265,7 @@ class SyntheticCorpus:
         rng: random.Random,
         *,
         index: int,
-        theme: ConversationTheme | None,
+        theme: SessionTheme | None,
     ) -> None:
         synthetic_builders._ensure_wire_gemini(self, data, role, rng, index=index, theme=theme)
 
@@ -280,14 +280,14 @@ class SyntheticCorpus:
     ) -> list[JSONValue]:
         return synthetic_runtime._generate_array(self, schema, rng, depth=depth, max_depth=max_depth, path=path)
 
-    def _generate_conversation(
+    def _generate_session(
         self,
         n_messages: int,
         rng: random.Random,
         *,
-        theme: ConversationTheme | None = None,
+        theme: SessionTheme | None = None,
     ) -> JSONValue:
-        return synthetic_builders._generate_conversation(self, n_messages, rng, theme=theme)
+        return synthetic_builders._generate_session(self, n_messages, rng, theme=theme)
 
     def _generate_from_schema(
         self,
@@ -314,7 +314,7 @@ class SyntheticCorpus:
         n_messages: int,
         rng: random.Random,
         *,
-        theme: ConversationTheme | None = None,
+        theme: SessionTheme | None = None,
     ) -> list[dict[str, JSONValue]]:
         return synthetic_builders._generate_jsonl_records(self, n_messages, rng, theme=theme)
 
@@ -323,7 +323,7 @@ class SyntheticCorpus:
         n_messages: int,
         rng: random.Random,
         *,
-        theme: ConversationTheme | None = None,
+        theme: SessionTheme | None = None,
     ) -> dict[str, JSONValue]:
         return synthetic_builders._generate_linear_json(self, n_messages, rng, theme=theme)
 
@@ -364,7 +364,7 @@ class SyntheticCorpus:
         n_messages: int,
         rng: random.Random,
         *,
-        theme: ConversationTheme | None = None,
+        theme: SessionTheme | None = None,
     ) -> dict[str, JSONValue]:
         return synthetic_builders._generate_tree_json(self, n_messages, rng, theme=theme)
 

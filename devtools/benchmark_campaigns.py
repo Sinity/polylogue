@@ -69,12 +69,12 @@ async def run_full_campaign(
     source_kind = CorpusSourceKind(corpus_source)
     print(
         f"Generating {scale_level} archive from {source_kind.value} corpus source "
-        f"({spec.conversations} conversations, ~{spec.message_count} messages)..."
+        f"({spec.sessions} sessions, ~{spec.message_count} messages)..."
     )
     archive_metrics = await generate_archive(spec, archive_dir, corpus_source=source_kind)
     print(
         f"Archive generated in {archive_metrics.wall_time_s:.1f}s "
-        f"({archive_metrics.conversation_count} convs, "
+        f"({archive_metrics.session_count} convs, "
         f"{archive_metrics.message_count} msgs, "
         f"{archive_metrics.db_size_bytes / 1024 / 1024:.1f} MB)"
     )

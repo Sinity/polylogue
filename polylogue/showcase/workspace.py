@@ -84,7 +84,7 @@ def create_verification_workspace(
     fixture_dir = workspace_dir / "fixtures"
     inbox_dir = data_home / "polylogue" / "inbox"
     report_dir = workspace_dir / "reports"
-    db_path = data_home / "polylogue" / "polylogue.db"
+    db_path = archive_root / "index.db"
 
     for path in [data_home, state_home, config_home, cache_home, archive_root, render_root, fake_home]:
         path.mkdir(parents=True, exist_ok=True)

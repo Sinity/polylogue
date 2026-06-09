@@ -2,11 +2,11 @@
 
 # Export
 
-Polylogue exports conversations in multiple formats, both singly and in bulk.
+Polylogue exports sessions in multiple formats, both singly and in bulk.
 
 ## Single Export
 
-Export one conversation by ID:
+Export one session by ID:
 
 ```bash
 polylogue export claude-ai:abc123
@@ -22,7 +22,7 @@ polylogue export claude-ai:abc123 --format obsidian
 
 ## Bulk Export
 
-Export every conversation matching a filter chain:
+Export every session matching a filter chain:
 
 ```bash
 polylogue --provider claude-code --since 2026-01 bulk-export
@@ -32,7 +32,7 @@ polylogue "refactor" --has-tool-use bulk-export --format jsonl
 
 ### Piping
 
-`bulk-export --format jsonl` emits one JSON line per conversation, suitable for
+`bulk-export --format jsonl` emits one JSON line per session, suitable for
 piping:
 
 ```bash
@@ -45,7 +45,7 @@ polylogue --since "last month" bulk-export --format jsonl | wc -l
 | Format | Description |
 |--------|-------------|
 | `markdown` | Default -- formatted markdown with message roles, timestamps, and code blocks |
-| `json` | Full conversation as structured JSON |
+| `json` | Full session as structured JSON |
 | `jsonl` | One JSON object per line (bulk-export default) |
 | `yaml` | YAML representation |
 | `plaintext` | Plain text -- message content only, no formatting |

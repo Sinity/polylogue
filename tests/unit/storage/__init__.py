@@ -5,5 +5,5 @@ Organized into focused test modules for different storage subsystems:
 - test_fts5.py: FTS5 search provider and indexing tests
 - test_hybrid.py: Hybrid search provider and RRF algorithm tests
 - test_cache.py: Search cache key and invalidation tests
-- test_search_misc.py: Database migrations, asset handling, session indexing tests
+- test_search_misc.py: Database rebuild checks, asset handling, session indexing tests
 """

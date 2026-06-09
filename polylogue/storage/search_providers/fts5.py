@@ -44,16 +44,16 @@ class FTS5Provider:
         self.db_path = db_path
 
     def index(self, messages: list[MessageRecord]) -> None:
-        """Repair index rows for the supplied conversations from persisted messages.
+        """Repair index rows for the supplied sessions from persisted messages.
 
         Args:
-            messages: Messages whose persisted conversations should be re-indexed.
+            messages: Messages whose persisted sessions should be re-indexed.
                 Messages must already exist in the SQLite archive.
 
         Raises:
             DatabaseError: If indexing fails
         """
-        rows = [(m.message_id, m.conversation_id, m.text) for m in messages]
+        rows = [(m.message_id, m.session_id, m.text) for m in messages]
         with connection_context(self.db_path) as conn:
             ensure_index(conn)
             replace_fts_rows_for_messages_sync(conn, rows)
@@ -88,13 +88,12 @@ class FTS5Provider:
             readiness = message_fts_search_readiness_sync(conn)
             check_fts_readiness(readiness, _MESSAGE_SEARCH_REPAIR_HINT)
 
-            # Search with relevance ranking
             sql = """
-                SELECT m.message_id
+                SELECT DISTINCT b.message_id
                 FROM messages_fts
-                JOIN messages AS m ON m.rowid = messages_fts.rowid
+                JOIN blocks AS b ON b.rowid = messages_fts.rowid
                 WHERE messages_fts MATCH ?
-                ORDER BY bm25(messages_fts), m.message_id
+                ORDER BY bm25(messages_fts), b.message_id
             """
             params: list[object] = [fts_query]
             if limit is not None:

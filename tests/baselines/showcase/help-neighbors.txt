@@ -2,11 +2,14 @@ Usage: polylogue neighbors [OPTIONS]
 
   Show explainable neighboring or near-duplicate candidates.
 
+  When neither --id nor --query is given, falls back to resolving a session
+  via root filters (``--latest``, ``--origin``, etc.) — #1642.
+
 Options:
-  --id TEXT               Known conversation id or prefix
-  -q, --query TEXT        Fuzzy query to seed candidate discovery
-  -p, --provider TEXT     Limit candidate scope to one provider
-  -n, --limit INTEGER     Maximum candidates  [default: 10]
-  --window-hours INTEGER  Neighboring time window around --id  [default: 24]
-  -f, --format [json]     Output format
-  -h, --help              Show this message and exit.
+  --id TEXT                Known session id or prefix
+  -q, --query TEXT         Fuzzy query to seed candidate discovery
+  -o, --origin TEXT        Limit candidate scope to one origin
+  -l, -n, --limit INTEGER  Maximum candidates  [default: 10]
+  --window-hours INTEGER   Neighboring time window around --id  [default: 24]
+  -f, --format [json]      Output format
+  -h, --help               Show this message and exit.

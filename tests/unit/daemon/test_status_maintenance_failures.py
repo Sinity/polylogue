@@ -32,37 +32,43 @@ from polylogue.maintenance.failure_routing import route_failure_sample
 from polylogue.maintenance.planner import FailureSample
 
 
-def _seed_raw_table(db: Path, parse_error: str | None = None, validation_status: str | None = None) -> None:
-    with sqlite3.connect(db) as conn:
-        conn.executescript(
-            """
-            CREATE TABLE raw_conversations (
-                raw_id TEXT PRIMARY KEY,
-                payload_provider TEXT,
-                source_name TEXT,
-                source_path TEXT NOT NULL,
-                source_index INTEGER,
-                blob_size INTEGER NOT NULL,
-                acquired_at TEXT NOT NULL,
-                file_mtime TEXT,
-                parsed_at TEXT,
-                parse_error TEXT,
-                validated_at TEXT,
-                validation_status TEXT,
-                validation_error TEXT,
-                validation_drift_count INTEGER DEFAULT 0,
-                validation_provider TEXT,
-                validation_mode TEXT,
-                detection_warnings TEXT
-            );
-            """
-        )
-        if parse_error is not None or validation_status is not None:
+def _seed_raw_table(db: Path, parse_error: str | None = None, validation_status: str | None = None) -> Path:
+    """Seed the archive `source.db` ``raw_sessions`` table next to *db*.
+
+    Returns the archive `index.db` sibling path so callers can patch
+    ``polylogue.daemon.status.index_db_path`` for ``_active_status_db_path``
+    to resolve into this archive root.
+    """
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    source_db = db.with_name("source.db")
+    index_db = db.with_name("index.db")
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    if parse_error is not None or validation_status is not None:
+        with sqlite3.connect(source_db) as conn:
             conn.execute(
-                "INSERT INTO raw_conversations (raw_id, source_name, source_path, blob_size, acquired_at, parse_error, validation_status) "
-                "VALUES (?,?,?,?,?,?,?)",
-                ("raw-1", "claude-code", "/x/y", 1, "2026-01-01T00:00:00Z", parse_error, validation_status),
+                """
+                INSERT INTO raw_sessions (
+                    raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                    acquired_at_ms, parse_error, validation_status, detection_warnings_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "raw-1",
+                    "claude-code-session",
+                    "native-1",
+                    "/x/y",
+                    bytes(32),
+                    1,
+                    1_770_000_000_000,
+                    parse_error,
+                    validation_status,
+                    "[]",
+                ),
             )
+            conn.commit()
+    return index_db
 
 
 def _route(archive_root: Path, op_id: str, kind: str = "RuntimeError", message: str = "boom") -> None:
@@ -120,8 +126,8 @@ def test_raw_failure_info_surfaces_maintenance_with_no_db(tmp_path: Path) -> Non
 
 
 def test_raw_failure_info_merges_ingest_and_maintenance(tmp_path: Path) -> None:
-    db = tmp_path / "polylogue.db"
-    _seed_raw_table(db, parse_error="JSONDecodeError at /tmp/foo")
+    db = tmp_path / "index.db"
+    index_db = _seed_raw_table(db, parse_error="JSONDecodeError at /tmp/foo")
 
     archive_root = tmp_path / "archive"
     archive_root.mkdir(parents=True, exist_ok=True)
@@ -130,6 +136,7 @@ def test_raw_failure_info_merges_ingest_and_maintenance(tmp_path: Path) -> None:
 
     with (
         patch("polylogue.daemon.status.db_path", return_value=db),
+        patch("polylogue.daemon.status.index_db_path", return_value=index_db),
         patch("polylogue.daemon.status.archive_root", return_value=archive_root),
     ):
         info = _raw_failure_info()
@@ -153,7 +160,7 @@ def test_check_raw_failures_medium_escalates_on_maintenance(tmp_path: Path) -> N
     for i in range(5):
         _route(archive_root, op_id=f"op-batch-{i}")
 
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     _seed_raw_table(db)
 
     with (
@@ -174,7 +181,7 @@ def test_check_raw_failures_medium_critical_on_large_maintenance_backlog(tmp_pat
     for _ in range(60):
         _route(archive_root, op_id="op-backlog")
 
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     _seed_raw_table(db)
 
     with (

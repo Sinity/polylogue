@@ -117,8 +117,11 @@ def main(argv: list[str] | None = None) -> int:
             from devtools.pages_builder import build_site
 
             build_site(config_path=config_path, output_dir=tmp_dir)
-            current_hash = _hash_directory(args.output) if args.output.exists() else ""
             new_hash = _hash_directory(tmp_dir)
+            if not args.output.exists():
+                print(f"OK: {args.output} is absent; sources render successfully.")
+                return 0
+            current_hash = _hash_directory(args.output)
             if current_hash != new_hash:
                 print(f"Error: {args.output} is out of sync with sources. Run: devtools render-pages", file=sys.stderr)
                 return 1

@@ -44,8 +44,7 @@ def message_has_text(message: TextMessageLike) -> bool:
 def message_tool_calls(message: SemanticMessageLike) -> tuple[ToolCall, ...]:
     """Derive tool calls from hydrated message ``content_blocks`` (#1256).
 
-    Hydrated ``Message`` instances no longer carry ``provider_meta``;
-    canonical tool-call evidence lives in typed ``content_blocks`` rows.
+    Canonical tool-call evidence lives in typed content-block rows.
     Harmonized parser-level extraction now flows through the typed cost
     projection (#803), not through this helper.
     """
@@ -83,7 +82,7 @@ def message_model_name(message: SemanticMessageLike) -> str | None:
 
 
 def _message_content_block_tool_calls(message: SemanticMessageLike) -> tuple[ToolCall, ...]:
-    from polylogue.archive.action_event.action_events import build_tool_calls_from_content_blocks
+    from polylogue.archive.actions.actions import build_tool_calls_from_content_blocks
 
     return build_tool_calls_from_content_blocks(
         provider=message.provider,

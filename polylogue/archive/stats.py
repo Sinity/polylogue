@@ -9,17 +9,17 @@ from dataclasses import dataclass, field
 class ArchiveStats:
     """Comprehensive archive statistics.
 
-    Provides a snapshot of the archive state including conversation counts,
-    message counts, provider breakdown, and embedding coverage.
+    Provides a snapshot of the archive state including session counts,
+    message counts, origin breakdown, and embedding coverage.
     """
 
-    total_conversations: int
+    total_sessions: int
     total_messages: int
     total_attachments: int = 0
-    providers: dict[str, int] = field(default_factory=dict)
-    embedded_conversations: int = 0
+    origins: dict[str, int] = field(default_factory=dict)
+    embedded_sessions: int = 0
     embedded_messages: int = 0
-    pending_embedding_conversations: int = 0
+    pending_embedding_sessions: int = 0
     stale_embedding_messages: int = 0
     messages_missing_embedding_provenance: int = 0
     embedding_oldest_at: str | None = None
@@ -29,23 +29,23 @@ class ArchiveStats:
     db_size_bytes: int = 0
 
     @property
-    def provider_count(self) -> int:
-        """Number of unique providers."""
-        return len(self.providers)
+    def origin_count(self) -> int:
+        """Number of unique origins."""
+        return len(self.origins)
 
     @property
-    def avg_messages_per_conversation(self) -> float:
-        """Average messages per conversation."""
-        if self.total_conversations == 0:
+    def avg_messages_per_session(self) -> float:
+        """Average messages per session."""
+        if self.total_sessions == 0:
             return 0.0
-        return self.total_messages / self.total_conversations
+        return self.total_messages / self.total_sessions
 
     @property
     def embedding_coverage(self) -> float:
-        """Percentage of conversations with embeddings."""
-        if self.total_conversations == 0:
+        """Percentage of sessions with embeddings."""
+        if self.total_sessions == 0:
             return 0.0
-        return (self.embedded_conversations / self.total_conversations) * 100
+        return (self.embedded_sessions / self.total_sessions) * 100
 
     @property
     def retrieval_ready(self) -> bool:
@@ -58,21 +58,21 @@ class ArchiveStats:
             return "none"
         if self.stale_embedding_messages > 0 or self.messages_missing_embedding_provenance > 0:
             return "stale"
-        if self.pending_embedding_conversations > 0:
+        if self.pending_embedding_sessions > 0:
             return "partial"
         return "fresh"
 
     def to_dict(self) -> dict[str, object]:
         """Convert to dictionary for serialization."""
         return {
-            "total_conversations": self.total_conversations,
+            "total_sessions": self.total_sessions,
             "total_messages": self.total_messages,
             "total_attachments": self.total_attachments,
-            "provider_count": self.provider_count,
-            "providers": self.providers,
-            "embedded_conversations": self.embedded_conversations,
+            "origin_count": self.origin_count,
+            "origins": self.origins,
+            "embedded_sessions": self.embedded_sessions,
             "embedded_messages": self.embedded_messages,
-            "pending_embedding_conversations": self.pending_embedding_conversations,
+            "pending_embedding_sessions": self.pending_embedding_sessions,
             "stale_embedding_messages": self.stale_embedding_messages,
             "messages_missing_embedding_provenance": self.messages_missing_embedding_provenance,
             "embedding_oldest_at": self.embedding_oldest_at,
@@ -82,7 +82,7 @@ class ArchiveStats:
             "embedding_coverage_percent": round(self.embedding_coverage, 1),
             "embedding_readiness_status": self.embedding_readiness_status,
             "retrieval_ready": self.retrieval_ready,
-            "avg_messages_per_conversation": round(self.avg_messages_per_conversation, 1),
+            "avg_messages_per_session": round(self.avg_messages_per_session, 1),
             "db_size_bytes": self.db_size_bytes,
         }
 

@@ -1,7 +1,7 @@
 """Tests for storage record mapping functions.
 
 Insightion code under test: polylogue/storage/runtime/__init__.py
-Functions: _parse_json, _row_get, _row_to_conversation, _row_to_message, _row_to_raw_conversation
+Functions: _parse_json, _row_get, _row_to_session, _row_to_message, _row_to_raw_session
 """
 
 from __future__ import annotations
@@ -10,18 +10,19 @@ import sqlite3
 
 import pytest
 
+from polylogue.core.enums import Origin
 from polylogue.errors import DatabaseError
 from polylogue.storage.runtime import (
-    ConversationRecord,
     MessageRecord,
-    RawConversationRecord,
+    RawSessionRecord,
+    SessionRecord,
 )
 from polylogue.storage.sqlite.queries.mappers import (
     _parse_json,
     _row_get,
-    _row_to_conversation,
     _row_to_message,
-    _row_to_raw_conversation,
+    _row_to_raw_session,
+    _row_to_session,
 )
 
 
@@ -119,65 +120,63 @@ class TestRowGet:
 
 
 # =============================================================================
-# _row_to_conversation
+# _row_to_session
 # =============================================================================
 
 
-class TestRowToConversation:
-    """Tests for _row_to_conversation mapper."""
+class TestRowToSession:
+    """Tests for _row_to_session mapper."""
 
     def test_maps_required_fields(self: object) -> None:
-        """All required fields are mapped from row to ConversationRecord."""
+        """All required fields are mapped from row to SessionRecord."""
         row = make_row(
             {
-                "conversation_id": "conv-1",
-                "source_name": "claude-ai",
-                "provider_conversation_id": "ext-conv-1",
+                "session_id": "conv-1",
+                "origin": "claude-ai-export",
+                "native_id": "ext-conv-1",
                 "title": "Test Chat",
                 "created_at": "2024-01-01T00:00:00Z",
                 "updated_at": "2024-01-02T00:00:00Z",
                 "sort_key": None,
                 "content_hash": "abcdef1234567890",
-                "provider_meta": None,
                 "metadata": None,
                 "version": 1,
-                "parent_conversation_id": None,
+                "parent_session_id": None,
                 "branch_type": None,
                 "raw_id": None,
             }
         )
-        result = _row_to_conversation(row)
-        assert isinstance(result, ConversationRecord)
-        assert result.conversation_id == "conv-1"
-        assert result.source_name == "claude-ai"
+        result = _row_to_session(row)
+        assert isinstance(result, SessionRecord)
+        assert result.session_id == "conv-1"
+        assert result.origin == Origin.from_string("claude-ai-export")
         assert result.title == "Test Chat"
         assert result.content_hash == "abcdef1234567890"
 
-    def test_maps_json_provider_meta(self: object) -> None:
-        """JSON provider_meta is parsed from string."""
+    def test_maps_json_metadata(self: object) -> None:
+        """JSON metadata is parsed from string."""
         import json
 
         meta = {"model": "claude-3"}
         row = make_row(
             {
-                "conversation_id": "conv-2",
-                "source_name": "claude-ai",
-                "provider_conversation_id": "ext-2",
+                "session_id": "conv-2",
+                "origin": "claude-ai-export",
+                "native_id": "ext-2",
                 "title": "With Meta",
                 "created_at": None,
                 "updated_at": None,
                 "sort_key": None,
                 "content_hash": "hash123456789abc",
-                "provider_meta": json.dumps(meta),
-                "metadata": None,
+                "metadata": json.dumps(meta),
                 "version": 1,
-                "parent_conversation_id": None,
+                "parent_session_id": None,
                 "branch_type": None,
                 "raw_id": None,
             }
         )
-        result = _row_to_conversation(row)
-        assert result.provider_meta == {"model": "claude-3"}
+        result = _row_to_session(row)
+        assert result.metadata == {"model": "claude-3"}
 
 
 # =============================================================================
@@ -193,7 +192,7 @@ class TestRowToMessage:
         row = make_row(
             {
                 "message_id": "m-1",
-                "conversation_id": "conv-1",
+                "session_id": "conv-1",
                 "provider_message_id": "ext-m-1",
                 "role": "user",
                 "text": "Hello world",
@@ -211,7 +210,7 @@ class TestRowToMessage:
         result = _row_to_message(row)
         assert isinstance(result, MessageRecord)
         assert result.message_id == "m-1"
-        assert result.conversation_id == "conv-1"
+        assert result.session_id == "conv-1"
         assert result.role == "user"
         assert result.text == "Hello world"
         assert result.branch_index == 0
@@ -221,7 +220,7 @@ class TestRowToMessage:
         row = make_row(
             {
                 "message_id": "m-2",
-                "conversation_id": "conv-1",
+                "session_id": "conv-1",
                 "provider_message_id": None,
                 "role": "assistant",
                 "text": "Reply",
@@ -241,36 +240,39 @@ class TestRowToMessage:
 
 
 # =============================================================================
-# _row_to_raw_conversation
+# _row_to_raw_session
 # =============================================================================
 
 
-class TestRowToRawConversation:
-    """Tests for _row_to_raw_conversation mapper."""
+class TestRowToRawSession:
+    """Tests for _row_to_raw_session mapper."""
 
     def test_maps_all_fields(self: object) -> None:
-        """All fields are mapped from row to RawConversationRecord."""
+        """All fields are mapped from row to RawSessionRecord."""
+        from polylogue.core.enums import Origin
+        from polylogue.core.sources import provider_from_origin
+
         row = make_row(
             {
                 "raw_id": "sha256hash",
-                "payload_provider": None,
-                "source_name": "inbox",
+                # raw_sessions carries a single origin column (#1743); source_name
+                # and payload_provider project from it on read.
+                "origin": "claude-ai-export",
                 "source_path": "/tmp/data.json",
-                "source_index": "0",
+                "source_index": 0,
                 "blob_size": 14,
-                "acquired_at": "2024-01-01T00:00:00Z",
-                "file_mtime": "2024-01-01T00:00:00Z",
-                "parsed_at": None,
+                "acquired_at_ms": 1704067200000,
+                "file_mtime_ms": 1704067200000,
+                "parsed_at_ms": None,
                 "parse_error": None,
-                "validated_at": None,
+                "validated_at_ms": None,
                 "validation_status": None,
                 "validation_error": None,
-                "validation_drift_count": None,
-                "validation_provider": None,
+                "validation_drift_count": 0,
                 "validation_mode": None,
             }
         )
-        result = _row_to_raw_conversation(row)
-        assert isinstance(result, RawConversationRecord)
+        result = _row_to_raw_session(row)
+        assert isinstance(result, RawSessionRecord)
         assert result.raw_id == "sha256hash"
-        assert result.source_name == "inbox"
+        assert result.source_name == provider_from_origin(Origin.from_string("claude-ai-export")).value

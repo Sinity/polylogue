@@ -13,9 +13,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from polylogue.api import Polylogue
     from polylogue.config import Config
-    from polylogue.operations import ArchiveOperations
     from polylogue.services import RuntimeServices
-    from polylogue.storage.repository import ConversationRepository
+    from polylogue.storage.repository import SessionRepository
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
     from polylogue.ui import UI
 
@@ -54,14 +53,8 @@ class AppEnv:
         return self.services.get_backend()
 
     @property
-    def repository(self) -> ConversationRepository:
+    def repository(self) -> SessionRepository:
         return self.services.get_repository()
-
-    @property
-    def operations(self) -> ArchiveOperations:
-        from polylogue.operations import ArchiveOperations
-
-        return ArchiveOperations.from_services(self.services)
 
     @property
     def polylogue(self) -> Polylogue:

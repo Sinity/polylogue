@@ -446,7 +446,7 @@ class SchemaRegistry:
         *,
         version: str,
         schema: SchemaInputDocument,
-        element_kind: str = "conversation_document",
+        element_kind: str = "session_document",
         first_seen: str | None = None,
         last_seen: str | None = None,
     ) -> tuple[SchemaVersionPackage, ElementSchemaMap]:

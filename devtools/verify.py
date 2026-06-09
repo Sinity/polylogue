@@ -26,6 +26,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -131,6 +132,8 @@ TESTMON_DATA = Path(".testmondata")
 TESTMON_SEED_STAMP = Path(".cache/testmon/seed.json")
 PYTEST_REPORT_DIR = Path(".cache/verify")
 PYTEST_REPORT_PATH = PYTEST_REPORT_DIR / "last-pytest.json"
+PYTEST_HEARTBEAT_ENV = "POLYLOGUE_VERIFY_HEARTBEAT_S"
+DEFAULT_PYTEST_HEARTBEAT_S = 30.0
 
 
 def _load_history() -> list[dict[str, Any]]:
@@ -246,18 +249,105 @@ def _clear_pytest_report() -> None:
         PYTEST_REPORT_PATH.unlink()
 
 
+def _process_cpu_seconds(pid: int) -> float | None:
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return None
+    try:
+        fields = raw.rsplit(") ", 1)[1].split()
+        ticks = os.sysconf("SC_CLK_TCK")
+        return (float(fields[11]) + float(fields[12])) / float(ticks)
+    except (IndexError, OSError, ValueError):
+        return None
+
+
+def _process_status(pid: int) -> dict[str, str | int | None]:
+    status: dict[str, str | int | None] = {"state": None, "rss_kb": None}
+    try:
+        lines = Path(f"/proc/{pid}/status").read_text().splitlines()
+    except OSError:
+        return status
+    for line in lines:
+        if line.startswith("State:"):
+            status["state"] = line.split(":", 1)[1].strip()
+        elif line.startswith("VmRSS:"):
+            with contextlib.suppress(ValueError, IndexError):
+                status["rss_kb"] = int(line.split()[1])
+    return status
+
+
+def _pytest_heartbeat_interval() -> float:
+    raw = os.environ.get(PYTEST_HEARTBEAT_ENV)
+    if raw is None:
+        return DEFAULT_PYTEST_HEARTBEAT_S
+    try:
+        value = float(raw)
+    except ValueError:
+        return DEFAULT_PYTEST_HEARTBEAT_S
+    return max(value, 0.0)
+
+
+def _run_pytest_with_heartbeat(
+    cmd: list[str],
+    *,
+    cwd: str | None,
+    env: dict[str, str],
+    t0: float,
+) -> subprocess.CompletedProcess[str]:
+    heartbeat_s = _pytest_heartbeat_interval()
+    sys.stderr.write(f"\n    command: {shlex.join(cmd)}\n")
+    sys.stderr.flush()
+    process = subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    last_cpu = _process_cpu_seconds(process.pid)
+    last_sample = time.monotonic()
+    while True:
+        try:
+            stdout, stderr = process.communicate(timeout=heartbeat_s if heartbeat_s > 0 else None)
+            return subprocess.CompletedProcess(cmd, process.returncode or 0, stdout, stderr)
+        except subprocess.TimeoutExpired:
+            now = time.monotonic()
+            status = _process_status(process.pid)
+            cpu_now = _process_cpu_seconds(process.pid)
+            cpu_pct = None
+            if cpu_now is not None and last_cpu is not None and now > last_sample:
+                cpu_pct = ((cpu_now - last_cpu) / (now - last_sample)) * 100.0
+            last_cpu = cpu_now
+            last_sample = now
+            rss = status["rss_kb"]
+            rss_text = f", rss={int(rss) // 1024} MiB" if isinstance(rss, int) else ""
+            cpu_text = f", cpu={cpu_pct:.0f}%" if cpu_pct is not None else ""
+            state_text = f", state={status['state']}" if status["state"] is not None else ""
+            sys.stderr.write(
+                f"    still running: pid={process.pid}, elapsed={now - t0:.0f}s{state_text}{cpu_text}{rss_text}\n"
+            )
+            sys.stderr.flush()
+
+
 def _run(label: str, cmd: list[str], *, cwd: str | None = None) -> tuple[int, float, dict[str, Any]]:
     t0 = time.monotonic()
     sys.stderr.write(f"  {label} ... ")
     sys.stderr.flush()
-    if label.startswith("pytest"):
+    is_pytest = label.startswith("pytest")
+    if is_pytest:
         _clear_pytest_report()
     env = _subprocess_env()
-    result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, env=env)
+    if is_pytest:
+        result = _run_pytest_with_heartbeat(cmd, cwd=cwd, env=env, t0=t0)
+    else:
+        result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, env=env)
     elapsed = time.monotonic() - t0
     metadata: dict[str, Any] = {}
-    if label.startswith("pytest"):
+    if is_pytest:
         metadata.update(_pytest_command_metadata(cmd))
+        metadata["heartbeat_s"] = _pytest_heartbeat_interval()
         report = _read_pytest_report()
         if report is not None:
             metadata.update(_pytest_metadata_from_report(report))
@@ -316,10 +406,6 @@ def build_verify_steps(
                 ("render-all", _devtools_cmd("render-all", "--check")),
                 ("verify-topology", _devtools_cmd("verify-topology")),
                 ("verify-layering", _devtools_cmd("verify-layering")),
-                (
-                    "verify-provider-meta-policy",
-                    _devtools_cmd("verify-provider-meta-policy"),
-                ),
                 ("verify-closure-matrix", _devtools_cmd("verify-closure-matrix")),
                 ("verify-schema-roundtrip", _devtools_cmd("verify-schema-roundtrip", "--all")),
                 ("verify-manifests", _devtools_cmd("verify-manifests")),

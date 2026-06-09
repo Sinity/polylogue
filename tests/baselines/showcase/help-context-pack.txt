@@ -1,0 +1,20 @@
+Usage: polylogue context-pack [OPTIONS]
+
+  Build a provenance-rich context pack for agent analysis.
+
+  Examples:
+      polylogue context-pack -P /realm/project/polylogue
+      polylogue context-pack -R github.com/Sinity/polylogue -s 2026-01-01
+      polylogue context-pack -q "cost tracking"
+
+Options:
+  -P, --project-path TEXT     Filter by cwd prefix pattern
+  -R, --project-repo TEXT     Filter by git repo URL or name
+  -s, --since TEXT            Start date (ISO 8601)
+  -u, --until TEXT            End date (ISO 8601)
+  -o, --origin TEXT           Source-origin filter
+  -q, --query TEXT            Free-text query
+  -n, --max-sessions INTEGER  Max sessions (1-20)
+  -m, --max-messages INTEGER  Max messages per session (1-100)
+  --no-redact                 Do not redact filesystem paths
+  -h, --help                  Show this message and exit.

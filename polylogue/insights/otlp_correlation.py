@@ -154,7 +154,7 @@ def _query_work_events(db_path: str, session_id: str) -> list[dict[str, Any]]:
     """Return session work events for a session."""
     with _connect(db_path) as conn:
         rows = conn.execute(
-            "SELECT * FROM session_work_events WHERE conversation_id = ? ORDER BY event_index ASC",
+            "SELECT * FROM session_work_events WHERE session_id = ? ORDER BY event_index ASC",
             (session_id,),
         ).fetchall()
         return [dict(row) for row in rows]
@@ -164,7 +164,7 @@ def _query_messages(db_path: str, session_id: str) -> list[dict[str, Any]]:
     """Return messages for a session.
 
     Returns rows with ``message_id``, ``role``, and ``sort_key`` (epoch seconds).
-    The ``sort_key`` mirrors ``Conversation.sort_key`` semantics — present for
+    The ``sort_key`` mirrors ``Session.sort_key`` semantics — present for
     every message, stable within a source family.
     """
     with _connect(db_path) as conn:
@@ -172,7 +172,7 @@ def _query_messages(db_path: str, session_id: str) -> list[dict[str, Any]]:
             """
             SELECT message_id, role, sort_key
             FROM messages
-            WHERE conversation_id = ?
+            WHERE session_id = ?
             ORDER BY sort_key ASC
             """,
             (session_id,),
@@ -249,7 +249,7 @@ def correlate_spans_to_work_events(db_path: str, session_id: str) -> list[dict[s
 
         enriched: dict[str, object] = {
             "event_id": we["event_id"],
-            "conversation_id": we["conversation_id"],
+            "session_id": we["session_id"],
             "heuristic_label": we["heuristic_label"],
             "start_time": we_start,
             "end_time": we_end,

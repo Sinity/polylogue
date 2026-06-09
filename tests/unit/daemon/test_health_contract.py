@@ -84,14 +84,10 @@ EXPECTED_SEVERITIES: frozenset[str] = frozenset({"ok", "warning", "error", "crit
 # Adding a code is a contract change — extend this set in the same PR.
 EXPECTED_READINESS_REASONS: frozenset[str] = frozenset(
     {
-        "schema_incompatible",
+        "schema_version_mismatch",
         "critical_check_failed",
         "fts_not_fresh",
         "probe_error",
-        # Reasons originating from DegradedReason.code (set by ingest paths
-        # when a structural condition disables the daemon for the process
-        # lifetime). Listed here so consumers can switch on them.
-        "schema_version_mismatch",
     }
 )
 
@@ -420,25 +416,22 @@ class TestReadinessProbeContract:
     ) -> None:
         import sqlite3
 
-        from polylogue.paths import db_path
-
         self._patch_healthy_fast(monkeypatch)
-        dbf = db_path()
-        dbf.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(dbf) as conn:
+        # The readiness probe reads the index.db messages_fts surface; a
+        # fresh, trigger-backed surface is ready and the bounded path must not
+        # fall back to an exact ``fts_invariant_snapshot_sync`` scan.
+        index_db = workspace_env["archive_root"] / "index.db"
+        index_db.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(index_db) as conn:
             conn.executescript(
                 """
-                CREATE TABLE messages (message_id TEXT, text TEXT);
-                CREATE TABLE messages_fts (text TEXT);
-                CREATE TRIGGER messages_fts_ai AFTER INSERT ON messages BEGIN SELECT 1; END;
-                CREATE TRIGGER messages_fts_ad AFTER DELETE ON messages BEGIN SELECT 1; END;
-                CREATE TRIGGER messages_fts_au AFTER UPDATE ON messages BEGIN SELECT 1; END;
-                CREATE TABLE fts_freshness_state (
+                CREATE TABLE IF NOT EXISTS fts_freshness_state (
                     surface TEXT PRIMARY KEY,
                     state TEXT NOT NULL,
                     checked_at TEXT NOT NULL
                 );
-                INSERT INTO fts_freshness_state VALUES ('messages_fts', 'ready', '2026-05-24T00:00:00+00:00');
+                INSERT OR REPLACE INTO fts_freshness_state
+                VALUES ('messages_fts', 'ready', '2026-05-24T00:00:00+00:00');
                 """
             )
         monkeypatch.setattr(
@@ -493,16 +486,23 @@ class TestReadinessProbeContract:
     ) -> None:
         import sqlite3
 
-        from polylogue.paths import db_path
-
         self._patch_healthy_fast(monkeypatch)
-        dbf = db_path()
-        dbf.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(dbf) as conn:
+        # index.db with a block source but no fresh messages_fts state means the
+        # message FTS invariant is not ready, so the probe must return 503.
+        index_db = workspace_env["archive_root"] / "index.db"
+        index_db.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(index_db) as conn:
             conn.executescript(
                 """
-                CREATE TABLE messages (message_id TEXT, text TEXT);
-                INSERT INTO messages VALUES ('m1', 'missing from fts');
+                CREATE TABLE IF NOT EXISTS fts_freshness_state (
+                    surface TEXT PRIMARY KEY,
+                    state TEXT NOT NULL,
+                    checked_at TEXT NOT NULL
+                );
+                DELETE FROM fts_freshness_state WHERE surface = 'messages_fts';
+                INSERT INTO blocks (
+                    message_id, session_id, position, block_type, text
+                ) VALUES ('message-1', 'session-1', 0, 'text', 'missing from fts');
                 """
             )
 
@@ -524,7 +524,7 @@ class TestReadinessProbeContract:
             check_name="schema_version",
             tier=HealthTier.FAST,
             severity=HealthSeverity.CRITICAL,
-            message="schema v2 incompatible with runtime v3",
+            message="schema v2 is not runtime v3",
             checked_at="2026-05-18T00:00:00+00:00",
             consecutive_failures=1,
         )
@@ -536,7 +536,7 @@ class TestReadinessProbeContract:
         handler.do_GET()
         status, payload = send_json.call_args.args
         assert status == HTTPStatus.SERVICE_UNAVAILABLE
-        assert payload["reason"] == "schema_incompatible"
+        assert payload["reason"] == "schema_version_mismatch"
         assert payload["reason"] in EXPECTED_READINESS_REASONS
 
     def test_readiness_surfaces_degraded_reason_taxonomy(

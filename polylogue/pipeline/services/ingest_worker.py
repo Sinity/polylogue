@@ -11,56 +11,36 @@ from __future__ import annotations
 
 import pickle
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, TypeVar
+from typing import TYPE_CHECKING, Literal
 
 from typing_extensions import TypedDict
 
 from polylogue.archive.artifact_taxonomy import ArtifactClassification, ArtifactKind, classify_artifact
 from polylogue.archive.artifact_taxonomy.support import is_subagent_path
-from polylogue.archive.conversation.branch_type import BranchType
-from polylogue.archive.message.roles import Role
 from polylogue.archive.raw_payload.decode import RawPayloadEnvelope
 from polylogue.core.common import format_malformed_jsonl_error as _format_malformed_jsonl_error
-from polylogue.core.json import dumps as json_dumps
 from polylogue.logging import get_logger
-from polylogue.pipeline.materialization_runtime import (
-    MaterializedContentBlock,
-    MaterializedConversation,
-    MaterializedMessage,
-    materialize_conversation,
-)
+from polylogue.pipeline.ids import session_content_hash
+from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import STREAM_RECORD_PROVIDERS
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime import (
-    ACTION_EVENT_MATERIALIZER_VERSION,
-    PROVIDER_EVENT_MATERIALIZER_VERSION,
-    RawConversationRecord,
-    _json_or_none,
+    RawSessionRecord,
 )
-from polylogue.storage.sqlite.provider_event_model import project_provider_event_payload
 from polylogue.types import (
-    AttachmentId,
-    ContentBlockType,
-    ContentHash,
-    ConversationId,
-    MessageId,
     Provider,
-    ProviderEventId,
-    SemanticBlockType,
     ValidationMode,
     ValidationStatus,
 )
 
 if TYPE_CHECKING:
-    from polylogue.archive.action_event.action_events import ActionEvent
     from polylogue.schemas.packages import SchemaResolution
     from polylogue.schemas.runtime_registry import SchemaRegistry
-    from polylogue.sources.parsers.base import ParsedConversation
+    from polylogue.sources.parsers.base import ParsedSession
 
 
 logger = get_logger(__name__)
@@ -73,163 +53,20 @@ class _TimestampUpdates(TypedDict, total=False):
     updated_at: str
 
 
-ConversationTuple = tuple[
-    ConversationId,
-    str,
-    str,
-    str | None,
-    str | None,
-    str | None,
-    float | None,
-    ContentHash,
-    str | None,
-    str,
-    int,
-    ConversationId | None,
-    BranchType | None,
-    str | None,
-    str,  # source_name
-    str | None,  # working_directories_json
-    str | None,  # git_branch
-    str | None,  # git_repository_url
-]
-MessageTuple = tuple[
-    MessageId,
-    ConversationId,
-    str,
-    Role,
-    str | None,
-    float | None,
-    ContentHash,
-    int,
-    MessageId | None,
-    int,
-    str | Provider,
-    int,
-    int,
-    int,
-    int,
-    int,  # input_tokens
-    int,  # output_tokens
-    int,  # cache_read_tokens
-    int,  # cache_write_tokens
-    str | None,  # model_name
-    str,  # message_type
-    str | None,  # paste_boundary_state
-]
-ContentBlockTuple = tuple[
-    str,
-    MessageId,
-    ConversationId,
-    int,
-    ContentBlockType,
-    str | None,
-    str | None,
-    str | None,
-    str | None,
-    str | None,
-    SemanticBlockType | str | None,
-]
-ActionEventTuple = tuple[
-    str,
-    str,
-    str,
-    int,
-    str | None,
-    str | None,
-    float | None,
-    int,
-    str,
-    str,
-    str | None,
-    str,
-    str | None,
-    str | None,
-    str | None,
-    str | None,
-    str | None,
-    str | None,
-    str | None,
-    str | None,
-    str,
-]
-ProviderEventTuple = tuple[
-    ProviderEventId,
-    ConversationId,
-    Provider,
-    int,
-    str,
-    str,
-    str | None,
-    float | None,
-    dict[str, object],
-    MessageId | None,
-    str | None,
-    int,
-]
-StatsTuple = tuple[ConversationId, str, int, int, int, int, int, int, int, int, int, int, int]
-AttachmentTuple = tuple[
-    AttachmentId,
-    str | None,
-    int | None,
-    str | None,
-    int,
-    str | None,
-    str | None,
-    str | None,
-    str | None,
-    str | None,
-]
-AttachmentRefTuple = tuple[
-    str,
-    AttachmentId,
-    ConversationId,
-    MessageId | None,
-    str | None,
-    str | None,
-    str | None,
-    str | None,
-    str | None,
-]
-
-
 # ---------------------------------------------------------------------------
-# Result dataclasses — cheap to pickle (no Pydantic)
+# Result dataclasses
 # ---------------------------------------------------------------------------
 
 
 @dataclass(slots=True)
-class ConversationData:
-    """All DB-ready data for one conversation, as plain tuples for executemany."""
+class SessionWritePayload:
+    """Current archive write payload for one parsed session."""
 
-    conversation_id: str
+    session_id: str
     content_hash: str
-
-    # Tuple matching INSERT INTO conversations column order
-    conversation_tuple: ConversationTuple
-
-    # list[tuple] matching INSERT INTO messages column order
-    message_tuples: list[MessageTuple] = field(default_factory=list)
-
-    # list[tuple] matching INSERT INTO content_blocks column order
-    block_tuples: list[ContentBlockTuple] = field(default_factory=list)
-
-    # list[tuple] matching INSERT INTO action_events column order
-    action_event_tuples: list[ActionEventTuple] = field(default_factory=list)
-
-    # list[tuple] matching INSERT INTO provider_events column order
-    provider_event_tuples: list[ProviderEventTuple] = field(default_factory=list)
-
-    # (conversation_id, source_name, msg_count, word_count, tool_use_count, thinking_count)
-    stats_tuple: StatsTuple | tuple[()] = ()
-
-    # Attachments are rare; keep as list of simple tuples
-    # Each: (attachment_id, conversation_id, message_id, mime_type, size_bytes, path, provider_meta_json)
-    attachment_tuples: list[AttachmentTuple] = field(default_factory=list)
-    attachment_ref_tuples: list[AttachmentRefTuple] = field(default_factory=list)
-
-    # Source metadata
-    source_name: str = ""
+    parsed_session: ParsedSession
+    message_count: int = 0
+    attachment_count: int = 0
     raw_id: str | None = None
     append_only: bool = False
 
@@ -244,15 +81,9 @@ class IngestRecordResult:
     validation_error: str | None = None
     parse_error: str | None = None
     error: str | None = None
-    conversations: list[ConversationData] = field(default_factory=list)
+    sessions: list[SessionWritePayload] = field(default_factory=list)
     source_name: str | None = None
     serialized_size_bytes: int | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class _ActionEventMessage:
-    id: str
-    timestamp: datetime | None
 
 
 ParsePlanMode = Literal["payload", "stream"]
@@ -260,7 +91,7 @@ ParsePlanMode = Literal["payload", "stream"]
 
 @dataclass(frozen=True, slots=True)
 class _IngestContext:
-    raw_record: RawConversationRecord
+    raw_record: RawSessionRecord
     raw_source: Path
     archive_root: Path
     validation_mode: ValidationMode
@@ -309,12 +140,12 @@ def _fallback_id(source_path: str | None, raw_id: str) -> str:
 
 def _make_ref_id(
     attachment_id: str,
-    conversation_id: str,
+    session_id: str,
     message_id: str | None,
 ) -> str:
     from hashlib import sha256
 
-    key = f"{attachment_id}:{conversation_id}:{message_id or ''}"
+    key = f"{attachment_id}:{session_id}:{message_id or ''}"
     return sha256(key.encode()).hexdigest()[:32]
 
 
@@ -335,11 +166,11 @@ def _finalize_result(result: IngestRecordResult, *, measure_serialized_size: boo
     return result
 
 
-def _normalized_conversation(
-    convo: ParsedConversation,
+def _normalized_session(
+    convo: ParsedSession,
     *,
     fallback_timestamp: str | None,
-) -> ParsedConversation:
+) -> ParsedSession:
     updates: _TimestampUpdates = {}
     if convo.created_at is None and fallback_timestamp:
         updates["created_at"] = fallback_timestamp
@@ -369,7 +200,7 @@ def _record_result(
     validation_error: str | None = None,
     parse_error: str | None = None,
     error: str | None = None,
-    conversations: list[ConversationData] | None = None,
+    sessions: list[SessionWritePayload] | None = None,
     include_source_name: bool = False,
 ) -> IngestRecordResult:
     return _finalize_result(
@@ -380,7 +211,7 @@ def _record_result(
             validation_error=validation_error,
             parse_error=parse_error,
             error=error,
-            conversations=conversations or [],
+            sessions=sessions or [],
             source_name=context.source_name if include_source_name else None,
         ),
         measure_serialized_size=context.measure_serialized_size,
@@ -515,16 +346,16 @@ def _build_fast_stream_parse_plan(
         return None
 
     kind = (
-        ArtifactKind.SUBAGENT_CONVERSATION_STREAM
+        ArtifactKind.SUBAGENT_SESSION_STREAM
         if is_subagent_path(context.raw_record.source_path)
-        else ArtifactKind.CONVERSATION_RECORD_STREAM
+        else ArtifactKind.SESSION_RECORD_STREAM
     )
     artifact = ArtifactClassification(
         provider=runtime_provider,
         kind=kind,
-        parse_as_conversation=True,
+        parse_as_session=True,
         schema_eligible=False,
-        default_priority=90 if kind is ArtifactKind.SUBAGENT_CONVERSATION_STREAM else 120,
+        default_priority=90 if kind is ArtifactKind.SUBAGENT_SESSION_STREAM else 120,
         reason="known JSONL stream provider with validation off",
     )
     return _build_parse_plan(
@@ -617,10 +448,10 @@ def _validate_parse_plan(
     )
 
 
-def _parse_plan_conversations(
+def _parse_plan_sessions(
     context: _IngestContext,
     plan: _ParsePlan,
-) -> list[ParsedConversation]:
+) -> list[ParsedSession]:
     from polylogue.sources.dispatch import parse_payload, parse_stream_payload
 
     fallback_id = _fallback_id(context.raw_record.source_path, context.raw_record.raw_id)
@@ -636,14 +467,14 @@ def _parse_plan_conversations(
                     valid_record_count += 1
                     yield item
 
-            conversations = parse_stream_payload(
+            sessions = parse_stream_payload(
                 plan.provider,
                 counted_stream(),
                 fallback_id,
             )
             if valid_record_count == 0:
                 raise ValueError(f"no valid JSON records in {stream_name}")
-            return conversations
+            return sessions
 
     return parse_payload(
         plan.provider,
@@ -654,31 +485,31 @@ def _parse_plan_conversations(
     )
 
 
-def _materialize_parsed_conversations(
+def _materialize_parsed_sessions(
     context: _IngestContext,
     plan: _ParsePlan,
     *,
     validation: _PlanValidation,
-    parsed_conversations: list[ParsedConversation],
+    parsed_sessions: list[ParsedSession],
 ) -> IngestRecordResult:
-    result_convos: list[ConversationData] = []
-    for convo in parsed_conversations:
-        normalized_convo = _normalized_conversation(
+    session_payloads: list[SessionWritePayload] = []
+    for convo in parsed_sessions:
+        normalized_convo = _normalized_session(
             convo,
             fallback_timestamp=context.fallback_timestamp,
         )
         try:
-            cdata = _transform_to_tuples(
-                normalized_convo,
-                # Use the plan's resolved provider (trusted source_name for known
-                # providers; the content-detected provider when the raw source was
-                # unknown) — not the raw source_name, which would discard detection.
-                source_name=plan.payload_provider,
-                archive_root=context.archive_root,
-                raw_id=context.raw_record.raw_id,
-                append_only=context.raw_record.source_index == -1,
+            session_payloads.append(
+                SessionWritePayload(
+                    session_id=str(make_session_id(normalized_convo.source_name, normalized_convo.provider_session_id)),
+                    content_hash=str(session_content_hash(normalized_convo)),
+                    parsed_session=normalized_convo,
+                    message_count=len(normalized_convo.messages),
+                    attachment_count=len(normalized_convo.attachments),
+                    raw_id=context.raw_record.raw_id,
+                    append_only=context.raw_record.source_index == -1,
+                )
             )
-            result_convos.append(cdata)
         except Exception as exc:
             return _record_result(
                 context,
@@ -693,7 +524,7 @@ def _materialize_parsed_conversations(
         plan.payload_provider,
         validation_status=validation.status,
         validation_error=validation.validation_error,
-        conversations=result_convos,
+        sessions=session_payloads,
         include_source_name=True,
     )
 
@@ -702,7 +533,7 @@ def _run_parse_plan(
     context: _IngestContext,
     plan: _ParsePlan,
 ) -> IngestRecordResult:
-    if not plan.artifact.parse_as_conversation:
+    if not plan.artifact.parse_as_session:
         return _record_result(
             context,
             plan.payload_provider,
@@ -721,7 +552,7 @@ def _run_parse_plan(
         )
 
     try:
-        parsed_conversations = _parse_plan_conversations(
+        parsed_sessions = _parse_plan_sessions(
             context,
             plan,
         )
@@ -734,11 +565,11 @@ def _run_parse_plan(
             error=f"parse: {exc}",
         )
 
-    return _materialize_parsed_conversations(
+    return _materialize_parsed_sessions(
         context,
         plan,
         validation=validation,
-        parsed_conversations=parsed_conversations,
+        parsed_sessions=parsed_sessions,
     )
 
 
@@ -748,7 +579,7 @@ def _run_parse_plan(
 
 
 def ingest_record(
-    raw_record: RawConversationRecord,
+    raw_record: RawSessionRecord,
     archive_root_str: str,
     validation_mode_value: str = "advisory",
     measure_serialized_size: bool = False,
@@ -827,372 +658,4 @@ def ingest_record(
     return _run_parse_plan(context, _build_envelope_parse_plan(context, envelope))
 
 
-# ---------------------------------------------------------------------------
-# Transform — converts ParsedConversation to plain tuples
-# ---------------------------------------------------------------------------
-
-
-def _conversation_tuple(conversation: MaterializedConversation, *, raw_id: str | None) -> ConversationTuple:
-    source_name = ""
-    if conversation.provider_meta and isinstance(conversation.provider_meta, dict):
-        raw = conversation.provider_meta.get("source")
-        source_name = raw if isinstance(raw, str) else ""
-    return (
-        conversation.conversation_id,
-        conversation.source_name,
-        conversation.provider_conversation_id,
-        conversation.title,
-        conversation.created_at,
-        conversation.updated_at,
-        conversation.sort_key,
-        conversation.content_hash,
-        _json_or_none(conversation.provider_meta),
-        "{}",
-        1,
-        conversation.parent_conversation_id,
-        conversation.branch_type,
-        raw_id,
-        source_name,
-        conversation.working_directories_json,
-        conversation.git_branch,
-        conversation.git_repository_url,
-    )
-
-
-def _message_tuple(conversation: MaterializedConversation, message: MaterializedMessage) -> MessageTuple:
-    return (
-        message.message_id,
-        conversation.conversation_id,
-        message.provider_message_id,
-        message.role,
-        None if message.blocks else message.text,
-        message.sort_key,
-        message.content_hash,
-        1,
-        message.parent_message_id,
-        message.branch_index,
-        conversation.source_name,
-        message.word_count,
-        message.has_tool_use,
-        message.has_thinking,
-        message.has_paste,
-        message.input_tokens,
-        message.output_tokens,
-        message.cache_read_tokens,
-        message.cache_write_tokens,
-        message.model_name,
-        message.message_type.value,
-        message.paste_boundary_state,
-    )
-
-
-def _message_tuples(conversation: MaterializedConversation) -> list[MessageTuple]:
-    return [_message_tuple(conversation, message) for message in conversation.messages]
-
-
-def _content_block_tuple(
-    *,
-    conversation_id: ConversationId,
-    message_id: MessageId,
-    block: MaterializedContentBlock,
-) -> ContentBlockTuple:
-    return (
-        block.block_id,
-        message_id,
-        conversation_id,
-        block.block_index,
-        block.type,
-        block.text,
-        block.tool_name,
-        block.tool_id,
-        block.tool_input_json,
-        block.metadata_json,
-        block.semantic_type,
-    )
-
-
-def _content_block_tuples(conversation: MaterializedConversation) -> list[ContentBlockTuple]:
-    return [
-        _content_block_tuple(
-            conversation_id=conversation.conversation_id,
-            message_id=message.message_id,
-            block=block,
-        )
-        for message in conversation.messages
-        for block in message.blocks
-    ]
-
-
-_TupleT = TypeVar("_TupleT")
-
-
-def _dedupe_by_key_preserve_last(items: list[_TupleT], key: Callable[[_TupleT], object]) -> list[_TupleT]:
-    if len(items) < 2:
-        return items
-    seen: set[object] = set()
-    deduped: list[_TupleT] = []
-    for item in reversed(items):
-        item_key = key(item)
-        if item_key in seen:
-            continue
-        seen.add(item_key)
-        deduped.append(item)
-    if len(deduped) == len(items):
-        return items
-    deduped.reverse()
-    return deduped
-
-
-def _stats_tuple(conversation: MaterializedConversation, message_tuples: list[MessageTuple]) -> StatsTuple:
-    return (
-        conversation.conversation_id,
-        conversation.source_name,
-        len(message_tuples),
-        sum(message[11] for message in message_tuples),
-        sum(message[12] for message in message_tuples),
-        sum(message[13] for message in message_tuples),
-        sum(message[14] for message in message_tuples),
-        sum(1 for m in message_tuples if m[3] == Role.USER),
-        sum(1 for m in message_tuples if m[3] == Role.ASSISTANT),
-        sum(1 for m in message_tuples if m[3] == Role.SYSTEM),
-        sum(1 for m in message_tuples if m[3] == Role.TOOL),
-        sum(m[11] for m in message_tuples if m[3] == Role.USER),
-        sum(m[11] for m in message_tuples if m[3] == Role.ASSISTANT),
-    )
-
-
-def _provider_event_tuples(
-    conversation: MaterializedConversation,
-    *,
-    raw_id: str | None,
-) -> list[ProviderEventTuple]:
-    tuples: list[ProviderEventTuple] = []
-    for event in conversation.provider_events:
-        projection = project_provider_event_payload(event.event_type, event.payload)
-        tuples.append(
-            (
-                event.event_id,
-                event.conversation_id,
-                event.source_name,
-                event.event_index,
-                event.event_type,
-                projection.normalized_kind,
-                event.timestamp,
-                event.sort_key,
-                projection.payload,
-                event.source_message_id,
-                raw_id,
-                PROVIDER_EVENT_MATERIALIZER_VERSION,
-            )
-        )
-    return tuples
-
-
-def _attachment_tuples(
-    conversation: MaterializedConversation,
-) -> tuple[list[AttachmentTuple], list[AttachmentRefTuple]]:
-    attachment_tuples: list[AttachmentTuple] = []
-    attachment_ref_tuples: list[AttachmentRefTuple] = []
-    for attachment in conversation.attachments:
-        meta_json = _json_or_none(attachment.provider_meta)
-        provider_attachment_id = getattr(attachment, "provider_attachment_id", None) or None
-        provider_file_id = getattr(attachment, "provider_file_id", None) or None
-        provider_drive_id = getattr(attachment, "provider_drive_id", None) or None
-        # #1252: upload_origin is the closed vocabulary the #1199 attachment
-        # library uses to group attachments without scanning provider_meta.
-        upload_origin = getattr(attachment, "upload_origin", None) or None
-        attachment_tuples.append(
-            (
-                attachment.attachment_id,
-                attachment.mime_type,
-                attachment.size_bytes,
-                attachment.path,
-                0,
-                meta_json,
-                provider_attachment_id,
-                provider_file_id,
-                provider_drive_id,
-                upload_origin,
-            )
-        )
-        attachment_ref_tuples.append(
-            (
-                _make_ref_id(
-                    attachment.attachment_id,
-                    conversation.conversation_id,
-                    attachment.message_id,
-                ),
-                attachment.attachment_id,
-                conversation.conversation_id,
-                attachment.message_id,
-                meta_json,
-                provider_attachment_id,
-                provider_file_id,
-                provider_drive_id,
-                upload_origin,
-            )
-        )
-    return attachment_tuples, attachment_ref_tuples
-
-
-def _transform_to_tuples(
-    convo: ParsedConversation,
-    *,
-    source_name: str,
-    archive_root: Path,
-    raw_id: str | None,
-    append_only: bool = False,
-) -> ConversationData:
-    """Convert a ParsedConversation to DB-ready tuples."""
-    materialized = materialize_conversation(
-        convo,
-        source_name=source_name,
-        archive_root=archive_root,
-    )
-    message_tuples = _dedupe_by_key_preserve_last(_message_tuples(materialized), lambda item: item[0])
-    block_tuples = _dedupe_by_key_preserve_last(_content_block_tuples(materialized), lambda item: item[0])
-    action_event_tuples = _dedupe_by_key_preserve_last(_build_action_event_tuples(materialized), lambda item: item[0])
-    provider_event_tuples = _dedupe_by_key_preserve_last(
-        _provider_event_tuples(materialized, raw_id=raw_id), lambda item: item[0]
-    )
-
-    attachment_tuples, attachment_ref_tuples = _attachment_tuples(materialized)
-    attachment_tuples = _dedupe_by_key_preserve_last(attachment_tuples, lambda item: item[0])
-    attachment_ref_tuples = _dedupe_by_key_preserve_last(attachment_ref_tuples, lambda item: item[0])
-
-    return ConversationData(
-        conversation_id=materialized.conversation_id,
-        content_hash=materialized.content_hash,
-        conversation_tuple=_conversation_tuple(materialized, raw_id=raw_id),
-        message_tuples=message_tuples,
-        block_tuples=block_tuples,
-        action_event_tuples=action_event_tuples,
-        provider_event_tuples=provider_event_tuples,
-        stats_tuple=_stats_tuple(materialized, message_tuples),
-        attachment_tuples=attachment_tuples,
-        attachment_ref_tuples=attachment_ref_tuples,
-        source_name=source_name,
-        raw_id=raw_id,
-        append_only=append_only,
-    )
-
-
-def _timestamp_iso_for_action_event(event: ActionEvent) -> str | None:
-    if event.timestamp is None:
-        return None
-    timestamp = event.timestamp
-    if timestamp.tzinfo is None:
-        timestamp = timestamp.replace(tzinfo=timezone.utc)
-    return timestamp.isoformat()
-
-
-def _action_event_source_block_id(event: ActionEvent) -> str | None:
-    if not isinstance(event.raw, dict):
-        return None
-    block_id = event.raw.get("block_id")
-    return block_id if isinstance(block_id, str) else None
-
-
-def _action_event_tuple(
-    conversation: MaterializedConversation,
-    message: MaterializedMessage,
-    event: ActionEvent,
-) -> ActionEventTuple:
-    affected_paths_json = json_dumps(list(event.affected_paths)) if event.affected_paths else None
-    branch_names_json = json_dumps(list(event.branch_names)) if event.branch_names else None
-    return (
-        event.event_id,
-        conversation.conversation_id,
-        message.message_id,
-        ACTION_EVENT_MATERIALIZER_VERSION,
-        _action_event_source_block_id(event),
-        _timestamp_iso_for_action_event(event),
-        message.sort_key,
-        event.sequence_index,
-        conversation.source_name,
-        event.kind.value,
-        event.tool_name,
-        event.normalized_tool_name,
-        event.tool_id,
-        affected_paths_json,
-        event.cwd_path,
-        branch_names_json,
-        event.command,
-        event.query,
-        event.url,
-        event.output_text,
-        event.search_text,
-    )
-
-
-def _action_event_message_timestamp(message: MaterializedMessage) -> datetime | None:
-    if message.sort_key is None:
-        return None
-    try:
-        return datetime.fromtimestamp(message.sort_key, tz=timezone.utc)
-    except (OSError, ValueError):
-        return None
-
-
-def _content_block_mapping_for_action_event(
-    *,
-    conversation_id: ConversationId,
-    message_id: MessageId,
-    block: MaterializedContentBlock,
-) -> dict[str, object]:
-    return {
-        "block_id": block.block_id,
-        "message_id": message_id,
-        "conversation_id": conversation_id,
-        "block_index": block.block_index,
-        "type": block.type,
-        "text": block.text,
-        "tool_name": block.tool_name,
-        "tool_id": block.tool_id,
-        "tool_input": block.tool_input_json,
-        "metadata": block.metadata_json,
-        "semantic_type": block.semantic_type,
-    }
-
-
-def _build_action_event_tuples(
-    conversation: MaterializedConversation,
-) -> list[ActionEventTuple]:
-    """Build action event tuples for all messages in a conversation.
-
-    Uses the lightweight action event builder directly from materialized content
-    blocks, avoiding Pydantic storage-record/domain-message hydration on dense
-    tool-call streams.
-    """
-    from polylogue.archive.action_event.action_events import build_action_events, build_tool_calls_from_content_blocks
-
-    provider = Provider.from_string(conversation.source_name)
-    action_tuples: list[ActionEventTuple] = []
-
-    for message in conversation.messages:
-        if not message.has_tool_use:
-            continue
-
-        content_blocks = tuple(
-            _content_block_mapping_for_action_event(
-                conversation_id=conversation.conversation_id,
-                message_id=message.message_id,
-                block=block,
-            )
-            for block in message.blocks
-        )
-        tool_calls = build_tool_calls_from_content_blocks(
-            provider=provider,
-            content_blocks=content_blocks,
-        )
-        action_message = _ActionEventMessage(
-            id=message.message_id,
-            timestamp=_action_event_message_timestamp(message),
-        )
-        for event in build_action_events(action_message, tool_calls):
-            action_tuples.append(_action_event_tuple(conversation, message, event))
-
-    return action_tuples
-
-
-__all__ = ["ConversationData", "IngestRecordResult", "ingest_record"]
+__all__ = ["SessionWritePayload", "IngestRecordResult", "ingest_record"]

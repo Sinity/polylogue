@@ -423,7 +423,7 @@ Owned files:
 
 Avoided files:
 
-- Storage schema and migrations.
+- Storage schema and rebuilds.
 - Topology/user-state/provenance persistence.
 - Web-shell visual layout beyond consuming the enriched JSON contract.
 
@@ -786,12 +786,12 @@ Outcome:
 - Added MCP `list_annotations`, `save_annotation`, and `delete_annotation`,
   and widened mark tools to accept target arguments.
 - Regenerated the MCP tool-schema witness.
-- Added storage tests for migration, target validation, and content-hash
+- Added storage tests for rebuild, target validation, and content-hash
   exclusion.
 
 Verification:
 
-- `pytest -q tests/unit/storage/test_user_state_contracts.py tests/unit/storage/test_schema_upgrades.py::test_ensure_schema_upgrades_v12_marks_to_target_aware_user_state tests/unit/storage/test_schema_upgrades.py::test_v12_to_v13_upgrade_plan_migrates_legacy_mark_table tests/unit/daemon/test_web_reader.py tests/unit/mcp/test_user_state_tools.py tests/unit/mcp/test_envelope_contracts.py tests/unit/mcp/test_tool_schema_witness.py tests/visual/test_reader_dom_smoke.py`
+- `pytest -q tests/unit/storage/test_user_state_contracts.py tests/unit/storage/test_user_state_contracts.py tests/unit/daemon/test_web_reader.py tests/unit/mcp/test_user_state_tools.py tests/unit/mcp/test_envelope_contracts.py tests/unit/mcp/test_tool_schema_witness.py tests/visual/test_reader_dom_smoke.py`
 - `ruff format --check <changed files>`
 - `ruff check <changed files>`
 - `python -m mypy <changed files>`
@@ -800,7 +800,7 @@ Verification:
 
 Target:
 
-- Complete the next recall-pack slice without another schema migration by
+- Complete the next recall-pack slice without another schema rebuild by
   making the stored payload typed and self-describing.
 - Preserve daemon compatibility for legacy `conversation_ids` while allowing
   explicit conversation/message/mark/annotation items.
@@ -848,7 +848,7 @@ Verification:
 - `pytest -q -n0 tests/unit/mcp/test_tool_schema_witness.py tests/unit/mcp/test_envelope_contracts.py tests/unit/cli/test_click_app.py::TestCliMetadata::test_all_subcommands_registered tests/unit/mcp/test_user_state_tools.py tests/unit/cli/test_user_state_command.py`
 - `devtools render-all --check`
 
-### 2026-05-15 - verification artifact migration start
+### 2026-05-15 - verification artifact conversion start
 
 Target:
 

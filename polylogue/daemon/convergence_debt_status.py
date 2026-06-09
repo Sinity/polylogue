@@ -46,47 +46,65 @@ class ConvergenceDebtSummary(BaseModel):
 
 def convergence_debt_summary_info(dbf: Path) -> ConvergenceDebtSummary:
     """Return durable post-ingest convergence debt snapshots."""
-    if not dbf.exists():
-        return ConvergenceDebtSummary()
+    ops_summary = _archive_convergence_debt_summary_info(dbf, dbf.with_name("ops.db"))
+    if ops_summary is not None:
+        return ops_summary
+    return ConvergenceDebtSummary()
+
+
+def _archive_convergence_debt_summary_info(dbf: Path, ops_db: Path) -> ConvergenceDebtSummary | None:
+    """Return the archive ops convergence-debt projection when populated."""
+    if not ops_db.exists():
+        return None
     try:
-        conn = open_readonly_connection(dbf)
+        conn = open_readonly_connection(ops_db)
         try:
             has_table = conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'live_convergence_debt'"
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'convergence_debt'"
             ).fetchone()
             if has_table is None:
-                return ConvergenceDebtSummary()
-            stage_rows = conn.execute(
+                return None
+            rows = conn.execute(
                 """
-                SELECT stage, next_retry_at
-                FROM live_convergence_debt
-                WHERE status = 'failed'
-                ORDER BY stage
-                """
-            ).fetchall()
-            recent_rows = conn.execute(
-                """
-                SELECT stage, subject_type, subject_id, status, failure_count,
-                       last_failed_at, next_retry_at, last_error
-                FROM live_convergence_debt
-                WHERE status = 'failed'
-                ORDER BY last_failed_at DESC
-                LIMIT 10
+                SELECT stage, target_type, target_id, status, attempts,
+                       updated_at_ms, last_error, next_retry_at
+                FROM convergence_debt
+                ORDER BY updated_at_ms DESC, priority DESC, debt_id DESC
                 """
             ).fetchall()
+            if not rows:
+                return None
         finally:
             conn.close()
     except sqlite3.Error:
+        return None
+
+    items = [
+        ConvergenceDebtItem(
+            stage=_required_str(row[0]),
+            subject_type=_required_str(row[1]),
+            subject_id=_required_str(row[2]),
+            status=_required_str(row[3]),
+            failure_count=_row_int(row[4]),
+            last_failed_at=_iso_from_epoch_ms(row[5]),
+            next_retry_at=_optional_str(row[7]),
+            retry_due=False,
+            last_error=_optional_str(row[6]),
+        )
+        for row in rows
+        if _required_str(row[3]) == "failed"
+    ]
+    if not items:
         return ConvergenceDebtSummary()
 
     now = datetime.now(UTC)
+    recent = [item.model_copy(update={"retry_due": _retry_due(item.next_retry_at, now=now)}) for item in items[:10]]
     failed_by_stage: dict[str, int] = {}
     retry_due_by_stage: dict[str, int] = {}
-    for row in stage_rows:
-        stage = _required_str(row[0])
-        failed_by_stage[stage] = failed_by_stage.get(stage, 0) + 1
-        if _retry_due(_optional_str(row[1]), now=now):
-            retry_due_by_stage[stage] = retry_due_by_stage.get(stage, 0) + 1
+    for item in items:
+        failed_by_stage[item.stage] = failed_by_stage.get(item.stage, 0) + 1
+        if _retry_due(item.next_retry_at, now=now):
+            retry_due_by_stage[item.stage] = retry_due_by_stage.get(item.stage, 0) + 1
     stage_summaries = [
         ConvergenceDebtStageSummary(
             stage=stage,
@@ -95,20 +113,14 @@ def convergence_debt_summary_info(dbf: Path) -> ConvergenceDebtSummary:
         )
         for stage, failed_count in sorted(failed_by_stage.items(), key=lambda item: (-item[1], item[0]))
     ]
-    recent = [
-        ConvergenceDebtItem(
-            stage=_required_str(row[0]),
-            subject_type=_required_str(row[1]),
-            subject_id=_required_str(row[2]),
-            status=_required_str(row[3]),
-            failure_count=_row_int(row[4]),
-            last_failed_at=_required_str(row[5]),
-            next_retry_at=_optional_str(row[6]),
-            retry_due=_retry_due(_optional_str(row[6]), now=now),
-            last_error=_optional_str(row[7]),
-        )
-        for row in recent_rows
-    ]
+    return _summary_from_parts(stage_summaries=stage_summaries, recent=recent)
+
+
+def _summary_from_parts(
+    *,
+    stage_summaries: list[ConvergenceDebtStageSummary],
+    recent: list[ConvergenceDebtItem],
+) -> ConvergenceDebtSummary:
     # Per-family rollup over the recent items so polylogue status and the
     # /health envelope show which source family the debt belongs to. This
     # is the same view the convergence-debt alert (see
@@ -153,6 +165,11 @@ def _row_int(value: object) -> int:
         except ValueError:
             return 0
     return 0
+
+
+def _iso_from_epoch_ms(value: object) -> str:
+    epoch_ms = _row_int(value)
+    return datetime.fromtimestamp(epoch_ms / 1000, tz=UTC).isoformat()
 
 
 def _retry_due(next_retry_at: str | None, *, now: datetime) -> bool:

@@ -1,4 +1,4 @@
-"""Compute scoped vs global facet aggregates over conversation queries.
+"""Compute scoped vs global facet aggregates over session queries.
 
 Facets are aggregate counts over a result set:
 
@@ -21,21 +21,21 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from polylogue.archive.conversation.models import ConversationSummary
+    from polylogue.archive.session.domain_models import SessionSummary
 
 
 @dataclass(frozen=True)
 class FacetBuckets:
-    """Aggregate counts derived from a set of conversation summaries.
+    """Aggregate counts derived from a set of session summaries.
 
-    Counts are keyed by the bucket label (provider name, tag name, etc.)
-    and value the number of conversations in the input set that carry
-    the bucket. ``total_conversations``/``total_messages`` describe the
+    Counts are keyed by the bucket label (origin family, tag name, etc.)
+    and value the number of sessions in the input set that carry
+    the bucket. ``total_sessions``/``total_messages`` describe the
     input set itself.
 
     The per-message families (``message_types``, ``action_types``,
     ``has_flags``) and ``repos`` are populated by SQL-backed aggregators
-    because they require scanning tables beyond the conversation summary
+    because they require scanning tables beyond the session summary
     surface.
     """
 
@@ -45,7 +45,7 @@ class FacetBuckets:
     message_types: dict[str, int] = field(default_factory=dict)
     action_types: dict[str, int] = field(default_factory=dict)
     has_flags: dict[str, int] = field(default_factory=dict)
-    total_conversations: int = 0
+    total_sessions: int = 0
     total_messages: int = 0
 
 
@@ -53,7 +53,7 @@ class FacetBuckets:
 class FacetSet:
     """Scoped + global facet pair with optional IDF weighting.
 
-    * ``scoped`` describes the conversations matching the active filter
+    * ``scoped`` describes the sessions matching the active filter
       chain — empty buckets if the user has narrowed away every value.
     * ``global_`` describes the unfiltered archive.
     * ``scoped_to_query`` is ``True`` whenever the active filter chain
@@ -61,9 +61,9 @@ class FacetSet:
       effective predicate).
     * ``idf`` carries inverse-document-frequency weights per facet
       value, computed against the *global* universe so that a bucket
-      appearing in nearly every conversation is "noise" (low IDF) and a
+      appearing in nearly every session is "noise" (low IDF) and a
       rare bucket is "signal" (high IDF). The map is keyed by facet
-      family name (``providers``, ``tags``) and then by value.
+      family name (``origins``, ``tags``) and then by value.
     """
 
     scoped: FacetBuckets
@@ -73,7 +73,7 @@ class FacetSet:
 
 
 def compute_facets(
-    summaries: Iterable[ConversationSummary],
+    summaries: Iterable[SessionSummary],
 ) -> FacetBuckets:
     """Roll a sequence of summaries into per-bucket counts.
 
@@ -83,21 +83,21 @@ def compute_facets(
 
     providers: dict[str, int] = {}
     tags: dict[str, int] = {}
-    total_conversations = 0
+    total_sessions = 0
     total_messages = 0
     for s in summaries:
-        total_conversations += 1
+        total_sessions += 1
         total_messages += s.message_count or 0
-        provider_key = str(s.provider)
+        provider_key = s.origin.value
         providers[provider_key] = providers.get(provider_key, 0) + 1
         # ``tags`` are M2M user-tags; deduplicate within a single
-        # conversation so a doubly-applied tag does not double-count.
+        # session so a doubly-applied tag does not double-count.
         for tag in set(s.tags):
             tags[tag] = tags.get(tag, 0) + 1
     return FacetBuckets(
         providers=providers,
         tags=tags,
-        total_conversations=total_conversations,
+        total_sessions=total_sessions,
         total_messages=total_messages,
     )
 
@@ -106,20 +106,20 @@ def compute_idf(buckets: FacetBuckets) -> dict[str, dict[str, float]]:
     """Compute per-value inverse-document-frequency over a bucket set.
 
     ``idf(value) = log(N / df(value))`` using natural log, where ``N``
-    is ``total_conversations`` and ``df`` is the value's count.
+    is ``total_sessions`` and ``df`` is the value's count.
     Returns ``{}`` if the universe is empty.
 
     Higher IDF means the value partitions the archive more strongly
     (rare = signal); IDF near zero means the value is shared by nearly
-    every conversation (common = noise).
+    every session (common = noise).
     """
 
-    total = buckets.total_conversations
+    total = buckets.total_sessions
     if total <= 0:
         return {}
     out: dict[str, dict[str, float]] = {}
     for family_name, family in (
-        ("providers", buckets.providers),
+        ("origins", buckets.providers),
         ("tags", buckets.tags),
         ("repos", buckets.repos),
         ("message_types", buckets.message_types),

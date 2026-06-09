@@ -122,11 +122,11 @@ class TestFullCorpusMode:
 
 
 class TestRecordStreamTitleAbstention:
-    """Record-stream artifact kinds must not infer conversation_title."""
+    """Record-stream artifact kinds must not infer session_title."""
 
     @pytest.fixture()
     def title_eligible_stats(self) -> dict[str, FieldStats]:
-        """Field stats that would normally score well for conversation_title."""
+        """Field stats that would normally score well for session_title."""
         return {
             "$.title": FieldStats(
                 path="$.title",
@@ -154,9 +154,9 @@ class TestRecordStreamTitleAbstention:
         kind: str,
         title_eligible_stats: dict[str, FieldStats],
     ) -> None:
-        """Record-stream artifacts produce no conversation_title candidates."""
+        """Record-stream artifacts produce no session_title candidates."""
         candidates = infer_semantic_roles(title_eligible_stats, artifact_kind=kind)
-        title_candidates = [c for c in candidates if c.role == "conversation_title"]
+        title_candidates = [c for c in candidates if c.role == "session_title"]
         assert not title_candidates, f"artifact_kind={kind} should abstain from title; got {title_candidates}"
 
     @pytest.mark.parametrize("kind", sorted(RECORD_STREAM_KINDS))
@@ -174,13 +174,13 @@ class TestRecordStreamTitleAbstention:
         self,
         title_eligible_stats: dict[str, FieldStats],
     ) -> None:
-        """conversation_document artifacts should still infer title."""
+        """session_document artifacts should still infer title."""
         candidates = infer_semantic_roles(
             title_eligible_stats,
-            artifact_kind="conversation_document",
+            artifact_kind="session_document",
         )
-        title_candidates = [c for c in candidates if c.role == "conversation_title"]
-        assert title_candidates, "conversation_document should infer title"
+        title_candidates = [c for c in candidates if c.role == "session_title"]
+        assert title_candidates, "session_document should infer title"
 
     def test_none_artifact_kind_still_infers_title(
         self,
@@ -188,7 +188,7 @@ class TestRecordStreamTitleAbstention:
     ) -> None:
         """When artifact_kind is None, title inference proceeds normally."""
         candidates = infer_semantic_roles(title_eligible_stats, artifact_kind=None)
-        title_candidates = [c for c in candidates if c.role == "conversation_title"]
+        title_candidates = [c for c in candidates if c.role == "session_title"]
         assert title_candidates, "None artifact_kind should infer title"
 
     def test_annotate_semantic_threads_artifact_kind(self) -> None:
@@ -215,11 +215,11 @@ class TestRecordStreamTitleAbstention:
         result = annotate_semantic_and_relational(
             schema,
             field_stats,
-            artifact_kind="conversation_record_stream",
+            artifact_kind="session_record_stream",
         )
         # Title should NOT be annotated for record streams
         title_prop = json_document(json_document(result.get("properties")).get("title"))
-        assert title_prop.get("x-polylogue-semantic-role") != "conversation_title"
+        assert title_prop.get("x-polylogue-semantic-role") != "session_title"
 
     def test_record_stream_eligible_roles_are_subset_of_semantic_roles(self) -> None:
         """All eligible roles are valid semantic roles."""
@@ -239,11 +239,11 @@ class TestProofSurface:
         """A schema with some semantic role annotations."""
         return {
             "type": "object",
-            "x-polylogue-artifact-kind": "conversation_document",
+            "x-polylogue-artifact-kind": "session_document",
             "properties": {
                 "title": {
                     "type": "string",
-                    "x-polylogue-semantic-role": "conversation_title",
+                    "x-polylogue-semantic-role": "session_title",
                     "x-polylogue-score": 0.72,
                     "x-polylogue-evidence": {"name_signal": "title", "avg_length": 15.0},
                 },
@@ -289,7 +289,7 @@ class TestProofSurface:
     def test_proof_chosen_path_for_assigned_roles(self, schema_with_roles: JSONDocument) -> None:
         """Assigned roles have a chosen_path."""
         proof = build_review_proof(schema_with_roles)
-        title_entry = next(e for e in proof.roles if e.role == "conversation_title")
+        title_entry = next(e for e in proof.roles if e.role == "session_title")
         assert title_entry.chosen_path == "$.title"
         assert title_entry.chosen_score == pytest.approx(0.72)
         assert not title_entry.abstained
@@ -318,7 +318,7 @@ class TestProofSurface:
         assert "ineligible_roles" in parsed
 
     def test_proof_eligible_roles_for_document(self, schema_with_roles: JSONDocument) -> None:
-        """conversation_document has all roles eligible."""
+        """session_document has all roles eligible."""
         proof = build_review_proof(schema_with_roles)
         assert proof.eligible_roles == list(SEMANTIC_ROLES)
         assert proof.ineligible_roles == []
@@ -327,7 +327,7 @@ class TestProofSurface:
         """Record-stream schemas show title as ineligible."""
         schema: JSONDocument = {
             "type": "object",
-            "x-polylogue-artifact-kind": "conversation_record_stream",
+            "x-polylogue-artifact-kind": "session_record_stream",
             "properties": {
                 "role": {
                     "type": "string",
@@ -338,8 +338,8 @@ class TestProofSurface:
             },
         }
         proof = build_review_proof(schema)
-        assert "conversation_title" in proof.ineligible_roles
-        title_entry = next(e for e in proof.roles if e.role == "conversation_title")
+        assert "session_title" in proof.ineligible_roles
+        title_entry = next(e for e in proof.roles if e.role == "session_title")
         assert title_entry.abstained
         assert "excludes" in (title_entry.abstain_reason or "")
 
@@ -384,7 +384,7 @@ class TestConfidenceToScoreRename:
         samples = [
             {
                 "messages": [{"role": "user", "text": f"msg {i}"} for i in range(5)],
-                "title": f"Conversation {j}",
+                "title": f"Session {j}",
             }
             for j in range(3)
         ]

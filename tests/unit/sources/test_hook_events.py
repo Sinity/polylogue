@@ -170,7 +170,7 @@ def test_classify_artifact_cc_stream(event_type: str) -> None:
     records: JSONValue = [_make_hook_record(event_type=event_type, provider="claude-code")]
     artifact = classify_artifact(records, provider="claude-code")
     assert artifact.kind is ArtifactKind.HOOK_EVENT, f"{event_type} should be HOOK_EVENT, got {artifact.kind}"
-    assert artifact.parse_as_conversation is False
+    assert artifact.parse_as_session is False
 
 
 @pytest.mark.parametrize(
@@ -190,7 +190,7 @@ def test_classify_artifact_codex_stream(event_type: str) -> None:
     records: JSONValue = [_make_hook_record(event_type=event_type, provider="codex")]
     artifact = classify_artifact(records, provider="codex")
     assert artifact.kind is ArtifactKind.HOOK_EVENT, f"{event_type} should be HOOK_EVENT, got {artifact.kind}"
-    assert artifact.parse_as_conversation is False
+    assert artifact.parse_as_session is False
 
 
 def test_classify_artifact_single_hook_dict() -> None:
@@ -490,7 +490,7 @@ def test_payload_with_secrets_not_misclassified() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Edge cases: codex provider events
+# Edge cases: codex session events
 # ---------------------------------------------------------------------------
 
 
@@ -549,7 +549,7 @@ def test_hook_event_precedence_over_record_stream() -> None:
         _make_hook_record(event_type="PostToolUse"),
     ]
     artifact = classify_artifact(records, provider="claude-code")
-    # Must be HOOK_EVENT, not CONVERSATION_RECORD_STREAM
+    # Must be HOOK_EVENT, not SESSION_RECORD_STREAM
     assert artifact.kind is ArtifactKind.HOOK_EVENT
     # Verify it's not a record stream
-    assert artifact.kind.value != ArtifactKind.CONVERSATION_RECORD_STREAM.value
+    assert artifact.kind.value != ArtifactKind.SESSION_RECORD_STREAM.value

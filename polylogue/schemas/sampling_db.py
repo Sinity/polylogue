@@ -5,19 +5,21 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Iterator
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, TypeAlias, overload
 
 from polylogue.archive.raw_payload import extract_record_samples_from_raw_content
 from polylogue.archive.raw_payload.decode import RawPayloadEnvelope
+from polylogue.core.enums import Origin
 from polylogue.core.json import JSONDocument
 from polylogue.core.provider_identity import (
-    CORE_RUNTIME_PROVIDERS,
     canonical_runtime_provider,
     canonical_schema_provider,
 )
+from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.logging import get_logger
-from polylogue.paths import db_path as archive_db_path
+from polylogue.paths import db_path as index_db_path
 from polylogue.schemas.observation import (
     ProviderConfig,
     SchemaUnit,
@@ -25,7 +27,7 @@ from polylogue.schemas.observation import (
     resolve_provider_config,
 )
 from polylogue.storage.blob_store import get_blob_store
-from polylogue.storage.sqlite.connection_profile import open_connection
+from polylogue.storage.sqlite.connection_profile import connection_context
 from polylogue.types import Provider
 
 logger = get_logger(__name__)
@@ -33,44 +35,77 @@ logger = get_logger(__name__)
 SchemaSample: TypeAlias = JSONDocument
 
 
+def _blob_hash_hex(blob_hash: object) -> str:
+    """Return the lowercase hex digest addressing a raw payload blob.
+
+    Native ``raw_sessions.blob_hash`` is the 32-byte SHA-256 digest stored as
+    a BLOB; the blob store addresses files by hex digest.
+    """
+    if isinstance(blob_hash, (bytes, bytearray)):
+        return bytes(blob_hash).hex()
+    return str(blob_hash)
+
+
+def _ms_to_iso(value: object) -> str | None:
+    if not isinstance(value, (int, float, str)):
+        return None
+    try:
+        epoch_ms = int(value)
+    except (TypeError, ValueError):
+        return None
+    return datetime.fromtimestamp(epoch_ms / 1000.0, tz=timezone.utc).isoformat()
+
+
 @dataclass(frozen=True)
-class _RawConversationRow:
+class _RawSessionRow:
     source_path: str | None
-    source_name: str | None
-    payload_provider: str | None
+    origin: str
     raw_id: str
-    file_mtime: str | None
-    acquired_at: str | None
+    blob_hash: bytes
+    file_mtime_ms: int | None
+    acquired_at_ms: int | None
+
+    @property
+    def provider_token(self) -> str:
+        try:
+            return provider_from_origin(Origin.from_string(self.origin)).value
+        except (ValueError, KeyError):
+            return Provider.UNKNOWN.value
 
     @property
     def observed_at(self) -> str | None:
-        return self.file_mtime or self.acquired_at
+        return _ms_to_iso(self.file_mtime_ms) or _ms_to_iso(self.acquired_at_ms)
+
+
+def _sample_origins_for_provider(source_name: Provider, config: ProviderConfig) -> tuple[str, ...]:
+    """Return the archive origin tokens that hold rows for this provider.
+
+    raw rows carry a single ``origin`` token (#1743). The requested provider —
+    and its configured ``db_source_name`` alias, when set — map to archive
+    origins via :func:`origin_from_provider`.
+    """
+    origins: list[str] = [origin_from_provider(source_name).value]
+    if config.db_source_name is not None:
+        alias = origin_from_provider(Provider.from_string(config.db_source_name)).value
+        if alias not in origins:
+            origins.append(alias)
+    return tuple(origins)
 
 
 def _sample_provider_where_clause(source_name: str | Provider) -> tuple[str, tuple[str, ...]]:
-    provider_token = str(Provider.from_string(source_name))
-    runtime_placeholders = ",".join("?" for _ in CORE_RUNTIME_PROVIDERS)
-    clause = (
-        "payload_provider = ? "
-        "OR (payload_provider IS NULL AND source_name = ?) "
-        f"OR (payload_provider IS NULL AND source_name NOT IN ({runtime_placeholders}))"
-    )
-    params: tuple[str, ...] = (
-        provider_token,
-        provider_token,
-        *CORE_RUNTIME_PROVIDERS,
-    )
-    return clause, params
+    provider = Provider.from_string(source_name)
+    origin = origin_from_provider(provider).value
+    return "origin = ?", (origin,)
 
 
-def _coerce_schema_row(row: sqlite3.Row) -> _RawConversationRow:
-    return _RawConversationRow(
-        source_path=row[0],
-        source_name=row[1],
-        payload_provider=row[2],
-        raw_id=row[3],
-        file_mtime=row[4],
-        acquired_at=row[5],
+def _coerce_schema_row(row: sqlite3.Row) -> _RawSessionRow:
+    return _RawSessionRow(
+        source_path=row["source_path"],
+        origin=str(row["origin"]),
+        raw_id=str(row["raw_id"]),
+        blob_hash=bytes(row["blob_hash"]) if row["blob_hash"] is not None else b"",
+        file_mtime_ms=row["file_mtime_ms"],
+        acquired_at_ms=row["acquired_at_ms"],
     )
 
 
@@ -89,14 +124,14 @@ def _record_sample_limit(
 
 def _iter_record_stream_units(
     *,
-    row: _RawConversationRow,
+    row: _RawSessionRow,
     source_name: Provider,
     raw_content: Path,
     config: ProviderConfig,
     max_samples: int | None,
     full_corpus: bool,
 ) -> Iterator[SchemaUnit]:
-    runtime_provider = canonical_runtime_provider(row.payload_provider or row.source_name)
+    runtime_provider = canonical_runtime_provider(row.provider_token)
     if canonical_schema_provider(runtime_provider) != str(source_name):
         return
 
@@ -129,7 +164,7 @@ def _iter_record_stream_units(
 
 
 def _build_raw_payload_envelope_for_row(
-    row: _RawConversationRow,
+    row: _RawSessionRow,
     *,
     source_name: Provider,
     raw_content: Path,
@@ -141,8 +176,7 @@ def _build_raw_payload_envelope_for_row(
         return sampling_root.build_raw_payload_envelope(
             raw_content,
             source_path=row.source_path,
-            fallback_provider=row.source_name or str(source_name),
-            payload_provider=row.payload_provider,
+            fallback_provider=row.provider_token or str(source_name),
             jsonl_dict_only=config.sample_granularity == "record",
         )
     except Exception:
@@ -158,20 +192,29 @@ def _iter_schema_units_from_db(
     max_samples: int | None = None,
     full_corpus: bool = False,
 ) -> Iterator[SchemaUnit]:
-    """Yield clusterable schema units from raw_conversations."""
+    """Yield clusterable schema units from raw_sessions.
+
+    Raw acquisition rows live in the ``source.db`` tier (#1743). Given an
+    ``index.db`` path, the sibling ``source.db`` of the same archive root holds
+    ``raw_sessions``; it is opened read-write but only read here.
+    """
     source_name = Provider.from_string(source_name)
+    source_db_path = db_path.parent / "source.db"
+    if not source_db_path.exists():
+        return
     blob_store = get_blob_store()
-    conn = open_connection(db_path)
-    try:
-        query_provider = config.db_source_name or source_name
-        where_clause, where_params = _sample_provider_where_clause(query_provider)
+    query_provider = config.db_source_name or source_name
+    origins = _sample_origins_for_provider(Provider.from_string(query_provider), config)
+    placeholders = ",".join("?" for _ in origins)
+    with connection_context(source_db_path) as conn:
+        conn.row_factory = sqlite3.Row
         cursor = conn.execute(
             f"""
-            SELECT source_path, source_name, payload_provider, raw_id, file_mtime, acquired_at
-            FROM raw_conversations
-            WHERE {where_clause}
+            SELECT source_path, origin, raw_id, blob_hash, file_mtime_ms, acquired_at_ms
+            FROM raw_sessions
+            WHERE origin IN ({placeholders})
             """,
-            where_params,
+            origins,
         )
         batch_size = 1 if config.sample_granularity == "record" else 100
         while True:
@@ -179,7 +222,7 @@ def _iter_schema_units_from_db(
             if not batch:
                 break
             for row in batch:
-                raw_content = blob_store.blob_path(row.raw_id)
+                raw_content = blob_store.blob_path(_blob_hash_hex(row.blob_hash))
 
                 if config.sample_granularity == "record":
                     yielded_record_units = False
@@ -215,8 +258,6 @@ def _iter_schema_units_from_db(
                     config=config,
                     max_samples=max_samples,
                 )
-    finally:
-        conn.close()
 
 
 @overload
@@ -251,7 +292,7 @@ def _iter_samples_from_db(
     for unit in _iter_schema_units_from_db(source_name, db_path=db_path, config=config):
         for sample in unit.schema_samples:
             if with_conv_ids:
-                yield sample, unit.conversation_id
+                yield sample, unit.session_id
             else:
                 yield sample
 
@@ -263,30 +304,25 @@ def get_sample_count_from_db(
     """Get total message count for a provider in the database."""
     source_name = Provider.from_string(source_name)
     if db_path is None:
-        db_path = archive_db_path()
+        db_path = index_db_path()
     if not db_path.exists():
         return 0
 
     config = resolve_provider_config(source_name)
-    provider_tokens = [str(source_name)]
-    if config.db_source_name and str(config.db_source_name) not in provider_tokens:
-        provider_tokens.append(str(config.db_source_name))
+    origins = _sample_origins_for_provider(source_name, config)
+    placeholders = ",".join("?" for _ in origins)
 
-    conn = open_connection(db_path)
-    try:
-        placeholders = ",".join("?" for _ in provider_tokens)
+    with connection_context(db_path) as conn:
         row = conn.execute(
             f"""
             SELECT COUNT(*)
             FROM messages m
-            JOIN conversations c ON m.conversation_id = c.conversation_id
-            WHERE c.source_name IN ({placeholders})
+            JOIN sessions c ON m.session_id = c.session_id
+            WHERE c.origin IN ({placeholders})
             """,
-            provider_tokens,
+            origins,
         ).fetchone()
         return row[0] if row else 0
-    finally:
-        conn.close()
 
 
 __all__ = [

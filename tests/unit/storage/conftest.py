@@ -1,6 +1,6 @@
 """Fixtures for storage tests.
 
-Extracted from the monolithic test_search_index.py to support module-level
+Extracted from the test_search_index.py to support module-level
 fixtures used across storage test files.
 """
 
@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.archive.message.roles import Role
-from polylogue.sources.parsers.base import ParsedConversation, ParsedMessage
+from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.types import Provider
 
 
@@ -77,11 +77,11 @@ def sample_sessions_index(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def sample_conversation() -> ParsedConversation:
-    """Create a sample parsed conversation."""
-    return ParsedConversation(
+def sample_session() -> ParsedSession:
+    """Create a sample parsed session."""
+    return ParsedSession(
         source_name=Provider.CLAUDE_CODE,
-        provider_conversation_id="abc123-def456",
+        provider_session_id="abc123-def456",
         title="abc123-def456",  # Default title is session ID
         created_at=None,
         updated_at=None,

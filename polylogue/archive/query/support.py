@@ -1,43 +1,54 @@
-"""Shared support helpers for immutable conversation query plans."""
+"""Shared support helpers for immutable session query plans."""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from polylogue.types import Provider
+from polylogue.core.enums import Origin
+from polylogue.core.sources import provider_from_origin
 
 if TYPE_CHECKING:
-    from polylogue.archive.models import Conversation, ConversationSummary
+    from polylogue.archive.models import Session, SessionSummary
 
 
-def provider_values(values: tuple[Provider | str, ...]) -> tuple[str, ...]:
-    return tuple(str(Provider.from_string(value)) for value in values)
+def _origins_as_provider_tokens(origins: tuple[str, ...]) -> list[str] | None:
+    """Project origin tokens back to provider tokens for the archive repository
+    search leg, which still filters the ``sessions.source_name`` provider column.
+
+    Removed once the source_name→origin reconciliation (#1743 Phase 2) moves that
+    SQL onto the ``origin`` column.
+    """
+    if not origins:
+        return None
+    return [provider_from_origin(Origin.from_string(token)).value for token in origins]
 
 
-def conversation_has_branches(conversation: Conversation) -> bool:
-    return any(message.branch_index > 0 for message in conversation.messages)
+def session_has_branches(session: Session) -> bool:
+    return any(message.branch_index > 0 for message in session.messages)
 
 
-def conversation_to_summary(conversation: Conversation) -> ConversationSummary:
-    from polylogue.archive.models import ConversationSummary
+def session_to_summary(session: Session) -> SessionSummary:
+    from polylogue.archive.models import SessionSummary
 
-    return ConversationSummary(
-        id=conversation.id,
-        provider=conversation.provider,
-        title=conversation.title,
-        created_at=conversation.created_at,
-        updated_at=conversation.updated_at,
-        provider_meta=conversation.provider_meta,
-        metadata=conversation.metadata,
-        parent_id=conversation.parent_id,
-        branch_type=conversation.branch_type,
-        message_count=len(conversation.messages),
-        dialogue_count=sum(1 for message in conversation.messages if message.is_dialogue),
+    return SessionSummary(
+        id=session.id,
+        origin=session.origin,
+        title=session.title,
+        created_at=session.created_at,
+        updated_at=session.updated_at,
+        metadata=session.metadata,
+        working_directories=session.working_directories,
+        git_branch=session.git_branch,
+        git_repository_url=session.git_repository_url,
+        parent_id=session.parent_id,
+        branch_type=session.branch_type,
+        message_count=len(session.messages),
+        dialogue_count=sum(1 for message in session.messages if message.is_dialogue),
     )
 
 
 __all__ = [
-    "conversation_has_branches",
-    "conversation_to_summary",
-    "provider_values",
+    "session_has_branches",
+    "session_to_summary",
+    "_origins_as_provider_tokens",
 ]

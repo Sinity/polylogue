@@ -17,19 +17,19 @@ from polylogue.archive.semantic.subscription_models import (
 
 
 def compute_usage_outlook(
-    conversations: list[dict[str, object]],
+    sessions: list[dict[str, object]],
     *,
     plan_name: str = "pro",
     cycle_start: str | None = None,
     anomaly_threshold: float = 2.0,
 ) -> UsageOutlookPayload:
-    """Compute subscription outlook from per-conversation cost summaries."""
+    """Compute subscription outlook from per-session cost summaries."""
     now = datetime.now(UTC)
     cycle = _resolve_cycle(now, cycle_start)
-    daily = _aggregate_daily(conversations)
+    daily = _aggregate_daily(sessions)
     projection = _compute_projection(daily, cycle, now)
     anomalies = _detect_anomalies(daily, threshold=anomaly_threshold)
-    confidence = _compute_confidence(conversations)
+    confidence = _compute_confidence(sessions)
 
     plan_config = _plan_for_name(plan_name)
     credits_used = projection.total_credits
@@ -41,10 +41,10 @@ def compute_usage_outlook(
         days_left = credits_remaining / burn_rate
         exhaustion = (now + timedelta(days=days_left)).isoformat()
 
-    per_model = _per_model_breakdown(conversations)
-    priced = sum(1 for c in conversations if c.get("has_cost"))
-    unavailable = len(conversations) - priced
-    coverage = (priced / max(1, len(conversations))) * 100
+    per_model = _per_model_breakdown(sessions)
+    priced = sum(1 for c in sessions if c.get("has_cost"))
+    unavailable = len(sessions) - priced
+    coverage = (priced / max(1, len(sessions))) * 100
 
     return UsageOutlookPayload(
         cycle_start=cycle[0].isoformat(),
@@ -69,12 +69,12 @@ def compute_usage_outlook(
 
 
 def build_subscription_cycle(
-    conversations: list[dict[str, object]],
+    sessions: list[dict[str, object]],
     *,
     plan_name: str = "pro",
     cycle_start: str | None = None,
 ) -> SubscriptionCycle:
-    outlook = compute_usage_outlook(conversations, plan_name=plan_name, cycle_start=cycle_start)
+    outlook = compute_usage_outlook(sessions, plan_name=plan_name, cycle_start=cycle_start)
     return SubscriptionCycle(
         plan=_plan_for_name(plan_name),
         outlook=outlook,
@@ -91,9 +91,9 @@ def _resolve_cycle(now: datetime, cycle_start: str | None) -> tuple[datetime, da
     return start, end
 
 
-def _aggregate_daily(conversations: list[dict[str, object]]) -> dict[str, dict[str, float]]:
+def _aggregate_daily(sessions: list[dict[str, object]]) -> dict[str, dict[str, float]]:
     daily: dict[str, dict[str, float]] = defaultdict(lambda: {"credits": 0.0, "api_usd": 0.0, "count": 0})
-    for c in conversations:
+    for c in sessions:
         date = str(c.get("created_at", ""))[:10]
         if date:
             daily[date]["credits"] += _as_float(c.get("credit_cost"))
@@ -153,16 +153,16 @@ def _detect_anomalies(daily: dict[str, dict[str, float]], *, threshold: float = 
     return anomalies[:10]
 
 
-def _compute_confidence(conversations: list[dict[str, object]]) -> float:
-    if not conversations:
+def _compute_confidence(sessions: list[dict[str, object]]) -> float:
+    if not sessions:
         return 0.0
-    with_estimate = sum(1 for c in conversations if c.get("cost_is_estimated"))
-    return max(0.0, 1.0 - (with_estimate / max(1, len(conversations))))
+    with_estimate = sum(1 for c in sessions if c.get("cost_is_estimated"))
+    return max(0.0, 1.0 - (with_estimate / max(1, len(sessions))))
 
 
-def _per_model_breakdown(conversations: list[dict[str, object]]) -> list[ModelBreakdownPayload]:
+def _per_model_breakdown(sessions: list[dict[str, object]]) -> list[ModelBreakdownPayload]:
     models: dict[str, dict[str, float]] = defaultdict(lambda: {"api_usd": 0.0, "sessions": 0.0})
-    for c in conversations:
+    for c in sessions:
         model = str(c.get("model", "unknown"))
         models[model]["api_usd"] += _as_float(c.get("api_cost_usd"))
         models[model]["sessions"] += 1

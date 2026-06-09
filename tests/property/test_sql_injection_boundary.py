@@ -1,6 +1,6 @@
 """SQL injection boundary properties for user-controlled filter inputs.
 
-`ConversationFilter` is the single funnel for user-controlled query inputs
+`SessionFilter` is the single funnel for user-controlled query inputs
 flowing in from the CLI, MCP, and Python API surfaces. This module
 property-fuzzes that funnel with strings packed with SQL/FTS5 metacharacters
 and asserts:
@@ -32,18 +32,14 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from polylogue.archive.filter.filters import ConversationFilter
-from polylogue.storage.index import rebuild_index
-from polylogue.storage.repository import ConversationRepository
-from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-from polylogue.storage.sqlite.connection import open_connection
-from tests.infra.storage_records import ConversationBuilder
+from polylogue.archive.filter.filters import SessionFilter
+from tests.infra.storage_records import SessionBuilder
 
 # Strings packed with SQL/FTS5 metacharacters, classic injection payloads,
 # and unicode/control variants. Hypothesis composes around these via .one_of
 # below; the explicit list also forms the deterministic regression spine.
 _KNOWN_INJECTION_PAYLOADS: tuple[str, ...] = (
-    "'; DROP TABLE conversations; --",
+    "'; DROP TABLE sessions; --",
     "' OR '1'='1",
     '" OR ""="',
     "%' OR '1'='1' --",
@@ -80,22 +76,26 @@ _SENTINEL_SUBSTRING = "ZQXWVPLRMS_sentinel_marker"
 
 
 @pytest.fixture
-def seeded_repo(tmp_path: Path) -> ConversationRepository:
-    """A small archive with sentinel rows used by every injection property."""
-    db_path = tmp_path / "injection.db"
-    with open_connection(db_path) as conn:
-        rebuild_index(conn)
+def seeded_archive_root(tmp_path: Path) -> Path:
+    """A archive root with sentinel rows.
+
+    ``SessionFilter`` executes over the archive; the
+    funnel under test is its archive-root-bound query path. Every sentinel is
+    seeded through the archive builder.
+    """
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir(parents=True, exist_ok=True)
+    db_path = archive_root / "index.db"
     for idx in range(3):
-        builder = ConversationBuilder(db_path, f"sent-{idx}").provider("claude-ai")
+        builder = SessionBuilder(db_path, f"sent-{idx}").provider("claude-ai")
         builder = builder.title(f"sentinel {idx} {_SENTINEL_SUBSTRING}")
         builder = builder.add_message(f"m{idx}", role="user", text=_SENTINEL_SUBSTRING)
         builder.save()
-    backend = SQLiteBackend(db_path)
-    return ConversationRepository(backend=backend)
+    return archive_root
 
 
-async def _sentinels_still_present(repo: ConversationRepository) -> int:
-    summaries = await ConversationFilter(repo).contains(_SENTINEL_SUBSTRING).list_summaries()
+async def _sentinels_still_present(archive_root: Path) -> int:
+    summaries = await SessionFilter(archive_root=archive_root).contains(_SENTINEL_SUBSTRING).list_summaries()
     return len(summaries)
 
 
@@ -116,14 +116,14 @@ injection_strings: st.SearchStrategy[str] = st.one_of(
 )
 @given(payload=injection_strings)
 @pytest.mark.asyncio
-async def test_contains_never_raises_sql_error(seeded_repo: ConversationRepository, payload: str) -> None:
+async def test_contains_never_raises_sql_error(seeded_archive_root: Path, payload: str) -> None:
     """`.contains(payload)` always completes; result count is bounded."""
-    sentinels_before = await _sentinels_still_present(seeded_repo)
+    sentinels_before = await _sentinels_still_present(seeded_archive_root)
     try:
-        results = await ConversationFilter(seeded_repo).contains(payload).list_summaries()
+        results = await SessionFilter(archive_root=seeded_archive_root).contains(payload).list_summaries()
     except Exception as exc:
         pytest.fail(
-            f"ConversationFilter.contains({payload!r}) raised {type(exc).__name__}: {exc}. "
+            f"SessionFilter.contains({payload!r}) raised {type(exc).__name__}: {exc}. "
             "Filter inputs must be parameterized or escaped, never interpolated as SQL."
         )
     assert isinstance(results, list)
@@ -131,7 +131,7 @@ async def test_contains_never_raises_sql_error(seeded_repo: ConversationReposito
         f"Unbounded result count {len(results)} for injection payload {payload!r}; "
         "possible UNION injection or row inflation."
     )
-    sentinels_after = await _sentinels_still_present(seeded_repo)
+    sentinels_after = await _sentinels_still_present(seeded_archive_root)
     assert sentinels_after == sentinels_before, (
         f"Sentinel rows changed from {sentinels_before} to {sentinels_after} after "
         f"querying {payload!r}; possible destructive injection."
@@ -145,14 +145,14 @@ async def test_contains_never_raises_sql_error(seeded_repo: ConversationReposito
 )
 @given(payload=injection_strings)
 @pytest.mark.asyncio
-async def test_title_never_raises_sql_error(seeded_repo: ConversationRepository, payload: str) -> None:
-    sentinels_before = await _sentinels_still_present(seeded_repo)
+async def test_title_never_raises_sql_error(seeded_archive_root: Path, payload: str) -> None:
+    sentinels_before = await _sentinels_still_present(seeded_archive_root)
     try:
-        results = await ConversationFilter(seeded_repo).title(payload).list_summaries()
+        results = await SessionFilter(archive_root=seeded_archive_root).title(payload).list_summaries()
     except Exception as exc:
-        pytest.fail(f"ConversationFilter.title({payload!r}) raised {type(exc).__name__}: {exc}")
+        pytest.fail(f"SessionFilter.title({payload!r}) raised {type(exc).__name__}: {exc}")
     assert isinstance(results, list)
-    sentinels_after = await _sentinels_still_present(seeded_repo)
+    sentinels_after = await _sentinels_still_present(seeded_archive_root)
     assert sentinels_after == sentinels_before
 
 
@@ -163,14 +163,14 @@ async def test_title_never_raises_sql_error(seeded_repo: ConversationRepository,
 )
 @given(payload=injection_strings)
 @pytest.mark.asyncio
-async def test_tag_filter_never_raises_sql_error(seeded_repo: ConversationRepository, payload: str) -> None:
-    sentinels_before = await _sentinels_still_present(seeded_repo)
+async def test_tag_filter_never_raises_sql_error(seeded_archive_root: Path, payload: str) -> None:
+    sentinels_before = await _sentinels_still_present(seeded_archive_root)
     try:
-        results = await ConversationFilter(seeded_repo).tag(payload).list_summaries()
+        results = await SessionFilter(archive_root=seeded_archive_root).tag(payload).list_summaries()
     except Exception as exc:
-        pytest.fail(f"ConversationFilter.tag({payload!r}) raised {type(exc).__name__}: {exc}")
+        pytest.fail(f"SessionFilter.tag({payload!r}) raised {type(exc).__name__}: {exc}")
     assert isinstance(results, list)
-    sentinels_after = await _sentinels_still_present(seeded_repo)
+    sentinels_after = await _sentinels_still_present(seeded_archive_root)
     assert sentinels_after == sentinels_before
 
 
@@ -181,23 +181,23 @@ async def test_tag_filter_never_raises_sql_error(seeded_repo: ConversationReposi
 )
 @given(payload=injection_strings)
 @pytest.mark.asyncio
-async def test_provider_filter_never_raises_sql_error(seeded_repo: ConversationRepository, payload: str) -> None:
-    sentinels_before = await _sentinels_still_present(seeded_repo)
+async def test_provider_filter_never_raises_sql_error(seeded_archive_root: Path, payload: str) -> None:
+    sentinels_before = await _sentinels_still_present(seeded_archive_root)
     try:
-        results = await ConversationFilter(seeded_repo).provider(payload).list_summaries()
+        results = await SessionFilter(archive_root=seeded_archive_root).origin(payload).list_summaries()
     except Exception as exc:
-        pytest.fail(f"ConversationFilter.provider({payload!r}) raised {type(exc).__name__}: {exc}")
+        pytest.fail(f"SessionFilter.origin({payload!r}) raised {type(exc).__name__}: {exc}")
     assert isinstance(results, list)
-    sentinels_after = await _sentinels_still_present(seeded_repo)
+    sentinels_after = await _sentinels_still_present(seeded_archive_root)
     assert sentinels_after == sentinels_before
 
 
 @pytest.mark.parametrize(
     "builder",
     [
-        lambda repo, payload: ConversationFilter(repo).contains(payload),
-        lambda repo, payload: ConversationFilter(repo).title(payload),
-        lambda repo, payload: ConversationFilter(repo).tag(payload),
+        lambda archive_root, payload: SessionFilter(archive_root=archive_root).contains(payload),
+        lambda archive_root, payload: SessionFilter(archive_root=archive_root).title(payload),
+        lambda archive_root, payload: SessionFilter(archive_root=archive_root).tag(payload),
     ],
 )
 @pytest.mark.parametrize(
@@ -206,12 +206,12 @@ async def test_provider_filter_never_raises_sql_error(seeded_repo: ConversationR
 )
 @pytest.mark.asyncio
 async def test_degenerate_inputs_complete_safely(
-    seeded_repo: ConversationRepository,
-    builder: Callable[[ConversationRepository, str], ConversationFilter],
+    seeded_archive_root: Path,
+    builder: Callable[[Path, str], SessionFilter],
     payload: str,
 ) -> None:
-    sentinels_before = await _sentinels_still_present(seeded_repo)
-    results = await builder(seeded_repo, payload).list_summaries()
+    sentinels_before = await _sentinels_still_present(seeded_archive_root)
+    results = await builder(seeded_archive_root, payload).list_summaries()
     assert isinstance(results, list)
-    sentinels_after = await _sentinels_still_present(seeded_repo)
+    sentinels_after = await _sentinels_still_present(seeded_archive_root)
     assert sentinels_after == sentinels_before

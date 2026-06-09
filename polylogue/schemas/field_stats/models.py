@@ -25,12 +25,12 @@ class FieldStats:
     array_lengths: list[int] = field(default_factory=list)
     is_multiline: int = 0
     value_count: int = 0
-    value_conversation_ids: dict[str, set[str]] = field(default_factory=dict)
+    value_session_ids: dict[str, set[str]] = field(default_factory=dict)
     string_lengths: list[int] = field(default_factory=list)
     newline_counts: list[int] = field(default_factory=list)
     numeric_values: list[float] = field(default_factory=list)
     distinct_value_count: int = 0
-    values_per_conversation: dict[str, set[str]] = field(default_factory=dict)
+    values_per_session: dict[str, set[str]] = field(default_factory=dict)
     _ordered_samples: list[list[float]] = field(default_factory=list)
     co_occurring_fields: Counter[str] = field(default_factory=Counter)
     object_key_counts: list[int] = field(default_factory=list)

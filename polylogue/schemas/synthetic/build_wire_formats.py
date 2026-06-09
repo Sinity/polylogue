@@ -9,7 +9,7 @@ from typing import Protocol, TypeAlias
 
 from polylogue.archive.raw_payload.decode import JSONValue
 from polylogue.schemas.synthetic.semantic_values import _text_for_role
-from polylogue.schemas.synthetic.showcase import ConversationTheme
+from polylogue.schemas.synthetic.showcase import SessionTheme
 
 SyntheticRecord: TypeAlias = dict[str, JSONValue]
 
@@ -35,7 +35,7 @@ class _WireFormatContext(Protocol):
         ts: float,
         *,
         index: int,
-        theme: ConversationTheme | None,
+        theme: SessionTheme | None,
     ) -> None: ...
 
     def _ensure_wire_claude_ai(
@@ -46,7 +46,7 @@ class _WireFormatContext(Protocol):
         ts: float,
         *,
         index: int,
-        theme: ConversationTheme | None,
+        theme: SessionTheme | None,
     ) -> None: ...
 
     def _ensure_wire_claude_code(
@@ -57,7 +57,7 @@ class _WireFormatContext(Protocol):
         ts: float,
         *,
         index: int,
-        theme: ConversationTheme | None,
+        theme: SessionTheme | None,
     ) -> None: ...
 
     def _ensure_wire_codex(
@@ -68,7 +68,7 @@ class _WireFormatContext(Protocol):
         ts: float,
         *,
         index: int,
-        theme: ConversationTheme | None,
+        theme: SessionTheme | None,
     ) -> None: ...
 
     def _ensure_wire_gemini(
@@ -78,7 +78,7 @@ class _WireFormatContext(Protocol):
         rng: random.Random,
         *,
         index: int,
-        theme: ConversationTheme | None,
+        theme: SessionTheme | None,
     ) -> None: ...
 
 
@@ -89,7 +89,7 @@ def _ensure_wire_format(
     rng: random.Random,
     index: int,
     base_ts: float = 1700000000.0,
-    theme: ConversationTheme | None = None,
+    theme: SessionTheme | None = None,
 ) -> None:
     ts = base_ts + index * 60
     match self.provider:
@@ -113,7 +113,7 @@ def _ensure_wire_chatgpt(
     ts: float,
     *,
     index: int,
-    theme: ConversationTheme | None,
+    theme: SessionTheme | None,
 ) -> None:
     msg = _record_field(data, "message")
     msg.setdefault("id", str(uuid.UUID(int=rng.getrandbits(128), version=4)))
@@ -137,14 +137,29 @@ def _ensure_wire_claude_ai(
     ts: float,
     *,
     index: int,
-    theme: ConversationTheme | None,
+    theme: SessionTheme | None,
 ) -> None:
-    data.setdefault("uuid", str(uuid.UUID(int=rng.getrandbits(128), version=4)))
-    data.setdefault("sender", role)
-    if not data.get("text"):
-        data["text"] = _text_for_role(rng, role, turn_index=index, theme=theme)
-    if "created_at" not in data:
-        data["created_at"] = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+    # A realistic claude.ai ``chat_messages`` entry is a compact turn: a sender
+    # plus text. ``_generate_from_schema`` instead fills every optional field
+    # (``content`` blocks, ``attachments``, ``files``), bloating each message so
+    # the conversation's discriminating ``chat_messages`` key falls outside the
+    # 8 KB acquisition detection prefix (``_DETECTION_PREFIX_SIZE``) and the
+    # bundle mis-detects → zero sessions imported. Reset the message to the
+    # realistic minimal shape, preserving a schema-generated uuid/created_at.
+    uuid_val = data.get("uuid") or str(uuid.UUID(int=rng.getrandbits(128), version=4))
+    text = data.get("text")
+    if not isinstance(text, str) or not text:
+        text = _text_for_role(rng, role, turn_index=index, theme=theme)
+    created_at = data.get("created_at")
+    data.clear()
+    data["uuid"] = uuid_val
+    data["sender"] = role
+    data["text"] = text
+    data["created_at"] = (
+        created_at
+        if isinstance(created_at, str) and created_at
+        else datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+    )
 
 
 def _ensure_wire_claude_code(
@@ -155,7 +170,7 @@ def _ensure_wire_claude_code(
     ts: float,
     *,
     index: int,
-    theme: ConversationTheme | None,
+    theme: SessionTheme | None,
 ) -> None:
     data.setdefault("type", role)
     msg = _record_field(data, "message")
@@ -166,7 +181,7 @@ def _ensure_wire_claude_code(
         data["timestamp"] = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
 
-def _claude_code_content_fallback(rng: random.Random, role: str, index: int, theme: ConversationTheme | None) -> object:
+def _claude_code_content_fallback(rng: random.Random, role: str, index: int, theme: SessionTheme | None) -> object:
     """Diverse content fallback matching production block-type distribution."""
     block_type = rng.choices(
         ["text", "tool_use", "tool_result", "thinking"],
@@ -204,7 +219,7 @@ def _ensure_wire_codex(
     ts: float,
     *,
     index: int,
-    theme: ConversationTheme | None,
+    theme: SessionTheme | None,
 ) -> None:
     data["type"] = "message"
     data.setdefault("role", role)
@@ -218,7 +233,7 @@ def _ensure_wire_codex(
     data.pop("payload", None)
 
 
-def _codex_content_fallback(rng: random.Random, role: str, index: int, theme: ConversationTheme | None) -> object:
+def _codex_content_fallback(rng: random.Random, role: str, index: int, theme: SessionTheme | None) -> object:
     """Diverse content fallback matching production block-type distribution."""
     block_type = rng.choices(
         ["text", "tool_use", "tool_result", "thinking"],
@@ -258,11 +273,26 @@ def _ensure_wire_gemini(
     rng: random.Random,
     *,
     index: int,
-    theme: ConversationTheme | None,
+    theme: SessionTheme | None,
 ) -> None:
-    data.setdefault("role", role)
-    if not data.get("text"):
-        data["text"] = _text_for_role(rng, role, turn_index=index, theme=theme)
+    # A realistic AI Studio / Drive `chunkedPrompt.chunks` entry is a single
+    # coherent turn: a role plus text. `_generate_from_schema` instead fills
+    # every optional chunk field at once (`isThought`, `executableCode`,
+    # `codeExecutionResult`, `errorMessage`, and the `drive*`/`inline*`
+    # attachment fields). The drive parser then fragments one chunk into many
+    # blocks (thinking + text + code + error), so the message's joined `.text`
+    # never round-trips contiguously through the renderer. Reset the chunk to
+    # the realistic minimal shape, preserving only a schema-generated
+    # `createTime` for timestamp coverage.
+    text = data.get("text")
+    if not isinstance(text, str) or not text:
+        text = _text_for_role(rng, role, turn_index=index, theme=theme)
+    create_time = data.get("createTime")
+    data.clear()
+    data["role"] = role
+    data["text"] = text
+    if isinstance(create_time, str) and create_time:
+        data["createTime"] = create_time
 
 
 __all__ = [

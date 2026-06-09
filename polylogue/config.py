@@ -27,7 +27,7 @@ from .paths import (
     render_root,
 )
 from .paths import (
-    db_path as default_db_path,
+    active_index_db_path as default_db_path,
 )
 
 
@@ -37,7 +37,7 @@ class ConfigError(PolylogueError):
 
 @dataclass
 class Source:
-    """A conversation source (local path, Drive folder, or both)."""
+    """A session source (local path, Drive folder, or both)."""
 
     name: str
     path: Path | None = None
@@ -117,7 +117,7 @@ class Config:
 
 
 def get_sources() -> list[Source]:
-    """Return the configured conversation sources.
+    """Return the configured session sources.
 
     Delegates to ``default_sources()`` for local watch roots (Claude Code,
     Codex, inbox), then adds Drive/Gemini if configured.  Daemon and CLI

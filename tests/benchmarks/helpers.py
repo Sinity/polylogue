@@ -8,11 +8,15 @@ from pathlib import Path
 from sqlite3 import Connection
 from typing import Protocol, TypeVar
 
-from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.repository import SessionRepository
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import open_connection
 
 T = TypeVar("T")
+
+
+def _index_db_path(db_path: Path) -> Path:
+    return db_path if db_path.name == "index.db" else db_path.parent / "index.db"
 
 
 class BenchmarkFixture(Protocol):
@@ -23,7 +27,7 @@ class BenchmarkFixture(Protocol):
 class BenchAsyncStore:
     loop: asyncio.AbstractEventLoop
     backend: SQLiteBackend
-    repository: ConversationRepository
+    repository: SessionRepository
 
     def run(self, awaitable: Awaitable[T]) -> T:
         return self.loop.run_until_complete(awaitable)
@@ -33,8 +37,8 @@ class BenchAsyncStore:
 def open_bench_store(db_path: Path) -> Iterator[BenchAsyncStore]:
     """Open a benchmark backend/repository pair without touching private APIs."""
     loop = asyncio.new_event_loop()
-    backend = SQLiteBackend(db_path=db_path)
-    repository = ConversationRepository(backend=backend)
+    backend = SQLiteBackend(db_path=_index_db_path(db_path))
+    repository = SessionRepository(backend=backend)
     store = BenchAsyncStore(loop=loop, backend=backend, repository=repository)
     try:
         yield store
@@ -59,5 +63,5 @@ def benchmark_connection_call(
     operation: Callable[[Connection], T],
 ) -> None:
     """Benchmark one sync sqlite/index operation against a seeded DB."""
-    with open_connection(db_path) as conn:
+    with open_connection(_index_db_path(db_path)) as conn:
         benchmark(lambda: operation(conn))

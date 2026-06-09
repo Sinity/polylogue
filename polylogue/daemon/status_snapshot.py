@@ -10,7 +10,7 @@ from typing import Any
 
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.daemon.fts_status import fts_readiness_info
-from polylogue.paths import db_path
+from polylogue.paths import active_index_db_path
 
 _MAX_FRESH_AGE_S = 30.0
 _SNAPSHOT_LOCK = threading.Lock()
@@ -43,7 +43,7 @@ def _minimal_status_payload(*, refresh_in_progress: bool = False, refresh_error:
     """Return a request-safe status envelope with no archive-scale scans."""
     from polylogue.daemon.status import _check_daemon_liveness, browser_capture_status_payload
 
-    dbf = db_path()
+    dbf = active_index_db_path()
     wal = dbf.with_suffix(".db-wal")
     fts_payload: dict[str, object] = {}
     if dbf.exists():
@@ -143,6 +143,20 @@ def refresh_status_snapshot(*, payload: JSONDocument | None = None) -> StatusSna
         return snapshot
     finally:
         _REFRESH_LOCK.release()
+
+
+def reset_status_snapshot() -> None:
+    """Drop the cached daemon status snapshot.
+
+    The process-wide ``_SNAPSHOT`` singleton is intentionally long-lived in a
+    running daemon. Tests that prime it via :func:`refresh_status_snapshot`
+    (e.g. with a deliberately minimal payload) must clear it afterwards so the
+    cached payload does not leak into unrelated status-surface tests in the same
+    process. Exposed for test teardown; not used in production.
+    """
+    global _SNAPSHOT
+    with _SNAPSHOT_LOCK:
+        _SNAPSHOT = None
 
 
 def snapshot_state_for_metrics() -> dict[str, Any]:

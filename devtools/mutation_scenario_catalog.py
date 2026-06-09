@@ -27,12 +27,9 @@ class MutationCampaign(NamedScenarioSource):
 MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
     "filters": MutationCampaign(
         name="filters",
-        description="ConversationFilter semantics and summary/picker contracts",
+        description="SessionFilter semantics and summary/picker contracts",
         paths_to_mutate=("polylogue/archive/filter/filters.py",),
-        tests=(
-            "tests/unit/core/test_filters_schemas.py",
-            "tests/unit/core/test_filters_props.py",
-        ),
+        tests=("tests/unit/core/test_filters_props.py",),
         notes=(
             "Targets the historical largest no-test blind spot.",
             "Timeout tail is expected in filter pipeline helpers.",
@@ -40,12 +37,12 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
     ),
     "models": MutationCampaign(
         name="models",
-        description="Message/Conversation semantic helpers and pairing logic",
+        description="Message/Session semantic helpers and pairing logic",
         paths_to_mutate=("polylogue/archive/models.py",),
         tests=(
             "tests/unit/core/test_models.py",
             "tests/unit/core/test_message_laws.py",
-            "tests/unit/core/test_conversation_semantics.py",
+            "tests/unit/core/test_session_semantics.py",
         ),
     ),
     "json": MutationCampaign(
@@ -56,7 +53,7 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
     ),
     "hybrid": MutationCampaign(
         name="hybrid",
-        description="Hybrid search fusion and ranked-conversation resolution",
+        description="Hybrid search fusion and ranked-session resolution",
         paths_to_mutate=("polylogue/storage/search_providers/hybrid.py",),
         tests=(
             "tests/unit/storage/test_hybrid.py",
@@ -65,7 +62,7 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
     ),
     "fts5": MutationCampaign(
         name="fts5",
-        description="FTS5 query escaping and conversation search semantics",
+        description="FTS5 query escaping and session search semantics",
         paths_to_mutate=("polylogue/storage/search_providers/fts5.py",),
         tests=("tests/unit/storage/test_fts5.py",),
     ),
@@ -136,7 +133,7 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
             "polylogue/cli/query_output.py",
         ),
         tests=(
-            "tests/unit/cli/test_query_exec.py",
+            "tests/unit/cli/test_query_verbs_runtime.py",
             "tests/unit/cli/test_query_exec_laws.py",
             "tests/unit/cli/test_query_fmt.py",
         ),
@@ -227,7 +224,6 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
             "polylogue/schemas/registry.py",
         ),
         tests=(
-            "tests/unit/sources/test_unified_semantic_laws.py",
             "tests/unit/sources/test_null_guard_properties.py",
             "tests/unit/sources/test_models.py",
             "tests/unit/sources/test_parsers_props.py",
@@ -245,7 +241,6 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
         tests=(
             "tests/unit/sources/test_parsers_props.py",
             "tests/unit/sources/test_source_laws.py",
-            "tests/unit/sources/test_unified_semantic_laws.py",
             "tests/unit/sources/test_parsers_base.py",
             "tests/unit/sources/test_parsers_chatgpt.py",
             "tests/unit/sources/test_parsers_codex.py",

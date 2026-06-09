@@ -1,4 +1,4 @@
-"""Showcase conversation themes for human-readable synthetic output.
+"""Showcase session themes for human-readable synthetic output.
 
 Each theme provides a coherent narrative arc with user and assistant turns
 that produce visually appealing demo/showcase corpora.
@@ -10,8 +10,8 @@ from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
-class ConversationTheme:
-    """Narrative theme for visually coherent synthetic conversations."""
+class SessionTheme:
+    """Narrative theme for visually coherent synthetic sessions."""
 
     title: str
     instructions: str
@@ -19,8 +19,8 @@ class ConversationTheme:
     assistant_turns: tuple[str, ...]
 
 
-_SHOWCASE_THEMES: tuple[ConversationTheme, ...] = (
-    ConversationTheme(
+_SHOWCASE_THEMES: tuple[SessionTheme, ...] = (
+    SessionTheme(
         title="Debugging flaky async pipeline tests",
         instructions="You are a coding assistant focused on debugging async Python services.",
         user_turns=(
@@ -38,7 +38,7 @@ _SHOWCASE_THEMES: tuple[ConversationTheme, ...] = (
             "Excellent result. Keep the stress test in CI and expose duplicate-write counters in your health metrics.",
         ),
     ),
-    ConversationTheme(
+    SessionTheme(
         title="Designing schema validation stages",
         instructions="You are a systems assistant specializing in data contracts and pipeline reliability.",
         user_turns=(
@@ -56,19 +56,19 @@ _SHOWCASE_THEMES: tuple[ConversationTheme, ...] = (
             "Perfect. Add tests for pending-validation selection and parse gating to protect the contract long-term.",
         ),
     ),
-    ConversationTheme(
+    SessionTheme(
         title="Improving search index performance",
         instructions="You are a performance-focused assistant for storage and indexing systems.",
         user_turns=(
-            "Search index rebuilds are slow after large imports. We need a strategy that scales with conversation growth.",
-            "Current profile shows heavy time in repeated per-conversation metadata queries.",
+            "Search index rebuilds are slow after large imports. We need a strategy that scales with session growth.",
+            "Current profile shows heavy time in repeated per-session metadata queries.",
             "I can batch those lookups. Any guidance on cache boundaries?",
             "We also need better observability for stage-level throughput and bottlenecks.",
             "Implemented batch lookup + stage metrics. End-to-end index time improved by 38 percent.",
         ),
         assistant_turns=(
             "First remove N+1 patterns: batch metadata loads and reuse immutable data across worker tasks.",
-            "Great target. Build a prepare cache keyed by conversation IDs and warm it per processing batch.",
+            "Great target. Build a prepare cache keyed by session IDs and warm it per processing batch.",
             "Cache per-run, scoped to candidate IDs only. Avoid global caches that can leak stale rows between runs.",
             "Emit per-stage counters, durations, and throughput. Include queue lag and retry/error distributions.",
             "Strong improvement. Add a benchmark regression gate so future refactors cannot silently erode performance.",
@@ -78,6 +78,6 @@ _SHOWCASE_THEMES: tuple[ConversationTheme, ...] = (
 
 
 __all__ = [
-    "ConversationTheme",
+    "SessionTheme",
     "_SHOWCASE_THEMES",
 ]

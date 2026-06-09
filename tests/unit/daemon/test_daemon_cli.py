@@ -4,7 +4,6 @@ import asyncio
 import inspect
 import sqlite3
 import threading
-from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -18,6 +17,8 @@ from polylogue.daemon.cli import main
 from polylogue.daemon.convergence import ConvergenceStage
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.cursor import CursorStore
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.frozen_clock import FrozenClock
 
 
@@ -82,6 +83,63 @@ def test_polylogued_status_plain_reports_daemon_components(tmp_path: Path) -> No
     assert "Browser capture spool:" in result.output
 
 
+def test_polylogued_status_json_reports_archive_storage(tmp_path: Path) -> None:
+    for filename, tier in (
+        ("source.db", ArchiveTier.SOURCE),
+        ("index.db", ArchiveTier.INDEX),
+        ("user.db", ArchiveTier.USER),
+        ("ops.db", ArchiveTier.OPS),
+    ):
+        initialize_archive_database(tmp_path / filename, tier)
+    with sqlite3.connect(tmp_path / "embeddings.db") as conn:
+        conn.execute("PRAGMA user_version = 1")
+        conn.commit()
+
+    with (
+        patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
+        patch("polylogue.daemon.status.db_path", return_value=tmp_path / "index.db"),
+        patch("polylogue.daemon.status.index_db_path", return_value=tmp_path / "index.db"),
+        patch("polylogue.daemon.status.default_sources", return_value=()),
+    ):
+        result = CliRunner().invoke(main, ["status", "--format", "json"])
+
+    assert result.exit_code == 0
+    payload = loads(result.output)
+    assert isinstance(payload, dict)
+    storage = cast(dict[str, object], payload["archive_storage"])
+    assert storage["active_store"] == "archive_file_set"
+    assert storage["archive_root"] == str(tmp_path)
+    assert storage["configured_archive_root"] == str(tmp_path)
+    assert storage["archive_root_matches_configured"] is True
+    assert storage["archive_ready"] is True
+    assert storage["final_shape_ready"] is True
+    assert storage["present_tiers"] == ["source", "index", "embeddings", "user", "ops"]
+    tiers = cast(list[dict[str, object]], storage["tiers"])
+    assert {tier["name"]: tier["user_version"] for tier in tiers} == {
+        "source": 1,
+        "index": 3,
+        "embeddings": 1,
+        "user": 1,
+        "ops": 1,
+    }
+
+
+def test_polylogued_status_plain_reports_archive_storage(tmp_path: Path) -> None:
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+
+    with (
+        patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
+        patch("polylogue.daemon.status.db_path", return_value=tmp_path / "index.db"),
+        patch("polylogue.daemon.status.index_db_path", return_value=tmp_path / "index.db"),
+        patch("polylogue.daemon.status.default_sources", return_value=()),
+    ):
+        result = CliRunner().invoke(main, ["status"])
+
+    assert result.exit_code == 0
+    assert "Storage: archive_file_set (source, index); missing embeddings, user, ops" in result.output
+
+
 @pytest.mark.contract
 @pytest.mark.frozen_clock_modules("polylogue.sources.live.cursor")
 def test_drain_convergence_debt_retries_due_items_without_source_failure(
@@ -90,7 +148,7 @@ def test_drain_convergence_debt_retries_due_items_without_source_failure(
 ) -> None:
     from polylogue.daemon import cli as daemon_cli
 
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     source = tmp_path / "session.jsonl"
     source.write_text("{}\n", encoding="utf-8")
     cursor = CursorStore(db)
@@ -100,11 +158,11 @@ def test_drain_convergence_debt_retries_due_items_without_source_failure(
         subject_id=str(source),
         error="initial failure",
     )
-    due_at = (frozen_clock.now() - timedelta(minutes=1)).isoformat()
-    with sqlite3.connect(db) as conn:
-        conn.execute("UPDATE live_convergence_debt SET next_retry_at = ?", (due_at,))
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        conn.execute(
+            "UPDATE convergence_debt SET next_retry_at = '1970-01-01T00:00:00+00:00'",
+        )
         conn.commit()
-
     stage = ConvergenceStage(
         name="insights",
         description="retry test",
@@ -122,32 +180,32 @@ def test_drain_convergence_debt_retries_due_items_without_source_failure(
 
 @pytest.mark.contract
 @pytest.mark.frozen_clock_modules("polylogue.sources.live.cursor")
-def test_drain_convergence_debt_retries_conversation_subjects_without_source_lookup(
+def test_drain_convergence_debt_retries_session_subjects_without_source_lookup(
     tmp_path: Path,
     frozen_clock: FrozenClock,
 ) -> None:
     from polylogue.daemon import cli as daemon_cli
 
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     cursor = CursorStore(db)
     cursor.record_convergence_debt(
         stage="insights",
-        subject_type="conversation_id",
+        subject_type="session_id",
         subject_id="conv-1",
         error="initial failure",
     )
-    due_at = (frozen_clock.now() - timedelta(minutes=1)).isoformat()
-    with sqlite3.connect(db) as conn:
-        conn.execute("UPDATE live_convergence_debt SET next_retry_at = ?", (due_at,))
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        conn.execute(
+            "UPDATE convergence_debt SET next_retry_at = '1970-01-01T00:00:00+00:00'",
+        )
         conn.commit()
-
     stage = ConvergenceStage(
         name="insights",
         description="retry test",
         check=lambda _candidate: False,
         execute=lambda _candidate: False,
-        check_conversations=lambda conversation_ids: {"conv-1"} if tuple(conversation_ids) == ("conv-1",) else set(),
-        execute_conversations=lambda conversation_ids: tuple(conversation_ids) == ("conv-1",),
+        check_sessions=lambda session_ids: {"conv-1"} if tuple(session_ids) == ("conv-1",) else set(),
+        execute_sessions=lambda session_ids: tuple(session_ids) == ("conv-1",),
     )
     with patch("polylogue.daemon.convergence_stages.make_default_convergence_stages", return_value=(stage,)):
         retried = daemon_cli._drain_convergence_debt_once(db)
@@ -160,7 +218,7 @@ def test_drain_convergence_debt_retries_conversation_subjects_without_source_loo
 def test_periodic_convergence_check_treats_sqlite_lock_as_archive_busy(tmp_path: Path) -> None:
     from polylogue.daemon import cli as daemon_cli
 
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     db.touch()
     sleep_calls = 0
 
@@ -174,7 +232,7 @@ def test_periodic_convergence_check_treats_sqlite_lock_as_archive_busy(tmp_path:
         raise sqlite3.OperationalError("database is locked")
 
     with (
-        patch("polylogue.paths.db_path", return_value=db),
+        patch("polylogue.daemon.cli._active_index_db_path", return_value=db),
         patch("asyncio.sleep", side_effect=fake_sleep),
         patch("asyncio.to_thread", side_effect=fake_to_thread),
         patch.object(daemon_cli.logger, "info") as info,
@@ -191,7 +249,7 @@ def test_periodic_convergence_check_treats_sqlite_lock_as_archive_busy(tmp_path:
 def test_periodic_convergence_check_warns_on_non_lock_failures(tmp_path: Path) -> None:
     from polylogue.daemon import cli as daemon_cli
 
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     db.touch()
     sleep_calls = 0
 
@@ -205,7 +263,7 @@ def test_periodic_convergence_check_warns_on_non_lock_failures(tmp_path: Path) -
         raise RuntimeError("unexpected convergence retry failure")
 
     with (
-        patch("polylogue.paths.db_path", return_value=db),
+        patch("polylogue.daemon.cli._active_index_db_path", return_value=db),
         patch("asyncio.sleep", side_effect=fake_sleep),
         patch("asyncio.to_thread", side_effect=fake_to_thread),
         patch.object(daemon_cli.logger, "info") as info,
@@ -331,13 +389,13 @@ def test_run_live_watcher_stops_on_keyboard_interrupt() -> None:
     assert stopped == [True]
 
 
-def test_ensure_fts_startup_readiness_runs_bounded_repair(
+def test_ensure_fts_startup_readiness_skips_old_non_blocks_shape(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from polylogue.daemon import cli as daemon_cli
 
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     db.write_bytes(b"sqlite placeholder")
 
     class FakeCursor:
@@ -366,20 +424,13 @@ def test_ensure_fts_startup_readiness_runs_bounded_repair(
                 return FakeCursor(("messages",))
             if query == "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1":
                 name = str(_params[0]) if isinstance(_params, tuple) and _params else ""
-                return (
-                    FakeCursor((1,))
-                    if name in {"messages", "messages_fts", "action_events", "action_events_fts"}
-                    else FakeCursor(None)
-                )
+                return FakeCursor((1,)) if name in {"messages", "messages_fts"} else FakeCursor(None)
             if query.startswith("SELECT name FROM sqlite_master WHERE type='trigger'"):
                 # All six FTS triggers present — no SIGKILL-drift recovery.
                 triggers: list[tuple[object, ...]] = [
                     ("messages_fts_ai",),
                     ("messages_fts_ad",),
                     ("messages_fts_au",),
-                    ("action_events_fts_ai",),
-                    ("action_events_fts_ad",),
-                    ("action_events_fts_au",),
                 ]
                 return FakeCursor(triggers[0], rows=triggers)
             raise AssertionError(f"unexpected query: {query}")
@@ -402,7 +453,7 @@ def test_ensure_fts_startup_readiness_runs_bounded_repair(
 
     repairs: list[FakeConnection] = []
 
-    monkeypatch.setattr("polylogue.paths.db_path", lambda: db)
+    monkeypatch.setattr("polylogue.paths.active_index_db_path", lambda: db)
     monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", lambda _db, timeout: conn)
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.ensure_fts_index_sync", ensure)
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.rebuild_fts_index_sync", rebuild)
@@ -423,23 +474,21 @@ def test_ensure_fts_startup_readiness_runs_bounded_repair(
 
     asyncio.run(daemon_cli._ensure_fts_startup_readiness())
 
-    assert ensured == [conn]
+    assert ensured == []
     assert rebuilds == []
-    assert repairs == [conn]
-    assert conn.committed is True
+    assert repairs == []
+    assert conn.committed is False
     assert conn.closed is True
-    # #1628: healthy path must write freshness snapshot so /healthz/ready
-    # stops returning 503 on a fully populated archive.
-    assert freshness_calls == [conn]
+    assert freshness_calls == []
 
 
-def test_ensure_fts_startup_readiness_rebuilds_when_bounded_repair_fails(
+def test_ensure_fts_startup_readiness_does_not_rebuild_old_non_blocks_shape(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from polylogue.daemon import cli as daemon_cli
 
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     db.write_bytes(b"sqlite placeholder")
 
     class FakeCursor:
@@ -468,19 +517,12 @@ def test_ensure_fts_startup_readiness_rebuilds_when_bounded_repair_fails(
                 return FakeCursor(("messages",))
             if query == "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1":
                 name = str(_params[0]) if isinstance(_params, tuple) and _params else ""
-                return (
-                    FakeCursor((1,))
-                    if name in {"messages", "messages_fts", "action_events", "action_events_fts"}
-                    else FakeCursor(None)
-                )
+                return FakeCursor((1,)) if name in {"messages", "messages_fts"} else FakeCursor(None)
             if query.startswith("SELECT name FROM sqlite_master WHERE type='trigger'"):
                 triggers: list[tuple[object, ...]] = [
                     ("messages_fts_ai",),
                     ("messages_fts_ad",),
                     ("messages_fts_au",),
-                    ("action_events_fts_ai",),
-                    ("action_events_fts_ad",),
-                    ("action_events_fts_au",),
                 ]
                 return FakeCursor(triggers[0], rows=triggers)
             raise AssertionError(f"unexpected query: {query}")
@@ -498,7 +540,7 @@ def test_ensure_fts_startup_readiness_rebuilds_when_bounded_repair_fails(
     def rebuild(fake_conn: FakeConnection) -> None:
         rebuilds.append(fake_conn)
 
-    monkeypatch.setattr("polylogue.paths.db_path", lambda: db)
+    monkeypatch.setattr("polylogue.paths.active_index_db_path", lambda: db)
     monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", lambda _db, timeout: conn)
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.ensure_fts_index_sync", lambda _conn: None)
     monkeypatch.setattr(
@@ -518,25 +560,23 @@ def test_ensure_fts_startup_readiness_rebuilds_when_bounded_repair_fails(
 
     asyncio.run(daemon_cli._ensure_fts_startup_readiness())
 
-    assert restored == [conn]
-    assert rebuilds == [conn]
-    assert conn.committed is True
+    assert restored == []
+    assert rebuilds == []
+    assert conn.committed is False
     assert conn.closed is True
 
 
-def test_ensure_fts_startup_readiness_skips_when_messages_table_absent(
+def test_ensure_fts_startup_readiness_skips_when_blocks_table_absent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Fresh-init guard (#1603): if ``messages_fts`` was created but the
-    base ``messages`` table is not yet visible (the bootstrap is still
-    in flight on another connection), the readiness check must skip the
-    repair path instead of raising ``OperationalError: no such table:
-    messages`` into the daemon log.
+    """Fresh-init/current-shape guard: if the canonical ``blocks`` table is not
+    visible, startup skips FTS repair instead of probing an old monolithic
+    shape.
     """
     from polylogue.daemon import cli as daemon_cli
 
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     db.write_bytes(b"sqlite placeholder")
 
     class FakeCursor:
@@ -555,11 +595,7 @@ def test_ensure_fts_startup_readiness_skips_when_messages_table_absent(
         def execute(self, sql: str, _params: object = ()) -> FakeCursor:
             query = " ".join(sql.split())
             self.queries.append(query)
-            if query == "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'":
-                return FakeCursor(("messages_fts",))
-            if query == "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'":
-                return FakeCursor(("messages",))
-            if query == "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'":
+            if query == "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1":
                 return FakeCursor(None)
             raise AssertionError(f"unexpected query: {query}")
 
@@ -570,32 +606,31 @@ def test_ensure_fts_startup_readiness_skips_when_messages_table_absent(
             self.closed = True
 
     conn = FakeConnection()
-    monkeypatch.setattr("polylogue.paths.db_path", lambda: db)
+    monkeypatch.setattr("polylogue.paths.active_index_db_path", lambda: db)
     monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", lambda _db, timeout: conn)
     monkeypatch.setattr(
         "polylogue.storage.fts.dangling_repair.repair_stale_fts_rows",
-        lambda _conn: pytest.fail("repair_stale_fts_rows must not run when messages table is absent"),
+        lambda _conn: pytest.fail("repair_stale_fts_rows must not run when blocks table is absent"),
     )
     monkeypatch.setattr(
         "polylogue.storage.fts.fts_lifecycle.rebuild_fts_index_sync",
-        lambda _conn: pytest.fail("rebuild_fts_index_sync must not run when messages table is absent"),
+        lambda _conn: pytest.fail("rebuild_fts_index_sync must not run when blocks table is absent"),
     )
 
     asyncio.run(daemon_cli._ensure_fts_startup_readiness())
 
-    assert "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'" in conn.queries
-    assert "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'" in conn.queries
+    assert "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1" in conn.queries
     assert conn.committed is False
     assert conn.closed is True
 
 
-def test_ensure_fts_startup_readiness_rebuilds_when_triggers_missing(
+def test_ensure_fts_startup_readiness_skips_non_current_archive_shape(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from polylogue.daemon import cli as daemon_cli
 
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     db.write_bytes(b"sqlite placeholder")
 
     class FakeCursor:
@@ -624,11 +659,7 @@ def test_ensure_fts_startup_readiness_rebuilds_when_triggers_missing(
                 return FakeCursor(("messages",))
             if query == "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1":
                 name = str(_params[0]) if isinstance(_params, tuple) and _params else ""
-                return (
-                    FakeCursor((1,))
-                    if name in {"messages", "messages_fts", "action_events", "action_events_fts"}
-                    else FakeCursor(None)
-                )
+                return FakeCursor((1,)) if name in {"messages", "messages_fts"} else FakeCursor(None)
             if query.startswith("SELECT name FROM sqlite_master WHERE type='trigger'"):
                 # One missing trigger must send startup through trigger restore
                 # before bounded repair can mark the FTS surfaces fresh.
@@ -636,8 +667,6 @@ def test_ensure_fts_startup_readiness_rebuilds_when_triggers_missing(
                     ("messages_fts_ai",),
                     ("messages_fts_ad",),
                     ("messages_fts_au",),
-                    ("action_events_fts_ai",),
-                    ("action_events_fts_ad",),
                 ]
                 return FakeCursor(triggers[0], rows=triggers)
             if query == "SELECT 1 FROM messages WHERE text IS NOT NULL LIMIT 1":
@@ -656,27 +685,9 @@ def test_ensure_fts_startup_readiness_rebuilds_when_triggers_missing(
     restored: list[FakeConnection] = []
     rebuilds: list[FakeConnection] = []
 
-    monkeypatch.setattr("polylogue.paths.db_path", lambda: db)
+    monkeypatch.setattr("polylogue.paths.active_index_db_path", lambda: db)
     monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", lambda _db, timeout: conn)
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.ensure_fts_index_sync", lambda fake_conn: None)
-    monkeypatch.setattr(
-        "polylogue.storage.fts.fts_lifecycle.restore_fts_triggers_sync",
-        lambda fake_conn: restored.append(fake_conn),
-    )
-    monkeypatch.setattr(
-        "polylogue.storage.fts.fts_lifecycle.rebuild_fts_index_sync",
-        lambda fake_conn: rebuilds.append(fake_conn),
-    )
-
-    monkeypatch.setattr("polylogue.storage.fts.freshness.ensure_fts_freshness_table_sync", lambda fake_conn: None)
-    monkeypatch.setattr(
-        "polylogue.storage.fts.dangling_repair.configure_bounded_repair_connection",
-        lambda fake_conn: None,
-    )
-    monkeypatch.setattr(
-        "polylogue.storage.fts.dangling_repair.repair_missing_fts_rows",
-        lambda fake_conn: SimpleNamespace(success=True, repaired_count=3, detail="repaired"),
-    )
     freshness_calls: list[FakeConnection] = []
     monkeypatch.setattr(
         "polylogue.daemon.fts_startup.record_fts_freshness_snapshot_sync",
@@ -685,12 +696,11 @@ def test_ensure_fts_startup_readiness_rebuilds_when_triggers_missing(
 
     asyncio.run(daemon_cli._ensure_fts_startup_readiness())
 
-    assert restored == [conn]
+    assert restored == []
     assert rebuilds == []
-    assert conn.committed is True
+    assert conn.committed is False
     assert conn.closed is True
-    # #1628: trigger-recovery path must also write freshness snapshot rows.
-    assert freshness_calls == [conn]
+    assert freshness_calls == []
 
 
 def test_periodic_db_optimize_does_not_run_on_startup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -709,7 +719,7 @@ def test_periodic_db_optimize_does_not_run_on_startup(monkeypatch: pytest.Monkey
         opened.append(path)
         raise AssertionError("PRAGMA optimize must not run at daemon startup")
 
-    monkeypatch.setattr("polylogue.paths.db_path", lambda: tmp_path / "polylogue.db")
+    monkeypatch.setattr("polylogue.paths.db_path", lambda: tmp_path / "index.db")
     monkeypatch.setattr(asyncio, "sleep", fake_sleep)
     monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", fake_open_connection)
 
@@ -717,6 +727,106 @@ def test_periodic_db_optimize_does_not_run_on_startup(monkeypatch: pytest.Monkey
         asyncio.run(daemon_cli._periodic_db_optimize())
 
     assert opened == []
+
+
+def test_daemon_cli_active_archive_uses_archive_file_set_from_archive_tiers(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    index_db = tmp_path / "index.db"
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+
+    assert daemon_cli._active_index_db_path() == index_db
+
+
+def test_daemon_cli_active_archive_uses_index_when_db_anchor_exists(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    db_anchor = tmp_path / "index.db"
+    db_anchor.touch()
+    index_db = tmp_path / "index.db"
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+
+    assert daemon_cli._active_index_db_path() == index_db
+
+
+def test_daemon_cli_heartbeat_counts_archive(tmp_path: Path) -> None:
+    from polylogue.archive.message.roles import Role
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.types import BlockType, Provider
+
+    archive_root = tmp_path
+    with ArchiveStore(archive_root) as archive:
+        archive.write_parsed(
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="daemon-heartbeat-v1",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.USER,
+                        text="heartbeat v1",
+                        content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="heartbeat v1")],
+                    )
+                ],
+            )
+        )
+
+    assert daemon_cli._heartbeat_counts(archive_root / "index.db") == (1, 1, "sessions")
+
+
+def test_ensure_fts_startup_readiness_handles_archive(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from polylogue.archive.message.roles import Role
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.types import BlockType, Provider
+
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+    with ArchiveStore(tmp_path) as archive:
+        archive.write_parsed(
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="daemon-startup-v1",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.USER,
+                        text="startup v1",
+                        content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="startup v1")],
+                    )
+                ],
+            )
+        )
+
+    asyncio.run(daemon_cli._ensure_fts_startup_readiness())
+
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT name FROM sqlite_master WHERE name='messages_fts'").fetchone() is not None
+        row = conn.execute(
+            """
+            SELECT state, source_rows, indexed_rows
+            FROM fts_freshness_state
+            WHERE surface = 'messages_fts'
+            """
+        ).fetchone()
+    assert row == ("ready", 1, 1)
 
 
 def test_run_daemon_services_stops_live_watcher_on_failure() -> None:
@@ -886,7 +996,7 @@ def test_run_daemon_services_schema_block_skips_db_background_work() -> None:
         check_name="schema_version",
         tier=HealthTier.FAST,
         severity=HealthSeverity.CRITICAL,
-        message="schema v12 incompatible with runtime v8",
+        message="archive2 is not runtime v8",
         checked_at="2026-05-24T00:00:00+00:00",
     )
     with (

@@ -8,13 +8,13 @@ Every materialized insight row records four provenance fields:
   observed at materialization time (for aggregates this is the high-water
   mark across all sources that contributed to the row).
 - ``input_high_water_mark``: explicit alias for the latest input source
-  change timestamp folded into this insight row. For per-conversation
+  change timestamp folded into this insight row. For per-session
   insights (profiles, work events, phases, threads) this is equivalent to
   ``source_updated_at``. Aggregates compute it from the input bucket.
 - ``input_row_count``: number of source rows that produced the insight.
-  For ``session_profiles`` this is the conversation's message count; for
+  For ``session_profiles`` this is the session's message count; for
   timeline rows it is the events/phases produced; for aggregates it is the
-  number of conversations folded into the bucket.
+  number of sessions folded into the bucket.
 
 These fields exist so a downstream reader can answer:
 

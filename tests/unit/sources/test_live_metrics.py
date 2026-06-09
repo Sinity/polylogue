@@ -23,9 +23,9 @@ def test_live_batch_metrics_payload_includes_memory_pressure_fields() -> None:
         parse_time_s=0.1,
         convergence_time_s=0.2,
         total_time_s=0.3,
-        ingested_conversation_count=2,
+        ingested_session_count=2,
         ingested_message_count=12,
-        changed_conversation_count=1,
+        changed_session_count=1,
         wal_bytes_before_checkpoint_max=4096,
         wal_bytes_after_checkpoint_max=1024,
         wal_checkpointed_pages_total=3,
@@ -41,9 +41,9 @@ def test_live_batch_metrics_payload_includes_memory_pressure_fields() -> None:
 
     assert payload["cgroup_path"] == "/user.slice/test.scope"
     assert payload["cgroup_memory_peak_mb"] == 128.0
-    assert payload["ingested_conversation_count"] == 2
+    assert payload["ingested_session_count"] == 2
     assert payload["ingested_message_count"] == 12
-    assert payload["changed_conversation_count"] == 1
+    assert payload["changed_session_count"] == 1
     assert payload["wal_bytes_before_checkpoint_max"] == 4096
     assert payload["wal_bytes_after_checkpoint_max"] == 1024
     assert payload["wal_checkpointed_pages_total"] == 3

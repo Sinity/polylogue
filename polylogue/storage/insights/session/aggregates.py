@@ -37,7 +37,7 @@ _PROVIDER_DAY_PROFILE_RECORDS_SQL_TEMPLATE = f"""
     JOIN session_profiles sp
       ON sp.source_name = tg.source_name
      AND {_PROFILE_BUCKET_DAY_SQL} = tg.bucket_day
-    ORDER BY tg.source_name, tg.bucket_day, COALESCE(sp.source_sort_key, 0) DESC, sp.conversation_id
+    ORDER BY tg.source_name, tg.bucket_day, COALESCE(sp.source_sort_key, 0) DESC, sp.session_id
 """
 _GROUP_BATCH_SIZE = 100
 _DISTINCT_PROVIDER_DAY_GROUPS_SQL = f"""

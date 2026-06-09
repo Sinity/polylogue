@@ -24,13 +24,13 @@ from pydantic import BaseModel
 from devtools.command_catalog import control_plane_command
 from devtools.render_support import write_if_changed
 from polylogue.surfaces.payloads import (
-    ConversationListRowPayload,
-    ConversationNeighborCandidatePayload,
-    ConversationSearchHitPayload,
-    ConversationSummaryPayload,
     MachineErrorPayload,
     MachineSuccessPayload,
     SearchEnvelope,
+    SessionListRowPayload,
+    SessionNeighborCandidatePayload,
+    SessionSearchHitPayload,
+    SessionSummaryPayload,
 )
 
 DEFAULT_OUTPUT_DIR = Path("docs/schemas/cli-output")
@@ -50,14 +50,14 @@ class CliOutputSchema:
 
 SCHEMAS: tuple[CliOutputSchema, ...] = (
     CliOutputSchema(
-        name="conversation-list-row",
-        title="Conversation List Row",
+        name="session-list-row",
+        title="Session List Row",
         description=(
             "One row of `polylogue list --format json` output. The list verb "
             "emits an array of these objects; the `ndjson` format emits one per "
             "line as results stream."
         ),
-        model=ConversationListRowPayload,
+        model=SessionListRowPayload,
         surfaces=(
             "polylogue list --format json",
             "polylogue list --format ndjson",
@@ -65,25 +65,25 @@ SCHEMAS: tuple[CliOutputSchema, ...] = (
         ),
     ),
     CliOutputSchema(
-        name="conversation-summary",
-        title="Conversation Summary",
-        description=("Compact conversation identity payload used by stats/group-by and embedded inside search hits."),
-        model=ConversationSummaryPayload,
+        name="session-summary",
+        title="Session Summary",
+        description=("Compact session identity payload used by stats/group-by and embedded inside search hits."),
+        model=SessionSummaryPayload,
         surfaces=(
             "polylogue stats --format json (rows)",
             "polylogue select --format json",
         ),
     ),
     CliOutputSchema(
-        name="conversation-search-hit",
-        title="Conversation Search Hit",
+        name="session-search-hit",
+        title="Session Search Hit",
         description=(
-            "A search match: conversation identity plus evidence (match "
+            "A search match: session identity plus evidence (match "
             "surface, retrieval lane, snippet, score). Default query-mode "
             "JSON output uses this shape; the `ndjson` mode emits one per "
             "line as hits arrive."
         ),
-        model=ConversationSearchHitPayload,
+        model=SessionSearchHitPayload,
         surfaces=(
             "polylogue --format json <query>",
             "polylogue --format ndjson <query>",
@@ -95,24 +95,23 @@ SCHEMAS: tuple[CliOutputSchema, ...] = (
         description=(
             "Typed ranked-result envelope (#1266) shared across CLI JSON, "
             "MCP, Python API, and daemon HTTP. Wraps the per-hit "
-            "`ConversationSearchHit` array with `total`, `limit`, "
+            "`SessionSearchHit` array with `total`, `limit`, "
             "`offset`, `next_cursor`, `query`, `retrieval_lane`, and the "
             "`ranking_policy`/`ranking_policy_version` declaration."
         ),
         model=SearchEnvelope,
         surfaces=(
             "polylogue --format json <query>",
-            "GET /api/conversations?query=...",
+            "GET /api/sessions?query=...",
         ),
     ),
     CliOutputSchema(
-        name="conversation-neighbor-candidate",
-        title="Conversation Neighbor Candidate",
+        name="session-neighbor-candidate",
+        title="Session Neighbor Candidate",
         description=(
-            "Semantic-neighbor candidate for `polylogue neighbors`: "
-            "conversation identity plus per-reason evidence and rank."
+            "Semantic-neighbor candidate for `polylogue neighbors`: session identity plus per-reason evidence and rank."
         ),
-        model=ConversationNeighborCandidatePayload,
+        model=SessionNeighborCandidatePayload,
         surfaces=("polylogue neighbors --format json",),
     ),
     CliOutputSchema(

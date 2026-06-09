@@ -28,7 +28,7 @@ from polylogue.pipeline.services.ingest_worker import (
 )
 from polylogue.storage.artifacts.inspection import inspect_raw_artifact
 from polylogue.storage.blob_store import BlobStore, reset_blob_store
-from polylogue.storage.runtime import RawConversationRecord
+from polylogue.storage.runtime import RawSessionRecord
 from polylogue.types import Provider, ValidationMode, ValidationStatus
 
 
@@ -49,9 +49,9 @@ def _valid_line(i: int) -> bytes:
     )
 
 
-def _make_record(store: BlobStore, content: bytes, *, source_path: str) -> RawConversationRecord:
+def _make_record(store: BlobStore, content: bytes, *, source_path: str) -> RawSessionRecord:
     raw_id, blob_size = store.write_from_bytes(content)
-    return RawConversationRecord(
+    return RawSessionRecord(
         raw_id=raw_id,
         source_name="claude-code",
         source_path=source_path,
@@ -84,7 +84,7 @@ def test_advisory_stream_counts_malformed_past_sample_boundary(blob_store: BlobS
     assert observation.malformed_jsonl_lines >= 2
 
 
-def _context(record: RawConversationRecord, *, mode: ValidationMode, tmp_path: Path) -> _IngestContext:
+def _context(record: RawSessionRecord, *, mode: ValidationMode, tmp_path: Path) -> _IngestContext:
     return _IngestContext(
         raw_record=record,
         raw_source=tmp_path / "unused",
@@ -99,8 +99,8 @@ def _context(record: RawConversationRecord, *, mode: ValidationMode, tmp_path: P
 def _schema_eligible_plan(malformed: int) -> _ParsePlan:
     artifact = ArtifactClassification(
         provider=Provider.CLAUDE_CODE,
-        kind=ArtifactKind.CONVERSATION_DOCUMENT,
-        parse_as_conversation=True,
+        kind=ArtifactKind.SESSION_DOCUMENT,
+        parse_as_session=True,
         schema_eligible=True,
         default_priority=100,
         reason="test schema-eligible artifact",

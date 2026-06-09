@@ -129,7 +129,7 @@ class ChatGPTExportBuilder:
         return path
 
 
-class GenericConversationBuilder:
+class GenericSessionBuilder:
     """Builder for simple message-list provider payloads."""
 
     def __init__(self, conv_id: str):
@@ -138,7 +138,7 @@ class GenericConversationBuilder:
         self._messages: JsonObjectList = []
         self._msg_counter = 0
 
-    def title(self, title: str) -> GenericConversationBuilder:
+    def title(self, title: str) -> GenericSessionBuilder:
         self._title = title
         return self
 
@@ -148,7 +148,7 @@ class GenericConversationBuilder:
         content: str,
         message_id: str | None = None,
         text: str | None = None,
-    ) -> GenericConversationBuilder:
+    ) -> GenericSessionBuilder:
         self._msg_counter += 1
         msg_id = message_id or f"m{self._msg_counter}"
         msg: JsonObject = {"id": msg_id, "role": role}
@@ -159,10 +159,10 @@ class GenericConversationBuilder:
         self._messages.append(msg)
         return self
 
-    def add_user(self, content: str, **kwargs: str | None) -> GenericConversationBuilder:
+    def add_user(self, content: str, **kwargs: str | None) -> GenericSessionBuilder:
         return self.add_message("user", content, **kwargs)
 
-    def add_assistant(self, content: str, **kwargs: str | None) -> GenericConversationBuilder:
+    def add_assistant(self, content: str, **kwargs: str | None) -> GenericSessionBuilder:
         return self.add_message("assistant", content, **kwargs)
 
     def build(self) -> JsonObject:
@@ -202,14 +202,14 @@ class InboxBuilder:
         self.files.append((path, content))
         return self
 
-    def add_codex_conversation(
+    def add_codex_session(
         self,
         conv_id: str,
         title: str | None = None,
         messages: list[tuple[str, str]] | None = None,
         filename: str | None = None,
     ) -> InboxBuilder:
-        builder = GenericConversationBuilder(conv_id)
+        builder = GenericSessionBuilder(conv_id)
         if title:
             builder.title(title)
         for role, content in messages or [("user", "Hello"), ("assistant", "Hi there!")]:
@@ -245,9 +245,9 @@ class InboxBuilder:
         name: str | None = None,
         chat_messages: JsonObjectList | None = None,
         filename: str | None = None,
-        wrap_in_conversations: bool = True,
+        wrap_in_sessions: bool = True,
     ) -> InboxBuilder:
-        conversation: JsonObject = {
+        session: JsonObject = {
             "id": conv_id,
             "chat_messages": chat_messages
             or [
@@ -256,8 +256,8 @@ class InboxBuilder:
             ],
         }
         if name:
-            conversation["name"] = name
-        payload = {"conversations": [conversation]} if wrap_in_conversations else conversation
+            session["name"] = name
+        payload = {"sessions": [session]} if wrap_in_sessions else session
         return self.add_json_file(filename or f"claude_{conv_id}.json", payload)
 
     def build(self) -> Path:

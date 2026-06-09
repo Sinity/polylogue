@@ -67,12 +67,12 @@ def _has_text_content(payload: object, provider: str) -> bool:
     """Check whether a generated payload contains any text content.
 
     This works across provider-specific payload shapes by parsing the
-    generated conversation and checking the parsed message text.
+    generated session and checking the parsed message text.
     """
     from polylogue.sources.dispatch import parse_payload
 
-    conversations = parse_payload(provider, payload, fallback_id="test")
-    for conv in conversations:
+    sessions = parse_payload(provider, payload, fallback_id="test")
+    for conv in sessions:
         for msg in conv.messages:
             if msg.text and msg.text.strip():
                 return True
@@ -105,15 +105,15 @@ def test_multiple_message_counts_all_valid(provider: str) -> None:
 
 
 @pytest.mark.parametrize("provider", _SYNTHETIC_PROVIDERS)
-def test_single_message_conversation(provider: str) -> None:
-    """A conversation with exactly one message must validate."""
+def test_single_message_session(provider: str) -> None:
+    """A session with exactly one message must validate."""
     payload = _generate_payload(provider, n_messages=1, seed=1)
     _validate_payload(provider, payload)
 
 
 @pytest.mark.parametrize("provider", _SYNTHETIC_PROVIDERS)
-def test_many_message_conversation(provider: str) -> None:
-    """A conversation with 50 messages must validate."""
+def test_many_message_session(provider: str) -> None:
+    """A session with 50 messages must validate."""
     payload = _generate_payload(provider, n_messages=50, seed=2)
     _validate_payload(provider, payload)
 
@@ -135,9 +135,9 @@ def test_generated_claude_code_contains_varied_block_types() -> None:
     payload = _generate_payload("claude-code", n_messages=30, seed=42)
     assert isinstance(payload, list), f"Expected list payload for claude-code, got {type(payload)}"
 
-    conversations = parse_payload("claude-code", payload, fallback_id="test")
+    sessions = parse_payload("claude-code", payload, fallback_id="test")
     block_types_found: set[str] = set()
-    for conv in conversations:
+    for conv in sessions:
         for msg in conv.messages:
             for blk in msg.content_blocks:
                 block_types_found.add(str(blk.type))
@@ -173,7 +173,7 @@ def test_claude_code_message_with_empty_text_parses() -> None:
     ]
 
     parsed = parse_payload("claude-code", records, fallback_id="test-empty")
-    assert len(parsed) >= 1, f"Expected at least 1 parsed conversation, got {len(parsed)}"
+    assert len(parsed) >= 1, f"Expected at least 1 parsed session, got {len(parsed)}"
     result = parsed[0]
     assert result.messages, "Should produce at least one message"
     user_msgs = [m for m in result.messages if m.role and str(m.role) == "user"]
@@ -232,7 +232,7 @@ def test_claude_code_user_only_roles() -> None:
     ]
 
     parsed = parse_payload("claude-code", records, fallback_id="test-user-only")
-    assert len(parsed) == 1, f"Expected 1 parsed conversation, got {len(parsed)}"
+    assert len(parsed) == 1, f"Expected 1 parsed session, got {len(parsed)}"
     result = parsed[0]
     assert len(result.messages) == 3, f"Expected 3 messages, got {len(result.messages)}"
 
@@ -253,7 +253,7 @@ def test_claude_code_assistant_only_roles() -> None:
     ]
 
     parsed = parse_payload("claude-code", records, fallback_id="test-assistant-only")
-    assert len(parsed) == 1, f"Expected 1 parsed conversation, got {len(parsed)}"
+    assert len(parsed) == 1, f"Expected 1 parsed session, got {len(parsed)}"
     result = parsed[0]
     assert len(result.messages) == 3, f"Expected 3 messages, got {len(result.messages)}"
 
@@ -296,7 +296,7 @@ def test_claude_code_system_records_not_messages() -> None:
     ]
 
     parsed = parse_payload("claude-code", records, fallback_id="test-sys-skip")
-    assert len(parsed) == 1, f"Expected 1 parsed conversation, got {len(parsed)}"
+    assert len(parsed) == 1, f"Expected 1 parsed session, got {len(parsed)}"
     result = parsed[0]
     role_texts = {str(m.role) for m in result.messages if m.role}
     assert "system" not in role_texts, f"System records should not produce message rows, got roles: {role_texts}"

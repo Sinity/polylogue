@@ -7,16 +7,16 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.storage.sqlite.connection import open_connection
 from tests.infra.archive_scenarios import (
     ArchiveScenario,
     ScenarioAttachment,
     ScenarioContentBlock,
     ScenarioMessage,
-    repository_for_scenario_db,
+    archive_for_scenario_db,
+    open_index_db,
     seed_workspace_scenarios,
 )
-from tests.infra.oracles import assert_conversation_surfaces_agree
+from tests.infra.oracles import assert_session_surfaces_agree
 from tests.infra.semantic_facts import ArchiveFacts, assert_same_archive_facts
 
 
@@ -24,7 +24,7 @@ def test_archive_scenario_seeds_record_and_hydration_facts(workspace_env: Mappin
     scenario = ArchiveScenario(
         name="scenario-harness",
         provider="claude-code",
-        title="Harness conversation",
+        title="Harness session",
         messages=(
             ScenarioMessage(role="user", text="Run the checks", message_id="m-user"),
             ScenarioMessage(
@@ -38,9 +38,9 @@ def test_archive_scenario_seeds_record_and_hydration_facts(workspace_env: Mappin
     )
     db_path, seeds = seed_workspace_scenarios(workspace_env, [scenario])
 
-    assert [seed.conversation_id for seed in seeds] == ["scenario-harness"]
-    with open_connection(db_path) as conn:
-        assert_conversation_surfaces_agree(
+    assert [seed.session_id for seed in seeds] == ["scenario-harness"]
+    with open_index_db(db_path) as conn:
+        assert_session_surfaces_agree(
             scenario.facts_from_connection(conn),
             scenario.hydrated_facts_from_connection(conn),
         )
@@ -74,15 +74,15 @@ async def test_archive_scenario_repository_projection_agrees(workspace_env: Mapp
         ),
     )
     db_path, _ = seed_workspace_scenarios(workspace_env, [scenario])
-    repository = repository_for_scenario_db(db_path)
+    archive = archive_for_scenario_db(db_path)
     try:
-        with open_connection(db_path) as conn:
-            assert_conversation_surfaces_agree(
+        with open_index_db(db_path) as conn:
+            assert_session_surfaces_agree(
                 scenario.facts_from_connection(conn),
-                await scenario.facts_from_repository(repository),
+                await scenario.facts_from_archive(archive),
             )
     finally:
-        await repository.close()
+        await archive.close()
 
 
 @pytest.mark.asyncio()
@@ -92,12 +92,12 @@ async def test_archive_facts_compare_db_and_repository(workspace_env: Mapping[st
         ArchiveScenario(name="archive-b", provider="codex"),
     ]
     db_path, _ = seed_workspace_scenarios(workspace_env, scenarios)
-    repository = repository_for_scenario_db(db_path)
+    archive = archive_for_scenario_db(db_path)
     try:
-        with open_connection(db_path) as conn:
+        with open_index_db(db_path) as conn:
             db_facts = ArchiveFacts.from_db_connection(conn)
-        repository_facts = ArchiveFacts.from_conversations(await repository.list(limit=None))
+        repository_facts = ArchiveFacts.from_sessions(await archive.list_sessions(limit=None))
     finally:
-        await repository.close()
+        await archive.close()
 
     assert_same_archive_facts(db_facts, repository_facts)

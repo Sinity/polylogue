@@ -13,14 +13,14 @@ from polylogue.ui.tui.app import PolylogueApp
 from polylogue.ui.tui.widgets.stats import StatCard
 
 if TYPE_CHECKING:
-    from polylogue.storage.repository import ConversationRepository
-    from tests.infra.storage_records import ConversationBuilder
+    from polylogue.storage.repository import SessionRepository
+    from tests.infra.storage_records import SessionBuilder
 
-ConversationBuilderFactory = Callable[[str], "ConversationBuilder"]
+SessionBuilderFactory = Callable[[str], "SessionBuilder"]
 DashboardAutopilot = Callable[[Pilot[object]], Coroutine[Any, Any, None]]
 
 
-def _dashboard_autopilot(repository: ConversationRepository) -> DashboardAutopilot:
+def _dashboard_autopilot(repository: SessionRepository) -> DashboardAutopilot:
     async def autopilot(pilot: Pilot[object]) -> None:
         try:
             await pilot.pause()
@@ -30,11 +30,11 @@ def _dashboard_autopilot(repository: ConversationRepository) -> DashboardAutopil
             await pilot.app.workers.wait_for_complete()
             for _ in range(20):
                 await pilot.pause()
-                stat = pilot.app.query_one("#stat-conversations", StatCard)
+                stat = pilot.app.query_one("#stat-sessions", StatCard)
                 if stat.value != "Loading...":
                     break
 
-            assert pilot.app.query_one("#stat-conversations", StatCard).value == "1"
+            assert pilot.app.query_one("#stat-sessions", StatCard).value == "1"
             assert pilot.app.query_one("#stat-messages", StatCard).value == "1"
         finally:
             await repository.backend.close()
@@ -45,17 +45,17 @@ def _dashboard_autopilot(repository: ConversationRepository) -> DashboardAutopil
 
 @pytest.mark.tui
 def test_dashboard_app_launches_headless_with_real_repository(
-    storage_repository: ConversationRepository,
-    conversation_builder: ConversationBuilderFactory,
+    storage_repository: SessionRepository,
+    session_builder: SessionBuilderFactory,
 ) -> None:
-    conversation_builder("tui-smoke-1").provider("chatgpt").title("Dashboard Smoke").add_message(
+    session_builder("tui-smoke-1").provider("chatgpt").title("Dashboard Smoke").add_message(
         "m1",
         text="Dashboard launch smoke",
     ).save()
 
-    from polylogue.operations import ArchiveOperations
+    from polylogue.api import Polylogue
 
-    operations = ArchiveOperations(repository=storage_repository)
-    app = PolylogueApp(operations=operations)
+    facade = Polylogue()
+    app = PolylogueApp(polylogue=facade)
 
     app.run(headless=True, size=(100, 30), auto_pilot=_dashboard_autopilot(storage_repository))

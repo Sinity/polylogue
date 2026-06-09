@@ -4,10 +4,10 @@ Every read surface (CLI, MCP, daemon HTTP, Python API) is expected to expose
 the canonical archive read operations using the *same* request and response
 contracts:
 
-* Input: ``ConversationQuerySpec`` for query/search, or a documented
-  primitive (``provider``, ``conversation_id``, etc.) for the simpler reads.
+* Input: ``SessionQuerySpec`` for query/search, or a documented
+  primitive (``origin``, ``session_id``, etc.) for the simpler reads.
 * Output: the shared ``polylogue.surfaces.payloads`` envelopes —
-  ``ConversationListResponse``, ``FacetsResponse``, ``ArchiveStats``,
+  ``SessionListResponse``, ``FacetsResponse``, ``ArchiveStats``,
   ``DaemonStatus``, ``TagMutationResult``.
 
 The Protocols below are intentionally narrow.  They cover the read surface
@@ -17,8 +17,8 @@ additional methods; conformance only requires the methods declared here.
 
 Protocol composition is preferred over a single fat ``ReadSurface``
 protocol because not every surface implements every capability.  A surface
-may declare conformance to ``ConversationListSurface`` without also
-implementing ``ConversationStatsSurface`` (for example, an MCP tool
+may declare conformance to ``SessionListSurface`` without also
+implementing ``SessionStatsSurface`` (for example, an MCP tool
 subset).  The composite ``ReadSurface`` is supplied for callers that need
 the full union.
 """
@@ -27,60 +27,60 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from polylogue.archive.query.spec import ConversationQuerySpec
+from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.daemon.status import DaemonStatus
 from polylogue.operations import ArchiveStats
 from polylogue.surfaces.payloads import (
-    ConversationListResponse,
     FacetsResponse,
+    SessionListResponse,
     TagMutationResult,
 )
 
 
 @runtime_checkable
-class ConversationListSurface(Protocol):
-    """Canonical conversation list/query contract.
+class SessionListSurface(Protocol):
+    """Canonical session list/query contract.
 
-    Implementations accept a :class:`ConversationQuerySpec` (the shared
+    Implementations accept a :class:`SessionQuerySpec` (the shared
     input contract validated by ``QuerySpecError``) and return a typed
-    :class:`ConversationListResponse` envelope (the shared output contract
+    :class:`SessionListResponse` envelope (the shared output contract
     with explicit ``items``, ``total``, ``limit``, ``offset`` fields).
     """
 
-    async def list_conversations(self, spec: ConversationQuerySpec) -> ConversationListResponse: ...
+    async def list_sessions(self, spec: SessionQuerySpec) -> SessionListResponse: ...
 
 
 @runtime_checkable
-class ConversationSearchSurface(Protocol):
-    """Canonical conversation search/hit contract.
+class SessionSearchSurface(Protocol):
+    """Canonical session search/hit contract.
 
-    Search routes through the same :class:`ConversationQuerySpec` as
+    Search routes through the same :class:`SessionQuerySpec` as
     listing — ``spec.contains_terms`` carries the FTS terms.  The
-    envelope is the same :class:`ConversationListResponse`; surfaces that
+    envelope is the same :class:`SessionListResponse`; surfaces that
     emit ranked search-hit-shaped rows wrap them into the canonical
-    envelope via ``ConversationSearchHitPayload.from_hit``.
+    envelope via ``SessionSearchHitPayload.from_hit``.
     """
 
-    async def search_conversations(self, spec: ConversationQuerySpec) -> ConversationListResponse: ...
+    async def search_sessions(self, spec: SessionQuerySpec) -> SessionListResponse: ...
 
 
 @runtime_checkable
-class ConversationTagsSurface(Protocol):
+class SessionTagsSurface(Protocol):
     """Canonical tag listing contract.
 
-    ``list_tags`` returns ``{tag: conversation_count}`` for the optionally
-    provider-scoped archive.  The mapping shape is shared verbatim across
+    ``list_tags`` returns ``{tag: session_count}`` for the optionally
+    origin-scoped archive.  The mapping shape is shared verbatim across
     CLI, MCP, and Python API.
     """
 
-    async def list_tags(self, *, provider: str | None = None) -> dict[str, int]: ...
+    async def list_tags(self, *, origin: str | None = None) -> dict[str, int]: ...
 
 
 @runtime_checkable
-class ConversationStatsSurface(Protocol):
+class SessionStatsSurface(Protocol):
     """Canonical archive-wide stats contract.
 
-    Returns the typed :class:`ArchiveStats` (counts, per-provider counts,
+    Returns the typed :class:`ArchiveStats` (counts, per-origin counts,
     last-updated timestamps).  Every surface that exposes archive stats
     consumes the same model.
     """
@@ -93,11 +93,11 @@ class FacetsSurface(Protocol):
     """Canonical facets contract.
 
     Returns the typed :class:`FacetsResponse` envelope.  Facets are an
-    aggregation projection over the archive — providers, tags, repos,
+    aggregation projection over the archive — origins, tags, repos,
     cwd prefixes, message_types, action_types, has_flags, time range.
     """
 
-    async def facets(self, spec: ConversationQuerySpec | None = None) -> FacetsResponse: ...
+    async def facets(self, spec: SessionQuerySpec | None = None) -> FacetsResponse: ...
 
 
 @runtime_checkable
@@ -125,17 +125,17 @@ class TagMutationSurface(Protocol):
     role, daemon read role) simply do not implement this protocol.
     """
 
-    async def add_tag(self, conversation_id: str, tag: str) -> TagMutationResult: ...
+    async def add_tag(self, session_id: str, tag: str) -> TagMutationResult: ...
 
-    async def remove_tag(self, conversation_id: str, tag: str) -> TagMutationResult: ...
+    async def remove_tag(self, session_id: str, tag: str) -> TagMutationResult: ...
 
 
 @runtime_checkable
 class ReadSurface(
-    ConversationListSurface,
-    ConversationSearchSurface,
-    ConversationTagsSurface,
-    ConversationStatsSurface,
+    SessionListSurface,
+    SessionSearchSurface,
+    SessionTagsSurface,
+    SessionStatsSurface,
     Protocol,
 ):
     """Composite read-surface contract.
@@ -147,10 +147,10 @@ class ReadSurface(
 
 
 __all__ = [
-    "ConversationListSurface",
-    "ConversationSearchSurface",
-    "ConversationStatsSurface",
-    "ConversationTagsSurface",
+    "SessionListSurface",
+    "SessionSearchSurface",
+    "SessionStatsSurface",
+    "SessionTagsSurface",
     "DaemonStatusSurface",
     "FacetsSurface",
     "ReadSurface",

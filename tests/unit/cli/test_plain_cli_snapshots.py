@@ -4,7 +4,7 @@ These pin the column layout, heading shape, and ordering of the
 ``polylogue --plain`` text surfaces exposed to scripts and users that pipe
 the CLI into other tools. The matrix covers:
 
-- ``list``: per-conversation rows (provider, id, title, date columns)
+- ``list``: per-session rows (provider, id, title, date columns)
 - ``count``: single integer
 - ``stats``: aggregate summary
 
@@ -15,9 +15,9 @@ comparison. A snapshot diff caused by a change in those fields is the test
 asserting against the wrong thing — the fix is to extend ``_redact`` below,
 not to update the baseline.
 
-The conversations are seeded via the ``corpus_seeded_db`` fixture (real
+The sessions are seeded via the ``corpus_seeded_db`` fixture (real
 synthetic pipeline output), so any user-visible drift in rendering of real
-conversation rows triggers a snapshot diff.
+session rows triggers a snapshot diff.
 """
 
 from __future__ import annotations
@@ -58,25 +58,16 @@ def runner() -> CliRunner:
 def seeded_db_env(
     corpus_seeded_db: Callable[..., Path],
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
 ) -> Path:
-    """Seed a deterministic corpus DB and wire env vars so the CLI finds it.
+    """Seed a deterministic corpus DB through the archive pipeline.
 
-    Returns the seeded DB path so individual tests can pass it to commands
-    that accept ``--db`` if they need to. The default code path (no flag)
-    resolves the DB from ``XDG_DATA_HOME``.
+    ``corpus_seeded_db`` ingests synthetic sessions into the archive
+    archive and points ``POLYLOGUE_ARCHIVE_ROOT`` at the root that
+    holds the seeded ``index.db`` — exactly the store the CLI query verbs
+    read — so no XDG/symlink staging is required. Returns the index db path.
     """
     db_path = corpus_seeded_db(providers=("chatgpt",), count=2, seed=42)
-
-    # Wire XDG to a layout that resolves polylogue.db at our seeded path.
-    data_home = tmp_path / "xdg-cli-data"
-    target = data_home / "polylogue" / "polylogue.db"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.symlink_to(db_path)
-
-    monkeypatch.setenv("XDG_DATA_HOME", str(data_home))
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
-    monkeypatch.delenv("POLYLOGUE_ARCHIVE_ROOT", raising=False)
     return db_path
 
 
@@ -116,13 +107,13 @@ def test_plain_stats_snapshot(
     assert output == snapshot
 
 
-def test_plain_list_provider_filter_snapshot(
+def test_plain_list_origin_filter_snapshot(
     runner: CliRunner,
     seeded_db_env: Path,
     snapshot: object,
 ) -> None:
-    """``polylogue --plain -p chatgpt list`` pins filtered list shape."""
-    output = _invoke(runner, ["--plain", "-p", "chatgpt", "list"])
+    """``polylogue --plain --origin chatgpt-export list`` pins filtered list shape."""
+    output = _invoke(runner, ["--plain", "--origin", "chatgpt-export", "list"])
     assert output == snapshot
 
 

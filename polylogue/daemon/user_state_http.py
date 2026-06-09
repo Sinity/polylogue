@@ -7,7 +7,7 @@ import json
 from http import HTTPStatus
 from typing import Any, cast
 
-from polylogue.archive.query.spec import ConversationQuerySpec
+from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.core.user_state_targets import TARGET_KIND_NAMES
 
 
@@ -43,9 +43,9 @@ def _saved_view_payload(row: dict[str, str]) -> dict[str, object]:
 
 def _recall_pack_payload(row: dict[str, str]) -> dict[str, object]:
     try:
-        conversation_ids = json.loads(row["conversation_ids_json"])
+        session_ids = json.loads(row["session_ids_json"])
     except json.JSONDecodeError:
-        conversation_ids = []
+        session_ids = []
     try:
         payload = json.loads(row["payload_json"])
     except json.JSONDecodeError:
@@ -53,7 +53,7 @@ def _recall_pack_payload(row: dict[str, str]) -> dict[str, object]:
     return {
         "pack_id": row["pack_id"],
         "label": row["label"],
-        "conversation_ids": conversation_ids,
+        "session_ids": session_ids,
         "payload": payload,
         "created_at": row["created_at"],
     }
@@ -161,7 +161,7 @@ def dispatch_delete(handler: Any, path: list[str], params: dict[str, list[str]])
 
 def handle_list_marks(handler: Any, params: dict[str, list[str]]) -> None:
     mark_type = handler._get_param(params, "mark_type")
-    conversation_id = handler._get_param(params, "conversation_id")
+    session_id = handler._get_param(params, "session_id")
     target_type = handler._get_param(params, "target_type")
     target_id = handler._get_param(params, "target_id")
     message_id = handler._get_param(params, "message_id")
@@ -171,7 +171,7 @@ def handle_list_marks(handler: Any, params: dict[str, list[str]]) -> None:
             list[dict[str, str]],
             await poly.list_marks(
                 mark_type=mark_type,
-                conversation_id=conversation_id,
+                session_id=session_id,
                 target_type=target_type,
                 target_id=target_id,
                 message_id=message_id,
@@ -186,12 +186,12 @@ def handle_create_mark(handler: Any) -> None:
     body = _read_json_body(handler)
     if body is None:
         return
-    conversation_id = str(body.get("conversation_id") or "")
+    session_id = str(body.get("session_id") or "")
     mark_type = str(body.get("mark_type") or "")
-    target_type = str(body.get("target_type") or "conversation")
+    target_type = str(body.get("target_type") or "session")
     target_id = str(body.get("target_id") or "") or None
     message_id = str(body.get("message_id") or "") or None
-    if not conversation_id or mark_type not in {"star", "pin", "archive"}:
+    if not session_id or mark_type not in {"star", "pin", "archive"}:
         handler._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
         return
     if target_type not in TARGET_KIND_NAMES:
@@ -200,7 +200,7 @@ def handle_create_mark(handler: Any) -> None:
 
     async def _create(poly: Any) -> dict[str, object]:
         created = await poly.add_mark(
-            conversation_id,
+            session_id,
             mark_type,
             target_type=target_type,
             target_id=target_id,
@@ -208,8 +208,8 @@ def handle_create_mark(handler: Any) -> None:
         )
         return {
             "target_type": target_type,
-            "target_id": target_id or message_id or conversation_id,
-            "conversation_id": conversation_id,
+            "target_id": target_id or message_id or session_id,
+            "session_id": session_id,
             "message_id": message_id,
             "mark_type": mark_type,
             "created": created,
@@ -220,27 +220,27 @@ def handle_create_mark(handler: Any) -> None:
 
 
 def handle_delete_mark(handler: Any, params: dict[str, list[str]]) -> None:
-    conversation_id = handler._get_param(params, "conversation_id")
+    session_id = handler._get_param(params, "session_id")
     mark_type = handler._get_param(params, "mark_type")
-    target_type = handler._get_param(params, "target_type", "conversation")
+    target_type = handler._get_param(params, "target_type", "session")
     target_id = handler._get_param(params, "target_id")
     message_id = handler._get_param(params, "message_id")
-    if not conversation_id or not mark_type:
+    if not session_id or not mark_type:
         handler._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
         return
 
     async def _delete(poly: Any) -> dict[str, object]:
         deleted = await poly.remove_mark(
-            conversation_id,
+            session_id,
             mark_type,
-            target_type=target_type or "conversation",
+            target_type=target_type or "session",
             target_id=target_id,
             message_id=message_id,
         )
         return {
-            "target_type": target_type or "conversation",
-            "target_id": target_id or message_id or conversation_id,
-            "conversation_id": conversation_id,
+            "target_type": target_type or "session",
+            "target_id": target_id or message_id or session_id,
+            "session_id": session_id,
             "message_id": message_id,
             "mark_type": mark_type,
             "deleted": deleted,
@@ -250,7 +250,7 @@ def handle_delete_mark(handler: Any, params: dict[str, list[str]]) -> None:
 
 
 def handle_list_annotations(handler: Any, params: dict[str, list[str]]) -> None:
-    conversation_id = handler._get_param(params, "conversation_id")
+    session_id = handler._get_param(params, "session_id")
     target_type = handler._get_param(params, "target_type")
     target_id = handler._get_param(params, "target_id")
     message_id = handler._get_param(params, "message_id")
@@ -259,7 +259,7 @@ def handle_list_annotations(handler: Any, params: dict[str, list[str]]) -> None:
         return cast(
             list[dict[str, str]],
             await poly.list_annotations(
-                conversation_id=conversation_id,
+                session_id=session_id,
                 target_type=target_type,
                 target_id=target_id,
                 message_id=message_id,
@@ -285,24 +285,24 @@ def handle_save_annotation(handler: Any) -> None:
     body = _read_json_body(handler)
     if body is None:
         return
-    conversation_id = str(body.get("conversation_id") or "")
-    target_type = str(body.get("target_type") or "conversation")
+    session_id = str(body.get("session_id") or "")
+    target_type = str(body.get("target_type") or "session")
     target_id = str(body.get("target_id") or "") or None
     message_id = str(body.get("message_id") or "") or None
     note_text = str(body.get("note_text") or "")
-    if not conversation_id or not note_text.strip():
+    if not session_id or not note_text.strip():
         handler._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
         return
     if target_type not in TARGET_KIND_NAMES:
         handler._send_error(HTTPStatus.BAD_REQUEST, "invalid_target_type")
         return
-    resolved_target_id = target_id or message_id or conversation_id
+    resolved_target_id = target_id or message_id or session_id
     annotation_id = str(body.get("annotation_id") or _default_annotation_id(target_type, resolved_target_id, note_text))
 
     async def _save(poly: Any) -> dict[str, object]:
         created = await poly.save_annotation(
             annotation_id,
-            conversation_id,
+            session_id,
             note_text,
             target_type=target_type,
             target_id=target_id,
@@ -357,7 +357,7 @@ def handle_save_view(handler: Any) -> None:
         handler._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
         return
 
-    ConversationQuerySpec.from_params(query, strict=True)
+    SessionQuerySpec.from_params(query, strict=True)
     query_json = json.dumps(query, sort_keys=True, separators=(",", ":"))
     view_id = str(body.get("view_id") or _default_saved_view_id(name, query_json))
 

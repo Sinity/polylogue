@@ -6,11 +6,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from polylogue.core.enums import Origin
+from polylogue.core.sources import provider_from_origin
 from polylogue.maintenance.scope import MaintenanceScopeFilter
 from polylogue.mcp.payloads import MCPMutationStatusPayload, MCPRootPayload
 from polylogue.mcp.query_contracts import (
     MCPContentProjectionRequest,
-    MCPConversationQueryRequest,
+    MCPSessionQueryRequest,
     MCPToolLimit,
     MCPToolOffset,
 )
@@ -23,8 +25,8 @@ if TYPE_CHECKING:
 
 def _build_mcp_scope_filter(
     *,
-    conversation_ids: list[str] | None,
-    provider: str | None,
+    session_ids: list[str] | None,
+    origin: str | None,
     source_family: str | None,
     source_root: str | None,
     raw_artifact_id: str | None,
@@ -49,8 +51,8 @@ def _build_mcp_scope_filter(
         time_range = None
 
     return MaintenanceScopeFilter(
-        conversation_ids=tuple(conversation_ids) if conversation_ids else None,
-        provider=provider,
+        session_ids=tuple(session_ids) if session_ids else None,
+        provider=provider_from_origin(Origin(origin)).value if origin is not None else None,
         source_family=source_family,
         source_root=Path(source_root) if source_root else None,
         raw_artifact_id=raw_artifact_id,
@@ -64,8 +66,8 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def maintenance_preview(
         targets: list[str] | None = None,
-        conversation_ids: list[str] | None = None,
-        provider: str | None = None,
+        session_ids: list[str] | None = None,
+        origin: str | None = None,
         source_family: str | None = None,
         source_root: str | None = None,
         raw_artifact_id: str | None = None,
@@ -80,7 +82,7 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         result shape is byte-for-byte identical to the CLI ``polylogue
         maintenance plan --output-format json`` and the daemon HTTP
         ``POST /api/maintenance/plan`` responses. The scope-filter
-        parameters mirror the CLI ``--conversation-id``, ``--provider``,
+        parameters mirror the CLI ``--session-id``, ``--origin``,
         ``--source-family``, ``--source-root``, ``--raw-artifact``,
         ``--since``/``--until``, ``--failure-kind``, and
         ``--parser-version`` flags.
@@ -99,8 +101,8 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             )
             resolved = tuple(targets or ())
             scope_filter = _build_mcp_scope_filter(
-                conversation_ids=conversation_ids,
-                provider=provider,
+                session_ids=session_ids,
+                origin=origin,
                 source_family=source_family,
                 source_root=source_root,
                 raw_artifact_id=raw_artifact_id,
@@ -119,8 +121,8 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     async def maintenance_execute(
         targets: list[str] | None = None,
         dry_run: bool = False,
-        conversation_ids: list[str] | None = None,
-        provider: str | None = None,
+        session_ids: list[str] | None = None,
+        origin: str | None = None,
         source_family: str | None = None,
         source_root: str | None = None,
         raw_artifact_id: str | None = None,
@@ -151,8 +153,8 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             )
             resolved = tuple(targets or ())
             scope_filter = _build_mcp_scope_filter(
-                conversation_ids=conversation_ids,
-                provider=provider,
+                session_ids=session_ids,
+                origin=origin,
                 source_family=source_family,
                 source_root=source_root,
                 raw_artifact_id=raw_artifact_id,
@@ -251,9 +253,9 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def rebuild_index() -> str:
         async def run() -> str:
-            ops = hooks.get_archive_ops()
-            success = await ops.rebuild_index()
-            status_info = await ops.get_index_status()
+            poly = hooks.get_polylogue()
+            success = await poly.rebuild_index()
+            status_info = await poly.get_index_status()
             index_exists_value = status_info.get("exists", False)
             indexed_messages_value = status_info.get("count", 0)
             return hooks.json_payload(
@@ -268,14 +270,13 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         return await hooks.async_safe_call("rebuild_index", run)
 
     @mcp.tool()
-    async def update_index(conversation_ids: list[str]) -> str:
+    async def update_index(session_ids: list[str]) -> str:
         async def run() -> str:
-            ops = hooks.get_archive_ops()
-            success = await ops.update_index(conversation_ids)
+            success = await hooks.get_polylogue().update_index(session_ids)
             return hooks.json_payload(
                 MCPMutationStatusPayload(
                     status="ok" if success else "failed",
-                    conversation_count=len(conversation_ids),
+                    session_count=len(session_ids),
                 ),
                 exclude_none=True,
             )
@@ -283,7 +284,7 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         return await hooks.async_safe_call("update_index", run)
 
     @mcp.tool()
-    async def export_conversation(
+    async def export_session(
         id: str,
         format: str = "markdown",
         no_code_blocks: bool = False,
@@ -293,7 +294,7 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         prose_only: bool = False,
     ) -> str:
         async def run() -> str:
-            from polylogue.rendering.formatting import format_conversation, normalize_conversation_output_format
+            from polylogue.rendering.formatting import format_session, normalize_session_output_format
 
             projection = MCPContentProjectionRequest(
                 no_code_blocks=no_code_blocks,
@@ -304,24 +305,24 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             ).build_projection()
 
             poly = hooks.get_polylogue()
-            conv = await poly.get_conversation(id, content_projection=projection)
+            conv = await poly.get_session(id, content_projection=projection)
             if conv is None:
-                return hooks.error_json(f"Conversation not found: {id}", code="not_found")
-            fmt = normalize_conversation_output_format(format)
-            return format_conversation(conv, fmt, None, content_projection=projection)
+                return hooks.error_json(f"Session not found: {id}", code="not_found")
+            fmt = normalize_session_output_format(format)
+            return format_session(conv, fmt, None, content_projection=projection)
 
-        return await hooks.async_safe_call("export_conversation", run)
+        return await hooks.async_safe_call("export_session", run)
 
     @mcp.tool()
-    async def rebuild_session_insights(conversation_ids: list[str] | None = None) -> str:
+    async def rebuild_session_insights(session_ids: list[str] | None = None) -> str:
         async def run() -> str:
             poly = hooks.get_polylogue()
-            counts = await poly.rebuild_insights(conversation_ids=conversation_ids)
+            counts = await poly.rebuild_insights(session_ids=session_ids)
             return hooks.json_payload(
                 MCPRootPayload(
                     root={
                         "status": "ok",
-                        "conversation_count": len(conversation_ids) if conversation_ids is not None else None,
+                        "session_count": len(session_ids) if session_ids is not None else None,
                         "counts": counts.to_dict(),
                         "total": counts.total(),
                     }
@@ -338,7 +339,7 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         limit: MCPToolLimit = 10,
         offset: MCPToolOffset = 0,
         retrieval_lane: str | None = None,
-        provider: str | None = None,
+        origin: str | None = None,
         since: str | None = None,
         tag: str | None = None,
         title: str | None = None,
@@ -361,13 +362,13 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         prose_only: bool = False,
     ) -> str:
         async def run() -> str:
-            from polylogue.rendering.formatting import format_conversation, normalize_conversation_output_format
+            from polylogue.rendering.formatting import format_session, normalize_session_output_format
 
-            fmt = normalize_conversation_output_format(format)
-            spec = MCPConversationQueryRequest(
+            fmt = normalize_session_output_format(format)
+            spec = MCPSessionQueryRequest(
                 query=query,
                 retrieval_lane=retrieval_lane,
-                provider=provider,
+                origin=origin,
                 since=since,
                 tag=tag,
                 title=title,
@@ -393,20 +394,20 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 no_file_reads=no_file_reads,
                 prose_only=prose_only,
             ).build_projection()
-            conversations = await hooks.get_archive_ops().query_conversations(spec, content_projection=projection)
+            sessions = await spec.list(hooks.get_config())
             return hooks.json_payload(
                 MCPRootPayload(
                     root={
-                        "count": len(conversations),
+                        "count": len(sessions),
                         "format": fmt,
                         "exports": [
                             {
-                                "conversation_id": str(conversation.id),
-                                "provider": str(conversation.provider),
-                                "title": conversation.display_title,
-                                "content": format_conversation(conversation, fmt, None, content_projection=projection),
+                                "session_id": str(session.id),
+                                "origin": session.origin.value,
+                                "title": session.display_title,
+                                "content": format_session(session, fmt, None, content_projection=projection),
                             }
-                            for conversation in conversations
+                            for session in sessions
                         ],
                     }
                 )

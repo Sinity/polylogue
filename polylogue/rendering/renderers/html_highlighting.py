@@ -59,7 +59,7 @@ class PygmentsHighlighter:
 
 
 class HTMLMessageRenderer:
-    """Markdown-to-HTML renderer used inside the HTML conversation renderer."""
+    """Markdown-to-HTML renderer used inside the HTML session renderer."""
 
     def __init__(self, highlighter: PygmentsHighlighter | None = None) -> None:
         self.highlighter = highlighter or PygmentsHighlighter()

@@ -1,0 +1,13 @@
+Usage: polylogue insights tool-usage [OPTIONS]
+
+  Per-tool, per-origin rollups over canonical actions with coverage map.
+
+Options:
+  --tool TEXT          Only entries for this normalized tool name
+  --mcp-server TEXT    Only entries for this MCP server prefix
+  --action-kind TEXT   Only entries for this action_kind value (e.g.
+                       file_read, shell)
+  -l, --limit INTEGER  Maximum rows  [default: 200]
+  --offset INTEGER     Start offset  [default: 0]
+  -f, --format [json]  Output format
+  -h, --help           Show this message and exit.

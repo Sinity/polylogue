@@ -10,9 +10,21 @@ import pytest
 
 from polylogue.core.json import JSONDocument
 from polylogue.daemon import status as status_module
-from polylogue.daemon.status import build_daemon_status, daemon_status_payload, format_daemon_status_lines
+from polylogue.daemon.status import (
+    _insight_freshness_info,
+    build_daemon_status,
+    daemon_status_payload,
+    format_daemon_status_lines,
+)
 from polylogue.daemon.status_snapshot import get_status_snapshot_payload, refresh_status_snapshot
 from polylogue.sources.live.cursor import CursorStore
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database, initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.ops_write import (
+    record_daemon_stage_event,
+    record_ingest_attempt,
+    upsert_ingest_cursor,
+)
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.frozen_clock import FrozenClock
 
 
@@ -37,9 +49,9 @@ def test_status_snapshot_refresh_default_stays_request_safe(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     db.touch()
-    monkeypatch.setattr("polylogue.daemon.status_snapshot.db_path", lambda: db)
+    monkeypatch.setattr("polylogue.daemon.status_snapshot.active_index_db_path", lambda: db)
     monkeypatch.setattr(
         "polylogue.daemon.status.daemon_status_payload",
         lambda: (_ for _ in ()).throw(AssertionError("periodic snapshot must not build rich status")),
@@ -53,8 +65,31 @@ def test_status_snapshot_refresh_default_stays_request_safe(
     assert snapshot.payload["db_path"] == str(db)
 
 
+def test_status_snapshot_refresh_default_prefers_archive(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_home = workspace_env["data_root"] / "polylogue"
+    archive_root = workspace_env["archive_root"]
+    data_home.mkdir(parents=True, exist_ok=True)
+    archive_root.mkdir(parents=True, exist_ok=True)
+    db_anchor = data_home / "index.db"
+    archive_db = archive_root / "index.db"
+    db_anchor.touch()
+    archive_db.touch()
+    monkeypatch.setattr(
+        "polylogue.daemon.status.daemon_status_payload",
+        lambda: (_ for _ in ()).throw(AssertionError("periodic snapshot must not build rich status")),
+    )
+
+    snapshot = refresh_status_snapshot()
+
+    assert snapshot.payload["db_path"] == str(archive_db)
+
+
 def test_build_daemon_status_reports_failed_live_cursor_files(tmp_path: Path) -> None:
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     failed = tmp_path / "failed.jsonl"
     failed.write_text('{"bad":true}\n')
     cursor = CursorStore(db)
@@ -79,7 +114,7 @@ def test_build_daemon_status_reports_failed_live_cursor_files(tmp_path: Path) ->
 
 
 def test_daemon_status_payload_and_plain_output_include_failed_files(tmp_path: Path) -> None:
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     failed = tmp_path / "failed.jsonl"
     failed.write_text('{"bad":true}\n')
     cursor = CursorStore(db)
@@ -110,6 +145,26 @@ def test_daemon_status_payload_and_plain_output_include_failed_files(tmp_path: P
     assert f"  {failed}" in lines
 
 
+def test_daemon_status_prefers_archive_ops_live_cursor(tmp_path: Path) -> None:
+    db = tmp_path / "index.db"
+    failed = tmp_path / "failed.jsonl"
+    failed.write_text('{"bad":true}\n')
+    cursor = CursorStore(db)
+    cursor.mark_failed(failed)
+
+    with (
+        patch("polylogue.daemon.status.db_path", return_value=db),
+        patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
+        patch("polylogue.daemon.status._blob_size_info", return_value=0),
+        patch("polylogue.daemon.status._fts_readiness_info", return_value={}),
+        patch("polylogue.daemon.status._insight_freshness_info", return_value={}),
+    ):
+        status = build_daemon_status(sources=())
+
+    assert status.live_cursor.failed_file_count == 1
+    assert status.live_cursor.failing_files[0].source_path == str(failed)
+
+
 def test_plain_daemon_status_reports_bounded_embedding_pending_messages() -> None:
     payload: JSONDocument = {
         "embedding_readiness": {
@@ -133,7 +188,7 @@ def test_plain_daemon_status_reports_bounded_embedding_pending_messages() -> Non
 
 
 def test_daemon_status_caps_failed_file_samples(tmp_path: Path) -> None:
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     cursor = CursorStore(db)
     for index in range(55):
         failed = tmp_path / f"failed-{index:02d}.jsonl"
@@ -162,7 +217,7 @@ def test_daemon_status_caps_failed_file_samples(tmp_path: Path) -> None:
 
 
 def test_daemon_status_reports_live_ingest_attempts(tmp_path: Path) -> None:
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     source = tmp_path / "session.jsonl"
     source.write_text('{"a":1}\n')
     cursor = CursorStore(db)
@@ -253,8 +308,163 @@ def test_daemon_status_reports_live_ingest_attempts(tmp_path: Path) -> None:
     assert "Catch-up: catching_up 0/1 files, read amp 0.0x" in lines
 
 
+def test_daemon_status_reads_ops_tier_from_archive_tiers(tmp_path: Path) -> None:
+    db = tmp_path / "index.db"
+    ops_db = tmp_path / "ops.db"
+    with sqlite3.connect(ops_db) as conn:
+        initialize_archive_tier(conn, ArchiveTier.OPS)
+        upsert_ingest_cursor(
+            conn,
+            source_path="/tmp/v1-source.jsonl",
+            updated_at_ms=1_700_000_000_000,
+            failure_count=2,
+            next_retry_at="2026-01-01T00:00:00+00:00",
+        )
+        record_ingest_attempt(
+            conn,
+            attempt_id="v1-attempt",
+            status="running",
+            source_path="/tmp/v1-source.jsonl",
+            origin="codex-session",
+            phase="full_parse",
+            started_at_ms=1_700_000_000_000,
+            heartbeat_at_ms=1_700_000_002_500,
+            parsed_raw_count=7,
+            materialized_count=3,
+        )
+        record_daemon_stage_event(
+            conn,
+            attempt_id="v1-attempt",
+            stage="full_parse",
+            status="running",
+            observed_at_ms=1_700_000_002_600,
+            payload={
+                "queued_file_count": 7,
+                "needed_file_count": 7,
+                "succeeded_file_count": 3,
+                "failed_file_count": 1,
+                "input_bytes": 1024,
+                "source_payload_read_bytes": 512,
+                "cursor_fingerprint_read_bytes": 256,
+                "archive_write_bytes_delta": 4096,
+                "total_time_s": 2.5,
+                "stage_timings_json": '{"full_parse": 1.25, "convergence": 0.75}',
+                "current_source": "codex-session",
+                "current_path": "/tmp/v1-source.jsonl",
+                "storage_route": "archive_full",
+                "storage_tiers": "source,index",
+                "payload_available_file_count": 6,
+                "payload_unavailable_file_count": 1,
+                "written_raw_count": 6,
+                "rss_current_mb": 42.0,
+                "cgroup_path": "/user.slice/v1.scope",
+                "cgroup_memory_current_mb": 2048.0,
+            },
+            event_id="stage-1",
+        )
+
+    with (
+        patch("polylogue.daemon.status.db_path", return_value=db),
+        patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
+        patch("polylogue.daemon.status._blob_size_info", return_value=0),
+        patch("polylogue.daemon.status._fts_readiness_info", return_value={}),
+        patch("polylogue.daemon.status._insight_freshness_info", return_value={}),
+    ):
+        payload = daemon_status_payload(sources=())
+
+    live_cursor = payload["live_cursor"]
+    assert isinstance(live_cursor, dict)
+    assert live_cursor["tracked_file_count"] == 1
+    assert live_cursor["failed_file_count"] == 1
+    assert payload["failing_files"] == ["/tmp/v1-source.jsonl"]
+
+    attempts = payload["live_ingest_attempts"]
+    assert isinstance(attempts, dict)
+    assert attempts["running_count"] == 1
+    recent = attempts["recent"]
+    assert isinstance(recent, list)
+    latest = recent[0]
+    assert isinstance(latest, dict)
+    assert latest["attempt_id"] == "v1-attempt"
+    assert latest["phase"] == "full_parse"
+    assert latest["current_source"] == "codex-session"
+    assert latest["current_path"] == "/tmp/v1-source.jsonl"
+    assert latest["queued_file_count"] == 7
+    assert latest["succeeded_file_count"] == 3
+    assert latest["failed_file_count"] == 1
+    assert latest["total_read_bytes"] == 768
+    assert latest["read_amplification"] == 0.75
+    assert latest["archive_write_bytes_delta"] == 4096
+    assert latest["total_time_s"] == 2.5
+    assert latest["stage_timings_s"] == {"full_parse": 1.25, "convergence": 0.75}
+    assert latest["storage_route"] == "archive_full"
+    assert latest["storage_tiers"] == "source,index"
+    assert latest["payload_available_file_count"] == 6
+    assert latest["payload_unavailable_file_count"] == 1
+    assert latest["written_raw_count"] == 6
+    assert latest["rss_current_mb"] == 42.0
+    assert latest["cgroup_path"] == "/user.slice/v1.scope"
+    assert latest["cgroup_memory_current_mb"] == 2048.0
+    lines = format_daemon_status_lines(payload)
+    assert any(line.startswith("Live ingest attempts: 1 running") for line in lines)
+    assert any(line.startswith("  latest: running ") and line.endswith("full_parse 3/7 files") for line in lines)
+    assert "  storage route: archive_full (source,index), 1 payload-unavailable" in lines
+    assert "  memory: cgroup 2048.0 MiB" in lines
+
+
+def test_daemon_status_reads_ops_tier_when_archive_db_exists(tmp_path: Path) -> None:
+    db = tmp_path / "index.db"
+    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    source = tmp_path / "session.jsonl"
+    source.write_text('{"a":1}\n')
+    cursor = CursorStore(db)
+    attempt_id = cursor.begin_ingest_attempt(paths=[source], input_bytes=source.stat().st_size, queued_file_count=1)
+    cursor.update_ingest_attempt(
+        attempt_id,
+        phase="legacy_phase",
+        current_source="legacy-source",
+        current_path=source,
+    )
+
+    ops_db = tmp_path / "ops.db"
+    with sqlite3.connect(ops_db) as conn:
+        record_ingest_attempt(
+            conn,
+            attempt_id=attempt_id,
+            status="running",
+            source_path="/tmp/v1-preferred.jsonl",
+            origin="codex-session",
+            phase="archive_phase",
+            started_at_ms=1_700_000_000_000,
+            heartbeat_at_ms=1_700_000_001_000,
+            parsed_raw_count=9,
+            materialized_count=4,
+        )
+
+    with (
+        patch("polylogue.daemon.status.db_path", return_value=db),
+        patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
+        patch("polylogue.daemon.status._blob_size_info", return_value=0),
+        patch("polylogue.daemon.status._fts_readiness_info", return_value={}),
+        patch("polylogue.daemon.status._insight_freshness_info", return_value={}),
+    ):
+        payload = daemon_status_payload(sources=())
+
+    attempts = payload["live_ingest_attempts"]
+    assert isinstance(attempts, dict)
+    recent = attempts["recent"]
+    assert isinstance(recent, list)
+    latest = recent[0]
+    assert isinstance(latest, dict)
+    assert latest["phase"] == "archive_phase"
+    assert latest["current_source"] == "codex-session"
+    assert latest["current_path"] == "/tmp/v1-preferred.jsonl"
+    assert latest["queued_file_count"] == 9
+    assert latest["succeeded_file_count"] == 4
+
+
 def test_daemon_status_reports_convergence_debt_separately(tmp_path: Path) -> None:
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     source = tmp_path / "session.jsonl"
     source.write_text('{"a":1}\n')
     cursor = CursorStore(db)
@@ -292,8 +502,33 @@ def test_daemon_status_reports_convergence_debt_separately(tmp_path: Path) -> No
     assert "  insights: 1 failed, 0 retry due" in lines
 
 
+def test_archive_storage_info_uses_configured_archive_root(tmp_path: Path) -> None:
+    default_root = tmp_path / "default"
+    active_root = tmp_path / "active"
+    default_root.mkdir()
+    active_root.mkdir()
+    initialize_archive_database(default_root / "ops.db", ArchiveTier.OPS)
+    db_anchor = active_root / "custom.sqlite"
+    db_anchor.touch()
+
+    with (
+        patch("polylogue.daemon.status.archive_root", return_value=default_root),
+        patch("polylogue.daemon.status.db_path", return_value=db_anchor),
+        patch("polylogue.daemon.status.index_db_path", return_value=default_root / "index.db"),
+    ):
+        storage = status_module._archive_storage_info()
+
+    assert storage.archive_root == str(default_root)
+    assert storage.configured_archive_root == str(default_root)
+    assert storage.archive_root_matches_configured is True
+    assert storage.active_db_path == str(default_root / "index.db")
+    assert storage.active_store == "empty"
+    assert storage.present_tiers == ["ops"]
+    assert storage.missing_tiers == ["source", "index", "embeddings", "user"]
+
+
 def test_daemon_status_payload_reuses_bounded_probe_results(tmp_path: Path) -> None:
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     db.touch()
     db_info = Mock(
         return_value={
@@ -304,7 +539,7 @@ def test_daemon_status_payload_reuses_bounded_probe_results(tmp_path: Path) -> N
         }
     )
     blob_info = Mock(return_value=0)
-    fts_info = Mock(return_value={"messages_ready": True, "action_events_ready": True})
+    fts_info = Mock(return_value={"messages_ready": True})
     freshness_info = Mock(return_value={"sessions_with_profiles": 3, "total_sessions": 4})
 
     with (
@@ -325,7 +560,6 @@ def test_daemon_status_payload_reuses_bounded_probe_results(tmp_path: Path) -> N
     fts_readiness = payload["fts_readiness"]
     assert isinstance(fts_readiness, dict)
     assert fts_readiness["messages_ready"] is True
-    assert fts_readiness["action_events_ready"] is True
     assert db_info.call_count == 1
     assert blob_info.call_count == 1
     assert fts_info.call_count == 1
@@ -335,13 +569,45 @@ def test_daemon_status_payload_reuses_bounded_probe_results(tmp_path: Path) -> N
     assert freshness_info.call_count >= 1
 
 
+def test_insight_freshness_reads_archive_file_set_from_archive_tiers(tmp_path: Path) -> None:
+    db_anchor = tmp_path / "custom.sqlite"
+    archive_db = tmp_path / "index.db"
+    initialize_archive_database(archive_db, ArchiveTier.INDEX)
+    with sqlite3.connect(archive_db) as conn:
+        conn.execute(
+            "INSERT INTO sessions (native_id, origin, content_hash) VALUES (?, ?, ?)",
+            ("native-1", "codex-session", bytes(32)),
+        )
+        conn.execute(
+            "INSERT INTO sessions (native_id, origin, content_hash) VALUES (?, ?, ?)",
+            ("native-2", "codex-session", bytes(32)),
+        )
+        conn.execute(
+            """
+            INSERT INTO session_profiles (
+                session_id, workflow_shape, search_text
+            ) VALUES (?, ?, ?)
+            """,
+            ("codex-session:native-1", "debugging", "profile"),
+        )
+        conn.commit()
+
+    with (
+        patch("polylogue.daemon.status.db_path", return_value=db_anchor),
+        patch("polylogue.daemon.status.index_db_path", return_value=archive_db),
+    ):
+        assert _insight_freshness_info() == {
+            "sessions_with_profiles": 1,
+            "total_sessions": 2,
+        }
+
+
 def test_daemon_status_fts_readiness_uses_lightweight_table_probe(tmp_path: Path) -> None:
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     with sqlite3.connect(db) as conn:
         conn.executescript(
             """
             CREATE TABLE messages_fts (text TEXT);
-            CREATE TABLE action_events_fts (text TEXT);
             """
         )
 
@@ -349,31 +615,93 @@ def test_daemon_status_fts_readiness_uses_lightweight_table_probe(tmp_path: Path
         readiness = status_module._fts_readiness_info()
 
     assert readiness["messages_ready"] is False
-    assert readiness["action_events_ready"] is False
     assert readiness["invariant_ready"] is False
 
 
+def test_daemon_status_fts_readiness_reads_archive_file_set_from_archive_tiers(tmp_path: Path) -> None:
+    db_anchor = tmp_path / "index.db"
+    archive_db = tmp_path / "index.db"
+    initialize_archive_database(archive_db, ArchiveTier.INDEX)
+    with sqlite3.connect(archive_db) as conn:
+        conn.execute(
+            "INSERT INTO sessions (native_id, origin, content_hash) VALUES (?, ?, ?)",
+            ("native-1", "codex-session", bytes(32)),
+        )
+        conn.execute(
+            """
+            INSERT INTO messages (
+                session_id, native_id, position, role, message_type, content_hash
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("codex-session:native-1", "message-1", 0, "user", "message", bytes(32)),
+        )
+        conn.execute(
+            """
+            INSERT INTO blocks (message_id, session_id, position, block_type, text)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            ("codex-session:native-1:message-1", "codex-session:native-1", 0, "text", "needle"),
+        )
+        conn.commit()
+
+    with patch("polylogue.daemon.status.db_path", return_value=db_anchor):
+        readiness = status_module._fts_readiness_info()
+
+    assert readiness["indexed_surface"] == "messages_fts"
+    assert readiness["messages_ready"] is True
+    assert readiness["invariant_ready"] is True
+    assert readiness["coverage_exact"] is False
+    surfaces = readiness["surfaces"]
+    assert isinstance(surfaces, dict)
+    blocks = surfaces["messages_fts"]
+    assert isinstance(blocks, dict)
+    assert blocks["source_exists"] is True
+    assert blocks["exists"] is True
+    assert blocks["triggers_present"] is True
+    assert blocks["ready"] is True
+
+
+def test_daemon_status_fts_readiness_prefers_archive_when_present(tmp_path: Path) -> None:
+    db_anchor = tmp_path / "custom.sqlite"
+    archive_db = tmp_path / "index.db"
+    with sqlite3.connect(db_anchor) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE messages (text TEXT);
+            CREATE TABLE messages_fts (text TEXT);
+            """
+        )
+    initialize_archive_database(archive_db, ArchiveTier.INDEX)
+
+    with (
+        patch("polylogue.daemon.status.db_path", return_value=db_anchor),
+        patch("polylogue.daemon.status.index_db_path", return_value=archive_db),
+    ):
+        readiness = status_module._fts_readiness_info()
+
+    assert readiness["indexed_surface"] == "messages_fts"
+    assert readiness["messages_ready"] is True
+    assert readiness["invariant_ready"] is True
+    surfaces = readiness["surfaces"]
+    assert isinstance(surfaces, dict)
+    assert set(surfaces) == {"messages_fts"}
+
+
 def test_daemon_status_fts_readiness_uses_bounded_structural_probes(tmp_path: Path) -> None:
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     queries: list[str] = []
     with sqlite3.connect(db) as conn:
         conn.executescript(
             """
-            CREATE TABLE messages (text TEXT);
-            CREATE TABLE conversation_stats (conversation_id TEXT PRIMARY KEY, message_count INTEGER NOT NULL);
+            CREATE TABLE blocks (text TEXT);
+            CREATE TABLE sessions (session_id TEXT PRIMARY KEY, message_count INTEGER NOT NULL);
             CREATE TABLE messages_fts (text TEXT);
             CREATE TABLE messages_fts_docsize (id INTEGER PRIMARY KEY, sz BLOB);
-            CREATE TRIGGER messages_fts_ai AFTER INSERT ON messages BEGIN SELECT 1; END;
-            CREATE TRIGGER messages_fts_ad AFTER DELETE ON messages BEGIN SELECT 1; END;
-            CREATE TRIGGER messages_fts_au AFTER UPDATE ON messages BEGIN SELECT 1; END;
-            CREATE TABLE action_events (event_id TEXT);
-            CREATE TABLE action_events_fts (text TEXT);
-            CREATE TABLE action_events_fts_docsize (id INTEGER PRIMARY KEY, sz BLOB);
-            CREATE TRIGGER action_events_fts_ai AFTER INSERT ON action_events BEGIN SELECT 1; END;
-            CREATE TRIGGER action_events_fts_ad AFTER DELETE ON action_events BEGIN SELECT 1; END;
-            CREATE TRIGGER action_events_fts_au AFTER UPDATE ON action_events BEGIN SELECT 1; END;
-            INSERT INTO conversation_stats VALUES ('c1', 2), ('c2', 3);
-            INSERT INTO messages(rowid, text) VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd'), (5, 'e');
+            CREATE TRIGGER messages_fts_ai AFTER INSERT ON blocks BEGIN SELECT 1; END;
+            CREATE TRIGGER messages_fts_ad AFTER DELETE ON blocks BEGIN SELECT 1; END;
+            CREATE TRIGGER messages_fts_au AFTER UPDATE ON blocks BEGIN SELECT 1; END;
+            INSERT INTO sessions VALUES ('c1', 2), ('c2', 3);
+            INSERT INTO blocks(rowid, text) VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd'), (5, 'e');
             INSERT INTO messages_fts_docsize VALUES (1, x''), (2, x''), (3, x''), (4, x''), (5, x'');
             """
         )
@@ -392,30 +720,42 @@ def test_daemon_status_fts_readiness_uses_bounded_structural_probes(tmp_path: Pa
         readiness = status_module._fts_readiness_info()
 
     assert readiness["messages_ready"] is True
-    assert readiness["action_events_ready"] is True
     assert readiness["invariant_ready"] is True
     assert readiness["coverage_exact"] is False
-    assert all("COUNT(*) FROM messages" not in query for query in queries)
+    assert all("COUNT(*) FROM blocks" not in query for query in queries)
     assert all("COUNT(*) FROM messages_fts_docsize" not in query for query in queries)
     assert all("LEFT JOIN messages_fts_docsize" not in query for query in queries)
 
 
 def test_fts_readiness_exact_detects_missing_docsize_row(tmp_path: Path) -> None:
     from polylogue.daemon.fts_status import fts_readiness_info
-    from polylogue.storage.sqlite.connection import open_connection
 
-    db_path = tmp_path / "polylogue.db"
-    with open_connection(db_path) as conn:
+    db_path = tmp_path / "index.db"
+    initialize_archive_database(db_path, ArchiveTier.INDEX)
+    with sqlite3.connect(db_path) as conn:
         conn.execute(
-            "INSERT INTO conversations(conversation_id, source_name, provider_conversation_id, version) VALUES(?,?,?,1)",
-            ("conv-stale-fts", "codex", "provider-conv"),
+            "INSERT INTO sessions (native_id, origin, content_hash) VALUES (?, ?, ?)",
+            ("native-1", "codex-session", bytes(32)),
         )
         conn.execute(
-            "INSERT INTO messages(message_id, conversation_id, role, text, source_name, version) VALUES(?,?,?,?,?,1)",
-            ("msg-stale-fts", "conv-stale-fts", "user", "needle stale index", "codex"),
+            """
+            INSERT INTO messages (
+                session_id, native_id, position, role, message_type, content_hash
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("codex-session:native-1", "message-1", 0, "user", "message", bytes(32)),
         )
-        conn.commit()
-        rowid = conn.execute("SELECT rowid FROM messages WHERE message_id = ?", ("msg-stale-fts",)).fetchone()[0]
+        conn.execute(
+            """
+            INSERT INTO blocks (message_id, session_id, position, block_type, text)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            ("codex-session:native-1:message-1", "codex-session:native-1", 0, "text", "needle stale index"),
+        )
+        rowid = conn.execute(
+            "SELECT rowid FROM blocks WHERE block_id = ?",
+            ("codex-session:native-1:message-1:0",),
+        ).fetchone()[0]
         conn.execute("DELETE FROM messages_fts WHERE rowid = ?", (rowid,))
         conn.commit()
 
@@ -432,18 +772,66 @@ def test_fts_readiness_exact_detects_missing_docsize_row(tmp_path: Path) -> None
     assert messages["ready"] is False
 
 
+def test_fts_readiness_exact_detects_archive_missing_messages_fts_row(tmp_path: Path) -> None:
+    from polylogue.daemon.fts_status import fts_readiness_info
+
+    archive_db = tmp_path / "index.db"
+    initialize_archive_database(archive_db, ArchiveTier.INDEX)
+    with sqlite3.connect(archive_db) as conn:
+        conn.execute(
+            "INSERT INTO sessions (native_id, origin, content_hash) VALUES (?, ?, ?)",
+            ("native-1", "codex-session", bytes(32)),
+        )
+        conn.execute(
+            """
+            INSERT INTO messages (
+                session_id, native_id, position, role, message_type, content_hash
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("codex-session:native-1", "message-1", 0, "user", "message", bytes(32)),
+        )
+        conn.execute(
+            """
+            INSERT INTO blocks (message_id, session_id, position, block_type, text)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            ("codex-session:native-1:message-1", "codex-session:native-1", 0, "text", "needle"),
+        )
+        rowid = conn.execute(
+            "SELECT rowid FROM blocks WHERE block_id = ?",
+            ("codex-session:native-1:message-1:0",),
+        ).fetchone()[0]
+        conn.execute("DELETE FROM messages_fts WHERE rowid = ?", (rowid,))
+        conn.commit()
+
+    readiness = fts_readiness_info(archive_db, exact=True)
+
+    assert readiness["indexed_surface"] == "messages_fts"
+    assert readiness["messages_ready"] is False
+    assert readiness["invariant_ready"] is False
+    assert readiness["message_indexable_count"] == 1
+    assert readiness["message_indexed_count"] == 0
+    assert readiness["coverage_pct"] == 0.0
+    surfaces = readiness["surfaces"]
+    assert isinstance(surfaces, dict)
+    blocks = surfaces["messages_fts"]
+    assert isinstance(blocks, dict)
+    assert blocks["missing_rows"] == 1
+    assert blocks["ready"] is False
+
+
 def test_fts_readiness_requires_recorded_freshness_when_available(tmp_path: Path) -> None:
     from polylogue.daemon.fts_status import fts_readiness_info
 
-    db_path = tmp_path / "polylogue.db"
+    db_path = tmp_path / "index.db"
     with sqlite3.connect(db_path) as conn:
         conn.executescript(
             """
-            CREATE TABLE messages (message_id TEXT, text TEXT);
+            CREATE TABLE blocks (text TEXT);
             CREATE TABLE messages_fts (text TEXT);
-            CREATE TRIGGER messages_fts_ai AFTER INSERT ON messages BEGIN SELECT 1; END;
-            CREATE TRIGGER messages_fts_ad AFTER DELETE ON messages BEGIN SELECT 1; END;
-            CREATE TRIGGER messages_fts_au AFTER UPDATE ON messages BEGIN SELECT 1; END;
+            CREATE TRIGGER messages_fts_ai AFTER INSERT ON blocks BEGIN SELECT 1; END;
+            CREATE TRIGGER messages_fts_ad AFTER DELETE ON blocks BEGIN SELECT 1; END;
+            CREATE TRIGGER messages_fts_au AFTER UPDATE ON blocks BEGIN SELECT 1; END;
             CREATE TABLE fts_freshness_state (
                 surface TEXT PRIMARY KEY,
                 state TEXT NOT NULL,
@@ -469,23 +857,17 @@ def test_fts_readiness_requires_recorded_freshness_when_available(tmp_path: Path
 def test_fts_readiness_reports_recorded_freshness_counts_without_exact_scan(tmp_path: Path) -> None:
     from polylogue.daemon.fts_status import fts_readiness_info
 
-    db_path = tmp_path / "polylogue.db"
+    db_path = tmp_path / "index.db"
     queries: list[str] = []
     with sqlite3.connect(db_path) as conn:
         conn.executescript(
             """
-            CREATE TABLE messages (message_id TEXT, text TEXT);
+            CREATE TABLE blocks (text TEXT);
             CREATE TABLE messages_fts (text TEXT);
             CREATE TABLE messages_fts_docsize (id INTEGER PRIMARY KEY, sz BLOB);
-            CREATE TRIGGER messages_fts_ai AFTER INSERT ON messages BEGIN SELECT 1; END;
-            CREATE TRIGGER messages_fts_ad AFTER DELETE ON messages BEGIN SELECT 1; END;
-            CREATE TRIGGER messages_fts_au AFTER UPDATE ON messages BEGIN SELECT 1; END;
-            CREATE TABLE action_events (event_id TEXT);
-            CREATE TABLE action_events_fts (text TEXT);
-            CREATE TABLE action_events_fts_docsize (id INTEGER PRIMARY KEY, sz BLOB);
-            CREATE TRIGGER action_events_fts_ai AFTER INSERT ON action_events BEGIN SELECT 1; END;
-            CREATE TRIGGER action_events_fts_ad AFTER DELETE ON action_events BEGIN SELECT 1; END;
-            CREATE TRIGGER action_events_fts_au AFTER UPDATE ON action_events BEGIN SELECT 1; END;
+            CREATE TRIGGER messages_fts_ai AFTER INSERT ON blocks BEGIN SELECT 1; END;
+            CREATE TRIGGER messages_fts_ad AFTER DELETE ON blocks BEGIN SELECT 1; END;
+            CREATE TRIGGER messages_fts_au AFTER UPDATE ON blocks BEGIN SELECT 1; END;
             CREATE TABLE fts_freshness_state (
                 surface TEXT PRIMARY KEY,
                 state TEXT NOT NULL,
@@ -500,8 +882,7 @@ def test_fts_readiness_reports_recorded_freshness_counts_without_exact_scan(tmp_
             INSERT INTO fts_freshness_state
                 (surface, state, checked_at, source_rows, indexed_rows, missing_rows, excess_rows, duplicate_rows, detail)
             VALUES
-                ('messages_fts', 'ready', '2026-05-24T00:00:00+00:00', 200, 199, 1, 0, 0, 'repair pending'),
-                ('action_events_fts', 'ready', '2026-05-24T00:00:00+00:00', 7, 7, 0, 0, 0, NULL);
+                ('messages_fts', 'ready', '2026-05-24T00:00:00+00:00', 200, 199, 1, 0, 0, 'repair pending');
             """
         )
 
@@ -517,8 +898,6 @@ def test_fts_readiness_reports_recorded_freshness_counts_without_exact_scan(tmp_
 
     assert readiness["message_indexable_count"] == 200
     assert readiness["message_indexed_count"] == 199
-    assert readiness["action_event_count"] == 7
-    assert readiness["action_event_indexed_count"] == 7
     assert readiness["coverage_pct"] == 99.5
     assert readiness["messages_ready"] is False
     assert readiness["invariant_ready"] is False
@@ -531,24 +910,24 @@ def test_fts_readiness_reports_recorded_freshness_counts_without_exact_scan(tmp_
     assert messages["freshness_recorded_state"] == "ready"
     assert messages["freshness_trusted"] is False
     assert messages["freshness_detail"] == "repair pending"
-    assert all("COUNT(*) FROM messages" not in query for query in queries)
+    assert all("COUNT(*) FROM blocks" not in query for query in queries)
     assert all("messages_fts_docsize" not in query for query in queries)
 
 
 def test_fts_readiness_rejects_zero_count_ready_freshness_when_source_has_rows(tmp_path: Path) -> None:
     from polylogue.daemon.fts_status import fts_readiness_info
 
-    db_path = tmp_path / "polylogue.db"
+    db_path = tmp_path / "index.db"
     queries: list[str] = []
     with sqlite3.connect(db_path) as conn:
         conn.executescript(
             """
-            CREATE TABLE messages (message_id TEXT, text TEXT);
+            CREATE TABLE blocks (text TEXT);
             CREATE TABLE messages_fts (text TEXT);
-            CREATE TRIGGER messages_fts_ai AFTER INSERT ON messages BEGIN SELECT 1; END;
-            CREATE TRIGGER messages_fts_ad AFTER DELETE ON messages BEGIN SELECT 1; END;
-            CREATE TRIGGER messages_fts_au AFTER UPDATE ON messages BEGIN SELECT 1; END;
-            INSERT INTO messages VALUES ('m1', 'needs indexing');
+            CREATE TRIGGER messages_fts_ai AFTER INSERT ON blocks BEGIN SELECT 1; END;
+            CREATE TRIGGER messages_fts_ad AFTER DELETE ON blocks BEGIN SELECT 1; END;
+            CREATE TRIGGER messages_fts_au AFTER UPDATE ON blocks BEGIN SELECT 1; END;
+            INSERT INTO blocks VALUES ('needs indexing');
             CREATE TABLE fts_freshness_state (
                 surface TEXT PRIMARY KEY,
                 state TEXT NOT NULL,
@@ -592,15 +971,15 @@ def test_fts_readiness_rejects_zero_count_ready_freshness_when_source_has_rows(t
 def test_fts_readiness_tolerates_malformed_recorded_counts(tmp_path: Path) -> None:
     from polylogue.daemon.fts_status import fts_readiness_info
 
-    db_path = tmp_path / "polylogue.db"
+    db_path = tmp_path / "index.db"
     with sqlite3.connect(db_path) as conn:
         conn.executescript(
             """
-            CREATE TABLE messages (message_id TEXT, text TEXT);
+            CREATE TABLE blocks (text TEXT);
             CREATE TABLE messages_fts (text TEXT);
-            CREATE TRIGGER messages_fts_ai AFTER INSERT ON messages BEGIN SELECT 1; END;
-            CREATE TRIGGER messages_fts_ad AFTER DELETE ON messages BEGIN SELECT 1; END;
-            CREATE TRIGGER messages_fts_au AFTER UPDATE ON messages BEGIN SELECT 1; END;
+            CREATE TRIGGER messages_fts_ai AFTER INSERT ON blocks BEGIN SELECT 1; END;
+            CREATE TRIGGER messages_fts_ad AFTER DELETE ON blocks BEGIN SELECT 1; END;
+            CREATE TRIGGER messages_fts_au AFTER UPDATE ON blocks BEGIN SELECT 1; END;
             CREATE TABLE fts_freshness_state (
                 surface TEXT PRIMARY KEY,
                 state TEXT NOT NULL,
@@ -629,14 +1008,14 @@ def test_fts_readiness_tolerates_malformed_recorded_counts(tmp_path: Path) -> No
 
 
 def test_daemon_status_insight_freshness_uses_lightweight_counts(tmp_path: Path) -> None:
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     with sqlite3.connect(db) as conn:
         conn.executescript(
             """
-            CREATE TABLE conversations (conversation_id TEXT PRIMARY KEY);
-            CREATE TABLE session_profiles (conversation_id TEXT PRIMARY KEY);
-            INSERT INTO conversations (conversation_id) VALUES ('a'), ('b');
-            INSERT INTO session_profiles (conversation_id) VALUES ('a');
+            CREATE TABLE sessions (session_id TEXT PRIMARY KEY);
+            CREATE TABLE session_profiles (session_id TEXT PRIMARY KEY);
+            INSERT INTO sessions (session_id) VALUES ('a'), ('b');
+            INSERT INTO session_profiles (session_id) VALUES ('a');
             """
         )
 
@@ -648,7 +1027,7 @@ def test_daemon_status_insight_freshness_uses_lightweight_counts(tmp_path: Path)
 
 @pytest.mark.frozen_clock_modules("polylogue.daemon.status")
 def test_daemon_status_flags_stale_live_ingest_attempts(tmp_path: Path, frozen_clock: FrozenClock) -> None:
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     source = tmp_path / "session.jsonl"
     source.write_text('{"a":1}\n')
     cursor = CursorStore(db)
@@ -657,11 +1036,11 @@ def test_daemon_status_flags_stale_live_ingest_attempts(tmp_path: Path, frozen_c
         input_bytes=source.stat().st_size,
         queued_file_count=1,
     )
-    old_updated_at = (frozen_clock.now() - timedelta(minutes=10)).isoformat()
-    with sqlite3.connect(db) as conn:
+    old_updated_at_ms = int((frozen_clock.now() - timedelta(minutes=10)).timestamp() * 1000)
+    with sqlite3.connect(db.with_name("ops.db")) as conn:
         conn.execute(
-            "UPDATE live_ingest_attempt SET updated_at = ? WHERE attempt_id = ?",
-            (old_updated_at, attempt_id),
+            "UPDATE ingest_attempts SET heartbeat_at_ms = ? WHERE attempt_id = ?",
+            (old_updated_at_ms, attempt_id),
         )
         conn.commit()
 
@@ -683,7 +1062,7 @@ def test_daemon_status_flags_stale_live_ingest_attempts(tmp_path: Path, frozen_c
     latest = recent[0]
     assert isinstance(latest, dict)
     assert latest["stale"] is True
-    # #1246: ``stale`` (legacy) and the typed ``progress_classification``
+    # #1246: ``stale`` (existing) and the typed ``progress_classification``
     # together encode the same condition for an attempt that has not made
     # progress for at least ``STUCK_AFTER_S``.
     assert latest["progress_classification"] == "stuck"
@@ -704,23 +1083,22 @@ def test_daemon_status_flags_slow_but_progressing_live_ingest_attempt(
     """Running attempts that exceed p95 historical duration but still
     report fresh progress are reported as ``slow``, not ``stuck`` (#1246)."""
 
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     source = tmp_path / "session.jsonl"
     source.write_text('{"a":1}\n')
     cursor = CursorStore(db)
     # Seed completed attempts with short, uniform durations so the p95
     # baseline is well below the running attempt's elapsed time.
     base = frozen_clock.now() - timedelta(hours=1)
-    with sqlite3.connect(db) as conn:
+    with sqlite3.connect(db.with_name("ops.db")) as conn:
         for i in range(8):
-            start = (base + timedelta(minutes=i)).isoformat()
-            end = (base + timedelta(minutes=i, seconds=2)).isoformat()
+            start = int((base + timedelta(minutes=i)).timestamp() * 1000)
+            end = int((base + timedelta(minutes=i, seconds=2)).timestamp() * 1000)
             conn.execute(
                 """
-                INSERT INTO live_ingest_attempt (
-                    attempt_id, started_at, updated_at, completed_at,
-                    status, phase, input_bytes
-                ) VALUES (?, ?, ?, ?, 'completed', 'convergence', 0)
+                INSERT INTO ingest_attempts (
+                    attempt_id, status, phase, started_at_ms, heartbeat_at_ms, finished_at_ms
+                ) VALUES (?, 'completed', 'convergence', ?, ?, ?)
                 """,
                 (f"hist-{i}", start, end, end),
             )
@@ -734,12 +1112,12 @@ def test_daemon_status_flags_slow_but_progressing_live_ingest_attempt(
     # Make the running attempt look like it has been ticking for 90s —
     # well above the 2-second historical p95, but well under the 180s
     # stuck threshold. Set updated_at to "now" so it is not stale.
-    started_at = (frozen_clock.now() - timedelta(seconds=90)).isoformat()
-    updated_at = frozen_clock.now().isoformat()
-    with sqlite3.connect(db) as conn:
+    started_at_ms = int((frozen_clock.now() - timedelta(seconds=90)).timestamp() * 1000)
+    updated_at_ms = int(frozen_clock.now().timestamp() * 1000)
+    with sqlite3.connect(db.with_name("ops.db")) as conn:
         conn.execute(
-            "UPDATE live_ingest_attempt SET started_at = ?, updated_at = ? WHERE attempt_id = ?",
-            (started_at, updated_at, attempt_id),
+            "UPDATE ingest_attempts SET started_at_ms = ?, heartbeat_at_ms = ? WHERE attempt_id = ?",
+            (started_at_ms, updated_at_ms, attempt_id),
         )
         conn.commit()
 
@@ -773,7 +1151,7 @@ def test_daemon_status_flags_slow_but_progressing_live_ingest_attempt(
 
 
 def test_daemon_status_summarizes_retry_due_and_excluded_live_cursor_files(tmp_path: Path) -> None:
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     failed = tmp_path / "failed.jsonl"
     failed.write_text('{"bad":true}\n')
     excluded = tmp_path / "excluded.jsonl"
@@ -783,9 +1161,9 @@ def test_daemon_status_summarizes_retry_due_and_excluded_live_cursor_files(tmp_p
     cursor.set(excluded, excluded.stat().st_size)
     cursor.mark_excluded(excluded)
 
-    with sqlite3.connect(db) as conn:
+    with sqlite3.connect(db.with_name("ops.db")) as conn:
         conn.execute(
-            "UPDATE live_cursor SET next_retry_at = ? WHERE source_path = ?",
+            "UPDATE ingest_cursor SET next_retry_at = ? WHERE source_path = ?",
             ("2000-01-01T00:00:00+00:00", str(failed)),
         )
         conn.commit()

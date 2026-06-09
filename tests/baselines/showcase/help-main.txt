@@ -1,46 +1,63 @@
 Usage: polylogue [OPTIONS] COMMAND [ARGS]...
 
-  Polylogue - AI conversation archive.
+  Polylogue - AI session archive.
+
+  Dispatch model (query-first):
+      Any positional token that is NOT a registered subcommand or verb is
+      treated as a search query against the archive. So `polylogue foo`
+      searches for `foo` — it does NOT raise "unknown subcommand".
+      Run `polylogue --help` to see the full subcommand list, or
+      `polylogue --diagnose <args>` to have the parser explain how it
+      routed your invocation.
 
   Query mode (default):
       polylogue "search terms"
-      polylogue -p claude-ai --since "last week"
+      polylogue --origin claude-ai-export --since "last week"
       polylogue --latest --output browser
 
-  Verbs (actions on matched conversations):
-      polylogue "error" -p claude-ai --since 2025-01 list
+  Verbs (actions on matched sessions):
+      polylogue "error" --origin claude-ai-export --since 2025-01 list
       polylogue --has thinking --sort tokens list --limit 10
-      polylogue -p chatgpt count
-      polylogue --provider codex stats --by provider
+      polylogue --origin chatgpt-export count
+      polylogue --origin codex-session stats --by origin
       polylogue --latest open
       polylogue "urgent" --tag review delete --dry-run
       polylogue list --format json
 
   Combined filters:
       polylogue --referenced-path README.md --action file_read list
-    polylogue --action search --action file_edit list
-    polylogue --action-sequence file_read,file_edit,shell list
-    polylogue --action-text "pytest -q" list
-    polylogue "pytest -q tests/unit/core/test_semantic_facts.py" --retrieval-lane actions --limit 5
-    polylogue --action other stats --by tool --format json
-    polylogue --provider claude-code --since 2026-01-01 stats --by repo --format json
-    polylogue --tool bash --exclude-tool read list
+      polylogue --action search --action file_edit list
+      polylogue --action-sequence file_read,file_edit,shell list
+      polylogue --action-text "pytest -q" list
+      polylogue "pytest -q tests/unit/core/test_semantic_facts.py" --retrieval-lane actions --limit 5
+      polylogue --action other stats --by tool --format json
+      polylogue --origin claude-code-session --since 2026-01-01 stats --by repo --format json
+      polylogue --tool bash --exclude-tool read list
       polylogue --similar "sqlite locking bug in parser" --limit 5
 
   Modifiers (write operations):
       polylogue "urgent" --add-tag review
 
-  Run `polylogue <command> --help` for subcommand details.
+  See also:
+      polylogue --help                  # this screen
+      polylogue <subcommand> --help     # per-subcommand help
+      polylogue --diagnose <args>       # explain parser decisions
 
 Options:
-  -i, --id TEXT                   Conversation ID (exact or prefix match)
+  --help-markdown                 Emit the full --help tree (root + every
+                                  subcommand) as Markdown and exit.
+  -i, --id TEXT                   Session ID (exact or prefix match)
   -c, --contains TEXT             FTS term (repeatable = AND)
   --exclude-text TEXT             Exclude FTS term
-  --retrieval-lane [auto|dialogue|actions|hybrid]
-                                  Query lane: dialogue FTS, action text, or
+  --retrieval-lane LANE           Query lane: dialogue FTS, action text, or
                                   hybrid
-  -p, --provider TEXT             Include providers (comma = OR)
-  --exclude-provider TEXT         Exclude providers
+  --lexical                       Force FTS-only search (overrides hybrid
+                                  auto-elevation when embeddings are
+                                  populated).
+  --semantic                      Treat the query as a similarity prompt
+                                  (vector-only; requires embeddings).
+  --origin TEXT                   Include origins (comma = OR)
+  --exclude-origin TEXT           Exclude origins
   -r, --repo TEXT                 Filter by repository name (comma = OR)
   -t, --tag TEXT                  Include tags (comma = OR, supports
                                   key:value)
@@ -48,13 +65,11 @@ Options:
   --title TEXT                    Title contains
   --referenced-path TEXT          Referenced file path contains substring
                                   (repeatable = AND)
-  --cwd-prefix TEXT               Filter conversations whose recorded working
+  --cwd-prefix TEXT               Filter sessions whose recorded working
                                   directory starts with this prefix
-  --action [file_read|file_write|file_edit|shell|git|search|web|agent|subagent|other|none]
-                                  Require semantic action category (repeatable
+  --action ACTION                 Require semantic action category (repeatable
                                   = AND)
-  --exclude-action [file_read|file_write|file_edit|shell|git|search|web|agent|subagent|other|none]
-                                  Exclude semantic action category (repeatable
+  --exclude-action ACTION         Exclude semantic action category (repeatable
                                   = AND)
   --action-sequence TEXT          Require ordered semantic action subsequence
                                   (comma-separated)
@@ -68,37 +83,42 @@ Options:
                                   embeddings)
   --has TEXT                      Filter by content: thinking (reasoning),
                                   tools (calls), summary, attachments
-  --has-tool-use                  Only conversations with tool use (SQL
+  --has-tool-use                  Only sessions with tool use (SQL pushdown)
+  --has-thinking                  Only sessions with thinking blocks (SQL
                                   pushdown)
-  --has-thinking                  Only conversations with thinking blocks (SQL
+  --has-paste                     Only sessions with pasted content (SQL
                                   pushdown)
-  --has-paste                     Only conversations with pasted content (SQL
-                                  pushdown)
-  --typed-only                    Only conversations without pasted content
-                                  (typed prose only)
+  --typed-only                    Only sessions without pasted content (typed
+                                  prose only)
   --min-messages INTEGER          Minimum message count
   --max-messages INTEGER          Maximum message count
   --min-words INTEGER             Minimum total word count
-  --message-type [message|summary|tool_use|tool_result|thinking|context|protocol]
-                                  Filter by message content type (message,
+  --message-type TYPE             Filter by message content type (message,
                                   summary, tool_use, tool_result, thinking,
                                   context, protocol)
-  --since-session TEXT            Show sessions in same cwd after this
-                                  conversation ID
+  --since-session TEXT            Show sessions in same cwd after this session
+                                  ID
   --since TEXT                    After date (ISO, 'yesterday', 'last week')
   --until TEXT                    Before date
-  -n, --limit INTEGER             Max results
+  -l, -n, --limit INTEGER         Max results
   --offset INTEGER                Offset for paginated results
+  --cursor TEXT                   Opaque keyset cursor from a previous
+                                  response's next_cursor. Stable across
+                                  archive growth for ranked search (#1268).
   --latest                        Most recent (= --sort date --limit 1)
   --sort [date|tokens|messages|words|longest|random]
                                   Sort by field
   --reverse                       Reverse sort order
-  --sample INTEGER                Random sample of N conversations
+  --sample INTEGER                Random sample of N sessions
   -o, --output TEXT               Output destinations: browser, clipboard,
                                   stdout (comma-separated)
-  -f, --format [markdown|json|html|obsidian|org|yaml|plaintext|csv]
+  --json                          Shortcut for --format json. Disables color
+                                  and progress for pipeable output. (#1689)
+  -f, --format [markdown|json|ndjson|html|obsidian|org|yaml|plaintext|csv]
                                   Output format (for --latest, --stream, or
-                                  verb output)
+                                  verb output). `ndjson` emits one JSON
+                                  document per line, streaming-friendly for
+                                  shell pipelines and LLM tool-use harnesses.
   --transform [strip-tools|strip-thinking|strip-all]
                                   Remove content: strip-tools (tool calls),
                                   strip-thinking (reasoning), strip-all (both)
@@ -120,31 +140,55 @@ Options:
   --add-tag TEXT                  Add tags (comma-separated)
   --plain                         Force non-interactive plain output
   -v, --verbose                   Verbose output
+  --diagnose                      Explain CLI parser decisions on stderr
+                                  before running. Useful when query-first
+                                  dispatch surprises you: shows whether a bare
+                                  token was routed to a subcommand or
+                                  interpreted as a search query.
   --version                       Show the version and exit.
   -h, --help                      Show this message and exit.
 
 Commands:
-  auth         Authenticate with external services (Google Drive for...
-  bulk-export  Bulk export every matched conversation in one process.
-  completions  Generate shell completion scripts.
-  count        Print count of matched conversations.
-  dashboard    Launch the dashboard TUI.
-  delete       Delete matched conversations.
-  diagnostics  Temporal session diagnostics
-  doctor       Health check with optional maintenance and cleanup previews.
-  export       Export one known conversation by ID.
-  ingest       Schedule a file or directory for ingestion by the daemon.
-  insights     Inspect durable archive insights.
-  list         List matched conversations.
-  messages     Show paginated messages for a conversation.
-  neighbors    Show explainable neighboring or near-duplicate candidates.
-  open         Open matched conversation in the daemon web reader.
-  raw          Show raw archive artifacts for a conversation.
-  reset        Reset database, blob store, assets, cache, or auth state.
-  resume       Reconstruct work-state context for a fresh agent session.
-  schema       Inspect schema packages, versions, and evidence.
-  select       Select one matched conversation and print a field.
-  show         Show matched conversations with default full-content output.
-  stats        Show statistics for matched conversations.
-  status       Show daemon and archive health.
-  tags         List all tags with conversation counts.
+  auth               Authenticate optional external services.
+  backup             Create a timestamped durability-tier backup.
+  blackboard
+  bulk-export        Bulk export every matched session in one process.
+  commands
+  completions        Emit shell completion setup for polylogue.
+  config             Show configuration paths and resolved settings.
+  context            Compose context preamble from archive objects.
+  context-pack       Build a provenance-rich context pack for agent analysis.
+  correlate          Cross-reference sessions with git commits, issues, and
+                     PRs.
+  cost               Summarize session cost telemetry.
+  count              Print count of matched sessions.
+  dashboard          Open the local dashboard.
+  delete             Delete matched sessions.
+  diagnostics        Temporal session diagnostics
+  doctor             Run archive health checks and repairs.
+  embed              Enable, preflight, and backfill the embedding pipeline.
+  export             Export sessions.
+  facets
+  feedback           Record learning corrections for derived insights.
+  ingest             Import sessions from configured sources.
+  init               Detect chat sources and write a starter polylogue.toml.
+  insights           Rebuild and inspect derived session insights.
+  list               List matched sessions.
+  maintenance        Preview and run maintenance backfill operations.
+  messages           List messages from matched sessions.
+  neighbors          Show semantic neighbors for a session.
+  open               Open matched session in the daemon web reader.
+  paths              Print canonical archive paths and bind-mount detection.
+  raw                Show raw archive payloads for matched sessions.
+  recent
+  reset              Reset local archive state.
+  resume             Resume from recent session context.
+  resume-candidates  Rank resume candidates for the current context.
+  schema             Inspect and audit provider schemas.
+  select             Select one matched session and print a field.
+  show               Show matched sessions with default full-content output.
+  stats              Show statistics for matched sessions.
+  status             Show daemon and archive status.
+  tags               Manage session tags.
+  tutorial           Interactive first-run walk-through.
+  user-state         Manage durable reader user state.

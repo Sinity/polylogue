@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -13,6 +12,8 @@ import click
 
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
+from polylogue.core.enums import Origin
+from polylogue.core.sources import provider_from_origin
 from polylogue.logging import configure_logging
 from polylogue.maintenance.envelope import envelope_from_operation
 from polylogue.maintenance.planner import preview_backfill
@@ -21,14 +22,21 @@ from polylogue.maintenance.registry import MaintenanceOperationRegistry, Operati
 from polylogue.maintenance.replay import ReplayProgress, execute_replay
 from polylogue.maintenance.scope import MaintenanceScopeFilter
 from polylogue.maintenance.targets import MAINTENANCE_TARGET_NAMES, build_maintenance_target_catalog
-from polylogue.paths import archive_root, render_root
+from polylogue.paths import archive_file_set_root_for_paths, archive_root, db_path, render_root
 from polylogue.storage.blob_gc import read_gc_history
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.archive_init import (
+    ArchiveInitBlockedError,
+    ArchiveInitResult,
+    initialize_archive_tier_files_from_plan,
+)
+from polylogue.storage.sqlite.archive_tiers.archive_plan import ArchiveInitPlan, build_archive_init_plan
 
 
 def _build_scope_filter(
     *,
-    conversation_ids: tuple[str, ...],
-    provider: str | None,
+    session_ids: tuple[str, ...],
+    origin: str | None,
     source_family: str | None,
     source_root: str | None,
     raw_artifact_id: str | None,
@@ -57,8 +65,8 @@ def _build_scope_filter(
         time_range = None
 
     return MaintenanceScopeFilter(
-        conversation_ids=conversation_ids if conversation_ids else None,
-        provider=provider,
+        session_ids=session_ids if session_ids else None,
+        provider=provider_from_origin(Origin(origin)).value if origin is not None else None,
         source_family=source_family,
         source_root=Path(source_root) if source_root else None,
         raw_artifact_id=raw_artifact_id,
@@ -70,12 +78,12 @@ def _build_scope_filter(
 
 _SCOPE_FILTER_OPTIONS = [
     click.option(
-        "--conversation-id",
-        "conversation_ids",
+        "--session-id",
+        "session_ids",
         multiple=True,
-        help="Restrict scope to one or more conversation ids (repeatable).",
+        help="Restrict scope to one or more session ids (repeatable).",
     ),
-    click.option("--provider", "-p", type=str, default=None, help="Restrict scope to one provider name."),
+    click.option("--origin", "-o", type=str, default=None, help="Restrict scope to one origin token."),
     click.option(
         "--source-family",
         type=str,
@@ -149,8 +157,8 @@ def plan_command(
     env: AppEnv,
     targets: tuple[str, ...],
     output_format: str,
-    conversation_ids: tuple[str, ...],
-    provider: str | None,
+    session_ids: tuple[str, ...],
+    origin: str | None,
     source_family: str | None,
     source_root: str | None,
     raw_artifact_id: str | None,
@@ -171,8 +179,8 @@ def plan_command(
         sources=[],  # maintenance doesn't need source acquisition
     )
     scope_filter = _build_scope_filter(
-        conversation_ids=conversation_ids,
-        provider=provider,
+        session_ids=session_ids,
+        origin=origin,
         source_family=source_family,
         source_root=source_root,
         raw_artifact_id=raw_artifact_id,
@@ -208,6 +216,257 @@ def plan_command(
 
     if result.error:
         click.echo(f"\nError: {result.error}", err=True)
+
+
+@maintenance_group.command("archive-plan")
+@click.option(
+    "--replace-existing",
+    is_flag=True,
+    help="Classify existing archive tier files as replaceable instead of blocking.",
+)
+@click.option(
+    "--output-format",
+    "output_format",
+    type=click.Choice(["plain", "json"]),
+    default="plain",
+    show_default=True,
+    help="Output format.",
+)
+def archive_plan_command(replace_existing: bool, output_format: str) -> None:
+    """Inspect readiness for the archive file set.
+
+    Read-only. The command reports the planned source/index/embeddings/user/ops
+    target files, required backups, and blockers before archive initialization.
+    """
+    plan = build_archive_init_plan(
+        archive_root=archive_root(),
+        replace_existing=replace_existing,
+    )
+
+    if output_format == "json":
+        click.echo(json.dumps(_archive_plan_payload(plan), indent=2, sort_keys=True))
+        return
+
+    _render_archive_plain_plan(plan)
+
+
+def _archive_plan_payload(plan: ArchiveInitPlan) -> dict[str, object]:
+    return {
+        "ready": plan.ready,
+        "archive_root": str(plan.archive_root),
+        "blockers": list(plan.blockers),
+        "tiers": [
+            {
+                "tier": tier_plan.tier.value,
+                "path": str(tier_plan.path),
+                "durability": tier_plan.durability,
+                "exists": tier_plan.exists,
+                "user_version": tier_plan.user_version,
+                "expected_user_version": tier_plan.expected_user_version,
+                "backup_required": tier_plan.backup_required,
+                "action": tier_plan.action.value,
+                "backup_path": str(tier_plan.backup_path) if tier_plan.backup_path is not None else None,
+                "blockers": list(tier_plan.blockers),
+            }
+            for tier_plan in plan.tiers
+        ],
+    }
+
+
+@maintenance_group.command("archive-read")
+@click.option("--query", "-q", type=str, default=None, help="Search block text instead of listing sessions.")
+@click.option("--origin", type=str, default=None, help="Restrict reads to one origin token.")
+@click.option("--limit", "-l", type=int, default=20, show_default=True, help="Maximum rows to return.")
+@click.option(
+    "--output-format",
+    "output_format",
+    type=click.Choice(["plain", "json"]),
+    default="plain",
+    show_default=True,
+    help="Output format.",
+)
+def archive_read_command(query: str | None, origin: str | None, limit: int, output_format: str) -> None:
+    """Read index sessions from the archive."""
+    root = archive_file_set_root_for_paths(archive_root_path=archive_root(), db_anchor=db_path())
+    index_db_path = root / "index.db"
+    if not index_db_path.exists():
+        message = f"archive index.db does not exist: {index_db_path}"
+        if output_format == "json":
+            click.echo(json.dumps({"ok": False, "error": message, "index_db_path": str(index_db_path)}, indent=2))
+        else:
+            click.echo(f"Blocked: {message}", err=True)
+        raise SystemExit(1)
+
+    with ArchiveStore.open_existing(root) as archive:
+        if query is not None:
+            hits = archive.search_summaries(query, limit=limit, origin=origin)
+            if output_format == "json":
+                click.echo(
+                    json.dumps(
+                        {
+                            "ok": True,
+                            "mode": "search",
+                            "query": query,
+                            "origin": origin,
+                            "index_db_path": str(index_db_path),
+                            "hits": [
+                                {
+                                    "rank": hit.rank,
+                                    "session_id": hit.session_id,
+                                    "block_id": hit.block_id,
+                                    "message_id": hit.message_id,
+                                    "origin": hit.origin,
+                                    "title": hit.title,
+                                    "snippet": hit.snippet,
+                                }
+                                for hit in hits
+                            ],
+                        },
+                        indent=2,
+                        sort_keys=True,
+                    )
+                )
+                return
+            for hit in hits:
+                title = f" {hit.title}" if hit.title else ""
+                click.echo(f"{hit.rank}. {hit.session_id}{title}")
+                click.echo(f"   {hit.block_id}: {hit.snippet}")
+            return
+
+        summaries = archive.list_summaries(limit=limit, origin=origin)
+        if output_format == "json":
+            click.echo(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "mode": "list",
+                        "origin": origin,
+                        "index_db_path": str(index_db_path),
+                        "sessions": [
+                            {
+                                "session_id": summary.session_id,
+                                "native_id": summary.native_id,
+                                "origin": summary.origin,
+                                "title": summary.title,
+                                "created_at": summary.created_at,
+                                "updated_at": summary.updated_at,
+                                "message_count": summary.message_count,
+                                "word_count": summary.word_count,
+                                "tags": list(summary.tags),
+                            }
+                            for summary in summaries
+                        ],
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return
+        for summary in summaries:
+            title = f" {summary.title}" if summary.title else ""
+            click.echo(f"{summary.session_id}{title}")
+            click.echo(f"  {summary.origin} messages={summary.message_count:,} words={summary.word_count:,}")
+
+
+@maintenance_group.command("archive-init")
+@click.option(
+    "--replace-existing",
+    is_flag=True,
+    help="Back up and replace existing durable archive tier files; recreate disposable ops state.",
+)
+@click.option("--yes", "-y", is_flag=True, help="Actually create the archive tier files.")
+@click.option(
+    "--output-format",
+    "output_format",
+    type=click.Choice(["plain", "json"]),
+    default="plain",
+    show_default=True,
+    help="Output format.",
+)
+def archive_init_command(replace_existing: bool, yes: bool, output_format: str) -> None:
+    """Initialize the archive file set after explicit confirmation.
+
+    This command backs up any durable archive targets it is allowed to replace,
+    then creates fresh source, index, embeddings, user, and ops databases.
+    Ingest and read surfaces populate and consume the archive.
+    """
+    plan = build_archive_init_plan(
+        archive_root=archive_root(),
+        replace_existing=replace_existing,
+    )
+    if not yes:
+        if output_format == "json":
+            payload = _archive_plan_payload(plan)
+            payload["executed"] = False
+            payload["next_action"] = "rerun with --yes to initialize the archive tier file set"
+            click.echo(json.dumps(payload, indent=2, sort_keys=True))
+            return
+        click.echo("Dry run only. Use --yes to initialize the archive tier file set.")
+        click.echo("")
+        _render_archive_plain_plan(plan)
+        return
+
+    try:
+        result = initialize_archive_tier_files_from_plan(plan)
+    except ArchiveInitBlockedError as exc:
+        if output_format == "json":
+            payload = _archive_plan_payload(plan)
+            payload["executed"] = False
+            payload["error"] = str(exc)
+            click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            _render_archive_plain_plan(plan)
+            click.echo(f"\nBlocked: {exc}", err=True)
+        raise SystemExit(1) from exc
+
+    if output_format == "json":
+        payload = _archive_init_payload(result)
+        payload["executed"] = True
+        click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+
+    click.echo("Initialized:")
+    for tier_result in result.tier_results:
+        backup = f" backup={tier_result.backup_path}" if tier_result.backup_path is not None else ""
+        click.echo(f"  {tier_result.tier}: {tier_result.action.value} {tier_result.path}{backup}")
+
+
+def _render_archive_plain_plan(plan: ArchiveInitPlan) -> None:
+    status = "ready" if plan.ready else "blocked"
+    click.echo(f"Archive tier initialization: {status}")
+    click.echo(f"Archive root: {plan.archive_root}")
+    click.echo("")
+    click.echo("Targets:")
+    for tier_plan in plan.tiers:
+        backup = f" backup={tier_plan.backup_path}" if tier_plan.backup_path is not None else ""
+        version = f" version={tier_plan.user_version}" if tier_plan.user_version is not None else ""
+        click.echo(
+            f"  {tier_plan.tier.value}: {tier_plan.action.value} {tier_plan.path}"
+            f" durability={tier_plan.durability} expected_version={tier_plan.expected_user_version}"
+            f"{version}{backup}"
+        )
+        for blocker in tier_plan.blockers:
+            click.echo(f"    blocker: {blocker}")
+    if plan.blockers:
+        click.echo("")
+        click.echo("Blockers:")
+        for blocker in plan.blockers:
+            click.echo(f"  {blocker}")
+
+
+def _archive_init_payload(result: ArchiveInitResult) -> dict[str, object]:
+    return {
+        "tiers": [
+            {
+                "tier": tier_result.tier,
+                "path": str(tier_result.path),
+                "action": tier_result.action.value,
+                "backup_path": str(tier_result.backup_path) if tier_result.backup_path is not None else None,
+                "initialized": tier_result.initialized,
+            }
+            for tier_result in result.tier_results
+        ],
+    }
 
 
 @maintenance_group.command("run")
@@ -258,8 +517,8 @@ def run_command(
     operation_id: str | None,
     resume_cursor: str | None,
     output_format: str,
-    conversation_ids: tuple[str, ...],
-    provider: str | None,
+    session_ids: tuple[str, ...],
+    origin: str | None,
     source_family: str | None,
     source_root: str | None,
     raw_artifact_id: str | None,
@@ -290,8 +549,8 @@ def run_command(
         )
 
     scope_filter = _build_scope_filter(
-        conversation_ids=conversation_ids,
-        provider=provider,
+        session_ids=session_ids,
+        origin=origin,
         source_family=source_family,
         source_root=source_root,
         raw_artifact_id=raw_artifact_id,
@@ -441,14 +700,15 @@ def preview_command(
 )
 @click.pass_obj
 def gc_history_command(env: AppEnv, limit: int, output_format: str) -> None:
-    """Show recent blob-GC passes recorded in ``gc_generations.evidence``.
+    """Show recent blob-GC passes recorded in ``gc_generations``.
 
-    Surfaces per-pass evidence (inspected/skipped/deleted, skip reasons,
-    dry-run flag, batch bound) written by ``run_blob_gc`` so operators
-    can audit GC behaviour over time without bespoke SQLite tooling.
+    Surfaces the typed reclaim counters (``reclaimed_count`` /
+    ``reclaimed_bytes``) and start/completion timestamps written by
+    ``run_blob_gc`` so operators can audit GC reclamation over time
+    without bespoke SQLite tooling.
 
-    Pre-#1190 generations and crashed-mid-pass rows surface with
-    ``evidence: null`` so operators can see they happened.
+    A pass whose ``completed_at_ms`` is null crashed mid-run; the row is
+    still surfaced so operators can see it happened.
     """
     configure_logging()
     config = Config(
@@ -458,15 +718,21 @@ def gc_history_command(env: AppEnv, limit: int, output_format: str) -> None:
     )
     history = read_gc_history(config.db_path, limit=limit)
 
+    def _iso_ms(epoch_ms: int | None) -> str | None:
+        if epoch_ms is None:
+            return None
+        return datetime.fromtimestamp(epoch_ms / 1000, tz=UTC).isoformat()
+
     if output_format == "json":
         payload = [
             {
-                "generation": row.generation,
-                "completed_at": row.completed_at,
-                "completed_at_iso": (
-                    datetime.fromtimestamp(row.completed_at, tz=UTC).isoformat() if row.completed_at else None
-                ),
-                "evidence": asdict(row.evidence) if row.evidence else None,
+                "generation_id": row.generation_id,
+                "started_at_ms": row.started_at_ms,
+                "started_at_iso": _iso_ms(row.started_at_ms),
+                "completed_at_ms": row.completed_at_ms,
+                "completed_at_iso": _iso_ms(row.completed_at_ms),
+                "reclaimed_count": row.reclaimed_count,
+                "reclaimed_bytes": row.reclaimed_bytes,
             }
             for row in history
         ]
@@ -481,21 +747,12 @@ def gc_history_command(env: AppEnv, limit: int, output_format: str) -> None:
     click.echo("")
     for row in history:
         when = (
-            datetime.fromtimestamp(row.completed_at, tz=UTC).isoformat(timespec="seconds")
-            if row.completed_at
-            else "unknown"
+            datetime.fromtimestamp(row.completed_at_ms / 1000, tz=UTC).isoformat(timespec="seconds")
+            if row.completed_at_ms is not None
+            else "unknown (crashed mid-pass)"
         )
-        click.echo(f"  generation={row.generation:>6}  completed_at={when}")
-        ev = row.evidence
-        if ev is None:
-            click.echo("    (no evidence — pre-#1190 row or crashed pass)")
-            continue
-        dry = " [DRY-RUN]" if ev.dry_run else ""
-        click.echo(
-            f"    inspected={ev.inspected:>4}  deleted={ev.deleted:>4}{dry}  "
-            f"skipped_ref={ev.skipped_referenced} skipped_leased={ev.skipped_leased} "
-            f"skipped_missing={ev.skipped_missing} unlink_errors={ev.skipped_unlink_error}"
-        )
+        click.echo(f"  generation={row.generation_id}  completed_at={when}")
+        click.echo(f"    reclaimed_count={row.reclaimed_count}  reclaimed_bytes={row.reclaimed_bytes}")
 
 
 @maintenance_group.command("status")

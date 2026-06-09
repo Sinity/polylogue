@@ -1,11 +1,11 @@
-"""Async storage repository for conversation persistence.
+"""Async storage repository for session persistence.
 
-Provides async/await interface for storing and retrieving conversations.
+Provides async/await interface for storing and retrieving sessions.
 Wraps SQLiteBackend for parallel operations.
 
-All methods are async and use eager loading (conversation_from_records)
+All methods are async and use eager loading (session_from_records)
 instead of lazy loading, since async I/O already enables efficient parallel
-fetching of conversations, messages, and attachments together.
+fetching of sessions, messages, and attachments together.
 """
 
 from __future__ import annotations
@@ -17,7 +17,6 @@ from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 if TYPE_CHECKING:
     from pathlib import Path
 
-from polylogue.storage.repository.action.reads import RepositoryActionReadMixin
 from polylogue.storage.repository.archive.reads import RepositoryArchiveReadMixin
 from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
 from polylogue.storage.repository.insight.profile_reads import (
@@ -39,9 +38,8 @@ from polylogue.storage.repository.raw.repository_raw import RepositoryRawMixin
 from polylogue.storage.repository.vectors.repository_vectors import RepositoryVectorMixin
 
 
-class ConversationRepository(
+class SessionRepository(
     RepositoryArchiveReadMixin,
-    RepositoryActionReadMixin,
     RepositoryInsightProfileReadMixin,
     RepositoryInsightTimelineReadMixin,
     RepositoryInsightThreadReadMixin,
@@ -51,29 +49,30 @@ class ConversationRepository(
     RepositoryWriteMixin,
     RepositoryVectorMixin,
 ):
-    """Async repository for conversation storage operations.
+    """Async repository for session storage operations.
 
     Wraps SQLiteBackend to provide high-level async storage interface with
-    full feature parity to sync ConversationRepository.
+    full feature parity to sync SessionRepository.
 
-    All methods are async. Eager loading (conversation_from_records) is used
-    for fetching conversations, enabling efficient parallel I/O via asyncio.gather()
-    for conversations, messages, and attachments.
+    All methods are async. Eager loading (session_from_records) is used
+    for fetching sessions, enabling efficient parallel I/O via asyncio.gather()
+    for sessions, messages, and attachments.
 
     Write safety is provided by SQLite's ``BEGIN IMMEDIATE`` transactions
     in the backend layer, combined with asyncio.Lock() serialization.
 
     Example:
-        async with ConversationRepository() as repo:
+        async with SessionRepository() as repo:
             conv = await repo.get("claude-ai:abc123")
             convs = await repo.list(limit=10)
-            await repo.save_conversation(conv_rec, msgs, atts)
+            await repo.save_parsed_session(parsed_session, content_hash)
     """
 
     def __init__(
         self,
         backend: SQLiteBackend | None = None,
         db_path: Path | None = None,
+        archive_root: Path | None = None,
     ) -> None:
         """Initialize async storage repository.
 
@@ -83,9 +82,10 @@ class ConversationRepository(
         """
         active_backend = backend if backend is not None else SQLiteBackend(db_path=db_path)
         self._backend: SQLiteBackend = active_backend
+        self._archive_root: Path | None = archive_root
         self.queries = active_backend.queries
 
-    async def __aenter__(self) -> ConversationRepository:
+    async def __aenter__(self) -> SessionRepository:
         """Enter async context manager."""
         return self
 
@@ -103,4 +103,4 @@ class ConversationRepository(
         await self._backend.close()
 
 
-__all__ = ["ConversationRepository"]
+__all__ = ["SessionRepository"]

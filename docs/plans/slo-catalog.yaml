@@ -42,7 +42,7 @@ surfaces:
 
   reader:
     description: "Reader list endpoint over the 5k synthetic archive"
-    benchmark_test: "tests/benchmarks/test_reader_api.py::test_bench_reader_list_conversations"
+    benchmark_test: "tests/benchmarks/test_reader_api.py::test_bench_reader_list_sessions"
     p50_ms: 300
     p95_ms: 750
     gate: "required"

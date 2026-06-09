@@ -1,11 +1,11 @@
-"""Raw conversation storage and validation tests.
+"""Raw session storage and validation tests.
 
 This module contains tests for:
-- RawConversationRecord storage in SQLiteBackend
-- Raw conversation retrieval and iteration
+- RawSessionRecord storage in SQLiteBackend
+- Raw session retrieval and iteration
 - Pydantic validation for raw records
 - Content hashing and SHA256 integrity
-- Links between raw and parsed conversations
+- Links between raw and parsed sessions
 """
 
 from __future__ import annotations
@@ -14,17 +14,17 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.storage.runtime import RawConversationRecord
+from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-from tests.infra.storage_records import make_conversation, make_raw_conversation
+from tests.infra.storage_records import make_raw_session, make_session, save_session_to_archive
 
 # test_db and test_conn fixtures are in conftest.py
 
 # test_db and test_conn fixtures are in conftest.py
 
 
-class TestRawConversationStorage:
-    """Tests for RawConversationRecord storage in SQLiteBackend."""
+class TestRawSessionStorage:
+    """Tests for RawSessionRecord storage in SQLiteBackend."""
 
     @pytest.fixture
     def backend(self, tmp_path: Path) -> SQLiteBackend:
@@ -32,9 +32,9 @@ class TestRawConversationStorage:
         db_path = tmp_path / "test.db"
         return SQLiteBackend(db_path=db_path)
 
-    async def test_save_raw_conversation_new(self, backend: SQLiteBackend) -> None:
-        """Saving a new raw conversation returns True."""
-        record = make_raw_conversation(
+    async def test_save_raw_session_new(self, backend: SQLiteBackend) -> None:
+        """Saving a new raw session returns True."""
+        record = make_raw_session(
             raw_id="abc123",
             source_name="test-provider",
             source_path="/tmp/test.json",
@@ -44,13 +44,13 @@ class TestRawConversationStorage:
             file_mtime=None,
         )
 
-        result = await backend.save_raw_conversation(record)
+        result = await backend.save_raw_session(record)
 
         assert result is True
 
-    async def test_save_raw_conversation_duplicate(self, backend: SQLiteBackend) -> None:
+    async def test_save_raw_session_duplicate(self, backend: SQLiteBackend) -> None:
         """Saving a duplicate raw_id returns False (INSERT OR IGNORE)."""
-        record = make_raw_conversation(
+        record = make_raw_session(
             raw_id="abc123",
             source_name="test-provider",
             source_path="/tmp/test.json",
@@ -60,14 +60,14 @@ class TestRawConversationStorage:
         )
 
         # First save succeeds
-        assert await backend.save_raw_conversation(record) is True
+        assert await backend.save_raw_session(record) is True
 
         # Second save is ignored (same raw_id)
-        assert await backend.save_raw_conversation(record) is False
+        assert await backend.save_raw_session(record) is False
 
-    async def test_get_raw_conversation(self, backend: SQLiteBackend) -> None:
-        """Retrieve a saved raw conversation by ID."""
-        original = make_raw_conversation(
+    async def test_get_raw_session(self, backend: SQLiteBackend) -> None:
+        """Retrieve a saved raw session by ID."""
+        original = make_raw_session(
             raw_id="xyz789",
             source_name="chatgpt",
             source_path="/path/to/export.json",
@@ -77,8 +77,8 @@ class TestRawConversationStorage:
             file_mtime="2026-01-15T08:30:00+00:00",
         )
 
-        await backend.save_raw_conversation(original)
-        retrieved = await backend.get_raw_conversation("xyz789")
+        await backend.save_raw_session(original)
+        retrieved = await backend.get_raw_session("xyz789")
 
         assert retrieved is not None
         assert retrieved.raw_id == original.raw_id
@@ -89,16 +89,16 @@ class TestRawConversationStorage:
         assert retrieved.acquired_at == original.acquired_at
         assert retrieved.file_mtime == original.file_mtime
 
-    async def test_get_raw_conversation_not_found(self, backend: SQLiteBackend) -> None:
-        """Retrieving non-existent raw conversation returns None."""
-        result = await backend.get_raw_conversation("nonexistent")
+    async def test_get_raw_session_not_found(self, backend: SQLiteBackend) -> None:
+        """Retrieving non-existent raw session returns None."""
+        result = await backend.get_raw_session("nonexistent")
 
         assert result is None
 
-    async def test_iter_raw_conversations(self, backend: SQLiteBackend) -> None:
-        """Iterate over all raw conversations."""
+    async def test_iter_raw_sessions(self, backend: SQLiteBackend) -> None:
+        """Iterate over all raw sessions."""
         records = [
-            make_raw_conversation(
+            make_raw_session(
                 raw_id=f"raw-{i}",
                 source_name="test" if i < 2 else "other",
                 source_path=f"/path/{i}.json",
@@ -109,15 +109,15 @@ class TestRawConversationStorage:
         ]
 
         for r in records:
-            await backend.save_raw_conversation(r)
+            await backend.save_raw_session(r)
 
-        all_records = [r async for r in backend.iter_raw_conversations()]
+        all_records = [r async for r in backend.iter_raw_sessions()]
         assert len(all_records) == 5
 
-    async def test_iter_raw_conversations_by_provider(self, backend: SQLiteBackend) -> None:
+    async def test_iter_raw_sessions_by_provider(self, backend: SQLiteBackend) -> None:
         """Filter iteration by provider name."""
         records = [
-            make_raw_conversation(
+            make_raw_session(
                 raw_id=f"raw-{i}",
                 source_name="chatgpt" if i % 2 == 0 else "claude-ai",
                 source_path=f"/path/{i}.json",
@@ -128,18 +128,18 @@ class TestRawConversationStorage:
         ]
 
         for r in records:
-            await backend.save_raw_conversation(r)
+            await backend.save_raw_session(r)
 
-        chatgpt_records = [r async for r in backend.iter_raw_conversations(provider="chatgpt")]
+        chatgpt_records = [r async for r in backend.iter_raw_sessions(provider="chatgpt")]
         assert len(chatgpt_records) == 3
 
-        claude_records = [r async for r in backend.iter_raw_conversations(provider="claude-ai")]
+        claude_records = [r async for r in backend.iter_raw_sessions(provider="claude-ai")]
         assert len(claude_records) == 3
 
     async def test_iter_raw_ids_by_source_name(self, backend: SQLiteBackend) -> None:
         """ID iteration can filter by exact provider name without hydrating raw blobs."""
         records = [
-            make_raw_conversation(
+            make_raw_session(
                 raw_id=f"raw-id-{i}",
                 source_name="chatgpt" if i % 2 == 0 else "claude-ai",
                 source_path=f"/path/{i}.json",
@@ -150,7 +150,7 @@ class TestRawConversationStorage:
         ]
 
         for record in records:
-            await backend.save_raw_conversation(record)
+            await backend.save_raw_session(record)
 
         chatgpt_ids = [raw_id async for raw_id in backend.iter_raw_ids(source_name="chatgpt")]
         claude_ids = [raw_id async for raw_id in backend.iter_raw_ids(source_name="claude-ai")]
@@ -162,7 +162,7 @@ class TestRawConversationStorage:
     async def test_iter_raw_headers_by_source_name(self, backend: SQLiteBackend) -> None:
         """Header iteration exposes blob sizes without hydrating full raw records."""
         records = [
-            make_raw_conversation(
+            make_raw_session(
                 raw_id=f"raw-header-{i}",
                 source_name="chatgpt" if i % 2 == 0 else "claude-ai",
                 source_path=f"/path/{i}.json",
@@ -173,7 +173,7 @@ class TestRawConversationStorage:
         ]
 
         for record in records:
-            await backend.save_raw_conversation(record)
+            await backend.save_raw_session(record)
 
         chatgpt_headers = [header async for header in backend.iter_raw_headers(source_name="chatgpt")]
 
@@ -182,8 +182,8 @@ class TestRawConversationStorage:
     async def test_get_raw_blob_sizes_preserves_requested_order(self, backend: SQLiteBackend) -> None:
         """Blob-size lookups should preserve caller order for batch shaping."""
         for raw_id, blob_size in (("raw-a", 10), ("raw-b", 20), ("raw-c", 30)):
-            await backend.save_raw_conversation(
-                make_raw_conversation(
+            await backend.save_raw_session(
+                make_raw_session(
                     raw_id=raw_id,
                     source_name="chatgpt",
                     source_path=f"/path/{raw_id}.json",
@@ -198,8 +198,8 @@ class TestRawConversationStorage:
 
     async def test_raw_provider_filters_prefer_payload_provider_when_present(self, backend: SQLiteBackend) -> None:
         """Raw provider filtering should use payload_provider when validation/parsing has classified the payload."""
-        await backend.save_raw_conversation(
-            make_raw_conversation(
+        await backend.save_raw_session(
+            make_raw_session(
                 raw_id="raw-generic",
                 payload_provider="chatgpt",
                 source_name="inbox",
@@ -209,19 +209,19 @@ class TestRawConversationStorage:
             )
         )
 
-        matched_records = [record async for record in backend.iter_raw_conversations(provider="chatgpt")]
+        matched_records = [record async for record in backend.iter_raw_sessions(provider="chatgpt")]
         matched_ids = [raw_id async for raw_id in backend.iter_raw_ids(source_name="chatgpt")]
-        matched_count = await backend.get_raw_conversation_count(provider="chatgpt")
+        matched_count = await backend.get_raw_session_count(provider="chatgpt")
 
         assert [record.raw_id for record in matched_records] == ["raw-generic"]
         assert matched_ids == ["raw-generic"]
         assert matched_count == 1
 
-    async def test_iter_raw_conversations_with_limit(self, backend: SQLiteBackend) -> None:
+    async def test_iter_raw_sessions_with_limit(self, backend: SQLiteBackend) -> None:
         """Limit the number of records returned."""
         for i in range(10):
-            await backend.save_raw_conversation(
-                make_raw_conversation(
+            await backend.save_raw_session(
+                make_raw_session(
                     raw_id=f"raw-{i}",
                     source_name="test",
                     source_path=f"/path/{i}.json",
@@ -230,77 +230,79 @@ class TestRawConversationStorage:
                 )
             )
 
-        limited = [r async for r in backend.iter_raw_conversations(limit=3)]
+        limited = [r async for r in backend.iter_raw_sessions(limit=3)]
         assert len(limited) == 3
 
-    async def test_conversation_links_to_raw(self, backend: SQLiteBackend) -> None:
-        """Conversations can link to their raw source via raw_id.
+    async def test_session_links_to_raw(self, backend: SQLiteBackend) -> None:
+        """Sessions can link to their raw source via raw_id.
 
-        The link goes: conversations.raw_id → raw_conversations.raw_id
+        The link goes: sessions.raw_id → raw_sessions.raw_id
         (data flows from raw to parsed, FK points backward to origin)
         """
-        # First store the raw conversation
-        raw_record = make_raw_conversation(
+        # First store the raw session
+        raw_record = make_raw_session(
             raw_id="raw-abc123",
             source_name="test",
             source_path="/test.json",
             blob_size=len(b'{"id": "test-conv"}'),
             acquired_at="2026-02-02T12:00:00+00:00",
         )
-        await backend.save_raw_conversation(raw_record)
+        await backend.save_raw_session(raw_record)
 
-        # Then store parsed conversation with link to raw
-        conv = make_conversation(
-            conversation_id="conv-link-test",
+        # Then store parsed session with link to raw
+        conv = make_session(
+            session_id="conv-link-test",
             source_name="test",
-            provider_conversation_id="test-123",
+            provider_session_id="test-123",
             content_hash="hash123",
             raw_id="raw-abc123",  # Link to raw source
         )
-        await backend.save_conversation_record(conv)
+        await save_session_to_archive(backend, session=conv)
 
-        # Verify the link exists in database
+        # Verify the link exists in database. Session ids are generated as
+        # ``origin:native_id`` (#1743); source_name="test" → unknown-export.
         async with backend.connection() as conn:
             cursor = await conn.execute(
-                "SELECT raw_id FROM conversations WHERE conversation_id = ?",
-                ("conv-link-test",),
+                "SELECT raw_id FROM sessions WHERE session_id = ?",
+                ("unknown-export:test-123",),
             )
             row = await cursor.fetchone()
 
         assert row is not None
         assert row["raw_id"] == "raw-abc123"
 
-    async def test_conversation_without_raw_id(self, backend: SQLiteBackend) -> None:
-        """Conversations can be saved without raw_id (e.g., direct file ingest)."""
-        conv = make_conversation(
-            conversation_id="conv-no-raw",
+    async def test_session_without_raw_id(self, backend: SQLiteBackend) -> None:
+        """Sessions can be saved without raw_id (e.g., direct file ingest)."""
+        conv = make_session(
+            session_id="conv-no-raw",
             source_name="test",
-            provider_conversation_id="test-456",
+            provider_session_id="test-456",
             content_hash="hash456",
             # raw_id is None (default)
         )
-        await backend.save_conversation_record(conv)
+        await save_session_to_archive(backend, session=conv)
 
-        # Verify it saved correctly
+        # Verify it saved correctly. Session ids are generated as
+        # ``origin:native_id`` (#1743); source_name="test" → unknown-export.
         async with backend.connection() as conn:
             cursor = await conn.execute(
-                "SELECT raw_id FROM conversations WHERE conversation_id = ?",
-                ("conv-no-raw",),
+                "SELECT raw_id FROM sessions WHERE session_id = ?",
+                ("unknown-export:test-456",),
             )
             row = await cursor.fetchone()
 
         assert row is not None
         assert row["raw_id"] is None
 
-    async def test_get_raw_conversation_count(self, backend: SQLiteBackend) -> None:
-        """Count raw conversations."""
+    async def test_get_raw_session_count(self, backend: SQLiteBackend) -> None:
+        """Count raw sessions."""
         # Initially empty
-        assert await backend.get_raw_conversation_count() == 0
+        assert await backend.get_raw_session_count() == 0
 
         # Add some records
         for i in range(5):
-            await backend.save_raw_conversation(
-                make_raw_conversation(
+            await backend.save_raw_session(
+                make_raw_session(
                     raw_id=f"count-{i}",
                     source_name="chatgpt" if i < 3 else "claude-ai",
                     source_path=f"/path/{i}.json",
@@ -310,18 +312,18 @@ class TestRawConversationStorage:
             )
 
         # Total count
-        assert await backend.get_raw_conversation_count() == 5
+        assert await backend.get_raw_session_count() == 5
 
         # Filtered count
-        assert await backend.get_raw_conversation_count(provider="chatgpt") == 3
-        assert await backend.get_raw_conversation_count(provider="claude-ai") == 2
-        assert await backend.get_raw_conversation_count(provider="codex") == 0
+        assert await backend.get_raw_session_count(provider="chatgpt") == 3
+        assert await backend.get_raw_session_count(provider="claude-ai") == 2
+        assert await backend.get_raw_session_count(provider="codex") == 0
 
-    async def test_iter_raw_conversations_without_limit_returns_all(self, backend: SQLiteBackend) -> None:
+    async def test_iter_raw_sessions_without_limit_returns_all(self, backend: SQLiteBackend) -> None:
         """Iterating without limit returns all records."""
         # Save 7 records
         for i in range(7):
-            record = make_raw_conversation(
+            record = make_raw_session(
                 raw_id=f"raw-all-{i}",
                 source_name="test",
                 source_path=f"/tmp/test-{i}.json",
@@ -330,23 +332,23 @@ class TestRawConversationStorage:
                 acquired_at="2026-02-02T12:00:00+00:00",
                 file_mtime=None,
             )
-            await backend.save_raw_conversation(record)
+            await backend.save_raw_session(record)
 
         # Iterate without limit
         results = []
-        async for raw in backend.iter_raw_conversations():
+        async for raw in backend.iter_raw_sessions():
             results.append(raw)
 
         assert len(results) == 7
         assert {r.raw_id for r in results} == {f"raw-all-{i}" for i in range(7)}
 
 
-class TestRawConversationRecordValidation:
-    """Tests for RawConversationRecord Pydantic validation."""
+class TestRawSessionRecordValidation:
+    """Tests for RawSessionRecord Pydantic validation."""
 
     def test_valid_record(self) -> None:
         """Valid record passes validation."""
-        record = make_raw_conversation(
+        record = make_raw_session(
             raw_id="valid-id",
             source_name="chatgpt",
             source_path="/path/to/file.json",
@@ -360,7 +362,7 @@ class TestRawConversationRecordValidation:
     def test_empty_raw_id_fails(self) -> None:
         """Empty raw_id fails validation."""
         with pytest.raises(ValueError, match="cannot be empty"):
-            make_raw_conversation(
+            make_raw_session(
                 raw_id="",
                 source_name="test",
                 source_path="/test.json",
@@ -371,7 +373,7 @@ class TestRawConversationRecordValidation:
     def test_empty_source_name_fails(self) -> None:
         """Empty source_name fails validation."""
         with pytest.raises(ValueError, match="cannot be empty"):
-            make_raw_conversation(
+            make_raw_session(
                 raw_id="test-id",
                 source_name="",
                 source_path="/test.json",
@@ -382,7 +384,7 @@ class TestRawConversationRecordValidation:
     def test_blob_size_is_persisted(self) -> None:
         """blob_size can be any non-negative integer."""
         # blob_size is just an int, no bounds checking
-        record = make_raw_conversation(
+        record = make_raw_session(
             raw_id="test-id",
             source_name="test",
             source_path="/test.json",
@@ -393,21 +395,21 @@ class TestRawConversationRecordValidation:
 
 
 class TestContentHashing:
-    """Tests for raw conversation content hashing.
+    """Tests for raw session content hashing.
 
-    These tests verify the hash integrity of stored raw conversations.
+    These tests verify the hash integrity of stored raw sessions.
     For parsing tests, see test_fixtures_contract.py.
     """
 
-    def test_raw_ids_are_sha256(self, raw_synthetic_samples: list[RawConversationRecord]) -> None:
+    def test_raw_ids_are_sha256(self, raw_synthetic_samples: list[RawSessionRecord]) -> None:
         """Raw IDs are valid SHA256 hashes."""
         for sample in raw_synthetic_samples:
             assert len(sample.raw_id) == 64, f"Invalid hash length: {sample.raw_id}"
             assert all(c in "0123456789abcdef" for c in sample.raw_id)
 
-    def test_content_matches_hash(self, raw_synthetic_samples: list[RawConversationRecord]) -> None:
+    def test_content_matches_hash(self, raw_synthetic_samples: list[RawSessionRecord]) -> None:
         """Raw IDs are valid SHA256 hashes (constructed during fixture generation)."""
-        # Note: raw_content is no longer stored on RawConversationRecord;
+        # Note: raw_content is no longer stored on RawSessionRecord;
         # content is in the blob store keyed by raw_id. The fixture constructs
         # raw_id = sha256(raw_bytes), so we verify the ID format and that
         # each sample has a valid SHA256 hash.

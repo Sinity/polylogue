@@ -40,14 +40,14 @@ operator-facing wrapper for the visual/DOM lane.
 
 | Reader state | Artefact id | Routes exercised |
 |---|---|---|
-| List / search | `polylogue.local_reader.search` | `/`, `/api/conversations`, `/api/conversations?query=...`, `/api/facets`, `/api/facets?provider=...`, `/api/facets?query=...` |
-| Detail / conversation | `polylogue.local_reader.conversation` | `/c/{id}`, `/api/conversations/{id}`, `/api/conversations/{id}/messages`, `/api/conversations/{id}/raw` |
+| List / search | `polylogue.local_reader.search` | `/`, `/api/sessions`, `/api/sessions?query=...`, `/api/facets`, `/api/facets?origin=...`, `/api/facets?query=...` |
+| Detail / session | `polylogue.local_reader.session` | `/c/{id}`, `/api/sessions/{id}`, `/api/sessions/{id}/messages`, `/api/sessions/{id}/raw` |
 | Stack workspace | `polylogue.local_reader.workspace.stack` | `/w/stack?ids=...`, `/api/stack?ids=...` |
 | Compare workspace | `polylogue.local_reader.workspace.compare` | `/w/compare?left=...&right=...&align=prompt`, `/api/compare?left=...&right=...&align=prompt` |
-| Empty archive | — | `/api/conversations`, `/api/facets` |
-| Degraded FTS | `polylogue.local_reader.degraded` | `/api/conversations?query=...` with message FTS absent |
-| Privacy boundary | — | `/`, `/c/{id}`, `/api/facets`, `/api/conversations`, `/api/conversations/{id}`, `/api/conversations/{id}/messages` (auditing for absolute local paths) |
-| Auth boundary | — | `/api/conversations` with/without `Authorization: Bearer ...` |
+| Empty archive | — | `/api/sessions`, `/api/facets` |
+| Degraded FTS | `polylogue.local_reader.degraded` | `/api/sessions?query=...` with message FTS absent |
+| Privacy boundary | — | `/`, `/c/{id}`, `/api/facets`, `/api/sessions`, `/api/sessions/{id}`, `/api/sessions/{id}/messages` (auditing for absolute local paths) |
+| Auth boundary | — | `/api/sessions` with/without `Authorization: Bearer ...` |
 
 The artefact ids match the names referenced in the design packs and in #848 so
 the visual-evidence companion can cross-reference them. MK3 expands the target
@@ -57,7 +57,7 @@ palette screenshots under `docs/design/mk3/screens/`.
 ## What the lane checks
 
 - **Page structure.** The HTML payloads at `/`, `/c/{id}`, and `/w/{mode}` contain the region
-  hooks (`renderSidebarState`, `renderConversations`, `renderFacets`,
+  hooks (`renderSidebarState`, `renderSessions`, `renderFacets`,
   `renderMain`, `renderWorkspaceToolbar`, `renderStackWorkspace`,
   `renderCompareWorkspace`, `renderInspector`) the JS bundle hydrates. A regression
   that drops a region fails here loudly without depending on pixel
@@ -69,13 +69,13 @@ palette screenshots under `docs/design/mk3/screens/`.
 - **Envelope shapes.** Every reader-facing JSON envelope is asserted by
   shape: `items`/`messages`/`raw_artifacts` plus `total` for the
   paginated list/detail surfaces, and the search route's `hits`/`total`
-  envelope when `?query=` is supplied. Conversation rows, detail headers,
+  envelope when `?query=` is supplied. Session rows, detail headers,
   and messages carry stable `target_ref` objects, deterministic reader
   anchors, and per-target action availability with explicit disabled
   reasons for actions the current reader cannot perform yet. Query search
-  hits also carry both conversation-level targets and match-level message
-  targets. Facets carry the `scoped_to_query`/`providers` shape and honour
-  the `?provider=` and `?query=` filter contracts.
+  hits also carry both session-level targets and match-level message
+  targets. Facets carry the `scoped_to_query`/`origins` shape and honour
+  the `?origin=` and `?query=` filter contracts.
 - **Empty / no-results state.** Distinguishes "archive is empty" from
   "query matched no rows", a discrimination the reader UI is required to
   expose.
@@ -101,7 +101,7 @@ palette screenshots under `docs/design/mk3/screens/`.
 - No pixel snapshots or image diffs that freeze implementation details.
 - No real archive content, no operator data, no committed private
   fixtures — the synthetic seeder produces three single-message
-  conversations with stable ids so the envelope assertions stay
+  sessions with stable ids so the envelope assertions stay
   reproducible.
 - No browser-binary requirement in the fast lanes. A later #865 slice should
   add a separate browser-backed screenshot lane for the richer reader, stack,

@@ -12,16 +12,7 @@ def test_build_operational_contract_surfaces_compiles_runtime_aligned_json_contr
 
     assert surfaces["json-doctor"].args == ("doctor", "--format", "json")
     assert surfaces["json-doctor"].tags == ("maintenance", "readiness")
-    assert surfaces["json-doctor-action-event-preview"].args == (
-        "doctor",
-        "--format",
-        "json",
-        "--repair",
-        "--preview",
-        "--target",
-        "action_event_read_model",
-    )
-    assert surfaces["json-doctor-action-event-preview"].tags == ("maintenance", "action-events")
+    assert "json-doctor-action-preview" not in surfaces
     assert surfaces["json-doctor-session-insights-preview"].args == (
         "doctor",
         "--format",

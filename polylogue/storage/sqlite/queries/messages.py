@@ -10,22 +10,16 @@ from polylogue.storage.sqlite.queries.message_query_reads import (
     iter_messages,
 )
 from polylogue.storage.sqlite.queries.message_query_stats import (
-    get_conversation_stats,
     get_message_counts_batch,
-)
-from polylogue.storage.sqlite.queries.message_query_writes import (
-    save_messages,
-    topo_sort_messages,
+    get_session_stats,
 )
 
 __all__ = [
-    "topo_sort_messages",
     "get_messages",
     "get_messages_batch",
     "get_messages_paginated",
-    "save_messages",
     "iter_messages",
-    "get_conversation_stats",
+    "get_session_stats",
     "get_message_counts_batch",
     "MessageTypeName",
 ]

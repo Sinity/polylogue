@@ -13,18 +13,18 @@ from tests.infra.storage_records import DbFactory
 
 @pytest.fixture
 def search_workspace(cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
-    """CLI workspace with searchable conversations."""
+    """CLI workspace with searchable sessions."""
     # Set up environment
     monkeypatch.setenv("XDG_STATE_HOME", str(cli_workspace["state_dir"]))
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(cli_workspace["archive_root"]))
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
 
-    # Create sample conversations with searchable content
+    # Create sample sessions with searchable content
     db_path = cli_workspace["db_path"]
     factory = DbFactory(db_path)
 
-    # Conversation 1: Python content, recent
-    factory.create_conversation(
+    # Session 1: Python content, recent
+    factory.create_session(
         id="conv1",
         provider="chatgpt",
         title="Python Error Handling",
@@ -36,8 +36,8 @@ def search_workspace(cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyP
         updated_at=datetime.now() - timedelta(days=1),
     )
 
-    # Conversation 2: JavaScript content, older
-    factory.create_conversation(
+    # Session 2: JavaScript content, older
+    factory.create_session(
         id="conv2",
         provider="claude-ai",
         title="JavaScript Async Patterns",
@@ -49,8 +49,8 @@ def search_workspace(cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyP
         updated_at=datetime.now() - timedelta(days=10),
     )
 
-    # Conversation 3: Rust content
-    factory.create_conversation(
+    # Session 3: Rust content
+    factory.create_session(
         id="conv3",
         provider="claude-code",
         title="Rust Ownership",

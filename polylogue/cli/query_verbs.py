@@ -1,7 +1,7 @@
 """Positional verb subcommands for the query-first CLI.
 
 Each verb takes the filter set from the parent context and executes
-a specific action on the matched conversations.
+a specific action on the matched sessions.
 """
 
 from __future__ import annotations
@@ -58,7 +58,7 @@ def _lazy_shell_complete(source: str) -> Callable[..., object]:
 
 
 _BULK_EXPORT_FORMATS = ("jsonl", "json", "markdown", "yaml", "plaintext", "html", "obsidian", "org")
-_complete_conversation_id = _lazy_shell_complete("conversation_id")
+_complete_session_id = _lazy_shell_complete("session_id")
 _complete_message_type = _lazy_shell_complete("message_type")
 
 
@@ -70,11 +70,11 @@ _complete_message_type = _lazy_shell_complete("message_type")
     type=click.Choice(["markdown", "json", "ndjson", "html", "obsidian", "org", "yaml", "plaintext", "csv"]),
     help="Output format (ndjson = one JSON document per line, streaming-friendly)",
 )
-@click.option("--fields", help="Fields: id, title, provider, date, messages, words, tags, summary")
+@click.option("--fields", help="Fields: id, title, origin, date, messages, words, tags, summary")
 @click.option("--limit", "-l", "-n", type=int, help="Max results")
 @click.pass_context
 def list_verb(ctx: click.Context, output_format: str | None, fields: str | None, limit: int | None) -> None:
-    """List matched conversations."""
+    """List matched sessions."""
     request = _parent_request(ctx).with_param_updates(list_mode=True)
     if output_format:
         request = request.with_param_updates(output_format=output_format)
@@ -88,7 +88,7 @@ def list_verb(ctx: click.Context, output_format: str | None, fields: str | None,
 @click.command("count")
 @click.pass_context
 def count_verb(ctx: click.Context) -> None:
-    """Print count of matched conversations."""
+    """Print count of matched sessions."""
     _execute_query_verb(ctx, _parent_request(ctx).with_param_updates(count_only=True))
 
 
@@ -96,7 +96,7 @@ def count_verb(ctx: click.Context) -> None:
 @click.option(
     "--by",
     "stats_by",
-    type=click.Choice(["provider", "month", "year", "day", "action", "tool", "repo", "work-kind"]),
+    type=click.Choice(["origin", "month", "year", "day", "action", "tool", "repo", "work-kind"]),
     help="Aggregate by dimension",
 )
 @click.option(
@@ -106,10 +106,10 @@ def count_verb(ctx: click.Context) -> None:
     type=click.Choice(["markdown", "json", "ndjson", "html", "obsidian", "org", "yaml", "plaintext", "csv"]),
     help="Output format (ndjson = one JSON document per row, streaming-friendly)",
 )
-@click.option("--limit", "-l", "-n", type=int, help="Max matched conversations before grouping")
+@click.option("--limit", "-l", "-n", type=int, help="Max matched sessions before grouping")
 @click.pass_context
 def stats_verb(ctx: click.Context, stats_by: str | None, output_format: str | None, limit: int | None) -> None:
-    """Show statistics for matched conversations."""
+    """Show statistics for matched sessions."""
     request = _parent_request(ctx).with_param_updates(stats_only=stats_by is None)
     if stats_by:
         request = request.with_param_updates(stats_by=stats_by)
@@ -121,25 +121,25 @@ def stats_verb(ctx: click.Context, stats_by: str | None, output_format: str | No
 
 
 @click.command("recent")
-@click.option("--limit", "-n", type=int, default=10, show_default=True, help="Maximum conversations to list.")
-@click.option("--provider", "-p", "provider_filter", default=None, help="Filter by provider.")
+@click.option("--limit", "-n", type=int, default=10, show_default=True, help="Maximum sessions to list.")
+@click.option("--origin", "origin_filter", default=None, help="Filter by origin.")
 @click.option("--format", "-f", "output_format", default=None, help="Output format: json, ndjson, yaml, csv.")
 @click.pass_context
 def recent_verb(
     ctx: click.Context,
     limit: int,
-    provider_filter: str | None,
+    origin_filter: str | None,
     output_format: str | None,
 ) -> None:
-    """List the most recently updated conversations."""
+    """List the most recently updated sessions."""
     request = _parent_request(ctx).with_param_updates(
         list_mode=True,
         sort="updated_at",
         reverse=True,
         limit=limit,
     )
-    if provider_filter:
-        request = request.with_param_updates(provider=provider_filter)
+    if origin_filter:
+        request = request.with_param_updates(origin=origin_filter)
     if output_format:
         request = request.with_param_updates(output_format=output_format)
     _execute_query_verb(ctx, request)
@@ -149,7 +149,7 @@ def recent_verb(
 @click.argument("target_terms", nargs=-1)
 @click.pass_context
 def show_verb(ctx: click.Context, target_terms: tuple[str, ...]) -> None:
-    """Show matched conversations with default full-content output."""
+    """Show matched sessions with default full-content output."""
     request = _parent_request(ctx)
     parent_terms = _parent_query_terms(ctx)
     candidates = parent_terms + target_terms
@@ -164,7 +164,7 @@ def show_verb(ctx: click.Context, target_terms: tuple[str, ...]) -> None:
 @click.argument("target_terms", nargs=-1, shell_complete=_lazy_open_targets())
 @click.pass_context
 def open_verb(ctx: click.Context, print_url: bool, target_terms: tuple[str, ...]) -> None:
-    """Open matched conversation in the daemon web reader."""
+    """Open matched session in the daemon web reader."""
     request = _parent_request(ctx).with_param_updates(open_result=True, print_url=print_url)
     parent_terms = _parent_query_terms(ctx)
     candidates = parent_terms + target_terms
@@ -182,16 +182,16 @@ def open_verb(ctx: click.Context, print_url: bool, target_terms: tuple[str, ...]
     type=click.Choice(_BULK_EXPORT_FORMATS),
     default="jsonl",
     show_default=True,
-    help="Output format. jsonl emits one conversation JSON per line.",
+    help="Output format. jsonl emits one session JSON per line.",
 )
 @click.option("--fields", help="Fields for JSON/YAML outputs")
 @click.pass_context
 def bulk_export_verb(ctx: click.Context, output_format: str, fields: str | None) -> None:
-    """Bulk export every matched conversation in one process.
+    """Bulk export every matched session in one process.
 
-    Reuses the parent filter chain (``--provider``, ``--since``, ``--referenced-path``,
+    Reuses the parent filter chain (``--origin``, ``--since``, ``--referenced-path``,
     ``--message-role``, etc.). Default ``--format jsonl`` emits one
-    single-line conversation JSON per line, suitable for piping into ``jq``
+    single-line session JSON per line, suitable for piping into ``jq``
     or downstream analysis tools. Other formats are concatenated with
     ``\\n---\\n`` separators where appropriate.
     """
@@ -207,7 +207,7 @@ def bulk_export_verb(ctx: click.Context, output_format: str, fields: str | None)
 @click.option("--force", is_flag=True, help="Skip confirmation")
 @click.pass_context
 def delete_verb(ctx: click.Context, dry_run: bool, force: bool) -> None:
-    """Delete matched conversations."""
+    """Delete matched sessions."""
     _execute_query_verb(
         ctx,
         _parent_request(ctx).with_param_updates(delete_matched=True, dry_run=dry_run, force=force),
@@ -244,15 +244,15 @@ def _execute_query_verb(
     execute_query_request(env, request)
 
 
-def _resolve_target_conversation_id(request: RootModeRequest) -> str | None:
+def _resolve_target_session_id(request: RootModeRequest) -> str | None:
     """Verb-tree adapter for the shared latest-resolver helper (#1626, #1642)."""
-    from polylogue.cli.shared.latest_resolver import resolve_conversation_id_from_root_params
+    from polylogue.cli.shared.latest_resolver import resolve_session_id_from_root_params
 
-    return resolve_conversation_id_from_root_params(dict(request.params))
+    return resolve_session_id_from_root_params(dict(request.params))
 
 
 @click.command("messages")
-@click.argument("conversation_id", required=False, shell_complete=_complete_conversation_id)
+@click.argument("session_id", required=False, shell_complete=_complete_session_id)
 @click.option("--message-role", "-r", "message_role", multiple=True, help="Filter by message role")
 @click.option(
     "--message-type",
@@ -274,7 +274,7 @@ def _resolve_target_conversation_id(request: RootModeRequest) -> str | None:
 @click.pass_context
 def messages_verb(
     ctx: click.Context,
-    conversation_id: str | None,
+    session_id: str | None,
     message_role: tuple[str, ...],
     message_type: str | None,
     limit: int,
@@ -286,20 +286,20 @@ def messages_verb(
     prose_only: bool,
     output_format: str | None,
 ) -> None:
-    """Show paginated messages for a conversation."""
+    """Show paginated messages for a session."""
     from polylogue.cli.messages import run_messages
 
     env: AppEnv = ctx.obj
     request = _parent_request(ctx)
-    if conversation_id is None:
-        conversation_id = _resolve_target_conversation_id(request)
-        if not conversation_id:
-            raise click.UsageError("messages requires a conversation ID (use --id or pass as argument)")
+    if session_id is None:
+        session_id = _resolve_target_session_id(request)
+        if not session_id:
+            raise click.UsageError("messages requires a session ID (use --id or pass as argument)")
 
     run_messages(
         env,
         request,
-        conversation_id=str(conversation_id),
+        session_id=str(session_id),
         message_role=message_role,
         message_type=message_type,
         limit=limit,
@@ -314,7 +314,7 @@ def messages_verb(
 
 
 @click.command("raw")
-@click.argument("conversation_id", required=False, shell_complete=_complete_conversation_id)
+@click.argument("session_id", required=False, shell_complete=_complete_session_id)
 @click.option("--limit", "-l", "-n", type=int, default=50, help="Max raw artifacts to return")
 @click.option("--offset", type=int, default=0, help="Offset for pagination")
 @click.option(
@@ -323,25 +323,25 @@ def messages_verb(
 @click.pass_context
 def raw_verb(
     ctx: click.Context,
-    conversation_id: str | None,
+    session_id: str | None,
     limit: int,
     offset: int,
     output_format: str,
 ) -> None:
-    """Show raw archive artifacts for a conversation."""
+    """Show raw archive artifacts for a session."""
     from polylogue.cli.messages import run_raw
 
     env: AppEnv = ctx.obj
     request = _parent_request(ctx)
-    if conversation_id is None:
-        conversation_id = _resolve_target_conversation_id(request)
-        if not conversation_id:
-            raise click.UsageError("raw requires a conversation ID (use --id or pass as argument)")
+    if session_id is None:
+        session_id = _resolve_target_session_id(request)
+        if not session_id:
+            raise click.UsageError("raw requires a session ID (use --id or pass as argument)")
 
     run_raw(
         env,
         request,
-        conversation_id=str(conversation_id),
+        session_id=str(session_id),
         limit=limit,
         offset=offset,
         output_format=output_format,
@@ -352,14 +352,14 @@ def raw_verb(
 @click.argument(
     "selector_kind",
     required=False,
-    default="conversation",
-    type=click.Choice(["conversation"]),
+    default="session",
+    type=click.Choice(["session"]),
 )
-@click.option("--print", "print_field", type=click.Choice(["id", "title", "provider", "json"]), default="id")
+@click.option("--print", "print_field", type=click.Choice(["id", "title", "origin", "json"]), default="id")
 @click.option("--limit", "-l", "-n", type=int, default=50, help="Max candidates to offer")
 @click.pass_context
 def select_verb(ctx: click.Context, selector_kind: str, print_field: str, limit: int) -> None:
-    """Select one matched conversation and print a field."""
+    """Select one matched session and print a field."""
     from polylogue.cli.select import SelectPrintField, run_select
 
     del selector_kind

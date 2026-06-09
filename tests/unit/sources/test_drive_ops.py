@@ -9,9 +9,9 @@ from unittest.mock import MagicMock, patch
 
 from polylogue.config import Source
 from polylogue.core.json import JSONDocument, JSONValue
-from polylogue.sources import DriveFile, download_drive_files, iter_drive_conversations
+from polylogue.sources import DriveFile, download_drive_files, iter_drive_sessions
 from polylogue.sources.drive import _apply_drive_attachments
-from polylogue.sources.parsers.base import ParsedAttachment, ParsedConversation
+from polylogue.sources.parsers.base import ParsedAttachment, ParsedSession
 from polylogue.storage.cursor_state import CursorStatePayload
 from polylogue.types import Provider
 
@@ -22,7 +22,7 @@ def _attachment(
     name: str | None = None,
     mime_type: str | None = None,
     size_bytes: int | None = None,
-    provider_meta: dict[str, object] | None = None,
+    attachment_kind: str | None = None,
 ) -> ParsedAttachment:
     return ParsedAttachment(
         provider_attachment_id=provider_attachment_id,
@@ -31,21 +31,21 @@ def _attachment(
         mime_type=mime_type,
         size_bytes=size_bytes,
         path=None,
-        provider_meta=provider_meta,
+        attachment_kind=attachment_kind,
     )
 
 
-def _conversation(*attachments: ParsedAttachment) -> ParsedConversation:
-    return ParsedConversation(
+def _session(*attachments: ParsedAttachment) -> ParsedSession:
+    return ParsedSession(
         source_name=Provider.GEMINI,
-        provider_conversation_id="conv-1",
+        provider_session_id="conv-1",
         messages=[],
         attachments=list(attachments),
     )
 
 
 @dataclass
-class _DriveConversationClient:
+class _DriveSessionClient:
     files: list[DriveFile]
     payloads: dict[str, JSONValue]
     payload_failures: dict[str, Exception] = field(default_factory=dict)
@@ -112,7 +112,7 @@ def test_download_drive_files_contract(tmp_path: Path) -> None:
 
 def test_apply_drive_attachments_contract(tmp_path: Path) -> None:
     missing_attachment = _attachment("placeholder").model_copy(update={"provider_attachment_id": None})
-    conversation = _conversation(
+    session = _session(
         _attachment("keep-meta", name="keep.txt", mime_type="text/plain", size_bytes=12),
         _attachment("fill-meta"),
         missing_attachment,
@@ -124,68 +124,57 @@ def test_apply_drive_attachments_contract(tmp_path: Path) -> None:
     ]
 
     _apply_drive_attachments(
-        convo=conversation,
+        convo=session,
         client=client,
         archive_root=tmp_path,
         download_assets=True,
     )
 
-    keep, filled, missing = conversation.attachments
+    keep, filled, missing = session.attachments
 
     assert keep.name == "keep.txt"
     assert keep.mime_type == "text/plain"
     assert keep.size_bytes == 12
-    assert keep.provider_meta == {
-        "drive_id": "keep-meta",
-        "name": "keep.txt",
-        "mime_type": "text/plain",
-    }
 
     assert filled.name == "filled.pdf"
     assert filled.mime_type == "application/pdf"
     assert filled.size_bytes == 2048
     assert filled.path is not None
-    assert filled.provider_meta == {
-        "drive_id": "fill-meta",
-        "name": "filled.pdf",
-        "mime_type": "application/pdf",
-    }
 
     assert missing.path is None
-    assert missing.provider_meta is None
     assert [call.args[0] for call in client.download_to_path.call_args_list] == ["keep-meta", "fill-meta"]
 
 
 def test_apply_drive_attachments_skips_inline_and_external_media(tmp_path: Path) -> None:
-    conversation = _conversation(
+    session = _session(
         _attachment(
             "inline-file-1",
             mime_type="text/plain",
-            provider_meta={"attachment_kind": "inline_file"},
+            attachment_kind="inline_file",
         ),
         _attachment(
             "youtube-video-1",
             mime_type="video/youtube",
-            provider_meta={"attachment_kind": "youtube_video"},
+            attachment_kind="youtube_video",
         ),
     )
     client = MagicMock()
 
     _apply_drive_attachments(
-        convo=conversation,
+        convo=session,
         client=client,
         archive_root=tmp_path,
         download_assets=True,
     )
 
     client.download_to_path.assert_not_called()
-    assert all(attachment.path is None for attachment in conversation.attachments)
+    assert all(attachment.path is None for attachment in session.attachments)
 
 
-def test_iter_drive_conversations_returns_empty_without_folder(tmp_path: Path) -> None:
+def test_iter_drive_sessions_returns_empty_without_folder(tmp_path: Path) -> None:
     assert (
         list(
-            iter_drive_conversations(
+            iter_drive_sessions(
                 source=Source(name="gemini", path=tmp_path),
                 archive_root=tmp_path,
                 download_assets=False,
@@ -195,7 +184,7 @@ def test_iter_drive_conversations_returns_empty_without_folder(tmp_path: Path) -
     )
 
 
-def test_iter_drive_conversations_tracks_cursor_and_attachment_downloads(tmp_path: Path) -> None:
+def test_iter_drive_sessions_tracks_cursor_and_attachment_downloads(tmp_path: Path) -> None:
     payload: JSONDocument = {
         "title": "Drive Chat",
         "chunkedPrompt": {
@@ -209,7 +198,7 @@ def test_iter_drive_conversations_tracks_cursor_and_attachment_downloads(tmp_pat
             ]
         },
     }
-    client = _DriveConversationClient(
+    client = _DriveSessionClient(
         files=[
             DriveFile("file-1", "chat.json", "application/json", "2025-01-01T00:00:00Z", 10),
             DriveFile("file-2", "newer.json", "application/json", "2025-01-01T00:05:00Z", 10),
@@ -221,8 +210,8 @@ def test_iter_drive_conversations_tracks_cursor_and_attachment_downloads(tmp_pat
     )
     cursor_state: CursorStatePayload = _empty_cursor_state()
 
-    conversations = list(
-        iter_drive_conversations(
+    sessions = list(
+        iter_drive_sessions(
             source=Source(name="gemini", folder="Google AI Studio"),
             archive_root=tmp_path,
             client=client,
@@ -231,18 +220,18 @@ def test_iter_drive_conversations_tracks_cursor_and_attachment_downloads(tmp_pat
         )
     )
 
-    assert len(conversations) == 2
+    assert len(sessions) == 2
     assert cursor_state["file_count"] == 2
     assert cursor_state["latest_file_id"] == "file-2"
     assert cursor_state["latest_file_name"] == "newer.json"
-    assert conversations[0].attachments[0].provider_attachment_id == "att-1"
-    assert conversations[0].attachments[0].path is not None
+    assert sessions[0].attachments[0].provider_attachment_id == "att-1"
+    assert sessions[0].attachments[0].path is not None
     assert [file_id for file_id, _ in client.download_to_path_calls] == ["att-1", "att-1"]
 
 
-def test_iter_drive_conversations_tracks_payload_failures_and_continues(tmp_path: Path) -> None:
+def test_iter_drive_sessions_tracks_payload_failures_and_continues(tmp_path: Path) -> None:
     good_payload: JSONDocument = {"chunkedPrompt": {"chunks": [{"role": "user", "text": "ok"}]}}
-    client = _DriveConversationClient(
+    client = _DriveSessionClient(
         files=[
             DriveFile("good", "good.json", "application/json", None, None),
             DriveFile("bad", "bad.json", "application/json", None, None),
@@ -252,8 +241,8 @@ def test_iter_drive_conversations_tracks_payload_failures_and_continues(tmp_path
     )
     cursor_state: CursorStatePayload = _empty_cursor_state()
 
-    conversations = list(
-        iter_drive_conversations(
+    sessions = list(
+        iter_drive_sessions(
             source=Source(name="gemini", folder="Google AI Studio"),
             archive_root=tmp_path,
             client=client,
@@ -262,19 +251,19 @@ def test_iter_drive_conversations_tracks_payload_failures_and_continues(tmp_path
         )
     )
 
-    assert len(conversations) == 1
+    assert len(sessions) == 1
     assert cursor_state["error_count"] == 1
     assert cursor_state["latest_error_file"] == "bad.json"
     assert "download failed" in str(cursor_state["latest_error"])
     assert client.download_to_path_calls == []
 
 
-def test_iter_drive_conversations_uses_injected_client_without_recreating(tmp_path: Path) -> None:
-    client = _DriveConversationClient(files=[], payloads={})
+def test_iter_drive_sessions_uses_injected_client_without_recreating(tmp_path: Path) -> None:
+    client = _DriveSessionClient(files=[], payloads={})
 
     with patch("polylogue.sources.drive.build_drive_source_client") as drive_client_factory:
         list(
-            iter_drive_conversations(
+            iter_drive_sessions(
                 source=Source(name="gemini", folder="Google AI Studio"),
                 archive_root=tmp_path,
                 client=client,

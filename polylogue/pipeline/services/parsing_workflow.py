@@ -174,6 +174,8 @@ async def ingest_sources(
     timings: dict[str, float] = {}
     backend = service._require_backend()
     source_names = [source.name for source in sources]
+    # Raw rows scope by their configured-source filesystem path, not origin.
+    source_paths = [str(source.path) for source in sources if source.path is not None]
 
     # Stage 1: Acquire
     t0 = time.perf_counter()
@@ -220,7 +222,7 @@ async def ingest_sources(
         )
         if stage in PARSE_STAGES:
             backlog = await planning_service.collect_parse_backlog(
-                source_names=source_names or None,
+                source_paths=source_paths or None,
                 exclude_raw_ids=parse_raw_ids,
             )
             _append_unique_raw_ids(
@@ -230,7 +232,7 @@ async def ingest_sources(
             )
             # Also collect validation backlog (records not yet validated/parsed)
             validation_backlog = await planning_service.collect_validation_backlog(
-                source_names=source_names or None,
+                source_paths=source_paths or None,
                 exclude_raw_ids=parse_raw_ids,
             )
             _append_unique_raw_ids(
@@ -290,7 +292,7 @@ async def parse_from_raw(
     progress_callback: ProgressCallback | None = None,
     force_write: bool = False,
 ) -> ParseResult:
-    """Parse raw_conversations from DB into conversations.
+    """Parse raw_sessions from DB into sessions.
 
     Uses the unified ingest batch processor (decode + validate + parse +
     transform + write in one pass). Derived session-insight materialization

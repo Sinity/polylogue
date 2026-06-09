@@ -13,24 +13,25 @@ from datetime import datetime, timezone
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from polylogue.archive.conversation.models import ConversationSummary
-from polylogue.archive.query.search_hits import conversation_search_hit_from_summary
+from polylogue.archive.query.search_hits import session_search_hit_from_summary
+from polylogue.archive.session.domain_models import SessionSummary
+from polylogue.core.enums import Origin
 from polylogue.surfaces.payloads import (
-    ConversationSearchHitPayload,
+    SessionSearchHitPayload,
     build_search_envelope,
     decode_search_cursor,
 )
-from polylogue.types import ConversationId, Provider
+from polylogue.types import SessionId
 
 
-def _payload(conv_id: str, rank: int, score: float) -> ConversationSearchHitPayload:
-    summary = ConversationSummary(
-        id=ConversationId(conv_id),
-        provider=Provider.CHATGPT,
-        title=f"Conversation {conv_id}",
+def _payload(conv_id: str, rank: int, score: float) -> SessionSearchHitPayload:
+    summary = SessionSummary(
+        id=SessionId(conv_id),
+        origin=Origin.CHATGPT_EXPORT,
+        title=f"Session {conv_id}",
         created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
     )
-    hit = conversation_search_hit_from_summary(
+    hit = session_search_hit_from_summary(
         summary,
         rank=rank,
         retrieval_lane="dialogue",
@@ -41,10 +42,10 @@ def _payload(conv_id: str, rank: int, score: float) -> ConversationSearchHitPayl
         matched_terms=("needle",),
         score_kind="bm25",
     )
-    return ConversationSearchHitPayload.from_search_hit(hit, message_count=0)
+    return SessionSearchHitPayload.from_search_hit(hit, message_count=0)
 
 
-# Strategy: distinct conversation ids (sorted) with strictly-decreasing
+# Strategy: distinct session ids (sorted) with strictly-decreasing
 # bm25 scores so the natural lane ordering is unambiguous.
 _n_hits = st.integers(min_value=3, max_value=15)
 _page_size = st.integers(min_value=1, max_value=6)
@@ -82,7 +83,7 @@ def test_full_walk_covers_all_hits_in_order(n: int, page: int) -> None:
             retrieval_lane="dialogue",
             cursor=cursor,
         )
-        page_ids = [h.conversation.id for h in envelope.hits]
+        page_ids = [h.session.id for h in envelope.hits]
         if not page_ids:
             break
         # No duplicates between pages.

@@ -318,14 +318,14 @@ class TestCollectFieldStats:
         stats = _collect_field_stats(samples)
         assert "$.mapping.*" in stats
 
-    def test_conversation_ids_tracked(self) -> None:
+    def test_session_ids_tracked(self) -> None:
         samples: list[JSONDocument] = [{"status": "active"}, {"status": "active"}, {"status": "pending"}]
         conv_ids: list[str | None] = ["conv1", "conv1", "conv2"]
-        stats = _collect_field_stats(samples, conversation_ids=conv_ids)
+        stats = _collect_field_stats(samples, session_ids=conv_ids)
         status_stats = stats["$.status"]
-        assert "active" in status_stats.value_conversation_ids
-        assert status_stats.value_conversation_ids["active"] == {"conv1"}
-        assert status_stats.value_conversation_ids["pending"] == {"conv2"}
+        assert "active" in status_stats.value_session_ids
+        assert status_stats.value_session_ids["active"] == {"conv1"}
+        assert status_stats.value_session_ids["pending"] == {"conv2"}
 
     @given(
         st.lists(

@@ -3,21 +3,20 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 from typing import TypeAlias
 
 import pytest
 
 from devtools.pipeline_probe import ProbeSummary, _build_budget_report, _write_probe_sources, main, run_probe
+from devtools.pipeline_probe.result import _db_raw_fanout, _db_row_counts
 from devtools.regression_cases import RegressionCase
 from polylogue.scenarios import CorpusRequest, CorpusScenario, CorpusSpec, PipelineProbeRequest
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.repository import ConversationRepository
-from polylogue.storage.runtime import RawConversationRecord
-from polylogue.storage.sqlite import create_backend
-from polylogue.storage.sqlite.connection import open_connection
-from polylogue.types import Provider, ValidationStatus
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 JsonScalar: TypeAlias = str | int | float | bool | None
 JsonValue: TypeAlias = JsonScalar | dict[str, "JsonValue"] | list["JsonValue"]
@@ -93,6 +92,69 @@ def test_build_budget_report_accounts_for_recorded_child_rss() -> None:
     assert report["violations"] == ["peak RSS 110.0 MiB exceeded budget 100.0 MiB"]
 
 
+def test_pipeline_probe_db_stats_and_fanout_read_archive_file_set(tmp_path: Path) -> None:
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    with sqlite3.connect(source_db) as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index,
+                blob_hash, blob_size, acquired_at_ms
+            ) VALUES ('raw-archive', 'codex-session', 'provider-native-archive', '/tmp/source.jsonl', 0, ?, 42, 1)
+            """,
+            (b"r" * 32,),
+        )
+    with sqlite3.connect(index_db) as conn:
+        conn.execute(
+            """
+            INSERT INTO sessions (
+                native_id, origin, raw_id, content_hash
+            ) VALUES ('provider-native-archive', 'codex-session', 'raw-archive', ?)
+            """,
+            (b"s" * 32,),
+        )
+        conn.execute(
+            """
+            INSERT INTO messages (
+                session_id, native_id, position, role, content_hash
+            ) VALUES ('codex-session:provider-native-archive', 'm1', 0, 'user', ?)
+            """,
+            (b"m" * 32,),
+        )
+        conn.execute(
+            """
+            INSERT INTO blocks (
+                message_id, session_id, position, block_type, text
+            ) VALUES ('codex-session:provider-native-archive:m1', 'codex-session:provider-native-archive', 0, 'text', 'hello')
+            """
+        )
+
+    stats = _db_row_counts(index_db)
+    fanout = _db_raw_fanout(index_db)
+
+    assert stats["raw_sessions_count"] == 1
+    assert stats["sessions_count"] == 1
+    assert stats["messages_count"] == 1
+    assert stats["blocks_count"] == 1
+    assert stats["archive_file_set_source_db_size_bytes"] > 0
+    assert stats["archive_file_set_index_db_size_bytes"] > 0
+    assert fanout == [
+        {
+            "raw_id": "raw-archive",
+            "payload_provider": "codex-session",
+            "source_name": "codex-session",
+            "blob_size_bytes": 42,
+            "session_count": 1,
+            "message_count": 1,
+            "parse_error": None,
+            "storage_route": "archive_file_set",
+        }
+    ]
+
+
 def _synthetic_request(workdir: Path) -> PipelineProbeRequest:
     return PipelineProbeRequest(
         stage="parse",
@@ -166,94 +228,69 @@ def _source_subset_request(
     )
 
 
+def _seed_archive_source_payload(provider: str, seed: int) -> bytes:
+    return SyntheticCorpus.generate_for_spec(
+        CorpusSpec.for_provider(
+            provider,
+            count=1,
+            messages_min=3,
+            messages_max=3,
+            seed=seed,
+            origin="generated.test-pipeline-probe",
+            tags=("synthetic", "test", "pipeline-probe"),
+        )
+    )[0]
+
+
 async def _seed_archive_source(tmp_path: Path) -> tuple[Path, Path]:
     source_db = tmp_path / "source.db"
     source_blob_root = tmp_path / "source-blobs"
     blob_store = BlobStore(source_blob_root)
-    backend = create_backend(db_path=source_db)
-    repository = ConversationRepository(backend=backend)
-    try:
-        raw_payloads = [
-            (
-                "chatgpt",
-                "chatgpt-main",
-                SyntheticCorpus.generate_for_spec(
-                    CorpusSpec.for_provider(
-                        "chatgpt",
-                        count=1,
-                        messages_min=3,
-                        messages_max=3,
-                        seed=100,
-                        origin="generated.test-pipeline-probe",
-                        tags=("synthetic", "test", "pipeline-probe"),
-                    )
-                )[0],
-            ),
-            (
-                "chatgpt",
-                "chatgpt-sidecar",
-                SyntheticCorpus.generate_for_spec(
-                    CorpusSpec.for_provider(
-                        "chatgpt",
-                        count=1,
-                        messages_min=3,
-                        messages_max=3,
-                        seed=101,
-                        origin="generated.test-pipeline-probe",
-                        tags=("synthetic", "test", "pipeline-probe"),
-                    )
-                )[0],
-            ),
-            (
-                "codex",
-                "codex-main",
-                SyntheticCorpus.generate_for_spec(
-                    CorpusSpec.for_provider(
-                        "codex",
-                        count=1,
-                        messages_min=3,
-                        messages_max=3,
-                        seed=200,
-                        origin="generated.test-pipeline-probe",
-                        tags=("synthetic", "test", "pipeline-probe"),
-                    )
-                )[0],
-            ),
-            (
-                "codex",
-                "codex-sidecar",
-                SyntheticCorpus.generate_for_spec(
-                    CorpusSpec.for_provider(
-                        "codex",
-                        count=1,
-                        messages_min=3,
-                        messages_max=3,
-                        seed=201,
-                        origin="generated.test-pipeline-probe",
-                        tags=("synthetic", "test", "pipeline-probe"),
-                    )
-                )[0],
-            ),
-        ]
-        for index, (source_name, _conversation_name, raw_bytes) in enumerate(raw_payloads):
-            raw_id, blob_size = blob_store.write_from_bytes(raw_bytes)
-            await repository.save_raw_conversation(
-                RawConversationRecord(
-                    raw_id=raw_id,
-                    payload_provider=Provider.from_string(source_name),
-                    source_name=source_name,
-                    source_path=f"/tmp/{source_name}-{index}",
-                    source_index=index,
-                    blob_size=blob_size,
-                    acquired_at=f"2026-04-0{index + 1}T12:00:00Z",
-                    file_mtime=f"2026-04-0{index + 1}T11:00:00Z",
-                    parsed_at="2026-04-01T00:00:00Z",
-                    validated_at="2026-04-01T00:00:00Z",
-                    validation_status=ValidationStatus.PASSED,
-                )
+    # The pipeline probe reads raw_sessions.origin/blob_hash directly from
+    # source.db.
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    raw_specs = [
+        ("chatgpt", "chatgpt-export", "chatgpt-main", 100),
+        ("chatgpt", "chatgpt-export", "chatgpt-sidecar", 101),
+        ("codex", "codex-session", "codex-main", 200),
+        ("codex", "codex-session", "codex-sidecar", 201),
+    ]
+    with sqlite3.connect(source_db) as conn:
+        for index, (provider, origin, native_id, seed) in enumerate(raw_specs):
+            blob_hash_hex, blob_size = blob_store.write_from_bytes(_seed_archive_source_payload(provider, seed))
+            blob_hash = bytes.fromhex(blob_hash_hex)
+            source_path = f"/tmp/{native_id}-{index}"
+            acquired_at_ms = (index + 1) * 1000
+            conn.execute(
+                """
+                INSERT INTO raw_sessions (
+                    raw_id, origin, native_id, source_path, source_index,
+                    blob_hash, blob_size, acquired_at_ms,
+                    parsed_at_ms, validated_at_ms, validation_status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'passed')
+                """,
+                (
+                    blob_hash_hex,
+                    origin,
+                    native_id,
+                    source_path,
+                    index,
+                    blob_hash,
+                    blob_size,
+                    acquired_at_ms,
+                    acquired_at_ms,
+                    acquired_at_ms,
+                ),
             )
-    finally:
-        await repository.close()
+            conn.execute(
+                """
+                INSERT INTO blob_refs (
+                    blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms
+                ) VALUES (?, ?, 'raw_payload', ?, ?, ?)
+                """,
+                (blob_hash, blob_hash_hex, source_path, blob_size, acquired_at_ms),
+            )
+        conn.commit()
 
     return source_db, source_blob_root
 
@@ -287,7 +324,7 @@ async def test_run_probe_emits_real_pipeline_summary(tmp_path: Path) -> None:
     assert _require_number(first_batch["write_elapsed_ms"]) >= 0
     assert _require_number(first_batch["commit_elapsed_ms"]) >= 0
     assert _require_number(first_batch["raw_state_update_elapsed_ms"]) >= 0
-    raw_count = _require_int(_json_path(summary, "db_stats", "raw_conversations_count"))
+    raw_count = _require_int(_json_path(summary, "db_stats", "raw_sessions_count"))
     assert raw_count >= 1
     assert len(_require_json_array(summary["raw_fanout"])) == raw_count
 
@@ -518,7 +555,7 @@ def test_main_runs_source_subset_mode(tmp_path: Path, capsys: pytest.CaptureFixt
 
     assert exit_code == 0
     assert _json_path(printed, "probe", "input_mode") == "source-subset"
-    assert _json_path(printed, "db_stats", "raw_conversations_count") == 1
+    assert _json_path(printed, "db_stats", "raw_sessions_count") == 1
 
 
 def test_main_uses_ephemeral_workdir_when_omitted(capsys: pytest.CaptureFixture[str]) -> None:
@@ -631,15 +668,68 @@ async def test_run_probe_can_sample_archive_subset_and_persist_manifest(tmp_path
     assert _json_path(summary, "probe", "input_mode") == "archive-subset"
     assert _json_path(summary, "sample", "selected_count") == 2
     assert _json_path(summary, "sample", "provider_counts") == {"chatgpt": 1, "codex": 1}
-    assert _json_path(summary, "db_stats", "raw_conversations_count") == 2
-    assert _json_path(summary, "db_stats", "conversations_count") == 2
+    assert _json_path(summary, "db_stats", "raw_sessions_count") == 2
+    assert _json_path(summary, "db_stats", "sessions_count") == 2
     raw_fanout = _require_json_array(summary["raw_fanout"])
     assert len(raw_fanout) == 2
-    assert sum(_require_int(_require_json_object(item)["conversation_count"]) for item in raw_fanout) == 2
+    assert sum(_require_int(_require_json_object(item)["session_count"]) for item in raw_fanout) == 2
     assert _require_str(_json_path(summary, "paths", "manifest_path")).endswith("archive-subset-manifest.json")
     assert len(_require_str(_json_path(summary, "provenance", "manifest_sha256"))) == 64
     assert manifest["sample_per_provider"] == 1
     assert len(_require_json_array(manifest["records"])) == 2
+
+
+async def test_run_probe_can_sample_archive_file_set_subset(tmp_path: Path) -> None:
+    source_db = tmp_path / "source.db"
+    source_blob_root = tmp_path / "source-blobs"
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    blob_hash, blob_size = BlobStore(source_blob_root).write_from_bytes(
+        SyntheticCorpus.generate_for_spec(
+            CorpusSpec.for_provider(
+                "chatgpt",
+                count=1,
+                messages_min=3,
+                messages_max=3,
+                seed=301,
+                origin="generated.test-pipeline-probe-archive",
+                tags=("synthetic", "test", "pipeline-probe"),
+            )
+        )[0]
+    )
+    with sqlite3.connect(source_db) as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index,
+                blob_hash, blob_size, acquired_at_ms, parsed_at_ms,
+                validated_at_ms, validation_status
+            ) VALUES (
+                'archive-raw-session-id', 'chatgpt-export', 'chatgpt-archive-1',
+                '/tmp/chatgpt-archive.json', 0, ?, ?, 1, 2, 3, 'passed'
+            )
+            """,
+            (bytes.fromhex(blob_hash), blob_size),
+        )
+    manifest_out = tmp_path / "subset-archive-manifest.json"
+    request = _archive_request(
+        workdir=tmp_path / "archive-archive-probe",
+        source_db=source_db,
+        source_blob_root=source_blob_root,
+        manifest_out=manifest_out,
+    )
+
+    summary = await run_probe(request)
+    manifest = _load_json_object(manifest_out.read_text(encoding="utf-8"))
+    records = _require_json_array(manifest["records"])
+    record = _require_json_object(records[0])
+
+    assert _json_path(summary, "probe", "input_mode") == "archive-subset"
+    assert _json_path(summary, "sample", "selected_count") == 1
+    assert _json_path(summary, "sample", "provider_counts") == {"chatgpt": 1}
+    assert record["raw_id"] == blob_hash
+    assert record["source_name"] == "chatgpt"
+    assert record["source_path"] == "/tmp/chatgpt-archive.json"
+    assert record["blob_size"] == blob_size
 
 
 async def test_run_probe_can_replay_archive_subset_manifest(tmp_path: Path) -> None:
@@ -670,9 +760,10 @@ async def test_run_probe_can_replay_archive_subset_manifest(tmp_path: Path) -> N
 
 
 async def test_run_probe_rejects_empty_archive_subset(tmp_path: Path) -> None:
-    empty_db = tmp_path / "empty-source.db"
-    with open_connection(empty_db):
-        pass
+    empty_db = tmp_path / "source.db"
+    # A source tier with no raw rows: the archive-subset probe reads
+    # raw_sessions (origin) and must reject the empty archive cleanly.
+    initialize_archive_database(empty_db, ArchiveTier.SOURCE)
     empty_blob_root = tmp_path / "empty-blobs"
     request = _archive_request(
         workdir=tmp_path / "archive-probe-empty",
@@ -680,5 +771,5 @@ async def test_run_probe_rejects_empty_archive_subset(tmp_path: Path) -> None:
         source_blob_root=empty_blob_root,
     )
 
-    with pytest.raises(ValueError, match="found no raw conversations"):
+    with pytest.raises(ValueError, match="found no raw sessions"):
         await run_probe(request)

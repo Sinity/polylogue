@@ -20,7 +20,7 @@ This test:
 
 The whitelist (``_AUDITED_SITES``) is keyed by ``(relative_path, line_no)``
 and records *why* a given interpolation is safe. New interpolations must be
-audited and added explicitly; the gate forces that conversation rather than
+audited and added explicitly; the gate forces that session rather than
 allowing silent drift.
 """
 
@@ -48,8 +48,24 @@ _AUDITED_SITES: Final[dict[tuple[str, int], str]] = {
     # literal with a ``{}`` for the placeholder list); ``placeholders`` is a
     # generated ``?,?`` string sized to the bound ``chunk``; values flow through
     # bound params, never the format string.
-    ("polylogue/storage/repository/archive/conversations.py", 296): (
+    ("polylogue/storage/repository/archive/sessions.py", 300): (
         "chunked IN-clause: literal scoped_sql template + '?,?' placeholders, values bound"
+    ),
+    # #1743 readiness fallback coverage (_archive_fallback_coverage):
+    #   degraded_row = self._conn.execute(f"... FROM {table_name} ... WHERE ({any_terms}){clause}")
+    # ``table_name`` is a closed insight-table identifier; ``any_terms`` is built
+    # from the (column, path) pairs in the closed ``_INSIGHT_FALLBACK_PAYLOAD``
+    # constant; ``clause`` comes from ``_readiness_session_filter`` whose values
+    # flow through bound params. No user input enters the format string.
+    ("polylogue/storage/sqlite/archive_tiers/archive.py", 2529): (
+        "readiness fallback coverage: closed insight-table + _INSIGHT_FALLBACK_PAYLOAD column/path; values bound"
+    ),
+    # #1743 readiness fallback reason counts (_archive_fallback_coverage):
+    #   rows = self._conn.execute(f"... FROM {table_name} ... json_each(... '{path}') ...{clause}")
+    # ``table_name``/``column``/``path`` are the closed-constant identifiers
+    # above; ``clause`` values are bound. No user input enters the format string.
+    ("polylogue/storage/sqlite/archive_tiers/archive.py", 2538): (
+        "readiness fallback reason counts: closed insight-table + _INSIGHT_FALLBACK_PAYLOAD column/path; values bound"
     ),
 }
 
@@ -100,6 +116,7 @@ _TRUSTED_IDENTIFIER_NAMES: frozenset[str] = frozenset(
         "backend",
         # `placeholders` / `aid_placeholders` / etc. — `", ".join("?" * n)`
         "placeholders",
+        "native_placeholders",
         "aid_placeholders",
         "values",
         "values_sql",
@@ -107,13 +124,15 @@ _TRUSTED_IDENTIFIER_NAMES: frozenset[str] = frozenset(
         "dimension",  # vec0 dimension is an int literal from config
         "table",
         "table_name",
+        "status_table",
+        "meta_table",
         "source_table",
         "freshness_table",
         "tablename",
         "column",
         "column_name",
         "columnname",
-        "id_column",  # compile-time PK column name (e.g. "conversation_id")
+        "id_column",  # compile-time PK column name (e.g. "session_id")
         "key_column",
         "view",
         "view_name",
@@ -135,6 +154,14 @@ _TRUSTED_IDENTIFIER_NAMES: frozenset[str] = frozenset(
         "select_columns",
         "selected",
         "definition",
+        # compile-time SELECT column-list constants (record projections)
+        "_session_record_select",
+        "_message_record_select",
+        # cross-tier ATTACH schema name from a closed module-level tuple
+        "schema_name",
+        # archive correction filter clauses — all literal "col = ?" fragments,
+        # values bound; built in feedback storage helper from a closed set
+        "archive_clauses",
         # SQL fragments built by helper functions from closed-set inputs
         "set_clause",
         "set_clauses",
@@ -142,16 +169,32 @@ _TRUSTED_IDENTIFIER_NAMES: frozenset[str] = frozenset(
         "where",
         "where_clause",
         "where_clauses",
+        "clauses",
         "where_sql",
+        "clause",
         "scope_clause",
         "scope_sql",
         "json_where",
         "join",  # attribute name of str.join() in `' AND '.join(where_clauses)`
         "join_clause",
         "filter_sql",
+        "pagination",
+        "bucket_format",
         "id_filter",
         "having_clause",
+        "tag_clause",
         "effective_raw_provider_sql",
+        "base_select",  # local literal SELECT template; dynamic values stay bound
+        "quoted",  # double-quote escaped identifier from a closed table list
+        "source_filter",  # local literal predicate fragment plus bound value
+        "source_alias",  # attached schema alias returned by _ensure_source_tier_attached
+        "schema",  # closed SQLite schema alias
+        "tags_relation",  # archive-local table name or closed user/archive tag UNION relation
+        "_tags_relation",  # instance copy of the same closed archive tag relation
+        "target_table",  # closed user-state target mapping table name
+        "target_column",  # closed user-state target mapping column name
+        "spec",  # archive tier spec object; version is an internal int literal
+        "version",
     }
 )
 

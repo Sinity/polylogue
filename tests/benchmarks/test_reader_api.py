@@ -1,8 +1,8 @@
 """Reader API benchmark tests.
 
 Covers: daemon HTTP endpoint latency on synthetic data
-  - GET /api/conversations       (list summaries)
-  - GET /api/conversations/{id}  (conversation detail)
+  - GET /api/sessions       (list summaries)
+  - GET /api/sessions/{id}  (session detail)
   - GET /api/facets              (aggregated provider/tag counts)
   - GET /api/status              (archive-level stats)
   - Context pack assembly        (future surface — placeholder)
@@ -22,33 +22,33 @@ from tests.benchmarks.helpers import BenchmarkFixture, benchmark_store_call
 
 
 def _first_conv_id(db_path: Path) -> str:
-    """Resolve the first conversation ID from the seeded benchmark DB."""
+    """Resolve the first session ID from the seeded benchmark DB."""
     from tests.benchmarks.helpers import open_bench_store
 
     with open_bench_store(db_path) as store:
-        summaries = store.run(store.repository.filter().list_summaries())
-        assert summaries, "Seeded benchmark DB has no conversations"
+        summaries = store.run(store.repository.list_summaries())
+        assert summaries, "Seeded benchmark DB has no sessions"
         return str(summaries[0].id)
 
 
 # ---------------------------------------------------------------------------
-# Conversation listing (GET /api/conversations)
+# Session listing (GET /api/sessions)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.benchmark
-def test_bench_reader_list_conversations(
+def test_bench_reader_list_sessions(
     benchmark: BenchmarkFixture,
     bench_db_5k: Path,
 ) -> None:
-    """Benchmark listing conversation summaries through the filter.
+    """Benchmark listing session summaries through the filter.
 
-    Matches: GET /api/conversations — returns list-of-summary envelope.
+    Matches: GET /api/sessions — returns list-of-summary envelope.
     """
     benchmark_store_call(
         benchmark,
         bench_db_5k,
-        lambda store: store.repository.filter().list_summaries(),
+        lambda store: store.repository.list_summaries(),
     )
 
 
@@ -57,27 +57,27 @@ def test_bench_reader_list_with_provider(
     benchmark: BenchmarkFixture,
     bench_db_5k: Path,
 ) -> None:
-    """Benchmark listing conversations filtered by provider."""
+    """Benchmark listing sessions filtered by provider."""
     benchmark_store_call(
         benchmark,
         bench_db_5k,
-        lambda store: store.repository.filter().provider("claude-code").list_summaries(),
+        lambda store: store.repository.list_summaries(provider="claude-code"),
     )
 
 
 # ---------------------------------------------------------------------------
-# Conversation detail (GET /api/conversations/{id})
+# Session detail (GET /api/sessions/{id})
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.benchmark
-def test_bench_reader_get_conversation(
+def test_bench_reader_get_session(
     benchmark: BenchmarkFixture,
     bench_db_5k: Path,
 ) -> None:
-    """Benchmark fetching a single conversation with full messages.
+    """Benchmark fetching a single session with full messages.
 
-    Matches: GET /api/conversations/{id} — returns conversation + all messages.
+    Matches: GET /api/sessions/{id} — returns session + all messages.
     """
     conv_id = _first_conv_id(bench_db_5k)
 
@@ -86,7 +86,7 @@ def test_bench_reader_get_conversation(
 
         with open_bench_store(db_path) as store:
             conv = store.run(store.repository.get(conv_id))
-            assert conv is not None, f"Conversation {conv_id} not found"
+            assert conv is not None, f"Session {conv_id} not found"
             assert len(conv.messages) > 0
 
     benchmark(lambda: _get_conv(bench_db_5k))
@@ -147,7 +147,7 @@ def test_bench_reader_context_pack(
     """Benchmark assembling a minimal context pack for a session.
 
     Placeholder for the context-pack reader surface.  Uses the same
-    get-conversation path as the detail endpoint today.
+    get-session path as the detail endpoint today.
     """
     conv_id = _first_conv_id(bench_db_5k)
 
@@ -174,7 +174,7 @@ def test_bench_reader_cost_rollup(
     benchmark: BenchmarkFixture,
     bench_db_5k: Path,
 ) -> None:
-    """Benchmark computing a cost rollup over conversations.
+    """Benchmark computing a cost rollup over sessions.
 
     Placeholder for the cost-rollup reader surface.  Uses provider-scoped
     stats as the nearest available query today.

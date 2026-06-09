@@ -8,12 +8,12 @@ import aiosqlite
 
 from polylogue.storage.runtime import SessionLatencyProfileRecord
 from polylogue.storage.sqlite.queries.mappers_support import _row_float, _row_int, _row_text
-from polylogue.types import ConversationId
+from polylogue.types import SessionId
 
 
 def _row_to_session_latency_profile_record(row: sqlite3.Row) -> SessionLatencyProfileRecord:
     return SessionLatencyProfileRecord(
-        conversation_id=ConversationId(row["conversation_id"]),
+        session_id=SessionId(row["session_id"]),
         materializer_version=int(_row_int(row, "materializer_version", 1) or 1),
         materialized_at=row["materialized_at"],
         source_updated_at=_row_text(row, "source_updated_at"),
@@ -34,17 +34,17 @@ def _row_to_session_latency_profile_record(row: sqlite3.Row) -> SessionLatencyPr
         median_user_response_ms=int(_row_int(row, "median_user_response_ms", 0) or 0),
         tool_call_count_by_category_json=_row_text(row, "tool_call_count_by_category_json") or "{}",
         evidence_payload_json=_row_text(row, "evidence_payload_json") or "{}",
-        search_text=_row_text(row, "search_text") or str(row["conversation_id"]),
+        search_text=_row_text(row, "search_text") or str(row["session_id"]),
     )
 
 
 async def get_session_latency_profile(
     conn: aiosqlite.Connection,
-    conversation_id: str,
+    session_id: str,
 ) -> SessionLatencyProfileRecord | None:
     cursor = await conn.execute(
-        "SELECT * FROM session_latency_profiles WHERE conversation_id = ?",
-        (conversation_id,),
+        "SELECT * FROM session_latency_profiles WHERE session_id = ?",
+        (session_id,),
     )
     row = await cursor.fetchone()
     return _row_to_session_latency_profile_record(row) if row else None

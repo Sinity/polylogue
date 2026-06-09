@@ -41,8 +41,8 @@ anything different; release-please consumes the existing history.
 - [ ] CI green on `master`.
 - [ ] `CHANGELOG.md` diff in the release PR looks right — entries grouped under
       the configured sections, no stray Unreleased content left over.
-- [ ] `SCHEMA_VERSION` bumped if any change in this slice modified
-      `polylogue/storage/sqlite/schema_ddl.py` or its inputs.
+- [ ] The owning archive-tier schema version was bumped if this slice modified
+      `polylogue/storage/sqlite/archive_tiers/*.py` DDL.
 - [ ] No `until: "vX.Y.Z"` exception in `docs/plans/*.yaml` references this
       release without a resolution PR.
 - [ ] `pip-audit` green (covered by CI; re-run locally if anything changed

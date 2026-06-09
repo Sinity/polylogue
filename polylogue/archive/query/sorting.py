@@ -1,4 +1,4 @@
-"""Sorting and finalization helpers for immutable conversation query plans."""
+"""Sorting and finalization helpers for immutable session query plans."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Protocol, TypeAlias, TypeVar
 
 if TYPE_CHECKING:
-    from polylogue.archive.models import Conversation, ConversationSummary
+    from polylogue.archive.models import Session, SessionSummary
 
 from polylogue.archive.filter.types import SortField
 
@@ -57,32 +57,32 @@ def sort_generic(
     return sorted(items, key=key_fn, reverse=not plan.reverse)
 
 
-def sort_conversations(
+def sort_sessions(
     plan: QuerySortPlan,
-    conversations: list[Conversation],
-) -> list[Conversation]:
+    sessions: list[Session],
+) -> list[Session]:
     dt_min = datetime.min.replace(tzinfo=timezone.utc)
 
-    def _key(conversation: Conversation) -> SortKey:
+    def _key(session: Session) -> SortKey:
         if plan.sort == "date":
-            return conversation.updated_at or dt_min
+            return session.updated_at or dt_min
         if plan.sort == "messages":
-            return len(conversation.messages)
+            return len(session.messages)
         if plan.sort == "words":
-            return sum(message.word_count for message in conversation.messages)
+            return sum(message.word_count for message in session.messages)
         if plan.sort == "longest":
-            return max((message.word_count for message in conversation.messages), default=0)
+            return max((message.word_count for message in session.messages), default=0)
         if plan.sort == "tokens":
-            return sum(len(message.text or "") for message in conversation.messages) // 4
-        return conversation.updated_at or dt_min
+            return sum(len(message.text or "") for message in session.messages) // 4
+        return session.updated_at or dt_min
 
-    return sort_generic(plan, conversations, _key)
+    return sort_generic(plan, sessions, _key)
 
 
 def sort_summaries(
     plan: QuerySortPlan,
-    summaries: list[ConversationSummary],
-) -> list[ConversationSummary]:
+    summaries: list[SessionSummary],
+) -> list[SessionSummary]:
     dt_min = datetime.min.replace(tzinfo=timezone.utc)
     return sort_generic(plan, summaries, lambda summary: summary.updated_at or dt_min)
 
@@ -112,7 +112,7 @@ __all__ = [
     "finalize_window",
     "QuerySortPlan",
     "ResultWindow",
-    "sort_conversations",
+    "sort_sessions",
     "sort_generic",
     "sort_summaries",
 ]

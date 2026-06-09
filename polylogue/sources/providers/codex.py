@@ -1,7 +1,7 @@
 """Codex (OpenAI CLI) provider-specific typed models.
 
 These models match the Codex session JSONL format.
-Derived from schema package: polylogue/schemas/providers/codex/versions/v1/elements/conversation_record_stream.schema.json.gz
+Derived from schema package: polylogue/schemas/providers/codex/versions/v1/elements/session_record_stream.schema.json.gz
 
 Codex sessions can have multiple format generations:
 - Envelope format: {"type": "...", "payload": {...}}

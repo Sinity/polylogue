@@ -6,7 +6,11 @@ import json
 from pathlib import Path
 from typing import cast
 
+from polylogue.surfaces.payloads import reader_anchor
 from tests.visual.conftest import (
+    READER_C1,
+    READER_C1_M1,
+    READER_C2,
     ReaderWorkspace,
     assert_no_private_paths,
     get_json,
@@ -54,7 +58,7 @@ def test_reader_search_shell_dom_evidence(reader_workspace: ReaderWorkspace, tmp
     assert dom.scripts == 1
     assert dom.styles == 1
     for phrase in (
-        "Select a conversation",
+        "Select a session",
         "Keyboard Shortcuts",
         "Focus search",
         "Local",
@@ -62,7 +66,7 @@ def test_reader_search_shell_dom_evidence(reader_workspace: ReaderWorkspace, tmp
         "/api/user/annotations",
         "toggleMark",
         "saveAnnotation",
-        "No annotations on this conversation",
+        "No annotations on this session",
         "Save current view",
         "Saved Views",
         "Save workspace",
@@ -99,11 +103,11 @@ def test_reader_search_shell_dom_evidence(reader_workspace: ReaderWorkspace, tmp
 def test_reader_stack_workspace_dom_evidence(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:
     with running_reader_server(reader_workspace) as (_, base_url):
         status, content_type, shell = get_text(
-            base_url, "/w/stack?ids=reader-c1,reader-c2,missing-conv&focus=reader-c1"
+            base_url, f"/w/stack?ids={READER_C1},{READER_C2},missing-conv&focus={READER_C1}"
         )
         stack = cast(
             dict[str, object],
-            get_json(base_url, "/api/stack?ids=reader-c1,reader-c2,missing-conv&focus=reader-c1"),
+            get_json(base_url, f"/api/stack?ids={READER_C1},{READER_C2},missing-conv&focus={READER_C1}"),
         )
 
     assert status == 200
@@ -124,12 +128,12 @@ def test_reader_stack_workspace_dom_evidence(reader_workspace: ReaderWorkspace, 
     assert stack["resolved_count"] == 2
     assert stack["degraded_count"] == 1
     items = cast(list[dict[str, object]], stack["items"])
-    assert items[2]["disabled_reason"] == "conversation_not_found"
+    assert items[2]["disabled_reason"] == "session_not_found"
 
     write_evidence_manifest(
         tmp_path / "reader-stack-workspace-dom-evidence.json",
         artifact_id="polylogue.local_reader.workspace.stack",
-        route="/w/stack?ids=reader-c1,reader-c2,missing-conv&focus=reader-c1",
+        route=f"/w/stack?ids={READER_C1},{READER_C2},missing-conv&focus={READER_C1}",
         fixture_id="reader-visual-synthetic-workspace-v1",
         checks={
             "status": status,
@@ -144,10 +148,10 @@ def test_reader_stack_workspace_dom_evidence(reader_workspace: ReaderWorkspace, 
 
 def test_reader_compare_workspace_dom_evidence(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:
     with running_reader_server(reader_workspace) as (_, base_url):
-        status, content_type, shell = get_text(base_url, "/w/compare?left=reader-c1&right=reader-c2&align=prompt")
+        status, content_type, shell = get_text(base_url, f"/w/compare?left={READER_C1}&right={READER_C2}&align=prompt")
         compare = cast(
             dict[str, object],
-            get_json(base_url, "/api/compare?left=reader-c1&right=reader-c2&align=prompt"),
+            get_json(base_url, f"/api/compare?left={READER_C1}&right={READER_C2}&align=prompt"),
         )
 
     assert status == 200
@@ -165,14 +169,14 @@ def test_reader_compare_workspace_dom_evidence(reader_workspace: ReaderWorkspace
         assert phrase in shell
     assert compare["mode"] == "compare"
     assert compare["align"] == "prompt"
-    assert cast(dict[str, object], compare["left"])["id"] == "reader-c1"
-    assert cast(dict[str, object], compare["right"])["id"] == "reader-c2"
+    assert cast(dict[str, object], compare["left"])["id"] == READER_C1
+    assert cast(dict[str, object], compare["right"])["id"] == READER_C2
     assert cast(list[dict[str, object]], compare["pairs"])
 
     write_evidence_manifest(
         tmp_path / "reader-compare-workspace-dom-evidence.json",
         artifact_id="polylogue.local_reader.workspace.compare",
-        route="/w/compare?left=reader-c1&right=reader-c2&align=prompt",
+        route=f"/w/compare?left={READER_C1}&right={READER_C2}&align=prompt",
         fixture_id="reader-visual-synthetic-workspace-v1",
         checks={
             "status": status,
@@ -185,14 +189,14 @@ def test_reader_compare_workspace_dom_evidence(reader_workspace: ReaderWorkspace
     )
 
 
-def test_reader_conversation_deeplink_and_detail_evidence(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:
+def test_reader_session_deeplink_and_detail_evidence(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:
     with running_reader_server(reader_workspace) as (_, base_url):
-        status, content_type, shell = get_text(base_url, "/c/reader-c1")
-        detail = cast(dict[str, object], get_json(base_url, "/api/conversations/reader-c1"))
-        messages = cast(dict[str, object], get_json(base_url, "/api/conversations/reader-c1/messages"))
-        raw = cast(dict[str, object], get_json(base_url, "/api/conversations/reader-c1/raw"))
-        marks = cast(dict[str, object], get_json(base_url, "/api/user/marks?conversation_id=reader-c1"))
-        annotations = cast(dict[str, object], get_json(base_url, "/api/user/annotations?conversation_id=reader-c1"))
+        status, content_type, shell = get_text(base_url, f"/c/{READER_C1}")
+        detail = cast(dict[str, object], get_json(base_url, f"/api/sessions/{READER_C1}"))
+        messages = cast(dict[str, object], get_json(base_url, f"/api/sessions/{READER_C1}/messages"))
+        raw = cast(dict[str, object], get_json(base_url, f"/api/sessions/{READER_C1}/raw"))
+        marks = cast(dict[str, object], get_json(base_url, f"/api/user/marks?session_id={READER_C1}"))
+        annotations = cast(dict[str, object], get_json(base_url, f"/api/user/annotations?session_id={READER_C1}"))
         saved_views = cast(dict[str, object], get_json(base_url, "/api/user/saved-views"))
 
     assert status == 200
@@ -203,30 +207,29 @@ def test_reader_conversation_deeplink_and_detail_evidence(reader_workspace: Read
     assert_no_private_paths(json.dumps(messages), context="reader messages JSON")
 
     target_ref = cast(dict[str, object], detail["target_ref"])
-    assert target_ref["identity_key"] == "conversation:reader-c1"
-    assert detail["anchor"] == "conversation-reader-c1"
+    assert target_ref["identity_key"] == f"session:{READER_C1}"
+    assert detail["anchor"] == reader_anchor("session", READER_C1)
     assert detail["title"] == "MK3 reader target contract"
 
     message_items = cast(list[dict[str, object]], messages["messages"])
     assert messages["total"] == 3
-    assert message_items[0]["target_ref"] == {
-        "target_type": "message",
-        "target_id": "reader-c1-m1",
-        "conversation_id": "reader-c1",
-        "message_id": "reader-c1-m1",
-        "identity_key": "message:reader-c1:reader-c1-m1",
-    }
+    first_target = cast(dict[str, object], message_items[0]["target_ref"])
+    assert first_target["target_type"] == "message"
+    assert first_target["target_id"] == READER_C1_M1
+    assert first_target["session_id"] == READER_C1
+    assert first_target["message_id"] == READER_C1_M1
+    assert first_target["identity_key"] == f"message:{READER_C1}:{READER_C1_M1}"
     assert message_items[2]["message_type"] == "tool_result"
     tool_actions = cast(dict[str, dict[str, object]], message_items[2]["actions"])
     assert tool_actions["copy_text"]["enabled"] is True
 
-    assert raw["id"] == "reader-c1"
+    assert raw["id"] == READER_C1
     assert "raw_artifacts" in raw
     mark_types = {str(item["mark_type"]) for item in cast(list[dict[str, object]], marks["items"])}
     assert mark_types == {"pin", "star"}
     annotation_items = cast(list[dict[str, object]], annotations["items"])
     assert annotation_items[0]["annotation_id"] == "reader-ann-c1"
-    assert annotation_items[0]["note_text"] == "This conversation anchors the MK3 reader evidence."
+    assert annotation_items[0]["note_text"] == "This session anchors the MK3 reader evidence."
     view_items = cast(list[dict[str, object]], saved_views["items"])
     assert view_items[0]["name"] == "Claude Code reader fixtures"
     assert cast(dict[str, object], view_items[0]["query"])["provider"] == "claude-code"
@@ -235,7 +238,7 @@ def test_reader_conversation_deeplink_and_detail_evidence(reader_workspace: Read
         "status": status,
         "content_type": content_type,
         "shell_bytes": len(shell.encode()),
-        "conversation_target": target_ref["identity_key"],
+        "session_target": target_ref["identity_key"],
         "message_total": messages["total"],
         "tool_message_present": True,
         "raw_endpoint_present": True,
@@ -245,9 +248,9 @@ def test_reader_conversation_deeplink_and_detail_evidence(reader_workspace: Read
         "private_path_safe": True,
     }
     write_evidence_manifest(
-        tmp_path / "reader-conversation-dom-evidence.json",
-        artifact_id="polylogue.local_reader.conversation",
-        route="/c/reader-c1",
+        tmp_path / "reader-session-dom-evidence.json",
+        artifact_id="polylogue.local_reader.session",
+        route=f"/c/{READER_C1}",
         fixture_id="reader-visual-synthetic-v1",
         checks=checks,
     )
@@ -258,22 +261,22 @@ def test_reader_search_query_no_results_and_facets_evidence(
     tmp_path: Path,
 ) -> None:
     with running_reader_server(reader_workspace) as (_, base_url):
-        query = cast(dict[str, object], get_json(base_url, "/api/conversations?query=Hello"))
-        no_results = cast(dict[str, object], get_json(base_url, "/api/conversations?query=zzzz_no_match"))
+        query = cast(dict[str, object], get_json(base_url, "/api/sessions?query=Hello"))
+        no_results = cast(dict[str, object], get_json(base_url, "/api/sessions?query=zzzz_no_match"))
         facets = cast(dict[str, object], get_json(base_url, "/api/facets?query=Hello"))
 
     assert query["total"] == 1
     hits = cast(list[dict[str, object]], query["hits"])
-    hit_conversation = cast(dict[str, object], hits[0]["conversation"])
-    hit_target = cast(dict[str, object], hit_conversation["target_ref"])
+    hit_session = cast(dict[str, object], hits[0]["session"])
+    hit_target = cast(dict[str, object], hit_session["target_ref"])
     hit_match = cast(dict[str, object], hits[0]["match"])
     match_target = cast(dict[str, object], hit_match["target_ref"])
-    assert hit_target["identity_key"] == "conversation:reader-c1"
-    assert match_target["identity_key"] == "message:reader-c1:reader-c1-m1"
+    assert hit_target["identity_key"] == f"session:{READER_C1}"
+    assert match_target["identity_key"] == f"message:{READER_C1}:{READER_C1_M1}"
     assert no_results["total"] == 0
     assert "diagnostics" in no_results
     assert facets["scoped_to_query"] is True
-    assert facets["providers"] == {"claude-code": 1}
+    assert facets["origins"] == {"claude-code-session": 1}
     assert_no_private_paths(json.dumps(query), context="reader search JSON")
     assert_no_private_paths(json.dumps(no_results), context="reader no-results JSON")
     assert_no_private_paths(json.dumps(facets), context="reader query facets JSON")
@@ -281,7 +284,7 @@ def test_reader_search_query_no_results_and_facets_evidence(
     write_evidence_manifest(
         tmp_path / "reader-query-dom-evidence.json",
         artifact_id="polylogue.local_reader.search.query",
-        route="/api/conversations?query=Hello",
+        route="/api/sessions?query=Hello",
         fixture_id="reader-visual-synthetic-v1",
         checks={
             "query_total": query["total"],
@@ -297,16 +300,16 @@ def test_reader_cost_panel_evidence(reader_workspace: ReaderWorkspace, tmp_path:
     """Cost panel endpoint surfaces typed cost shape with confidence chip vocabulary (#1122).
 
     Pins:
-    - existing conversation returns the typed cost-panel payload with a
+    - existing session returns the typed cost-panel payload with a
       confidence chip from the MK3 vocabulary;
-    - unknown conversation returns 404 (not a blank panel);
+    - unknown session returns 404 (not a blank panel);
     - shell HTML carries the new ``Cost`` tab + ``renderInspectorCost``
       so the panel is reachable through the inspector tab strip.
     """
     with running_reader_server(reader_workspace) as (_, base_url):
-        status, content_type, shell = get_text(base_url, "/c/reader-c1")
-        known_cost = cast(dict[str, object], get_json(base_url, "/api/conversations/reader-c1/cost"))
-        unknown_status, _, unknown_body = get_text(base_url, "/api/conversations/does-not-exist/cost")
+        status, content_type, shell = get_text(base_url, f"/c/{READER_C1}")
+        known_cost = cast(dict[str, object], get_json(base_url, f"/api/sessions/{READER_C1}/cost"))
+        unknown_status, _, unknown_body = get_text(base_url, "/api/sessions/does-not-exist/cost")
 
     assert status == 200
     assert "text/html" in content_type
@@ -325,8 +328,8 @@ def test_reader_cost_panel_evidence(reader_workspace: ReaderWorkspace, tmp_path:
     ):
         assert phrase in shell
 
-    # Known conversation: typed envelope, with a chip from the closed vocabulary.
-    assert known_cost["conversation_id"] == "reader-c1"
+    # Known session: typed envelope, with a chip from the closed vocabulary.
+    assert known_cost["session_id"] == READER_C1
     assert known_cost["confidence_tag"] in {
         "q-canonical",
         "q-estimated",
@@ -338,7 +341,7 @@ def test_reader_cost_panel_evidence(reader_workspace: ReaderWorkspace, tmp_path:
     assert isinstance(known_cost["per_model_breakdown"], list)
     assert "missing_reasons" in known_cost
 
-    # Unknown conversation: 404, not a blank panel.
+    # Unknown session: 404, not a blank panel.
     assert unknown_status == 404
     unknown_payload = json.loads(unknown_body)
     assert unknown_payload.get("error") in {"not_found", None}
@@ -346,7 +349,7 @@ def test_reader_cost_panel_evidence(reader_workspace: ReaderWorkspace, tmp_path:
     write_evidence_manifest(
         tmp_path / "reader-cost-panel-dom-evidence.json",
         artifact_id="polylogue.local_reader.cost_panel",
-        route="/api/conversations/reader-c1/cost",
+        route=f"/api/sessions/{READER_C1}/cost",
         fixture_id="reader-visual-synthetic-v1",
         checks={
             "shell_status": status,
@@ -365,21 +368,21 @@ def test_reader_insights_browser_evidence(reader_workspace: ReaderWorkspace, tmp
     """Insights browser endpoint surfaces typed envelope + readiness chips (#1120).
 
     Pins:
-    - existing conversation returns the four-kind envelope (profile/timeline/
+    - existing session returns the four-kind envelope (profile/timeline/
       phases/threads), each with a chip from the closed q-ready/q-partial/
       q-missing vocabulary;
-    - unknown conversation returns 404 (not a blank panel);
+    - unknown session returns 404 (not a blank panel);
     - include= subset honors the request and drops unknown tokens;
     - shell HTML carries the new ``Insights`` tab + ``renderInspectorInsights``
       so the panel is reachable through the inspector tab strip and uses
       the readiness chip CSS classes.
     """
     with running_reader_server(reader_workspace) as (_, base_url):
-        status, content_type, shell = get_text(base_url, "/c/reader-c1")
-        known = cast(dict[str, object], get_json(base_url, "/api/insights/sessions/reader-c1"))
+        status, content_type, shell = get_text(base_url, f"/c/{READER_C1}")
+        known = cast(dict[str, object], get_json(base_url, f"/api/insights/sessions/{READER_C1}"))
         subset = cast(
             dict[str, object],
-            get_json(base_url, "/api/insights/sessions/reader-c1?include=profile,bogus,phases"),
+            get_json(base_url, f"/api/insights/sessions/{READER_C1}?include=profile,bogus,phases"),
         )
         unknown_status, _, unknown_body = get_text(base_url, "/api/insights/sessions/does-not-exist")
 
@@ -398,7 +401,7 @@ def test_reader_insights_browser_evidence(reader_workspace: ReaderWorkspace, tmp
     ):
         assert phrase in shell, f"missing phrase in shell: {phrase!r}"
 
-    assert known["conversation_id"] == "reader-c1"
+    assert known["session_id"] == READER_C1
     assert isinstance(known["kinds"], dict)
     kinds = cast(dict[str, dict[str, object]], known["kinds"])
     assert set(kinds.keys()) == {"profile", "timeline", "phases", "threads"}
@@ -420,7 +423,7 @@ def test_reader_insights_browser_evidence(reader_workspace: ReaderWorkspace, tmp
     write_evidence_manifest(
         tmp_path / "reader-insights-browser-dom-evidence.json",
         artifact_id="polylogue.local_reader.insights_browser",
-        route="/api/insights/sessions/reader-c1",
+        route=f"/api/insights/sessions/{READER_C1}",
         fixture_id="reader-visual-synthetic-v1",
         checks={
             "shell_status": status,
@@ -439,16 +442,16 @@ def test_reader_insights_browser_evidence(reader_workspace: ReaderWorkspace, tmp
 
 
 def test_reader_empty_and_degraded_evidence(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:
-    with running_reader_server(reader_workspace, conversations=False) as (_, base_url):
-        empty_list = cast(dict[str, object], get_json(base_url, "/api/conversations"))
+    with running_reader_server(reader_workspace, sessions=False) as (_, base_url):
+        empty_list = cast(dict[str, object], get_json(base_url, "/api/sessions"))
         empty_facets = cast(dict[str, object], get_json(base_url, "/api/facets"))
 
-    with running_reader_server(reader_workspace, conversations=True, message_fts=False) as (_, base_url):
-        degraded_status, _, degraded_body = get_text(base_url, "/api/conversations?query=Hello")
+    with running_reader_server(reader_workspace, sessions=True, message_fts=False) as (_, base_url):
+        degraded_status, _, degraded_body = get_text(base_url, "/api/sessions?query=Hello")
 
     assert empty_list["total"] == 0
     assert empty_list["items"] == []
-    assert empty_facets["total_conversations"] == 0
+    assert empty_facets["total_sessions"] == 0
     assert degraded_status == 503
     degraded_payload = json.loads(degraded_body)
     assert degraded_payload["ok"] is False
@@ -461,11 +464,11 @@ def test_reader_empty_and_degraded_evidence(reader_workspace: ReaderWorkspace, t
     write_evidence_manifest(
         tmp_path / "reader-degraded-dom-evidence.json",
         artifact_id="polylogue.local_reader.degraded",
-        route="/api/conversations?query=Hello",
+        route="/api/sessions?query=Hello",
         fixture_id="reader-visual-synthetic-empty-and-degraded-v1",
         checks={
             "empty_total": empty_list["total"],
-            "empty_facets_total": empty_facets["total_conversations"],
+            "empty_facets_total": empty_facets["total_sessions"],
             "degraded_status": degraded_status,
             "sanitized_error": True,
             "private_path_safe": True,

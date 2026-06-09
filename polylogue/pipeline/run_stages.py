@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from polylogue.pipeline.stage_models import AcquireResult
     from polylogue.protocols import ProgressCallback
     from polylogue.storage.insights.session.runtime import SessionInsightCounts
-    from polylogue.storage.repository import ConversationRepository
+    from polylogue.storage.repository import SessionRepository
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 
@@ -87,7 +87,7 @@ async def execute_acquire_stage(
 async def execute_ingest_stage(
     *,
     config: Config,
-    repository: ConversationRepository,
+    repository: SessionRepository,
     archive_root: Path,
     sources: list[Source],
     stage: str,
@@ -99,24 +99,23 @@ async def execute_ingest_stage(
     measure_ingest_result_size: bool = False,
     force_write: bool = False,
 ) -> IngestResult:
-    from polylogue.pipeline.services.parsing import ParsingService
+    del repository, archive_root, skip_acquire, ui, progress_callback, raw_batch_size, ingest_workers
+    del measure_ingest_result_size, force_write
+    from polylogue.api.archive import _active_archive_root
+    from polylogue.pipeline.services.archive_ingest import parse_sources_archive
+    from polylogue.pipeline.services.parsing_models import IngestResult, ParseResult
+    from polylogue.pipeline.stage_models import AcquireResult
 
-    parsing_service = ParsingService(
-        repository=repository,
-        archive_root=archive_root,
-        config=config,
-        raw_batch_size=raw_batch_size,
-        ingest_workers=ingest_workers,
-        measure_ingest_result_size=measure_ingest_result_size,
+    resolved_archive_root = _active_archive_root(config)
+    parse_result = (
+        await parse_sources_archive(resolved_archive_root, sources) if stage in PARSE_STAGES else ParseResult()
     )
-    return await parsing_service.ingest_sources(
-        sources=sources,
-        stage=stage,
-        ui=ui,
-        progress_callback=progress_callback,
-        parse_records=stage in PARSE_STAGES,
-        skip_acquire=skip_acquire,
-        force_write=force_write,
+    return IngestResult(
+        acquire_result=AcquireResult(),
+        validation_result=None,
+        parse_result=parse_result,
+        parse_raw_ids=[],
+        diagnostics={"batch_observations": {"batches": parse_result.batch_observations}},
     )
 
 
@@ -148,16 +147,16 @@ async def execute_materialize_stage(
     from polylogue.storage.insights.session.rebuild import rebuild_session_insights_async
 
     if stage in {"all", "reprocess"}:
-        conversation_ids = sorted(processed_ids)
-        if not conversation_ids:
+        session_ids = sorted(processed_ids)
+        if not session_ids:
             return MaterializeStageOutcome(item_count=0, rebuilt=False)
 
         if progress_callback is not None:
-            progress_callback(0, desc=f"Materializing: 0/{len(conversation_ids)}")
+            progress_callback(0, desc=f"Materializing: 0/{len(session_ids)}")
 
-        observation = await refresh_session_insights_bulk(backend, conversation_ids)
+        observation = await refresh_session_insights_bulk(backend, session_ids)
         return MaterializeStageOutcome(
-            item_count=len(conversation_ids),
+            item_count=len(session_ids),
             rebuilt=False,
             observation=observation,
         )
@@ -167,15 +166,13 @@ async def execute_materialize_stage(
 
     if source_names:
         scoped_source_names = list(source_names)
-        materialize_total = await backend.count_conversation_ids(source_names=scoped_source_names)
+        materialize_total = await backend.count_session_ids(source_names=scoped_source_names)
         if not materialize_total:
             return MaterializeStageOutcome(item_count=0, rebuilt=False)
-        conversation_ids = [
-            conversation_id async for conversation_id in backend.iter_conversation_ids(source_names=scoped_source_names)
-        ]
+        session_ids = [session_id async for session_id in backend.iter_session_ids(source_names=scoped_source_names)]
         if progress_callback is not None:
             progress_callback(0, desc=f"Materializing: 0/{materialize_total}")
-        observation = await refresh_session_insights_bulk(backend, conversation_ids)
+        observation = await refresh_session_insights_bulk(backend, session_ids)
         return MaterializeStageOutcome(
             item_count=materialize_total,
             rebuilt=False,
@@ -183,20 +180,21 @@ async def execute_materialize_stage(
         )
 
     async with backend.connection() as conn:
-        total_row = await (await conn.execute("SELECT COUNT(*) FROM conversations")).fetchone()
-        total_conversations = int(total_row[0]) if total_row is not None else 0
+        total_row = await (await conn.execute("SELECT COUNT(*) FROM sessions")).fetchone()
+        total_sessions = int(total_row[0]) if total_row is not None else 0
         if progress_callback is not None:
-            progress_callback(0, desc=f"Materializing: 0/{total_conversations}")
+            progress_callback(0, desc=f"Materializing: 0/{total_sessions}")
         counts = await rebuild_session_insights_async(
             conn,
             progress_callback=progress_callback,
-            progress_total=total_conversations,
+            progress_total=total_sessions,
         )
         await conn.commit()
+    observation = _materialize_rebuild_observation(mode="rebuild", counts=counts)
     return MaterializeStageOutcome(
         item_count=counts.profiles,
         rebuilt=True,
-        observation=_materialize_rebuild_observation(mode="rebuild", counts=counts),
+        observation=observation,
     )
 
 
@@ -233,14 +231,14 @@ async def execute_index_stage(
                     )
             if source_names:
                 scoped_source_names = list(source_names)
-                total = await backend.count_conversation_ids(source_names=scoped_source_names)
+                total = await backend.count_session_ids(source_names=scoped_source_names)
                 index_kwargs = {"progress_callback": progress_callback} if progress_callback is not None else {}
                 success = await index_service.update_index(
-                    backend.iter_conversation_ids(source_names=scoped_source_names),
+                    backend.iter_session_ids(source_names=scoped_source_names),
                     **index_kwargs,
                 )
                 return IndexStageOutcome(indexed=success, item_count=total)
-            total = await backend.count_conversation_ids()
+            total = await backend.count_session_ids()
             rebuild_kwargs = {"progress_callback": progress_callback} if progress_callback is not None else {}
             return IndexStageOutcome(
                 indexed=await index_service.rebuild_index(**rebuild_kwargs),
@@ -256,7 +254,7 @@ async def execute_index_stage(
                     item_count=len(processed_ids),
                 )
             if processed_ids:
-                # The parse stage repairs FTS for changed conversations as a
+                # The parse stage repairs FTS for changed sessions as a
                 # synchronous ingest side effect. Re-running the same repair in
                 # the chained index stage doubles FTS I/O on large archives.
                 return IndexStageOutcome(indexed=True, item_count=0)
@@ -273,7 +271,7 @@ async def execute_embed_stage(
     *,
     config: Config,
     backend: SQLiteBackend,
-    conversation_id: str | None = None,
+    session_id: str | None = None,
     model: str = "voyage-4",
     rebuild: bool = False,
     stats_only: bool = False,
@@ -306,8 +304,8 @@ async def execute_embed_stage(
             click.echo(_json.dumps(payload, indent=2, sort_keys=True))
         else:
             click.echo(f"Embedding status: {payload['status']}")
-            click.echo(f"  Embedded: {payload['embedded_conversations']}/{payload['total_conversations']}")
-            click.echo(f"  Pending:  {payload['pending_conversations']}")
+            click.echo(f"  Embedded: {payload['embedded_sessions']}/{payload['total_sessions']}")
+            click.echo(f"  Pending:  {payload['pending_sessions']}")
         return EmbedStageOutcome(embedded_count=0, error_count=0, stats_only=True)
 
     voyage_key = os.environ.get("VOYAGE_API_KEY")
@@ -327,46 +325,46 @@ async def execute_embed_stage(
         vec_provider.model = model
 
     from polylogue.storage.embeddings.materialization import (
-        embed_conversation_sync,
-        iter_pending_conversations,
+        embed_session_sync,
+        iter_pending_sessions,
     )
-    from polylogue.storage.repository import ConversationRepository as _Repo
+    from polylogue.storage.repository import SessionRepository as _Repo
 
     repo = _Repo(backend=backend)
 
-    if conversation_id:
-        outcome = embed_conversation_sync(repo, vec_provider, conversation_id, fetch_title=True)
+    if session_id:
+        outcome = embed_session_sync(repo, vec_provider, session_id, fetch_title=True)
         if outcome.status == "not_found":
-            click.echo(f"Error: Conversation {conversation_id} not found", err=True)
+            click.echo(f"Error: Session {session_id} not found", err=True)
             raise click.Abort()
         if outcome.status in {"no_messages", "no_embeddable_messages"}:
-            click.echo(f"No messages to embed in {outcome.conversation_id}")
+            click.echo(f"No messages to embed in {outcome.session_id}")
             return EmbedStageOutcome(embedded_count=0, error_count=0)
         if outcome.status == "error":
-            click.echo(f"Error embedding {conversation_id}: {outcome.error}", err=True)
+            click.echo(f"Error embedding {session_id}: {outcome.error}", err=True)
             raise click.Abort()
-        click.echo(f"✓ Embedded {outcome.conversation_id[:12]}")
+        click.echo(f"✓ Embedded {outcome.session_id[:12]}")
         return EmbedStageOutcome(embedded_count=1, error_count=0)
 
-    pending = iter_pending_conversations(backend, rebuild=rebuild, max_conversations=limit)
+    pending = iter_pending_sessions(backend, rebuild=rebuild, max_sessions=limit)
     if not pending:
-        click.echo("All conversations are already embedded.")
+        click.echo("All sessions are already embedded.")
         return EmbedStageOutcome(embedded_count=0, error_count=0)
 
-    click.echo(f"Embedding {len(pending)} conversations...")
+    click.echo(f"Embedding {len(pending)} sessions...")
     embedded_count = 0
     error_count = 0
     for index, item in enumerate(pending, 1):
-        outcome = embed_conversation_sync(repo, vec_provider, item.conversation_id)
+        outcome = embed_session_sync(repo, vec_provider, item.session_id)
         if outcome.status == "embedded":
             embedded_count += 1
         elif outcome.status in {"no_messages", "no_embeddable_messages"}:
             pass
         elif outcome.status == "error":
             error_count += 1
-            label = item.title or item.conversation_id[:12]
+            label = item.title or item.session_id[:12]
             click.echo(f"Warning: [{index}/{len(pending)}] {label}: {outcome.error}", err=True)
-    summary = f"✓ Embedded {embedded_count} conversations"
+    summary = f"✓ Embedded {embedded_count} sessions"
     if error_count:
         summary += f" ({error_count} errors)"
     click.echo(summary)

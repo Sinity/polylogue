@@ -68,8 +68,8 @@ ASSURANCE_REGISTRY: tuple[OutputAssurance, ...] = (
         snapshot=True,
         plain=True,
         streaming=True,
-        schema="conversation-list-row.schema.json",
-        notes="--format json|ndjson|yaml|csv all backed by ConversationListRowPayload.",
+        schema="session-list-row.schema.json",
+        notes="--format json|ndjson|yaml|csv all backed by SessionListRowPayload.",
     ),
     OutputAssurance(
         command="search",
@@ -78,10 +78,10 @@ ASSURANCE_REGISTRY: tuple[OutputAssurance, ...] = (
         snapshot=True,
         plain=True,
         streaming=True,
-        schema="conversation-search-hit.schema.json",
+        schema="session-search-hit.schema.json",
         notes=(
             "Search is the default query mode: bare `polylogue <terms>` "
-            "with --format json|ndjson uses ConversationSearchHitPayload."
+            "with --format json|ndjson uses SessionSearchHitPayload."
         ),
     ),
     OutputAssurance(
@@ -113,7 +113,7 @@ ASSURANCE_REGISTRY: tuple[OutputAssurance, ...] = (
         snapshot=True,
         plain=True,
         streaming=False,
-        notes="Renders full conversation in markdown/plaintext/html; not a stable JSON surface.",
+        notes="Renders full session in markdown/plaintext/html; not a stable JSON surface.",
     ),
     OutputAssurance(
         command="open",
@@ -141,8 +141,8 @@ ASSURANCE_REGISTRY: tuple[OutputAssurance, ...] = (
         plain=True,
         streaming=True,
         notes=(
-            "--format jsonl emits one full conversation JSON per line; no published row schema "
-            "(Conversation shape is large and provider-specific)."
+            "--format jsonl emits one full session JSON per line; no published row schema "
+            "(Session shape is large and provider-specific)."
         ),
     ),
     OutputAssurance(
@@ -211,7 +211,7 @@ ASSURANCE_REGISTRY: tuple[OutputAssurance, ...] = (
         snapshot=True,
         plain=True,
         streaming=False,
-        schema="conversation-neighbor-candidate.schema.json",
+        schema="session-neighbor-candidate.schema.json",
     ),
     OutputAssurance(
         command="resume",

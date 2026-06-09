@@ -2,7 +2,7 @@
 
 # Generate: Synthetic Data
 
-Polylogue includes a built-in synthetic data generator for exploring features without importing real conversation data.
+Polylogue includes a built-in synthetic data generator for exploring features without importing real session data.
 
 Synthetic generation is available through the `polylogue.scenarios` module and the test infrastructure. Use `devtools lab-scenario` for demo workspace seeding and verification-lab exercises.
 
@@ -16,7 +16,7 @@ devtools lab-scenario verify-baselines
 
 ## How It Works
 
-`SyntheticCorpus` from `polylogue.scenarios` generates realistic conversation structures for each supported provider:
+`SyntheticCorpus` from `polylogue.scenarios` generates realistic session structures for each supported provider:
 
 - **ChatGPT**: JSON documents with UUID-based message graphs (`mapping`)
 - **Claude AI**: JSON documents with `chat_messages` arrays
@@ -32,7 +32,7 @@ The test suite uses the same `SyntheticCorpus` infrastructure through shared fix
 
 - `seeded_db` — A pre-populated database for integration tests
 - `synthetic_source` — A temporary source directory with generated files
-- `raw_synthetic_samples` — Raw conversation data for unit tests
+- `raw_synthetic_samples` — Raw session data for unit tests
 
 ---
 

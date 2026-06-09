@@ -13,7 +13,7 @@ from polylogue.pipeline.stage_models import ValidateResult
 from polylogue.protocols import ProgressCallback
 from polylogue.storage.raw.artifacts import RawIngestArtifactState
 from polylogue.storage.run_state import PlanCounts, PlanDetails, PlanResult
-from polylogue.storage.runtime import RawConversationRecord
+from polylogue.storage.runtime import RawSessionRecord
 from polylogue.types import PlanStage
 
 from .acquisition import AcquisitionService
@@ -46,7 +46,7 @@ class _PlanStageFlags:
         )
 
     @property
-    def has_conversation_products(self) -> bool:
+    def has_session_products(self) -> bool:
         return self.materialize or self.index
 
 
@@ -68,11 +68,11 @@ def _summarize_plan_stage(
     return PlanStage.CUSTOM
 
 
-def _apply_conversation_stage_counts(counts: PlanCounts, *, conversation_count: int, flags: _PlanStageFlags) -> None:
-    if flags.materialize and conversation_count:
-        counts.materialize = conversation_count
-    if flags.index and conversation_count:
-        counts.index = conversation_count
+def _apply_session_stage_counts(counts: PlanCounts, *, session_count: int, flags: _PlanStageFlags) -> None:
+    if flags.materialize and session_count:
+        counts.materialize = session_count
+    if flags.index and session_count:
+        counts.index = session_count
 
 
 def _plan_summary(
@@ -95,21 +95,22 @@ def _plan_summary(
     )
 
 
-async def _plan_existing_conversation_stages(
+async def _plan_existing_session_stages(
     service: PlanningService,
     *,
     source_names: list[str],
-    db_scope_names: list[str] | None,
     summary_stage: PlanStage,
     stage_sequence: list[PlanStage],
     flags: _PlanStageFlags,
 ) -> IngestPlan:
-    conversation_count = 0
-    if flags.has_conversation_products:
-        conversation_count = await service.backend.count_conversation_ids(source_names=db_scope_names)
+    session_count = 0
+    if flags.has_session_products:
+        # Sessions carry origin + raw_id, not the configured-source path, so
+        # name-scoping the session count matched nothing; count all sessions.
+        session_count = await service.backend.count_session_ids(source_names=None)
 
     counts = PlanCounts()
-    _apply_conversation_stage_counts(counts, conversation_count=conversation_count, flags=flags)
+    _apply_session_stage_counts(counts, session_count=session_count, flags=flags)
     return IngestPlan(
         summary=_plan_summary(
             summary_stage=summary_stage,
@@ -126,7 +127,7 @@ async def _plan_parse_backlog(
     service: PlanningService,
     *,
     source_names: list[str],
-    db_scope_names: list[str] | None,
+    db_scope_paths: list[str] | None,
     summary_stage: PlanStage,
     stage_sequence: list[PlanStage],
     flags: _PlanStageFlags,
@@ -134,13 +135,13 @@ async def _plan_parse_backlog(
 ) -> IngestPlan:
     validate_backlog_ids = await collect_validation_backlog(
         service.backend,
-        source_names=db_scope_names,
+        source_paths=db_scope_paths,
         exclude_raw_ids=[],
         force_reparse=force_reparse,
     )
     parse_backlog_ids = await collect_parse_backlog(
         service.backend,
-        source_names=db_scope_names,
+        source_paths=db_scope_paths,
         exclude_raw_ids=validate_backlog_ids,
         force_reparse=force_reparse,
     )
@@ -153,7 +154,7 @@ async def _plan_parse_backlog(
     if reprocess_raw_ids:
         counts.parse = len(reprocess_raw_ids)
         details.backlog_parse = len(parse_backlog_ids)
-        _apply_conversation_stage_counts(counts, conversation_count=len(reprocess_raw_ids), flags=flags)
+        _apply_session_stage_counts(counts, session_count=len(reprocess_raw_ids), flags=flags)
     return IngestPlan(
         summary=_plan_summary(
             summary_stage=summary_stage,
@@ -174,7 +175,6 @@ async def _final_scan_counts(
     plan_details: PlanDetails,
     validate_raw_ids: list[str],
     parse_ready_raw_ids: list[str],
-    db_scope_names: list[str] | None,
     flags: _PlanStageFlags,
 ) -> PlanCounts:
     counts = PlanCounts()
@@ -186,10 +186,12 @@ async def _final_scan_counts(
         counts.validate_count = len(validate_raw_ids)
     if flags.parse and parse_ready_raw_ids:
         counts.parse = len(parse_ready_raw_ids)
-        _apply_conversation_stage_counts(counts, conversation_count=len(parse_ready_raw_ids), flags=flags)
-    elif not flags.parse and flags.has_conversation_products:
-        conversation_count = await service.backend.count_conversation_ids(source_names=db_scope_names)
-        _apply_conversation_stage_counts(counts, conversation_count=conversation_count, flags=flags)
+        _apply_session_stage_counts(counts, session_count=len(parse_ready_raw_ids), flags=flags)
+    elif not flags.parse and flags.has_session_products:
+        # Sessions carry origin + raw_id, not the configured-source path, so
+        # name-scoping the session count matched nothing; count all sessions.
+        session_count = await service.backend.count_session_ids(source_names=None)
+        _apply_session_stage_counts(counts, session_count=session_count, flags=flags)
     return counts
 
 
@@ -205,7 +207,10 @@ async def build_ingest_plan(
     force_reparse: bool = False,
 ) -> IngestPlan:
     source_names = [source.name for source in sources]
-    db_scope_names = source_names or None
+    # Raw rows are scoped by their configured-source filesystem path, not by
+    # origin (which carries provider identity after the source_name→origin
+    # column rename). Inbox roots are paths, so scope raw selection on them.
+    db_scope_paths = [str(source.path) for source in sources if source.path is not None] or None
 
     normalized_stage_names = normalize_stage_sequence(stage=stage, stage_sequence=stage_sequence)
     normalized_plan_stage_sequence = _normalize_plan_stage_sequence(normalized_stage_names)
@@ -217,10 +222,9 @@ async def build_ingest_plan(
     )
 
     if not stage_flags.acquire and not stage_flags.parse:
-        return await _plan_existing_conversation_stages(
+        return await _plan_existing_session_stages(
             service,
             source_names=source_names,
-            db_scope_names=db_scope_names,
             summary_stage=summary_stage,
             stage_sequence=normalized_plan_stage_sequence,
             flags=stage_flags,
@@ -230,7 +234,7 @@ async def build_ingest_plan(
         return await _plan_parse_backlog(
             service,
             source_names=source_names,
-            db_scope_names=db_scope_names,
+            db_scope_paths=db_scope_paths,
             summary_stage=summary_stage,
             stage_sequence=normalized_plan_stage_sequence,
             flags=stage_flags,
@@ -249,7 +253,7 @@ async def build_ingest_plan(
         backlog_validate=0,
         backlog_parse=0,
     )
-    pending_records: list[RawConversationRecord] = []
+    pending_records: list[RawSessionRecord] = []
     preview_validation = ValidateResult() if preview and stage_flags.parse else None
     seen_scanned_raw_ids: set[str] = set()
 
@@ -261,8 +265,8 @@ async def build_ingest_plan(
             return
 
         batch_raw_ids = dedupe_ids([record.raw_id for record in pending_records])
-        scanned_states = await service.repository.get_raw_conversation_states(batch_raw_ids)
-        preview_records: list[RawConversationRecord] = []
+        scanned_states = await service.repository.get_raw_session_states(batch_raw_ids)
+        preview_records: list[RawSessionRecord] = []
 
         for record in pending_records:
             if record.raw_id in seen_scanned_raw_ids:
@@ -302,7 +306,7 @@ async def build_ingest_plan(
             preview_validation.merge(scanned_preview_validation)
         pending_records.clear()
 
-    async def process_record(record: RawConversationRecord) -> None:
+    async def process_record(record: RawSessionRecord) -> None:
         nonlocal scanned_count
         scanned_count += 1
         pending_records.append(record)
@@ -322,7 +326,7 @@ async def build_ingest_plan(
     if stage_flags.parse:
         backlog_validate_ids = await collect_validation_backlog(
             service.backend,
-            source_names=db_scope_names,
+            source_paths=db_scope_paths,
             exclude_raw_ids=validate_raw_ids,
             force_reparse=force_reparse,
         )
@@ -345,7 +349,7 @@ async def build_ingest_plan(
     if stage_flags.parse:
         backlog_parse_ids = await collect_parse_backlog(
             service.backend,
-            source_names=db_scope_names,
+            source_paths=db_scope_paths,
             exclude_raw_ids=validate_raw_ids,
             force_reparse=force_reparse,
         )
@@ -362,7 +366,6 @@ async def build_ingest_plan(
         plan_details=plan_details,
         validate_raw_ids=validate_raw_ids,
         parse_ready_raw_ids=parse_ready_raw_ids,
-        db_scope_names=db_scope_names,
         flags=stage_flags,
     )
     return IngestPlan(

@@ -1,0 +1,10 @@
+Usage: polylogue maintenance archive-read [OPTIONS]
+
+  Read index sessions from the archive.
+
+Options:
+  -q, --query TEXT              Search block text instead of listing sessions.
+  --origin TEXT                 Restrict reads to one origin token.
+  -l, --limit INTEGER           Maximum rows to return.  [default: 20]
+  --output-format [plain|json]  Output format.  [default: plain]
+  -h, --help                    Show this message and exit.

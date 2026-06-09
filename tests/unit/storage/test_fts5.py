@@ -3,7 +3,7 @@
 Tests cover FTS5 index creation, incremental updates, search functionality,
 ranking, special characters, edge cases, and escaping.
 
-Extracted from monolithic test_search_index.py.
+Extracted from test_search_index.py.
 """
 
 from __future__ import annotations
@@ -19,40 +19,93 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 
 from polylogue.config import Config, IndexConfig
-from polylogue.pipeline.prepare import RecordBundle, save_bundle
-from polylogue.storage.index import rebuild_index, update_index_for_conversations
-from polylogue.storage.repository import ConversationRepository
-from polylogue.storage.runtime import ACTION_EVENT_MATERIALIZER_VERSION
+from polylogue.storage.index import rebuild_index, update_index_for_sessions
+from polylogue.storage.repository import SessionRepository
 from polylogue.storage.search import escape_fts5_query, search_messages
 from polylogue.storage.search_providers import create_vector_provider
 from polylogue.storage.search_providers.fts5 import FTS5Provider
 from polylogue.storage.sqlite.connection import open_connection
 from tests.infra.mutmut import preserved_mutmut_env
 from tests.infra.storage_records import (
-    ConversationBuilder,
     DbFactory,
+    SessionBuilder,
     make_content_block,
-    make_conversation,
     make_message,
-    store_records,
+    make_session,
+    save_current_archive_records,
+    save_session_to_archive,
 )
 from tests.infra.strategies import fts5_match_text_strategy, search_query_strategy
+
+
+def _archive_session_id(source_name: str, provider_session_id: str) -> str:
+    from polylogue.core.identity_law import session_id as make_archive_session_id
+    from polylogue.core.sources import origin_from_provider
+    from polylogue.types import Provider
+
+    return make_archive_session_id(origin_from_provider(Provider.from_string(source_name)).value, provider_session_id)
+
+
+def _archive_message_id(source_name: str, provider_session_id: str, provider_message_id: str) -> str:
+    from polylogue.core.identity_law import message_id as make_archive_message_id
+
+    return make_archive_message_id(
+        _archive_session_id(source_name, provider_session_id),
+        provider_message_id,
+        position=0,
+    )
+
+
+def _insert_current_session_message(
+    conn: sqlite3.Connection,
+    *,
+    provider_session_id: str,
+    provider_message_id: str,
+    text: str,
+    position: int = 0,
+    role: str = "user",
+    source_name: str = "test",
+) -> tuple[str, str]:
+    from polylogue.core.identity_law import message_id as make_archive_message_id
+
+    session_id = _archive_session_id(source_name, provider_session_id)
+    message_id = make_archive_message_id(session_id, provider_message_id, position=position)
+    content_hash = b"x" * 32
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO sessions (native_id, origin, title, content_hash)
+        VALUES (?, ?, ?, ?)
+        """,
+        (provider_session_id, session_id.split(":", 1)[0], "FTS test", content_hash),
+    )
+    conn.execute(
+        """
+        INSERT INTO messages (session_id, native_id, position, role, message_type, content_hash)
+        VALUES (?, ?, ?, ?, 'message', ?)
+        """,
+        (session_id, provider_message_id, position, role, content_hash),
+    )
+    conn.execute(
+        """
+        INSERT INTO blocks (message_id, session_id, position, block_type, text)
+        VALUES (?, ?, 0, 'text', ?)
+        """,
+        (message_id, session_id, text),
+    )
+    return session_id, message_id
+
 
 # ============================================================================
 # Tests for search_messages()
 # ============================================================================
 
 
-async def test_search_respects_limit(
-    workspace_env: dict[str, Path], storage_repository: ConversationRepository
-) -> None:
+async def test_search_respects_limit(workspace_env: dict[str, Path], storage_repository: SessionRepository) -> None:
     """search_messages() respects limit parameter."""
     for i in range(10):
-        conv = make_conversation(f"conv{i}", title=f"Conv {i}")
+        conv = make_session(f"conv{i}", title=f"Conv {i}")
         msg = make_message(f"msg{i}", f"conv{i}", text="search limit")
-        await save_bundle(
-            RecordBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository
-        )
+        await save_current_archive_records(storage_repository, session=conv, messages=[msg], attachments=[])
 
     rebuild_index()
 
@@ -60,14 +113,12 @@ async def test_search_respects_limit(
     assert len(results.hits) == 3
 
 
-async def test_search_includes_snippet(
-    workspace_env: dict[str, Path], storage_repository: ConversationRepository
-) -> None:
+async def test_search_includes_snippet(workspace_env: dict[str, Path], storage_repository: SessionRepository) -> None:
     """search_messages() includes text snippet in results."""
-    conv = make_conversation("conv1")
+    conv = make_session("conv1")
     msg = make_message("msg1", "conv1", text="The quick brown fox jumps over the lazy dog")
 
-    await save_bundle(RecordBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
+    await save_current_archive_records(storage_repository, session=conv, messages=[msg], attachments=[])
     rebuild_index()
 
     results = search_messages("quick", archive_root=workspace_env["archive_root"], limit=10)
@@ -78,38 +129,37 @@ async def test_search_includes_snippet(
     assert isinstance(results.hits[0].snippet, str)
 
 
-async def test_search_includes_conversation_metadata(
+async def test_search_includes_session_metadata(
     workspace_env: dict[str, Path],
-    storage_repository: ConversationRepository,
+    storage_repository: SessionRepository,
 ) -> None:
-    """search_messages() includes conversation metadata in results."""
-    conv = make_conversation(
-        "conv1", source_name="claude-ai", title="My Conversation", provider_meta={"source": "my-source"}
-    )
+    """search_messages() includes session metadata in results."""
+    conv = make_session("conv1", source_name="claude-ai", title="My Session", provider_meta={"source": "my-source"})
     msg = make_message("msg1", "conv1", text="search query", timestamp="2024-01-01T10:30:00Z")
 
-    await save_bundle(RecordBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
+    await save_current_archive_records(storage_repository, session=conv, messages=[msg], attachments=[])
     rebuild_index()
 
     results = search_messages("search", archive_root=workspace_env["archive_root"], limit=10)
 
     assert len(results.hits) == 1
     hit = results.hits[0]
-    assert hit.conversation_id == "conv1"
-    assert hit.source_name == "claude-ai"
-    assert hit.title == "My Conversation"
-    assert hit.message_id == "msg1"
+    assert hit.session_id == _archive_session_id("claude-ai", "conv1")
+    assert hit.source_name == "claude-ai-export"
+    assert hit.title == "My Session"
+    assert hit.message_id == _archive_message_id("claude-ai", "conv1", "msg1")
     assert hit.timestamp is not None and "2024-01-01" in hit.timestamp
 
 
-async def test_search_returns_best_message_per_conversation(
+async def test_search_returns_best_message_per_session(
     workspace_env: dict[str, Path],
-    storage_repository: ConversationRepository,
+    storage_repository: SessionRepository,
 ) -> None:
-    """search_messages() picks the strongest per-conversation hit deterministically."""
+    """search_messages() picks the strongest per-session hit deterministically."""
     archive_root = workspace_env["archive_root"]
-    bundle = RecordBundle(
-        conversation=make_conversation("conv-best-hit", title="Best Hit Test"),
+    await save_current_archive_records(
+        storage_repository,
+        session=make_session("conv-best-hit", title="Best Hit Test"),
         messages=[
             make_message(
                 "msg-best-old",
@@ -126,13 +176,12 @@ async def test_search_returns_best_message_per_conversation(
         ],
         attachments=[],
     )
-    await save_bundle(bundle, repository=storage_repository)
     rebuild_index()
 
     results = search_messages("deterministic best hit token", archive_root=archive_root, limit=5)
 
     assert len(results.hits) == 1
-    assert results.hits[0].message_id == "msg-best-new"
+    assert results.hits[0].message_id == _archive_message_id("test", "conv-best-hit", "msg-best-new")
 
 
 # ============================================================================
@@ -152,16 +201,16 @@ SEARCH_WITH_SPECIAL_TEXT_CASES = [
 @pytest.mark.parametrize("text,search_term,description", SEARCH_WITH_SPECIAL_TEXT_CASES)
 async def test_search_with_special_text(
     workspace_env: dict[str, Path],
-    storage_repository: ConversationRepository,
+    storage_repository: SessionRepository,
     text: str,
     search_term: str,
     description: str,
 ) -> None:
     """search_messages() handles special text patterns."""
-    conv = make_conversation("conv1", title=f"Test {description}")
+    conv = make_session("conv1", title=f"Test {description}")
     msg = make_message("msg1", "conv1", text=text)
 
-    await save_bundle(RecordBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
+    await save_current_archive_records(storage_repository, session=conv, messages=[msg], attachments=[])
     rebuild_index()
 
     results = search_messages(search_term, archive_root=workspace_env["archive_root"], limit=10)
@@ -178,68 +227,18 @@ def test_rebuild_index_with_empty_database(test_conn: sqlite3.Connection) -> Non
     rebuild_index(test_conn)
 
     count = test_conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
-    action_count = test_conn.execute("SELECT COUNT(*) FROM action_events_fts").fetchone()[0]
     assert count == 0
-    assert action_count == 0
-
-
-def test_action_event_status_ignores_orphan_tool_sources(test_conn: sqlite3.Connection) -> None:
-    """Action-event readiness should ignore orphaned tool-use blocks outside reachable conversations."""
-    from polylogue.storage.action_events.rebuild_runtime import rebuild_action_event_read_model_sync
-    from polylogue.storage.action_events.status import action_event_read_model_status_sync
-
-    conv = make_conversation("conv1", title="Action ready")
-    msg = make_message(
-        "msg1",
-        "conv1",
-        text="Read config",
-        content_blocks=[
-            make_content_block(
-                message_id="msg1",
-                conversation_id="conv1",
-                block_index=0,
-                block_type="tool_use",
-                tool_name="Read",
-                semantic_type="file_read",
-            )
-        ],
-    )
-    store_records(conversation=conv, messages=[msg], attachments=[], conn=test_conn)
-    rebuild_action_event_read_model_sync(test_conn)
-    test_conn.commit()
-
-    test_conn.execute("PRAGMA foreign_keys = OFF")
-    try:
-        test_conn.execute(
-            """
-            INSERT INTO content_blocks (
-                block_id, message_id, conversation_id, block_index, type, tool_name
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            ("blk-orphan", "missing-msg", "missing-conv", 0, "tool_use", "Read"),
-        )
-        test_conn.commit()
-    finally:
-        test_conn.execute("PRAGMA foreign_keys = ON")
-
-    status = action_event_read_model_status_sync(test_conn)
-
-    assert status["source_conversation_count"] == 2
-    assert status["valid_source_conversation_count"] == 1
-    assert status["orphan_source_conversation_count"] == 1
-    assert status["rows_ready"] is False
-    assert status["ready"] is False
 
 
 async def test_search_returns_searchresult_object(
     workspace_env: dict[str, Path],
-    storage_repository: ConversationRepository,
+    storage_repository: SessionRepository,
 ) -> None:
     """search_messages() returns SearchResult with hits list."""
-    conv = make_conversation("conv1")
+    conv = make_session("conv1")
     msg = make_message("msg1", "conv1", text="search result")
 
-    await save_bundle(RecordBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
+    await save_current_archive_records(storage_repository, session=conv, messages=[msg], attachments=[])
     rebuild_index()
 
     results = search_messages("search", archive_root=workspace_env["archive_root"], limit=10)
@@ -249,67 +248,65 @@ async def test_search_returns_searchresult_object(
     assert isinstance(results.hits, list)
     if results.hits:
         hit = results.hits[0]
-        assert hasattr(hit, "conversation_id")
+        assert hasattr(hit, "session_id")
         assert hasattr(hit, "message_id")
         assert hasattr(hit, "source_name")
         assert hasattr(hit, "snippet")
         assert hasattr(hit, "title")
         assert hasattr(hit, "timestamp")
-        assert hasattr(hit, "conversation_url")
+        assert hasattr(hit, "session_url")
 
 
-def test_rebuild_index_with_multiple_messages_per_conversation(test_conn: sqlite3.Connection) -> None:
-    """rebuild_index() correctly indexes all messages in a conversation."""
-    conv = make_conversation("conv1", title="Multi-message Conv")
-    messages = [
-        make_message(
-            f"msg{i}",
-            "conv1",
-            role="user" if i % 2 == 0 else "assistant",
+def test_rebuild_index_with_multiple_messages_per_session(test_conn: sqlite3.Connection) -> None:
+    """rebuild_index() correctly indexes all messages in a session."""
+    session_id = _archive_session_id("test", "conv1")
+    for i in range(10):
+        _insert_current_session_message(
+            test_conn,
+            provider_session_id="conv1",
+            provider_message_id=f"msg{i}",
             text=f"message number {i}",
-            timestamp=f"2024-01-01T00:{i:02d}:00Z",
+            position=i,
+            role="user" if i % 2 == 0 else "assistant",
         )
-        for i in range(10)
-    ]
-
-    store_records(conversation=conv, messages=messages, attachments=[], conn=test_conn)
     rebuild_index(test_conn)
 
     count = test_conn.execute(
         """
         SELECT COUNT(*)
         FROM messages_fts
-        JOIN messages ON messages.rowid = messages_fts.rowid
-        WHERE messages.conversation_id = ?
+        JOIN blocks ON blocks.rowid = messages_fts.rowid
+        WHERE blocks.session_id = ?
         """,
-        ("conv1",),
+        (session_id,),
     ).fetchone()[0]
     assert count == 10
 
 
-def test_update_index_deletes_old_entries_from_conversation(test_conn: sqlite3.Connection) -> None:
-    """update_index_for_conversations() removes old index entries for updated conversations."""
-    conv = make_conversation("conv1")
-    msg = make_message("msg1", "conv1", text="original message")
+def test_update_index_deletes_old_entries_from_session(test_conn: sqlite3.Connection) -> None:
+    """update_index_for_sessions() removes old index entries for updated sessions."""
+    session_id, message_id = _insert_current_session_message(
+        test_conn,
+        provider_session_id="conv1",
+        provider_message_id="msg1",
+        text="original message",
+    )
 
-    store_records(conversation=conv, messages=[msg], attachments=[], conn=test_conn)
     rebuild_index(test_conn)
 
     # Delete original message
-    test_conn.execute("DELETE FROM messages WHERE message_id = ?", ("msg1",))
+    test_conn.execute("DELETE FROM messages WHERE message_id = ?", (message_id,))
 
     # Add new message
-    test_conn.execute(
-        """
-        INSERT INTO messages
-        (message_id, conversation_id, role, text, content_hash, version)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        ("msg2", "conv1", "user", "new message", "hash-msg2", 1),
+    _insert_current_session_message(
+        test_conn,
+        provider_session_id="conv1",
+        provider_message_id="msg2",
+        text="new message",
     )
 
     # Update index
-    update_index_for_conversations(["conv1"], test_conn)
+    update_index_for_sessions([session_id], test_conn)
 
     # Old message should not be in index
     old_hits = test_conn.execute(
@@ -324,10 +321,10 @@ def test_update_index_deletes_old_entries_from_conversation(test_conn: sqlite3.C
 
 async def test_rebuild_index_populates_action_search_rows(
     workspace_env: dict[str, Path],
-    storage_repository: ConversationRepository,
+    storage_repository: SessionRepository,
 ) -> None:
-    """rebuild_index() also populates persisted action-event search rows."""
-    conv = make_conversation("conv-actions", title="Action indexing")
+    """rebuild_index() keeps current tool-action projections readable."""
+    conv = make_session("conv-actions", title="Action indexing")
     msg = make_message(
         "msg-actions",
         "conv-actions",
@@ -336,7 +333,7 @@ async def test_rebuild_index_populates_action_search_rows(
         content_blocks=[
             make_content_block(
                 message_id="msg-actions",
-                conversation_id="conv-actions",
+                session_id="conv-actions",
                 block_index=0,
                 block_type="tool_use",
                 tool_name="Bash",
@@ -347,186 +344,224 @@ async def test_rebuild_index_populates_action_search_rows(
         ],
     )
 
-    await save_bundle(RecordBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
+    await save_current_archive_records(storage_repository, session=conv, messages=[msg], attachments=[])
     rebuild_index()
 
     with open_connection(storage_repository.backend.db_path) as conn:
         action_row = conn.execute(
             """
-            SELECT normalized_tool_name, action_kind, materializer_version, command
-            FROM action_events
-            WHERE conversation_id = ?
+            SELECT tool_name, semantic_type, tool_command
+            FROM actions
+            WHERE session_id = ?
             """,
-            ("conv-actions",),
+            (_archive_session_id("test", "conv-actions"),),
         ).fetchone()
-        count = conn.execute(
-            "SELECT COUNT(*) FROM action_events_fts WHERE action_events_fts MATCH ?",
-            ("semantic_facts",),
-        ).fetchone()[0]
     assert action_row is not None
-    assert action_row["normalized_tool_name"] == "bash"
-    assert action_row["action_kind"] == "shell"
-    assert action_row["materializer_version"] == ACTION_EVENT_MATERIALIZER_VERSION
-    assert action_row["command"] == "pytest -q tests/unit/core/test_semantic_facts.py"
-    assert count == 1
+    assert action_row["tool_name"] == "Bash"
+    assert action_row["semantic_type"] == "shell"
+    assert action_row["tool_command"] == "pytest -q tests/unit/core/test_semantic_facts.py"
 
 
-def test_update_index_refreshes_action_entries_for_updated_tool_blocks(
-    test_conn: sqlite3.Connection,
-) -> None:
-    """update_index_for_conversations() refreshes action-search rows from content blocks."""
-    conv = make_conversation("conv-action-refresh", title="Action refresh")
-    msg = make_message(
-        "msg-action-refresh",
-        "conv-action-refresh",
-        role="assistant",
-        text="Ran commands",
-        content_blocks=[
-            make_content_block(
-                message_id="msg-action-refresh",
-                conversation_id="conv-action-refresh",
-                block_index=0,
-                block_type="tool_use",
-                tool_name="Bash",
-                tool_id="tool-refresh",
-                tool_input=json.dumps({"command": "pytest -q"}),
-                semantic_type="shell",
-            )
-        ],
-    )
-    store_records(conversation=conv, messages=[msg], attachments=[], conn=test_conn)
-    rebuild_index(test_conn)
+def test_actions_view_reflects_updated_tool_blocks(tmp_path: Path) -> None:
+    """The current archive action projection is the blocks-backed actions view."""
+    db_path = tmp_path / "index.db"
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
-    original_hits = test_conn.execute(
-        "SELECT COUNT(*) FROM action_events_fts WHERE action_events_fts MATCH ?",
-        ("pytest",),
-    ).fetchone()[0]
-    assert original_hits == 1
-
-    test_conn.execute("DELETE FROM content_blocks WHERE message_id = ?", ("msg-action-refresh",))
-    test_conn.execute(
-        """
-        INSERT INTO content_blocks (
-            block_id, message_id, conversation_id, block_index, type, text, tool_name, tool_id, tool_input, metadata, semantic_type
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            "blk-refresh-0b",
-            "msg-action-refresh",
-            "conv-action-refresh",
-            0,
-            "tool_use",
-            None,
-            "Bash",
-            "tool-refresh",
-            json.dumps({"command": "ruff check polylogue/archive/action_event/action_events.py"}),
-            None,
-            "shell",
-        ),
-    )
-
-    update_index_for_conversations(["conv-action-refresh"], test_conn)
-
-    pytest_hits = test_conn.execute(
-        "SELECT COUNT(*) FROM action_events_fts WHERE action_events_fts MATCH ?",
-        ("pytest",),
-    ).fetchone()[0]
-    ruff_hits = test_conn.execute(
-        "SELECT COUNT(*) FROM action_events_fts WHERE action_events_fts MATCH ?",
-        ("action_events",),
-    ).fetchone()[0]
-    assert pytest_hits == 0
-    assert ruff_hits == 1
-
-
-def test_update_index_removes_action_entries_when_tool_blocks_disappear(
-    test_conn: sqlite3.Connection,
-) -> None:
-    """update_index_for_conversations() drops stale action rows when tool blocks are removed."""
-    conv = make_conversation("conv-action-remove", title="Action removal")
-    msg = make_message(
-        "msg-action-remove",
-        "conv-action-remove",
-        role="assistant",
-        text="Ran commands",
-        content_blocks=[
-            make_content_block(
-                message_id="msg-action-remove",
-                conversation_id="conv-action-remove",
-                block_index=0,
-                block_type="tool_use",
-                tool_name="Bash",
-                tool_id="tool-remove",
-                tool_input=json.dumps({"command": "pytest -q"}),
-                semantic_type="shell",
-            )
-        ],
-    )
-    store_records(conversation=conv, messages=[msg], attachments=[], conn=test_conn)
-    rebuild_index(test_conn)
-
-    assert (
-        test_conn.execute(
-            "SELECT COUNT(*) FROM action_events WHERE conversation_id = ?",
-            ("conv-action-remove",),
+    initialize_archive_database(db_path, ArchiveTier.INDEX)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO sessions (native_id, origin, content_hash) VALUES (?, ?, ?)",
+            ("conv-action-refresh", "unknown-export", bytes(32)),
+        )
+        conn.execute(
+            """
+            INSERT INTO messages (
+                session_id, native_id, position, role, message_type, content_hash
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "unknown-export:conv-action-refresh",
+                "msg-action-refresh",
+                0,
+                "assistant",
+                "message",
+                bytes(32),
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO blocks (
+                message_id, session_id, position, block_type, tool_name, tool_id, tool_input, semantic_type
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "unknown-export:conv-action-refresh:msg-action-refresh",
+                "unknown-export:conv-action-refresh",
+                0,
+                "tool_use",
+                "Bash",
+                "tool-refresh",
+                json.dumps({"command": "pytest -q"}),
+                "shell",
+            ),
+        )
+        original_command = conn.execute(
+            "SELECT tool_command FROM actions WHERE session_id = ?",
+            ("unknown-export:conv-action-refresh",),
         ).fetchone()[0]
-        == 1
-    )
+        assert original_command == "pytest -q"
 
-    test_conn.execute("DELETE FROM content_blocks WHERE message_id = ?", ("msg-action-remove",))
+        conn.execute(
+            "DELETE FROM blocks WHERE message_id = ?",
+            ("unknown-export:conv-action-refresh:msg-action-refresh",),
+        )
+        conn.execute(
+            """
+            INSERT INTO blocks (
+                message_id, session_id, position, block_type, tool_name, tool_id, tool_input, semantic_type
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+            (
+                "unknown-export:conv-action-refresh:msg-action-refresh",
+                "unknown-export:conv-action-refresh",
+                0,
+                "tool_use",
+                "Bash",
+                "tool-refresh",
+                json.dumps({"command": "ruff check polylogue/storage"}),
+                "shell",
+            ),
+        )
 
-    update_index_for_conversations(["conv-action-remove"], test_conn)
+        refreshed_command = conn.execute(
+            "SELECT tool_command FROM actions WHERE session_id = ?",
+            ("unknown-export:conv-action-refresh",),
+        ).fetchone()[0]
+        assert refreshed_command == "ruff check polylogue/storage"
 
-    action_rows = test_conn.execute(
-        "SELECT COUNT(*) FROM action_events WHERE conversation_id = ?",
-        ("conv-action-remove",),
-    ).fetchone()[0]
-    fts_rows = test_conn.execute(
-        "SELECT COUNT(*) FROM action_events_fts WHERE conversation_id = ?",
-        ("conv-action-remove",),
-    ).fetchone()[0]
-    assert action_rows == 0
-    assert fts_rows == 0
+
+def test_actions_view_drops_rows_when_tool_blocks_disappear(tmp_path: Path) -> None:
+    """Removing the tool block removes the derived action projection."""
+    db_path = tmp_path / "index.db"
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    initialize_archive_database(db_path, ArchiveTier.INDEX)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO sessions (native_id, origin, content_hash) VALUES (?, ?, ?)",
+            ("conv-action-remove", "unknown-export", bytes(32)),
+        )
+        conn.execute(
+            """
+            INSERT INTO messages (
+                session_id, native_id, position, role, message_type, content_hash
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "unknown-export:conv-action-remove",
+                "msg-action-remove",
+                0,
+                "assistant",
+                "message",
+                bytes(32),
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO blocks (
+                message_id, session_id, position, block_type, tool_name, tool_id, tool_input, semantic_type
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "unknown-export:conv-action-remove:msg-action-remove",
+                "unknown-export:conv-action-remove",
+                0,
+                "tool_use",
+                "Bash",
+                "tool-remove",
+                json.dumps({"command": "pytest -q"}),
+                "shell",
+            ),
+        )
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM actions WHERE session_id = ?",
+                ("unknown-export:conv-action-remove",),
+            ).fetchone()[0]
+            == 1
+        )
+
+        conn.execute(
+            "DELETE FROM blocks WHERE message_id = ?",
+            ("unknown-export:conv-action-remove:msg-action-remove",),
+        )
+
+        action_rows = conn.execute(
+            "SELECT COUNT(*) FROM actions WHERE session_id = ?",
+            ("unknown-export:conv-action-remove",),
+        ).fetchone()[0]
+        assert action_rows == 0
 
 
 def test_batch_index_10k_messages(test_conn: sqlite3.Connection) -> None:
-    """Benchmark: update_index_for_conversations handles 10k messages efficiently."""
+    """Benchmark: update_index_for_sessions handles 10k messages efficiently."""
     import time
 
-    # Create 100 conversations with 100 messages each = 10,000 messages
+    # Create 100 sessions with 100 messages each = 10,000 messages
     num_convs = 100
     msgs_per_conv = 100
+    content_hash = b"x" * 32
 
     for i in range(num_convs):
-        conv = make_conversation(f"conv{i}", title=f"Benchmark Conv {i}")
-        store_records(conversation=conv, messages=[], attachments=[], conn=test_conn)
+        session_id = _archive_session_id("test", f"conv{i}")
+        test_conn.execute(
+            "INSERT INTO sessions (native_id, origin, title, content_hash) VALUES (?, ?, ?, ?)",
+            (f"conv{i}", session_id.split(":", 1)[0], f"Benchmark Conv {i}", content_hash),
+        )
 
         # Batch insert messages directly for speed
         messages_batch = [
             (
+                session_id,
                 f"msg{i}-{j}",
-                f"conv{i}",
+                j,
                 "user" if j % 2 == 0 else "assistant",
-                f"message content {i}-{j} with searchable text",
-                f"hash-{i}-{j}",
-                1,
+                content_hash,
             )
             for j in range(msgs_per_conv)
         ]
         test_conn.executemany(
             """INSERT INTO messages
-               (message_id, conversation_id, role, text, content_hash, version)
-               VALUES (?, ?, ?, ?, ?, ?)""",
+               (session_id, native_id, position, role, message_type, content_hash)
+               VALUES (?, ?, ?, ?, 'message', ?)""",
             messages_batch,
+        )
+        blocks_batch = [
+            (
+                f"{session_id}:msg{i}-{j}",
+                session_id,
+                0,
+                "text",
+                f"message content {i}-{j} with searchable text",
+            )
+            for j in range(msgs_per_conv)
+        ]
+        test_conn.executemany(
+            """INSERT INTO blocks
+               (message_id, session_id, position, block_type, text)
+               VALUES (?, ?, ?, ?, ?)""",
+            blocks_batch,
         )
 
     test_conn.commit()
 
     # Time the index build
-    conv_ids = [f"conv{i}" for i in range(num_convs)]
+    conv_ids = [_archive_session_id("test", f"conv{i}") for i in range(num_convs)]
 
     start = time.perf_counter()
-    update_index_for_conversations(conv_ids, test_conn)
+    update_index_for_sessions(conv_ids, test_conn)
     elapsed = time.perf_counter() - start
 
     # Verify all indexed
@@ -539,32 +574,38 @@ def test_batch_index_10k_messages(test_conn: sqlite3.Connection) -> None:
 
 async def test_batch_index_search_returns_correct_provider(
     workspace_env: dict[str, Path],
-    storage_repository: ConversationRepository,
+    storage_repository: SessionRepository,
 ) -> None:
     """Verify batch indexing allows retrieving correct source_name via search."""
-    # Create conversations with different providers
-    conv1 = make_conversation("conv1", source_name="claude-ai", title="Claude Conv")
-    conv2 = make_conversation("conv2", source_name="chatgpt", title="ChatGPT Conv")
+    # Create sessions with different providers
+    conv1 = make_session("conv1", source_name="claude-ai", title="Claude Conv")
+    conv2 = make_session("conv2", source_name="chatgpt", title="ChatGPT Conv")
 
     messages1 = [make_message(f"msg1-{i}", "conv1", text=f"claude text {i}") for i in range(5)]
     messages2 = [make_message(f"msg2-{i}", "conv2", text=f"chatgpt text {i}") for i in range(5)]
 
-    await save_bundle(
-        RecordBundle(conversation=conv1, messages=messages1, attachments=[]), repository=storage_repository
+    await save_current_archive_records(
+        storage_repository,
+        session=conv1,
+        messages=messages1,
+        attachments=[],
     )
-    await save_bundle(
-        RecordBundle(conversation=conv2, messages=messages2, attachments=[]), repository=storage_repository
+    await save_current_archive_records(
+        storage_repository,
+        session=conv2,
+        messages=messages2,
+        attachments=[],
     )
 
     rebuild_index()
 
     # Verify provider names via search
     results1 = search_messages("claude", archive_root=workspace_env["archive_root"], limit=10)
-    assert all(hit.source_name == "claude-ai" for hit in results1.hits)
+    assert all(hit.source_name == "claude-ai-export" for hit in results1.hits)
     assert len(results1.hits) == 1
 
     results2 = search_messages("chatgpt", archive_root=workspace_env["archive_root"], limit=10)
-    assert all(hit.source_name == "chatgpt" for hit in results2.hits)
+    assert all(hit.source_name == "chatgpt-export" for hit in results2.hits)
     assert len(results2.hits) == 1
 
 
@@ -583,37 +624,30 @@ async def test_batch_index_search_returns_correct_provider(
         ("quoted", True),  # Part of text with quotes
     ],
 )
-def test_search_messages_known_cases(query: str, should_find: bool, tmp_path: Path) -> None:
-    """Integration test for known search cases with specific assertions."""
-    # Setup database with test data
-    db_path = tmp_path / "test.db"
+async def test_search_messages_known_cases(query: str, should_find: bool, tmp_path: Path) -> None:
+    """Integration test for known archive search cases with specific assertions."""
+    from polylogue.api import Polylogue
+
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    db_path = archive_root / "index.db"
     DbFactory(db_path)
 
-    # Insert test conversation using builder
     (
-        ConversationBuilder(db_path, "test1")
-        .title("Test Conversation")
+        SessionBuilder(db_path, "test1")
+        .title("Test Session")
         .add_message("msg1", role="user", text='This is a test message with "quoted text" inside.')
         .save()
     )
 
-    # Build search index
-    with open_connection(str(db_path)) as conn:
-        rebuild_index(conn)
-
-    # Search - use keyword arguments
-    results = search_messages(
-        query,
-        archive_root=tmp_path,
-        db_path=Path(str(db_path)),
-        limit=10,
-    )
+    async with Polylogue(archive_root=archive_root, db_path=db_path) as plg:
+        results = await plg.search(query, limit=10)
 
     if should_find:
         assert len(results.hits) > 0, f"Expected to find results for '{query}'"
     else:
-        # Either no results or results don't match the query
-        # The important thing is no SQL errors occur
+        # Either no results or results don't match the query; the important
+        # property is that no FTS syntax error escapes.
         assert isinstance(results.hits, list)
 
 
@@ -630,10 +664,10 @@ def test_search_messages_escaping_never_crashes(query: str, tmp_path: Path) -> N
     db_path = tmp_path / "test.db"
     DbFactory(db_path)
 
-    # Insert test conversation using builder
+    # Insert test session using builder
     (
-        ConversationBuilder(db_path, "test1")
-        .title("Test Conversation")
+        SessionBuilder(db_path, "test1")
+        .title("Test Session")
         .add_message("msg1", role="user", text='This is a test message with "quoted text" inside.')
         .save()
     )
@@ -719,36 +753,24 @@ def test_escape_fts5_unicode(unicode_query: str) -> None:
 # ============================================================================
 
 
-def test_search_messages_returns_valid_structure(tmp_path: Path) -> None:
-    """Search results have expected structure."""
-    db_path = tmp_path / "test.db"
+async def test_search_messages_returns_valid_structure(tmp_path: Path) -> None:
+    """Archive search results have the expected structure."""
+    from polylogue.api import Polylogue
+
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    db_path = archive_root / "index.db"
     DbFactory(db_path)
 
-    # Insert test conversation using builder
-    (
-        ConversationBuilder(db_path, "test1")
-        .title("Test")
-        .add_message("msg1", role="user", text="Searchable content")
-        .save()
-    )
+    (SessionBuilder(db_path, "test1").title("Test").add_message("msg1", role="user", text="Searchable content").save())
 
-    # Build search index
-    with open_connection(str(db_path)) as conn:
-        rebuild_index(conn)
-
-    # Search using keyword arguments
-    results = search_messages(
-        "searchable",
-        archive_root=tmp_path,
-        db_path=Path(str(db_path)),
-        limit=10,
-    )
+    async with Polylogue(archive_root=archive_root, db_path=db_path) as plg:
+        results = await plg.search("searchable", limit=10)
 
     assert len(results.hits) > 0
     for hit in results.hits:
-        # Verify result structure
         assert hasattr(hit, "snippet")
-        assert hasattr(hit, "conversation_id")
+        assert hasattr(hit, "session_id")
         assert hit.snippet is not None
         assert len(hit.snippet) > 0
 
@@ -864,18 +886,18 @@ class TestFTS5Provider:
     @pytest.fixture
     def fts_provider(self: object, workspace_env: dict[str, Path]) -> FTS5Provider:
         """Create FTS5Provider with test database."""
-        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
+        db_path = workspace_env["archive_root"] / "index.db"
         return FTS5Provider(db_path=db_path)
 
     @pytest.fixture
     async def populated_fts(
         self: object,
         workspace_env: dict[str, Path],
-        storage_repository: ConversationRepository,
+        storage_repository: SessionRepository,
         fts_provider: FTS5Provider,
     ) -> FTS5Provider:
         """FTS provider with indexed test data."""
-        conv = make_conversation(
+        conv = make_session(
             "fts-conv-1",
             source_name="claude-ai",
             title="FTS Test",
@@ -893,7 +915,7 @@ class TestFTS5Provider:
                 timestamp="1001",
             ),
         ]
-        await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
+        await save_current_archive_records(storage_repository, session=conv, messages=msgs, attachments=[])
 
         # Index the messages
         fts_provider.index(msgs)
@@ -907,7 +929,7 @@ class TestFTS5Provider:
         """Ensure index creates FTS5 virtual table."""
         from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
-        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
+        db_path = workspace_env["archive_root"] / "index.db"
 
         # Index empty list to trigger table creation
         fts_provider.index([])
@@ -918,18 +940,17 @@ class TestFTS5Provider:
             pass
 
         # Index with actual message to ensure table creation
-        conv = make_conversation(
+        conv = make_session(
             "ensure-conv",
             title="Ensure Test",
             created_at="1970-01-02T00:00:00+00:00",
             updated_at="1970-01-02T00:00:00+00:00",
             provider_meta={"source": "inbox"},
         )
-        # First save the conversation so source_name lookup works
+        # First save the session so source_name lookup works
         backend = SQLiteBackend(db_path=db_path)
-        await backend.begin()
-        await backend.save_conversation_record(conv)
-        await backend.commit()
+        await save_session_to_archive(backend, session=conv)
+        await backend.close()
 
         msgs = [make_message("ens-msg", "ensure-conv", timestamp="1000")]
 
@@ -944,10 +965,10 @@ class TestFTS5Provider:
         self: object,
         workspace_env: dict[str, Path],
         fts_provider: FTS5Provider,
-        storage_repository: ConversationRepository,
+        storage_repository: SessionRepository,
     ) -> None:
         """Calling index multiple times is safe (idempotent)."""
-        conv = make_conversation(
+        conv = make_session(
             "idem-conv",
             title="Idempotent Test",
             created_at="1970-01-02T00:00:00+00:00",
@@ -955,7 +976,7 @@ class TestFTS5Provider:
             provider_meta={"source": "inbox"},
         )
         msgs = [make_message("idem-msg", "idem-conv", text="Idempotent message", timestamp="1000")]
-        await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
+        await save_current_archive_records(storage_repository, session=conv, messages=msgs, attachments=[])
 
         # Index twice - should not error or duplicate
         fts_provider.index(msgs)
@@ -964,16 +985,16 @@ class TestFTS5Provider:
         # Search should return exactly one result
         results = fts_provider.search("idempotent")
         assert len(results) == 1
-        assert results[0] == "idem-msg"
+        assert results[0] == _archive_message_id("test", "idem-conv", "idem-msg")
 
     async def test_index_deletes_old_entries(
         self: object,
         workspace_env: dict[str, Path],
         fts_provider: FTS5Provider,
-        storage_repository: ConversationRepository,
+        storage_repository: SessionRepository,
     ) -> None:
         """Incremental indexing removes old entries before inserting."""
-        conv = make_conversation(
+        conv = make_session(
             "incr-conv",
             title="Incremental Test",
             created_at="1970-01-02T00:00:00+00:00",
@@ -981,7 +1002,7 @@ class TestFTS5Provider:
             provider_meta={"source": "inbox"},
         )
         msgs_v1 = [make_message("incr-msg-1", "incr-conv", text="Original content about apples", timestamp="1000")]
-        await storage_repository.save_conversation(conversation=conv, messages=msgs_v1, attachments=[])
+        await save_current_archive_records(storage_repository, session=conv, messages=msgs_v1, attachments=[])
         fts_provider.index(msgs_v1)
 
         # Should find "apples"
@@ -989,7 +1010,7 @@ class TestFTS5Provider:
         assert len(results) == 1
 
         # Re-index with different content
-        conv_v2 = make_conversation(
+        conv_v2 = make_session(
             "incr-conv",
             title="Incremental Test",
             created_at="1970-01-02T00:00:00+00:00",
@@ -998,7 +1019,7 @@ class TestFTS5Provider:
             content_hash="updated-content-hash",
         )
         msgs_v2 = [make_message("incr-msg-1", "incr-conv", text="Updated content about oranges", timestamp="1000")]
-        await storage_repository.save_conversation(conversation=conv_v2, messages=msgs_v2, attachments=[])
+        await save_current_archive_records(storage_repository, session=conv_v2, messages=msgs_v2, attachments=[])
         fts_provider.index(msgs_v2)
 
         # "apples" should no longer be found
@@ -1013,10 +1034,10 @@ class TestFTS5Provider:
         self: object,
         workspace_env: dict[str, Path],
         fts_provider: FTS5Provider,
-        storage_repository: ConversationRepository,
+        storage_repository: SessionRepository,
     ) -> None:
         """Messages with empty text are not indexed."""
-        conv = make_conversation(
+        conv = make_session(
             "skip-conv",
             title="Skip Test",
             created_at="1970-01-02T00:00:00+00:00",
@@ -1027,13 +1048,13 @@ class TestFTS5Provider:
             make_message("skip-msg-1", "skip-conv", text="", timestamp="1000"),  # Empty text
             make_message("skip-msg-2", "skip-conv", role="assistant", text="This has content", timestamp="1001"),
         ]
-        await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
+        await save_current_archive_records(storage_repository, session=conv, messages=msgs, attachments=[])
         fts_provider.index(msgs)
 
         # Search should only find the non-empty message
         results = fts_provider.search("content")
         assert len(results) == 1
-        assert results[0] == "skip-msg-2"
+        assert results[0] == _archive_message_id("test", "skip-conv", "skip-msg-2")
 
     def test_search_returns_ranked_results(self: object, populated_fts: FTS5Provider) -> None:
         """Search returns results ordered by relevance (BM25)."""
@@ -1103,25 +1124,23 @@ class TestSearchProviderInit:
         assert isinstance(provider, FTS5Provider)
 
 
-async def _seed_conversation(storage_repository: ConversationRepository) -> None:
-    """Helper to seed a test conversation."""
-    await save_bundle(
-        RecordBundle(
-            conversation=make_conversation("conv:hash", source_name="codex", title="Demo"),
-            messages=[make_message("msg:hash", "conv:hash", text="hello world")],
-            attachments=[],
-        ),
-        repository=storage_repository,
+async def _seed_session(storage_repository: SessionRepository) -> None:
+    """Helper to seed a test session."""
+    await save_current_archive_records(
+        storage_repository,
+        session=make_session("conv:hash", source_name="codex", title="Demo"),
+        messages=[make_message("msg:hash", "conv:hash", text="hello world")],
+        attachments=[],
     )
 
 
-async def test_search_after_index(workspace_env: dict[str, Path], storage_repository: ConversationRepository) -> None:
+async def test_search_after_index(workspace_env: dict[str, Path], storage_repository: SessionRepository) -> None:
     """Test searching after building the index."""
-    await _seed_conversation(storage_repository)
+    await _seed_session(storage_repository)
     rebuild_index()
     results = search_messages("hello", archive_root=workspace_env["archive_root"], limit=5)
     assert results.hits
-    assert results.hits[0].conversation_id == "conv:hash"
+    assert results.hits[0].session_id == _archive_session_id("codex", "conv:hash")
 
 
 def test_health_cached(workspace_env: dict[str, Path]) -> None:
@@ -1155,21 +1174,17 @@ def test_search_invalid_query_reports_error(
 
     class StubConn:
         def execute(self, sql: str, params: object = ()) -> StubCursor:
-            del params
-            if "action_events_fts_docsize" in sql:
-                return StubCursor(row=(0,))
-            if "action_events_fts" in sql and "sqlite_master" in sql:
-                return StubCursor(row=None)
-            if "COUNT(*) FROM sqlite_master" in sql:
-                return StubCursor(row=(6,))
-            if "sqlite_master" in sql:
-                return StubCursor(row={"name": "messages_fts"} if "type='table'" in sql else (3,))
+            param_values = tuple(params) if isinstance(params, tuple) else ()
             if "messages_fts_docsize" in sql:
                 return StubCursor(row=(1,))
-            if "COUNT(*)" in sql and "messages" in sql:
+            if "COUNT(*)" in sql and "FROM blocks" in sql and "search_text" in sql:
                 return StubCursor(row=(1,))
-            if "content_blocks" in sql:
-                return StubCursor(row=(0,))
+            if "sqlite_master" in sql and "trigger" in sql:
+                return StubCursor(row=(3,))
+            if "sqlite_master" in sql and param_values in {("blocks",), ("messages_fts",)}:
+                return StubCursor(row=(1,))
+            if "sqlite_master" in sql and "messages_fts" in sql:
+                return StubCursor(row={"name": "messages_fts"})
             if "MATCH" in sql:
                 raise sqlite3.OperationalError("fts5: syntax error")
             return StubCursor()
@@ -1188,23 +1203,23 @@ def test_search_invalid_query_reports_error(
 
 async def test_search_returns_daemon_reader_url(
     workspace_env: dict[str, Path],
-    storage_repository: ConversationRepository,
+    storage_repository: SessionRepository,
 ) -> None:
     """Search results point to the daemon reader, not rendered files."""
     archive_root = workspace_env["archive_root"]
-    source_name = "legacy-provider"
-    conversation_id = "conv-one"
-    bundle = RecordBundle(
-        conversation=make_conversation(conversation_id, source_name=source_name, title="Legacy"),
-        messages=[make_message("msg:legacy", conversation_id, text="hello legacy")],
+    source_name = "test"
+    session_id = "conv-one"
+    await save_current_archive_records(
+        storage_repository,
+        session=make_session(session_id, source_name=source_name, title="Reader URL"),
+        messages=[make_message("msg:legacy", session_id, text="hello legacy")],
         attachments=[],
     )
-    await save_bundle(bundle, repository=storage_repository)
     rebuild_index()
 
     results = search_messages("hello", archive_root=archive_root, limit=5)
     assert results.hits
-    assert results.hits[0].conversation_url == "/?conversation=conv-one"
+    assert results.hits[0].session_url == "/?session=unknown-export%3Aconv-one"
 
 
 # ============================================================================
@@ -1220,7 +1235,7 @@ SEARCH_SINCE_VALID_CASES = [
         "2024-01-20T10:00:00",
         "message",
         "2024-01-15",
-        "conv:iso:new",
+        _archive_message_id("test", "conv:iso", "new"),
         "ISO date",
     ),
     (
@@ -1229,7 +1244,7 @@ SEARCH_SINCE_VALID_CASES = [
         "1706227200.0",
         "numeric",
         "2024-01-15",
-        "conv:numeric:new",
+        _archive_message_id("test", "conv:numeric", "new"),
         "numeric timestamp",
     ),
 ]
@@ -1240,7 +1255,7 @@ SEARCH_SINCE_VALID_CASES = [
 )
 async def test_search_since_filters(
     workspace_env: dict[str, Path],
-    storage_repository: ConversationRepository,
+    storage_repository: SessionRepository,
     conv_id: str,
     old_ts: str,
     new_ts: str,
@@ -1251,15 +1266,15 @@ async def test_search_since_filters(
 ) -> None:
     """--since filters messages by timestamp (ISO and numeric formats)."""
     archive_root = workspace_env["archive_root"]
-    bundle = RecordBundle(
-        conversation=make_conversation(conv_id, title=f"Test {description}"),
+    await save_current_archive_records(
+        storage_repository,
+        session=make_session(conv_id, title=f"Test {description}"),
         messages=[
             make_message(f"{conv_id}:old", conv_id, text=f"old message {description}", timestamp=old_ts),
             make_message(f"{conv_id}:new", conv_id, text=f"new message {description}", timestamp=new_ts),
         ],
         attachments=[],
     )
-    await save_bundle(bundle, repository=storage_repository)
     rebuild_index()
 
     results = search_messages(search_term, archive_root=archive_root, since=since_date, limit=10)
@@ -1269,37 +1284,33 @@ async def test_search_since_filters(
 
 async def test_search_since_handles_mixed_timestamp_formats(
     workspace_env: dict[str, Path],
-    storage_repository: ConversationRepository,
+    storage_repository: SessionRepository,
 ) -> None:
     """--since works with mix of ISO and numeric timestamps in same DB."""
     archive_root = workspace_env["archive_root"]
 
-    # Create conversation with ISO timestamp (after cutoff)
-    bundle_iso = RecordBundle(
-        conversation=make_conversation("conv:iso-new", title="ISO Test"),
+    await save_current_archive_records(
+        storage_repository,
+        session=make_session("conv:iso-new", title="ISO Test"),
         messages=[
             make_message("msg:iso-new", "conv:iso-new", text="mixedformat gamma", timestamp="2024-01-25T12:00:00")
         ],
         attachments=[],
     )
 
-    # Create conversation with numeric timestamp (after cutoff)
-    bundle_num = RecordBundle(
-        conversation=make_conversation("conv:num-new", title="Numeric Test"),
+    await save_current_archive_records(
+        storage_repository,
+        session=make_session("conv:num-new", title="Numeric Test"),
         messages=[make_message("msg:num-new", "conv:num-new", text="mixedformat delta", timestamp="1706400000.0")],
         attachments=[],
     )
 
-    # Create conversation with old ISO timestamp (before cutoff)
-    bundle_old = RecordBundle(
-        conversation=make_conversation("conv:old", title="Old Test"),
+    await save_current_archive_records(
+        storage_repository,
+        session=make_session("conv:old", title="Old Test"),
         messages=[make_message("msg:iso-old", "conv:old", text="mixedformat alpha", timestamp="2024-01-05T12:00:00")],
         attachments=[],
     )
-
-    await save_bundle(bundle_iso, repository=storage_repository)
-    await save_bundle(bundle_num, repository=storage_repository)
-    await save_bundle(bundle_old, repository=storage_repository)
     rebuild_index()
 
     results = search_messages(
@@ -1310,8 +1321,11 @@ async def test_search_since_handles_mixed_timestamp_formats(
     )
     # Should get 2 hits: one ISO, one numeric - both after cutoff
     assert len(results.hits) == 2
-    hit_conv_ids = {h.conversation_id for h in results.hits}
-    assert hit_conv_ids == {"conv:iso-new", "conv:num-new"}
+    hit_conv_ids = {h.session_id for h in results.hits}
+    assert hit_conv_ids == {
+        _archive_session_id("test", "conv:iso-new"),
+        _archive_session_id("test", "conv:num-new"),
+    }
 
 
 SEARCH_SINCE_ERROR_CASES = [
@@ -1324,13 +1338,13 @@ SEARCH_SINCE_ERROR_CASES = [
 @pytest.mark.parametrize("invalid_date,expected_error", SEARCH_SINCE_ERROR_CASES)
 async def test_search_since_invalid_date_raises_error(
     workspace_env: dict[str, Path],
-    storage_repository: ConversationRepository,
+    storage_repository: SessionRepository,
     invalid_date: str,
     expected_error: str,
 ) -> None:
     """Invalid --since format raises ValueError with helpful message."""
     archive_root = workspace_env["archive_root"]
-    await _seed_conversation(storage_repository)
+    await _seed_session(storage_repository)
     rebuild_index()
 
     with pytest.raises(ValueError, match=expected_error):
@@ -1344,12 +1358,13 @@ async def test_search_since_invalid_date_raises_error(
 
 async def test_search_since_boundary_condition(
     workspace_env: dict[str, Path],
-    storage_repository: ConversationRepository,
+    storage_repository: SessionRepository,
 ) -> None:
     """Messages at or after --since timestamp are included, earlier ones excluded."""
     archive_root = workspace_env["archive_root"]
-    bundle = RecordBundle(
-        conversation=make_conversation("conv:boundary", title="Boundary Test"),
+    await save_current_archive_records(
+        storage_repository,
+        session=make_session("conv:boundary", title="Boundary Test"),
         messages=[
             make_message(
                 "msg:after-cutoff", "conv:boundary", text="boundary after message", timestamp="2024-01-20T12:00:00"
@@ -1360,7 +1375,6 @@ async def test_search_since_boundary_condition(
         ],
         attachments=[],
     )
-    await save_bundle(bundle, repository=storage_repository)
     rebuild_index()
 
     results = search_messages(
@@ -1371,7 +1385,7 @@ async def test_search_since_boundary_condition(
     )
     # Should include after, exclude before
     assert len(results.hits) == 1
-    assert results.hits[0].message_id == "msg:after-cutoff"
+    assert results.hits[0].message_id == _archive_message_id("test", "conv:boundary", "msg:after-cutoff")
 
 
 def test_search_without_fts_table_raises_descriptive_error(
@@ -1393,16 +1407,17 @@ def test_search_without_fts_table_raises_descriptive_error(
     assert "Search index not built" in str(exc_info.value)
 
 
-def test_search_with_empty_fts_rows_raises_descriptive_error(
+async def test_search_with_empty_fts_rows_returns_no_hits(
     workspace_env: dict[str, Path],
     db_path: Path,
 ) -> None:
-    """search() rejects archives whose FTS table exists but is not populated."""
-    from polylogue.storage.sqlite.connection import open_connection
+    """Search over an emptied block FTS index reports incomplete search state."""
+    from polylogue.api import Polylogue
+    from polylogue.errors import DatabaseError
+    from tests.infra.archive_scenarios import open_index_db
 
     archive_root = workspace_env["archive_root"]
-    factory = DbFactory(db_path)
-    factory.create_conversation(
+    DbFactory(db_path).create_session(
         id="conv-incomplete-fts",
         provider="chatgpt",
         title="Incomplete FTS",
@@ -1411,14 +1426,13 @@ def test_search_with_empty_fts_rows_raises_descriptive_error(
             {"id": "m-incomplete-2", "role": "assistant", "text": "still not indexed"},
         ],
     )
-    with open_connection(db_path) as conn:
+    with open_index_db(db_path) as conn:
         conn.execute("DELETE FROM messages_fts")
         conn.commit()
 
-    with pytest.raises(Exception) as exc_info:
-        search_messages("search", archive_root=archive_root, db_path=db_path, limit=5)
-    assert exc_info.type.__name__ == "DatabaseError"
-    assert "Search index is incomplete" in str(exc_info.value)
+    async with Polylogue(archive_root=archive_root, db_path=db_path) as plg:
+        with pytest.raises(DatabaseError, match="Search index is incomplete"):
+            await plg.search("search", limit=5)
 
 
 # ============================================================================
@@ -1475,10 +1489,10 @@ class TestSearchWithSinceLaws:
         db_path = tmp_path / "since.db"
         DbFactory(db_path)
 
-        # Seed conversations with spread timestamps
+        # Seed sessions with spread timestamps
         for i in range(3):
             (
-                ConversationBuilder(db_path, f"since-conv-{i}")
+                SessionBuilder(db_path, f"since-conv-{i}")
                 .title(f"Since Test {i}")
                 .add_message(
                     f"msg-{i}",
@@ -1527,23 +1541,22 @@ def test_fts_triggers_restored_after_exception() -> None:
     import sqlite3
 
     from polylogue.storage.fts.fts_lifecycle import restore_fts_triggers_sync, suspend_fts_triggers_sync
-    from polylogue.storage.sqlite.schema_ddl import SCHEMA_DDL
+    from polylogue.storage.sqlite.schema import SCHEMA_DDL
 
     db_path = None
     conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
     try:
         conn.executescript(SCHEMA_DDL)
-        conn.execute(
-            "INSERT INTO conversations(conversation_id, source_name, provider_conversation_id, version) VALUES(?,?,?,1)",
-            ("c1", "test", "pc1"),
-        )
-        conn.commit()
 
         # Simulate ingest: suspend, insert, exception, restore in finally
         suspend_fts_triggers_sync(conn)
-        conn.execute(
-            "INSERT INTO messages(message_id, conversation_id, role, text, source_name, version) VALUES(?,?,?,?,?,1)",
-            ("m1", "c1", "user", "test message", "test"),
+        _insert_current_session_message(
+            conn,
+            provider_session_id="pc1",
+            provider_message_id="m1",
+            text="test message",
+            source_name="unknown",
         )
         try:
             raise RuntimeError("simulated ingest failure")
@@ -1555,9 +1568,14 @@ def test_fts_triggers_restored_after_exception() -> None:
             conn.commit()
 
         # Insert another message — FTS should pick it up since triggers are active
-        conn.execute(
-            "INSERT INTO messages(message_id, conversation_id, role, text, source_name, version) VALUES(?,?,?,?,?,1)",
-            ("m2", "c1", "assistant", "another message", "test"),
+        _insert_current_session_message(
+            conn,
+            provider_session_id="pc1",
+            provider_message_id="m2",
+            text="another message",
+            position=1,
+            role="assistant",
+            source_name="unknown",
         )
         conn.commit()
         from polylogue.storage.fts.fts_lifecycle import rebuild_fts_index_sync
@@ -1582,37 +1600,50 @@ def test_fts_index_recovers_from_corrupt_trigger_state() -> None:
     import sqlite3
 
     from polylogue.storage.fts.fts_lifecycle import restore_fts_triggers_sync, suspend_fts_triggers_sync
-    from polylogue.storage.sqlite.schema_ddl import SCHEMA_DDL
+    from polylogue.storage.sqlite.schema import SCHEMA_DDL
 
     conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA_DDL)
     conn.execute(
-        "INSERT INTO conversations(conversation_id, source_name, provider_conversation_id, version) VALUES(?,?,?,1)",
-        ("c1", "test", "pc1"),
+        "INSERT INTO sessions(native_id, origin, content_hash) VALUES(?,?,?)",
+        ("pc1", "unknown-export", b"x" * 32),
     )
     conn.commit()
 
     # Normal insert with triggers active
-    conn.execute(
-        "INSERT INTO messages(message_id, conversation_id, role, text, source_name, version) VALUES(?,?,?,?,?,1)",
-        ("m1", "c1", "user", "hello world this is a test message", "test"),
+    _insert_current_session_message(
+        conn,
+        provider_session_id="pc1",
+        provider_message_id="m1",
+        text="hello world this is a test message",
+        source_name="unknown",
     )
     conn.commit()
     assert conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] == 1
 
     # Simulate crash recovery: triggers suspended, data inserted, triggers restored
     suspend_fts_triggers_sync(conn)
-    conn.execute(
-        "INSERT INTO messages(message_id, conversation_id, role, text, source_name, version) VALUES(?,?,?,?,?,1)",
-        ("m2", "c1", "assistant", "another message for testing", "test"),
+    _insert_current_session_message(
+        conn,
+        provider_session_id="pc1",
+        provider_message_id="m2",
+        text="another message for testing",
+        position=1,
+        role="assistant",
+        source_name="unknown",
     )
     restore_fts_triggers_sync(conn)
     conn.commit()
 
     # New message should be picked up
-    conn.execute(
-        "INSERT INTO messages(message_id, conversation_id, role, text, source_name, version) VALUES(?,?,?,?,?,1)",
-        ("m3", "c1", "user", "third message here", "test"),
+    _insert_current_session_message(
+        conn,
+        provider_session_id="pc1",
+        provider_message_id="m3",
+        text="third message here",
+        position=2,
+        source_name="unknown",
     )
     conn.commit()
 

@@ -95,14 +95,57 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     return row is not None
 
 
-def _raw_conversation_hashes(conn: sqlite3.Connection) -> list[str]:
-    if not _table_exists(conn, "raw_conversations"):
+def _blob_hash_text(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, bytes):
+        if len(value) == 32:
+            return value.hex()
+        return None
+    text = str(value)
+    return text if text else None
+
+
+def _archive_source_blob_hashes(conn: sqlite3.Connection) -> list[str]:
+    hashes: set[str] = set()
+    if _table_exists(conn, "raw_sessions"):
+        rows = conn.execute("SELECT blob_hash FROM raw_sessions").fetchall()
+        hashes.update(hash_text for row in rows if (hash_text := _blob_hash_text(row[0])) is not None)
+    if _table_exists(conn, "blob_refs"):
+        rows = conn.execute("SELECT blob_hash FROM blob_refs").fetchall()
+        hashes.update(hash_text for row in rows if (hash_text := _blob_hash_text(row[0])) is not None)
+    return sorted(hashes)
+
+
+def _raw_session_hashes(conn: sqlite3.Connection) -> list[str]:
+    if not _table_exists(conn, "raw_sessions"):
         return []
     # No ORDER BY: the result is consumed unordered into a set
     # (scan_blob_integrity builds ``set(referenced)``), so sorting the full
-    # raw_conversations scan on unindexed ``acquired_at`` was pure overhead.
-    rows = conn.execute("SELECT raw_id FROM raw_conversations").fetchall()
+    # raw_sessions scan on unindexed ``acquired_at`` was pure overhead.
+    rows = conn.execute("SELECT raw_id FROM raw_sessions").fetchall()
     return [str(row[0]) for row in rows if row[0]]
+
+
+def _referenced_blob_hashes(db_path: Path, conn: sqlite3.Connection) -> list[str]:
+    direct_archive_hashes = _archive_source_blob_hashes(conn)
+    if direct_archive_hashes:
+        return direct_archive_hashes
+
+    source_db = db_path.with_name("source.db")
+    if source_db != db_path and source_db.exists():
+        try:
+            source_conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+            try:
+                source_archive_hashes = _archive_source_blob_hashes(source_conn)
+                if source_archive_hashes:
+                    return source_archive_hashes
+            finally:
+                source_conn.close()
+        except sqlite3.Error:
+            pass
+
+    return _raw_session_hashes(conn)
 
 
 def _pending_blob_leases(conn: sqlite3.Connection) -> dict[str, int]:
@@ -153,12 +196,13 @@ def scan_blob_integrity(
     ``full=False`` bounds the filesystem and hash-verification scan to
     ``sample_size`` blobs and references while still loading the reference and
     lease sets needed to avoid false orphan reports. ``full=True`` scans every
-    blob and every raw-conversation reference.
+    blob and every raw-session reference.
     """
 
     blob_store = store if store is not None else get_blob_store()
-    with open_read_connection(Path(db_path)) as conn:
-        referenced = _raw_conversation_hashes(conn)
+    resolved_db_path = Path(db_path)
+    with open_read_connection(resolved_db_path) as conn:
+        referenced = _referenced_blob_hashes(resolved_db_path, conn)
         leases = _pending_blob_leases(conn)
 
     referenced_set = set(referenced)

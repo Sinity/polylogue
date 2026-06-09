@@ -1,4 +1,4 @@
-"""Shared content-kind projection for conversation/message output surfaces."""
+"""Shared content-kind projection for session/message output surfaces."""
 
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 
 if TYPE_CHECKING:
-    from polylogue.archive.conversation.models import Conversation
     from polylogue.archive.message.models import Message
+    from polylogue.archive.session.domain_models import Session
 
 
 class ContentKind(str, Enum):
@@ -33,7 +33,7 @@ class ContentKind(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class ContentProjectionSpec:
-    """Shared output projection controls for conversation content."""
+    """Shared output projection controls for session content."""
 
     include_prose: bool = True
     include_code: bool = True
@@ -97,22 +97,22 @@ def coerce_content_projection_spec(
     return ContentProjectionSpec.from_params(value)
 
 
-def project_conversation_content(
-    conversation: Conversation,
+def project_session_content(
+    session: Session,
     projection: ContentProjectionSpec | Mapping[str, object] | None,
-) -> Conversation:
-    """Return a conversation with content-kind projection applied."""
+) -> Session:
+    """Return a session with content-kind projection applied."""
     spec = coerce_content_projection_spec(projection)
     if spec.is_default():
-        return conversation
+        return session
 
-    tool_semantics = _tool_semantics_by_id(list(conversation.messages))
+    tool_semantics = _tool_semantics_by_id(list(session.messages))
     projected_messages = [
         projected
-        for message in conversation.messages
+        for message in session.messages
         if (projected := _project_message_content(message, spec, tool_semantics)) is not None
     ]
-    return conversation.model_copy(update={"messages": MessageCollection(messages=projected_messages)})
+    return session.model_copy(update={"messages": MessageCollection(messages=projected_messages)})
 
 
 def project_message_content(
@@ -382,5 +382,5 @@ __all__ = [
     "ContentProjectionSpec",
     "coerce_content_projection_spec",
     "project_message_content",
-    "project_conversation_content",
+    "project_session_content",
 ]

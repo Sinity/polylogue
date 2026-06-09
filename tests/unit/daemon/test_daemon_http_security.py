@@ -44,12 +44,12 @@ ENDPOINTS_GET = [
     "/api/health/check",
     "/api/health",
     "/api/status",
-    "/api/conversations",
+    "/api/sessions",
     "/api/facets",
     "/api/sources",
-    "/api/conversations/some-id",
-    "/api/conversations/some-id/raw",
-    "/api/conversations/some-id/messages",
+    "/api/sessions/some-id",
+    "/api/sessions/some-id/raw",
+    "/api/sessions/some-id/messages",
     "/api/raw_artifacts/some-hash",
 ]
 
@@ -267,12 +267,12 @@ class TestGetEndpointAuthGate:
             patch.object(handler, "_handle_health_check"),
             patch.object(handler, "_handle_health"),
             patch.object(handler, "_handle_status"),
-            patch.object(handler, "_handle_list_conversations"),
+            patch.object(handler, "_handle_list_sessions"),
             patch.object(handler, "_handle_facets"),
             patch.object(handler, "_handle_sources"),
-            patch.object(handler, "_handle_get_conversation"),
+            patch.object(handler, "_handle_get_session"),
             patch.object(handler, "_handle_get_messages"),
-            patch.object(handler, "_handle_get_conversation_raw"),
+            patch.object(handler, "_handle_get_session_raw"),
             patch.object(handler, "_handle_get_raw_artifact"),
         ):
             handler.do_GET()
@@ -621,7 +621,7 @@ class TestJsonSerializationRobustness:
 
         payload: dict[str, object] = {
             "id": "abc",
-            "title": "My conversation",
+            "title": "My session",
             "count": 42,
             "tags": ["a", "b"],
             "nested": {"ok": True, "value": None},

@@ -1,5 +1,3 @@
-"""Provider-level archive semantics."""
+"""Provider-wire parser semantics and capability metadata."""
 
-from polylogue.archive.provider.events import ProviderEvent
-
-__all__ = ["ProviderEvent"]
+__all__: list[str] = []

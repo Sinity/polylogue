@@ -70,7 +70,7 @@ _INSIGHT_OPERATION_BY_METHOD = {
     "list_session_profile_insights": "query-session-profiles",
     "list_session_work_event_insights": "query-session-work-events",
     "list_session_phase_insights": "query-session-phases",
-    "list_work_thread_insights": "query-work-threads",
+    "list_thread_insights": "query-threads",
     "list_session_tag_rollup_insights": "query-session-tag-rollups",
     "list_archive_coverage_insights": "query-archive-coverage",
     "list_tool_usage_insights": "query-tool-usage",
@@ -192,13 +192,13 @@ def _default_metadata_for_polylogue(argv: tuple[str, ...]) -> ScenarioMetadata:
     first_token = _first_non_option(argv)
     if first_token in _KNOWN_POLYLOGUE_SUBCOMMANDS or not argv:
         return ScenarioMetadata()
-    return _metadata_for_operations("query-conversations")
+    return _metadata_for_operations("query-sessions")
 
 
 def _default_metadata_for_pipeline_probe(request: PipelineProbeRequest) -> ScenarioMetadata:
     if request.stage == "parse":
         return _metadata_for_operations(
-            "acquire-raw-conversations",
+            "acquire-raw-sessions",
             "plan-validation-backlog",
             "plan-parse-backlog",
             "ingest-archive-runtime",

@@ -1,0 +1,10 @@
+Usage: polylogue blackboard [OPTIONS] COMMAND [ARGS]...
+
+  Persistent agent-addressable notes surface.
+
+Options:
+  -h, --help  Show this message and exit.
+
+Commands:
+  list  List blackboard notes.
+  post  Post a note to the blackboard.

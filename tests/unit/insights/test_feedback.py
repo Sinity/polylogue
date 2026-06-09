@@ -3,7 +3,7 @@
 Acceptance criteria covered here:
 
 - Content-hash invariant: recording, mutating, and clearing corrections
-  never alters ``conversations.content_hash``. This is the durable
+  never alters ``sessions.content_hash``. This is the durable
   separation between the archive substrate and the user-metadata zone.
 - Determinism: applying a correction set to a heuristic output produces
   identical results across independent merge calls.
@@ -27,9 +27,9 @@ from polylogue.insights.feedback import (
     apply_corrections_to_auto_tags,
     parse_correction_kind,
 )
-from polylogue.storage.repository import ConversationRepository
-from polylogue.storage.sqlite.queries import conversations as conversations_q
-from tests.infra.storage_records import make_conversation, make_message
+from polylogue.storage.repository import SessionRepository
+from polylogue.storage.sqlite.queries import sessions as sessions_q
+from tests.infra.storage_records import make_message, make_session, save_current_archive_records
 
 # ---------------------------------------------------------------------------
 # Pure-function semantics — no DB
@@ -38,7 +38,7 @@ from tests.infra.storage_records import make_conversation, make_message
 
 def _correction(kind: CorrectionKind, payload: dict[str, str]) -> LearningCorrection:
     return LearningCorrection(
-        conversation_id="conv-1",
+        session_id="conv-1",
         kind=kind,
         payload=payload,
         created_at=datetime(2026, 5, 17, tzinfo=UTC),
@@ -104,20 +104,26 @@ class TestApplyCorrectionToSummary:
 # ---------------------------------------------------------------------------
 
 
-async def _seed_conversation(repository: ConversationRepository, conv_id: str) -> None:
-    conv = make_conversation(conv_id, source_name="claude-code", title="Original title")
+async def _seed_session(repository: SessionRepository, conv_id: str) -> None:
+    conv = make_session(conv_id, source_name="claude-code", title="Original title")
     msgs = [make_message(f"{conv_id}-msg", conv_id, text="Hello world.")]
-    await repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
+    await save_current_archive_records(repository, session=conv, messages=msgs, attachments=[])
+
+
+def _archive_session_id(conv_id: str) -> str:
+    # ``_seed_session`` persists via ``make_session`` whose native_id is the
+    # conv id itself, so the generated archive session_id is ``origin:conv_id``.
+    return f"claude-code-session:{conv_id}"
 
 
 async def _read_content_hash(
-    repository: ConversationRepository,
-    conversation_id: str,
+    repository: SessionRepository,
+    session_id: str,
 ) -> str | None:
     async with repository.backend.connection() as conn:
         cursor = await conn.execute(
-            "SELECT content_hash FROM conversations WHERE conversation_id = ?",
-            (conversation_id,),
+            "SELECT content_hash FROM sessions WHERE session_id = ?",
+            (session_id,),
         )
         row = await cursor.fetchone()
         if row is None:
@@ -131,10 +137,10 @@ class TestFeedbackStorage:
     async def test_record_then_list_then_clear(
         self,
         workspace_env: dict[str, Path],
-        storage_repository: ConversationRepository,
+        storage_repository: SessionRepository,
     ) -> None:
         del workspace_env
-        await _seed_conversation(storage_repository, "conv-A")
+        await _seed_session(storage_repository, "conv-A")
 
         from polylogue.storage.insights.feedback import (
             clear_corrections,
@@ -145,29 +151,29 @@ class TestFeedbackStorage:
         async with storage_repository.backend.connection() as conn:
             recorded = await upsert_correction(
                 conn,
-                conversation_id="conv-A",
+                session_id="conv-A",
                 kind=CorrectionKind.SUMMARY_OVERRIDE,
                 payload={"summary": "User-authored summary."},
                 note="operator replacement",
             )
-            assert recorded.conversation_id == "conv-A"
+            assert recorded.session_id == "conv-A"
             assert recorded.kind == CorrectionKind.SUMMARY_OVERRIDE
 
-            listed = await list_corrections(conn, conversation_id="conv-A")
+            listed = await list_corrections(conn, session_id="conv-A")
             assert [c.kind for c in listed] == [CorrectionKind.SUMMARY_OVERRIDE]
             assert listed[0].payload == {"summary": "User-authored summary."}
 
-            removed = await clear_corrections(conn, conversation_id="conv-A")
+            removed = await clear_corrections(conn, session_id="conv-A")
             assert removed == 1
-            assert await list_corrections(conn, conversation_id="conv-A") == []
+            assert await list_corrections(conn, session_id="conv-A") == []
 
     async def test_upsert_is_idempotent_on_kind(
         self,
         workspace_env: dict[str, Path],
-        storage_repository: ConversationRepository,
+        storage_repository: SessionRepository,
     ) -> None:
         del workspace_env
-        await _seed_conversation(storage_repository, "conv-B")
+        await _seed_session(storage_repository, "conv-B")
 
         from polylogue.storage.insights.feedback import (
             list_corrections,
@@ -177,33 +183,34 @@ class TestFeedbackStorage:
         async with storage_repository.backend.connection() as conn:
             await upsert_correction(
                 conn,
-                conversation_id="conv-B",
+                session_id="conv-B",
                 kind=CorrectionKind.SUMMARY_OVERRIDE,
                 payload={"summary": "First summary."},
             )
             await upsert_correction(
                 conn,
-                conversation_id="conv-B",
+                session_id="conv-B",
                 kind=CorrectionKind.SUMMARY_OVERRIDE,
                 payload={"summary": "Second summary."},
             )
 
-            corrections = await list_corrections(conn, conversation_id="conv-B")
+            corrections = await list_corrections(conn, session_id="conv-B")
 
-        # (conversation_id, kind) is UNIQUE: only the latest payload survives.
+        # (session_id, kind) is UNIQUE: only the latest payload survives.
         assert len(corrections) == 1
         assert corrections[0].payload == {"summary": "Second summary."}
 
     async def test_content_hash_invariant(
         self,
         workspace_env: dict[str, Path],
-        storage_repository: ConversationRepository,
+        storage_repository: SessionRepository,
     ) -> None:
-        """AC #1131: corrections never touch the conversation's content_hash."""
+        """AC #1131: corrections never touch the session's content_hash."""
 
         del workspace_env
-        await _seed_conversation(storage_repository, "conv-C")
-        original_hash = await _read_content_hash(storage_repository, "conv-C")
+        await _seed_session(storage_repository, "conv-C")
+        session_id = _archive_session_id("conv-C")
+        original_hash = await _read_content_hash(storage_repository, session_id)
         assert original_hash is not None and len(original_hash) > 0
 
         from polylogue.storage.insights.feedback import (
@@ -214,26 +221,26 @@ class TestFeedbackStorage:
         async with storage_repository.backend.connection() as conn:
             await upsert_correction(
                 conn,
-                conversation_id="conv-C",
+                session_id="conv-C",
                 kind=CorrectionKind.TAG_REJECT,
                 payload={"tag": "costly"},
                 note="not actually expensive work",
             )
-        after_record = await _read_content_hash(storage_repository, "conv-C")
+        after_record = await _read_content_hash(storage_repository, session_id)
         assert after_record == original_hash
 
         async with storage_repository.backend.connection() as conn:
-            await clear_corrections(conn, conversation_id="conv-C")
-        after_clear = await _read_content_hash(storage_repository, "conv-C")
+            await clear_corrections(conn, session_id="conv-C")
+        after_clear = await _read_content_hash(storage_repository, session_id)
         assert after_clear == original_hash
 
     async def test_list_filters_by_kind(
         self,
         workspace_env: dict[str, Path],
-        storage_repository: ConversationRepository,
+        storage_repository: SessionRepository,
     ) -> None:
         del workspace_env
-        await _seed_conversation(storage_repository, "conv-D")
+        await _seed_session(storage_repository, "conv-D")
 
         from polylogue.storage.insights.feedback import (
             list_corrections,
@@ -243,20 +250,20 @@ class TestFeedbackStorage:
         async with storage_repository.backend.connection() as conn:
             await upsert_correction(
                 conn,
-                conversation_id="conv-D",
+                session_id="conv-D",
                 kind=CorrectionKind.TAG_REJECT,
                 payload={"tag": "repo:polylogue"},
             )
             await upsert_correction(
                 conn,
-                conversation_id="conv-D",
+                session_id="conv-D",
                 kind=CorrectionKind.SUMMARY_OVERRIDE,
                 payload={"summary": "Replacement"},
             )
 
             filtered = await list_corrections(
                 conn,
-                conversation_id="conv-D",
+                session_id="conv-D",
                 kind=CorrectionKind.SUMMARY_OVERRIDE,
             )
 
@@ -266,7 +273,7 @@ class TestFeedbackStorage:
     async def test_unknown_kind_rejected_at_typed_boundary(
         self,
         workspace_env: dict[str, Path],
-        storage_repository: ConversationRepository,
+        storage_repository: SessionRepository,
     ) -> None:
         del workspace_env, storage_repository
         # The DB column is permissive (TEXT) so old rows can survive
@@ -281,16 +288,17 @@ class TestFeedbackStorage:
 # ---------------------------------------------------------------------------
 
 
-def test_user_corrections_ddl_is_in_schema_ddl() -> None:
-    from polylogue.storage.sqlite.schema_ddl import SCHEMA_DDL
+def test_corrections_ddl_is_in_user_tier_ddl() -> None:
+    # The learning-corrections table lives in the user-durability tier
+    # (``user.db``) by construction — it carries irreplaceable human input and
+    # sits outside the content-hash boundary (#1131). The canonical table is
+    # named ``corrections`` in the split-file archive.
+    from polylogue.storage.sqlite.archive_tiers.user import USER_DDL
 
-    assert "CREATE TABLE IF NOT EXISTS user_corrections" in SCHEMA_DDL
-    # Hash boundary documented in the DDL block so future readers see it
-    # next to the table definition.
-    assert "user_corrections" in SCHEMA_DDL
+    assert "CREATE TABLE IF NOT EXISTS corrections" in USER_DDL
 
 
 def _suppress_unused_import_warning() -> None:
-    # ``conversations_q`` is imported for future tests that need to read
+    # ``sessions_q`` is imported for future tests that need to read
     # other rows; reference it so static linters do not flag the import.
-    assert callable(conversations_q.list_tags)
+    assert callable(sessions_q.list_tags)

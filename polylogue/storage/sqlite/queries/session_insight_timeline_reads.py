@@ -75,16 +75,16 @@ async def _require_session_work_events_fts_ready(conn: aiosqlite.Connection) -> 
 
 async def get_work_events(
     conn: aiosqlite.Connection,
-    conversation_id: str,
+    session_id: str,
 ) -> list[SessionWorkEventRecord]:
     cursor = await conn.execute(
         """
         SELECT *
         FROM session_work_events
-        WHERE conversation_id = ?
+        WHERE session_id = ?
         ORDER BY event_index
         """,
-        (conversation_id,),
+        (session_id,),
     )
     rows = await cursor.fetchall()
     return [_row_to_session_work_event_record(row) for row in rows]
@@ -92,16 +92,16 @@ async def get_work_events(
 
 async def get_session_phases(
     conn: aiosqlite.Connection,
-    conversation_id: str,
+    session_id: str,
 ) -> list[SessionPhaseRecord]:
     cursor = await conn.execute(
         """
         SELECT *
         FROM session_phases
-        WHERE conversation_id = ?
+        WHERE session_id = ?
         ORDER BY phase_index
         """,
-        (conversation_id,),
+        (session_id,),
     )
     rows = await cursor.fetchall()
     return [_row_to_session_phase_record(row) for row in rows]
@@ -130,9 +130,9 @@ async def list_work_events(
         where = []
         order_by = "ORDER BY COALESCE(swe.start_time, swe.end_time, swe.source_updated_at, swe.materialized_at) DESC, swe.event_index"
 
-    if query.conversation_id:
-        where.append("swe.conversation_id = ?")
-        params.append(query.conversation_id)
+    if query.session_id:
+        where.append("swe.session_id = ?")
+        params.append(query.session_id)
     if query.provider:
         where.append("swe.source_name = ?")
         params.append(query.provider)
@@ -170,9 +170,9 @@ async def list_session_phases(
 ) -> list[SessionPhaseRecord]:
     params: list[object] = []
     where: list[str] = []
-    if query.conversation_id:
-        where.append("conversation_id = ?")
-        params.append(query.conversation_id)
+    if query.session_id:
+        where.append("session_id = ?")
+        params.append(query.session_id)
     if query.provider:
         where.append("source_name = ?")
         params.append(query.provider)

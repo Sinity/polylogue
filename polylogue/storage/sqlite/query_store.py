@@ -4,21 +4,18 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
-from typing import TYPE_CHECKING
 
 import aiosqlite
 
 from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
 from polylogue.storage.query_models import (
     SessionTagRollupListQuery,
-    WorkThreadListQuery,
+    ThreadListQuery,
 )
 from polylogue.storage.runtime import (
-    ActionEventRecord,
     SessionTagRollupRecord,
-    WorkThreadRecord,
+    ThreadRecord,
 )
-from polylogue.storage.sqlite.queries import action_events as action_events_q
 from polylogue.storage.sqlite.queries import (
     session_insight_summary_queries as session_insight_summaries_q,
 )
@@ -33,9 +30,6 @@ from polylogue.storage.sqlite.query_store_insight_timelines import (
     SQLiteQueryStoreInsightTimelinesMixin,
 )
 from polylogue.storage.sqlite.query_store_maintenance import SQLiteQueryStoreMaintenanceMixin
-
-if TYPE_CHECKING:
-    from polylogue.storage.action_events.artifacts import ActionEventArtifactState
 
 
 class SQLiteQueryStore(
@@ -55,45 +49,26 @@ class SQLiteQueryStore(
 
     # -- Insight status (formerly query_store_insight_status.py) ------------
 
-    async def get_action_event_artifact_state(self) -> ActionEventArtifactState:
-        from polylogue.storage.action_events.status import action_event_artifact_state_async
-
-        async with self._connection_factory() as conn:
-            return await action_event_artifact_state_async(conn)
-
     async def get_session_insight_status(self, *, verify_freshness: bool = True) -> SessionInsightStatusSnapshot:
         from polylogue.storage.insights.session.status import session_insight_status_async
 
         async with self._connection_factory() as conn:
             return await session_insight_status_async(conn, verify_freshness=verify_freshness)
 
-    # -- Action events (formerly query_store_insight_actions.py) ------------
+    # -- Threads (formerly query_store_insight_threads.py) ------------------
 
-    async def get_action_events(self, conversation_id: str) -> list[ActionEventRecord]:
+    async def get_thread(self, thread_id: str) -> ThreadRecord | None:
         async with self._connection_factory() as conn:
-            return await action_events_q.get_action_events(conn, conversation_id)
+            return await session_insight_threads_q.get_thread(conn, thread_id)
 
-    async def get_action_events_batch(
+    async def _list_threads_query(
         self,
-        conversation_ids: list[str],
-    ) -> dict[str, list[ActionEventRecord]]:
+        query: ThreadListQuery,
+    ) -> list[ThreadRecord]:
         async with self._connection_factory() as conn:
-            return await action_events_q.get_action_events_batch(conn, conversation_ids)
+            return await session_insight_threads_q.list_threads(conn, query)
 
-    # -- Work threads (formerly query_store_insight_threads.py) -------------
-
-    async def get_work_thread(self, thread_id: str) -> WorkThreadRecord | None:
-        async with self._connection_factory() as conn:
-            return await session_insight_threads_q.get_work_thread(conn, thread_id)
-
-    async def _list_work_threads_query(
-        self,
-        query: WorkThreadListQuery,
-    ) -> list[WorkThreadRecord]:
-        async with self._connection_factory() as conn:
-            return await session_insight_threads_q.list_work_threads(conn, query)
-
-    async def list_work_threads(
+    async def list_threads(
         self,
         *,
         since: str | None = None,
@@ -101,9 +76,9 @@ class SQLiteQueryStore(
         limit: int | None = 50,
         offset: int = 0,
         query: str | None = None,
-    ) -> list[WorkThreadRecord]:
-        return await self._list_work_threads_query(
-            WorkThreadListQuery(
+    ) -> list[ThreadRecord]:
+        return await self._list_threads_query(
+            ThreadListQuery(
                 since=since,
                 until=until,
                 limit=limit,

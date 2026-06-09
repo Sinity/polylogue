@@ -28,10 +28,12 @@ from hypothesis.strategies import SearchStrategy
 
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.roles import Role
-from polylogue.archive.models import Conversation, ConversationSummary, Message
+from polylogue.archive.models import Message, Session, SessionSummary
+from polylogue.core.enums import Origin
+from polylogue.core.sources import origin_from_provider
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.sources.providers.gemini import GeminiMessage, GeminiPart
-from polylogue.types import ConversationId, Provider
+from polylogue.types import Provider, SessionId
 
 TimestampInput: TypeAlias = str | int | float | None
 SparseProviderMeta: TypeAlias = dict[str, object] | None
@@ -106,7 +108,7 @@ _provider_meta_or_none: SearchStrategy[SparseProviderMeta] = st.one_of(
     ),
 )
 
-_SPARSE_CONVERSATION_HEALTH_CHECKS = [
+_SPARSE_SESSION_HEALTH_CHECKS = [
     HealthCheck.filter_too_much,
     HealthCheck.too_slow,
     HealthCheck.differing_executors,
@@ -141,19 +143,18 @@ def sparse_message(draw: st.DrawFn) -> Message:
 
 
 @st.composite
-def sparse_conversation(draw: st.DrawFn) -> Conversation:
-    """Generate a Conversation with sparse fields and None timestamps."""
+def sparse_session(draw: st.DrawFn) -> Session:
+    """Generate a Session with sparse fields and None timestamps."""
     messages = draw(st.lists(sparse_message(), min_size=0, max_size=10))
-    return Conversation(
-        id=ConversationId(draw(st.text(min_size=1, max_size=30))),
-        provider=Provider.from_string(
-            draw(st.sampled_from(["chatgpt", "claude-ai", "gemini", "claude-code", "codex"]))
+    return Session(
+        id=SessionId(draw(st.text(min_size=1, max_size=30))),
+        origin=origin_from_provider(
+            Provider.from_string(draw(st.sampled_from(["chatgpt", "claude-ai", "gemini", "claude-code", "codex"])))
         ),
         title=draw(st.one_of(st.none(), st.text(max_size=100))),
         messages=MessageCollection(messages=messages),
         created_at=draw(_timestamp_or_none),
         updated_at=draw(_timestamp_or_none),
-        provider_meta=draw(st.one_of(st.none(), st.just({}))),
         metadata=draw(
             st.one_of(
                 st.just({}),
@@ -225,60 +226,60 @@ class TestMessageNoneGuardProperties:
 
 
 # =============================================================================
-# Property: Conversation operations never crash with mixed None timestamps
+# Property: Session operations never crash with mixed None timestamps
 # =============================================================================
 
 
-class TestConversationNoneGuardProperties:
-    """Conversation operations must handle mixed None timestamps and fields."""
+class TestSessionNoneGuardProperties:
+    """Session operations must handle mixed None timestamps and fields."""
 
-    @given(conv=sparse_conversation())
-    @settings(max_examples=100, suppress_health_check=_SPARSE_CONVERSATION_HEALTH_CHECKS)
-    def test_display_date_never_crashes(self, conv: Conversation) -> None:
+    @given(conv=sparse_session())
+    @settings(max_examples=100, suppress_health_check=_SPARSE_SESSION_HEALTH_CHECKS)
+    def test_display_date_never_crashes(self, conv: Session) -> None:
         """display_date with None updated_at/created_at must not crash."""
         result = conv.display_date
         assert result is None or isinstance(result, datetime)
 
-    @given(conv=sparse_conversation())
-    @settings(max_examples=100, suppress_health_check=_SPARSE_CONVERSATION_HEALTH_CHECKS)
-    def test_tags_never_crashes(self, conv: Conversation) -> None:
+    @given(conv=sparse_session())
+    @settings(max_examples=100, suppress_health_check=_SPARSE_SESSION_HEALTH_CHECKS)
+    def test_tags_never_crashes(self, conv: Session) -> None:
         """tags property must handle None/missing metadata."""
         result = conv.tags
         assert isinstance(result, list)
         assert all(isinstance(t, str) for t in result)
 
-    @given(conv=sparse_conversation())
-    @settings(max_examples=100, suppress_health_check=_SPARSE_CONVERSATION_HEALTH_CHECKS)
-    def test_len_messages_never_crashes(self, conv: Conversation) -> None:
-        """len(messages) matches the count of message objects in the conversation."""
+    @given(conv=sparse_session())
+    @settings(max_examples=100, suppress_health_check=_SPARSE_SESSION_HEALTH_CHECKS)
+    def test_len_messages_never_crashes(self, conv: Session) -> None:
+        """len(messages) matches the count of message objects in the session."""
         result = len(conv.messages)
         assert isinstance(result, int)
         assert result == sum(1 for _ in conv.messages)
 
-    @given(conv=sparse_conversation())
-    @settings(max_examples=100, suppress_health_check=_SPARSE_CONVERSATION_HEALTH_CHECKS)
-    def test_iter_messages_never_crashes(self, conv: Conversation) -> None:
+    @given(conv=sparse_session())
+    @settings(max_examples=100, suppress_health_check=_SPARSE_SESSION_HEALTH_CHECKS)
+    def test_iter_messages_never_crashes(self, conv: Session) -> None:
         """Iterating messages must not crash."""
         for msg in conv.messages:
             assert isinstance(msg, Message)
 
 
 # =============================================================================
-# Property: Sorting conversations with mixed None timestamps (1525107)
+# Property: Sorting sessions with mixed None timestamps (1525107)
 # =============================================================================
 
 
 class TestSortMixedTimestamps:
-    """Sorting conversations with mixed None/datetime updated_at must not crash.
+    """Sorting sessions with mixed None/datetime updated_at must not crash.
 
     Regression: commit 1525107 — mixed None/datetime in sort key → TypeError
-    when using `sorted(conversations, key=lambda c: c.updated_at or c.created_at)`
+    when using `sorted(sessions, key=lambda c: c.updated_at or c.created_at)`
     because None < datetime is a TypeError in Python 3.
     """
 
-    @given(convs=st.lists(sparse_conversation(), min_size=2, max_size=20))
-    @settings(max_examples=50, suppress_health_check=_SPARSE_CONVERSATION_HEALTH_CHECKS)
-    def test_sort_by_display_date_never_crashes(self, convs: list[Conversation]) -> None:
+    @given(convs=st.lists(sparse_session(), min_size=2, max_size=20))
+    @settings(max_examples=50, suppress_health_check=_SPARSE_SESSION_HEALTH_CHECKS)
+    def test_sort_by_display_date_never_crashes(self, convs: list[Session]) -> None:
         """Sorting by display_date must handle None values gracefully."""
         _epoch = datetime.min.replace(tzinfo=timezone.utc)
         # This is the exact pattern from facade.py that was crashing
@@ -289,9 +290,9 @@ class TestSortMixedTimestamps:
         )
         assert len(sorted_convs) == len(convs)
 
-    @given(convs=st.lists(sparse_conversation(), min_size=0, max_size=15))
-    @settings(max_examples=50, suppress_health_check=_SPARSE_CONVERSATION_HEALTH_CHECKS)
-    def test_sort_stability_with_all_none(self, convs: list[Conversation]) -> None:
+    @given(convs=st.lists(sparse_session(), min_size=0, max_size=15))
+    @settings(max_examples=50, suppress_health_check=_SPARSE_SESSION_HEALTH_CHECKS)
+    def test_sort_stability_with_all_none(self, convs: list[Session]) -> None:
         """When all timestamps are None, sort must preserve relative order."""
         _epoch = datetime.min.replace(tzinfo=timezone.utc)
         # Force all timestamps to None
@@ -468,12 +469,12 @@ class TestClaudeCodeNoneGuardProperty:
 
 
 # =============================================================================
-# Property: ConversationSummary with all-None fields (f9c88e2)
+# Property: SessionSummary with all-None fields (f9c88e2)
 # =============================================================================
 
 
-class TestConversationSummaryNoneGuards:
-    """ConversationSummary display methods must handle None fields."""
+class TestSessionSummaryNoneGuards:
+    """SessionSummary display methods must handle None fields."""
 
     @given(
         title=st.one_of(st.none(), st.text(max_size=100)),
@@ -495,9 +496,9 @@ class TestConversationSummaryNoneGuards:
         updated_at: datetime | None,
         metadata: SparseMetadata,
     ) -> None:
-        summary = ConversationSummary(
-            id=ConversationId("test-id"),
-            provider=Provider.CHATGPT,
+        summary = SessionSummary(
+            id=SessionId("test-id"),
+            origin=Origin.CHATGPT_EXPORT,
             title=title,
             created_at=created_at,
             updated_at=updated_at,
@@ -517,9 +518,9 @@ class TestConversationSummaryNoneGuards:
         created_at: datetime | None,
         updated_at: datetime | None,
     ) -> None:
-        summary = ConversationSummary(
-            id=ConversationId("test-id"),
-            provider=Provider.CHATGPT,
+        summary = SessionSummary(
+            id=SessionId("test-id"),
+            origin=Origin.CHATGPT_EXPORT,
             created_at=created_at,
             updated_at=updated_at,
         )

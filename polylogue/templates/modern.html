@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ conversation.title or conversation.id }} | Polylogue</title>
+    <title>{{ session.title or session.id }} | Polylogue</title>
     <link rel="stylesheet" href="/static/style.css">
 </head>
 
@@ -13,16 +13,16 @@
         <header>
             <p style="margin-bottom: 2rem;"><a href="/" style="color: var(--accent); text-decoration: none;">← Back to
                     Home</a></p>
-            <h1>{{ conversation.title or "Untitled Conversation" }}</h1>
-            <div class="conversation-meta" style="justify-content: center; margin-top: 1rem;">
-                <span class="badge">{{ conversation.provider }}</span>
-                <span>{{ conversation.created_at or "Unknown Date" }}</span>
-                <span class="id" title="{{ conversation.id }}">{{ conversation.id[:12] }}...</span>
+            <h1>{{ session.title or "Untitled Session" }}</h1>
+            <div class="session-meta" style="justify-content: center; margin-top: 1rem;">
+                <span class="badge">{{ session.provider }}</span>
+                <span>{{ session.created_at or "Unknown Date" }}</span>
+                <span class="id" title="{{ session.id }}">{{ session.id[:12] }}...</span>
             </div>
         </header>
 
         <div class="chat">
-            {% for msg in conversation.messages %}
+            {% for msg in session.messages %}
             <div class="message" data-role="{{ msg.role }}">
                 <div class="avatar {% if msg.role == 'user' %}user-avatar{% endif %}">
                     {{ msg.role[:2] | upper }}

@@ -22,7 +22,7 @@ class InvalidationReason(str, Enum):
     """Why a derived read model needs to be (re)built.
 
     The values are stable wire-strings: do not rename without a
-    deliberate migration of stored evidence and fixtures.
+    deliberate movement of stored evidence and fixtures.
     """
 
     #: The materialized read model is missing entirely for some

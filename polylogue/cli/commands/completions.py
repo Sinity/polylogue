@@ -23,7 +23,7 @@ Install (per shell):
 
       polylogue completions --shell fish > ~/.config/fish/completions/polylogue.fish
 
-Dynamic completers cover: conversation IDs, provider/source-family
+Dynamic completers cover: session IDs, origin/source-family
 tokens, tags, repository names, working-directory prefixes, action
 categories and ordered action sequences, normalized tool names,
 message types, and retrieval lanes. The matrix of completer × shell
@@ -43,7 +43,7 @@ Install:
   fish: polylogue completions --shell fish > ~/.config/fish/completions/polylogue.fish
 
 \b
-Dynamic completers cover: conversation IDs, providers/source-families,
+Dynamic completers cover: session IDs, origins/source-families,
 tags, repos, cwd prefixes, action categories and sequences, tool names,
 message types, retrieval lanes.
 """

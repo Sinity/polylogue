@@ -24,13 +24,15 @@ import pytest
 from polylogue.api import Polylogue
 from polylogue.config import Config, Source
 from polylogue.core.json import JSONDocument
+from polylogue.core.sources import origin_from_provider
 from polylogue.pipeline.services.parsing import ParsingService
-from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.repository import SessionRepository
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+from polylogue.types import Provider
 
 pytestmark = pytest.mark.slow
 
-WorkflowRepos: TypeAlias = tuple[Config, ConversationRepository, ConversationRepository, Path, Path]
+WorkflowRepos: TypeAlias = tuple[Config, SessionRepository, SessionRepository, Path, Path]
 ProviderName: TypeAlias = Literal["chatgpt", "claude-ai", "claude-code", "codex", "gemini"]
 RenderFormat: TypeAlias = Literal["markdown", "html"]
 
@@ -40,7 +42,7 @@ class SyntheticSourceFactory(Protocol):
         self,
         provider: str,
         count: int = 1,
-        messages_per_conversation: range = range(4, 12),
+        messages_per_session: range = range(4, 12),
         seed: int = 42,
     ) -> Source: ...
 
@@ -59,7 +61,10 @@ async def temp_config_and_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     render_root = tmp_path / "render"
     render_root.mkdir(parents=True, exist_ok=True)
 
-    db_path = tmp_path / "test.db"
+    # The split-file backend, the config archive root, and the db_path used by
+    # update_index/search must all point at the same archive. db_path is the
+    # backend's index tier under archive_root (not a standalone test.db).
+    db_path = archive_root / "index.db"
 
     # Create minimal config
     config = Config(
@@ -68,17 +73,11 @@ async def temp_config_and_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
         sources=[],
     )
 
-    # Create backend and repositories
-    from polylogue.storage.sqlite.connection import open_connection
-
-    with open_connection(db_path) as conn:
-        from polylogue.storage.sqlite.schema import _ensure_schema
-
-        _ensure_schema(conn)
-
+    # Create backend and repositories. SQLiteBackend bootstraps the full split
+    # archive (source/index/embeddings/user/ops) under archive_root.
     backend = SQLiteBackend(db_path=db_path)
-    storage_repo = ConversationRepository(backend=backend)
-    conv_repo = ConversationRepository(backend=backend)
+    storage_repo = SessionRepository(backend=backend)
+    conv_repo = SessionRepository(backend=backend)
 
     yield config, storage_repo, conv_repo, archive_root, db_path
 
@@ -100,14 +99,23 @@ def gemini_sample_source(synthetic_source: SyntheticSourceFactory) -> Source:
 # =============================================================================
 
 
-@pytest.mark.parametrize("provider", ["chatgpt", "claude-ai", "claude-code", "codex", "gemini"])
+@pytest.mark.parametrize(
+    "provider",
+    [
+        "chatgpt",
+        "claude-ai",
+        "claude-code",
+        "codex",
+        "gemini",
+    ],
+)
 async def test_full_workflow_per_provider(
     provider: ProviderName, synthetic_source: SyntheticSourceFactory, temp_config_and_repo: WorkflowRepos
 ) -> None:
     """Import → Store → Query → Render for each provider."""
     config, storage_repo, conv_repo, archive_root, db_path = temp_config_and_repo
 
-    source = synthetic_source(provider, count=1, messages_per_conversation=range(4, 12))
+    source = synthetic_source(provider, count=1, messages_per_session=range(4, 12))
 
     # 1. IMPORT: Run ingestion
     service = ParsingService(
@@ -118,39 +126,41 @@ async def test_full_workflow_per_provider(
     parse_result = await service.parse_sources([source])
 
     # Build FTS index for search tests (INDEX stage of pipeline)
-    from polylogue.storage.index import update_index_for_conversations
+    from polylogue.storage.index import update_index_for_sessions
     from polylogue.storage.sqlite.connection import open_connection
 
     with open_connection(db_path) as conn:
-        update_index_for_conversations(list(parse_result.processed_ids), conn)
+        update_index_for_sessions(list(parse_result.processed_ids), conn)
 
     # Verify import
-    assert parse_result.counts["conversations"] > 0, f"No conversations imported from {provider}"
+    assert parse_result.counts["sessions"] > 0, f"No sessions imported from {provider}"
     assert parse_result.counts["messages"] > 0, f"No messages imported from {provider}"
 
     # 2. STORE: Query back from database
     from polylogue.storage.search import search_messages
 
     convs = await conv_repo.list()
-    source_names = {"claude-ai": "claude-ai"}  # provider name mapping in parser
-    expected_provider = source_names.get(provider, provider)
-    convs = [c for c in convs if c.provider == expected_provider]
-    assert len(convs) > 0, f"No conversations found for {provider}"
+    expected_origin = origin_from_provider(Provider.from_string(provider)).value
+    convs = [c for c in convs if str(c.origin) == expected_origin]
+    assert len(convs) > 0, f"No sessions found for {provider}"
 
-    # 3. QUERY: Verify conversation structure
+    # 3. QUERY: Verify session structure
     conv = convs[0]
     assert conv.id is not None
     assert len(conv.messages) > 0
     assert any(m.text for m in conv.messages), "All messages are empty"
 
     # 4. RENDER: Generate markdown output
-    from polylogue.rendering.core import ConversationFormatter
+    from polylogue.rendering.formatting import format_session
 
-    formatter = ConversationFormatter(archive_root, db_path=db_path)
-    formatted = await formatter.format(str(conv.id))
-    markdown = formatted.markdown_text
+    markdown = format_session(conv, "markdown", None)
     assert len(markdown) > 0
-    assert any(m.text in markdown for m in conv.messages if m.text), "No message text found in markdown"
+    # The archive renderer renders each content block separately, so a
+    # multi-block message's flattened ``text`` (parts joined with blank lines)
+    # is not a verbatim substring. Assert on the first line of a message, which
+    # is the first block's leading text and renders verbatim.
+    first_lines = [m.text.strip().splitlines()[0] for m in conv.messages if m.text and m.text.strip()]
+    assert any(line and line in markdown for line in first_lines), "No message content found in rendered markdown"
 
     # 5. SEARCH: Full-text search works
     first_text = next((message.text for message in conv.messages if message.text), None)
@@ -162,7 +172,7 @@ async def test_full_workflow_per_provider(
             archive_root=archive_root,
             db_path=db_path,
         )
-        found_ids = {r.conversation_id for r in search_result.hits}
+        found_ids = {r.session_id for r in search_result.hits}
         assert conv.id in found_ids, f"Search failed for '{search_term}'"
 
 
@@ -186,33 +196,22 @@ async def test_render_formats(
     )
     await service.parse_sources([chatgpt_sample_source])
 
-    # Get conversation
+    # Get session
     convs = await conv_repo.list()
-    convs = [c for c in convs if c.provider == "chatgpt"]
+    convs = [c for c in convs if c.origin == "chatgpt-export"]
     assert len(convs) > 0
 
     output = ""
     if format == "markdown":
-        # Markdown formatting path uses ConversationFormatter directly.
-        from polylogue.rendering.core import ConversationFormatter
+        from polylogue.rendering.formatting import format_session
 
-        formatter = ConversationFormatter(archive_root, db_path=db_path)
-        formatted = await formatter.format(str(convs[0].id))
-        output = formatted.markdown_text
+        output = format_session(convs[0], "markdown", None)
         assert "#" in output or "**" in output or "*" in output
     elif format == "html":
-        # HTML rendering path uses the HTML renderer and validates generated files.
-        from polylogue.rendering.renderers import create_renderer
+        from polylogue.rendering.renderers.html import render_session_html
 
-        renderer = create_renderer("html", config=config, backend=storage_repo.backend)
-        output_path = await renderer.render(str(convs[0].id), config.render_root)
-        assert output_path.exists()
-        assert output_path.suffix == ".html"
-
-        output = output_path.read_text(encoding="utf-8")
-        assert "<html" in output.lower()
-        # HTML renderer writes markdown sidecar too.
-        assert output_path.with_name("conversation.md").exists()
+        output = render_session_html(convs[0])
+        assert "<html" in output.lower() or "<!doctype html" in output.lower()
 
     # Verify content present (at least one message should be there)
     assert any(m.text in output for m in convs[0].messages if m.text), "No message text found in output"
@@ -237,13 +236,13 @@ async def test_incremental_sync_no_duplicates(
 
     # First sync
     result1 = await service.parse_sources([chatgpt_sample_source])
-    count1 = result1.counts["conversations"]
+    count1 = result1.counts["sessions"]
 
     # Second sync (should deduplicate)
     result2 = await service.parse_sources([chatgpt_sample_source])
-    count2 = result2.counts["conversations"]
+    count2 = result2.counts["sessions"]
 
-    # Second sync should add 0 conversations
+    # Second sync should add 0 sessions
     assert count2 == 0, f"Expected 0 new convs, got {count2}"
 
     # Total count should match first sync
@@ -252,12 +251,12 @@ async def test_incremental_sync_no_duplicates(
 
 
 async def test_incremental_sync_with_updates(temp_config_and_repo: WorkflowRepos) -> None:
-    """Modified conversations are updated, not duplicated."""
+    """Modified sessions are updated, not duplicated."""
     config, storage_repo, conv_repo, archive_root, db_path = temp_config_and_repo
 
-    # Create initial source with 1 conversation
+    # Create initial source with 1 session
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-        conv_v1: JSONDocument = {
+        conv_before_update: JSONDocument = {
             "id": "test-conv-1",
             "title": "Version 1",
             "mapping": {
@@ -281,24 +280,24 @@ async def test_incremental_sync_with_updates(temp_config_and_repo: WorkflowRepos
                 },
             },
         }
-        json.dump(conv_v1, f)
-        source_path_v1 = Path(f.name)
+        json.dump(conv_before_update, f)
+        source_path_before_update = Path(f.name)
 
     try:
         # First sync
-        source_v1 = Source(name="test", path=source_path_v1)
+        source_before_update = Source(name="test", path=source_path_before_update)
         service = ParsingService(
             repository=storage_repo,
             archive_root=archive_root,
             config=config,
         )
-        await service.parse_sources([source_v1])
+        await service.parse_sources([source_before_update])
 
-        # Modify conversation
-        with open(source_path_v1, "w") as f:
-            conv_v2: JSONDocument = {
+        # Modify session
+        with open(source_path_before_update, "w") as f:
+            conv_after_update: JSONDocument = {
                 "id": "test-conv-1",
-                "title": "Version 2",
+                "title": "Updated version",
                 "mapping": {
                     "node1": {
                         "id": "node1",
@@ -320,32 +319,32 @@ async def test_incremental_sync_with_updates(temp_config_and_repo: WorkflowRepos
                     },
                 },
             }
-            json.dump(conv_v2, f)
+            json.dump(conv_after_update, f)
 
         # Second sync
-        await service.parse_sources([source_v1])
+        await service.parse_sources([source_before_update])
 
-        # Should still have 1 conversation
+        # Should still have 1 session
         all_convs = await conv_repo.list()
         assert len(all_convs) == 1
 
         # Should have updated content
         conv = all_convs[0]
-        assert conv.title == "Version 2"
+        assert conv.title == "Updated version"
         assert "Updated answer" in [m.text for m in conv.messages]
 
     finally:
-        source_path_v1.unlink()
+        source_path_before_update.unlink()
 
 
-async def test_sync_handles_deleted_conversations(temp_config_and_repo: WorkflowRepos) -> None:
-    """Conversations removed from source are NOT deleted from archive.
+async def test_sync_handles_deleted_sessions(temp_config_and_repo: WorkflowRepos) -> None:
+    """Sessions removed from source are NOT deleted from archive.
 
     This is expected behavior - archive is append-only.
     """
     config, storage_repo, conv_repo, archive_root, db_path = temp_config_and_repo
 
-    # Create source with 2 conversations
+    # Create source with 2 sessions
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
         conv1 = {
             "id": "conv-1",
@@ -389,13 +388,13 @@ async def test_sync_handles_deleted_conversations(temp_config_and_repo: Workflow
         )
         await service.parse_sources([Source(name="s1", path=path1), Source(name="s2", path=path2)])
 
-        # Should have 2 conversations
+        # Should have 2 sessions
         assert len(await conv_repo.list()) == 2
 
         # Remove second source, sync again
         await service.parse_sources([Source(name="s1", path=path1)])
 
-        # Should STILL have 2 conversations (archive is append-only)
+        # Should STILL have 2 sessions (archive is append-only)
         assert len(await conv_repo.list()) == 2
 
     finally:
@@ -424,20 +423,20 @@ async def test_multi_source_concurrent_sync(
     )
     await service.parse_sources(sources)
 
-    # Should have conversations from both
+    # Should have sessions from both
     all_convs = await conv_repo.list()
     assert len(all_convs) >= 2
 
     # Each provider should be present
-    providers = {c.provider for c in all_convs}
+    providers = {c.origin for c in all_convs}
     assert len(providers) >= 2
 
 
 async def test_multi_source_isolated_namespaces(temp_config_and_repo: WorkflowRepos) -> None:
-    """Each source can have different conversations."""
+    """Each source can have different sessions."""
     config, storage_repo, conv_repo, archive_root, db_path = temp_config_and_repo
 
-    # Create 2 sources with different conversations
+    # Create 2 sources with different sessions
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
         conv = {
             "id": "conv-1",
@@ -485,7 +484,7 @@ async def test_multi_source_isolated_namespaces(temp_config_and_repo: WorkflowRe
             ]
         )
 
-        # Should have 2 conversations from different sources
+        # Should have 2 sessions from different sources
         all_convs = await conv_repo.list()
         assert len(all_convs) == 2
 
@@ -523,8 +522,8 @@ async def test_sync_with_malformed_file_skips_gracefully(temp_config_and_repo: W
         # Should not crash
         result = await service.parse_sources([source])
 
-        # Should report 0 conversations
-        assert result.counts["conversations"] == 0
+        # Should report 0 sessions
+        assert result.counts["sessions"] == 0
 
     finally:
         bad_path.unlink()
@@ -544,8 +543,8 @@ async def test_sync_with_missing_file_reports_error(temp_config_and_repo: Workfl
     # Should not crash
     result = await service.parse_sources([source])
 
-    # Should report 0 conversations
-    assert result.counts["conversations"] == 0
+    # Should report 0 sessions
+    assert result.counts["sessions"] == 0
 
 
 async def test_sync_partial_success_with_mixed_sources(
@@ -568,11 +567,11 @@ async def test_sync_partial_success_with_mixed_sources(
     result = await service.parse_sources(sources)
 
     # Good source should succeed
-    assert result.counts["conversations"] > 0
+    assert result.counts["sessions"] > 0
 
-    # Should have conversations from good source
+    # Should have sessions from good source
     convs = await conv_repo.list()
-    convs = [c for c in convs if c.provider == "chatgpt"]
+    convs = [c for c in convs if c.origin == "chatgpt-export"]
     assert len(convs) > 0
 
 
@@ -582,7 +581,7 @@ async def test_sync_partial_success_with_mixed_sources(
 
 
 async def test_search_accuracy_basic_terms(temp_config_and_repo: WorkflowRepos, chatgpt_sample_source: Source) -> None:
-    """Search returns correct conversations for basic queries."""
+    """Search returns correct sessions for basic queries."""
     config, storage_repo, conv_repo, archive_root, db_path = temp_config_and_repo
 
     service = ParsingService(
@@ -599,7 +598,7 @@ async def test_search_accuracy_basic_terms(temp_config_and_repo: WorkflowRepos, 
     with open_connection(db_path) as conn:
         rebuild_index(conn)
 
-    # Get all conversations
+    # Get all sessions
     all_convs = await conv_repo.list()
     assert len(all_convs) > 0
 
@@ -620,15 +619,15 @@ async def test_search_accuracy_basic_terms(temp_config_and_repo: WorkflowRepos, 
     from polylogue.storage.search import search_messages
 
     result = search_messages(search_term, archive_root=archive_root, db_path=db_path)
-    result_ids = {r.conversation_id for r in result.hits}
-    assert target_conv.id in result_ids, f"Failed to find conversation with '{search_term}'"
+    result_ids = {r.session_id for r in result.hits}
+    assert target_conv.id in result_ids, f"Failed to find session with '{search_term}'"
 
 
 async def test_search_with_special_characters(temp_config_and_repo: WorkflowRepos) -> None:
     """Search handles special FTS5 characters correctly."""
     config, storage_repo, conv_repo, archive_root, db_path = temp_config_and_repo
 
-    # Create conversation with special characters
+    # Create session with special characters
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
         conv = {
             "id": "special-chars",
@@ -692,10 +691,10 @@ async def test_search_with_special_characters(temp_config_and_repo: WorkflowRepo
 # =============================================================================
 
 
-async def test_daemon_owned_api_ingest_lands_source_conversation(
+async def test_daemon_owned_api_ingest_lands_source_session(
     workspace_env: dict[str, Path], chatgpt_sample_source: Source
 ) -> None:
-    """The daemon-owned API ingest path lands source conversations in the archive."""
+    """The daemon-owned API ingest path lands source sessions in the archive."""
     from polylogue.config import get_config
 
     config = get_config()
@@ -703,8 +702,8 @@ async def test_daemon_owned_api_ingest_lands_source_conversation(
 
     async with Polylogue(archive_root=config.archive_root, db_path=config.db_path) as polylogue:
         result = await polylogue.parse_sources([chatgpt_sample_source])
-        stored = await polylogue.list_conversations(limit=5)
+        stored = await polylogue.list_sessions(limit=5)
 
     assert result is not None
-    assert result.counts["conversations"] > 0
+    assert result.counts["sessions"] > 0
     assert len(stored) == 1

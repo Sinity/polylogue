@@ -1,6 +1,6 @@
 """Lineage / topology endpoint contracts for the reader (#1121).
 
-``GET /api/conversations/{id}/topology`` returns the bounded
+``GET /api/sessions/{id}/topology`` returns the bounded
 :class:`polylogue.insights.topology.SessionTopology` envelope shaped by
 :mod:`polylogue.daemon.topology_http`. Tests cover:
 
@@ -44,8 +44,8 @@ from polylogue.insights.topology import (
     TopologyEdgeKind,
     TopologyNode,
 )
-from polylogue.types import ConversationId
-from tests.infra.storage_records import ConversationBuilder, db_setup
+from polylogue.types import SessionId
+from tests.infra.storage_records import SessionBuilder, db_setup
 
 # ---------------------------------------------------------------------------
 # In-process handler harness (mirrors test_cost_panel_endpoint.py)
@@ -96,21 +96,27 @@ def _seed_lineage(db_path: Path) -> None:
         isolated  (no parent, no children)
     """
 
-    ConversationBuilder(db_path, "root").provider("claude-code").title("Root").add_message(
+    SessionBuilder(db_path, "root").provider("claude-code").title("Root").add_message(
         role="user", text="kickoff"
     ).save()
-    ConversationBuilder(db_path, "child").provider("claude-code").title("Resume").parent_conversation(
-        "root"
-    ).branch_type("continuation").add_message(role="user", text="continue").save()
-    ConversationBuilder(db_path, "grandchild").provider("claude-code").title("Fork").parent_conversation(
-        "child"
-    ).branch_type("fork").add_message(role="user", text="fork").save()
-    ConversationBuilder(db_path, "side").provider("claude-code").title("Side").parent_conversation("root").branch_type(
+    SessionBuilder(db_path, "child").provider("claude-code").title("Resume").parent_session("ext-root").branch_type(
+        "continuation"
+    ).add_message(role="user", text="continue").save()
+    SessionBuilder(db_path, "grandchild").provider("claude-code").title("Fork").parent_session("ext-child").branch_type(
+        "fork"
+    ).add_message(role="user", text="fork").save()
+    SessionBuilder(db_path, "side").provider("claude-code").title("Side").parent_session("ext-root").branch_type(
         "sidechain"
     ).add_message(role="user", text="side").save()
-    ConversationBuilder(db_path, "isolated").provider("claude-code").title("Lone").add_message(
+    SessionBuilder(db_path, "isolated").provider("claude-code").title("Lone").add_message(
         role="user", text="alone"
     ).save()
+
+
+# Archive session ids derive from the builder's provider_session_id
+# (``ext-<conv_id>``) and the claude-code origin.
+def _native(token: str) -> str:
+    return f"claude-code-session:ext-{token}"
 
 
 # ---------------------------------------------------------------------------
@@ -132,7 +138,7 @@ def _topology(
         edges = [("child", "root", TopologyEdgeKind.CONTINUATION, True, None)]
     node_tuple = tuple(
         TopologyNode(
-            conversation_id=ConversationId(cid),
+            session_id=SessionId(cid),
             source_name="claude-code",
             title=cid.title(),
             depth=depth,
@@ -142,8 +148,8 @@ def _topology(
     )
     edge_tuple = tuple(
         TopologyEdge(
-            child_id=ConversationId(child),
-            parent_id=ConversationId(parent) if parent else None,
+            child_id=SessionId(child),
+            parent_id=SessionId(parent) if parent else None,
             parent_native_id=native,
             kind=kind,
             resolved=resolved,
@@ -151,8 +157,8 @@ def _topology(
         for child, parent, kind, resolved, native in edges
     )
     return SessionTopology(
-        target_id=ConversationId(target),
-        root_id=ConversationId(root),
+        target_id=SessionId(target),
+        root_id=SessionId(root),
         nodes=node_tuple,
         edges=edge_tuple,
         cycle_detected=cycle,
@@ -207,7 +213,7 @@ class TestEnvelopeProjection:
         env = build_topology_envelope(topo)
         assert env["readiness"] == READINESS_OK
         assert env["node_count"] == 2
-        node_ids = [cast(dict[str, object], n)["conversation_id"] for n in cast(list[object], env["nodes"])]
+        node_ids = [cast(dict[str, object], n)["session_id"] for n in cast(list[object], env["nodes"])]
         assert node_ids == ["root", "child"]
 
     def test_unresolved_edge_marks_partial(self) -> None:
@@ -261,11 +267,11 @@ class TestEnvelopeProjection:
 
 
 class TestTopologyEndpointDispatch:
-    """``GET /api/conversations/{id}/topology`` routes to the topology handler."""
+    """``GET /api/sessions/{id}/topology`` routes to the topology handler."""
 
-    def test_unknown_conversation_returns_404(self, workspace_env: dict[str, Path]) -> None:
+    def test_unknown_session_returns_404(self, workspace_env: dict[str, Path]) -> None:
         _seed_lineage(db_setup(workspace_env))
-        handler = _make_handler("GET", "/api/conversations/does-not-exist/topology")
+        handler = _make_handler("GET", "/api/sessions/does-not-exist/topology")
         send_error, send_json = _capture_responses(handler)
         handler.do_GET()
         send_json.assert_not_called()
@@ -277,26 +283,26 @@ class TestTopologyEndpointDispatch:
     def test_descendant_request_anchors_at_root(self, workspace_env: dict[str, Path]) -> None:
         """Requesting topology from a deep descendant must walk back to root."""
         _seed_lineage(db_setup(workspace_env))
-        handler = _make_handler("GET", "/api/conversations/grandchild/topology")
+        handler = _make_handler("GET", f"/api/sessions/{_native('grandchild')}/topology")
         send_error, send_json = _capture_responses(handler)
         handler.do_GET()
         send_error.assert_not_called()
         status, payload = send_json.call_args.args
         assert status == HTTPStatus.OK
-        assert payload["target_id"] == "grandchild"
-        assert payload["root_id"] == "root"
-        node_ids = {n["conversation_id"] for n in payload["nodes"]}
-        assert node_ids == {"root", "child", "grandchild", "side"}
+        assert payload["target_id"] == _native("grandchild")
+        assert payload["root_id"] == _native("root")
+        node_ids = {n["session_id"] for n in payload["nodes"]}
+        assert node_ids == {_native("root"), _native("child"), _native("grandchild"), _native("side")}
         # BFS order: root first, depth-1 siblings before depth-2 grandchild.
         depths = [n["depth"] for n in payload["nodes"]]
         assert depths[0] == 0
         assert depths == sorted(depths)
         assert payload["readiness"] == READINESS_OK
 
-    def test_isolated_conversation_renders_empty_readiness(self, workspace_env: dict[str, Path]) -> None:
+    def test_isolated_session_renders_empty_readiness(self, workspace_env: dict[str, Path]) -> None:
         """#1121 AC: no-lineage state is rendered explicitly with a readiness chip."""
         _seed_lineage(db_setup(workspace_env))
-        handler = _make_handler("GET", "/api/conversations/isolated/topology")
+        handler = _make_handler("GET", f"/api/sessions/{_native('isolated')}/topology")
         send_error, send_json = _capture_responses(handler)
         handler.do_GET()
         send_error.assert_not_called()
@@ -311,7 +317,7 @@ class TestTopologyEndpointDispatch:
         _seed_lineage(db_setup(workspace_env))
         handler = _make_handler(
             "GET",
-            f"/api/conversations/root/topology?limit={MAX_NODE_LIMIT + 1}",
+            f"/api/sessions/{_native('root')}/topology?limit={MAX_NODE_LIMIT + 1}",
         )
         send_error, send_json = _capture_responses(handler)
         handler.do_GET()
@@ -323,7 +329,7 @@ class TestTopologyEndpointDispatch:
 
     def test_node_limit_clamps_payload_size(self, workspace_env: dict[str, Path]) -> None:
         _seed_lineage(db_setup(workspace_env))
-        handler = _make_handler("GET", "/api/conversations/root/topology?limit=2")
+        handler = _make_handler("GET", f"/api/sessions/{_native('root')}/topology?limit=2")
         send_error, send_json = _capture_responses(handler)
         handler.do_GET()
         send_error.assert_not_called()
@@ -332,7 +338,7 @@ class TestTopologyEndpointDispatch:
         assert payload["node_count"] == 2
         assert payload["truncated_count"] >= 1
         # Edges referencing dropped nodes must be filtered out.
-        kept_ids = {n["conversation_id"] for n in payload["nodes"]}
+        kept_ids = {n["session_id"] for n in payload["nodes"]}
         for edge in payload["edges"]:
             if edge["resolved"]:
                 assert edge["child_id"] in kept_ids

@@ -24,6 +24,9 @@ from polylogue.daemon.convergence_debt_status import (
     convergence_debt_summary_info,
 )
 from polylogue.daemon.health import HealthSeverity, HealthTier
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.ops_write import add_convergence_debt
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
 def _item(
@@ -51,9 +54,121 @@ def _summary(items: list[ConvergenceDebtItem]) -> ConvergenceDebtSummary:
 
 
 def test_convergence_debt_summary_does_not_count_deferred_as_failed(tmp_path: Path) -> None:
-    db_path = tmp_path / "debt.sqlite"
+    db_path = tmp_path / "archive.db"
+    ops_path = tmp_path / "ops.db"
     import sqlite3
 
+    db_path.touch()
+    initialize_archive_database(ops_path, ArchiveTier.OPS)
+    with sqlite3.connect(ops_path) as conn:
+        add_convergence_debt(
+            conn,
+            stage="insights",
+            target_type="session_id",
+            target_id="conv-deferred",
+            status="deferred",
+            attempts=1,
+            last_error="insights deferred until source quiet",
+            next_retry_at="2026-05-24T00:01:00+00:00",
+            created_at_ms=1_770_000_000_000,
+            updated_at_ms=1_770_000_000_000,
+        )
+        add_convergence_debt(
+            conn,
+            stage="fts",
+            target_type="session_id",
+            target_id="conv-failed",
+            status="failed",
+            attempts=1,
+            last_error="boom",
+            created_at_ms=1_770_000_000_000,
+            updated_at_ms=1_770_000_000_000,
+        )
+
+    summary = convergence_debt_summary_info(db_path)
+
+    assert summary.failed_count == 1
+    assert [item.subject_id for item in summary.recent] == ["conv-failed"]
+
+
+def test_convergence_debt_summary_prefers_populated_archive_ops(tmp_path: Path) -> None:
+    db_path = tmp_path / "archive.db"
+    ops_path = tmp_path / "ops.db"
+    import sqlite3
+
+    db_path.touch()
+    initialize_archive_database(ops_path, ArchiveTier.OPS)
+    with sqlite3.connect(ops_path) as conn:
+        add_convergence_debt(
+            conn,
+            stage="session_profile",
+            target_type="source_path",
+            target_id=str(tmp_path / "session.jsonl"),
+            priority=7,
+            attempts=3,
+            last_error="profile materializer failed",
+            created_at_ms=1_770_000_000_000,
+            updated_at_ms=1_770_000_010_000,
+        )
+
+    summary = convergence_debt_summary_info(db_path)
+
+    assert summary.failed_count == 1
+    assert summary.retry_due_count == 1
+    assert summary.stage_summaries[0].stage == "session_profile"
+    assert summary.stage_summaries[0].retry_due_count == 1
+    assert summary.recent[0].subject_id.endswith("session.jsonl")
+    assert summary.recent[0].failure_count == 3
+    assert summary.recent[0].retry_due is True
+    assert summary.recent[0].last_error == "profile materializer failed"
+
+
+def test_convergence_debt_summary_uses_archive_retry_metadata(tmp_path: Path) -> None:
+    db_path = tmp_path / "archive.db"
+    ops_path = tmp_path / "ops.db"
+    import sqlite3
+
+    db_path.touch()
+    initialize_archive_database(ops_path, ArchiveTier.OPS)
+    with sqlite3.connect(ops_path) as conn:
+        add_convergence_debt(
+            conn,
+            stage="session_profile",
+            target_type="source_path",
+            target_id=str(tmp_path / "future.jsonl"),
+            attempts=1,
+            last_error="waiting",
+            next_retry_at="2999-01-01T00:00:00+00:00",
+            created_at_ms=1_770_000_000_000,
+            updated_at_ms=1_770_000_010_000,
+        )
+
+    summary = convergence_debt_summary_info(db_path)
+
+    assert summary.failed_count == 1
+    assert summary.retry_due_count == 0
+    assert summary.recent[0].next_retry_at == "2999-01-01T00:00:00+00:00"
+    assert summary.recent[0].retry_due is False
+
+
+def test_convergence_debt_summary_treats_archive_deferred_as_authoritative(tmp_path: Path) -> None:
+    db_path = tmp_path / "archive.db"
+    ops_path = tmp_path / "ops.db"
+    import sqlite3
+
+    initialize_archive_database(ops_path, ArchiveTier.OPS)
+    with sqlite3.connect(ops_path) as conn:
+        add_convergence_debt(
+            conn,
+            stage="session_profile",
+            target_type="source_path",
+            target_id=str(tmp_path / "deferred.jsonl"),
+            status="deferred",
+            attempts=1,
+            last_error="insights deferred until source quiet",
+            created_at_ms=1_770_000_000_000,
+            updated_at_ms=1_770_000_010_000,
+        )
     with sqlite3.connect(db_path) as conn:
         conn.execute(
             """
@@ -71,43 +186,79 @@ def test_convergence_debt_summary_does_not_count_deferred_as_failed(tmp_path: Pa
             )
             """
         )
-        conn.executemany(
+        conn.execute(
             """
             INSERT INTO live_convergence_debt (
                 stage, subject_type, subject_id, status, failure_count,
                 first_failed_at, last_failed_at, next_retry_at, last_error
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            [
-                (
-                    "insights",
-                    "conversation_id",
-                    "conv-deferred",
-                    "deferred",
-                    1,
-                    "2026-05-24T00:00:00+00:00",
-                    "2026-05-24T00:00:00+00:00",
-                    "2026-05-24T00:01:00+00:00",
-                    "insights deferred until source quiet",
-                ),
-                (
-                    "fts",
-                    "conversation_id",
-                    "conv-failed",
-                    "failed",
-                    1,
-                    "2026-05-24T00:00:00+00:00",
-                    "2026-05-24T00:00:00+00:00",
-                    None,
-                    "boom",
-                ),
-            ],
+            (
+                "legacy_insights",
+                "session_id",
+                "legacy-conv",
+                "failed",
+                2,
+                "2026-05-24T00:00:00+00:00",
+                "2026-05-24T00:00:00+00:00",
+                None,
+                "legacy debt",
+            ),
         )
 
     summary = convergence_debt_summary_info(db_path)
 
-    assert summary.failed_count == 1
-    assert [item.subject_id for item in summary.recent] == ["conv-failed"]
+    assert summary.failed_count == 0
+    assert summary.recent == []
+
+
+def test_convergence_debt_summary_ignores_old_single_file_debt_when_ops_empty(tmp_path: Path) -> None:
+    db_path = tmp_path / "archive.db"
+    ops_path = tmp_path / "ops.db"
+    import sqlite3
+
+    initialize_archive_database(ops_path, ArchiveTier.OPS)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE live_convergence_debt (
+                stage TEXT NOT NULL,
+                subject_type TEXT NOT NULL,
+                subject_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                failure_count INTEGER NOT NULL DEFAULT 0,
+                first_failed_at TEXT NOT NULL,
+                last_failed_at TEXT NOT NULL,
+                next_retry_at TEXT,
+                materializer_version TEXT,
+                last_error TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO live_convergence_debt (
+                stage, subject_type, subject_id, status, failure_count,
+                first_failed_at, last_failed_at, next_retry_at, last_error
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "legacy_insights",
+                "session_id",
+                "legacy-conv",
+                "failed",
+                2,
+                "2026-05-24T00:00:00+00:00",
+                "2026-05-24T00:00:00+00:00",
+                None,
+                "legacy debt",
+            ),
+        )
+
+    summary = convergence_debt_summary_info(db_path)
+
+    assert summary.failed_count == 0
+    assert summary.recent == []
 
 
 # ---------------------------------------------------------------------------
@@ -160,10 +311,10 @@ def test_watchsource_name_to_family_known_and_unknown() -> None:
     assert watchsource_name_to_family("never-heard-of-it") == "unknown"
 
 
-def test_source_family_for_subject_returns_unknown_for_conversation_id() -> None:
-    # Conversation-id subject attribution requires a DB lookup; for now we
+def test_source_family_for_subject_returns_unknown_for_session_id() -> None:
+    # Session-id subject attribution requires a DB lookup; for now we
     # group those under "unknown" and they fall under the global default.
-    assert source_family_for_subject("conversation_id", "abc-123") == "unknown"
+    assert source_family_for_subject("session_id", "abc-123") == "unknown"
 
 
 def test_source_family_for_path_returns_unknown_for_arbitrary_path() -> None:
@@ -181,11 +332,11 @@ def test_aggregate_debt_by_family_buckets_subjects() -> None:
         [
             _item(subject_id="/x/y/a.jsonl"),
             _item(subject_id="/x/y/b.jsonl"),
-            _item(subject_type="conversation_id", subject_id="conv-1"),
+            _item(subject_type="session_id", subject_id="conv-1"),
         ]
     )
     counts = aggregate_debt_by_family(summary)
-    # Both paths and the conversation-id all bucket to "unknown" in this
+    # Both paths and the session-id all bucket to "unknown" in this
     # synthetic test because the paths don't live under any real watch root.
     assert counts["unknown"] == 3
 

@@ -13,18 +13,18 @@ from hypothesis import settings
 from hypothesis.stateful import Bundle, RuleBasedStateMachine, rule
 
 from tests.infra.storage_records import (
-    make_conversation,
     make_message,
+    make_session,
     store_records,
 )
 
 
 class ArchiveLifecycleStateMachine(RuleBasedStateMachine):
-    """Model-based test for conversation save/delete/query consistency.
+    """Model-based test for session save/delete/query consistency.
 
     Invariants checked after every operation:
     - COUNT(*) matches the model's expected set
-    - No dangling messages (every message.conversation_id exists in conversations)
+    - No dangling messages (every message.session_id exists in sessions)
     - List result set matches expected IDs
     """
 
@@ -41,20 +41,23 @@ class ArchiveLifecycleStateMachine(RuleBasedStateMachine):
         self._expected_messages: dict[str, int] = {}
         self._next_id = 0
 
-    saved_conversations = Bundle("saved_conversations")
+    saved_sessions = Bundle("saved_sessions")
 
-    @rule(target=saved_conversations)
-    def save_new_conversation(self) -> str:
-        cid = f"sm-conv-{self._next_id}"
+    @rule(target=saved_sessions)
+    def save_new_session(self) -> str:
+        # ``cid`` is the canonical generated ``origin:native_id`` session id so
+        # it matches the stored row; the native part is the provider id.
+        native = f"sm-conv-{self._next_id}"
+        cid = f"chatgpt-export:{native}"
         self._next_id += 1
 
-        conv = make_conversation(conversation_id=cid, source_name="chatgpt", title=f"Conv {cid}")
+        conv = make_session(session_id=cid, source_name="chatgpt", provider_session_id=native, title=f"Conv {cid}")
         msgs = [
-            make_message(message_id=f"{cid}-m1", conversation_id=cid, role="user", text="Hello"),
-            make_message(message_id=f"{cid}-m2", conversation_id=cid, role="assistant", text="Hi"),
+            make_message(message_id=f"{cid}-m1", session_id=cid, role="user", text="Hello"),
+            make_message(message_id=f"{cid}-m2", session_id=cid, role="assistant", text="Hi"),
         ]
 
-        store_records(conversation=conv, messages=msgs, attachments=[], conn=self._conn)
+        store_records(session=conv, messages=msgs, attachments=[], conn=self._conn)
 
         self._expected_ids.add(cid)
         self._expected_messages[cid] = 2
@@ -62,30 +65,31 @@ class ArchiveLifecycleStateMachine(RuleBasedStateMachine):
         self._check_invariants()
         return cid
 
-    @rule(cid=saved_conversations)
-    def re_save_same_conversation(self, cid: str) -> None:
+    @rule(cid=saved_sessions)
+    def re_save_same_session(self, cid: str) -> None:
         """Re-import should be idempotent if present, or resurrect if deleted."""
-        conv = make_conversation(conversation_id=cid, source_name="chatgpt", title=f"Conv {cid}")
+        native = cid.removeprefix("chatgpt-export:")
+        conv = make_session(session_id=cid, source_name="chatgpt", provider_session_id=native, title=f"Conv {cid}")
         msgs = [
-            make_message(message_id=f"{cid}-m1", conversation_id=cid, role="user", text="Hello"),
-            make_message(message_id=f"{cid}-m2", conversation_id=cid, role="assistant", text="Hi"),
+            make_message(message_id=f"{cid}-m1", session_id=cid, role="user", text="Hello"),
+            make_message(message_id=f"{cid}-m2", session_id=cid, role="assistant", text="Hi"),
         ]
 
-        store_records(conversation=conv, messages=msgs, attachments=[], conn=self._conn)
+        store_records(session=conv, messages=msgs, attachments=[], conn=self._conn)
 
         self._expected_ids.add(cid)
         self._expected_messages[cid] = 2
 
         self._check_invariants()
 
-    @rule(cid=saved_conversations)
-    def delete_conversation(self, cid: str) -> None:
+    @rule(cid=saved_sessions)
+    def delete_session(self, cid: str) -> None:
         if cid not in self._expected_ids:
             return
 
         self._conn.execute("PRAGMA foreign_keys = ON")
-        self._conn.execute("DELETE FROM messages WHERE conversation_id = ?", (cid,))
-        self._conn.execute("DELETE FROM conversations WHERE conversation_id = ?", (cid,))
+        self._conn.execute("DELETE FROM messages WHERE session_id = ?", (cid,))
+        self._conn.execute("DELETE FROM sessions WHERE session_id = ?", (cid,))
         self._conn.commit()
 
         self._expected_ids.discard(cid)
@@ -94,25 +98,23 @@ class ArchiveLifecycleStateMachine(RuleBasedStateMachine):
         self._check_invariants()
 
     def _check_invariants(self) -> None:
-        actual_count = self._conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
+        actual_count = self._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
         assert actual_count == len(self._expected_ids), (
-            f"Conversation count: expected {len(self._expected_ids)}, got {actual_count}"
+            f"Session count: expected {len(self._expected_ids)}, got {actual_count}"
         )
 
-        actual_ids = {
-            r["conversation_id"] for r in self._conn.execute("SELECT conversation_id FROM conversations").fetchall()
-        }
-        assert actual_ids == self._expected_ids, f"Conversation IDs: expected {self._expected_ids}, got {actual_ids}"
+        actual_ids = {r["session_id"] for r in self._conn.execute("SELECT session_id FROM sessions").fetchall()}
+        assert actual_ids == self._expected_ids, f"Session IDs: expected {self._expected_ids}, got {actual_ids}"
 
         orphan_count = self._conn.execute(
             "SELECT COUNT(*) FROM messages m "
-            "WHERE NOT EXISTS (SELECT 1 FROM conversations c WHERE c.conversation_id = m.conversation_id)"
+            "WHERE NOT EXISTS (SELECT 1 FROM sessions c WHERE c.session_id = m.session_id)"
         ).fetchone()[0]
         assert orphan_count == 0, f"Found {orphan_count} orphaned messages"
 
         for cid, expected_msg_count in self._expected_messages.items():
             actual_msg_count = self._conn.execute(
-                "SELECT COUNT(*) FROM messages WHERE conversation_id = ?", (cid,)
+                "SELECT COUNT(*) FROM messages WHERE session_id = ?", (cid,)
             ).fetchone()[0]
             assert actual_msg_count == expected_msg_count, (
                 f"Messages for {cid}: expected {expected_msg_count}, got {actual_msg_count}"

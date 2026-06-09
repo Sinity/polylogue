@@ -11,15 +11,13 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
     specs = build_runtime_operation_catalog().by_name()
 
     assert set(specs) == {
-        "acquire-raw-conversations",
+        "acquire-raw-sessions",
         "plan-validation-backlog",
         "plan-parse-backlog",
         "ingest-archive-runtime",
         "index-message-fts",
         "materialize-transcript-embeddings",
-        "materialize-action-events",
-        "query-conversations",
-        "project-action-event-readiness",
+        "query-sessions",
         "materialize-session-insights",
         "project-retrieval-band-readiness",
         "query-embedding-status",
@@ -28,7 +26,7 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
         "query-session-profiles",
         "query-session-work-events",
         "query-session-phases",
-        "query-work-threads",
+        "query-threads",
         "query-session-tag-rollups",
         "query-archive-coverage",
         "query-tool-usage",
@@ -43,23 +41,19 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
         "mutate-remove-tag",
         "mutate-set-metadata",
         "mutate-delete-metadata",
-        "mutate-delete-conversation",
-        "mutate-bulk-tag-conversations",
+        "mutate-delete-session",
+        "mutate-bulk-tag-sessions",
     }
-    assert specs["acquire-raw-conversations"].kind is OperationKind.MATERIALIZATION
-    assert specs["acquire-raw-conversations"].mutates_state is True
-    assert specs["acquire-raw-conversations"].produces == ("raw_validation_state", "artifact_observation_rows")
-    assert specs["acquire-raw-conversations"].path_targets == ("source-acquisition-loop",)
+    assert specs["acquire-raw-sessions"].kind is OperationKind.MATERIALIZATION
+    assert specs["acquire-raw-sessions"].mutates_state is True
+    assert specs["acquire-raw-sessions"].produces == ("raw_validation_state", "artifact_observation_rows")
+    assert specs["acquire-raw-sessions"].path_targets == ("source-acquisition-loop",)
     assert specs["plan-validation-backlog"].kind is OperationKind.PLANNING
     assert specs["plan-validation-backlog"].path_targets == ("raw-reparse-loop", "raw-archive-ingest-loop")
     assert specs["ingest-archive-runtime"].kind is OperationKind.MATERIALIZATION
     assert specs["ingest-archive-runtime"].mutates_state is True
-    assert specs["ingest-archive-runtime"].produces == ("raw_validation_state", "archive_conversation_rows")
+    assert specs["ingest-archive-runtime"].produces == ("raw_validation_state", "archive_session_rows")
     assert specs["ingest-archive-runtime"].path_targets == ("raw-archive-ingest-loop",)
-    assert specs["materialize-action-events"].kind is OperationKind.MATERIALIZATION
-    assert specs["materialize-action-events"].mutates_state is True
-    assert specs["materialize-action-events"].produces == ("action_event_rows", "action_event_fts")
-    assert specs["materialize-action-events"].path_targets == ("action-event-repair-loop",)
     assert specs["materialize-transcript-embeddings"].kind is OperationKind.MATERIALIZATION
     assert specs["materialize-transcript-embeddings"].mutates_state is True
     assert specs["materialize-transcript-embeddings"].produces == (
@@ -73,9 +67,8 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
     assert "session_insight_rows" in specs["materialize-session-insights"].produces
     assert "session_insight_fts" in specs["materialize-session-insights"].produces
     assert "session_profile_rows" in specs["materialize-session-insights"].produces
-    assert "work_thread_fts" in specs["materialize-session-insights"].produces
+    assert "thread_fts" in specs["materialize-session-insights"].produces
     assert specs["materialize-session-insights"].path_targets == ("session-insight-repair-loop",)
-    assert specs["project-action-event-readiness"].previewable is True
     assert specs["project-retrieval-band-readiness"].previewable is True
     assert specs["project-retrieval-band-readiness"].path_targets == ("retrieval-band-readiness-loop",)
     assert specs["query-embedding-status"].path_targets == ("embedding-status-query-loop",)
@@ -104,7 +97,7 @@ def test_runtime_operation_catalog_has_declared_surfaces_and_code_refs() -> None
 def test_declared_operation_catalog_contains_runtime_and_control_plane_operations() -> None:
     catalog = build_declared_operation_catalog()
 
-    assert "project-action-event-readiness" in catalog.names()
+    assert "project-session-insight-readiness" in catalog.names()
     assert "benchmark.storage.crud" in catalog.names()
     assert "cli.json-contract" in catalog.names()
 
@@ -112,6 +105,6 @@ def test_declared_operation_catalog_contains_runtime_and_control_plane_operation
 def test_operation_catalog_resolve_filters_unknown_names() -> None:
     catalog = build_declared_operation_catalog()
 
-    assert tuple(spec.name for spec in catalog.resolve(("project-action-event-readiness", "missing"))) == (
-        "project-action-event-readiness",
+    assert tuple(spec.name for spec in catalog.resolve(("project-session-insight-readiness", "missing"))) == (
+        "project-session-insight-readiness",
     )

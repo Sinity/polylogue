@@ -21,7 +21,7 @@ from polylogue.types import Provider
 from . import decoders as _decoders
 from .decoders import _zip_entry_provider_hint
 from .dispatch import GROUP_PROVIDERS, _detect_provider_from_raw_bytes, detect_provider
-from .parsers.base import RawConversationData
+from .parsers.base import RawSessionData
 
 _DETECTION_PREFIX_SIZE = 8192  # 8 KB — enough for provider detection
 _HEARTBEAT_INTERVAL_S = 5.0
@@ -74,7 +74,7 @@ class DetectedEntryPayload:
 
 @dataclass(frozen=True, slots=True)
 class SerializedSplitPayload:
-    """A serialized split conversation payload ready for blob persistence."""
+    """A serialized split session payload ready for blob persistence."""
 
     provider: Provider
     payload_bytes: bytes
@@ -83,7 +83,7 @@ class SerializedSplitPayload:
 
 @dataclass(slots=True)
 class SplitPayloadBuffer:
-    """Buffer ZIP payloads until an entry proves it contains multiple conversations."""
+    """Buffer ZIP payloads until an entry proves it contains multiple sessions."""
 
     _pending: list[tuple[Provider, bytes]] = field(default_factory=list)
     _next_source_index: int = 0
@@ -232,8 +232,8 @@ def raw_data_record(
     blob_hash: str,
     blob_size: int,
     source_index: int | None = None,
-) -> RawConversationData:
-    return RawConversationData(
+) -> RawSessionData:
+    return RawSessionData(
         raw_bytes=b"",
         source_path=source_path,
         source_index=source_index,
@@ -279,7 +279,7 @@ def make_split_entry_raw_data(
     split_payload: SerializedSplitPayload,
     source_path: str,
     file_mtime: str | None,
-) -> RawConversationData:
+) -> RawSessionData:
     """Persist a split payload to the blob store and return raw metadata."""
     blob_hash, blob_size = blob_store.write_from_bytes(split_payload.payload_bytes)
     return raw_data_record(
@@ -292,7 +292,7 @@ def make_split_entry_raw_data(
     )
 
 
-def read_plain_source_file(context: SourceReadContext) -> RawConversationData:
+def read_plain_source_file(context: SourceReadContext) -> RawSessionData:
     """Stream one non-ZIP source file into the blob store."""
     blob_hash, blob_size = stream_path_to_blob(
         context.blob_store,
@@ -328,7 +328,7 @@ def _stream_preserved_zip_entry(
     context: ZipEntryReadContext,
     *,
     provider_hint: Provider,
-) -> RawConversationData:
+) -> RawSessionData:
     with zf.open(context.entry.filename) as handle:
         blob_hash, blob_size = stream_fileobj_to_blob(
             context.blob_store,
@@ -356,8 +356,8 @@ def _stream_preserved_zip_entry(
 def iter_zip_entry_raw_data(
     zf: zipfile.ZipFile,
     context: ZipEntryReadContext,
-) -> Iterable[RawConversationData]:
-    """Yield raw records for one ZIP entry, splitting multi-conversation payloads."""
+) -> Iterable[RawSessionData]:
+    """Yield raw records for one ZIP entry, splitting multi-session payloads."""
     entry_provider_hint = _zip_entry_provider_hint(context.entry.filename, context.provider_hint)
     if entry_provider_hint in GROUP_PROVIDERS:
         yield _stream_preserved_zip_entry(zf, context, provider_hint=entry_provider_hint)
@@ -381,7 +381,7 @@ def iter_zip_entry_raw_data(
                 source_path=context.source_path,
             )
             classify_ms = (time.perf_counter() - classify_start) * 1000.0
-            if not artifact.parse_as_conversation:
+            if not artifact.parse_as_session:
                 continue
             pending_index = split_buffer.pending_index
             serialize_start = time.perf_counter()
@@ -411,7 +411,7 @@ def iter_zip_entry_raw_data(
         return
 
     # Preserve original ZIP entry bytes when the entry is grouped,
-    # non-conversation metadata, or a single conversation document.
+    # non-session metadata, or a single session document.
     yield _stream_preserved_zip_entry(zf, context, provider_hint=detected_provider)
 
 

@@ -33,7 +33,7 @@ class SqliteVecQueryMixin:
 
         def _get_connection(self) -> sqlite3.Connection: ...
 
-    def upsert(self, conversation_id: str, messages: list[MessageRecord]) -> None:
+    def upsert(self, session_id: str, messages: list[MessageRecord]) -> None:
         """Upsert message embeddings into the vector store."""
         if not messages:
             return
@@ -50,15 +50,15 @@ class SqliteVecQueryMixin:
         try:
             embeddings = self._get_embeddings(texts, input_type="document")
         except (SqliteVecError, httpx.HTTPError) as exc:
-            logger.error("Failed to generate embeddings for %s: %s", conversation_id, exc)
+            logger.error("Failed to generate embeddings for %s: %s", session_id, exc)
             raise
 
         conn = self._get_connection()
         try:
             source_name = "unknown"
             row = conn.execute(
-                "SELECT source_name FROM conversations WHERE conversation_id = ?",
-                (conversation_id,),
+                "SELECT source_name FROM sessions WHERE session_id = ?",
+                (session_id,),
             ).fetchone()
             if row:
                 source_name = row[0] or "unknown"
@@ -71,10 +71,10 @@ class SqliteVecQueryMixin:
                 )
                 conn.execute(
                     """
-                    INSERT INTO message_embeddings (message_id, embedding, source_name, conversation_id)
+                    INSERT INTO message_embeddings (message_id, embedding, source_name, session_id)
                     VALUES (?, ?, ?, ?)
                     """,
-                    (msg.message_id, embedding_blob, source_name, msg.conversation_id),
+                    (msg.message_id, embedding_blob, source_name, msg.session_id),
                 )
                 conn.execute(
                     """
@@ -93,15 +93,15 @@ class SqliteVecQueryMixin:
             conn.execute(
                 """
                 INSERT INTO embedding_status (
-                    conversation_id, message_count_embedded, last_embedded_at, needs_reindex
+                    session_id, message_count_embedded, last_embedded_at, needs_reindex
                 ) VALUES (?, ?, datetime('now'), 0)
-                ON CONFLICT(conversation_id) DO UPDATE SET
+                ON CONFLICT(session_id) DO UPDATE SET
                     message_count_embedded = excluded.message_count_embedded,
                     last_embedded_at = excluded.last_embedded_at,
                     needs_reindex = 0,
                     error_message = NULL
                 """,
-                (conversation_id, len(embeddable)),
+                (session_id, len(embeddable)),
             )
             conn.commit()
         finally:
@@ -173,7 +173,7 @@ class SqliteVecQueryMixin:
             embedding_stats = read_embedding_stats_sync(conn, include_retrieval_bands=False)
             return {
                 "embedded_messages": embedding_stats.embedded_messages,
-                "pending_conversations": embedding_stats.pending_conversations,
+                "pending_sessions": embedding_stats.pending_sessions,
             }
         finally:
             conn.close()

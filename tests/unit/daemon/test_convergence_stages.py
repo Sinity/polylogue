@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import sqlite3
 from collections.abc import Iterator
@@ -11,58 +12,119 @@ from typing import cast
 import pytest
 
 import polylogue.daemon.convergence_stages as stages
+from polylogue.archive.message.roles import Role
 from polylogue.daemon.convergence_stages import (
     make_default_convergence_stages,
     make_embed_stage,
     make_fts_stage,
     make_insights_stage,
 )
-from polylogue.storage.fts.fts_lifecycle import restore_fts_triggers_sync
-from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
+from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.insights.session.runtime import SessionInsightCounts
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.connection import open_connection
+from polylogue.types import BlockType, Provider
 from tests.infra.frozen_clock import FrozenClock
-from tests.infra.storage_records import make_conversation, make_message, store_records
 
 
-def _seed_raw_source_conversation(conn: sqlite3.Connection, *, conversation_id: str, source_path: Path) -> None:
-    conn.execute(
-        """
-        INSERT INTO raw_conversations (
-            raw_id,
-            source_name,
-            source_path,
-            blob_size,
-            acquired_at
-        ) VALUES (?, ?, ?, ?, ?)
-        """,
-        (
-            f"raw-{conversation_id}",
-            "codex",
-            str(source_path),
-            source_path.stat().st_size,
-            "2026-05-24T01:00:00+00:00",
-        ),
-    )
-    store_records(
-        conversation=make_conversation(
-            conversation_id,
-            source_name="codex",
-            title=conversation_id,
+def _main_db_path(conn: sqlite3.Connection) -> Path:
+    row = conn.execute("PRAGMA database_list").fetchone()
+    return Path(str(row[2]))
+
+
+def _seed_raw_source_session(conn: sqlite3.Connection, *, session_id: str, source_path: Path) -> str:
+    index_path = _main_db_path(conn)
+    if not source_path.exists():
+        source_path.write_bytes(b"{}\n")
+    raw_id = f"raw-{session_id}"
+    source_db = index_path.with_name("source.db")
+    with sqlite3.connect(source_db) as source_conn:
+        initialize_archive_tier(source_conn, ArchiveTier.SOURCE)
+        source_conn.execute(
+            """
+            INSERT OR REPLACE INTO raw_sessions (
+                raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                raw_id,
+                "codex-session",
+                session_id,
+                str(source_path),
+                hashlib.sha256(f"raw:{session_id}".encode()).digest(),
+                source_path.stat().st_size,
+                1_769_000_000_000,
+            ),
+        )
+        source_conn.commit()
+    stored_session_id = write_parsed_session_to_archive(
+        conn,
+        ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id=session_id,
+            title=session_id,
             created_at="2026-05-24T01:00:00+00:00",
             updated_at="2026-05-24T01:00:00+00:00",
-            raw_id=f"raw-{conversation_id}",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="msg-1",
+                    role=Role.normalize("user"),
+                    text=f"Message for {session_id}",
+                    position=0,
+                    content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text=f"Message for {session_id}")],
+                )
+            ],
         ),
-        messages=[
-            make_message(
-                f"{conversation_id}:msg-1",
-                conversation_id,
-                text=f"Message for {conversation_id}",
-            )
-        ],
-        attachments=[],
-        conn=conn,
+        raw_id=raw_id,
+        content_hash=hashlib.sha256(f"session:{session_id}".encode()).hexdigest(),
+    )
+    return stored_session_id
+
+
+def _seed_index_session(conn: sqlite3.Connection, *, session_id: str, text: str) -> str:
+    return write_parsed_session_to_archive(
+        conn,
+        ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id=session_id,
+            title=session_id,
+            created_at="2026-05-24T01:00:00+00:00",
+            updated_at="2026-05-24T01:00:00+00:00",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="msg-1",
+                    role=Role.normalize("user"),
+                    text=text,
+                    position=0,
+                    content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
+                )
+            ],
+        ),
+        content_hash=hashlib.sha256(f"session:{session_id}".encode()).hexdigest(),
+    )
+
+
+def _seed_empty_text_index_session(conn: sqlite3.Connection, *, session_id: str) -> str:
+    return write_parsed_session_to_archive(
+        conn,
+        ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id=session_id,
+            title=session_id,
+            messages=[
+                ParsedMessage(
+                    provider_message_id="msg-1",
+                    role=Role.normalize("user"),
+                    text="",
+                    position=0,
+                    content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="")],
+                )
+            ],
+        ),
+        content_hash=hashlib.sha256(f"session:{session_id}".encode()).hexdigest(),
     )
 
 
@@ -70,6 +132,96 @@ def _truncate(path: Path, size: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("wb") as handle:
         handle.truncate(size)
+
+
+def _seed_minimal_archive(db_path: Path, source_path: Path, *, session_id: str = "codex-session:s1") -> None:
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path.write_text("{}\n", encoding="utf-8")
+    with sqlite3.connect(db_path.with_name("source.db")) as conn:
+        initialize_archive_tier(conn, ArchiveTier.SOURCE)
+        conn.execute(
+            """
+            INSERT INTO raw_sessions(raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "raw-s1",
+                "codex-session",
+                session_id,
+                str(source_path),
+                hashlib.sha256(b"raw-s1").digest(),
+                source_path.stat().st_size,
+                1_770_000_000_000,
+            ),
+        )
+        conn.commit()
+    with sqlite3.connect(db_path) as conn:
+        initialize_archive_tier(conn, ArchiveTier.INDEX)
+        native_id = session_id.split(":", 1)[-1]
+        conn.execute(
+            """
+            INSERT INTO sessions(
+                native_id, origin, raw_id, title, message_count, user_message_count,
+                assistant_message_count, tool_use_count, paste_count, content_hash, updated_at_ms
+            ) VALUES (?, 'codex-session', 'raw-s1', 'Native session', 1, 1, 0, 0, 0, ?, 1770000000000)
+            """,
+            (native_id, hashlib.sha256(f"session:{session_id}".encode()).digest()),
+        )
+        conn.execute(
+            """
+            INSERT INTO messages(session_id, native_id, position, role, message_type, content_hash)
+            VALUES (?, 'm1', 0, 'user', 'message', ?)
+            """,
+            (session_id, hashlib.sha256(f"message:{session_id}".encode()).digest()),
+        )
+        conn.execute(
+            """
+            INSERT INTO blocks(message_id, session_id, position, block_type, text)
+            VALUES (?, ?, 0, 'text', 'archive searchable block')
+            """,
+            (f"{session_id}:m1", session_id),
+        )
+        conn.execute("DELETE FROM messages_fts")
+        conn.commit()
+
+
+def test_fts_stage_repairs_archive_when_db_anchor_exists(tmp_path: Path) -> None:
+    archive_db = tmp_path / "index.db"
+    (tmp_path / "index.db").touch()
+    source_path = tmp_path / "codex.jsonl"
+    _seed_minimal_archive(archive_db, source_path)
+
+    stage = make_fts_stage(tmp_path / "index.db")
+
+    assert stage.check(source_path) is True
+    assert stage.execute(source_path) is True
+    with sqlite3.connect(archive_db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 1
+
+
+def test_insights_stage_materializes_archive_profiles_from_archive_tiers(tmp_path: Path) -> None:
+    archive_db = tmp_path / "index.db"
+    source_path = tmp_path / "codex.jsonl"
+    session_id = "codex-session:s1"
+    _seed_minimal_archive(archive_db, source_path, session_id=session_id)
+
+    stage = make_insights_stage(tmp_path / "index.db")
+
+    assert stage.check_sessions is not None
+    assert stage.execute_sessions is not None
+    assert stage.check_sessions([session_id]) == {session_id}
+    assert stage.execute_sessions([session_id]) is True
+    assert stage.check_sessions([session_id]) == set()
+    with sqlite3.connect(archive_db) as conn:
+        profile = conn.execute("SELECT session_id, substantive_count FROM session_profiles").fetchone()
+        materialization = conn.execute(
+            """
+            SELECT insight_type, session_id, materializer_version, source_sort_key_ms
+            FROM insight_materialization
+            """
+        ).fetchone()
+    assert profile == (session_id, 1)
+    assert materialization == ("session_profile", session_id, SESSION_INSIGHT_MATERIALIZER_VERSION, 1770000000000)
 
 
 def test_insights_stage_rebuilds_sync_against_configured_db(
@@ -84,7 +236,7 @@ def test_insights_stage_rebuilds_sync_against_configured_db(
         def execute(self, sql: str, params: tuple[str, ...] = ()) -> object:
             if "sqlite_master" in sql:
                 return _FakeCursor([(1,)])
-            if "raw_conversations" in sql:
+            if "raw_sessions" in sql:
                 return _FakeCursor([(params[0], "conv-1")])
             if "session_profiles" in sql:
                 return _FakeCursor([])
@@ -114,13 +266,13 @@ def test_insights_stage_rebuilds_sync_against_configured_db(
     def fake_rebuild(
         conn: FakeConnection,
         *,
-        conversation_ids: list[str],
+        session_ids: list[str],
         page_size: int,
     ) -> SessionInsightCounts:
         nonlocal rebuilt
         del conn
         rebuilt = True
-        assert conversation_ids == ["conv-1"]
+        assert session_ids == ["conv-1"]
         assert page_size == 10
         return SessionInsightCounts(
             profiles=1,
@@ -134,6 +286,11 @@ def test_insights_stage_rebuilds_sync_against_configured_db(
         raise AssertionError("insights stage should not open an asyncio runner")
 
     monkeypatch.setattr(asyncio, "run", fail_if_used)
+    monkeypatch.setattr("polylogue.daemon.convergence_stages._active_archive_index_path", lambda _db_path: None)
+    monkeypatch.setattr(
+        "polylogue.daemon.convergence_stages._session_ids_for_source_path", lambda _conn, _path: ["conv-1"]
+    )
+    monkeypatch.setattr("polylogue.daemon.convergence_stages._hot_insight_session_ids", lambda _conn, _ids: set())
     monkeypatch.setattr("polylogue.storage.sqlite.connection.open_connection", fake_open_connection)
     monkeypatch.setattr("polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync", fake_rebuild)
 
@@ -148,7 +305,6 @@ def test_fts_stage_repairs_only_missing_action_index_when_messages_current(
 ) -> None:
     db_path = tmp_path / "archive.sqlite"
     repaired_messages: list[list[str]] = []
-    inserted_actions: list[list[str]] = []
     rebuilt = False
     committed = False
 
@@ -165,11 +321,8 @@ def test_fts_stage_repairs_only_missing_action_index_when_messages_current(
         assert timeout == 30.0
         return FakeConnection()
 
-    def fake_repair_messages(conn: FakeConnection, conversation_ids: list[str]) -> None:
-        repaired_messages.append(conversation_ids)
-
-    def fake_insert_missing_actions(conn: FakeConnection, conversation_ids: list[str]) -> None:
-        inserted_actions.append(conversation_ids)
+    def fake_repair_messages(conn: FakeConnection, session_ids: list[str]) -> None:
+        repaired_messages.append(session_ids)
 
     def fake_rebuild(conn: FakeConnection) -> None:
         nonlocal rebuilt
@@ -178,76 +331,41 @@ def test_fts_stage_repairs_only_missing_action_index_when_messages_current(
     needs_calls: list[list[str]] = []
     marked_ready: list[FakeConnection] = []
 
-    def fake_repair_needs(_conn: FakeConnection, conversation_ids: list[str]) -> stages._FtsRepairNeeds:
-        needs_calls.append(conversation_ids)
-        return stages._FtsRepairNeeds(actions=len(needs_calls) == 1)
+    def fake_repair_needs(_conn: FakeConnection, session_ids: list[str]) -> stages._FtsRepairNeeds:
+        needs_calls.append(session_ids)
+        return stages._FtsRepairNeeds(messages=len(needs_calls) == 1)
 
     monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", fake_open_connection)
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.repair_message_fts_index_sync", fake_repair_messages)
-    monkeypatch.setattr(
-        "polylogue.storage.fts.fts_lifecycle.insert_missing_action_fts_index_sync",
-        fake_insert_missing_actions,
-    )
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.rebuild_fts_index_sync", fake_rebuild)
     monkeypatch.setattr(
         stages,
-        "_conversation_ids_for_source_paths",
+        "_session_ids_for_source_paths",
         lambda _conn, paths: {Path(paths[0]): ["conv-a"], Path(paths[1]): ["conv-b"]},
     )
-    monkeypatch.setattr(stages, "_fts_repair_needs_for_conversations", fake_repair_needs)
-    monkeypatch.setattr(stages, "_action_events_exist_for_conversations", lambda _conn, _ids: False)
+    monkeypatch.setattr(stages, "_fts_repair_needs_for_sessions", fake_repair_needs)
     monkeypatch.setattr(stages, "_mark_message_fts_ready_after_targeted_repair", lambda conn: marked_ready.append(conn))
 
     stage = make_fts_stage(db_path)
     assert stage.execute_many is not None
     assert stage.execute_many([tmp_path / "a.jsonl", tmp_path / "b.jsonl"]) is True
-    assert repaired_messages == []
-    assert inserted_actions == [["conv-a", "conv-b"]]
+    assert repaired_messages == [["conv-a", "conv-b"]]
     assert needs_calls == [["conv-a", "conv-b"], ["conv-a", "conv-b"]]
     assert len(marked_ready) == 1
     assert committed is True
     assert rebuilt is False
 
 
-def test_action_event_probe_uses_indexed_base_table() -> None:
-    queries: list[tuple[str, tuple[str, ...]]] = []
-
-    class FakeConnection:
-        def execute(self, sql: str, params: tuple[str, ...] = ()) -> object:
-            queries.append((sql, params))
-            if "sqlite_master" in sql:
-                return _FakeCursor([("action_events",)])
-            if "action_events" in sql:
-                return _FakeCursor([(1,)])
-            raise AssertionError(f"unexpected SQL: {sql}")
-
-    class _FakeCursor:
-        def __init__(self, rows: list[tuple[object, ...]]) -> None:
-            self._rows = rows
-
-        def fetchone(self) -> tuple[object, ...] | None:
-            return self._rows[0] if self._rows else None
-
-    conn = cast(sqlite3.Connection, FakeConnection())
-    assert stages._action_events_exist_for_conversations(conn, ["conv-a", "conv-b"]) is True
-    probe_sql = queries[-1][0]
-    assert "FROM action_events\n" in probe_sql
-    assert "action_events_fts" not in probe_sql
-    assert queries[-1][1] == ("conv-a", "conv-b")
-
-
 def test_fts_repair_needs_probe_uses_docsize_shadow_tables() -> None:
     queries: list[tuple[str, tuple[str, ...]]] = []
-    existing_tables = {"messages_fts_docsize", "action_events", "action_events_fts", "action_events_fts_docsize"}
+    existing_tables = {"messages_fts_docsize"}
 
     class FakeConnection:
         def execute(self, sql: str, params: tuple[str, ...] = ()) -> object:
             queries.append((sql, params))
             if "sqlite_master" in sql:
                 return _FakeCursor([(1,)] if params and params[0] in existing_tables else [])
-            if "messages AS m" in sql:
-                return _FakeCursor([(0,)])
-            if "action_events AS ae" in sql:
+            if "blocks AS b" in sql:
                 return _FakeCursor([(0,)])
             raise AssertionError(f"unexpected SQL: {sql}")
 
@@ -260,43 +378,28 @@ def test_fts_repair_needs_probe_uses_docsize_shadow_tables() -> None:
 
     conn = cast(sqlite3.Connection, FakeConnection())
 
-    assert stages._fts_repair_needs_for_conversations(conn, ["conv-a"]) == stages._FtsRepairNeeds()
+    assert stages._fts_repair_needs_for_sessions(conn, ["conv-a"]) == stages._FtsRepairNeeds()
 
     probe_sql = "\n".join(sql for sql, _params in queries)
     assert "LEFT JOIN messages_fts_docsize" in probe_sql
-    assert "LEFT JOIN action_events_fts_docsize" in probe_sql
     assert "LEFT JOIN messages_fts AS" not in probe_sql
-    assert "LEFT JOIN action_events_fts AS" not in probe_sql
 
 
 def test_fts_repair_needs_ignores_empty_text_messages(tmp_path: Path) -> None:
-    db_path = tmp_path / "archive.sqlite"
+    db_path = tmp_path / "index.db"
     with open_connection(db_path) as conn:
-        restore_fts_triggers_sync(conn)
-        store_records(
-            conversation=make_conversation("conv-empty-text", source_name="codex"),
-            messages=[make_message("msg-empty-text", "conv-empty-text", text="")],
-            attachments=[],
-            conn=conn,
-        )
+        session_id = _seed_empty_text_index_session(conn, session_id="conv-empty-text")
         conn.commit()
 
-        assert stages._fts_repair_needs_for_conversations(conn, ["conv-empty-text"]) == stages._FtsRepairNeeds()
+        assert stages._fts_repair_needs_for_sessions(conn, [session_id]) == stages._FtsRepairNeeds()
 
 
 def test_targeted_fts_ready_marker_preserves_ledger_counts(tmp_path: Path) -> None:
     from polylogue.storage.fts.freshness import record_fts_surface_state_sync
 
-    db_path = tmp_path / "archive.sqlite"
+    db_path = tmp_path / "index.db"
     with open_connection(db_path) as conn:
-        conn.execute(
-            "INSERT INTO conversations(conversation_id, source_name, provider_conversation_id, version) VALUES(?,?,?,1)",
-            ("conv-ledger", "codex", "provider-conv"),
-        )
-        conn.execute(
-            "INSERT INTO messages(message_id, conversation_id, role, text, source_name, version) VALUES(?,?,?,?,?,1)",
-            ("msg-ledger", "conv-ledger", "user", "indexed text", "codex"),
-        )
+        _seed_index_session(conn, session_id="conv-ledger", text="indexed text")
         record_fts_surface_state_sync(
             conn,
             surface="messages_fts",
@@ -322,21 +425,14 @@ def test_targeted_fts_ready_marker_preserves_ledger_counts(tmp_path: Path) -> No
         0,
         0,
         0,
-        "targeted changed-conversation repair complete",
+        "targeted changed-session repair complete",
     )
 
 
 def test_targeted_fts_ready_marker_handles_legacy_freshness_table(tmp_path: Path) -> None:
-    db_path = tmp_path / "archive.sqlite"
+    db_path = tmp_path / "index.db"
     with open_connection(db_path) as conn:
-        conn.execute(
-            "INSERT INTO conversations(conversation_id, source_name, provider_conversation_id, version) VALUES(?,?,?,1)",
-            ("conv-legacy-ledger", "codex", "provider-conv"),
-        )
-        conn.execute(
-            "INSERT INTO messages(message_id, conversation_id, role, text, source_name, version) VALUES(?,?,?,?,?,1)",
-            ("msg-legacy-ledger", "conv-legacy-ledger", "user", "indexed text", "codex"),
-        )
+        _seed_index_session(conn, session_id="conv-legacy-ledger", text="indexed text")
         conn.execute("DROP TABLE IF EXISTS fts_freshness_state")
         conn.execute(
             """
@@ -365,130 +461,8 @@ def test_targeted_fts_ready_marker_handles_legacy_freshness_table(tmp_path: Path
         0,
         0,
         0,
-        "targeted changed-conversation repair complete",
+        "targeted changed-session repair complete",
     )
-
-
-def test_embed_stage_scopes_changed_conversations_without_asyncio_run(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    db_path = tmp_path / "archive.sqlite"
-    db_path.touch()
-    path_a = tmp_path / "a.jsonl"
-    path_b = tmp_path / "b.jsonl"
-    embedded_calls: list[list[str]] = []
-    pending_calls = 0
-
-    class FakeConnection:
-        def close(self) -> None:
-            pass
-
-        def commit(self) -> None:
-            pass
-
-    def fake_open_connection(path: Path, *, timeout: float) -> FakeConnection:
-        assert path == db_path
-        assert timeout == 5.0
-        return FakeConnection()
-
-    def fail_if_used(coro: object) -> object:
-        raise AssertionError("embed stage should not open an asyncio runner")
-
-    def fake_pending(_conn: FakeConnection, conversation_ids: list[str]) -> list[str]:
-        nonlocal pending_calls
-        pending_calls += 1
-        if pending_calls > 2:
-            return []
-        return [conversation_id for conversation_id in conversation_ids if conversation_id in {"conv-a", "conv-c"}]
-
-    def fake_embed(
-        _db_path: Path,
-        conversation_ids: list[str],
-        *,
-        max_errors: int | None = None,
-        stop_after_seconds: int | None = None,
-    ) -> bool:
-        assert max_errors is not None
-        assert stop_after_seconds is not None
-        embedded_calls.append(list(conversation_ids))
-        return True
-
-    monkeypatch.setenv("VOYAGE_API_KEY", "key")
-    monkeypatch.setenv("POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS", "1")
-    monkeypatch.setattr(asyncio, "run", fail_if_used)
-    monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", fake_open_connection)
-    monkeypatch.setattr(
-        stages,
-        "_conversation_ids_for_source_paths",
-        lambda _conn, paths: {Path(paths[0]): ["conv-a", "conv-b"], Path(paths[1]): ["conv-c"]},
-    )
-    monkeypatch.setattr(stages, "_pending_embedding_conversation_ids", fake_pending)
-    monkeypatch.setattr(stages, "_embed_conversations_sync", fake_embed)
-    monkeypatch.setattr(stages, "_reconcile_embedding_config_change", lambda _conn: None)
-
-    stage = make_embed_stage(db_path)
-    assert stage.check_many is not None
-    assert stage.execute_many is not None
-    assert stage.check_many([path_a, path_b]) == {path_a, path_b}
-    assert stage.execute_many([path_a, path_b]) is True
-    assert embedded_calls == [["conv-a", "conv-c"]]
-
-
-def test_embed_stage_processes_bounded_window_and_leaves_debt(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    db_path = tmp_path / "archive.sqlite"
-    db_path.touch()
-    path_a = tmp_path / "a.jsonl"
-    embedded_calls: list[list[str]] = []
-    remaining_checks = 0
-
-    class FakeConnection:
-        def close(self) -> None:
-            pass
-
-        def commit(self) -> None:
-            pass
-
-    def fake_open_connection(path: Path, *, timeout: float) -> FakeConnection:
-        assert path == db_path
-        assert timeout == 5.0
-        return FakeConnection()
-
-    def fake_pending(_conn: FakeConnection, conversation_ids: list[str] | tuple[str, ...]) -> list[str]:
-        nonlocal remaining_checks
-        ids = list(conversation_ids)
-        if ids == ["conv-a", "conv-b", "conv-c"]:
-            remaining_checks += 1
-            return ["conv-c"] if remaining_checks > 1 else ["conv-a", "conv-b"]
-        return []
-
-    def fake_embed(
-        _db_path: Path,
-        conversation_ids: list[str],
-        *,
-        max_errors: int | None = None,
-        stop_after_seconds: int | None = None,
-    ) -> bool:
-        embedded_calls.append(list(conversation_ids))
-        return True
-
-    monkeypatch.setenv("VOYAGE_API_KEY", "key")
-    monkeypatch.setenv("POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS", "1")
-    monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", fake_open_connection)
-    monkeypatch.setattr(
-        stages, "_conversation_ids_for_source_path", lambda _conn, _path: ["conv-a", "conv-b", "conv-c"]
-    )
-    monkeypatch.setattr(stages, "_pending_embedding_conversation_ids", fake_pending)
-    monkeypatch.setattr(stages, "_embed_conversations_sync", fake_embed)
-    monkeypatch.setattr(stages, "_reconcile_embedding_config_change", lambda _conn: None)
-
-    stage = make_embed_stage(db_path)
-
-    assert stage.execute(path_a) is False
-    assert embedded_calls == [["conv-a", "conv-b"]]
 
 
 def test_default_convergence_stages_always_register_embed_stage(
@@ -509,7 +483,7 @@ def test_embed_stage_is_noop_when_disabled(
 ) -> None:
     monkeypatch.setenv("VOYAGE_API_KEY", "key")
     monkeypatch.delenv("POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS", raising=False)
-    db_path = tmp_path / "archive.sqlite"
+    db_path = tmp_path / "index.db"
     db_path.touch()
 
     stage = make_embed_stage(db_path)
@@ -540,21 +514,21 @@ def test_insights_stage_batches_sync_rebuild_chunks(
     def fake_rebuild(
         conn: FakeConnection,
         *,
-        conversation_ids: list[str],
+        session_ids: list[str],
         page_size: int,
     ) -> SessionInsightCounts:
         del conn
-        rebuild_calls.append((conversation_ids, page_size))
+        rebuild_calls.append((session_ids, page_size))
         return SessionInsightCounts(profiles=2, work_events=0, phases=0, threads=0, tag_rollups=0)
 
     monkeypatch.setattr("polylogue.storage.sqlite.connection.open_connection", fake_open_connection)
     monkeypatch.setattr("polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync", fake_rebuild)
     monkeypatch.setattr(
         stages,
-        "_conversation_ids_for_source_paths",
+        "_session_ids_for_source_paths",
         lambda _conn, paths: {Path(paths[0]): ["conv-a"], Path(paths[1]): ["conv-b"]},
     )
-    monkeypatch.setattr(stages, "_hot_insight_conversation_ids", lambda _conn, _ids: set())
+    monkeypatch.setattr(stages, "_hot_insight_session_ids", lambda _conn, _ids: set())
 
     stage = make_insights_stage(db_path)
     assert stage.execute_many is not None
@@ -562,7 +536,7 @@ def test_insights_stage_batches_sync_rebuild_chunks(
     assert rebuild_calls == [(["conv-a", "conv-b"], 10)]
 
 
-def test_insights_stage_defers_hot_large_conversation_debt(
+def test_insights_stage_defers_hot_large_session_debt(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -570,7 +544,7 @@ def test_insights_stage_defers_hot_large_conversation_debt(
     source_path = tmp_path / "active-codex.jsonl"
     _truncate(source_path, stages._HOT_INSIGHT_SOURCE_BYTES + 1)
     with open_connection(db_path) as conn:
-        _seed_raw_source_conversation(conn, conversation_id="conv-hot", source_path=source_path)
+        session_id = _seed_raw_source_session(conn, session_id="conv-hot", source_path=source_path)
         conn.commit()
 
     def fail_rebuild(*_args: object, **_kwargs: object) -> object:
@@ -579,31 +553,32 @@ def test_insights_stage_defers_hot_large_conversation_debt(
     monkeypatch.setattr("polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync", fail_rebuild)
 
     stage = make_insights_stage(db_path)
-    assert stage.execute_conversations is not None
-    assert stage.execute_conversations(["conv-hot"]) is False
+    assert stage.execute_sessions is not None
+    assert stage.execute_sessions([session_id]) is False
 
 
-def test_conversation_ids_missing_profiles_includes_stale(tmp_path: Path) -> None:
+def test_session_ids_missing_profiles_includes_stale(tmp_path: Path) -> None:
     """#1620: the path-fallback debt loop must surface stale profiles, not just missing ones.
 
-    Before the fix, conversations whose JSONL had gone quiet but whose
-    ``conversations.sort_key`` drifted from the materialized
+    Before the fix, sessions whose JSONL had gone quiet but whose
+    ``sessions.sort_key_ms`` drifted from the materialized
     ``source_sort_key`` were never picked up by the daemon's debt loop —
     ``remaining=0`` was reported indefinitely.
     """
     db_path = tmp_path / "missing_profiles.sqlite"
     cutoff_safe_sort_key = 1.0  # well below now - HOT_SOURCE_GRACE_SECONDS
+    cutoff_safe_sort_key_ms = int(cutoff_safe_sort_key * 1000)
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         conn.executescript(
             """
-            CREATE TABLE conversations (
-                conversation_id TEXT PRIMARY KEY,
-                sort_key REAL,
-                updated_at TEXT
+            CREATE TABLE sessions (
+                session_id TEXT PRIMARY KEY,
+                sort_key_ms INTEGER,
+                updated_at_ms INTEGER
             );
             CREATE TABLE session_profiles (
-                conversation_id TEXT PRIMARY KEY,
+                session_id TEXT PRIMARY KEY,
                 materializer_version INTEGER,
                 source_sort_key REAL,
                 source_updated_at TEXT
@@ -611,62 +586,62 @@ def test_conversation_ids_missing_profiles_includes_stale(tmp_path: Path) -> Non
             """
         )
         conn.execute(
-            "INSERT INTO conversations (conversation_id, sort_key) VALUES ('conv-missing', ?)",
-            (cutoff_safe_sort_key,),
+            "INSERT INTO sessions (session_id, sort_key_ms) VALUES ('conv-missing', ?)",
+            (cutoff_safe_sort_key_ms,),
         )
         conn.execute(
-            "INSERT INTO conversations (conversation_id, sort_key) VALUES ('conv-stale', ?)",
-            (cutoff_safe_sort_key,),
+            "INSERT INTO sessions (session_id, sort_key_ms) VALUES ('conv-stale', ?)",
+            (cutoff_safe_sort_key_ms,),
         )
         conn.execute(
-            "INSERT INTO conversations (conversation_id, sort_key) VALUES ('conv-fresh', ?)",
-            (cutoff_safe_sort_key,),
+            "INSERT INTO sessions (session_id, sort_key_ms) VALUES ('conv-fresh', ?)",
+            (cutoff_safe_sort_key_ms,),
         )
         conn.execute(
             """
-            INSERT INTO session_profiles (conversation_id, materializer_version, source_sort_key)
+            INSERT INTO session_profiles (session_id, materializer_version, source_sort_key)
             VALUES ('conv-stale', ?, ?)
             """,
             (SESSION_INSIGHT_MATERIALIZER_VERSION, cutoff_safe_sort_key + 1000.0),
         )
         conn.execute(
             """
-            INSERT INTO session_profiles (conversation_id, materializer_version, source_sort_key)
+            INSERT INTO session_profiles (session_id, materializer_version, source_sort_key)
             VALUES ('conv-fresh', ?, ?)
             """,
             (SESSION_INSIGHT_MATERIALIZER_VERSION, cutoff_safe_sort_key),
         )
         conn.commit()
 
-        ids = stages._conversation_ids_missing_profiles(conn)
+        ids = stages._session_ids_missing_profiles(conn)
 
     assert set(ids) == {"conv-missing", "conv-stale"}
 
 
 def test_insights_staleness_uses_sort_key_not_timestamp_text(tmp_path: Path) -> None:
-    db_path = tmp_path / "archive.sqlite"
+    db_path = tmp_path / "index.db"
     with sqlite3.connect(db_path) as conn:
         conn.executescript(
             """
-            CREATE TABLE conversations (
-                conversation_id TEXT PRIMARY KEY,
-                sort_key REAL,
-                updated_at TEXT
+            CREATE TABLE sessions (
+                session_id TEXT PRIMARY KEY,
+                sort_key_ms INTEGER,
+                updated_at_ms INTEGER
             );
             CREATE TABLE session_profiles (
-                conversation_id TEXT PRIMARY KEY,
+                session_id TEXT PRIMARY KEY,
                 materializer_version INTEGER,
                 source_sort_key REAL,
                 source_updated_at TEXT
             );
-            INSERT INTO conversations (conversation_id, sort_key, updated_at)
-            VALUES ('conv-current', 1779606000.0, '2026-05-24T07:00:00+00:00');
+            INSERT INTO sessions (session_id, sort_key_ms, updated_at_ms)
+            VALUES ('conv-current', 1779606000000, 1779606000000);
             """
         )
         conn.execute(
             """
             INSERT INTO session_profiles (
-                conversation_id,
+                session_id,
                 materializer_version,
                 source_sort_key,
                 source_updated_at
@@ -685,7 +660,7 @@ def test_insights_staleness_uses_sort_key_not_timestamp_text(tmp_path: Path) -> 
     assert stale == []
 
 
-def test_insights_conversation_rebuild_returns_false_when_still_stale(
+def test_insights_session_rebuild_returns_false_when_still_stale(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -693,148 +668,110 @@ def test_insights_conversation_rebuild_returns_false_when_still_stale(
     source_path = tmp_path / "quiet-codex.jsonl"
     source_path.write_text("{}\n", encoding="utf-8")
     with open_connection(db_path) as conn:
-        _seed_raw_source_conversation(conn, conversation_id="conv-stale", source_path=source_path)
+        session_id = _seed_raw_source_session(conn, session_id="conv-stale", source_path=source_path)
         conn.commit()
 
     def no_op_rebuild(
         conn: sqlite3.Connection,
         *,
-        conversation_ids: list[str],
+        session_ids: list[str],
         page_size: int,
     ) -> SessionInsightCounts:
-        del conn, conversation_ids, page_size
+        del conn, session_ids, page_size
         return SessionInsightCounts(profiles=0, work_events=0, phases=0, threads=0, tag_rollups=0)
 
     monkeypatch.setattr("polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync", no_op_rebuild)
 
     stage = make_insights_stage(db_path)
-    assert stage.execute_conversations is not None
-    assert stage.execute_conversations(["conv-stale"]) is False
+    assert stage.execute_sessions is not None
+    assert stage.execute_sessions([session_id]) is False
 
 
-def test_insights_stage_rebuilds_large_conversation_after_quiet_window(
+def test_insights_stage_rebuilds_large_session_after_quiet_window(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     frozen_clock: FrozenClock,
 ) -> None:
-    db_path = tmp_path / "archive.sqlite"
+    db_path = tmp_path / "index.db"
     source_path = tmp_path / "quiet-codex.jsonl"
     _truncate(source_path, stages._HOT_INSIGHT_SOURCE_BYTES + 1)
     quiet_mtime = frozen_clock.now().timestamp() - stages._HOT_INSIGHT_QUIET_SECONDS - 5
     os.utime(source_path, (quiet_mtime, quiet_mtime))
-    rebuild_calls: list[tuple[list[str], int]] = []
     with open_connection(db_path) as conn:
-        _seed_raw_source_conversation(conn, conversation_id="conv-quiet", source_path=source_path)
+        session_id = _seed_raw_source_session(conn, session_id="conv-quiet", source_path=source_path)
         conn.commit()
 
-    def fake_rebuild(
-        conn: sqlite3.Connection,
-        *,
-        conversation_ids: list[str],
-        page_size: int,
-    ) -> SessionInsightCounts:
-        del conn
-        rebuild_calls.append((conversation_ids, page_size))
-        return SessionInsightCounts(profiles=1, work_events=0, phases=0, threads=0, tag_rollups=0)
-
-    monkeypatch.setattr("polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync", fake_rebuild)
     monkeypatch.setattr(stages, "_stale_session_profile_ids", lambda _conn, _ids: [])
 
     stage = make_insights_stage(db_path)
-    assert stage.execute_conversations is not None
-    assert stage.execute_conversations(["conv-quiet"]) is True
-    assert rebuild_calls == [(["conv-quiet"], 10)]
+    assert stage.execute_sessions is not None
+    assert stage.execute_sessions([session_id]) is True
+    with sqlite3.connect(db_path) as conn:
+        assert (
+            conn.execute("SELECT COUNT(*) FROM session_profiles WHERE session_id = ?", (session_id,)).fetchone()[0] == 1
+        )
 
 
-def test_insights_stage_rebuilds_small_active_conversation(
+def test_insights_stage_rebuilds_small_active_session(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    db_path = tmp_path / "archive.sqlite"
+    db_path = tmp_path / "index.db"
     source_path = tmp_path / "small-active-codex.jsonl"
     _truncate(source_path, 1024)
-    rebuild_calls: list[tuple[list[str], int]] = []
     with open_connection(db_path) as conn:
-        _seed_raw_source_conversation(conn, conversation_id="conv-small", source_path=source_path)
+        session_id = _seed_raw_source_session(conn, session_id="conv-small", source_path=source_path)
         conn.commit()
 
-    def fake_rebuild(
-        conn: sqlite3.Connection,
-        *,
-        conversation_ids: list[str],
-        page_size: int,
-    ) -> SessionInsightCounts:
-        del conn
-        rebuild_calls.append((conversation_ids, page_size))
-        return SessionInsightCounts(profiles=1, work_events=0, phases=0, threads=0, tag_rollups=0)
-
-    monkeypatch.setattr("polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync", fake_rebuild)
     monkeypatch.setattr(stages, "_stale_session_profile_ids", lambda _conn, _ids: [])
 
     stage = make_insights_stage(db_path)
-    assert stage.execute_conversations is not None
-    assert stage.execute_conversations(["conv-small"]) is True
-    assert rebuild_calls == [(["conv-small"], 10)]
+    assert stage.execute_sessions is not None
+    assert stage.execute_sessions([session_id]) is True
+    with sqlite3.connect(db_path) as conn:
+        assert (
+            conn.execute("SELECT COUNT(*) FROM session_profiles WHERE session_id = ?", (session_id,)).fetchone()[0] == 1
+        )
 
 
-def test_insights_stage_scopes_conversation_debt_to_stale_profiles(tmp_path: Path) -> None:
-    db_path = tmp_path / "archive.sqlite"
-    conversations = {
+def test_insights_stage_scopes_session_debt_to_stale_profiles(tmp_path: Path) -> None:
+    db_path = tmp_path / "index.db"
+    sessions = {
         "conv-fresh": "2026-05-24T01:00:00+00:00",
         "conv-missing-profile": "2026-05-24T01:01:00+00:00",
         "conv-stale-source": "2026-05-24T01:02:00+00:00",
         "conv-stale-version": "2026-05-24T01:03:00+00:00",
     }
     with open_connection(db_path) as conn:
-        for conversation_id, updated_at in conversations.items():
-            store_records(
-                conversation=make_conversation(
-                    conversation_id,
-                    source_name="codex",
-                    title=conversation_id,
-                    created_at=updated_at,
-                    updated_at=updated_at,
-                ),
-                messages=[
-                    make_message(
-                        f"{conversation_id}:msg-1",
-                        conversation_id,
-                        text=f"Message for {conversation_id}",
-                    )
-                ],
-                attachments=[],
-                conn=conn,
-            )
-        rebuild_session_insights_sync(
-            conn,
-            conversation_ids=list(conversations),
-            page_size=10,
-        )
-        conn.execute("DELETE FROM session_profiles WHERE conversation_id = ?", ("conv-missing-profile",))
+        for session_id, updated_at in sessions.items():
+            del updated_at
+            _seed_index_session(conn, session_id=session_id, text=f"Message for {session_id}")
+        assert stages._archive_insights_execute_ids(conn, [f"codex-session:{session_id}" for session_id in sessions])
+        conn.execute("DELETE FROM session_profiles WHERE session_id = ?", ("codex-session:conv-missing-profile",))
         conn.execute(
-            "UPDATE conversations SET updated_at = ? WHERE conversation_id = ?",
-            ("2026-05-24T02:02:00+00:00", "conv-stale-source"),
+            "UPDATE sessions SET updated_at_ms = ? WHERE session_id = ?",
+            (1_769_000_000_000, "codex-session:conv-stale-source"),
         )
         conn.execute(
-            "UPDATE session_profiles SET materializer_version = ? WHERE conversation_id = ?",
-            (SESSION_INSIGHT_MATERIALIZER_VERSION - 1, "conv-stale-version"),
+            "UPDATE insight_materialization SET materializer_version = ? WHERE session_id = ?",
+            (SESSION_INSIGHT_MATERIALIZER_VERSION - 1, "codex-session:conv-stale-version"),
         )
         conn.commit()
 
     stage = make_insights_stage(db_path)
-    assert stage.check_conversations is not None
-    assert stage.check_conversations(
+    assert stage.check_sessions is not None
+    assert stage.check_sessions(
         [
-            "conv-fresh",
-            "conv-missing-profile",
-            "conv-stale-source",
-            "conv-stale-version",
-            "conv-unknown",
+            "codex-session:conv-fresh",
+            "codex-session:conv-missing-profile",
+            "codex-session:conv-stale-source",
+            "codex-session:conv-stale-version",
+            "codex-session:conv-unknown",
         ]
     ) == {
-        "conv-missing-profile",
-        "conv-stale-source",
-        "conv-stale-version",
+        "codex-session:conv-missing-profile",
+        "codex-session:conv-stale-source",
+        "codex-session:conv-stale-version",
     }
 
 

@@ -17,7 +17,7 @@ from . import cursor as _cursor
 from . import decoders as _decoders
 from .cursor import _log_source_iteration_summary, _record_cursor_failure
 from .decoders import _ZipEntryValidator
-from .parsers.base import RawConversationData
+from .parsers.base import RawSessionData
 from .source_acquisition_components import (
     ObservationCallback,
     SourceReadContext,
@@ -43,7 +43,7 @@ def _iter_entry_payloads(
     stream_name: str,
     provider_hint: Provider,
 ) -> Iterable[DetectedEntryPayload]:
-    """Compatibility wrapper for source law tests around entry payload detection."""
+    """Adapter for source law tests around entry payload detection."""
     for detected in iter_entry_payloads(
         handle,
         stream_name=stream_name,
@@ -60,7 +60,7 @@ def iter_source_raw_data(
     known_cursors: dict[str, dict[str, object]] | None = None,
     observation_callback: ObservationCallback | None = None,
     status_callback: StatusCallback | None = None,
-) -> Iterable[RawConversationData]:
+) -> Iterable[RawSessionData]:
     """Iterate raw source payloads without parsing provider payload semantics.
 
     For non-ZIP files, uses the blob store for streaming hash — the file is
@@ -98,7 +98,7 @@ def iter_source_raw_data(
                     provider_hint,
                     cursor_state=cursor_state,
                     zip_path=path,
-                    conversation_only=False,
+                    session_only=False,
                 )
                 with zipfile.ZipFile(path) as zf:
                     for info in validator.filter_entries(zf.infolist()):

@@ -1,4 +1,4 @@
-"""Grouped stats output: structured serialization, SQL stats, summary/date/provider grouping,
+"""Grouped stats output: structured serialization, SQL stats, summary/date/origin grouping,
 semantic action/tool grouping, and profile-backed grouping."""
 
 from __future__ import annotations
@@ -15,12 +15,12 @@ import click
 from polylogue.cli.query_feedback import emit_no_results
 
 if TYPE_CHECKING:
-    from polylogue.archive.action_event.action_events import ActionEvent
-    from polylogue.archive.filter.filters import ConversationFilter
-    from polylogue.archive.models import Conversation, ConversationSummary
-    from polylogue.archive.query.spec import ConversationQuerySpec
+    from polylogue.archive.actions.actions import Action
+    from polylogue.archive.filter.filters import SessionFilter
+    from polylogue.archive.models import Session, SessionSummary
+    from polylogue.archive.query.spec import SessionQuerySpec
     from polylogue.cli.shared.types import AppEnv
-    from polylogue.protocols import ConversationArchiveStatsStore
+    from polylogue.protocols import SessionArchiveStatsStore
 
 
 DATE_GROUP_DIMENSIONS = frozenset({"month", "year", "day"})
@@ -30,21 +30,21 @@ DATE_GROUP_FORMATS = {
     "year": "%Y",
 }
 GROUP_COUNT_COLUMNS = (
-    ("conversations", "Convs"),
+    ("sessions", "Convs"),
     ("messages", "Messages"),
 )
 GROUP_WORD_COLUMNS = (
-    ("conversations", "Convs"),
+    ("sessions", "Convs"),
     ("messages", "Messages"),
     ("words", "Words"),
 )
 SEMANTIC_COLUMNS = (
-    ("conversations", "Convs"),
+    ("sessions", "Convs"),
     ("facts", "Facts"),
     ("messages", "Msgs"),
 )
 PROFILE_COLUMNS = (
-    ("conversations", "Convs"),
+    ("sessions", "Convs"),
     ("work_events", "Events"),
     ("messages", "Msgs"),
 )
@@ -60,20 +60,20 @@ def _sort_group_keys(groups: Mapping[str, object], dimension: str) -> list[str]:
     return sorted(groups.keys(), reverse=dimension in DATE_GROUP_DIMENSIONS)
 
 
-def _summary_group_key(summary: ConversationSummary, dimension: str) -> str:
-    if dimension == "provider":
-        return str(summary.provider) if summary.provider else "unknown"
+def _summary_group_key(summary: SessionSummary, dimension: str) -> str:
+    if dimension == "origin":
+        return str(summary.origin) if summary.origin else "unknown-export"
     if dimension in DATE_GROUP_DIMENSIONS:
         dt = summary.updated_at or summary.created_at
         return dt.strftime(DATE_GROUP_FORMATS[dimension]) if dt else "unknown"
     return "all"
 
 
-def _conversation_group_key(conversation: Conversation, dimension: str) -> str:
-    if dimension == "provider":
-        return conversation.provider or "unknown"
+def _session_group_key(session: Session, dimension: str) -> str:
+    if dimension == "origin":
+        return str(session.origin)
     if dimension in DATE_GROUP_DIMENSIONS:
-        dt = conversation.display_date
+        dt = session.display_date
         return dt.strftime(DATE_GROUP_FORMATS[dimension]) if dt else "unknown"
     return "all"
 
@@ -85,8 +85,8 @@ def _count_value(row: dict[str, object], key: str) -> int:
     raise TypeError(f"Stats value {key!r} must be int, got {type(value).__name__}")
 
 
-def _formatted_group_label(group_label: str, *, color_provider: bool) -> str:
-    if not color_provider:
+def _formatted_group_label(group_label: str, *, color_origin: bool) -> str:
+    if not color_origin:
         return group_label
 
     from polylogue.ui.theme import provider_color
@@ -102,9 +102,9 @@ def _emit_grouped_stats_table(
     summary: dict[str, object],
     columns: tuple[tuple[str, str], ...],
     total_label: str,
-    matched_conversations: int,
+    matched_sessions: int,
     output_format: str,
-    color_provider: bool = False,
+    color_origin: bool = False,
     multi_membership: bool = False,
     note: str | None = None,
 ) -> None:
@@ -119,7 +119,7 @@ def _emit_grouped_stats_table(
 
     from rich.table import Table
 
-    env.ui.console.print(f"\nMatched: {matched_conversations:,} conversations (by {dimension})\n")
+    env.ui.console.print(f"\nMatched: {matched_sessions:,} sessions (by {dimension})\n")
     table = Table(show_header=True, header_style="bold", box=None, pad_edge=False)
     table.add_column("Group", style="bold", min_width=12)
     for _, title in columns:
@@ -128,7 +128,7 @@ def _emit_grouped_stats_table(
     for row in rows:
         group_label = str(row["group"])
         table.add_row(
-            _formatted_group_label(group_label, color_provider=color_provider),
+            _formatted_group_label(group_label, color_origin=color_origin),
             *(f"{_count_value(row, key):,}" for key, _ in columns),
         )
 
@@ -209,10 +209,10 @@ def emit_structured_stats(
 
 async def output_stats_sql(
     env: AppEnv,
-    filter_chain: ConversationFilter,
-    repo: ConversationArchiveStatsStore,
+    filter_chain: SessionFilter,
+    repo: SessionArchiveStatsStore,
     *,
-    selection: ConversationQuerySpec | None = None,
+    selection: SessionQuerySpec | None = None,
     output_format: str = "markdown",
 ) -> None:
     """Output statistics using SQL aggregation without full message loading."""
@@ -247,12 +247,12 @@ async def output_stats_sql(
     else:
         conv_ids = None
         archive_stats = await repo.get_archive_stats()
-        conv_count = archive_stats.total_conversations
+        conv_count = archive_stats.total_sessions
         if conv_count == 0:
             emit_no_results(
                 env,
                 output_format=output_format,
-                message="No conversations in archive.",
+                message="No sessions in archive.",
                 exit_code=2 if output_format == "json" else None,
             )
             return
@@ -269,27 +269,27 @@ async def output_stats_sql(
         date_range = f"{min_date} to {max_date}"
 
     structured_summary: dict[str, object] = {
-        "conversations": conv_count,
+        "sessions": conv_count,
         "messages_total": stats["total"],
         "messages_user": stats["user"],
         "messages_assistant": stats["assistant"],
         "words_approx": stats["words_approx"],
         "attachment_refs": stats["attachment_refs"],
         "distinct_attachments": stats["distinct_attachments"],
-        "providers": stats.get("providers") or {},
+        "origins": stats.get("origins") or stats.get("providers") or {},
         "date_range": None,
         "filtered": has_filters,
     }
-    pending_embedding_conversations = 0
+    pending_embedding_sessions = 0
     stale_embedding_messages = 0
     if not has_filters:
         assert archive_stats is not None
-        pending_embedding_conversations = getattr(archive_stats, "pending_embedding_conversations", 0)
+        pending_embedding_sessions = getattr(archive_stats, "pending_embedding_sessions", 0)
         stale_embedding_messages = getattr(archive_stats, "stale_embedding_messages", 0)
         embeddings_payload = {
-            "embedded_conversations": getattr(archive_stats, "embedded_conversations", 0),
+            "embedded_sessions": getattr(archive_stats, "embedded_sessions", 0),
             "embedded_messages": getattr(archive_stats, "embedded_messages", 0),
-            "pending_embedding_conversations": pending_embedding_conversations,
+            "pending_embedding_sessions": pending_embedding_sessions,
             "stale_embedding_messages": stale_embedding_messages,
             "messages_missing_embedding_provenance": getattr(
                 archive_stats,
@@ -313,7 +313,7 @@ async def output_stats_sql(
         return
 
     out = env.ui.console.print
-    out(f"\nConversations: {conv_count:,}\n")
+    out(f"\nSessions: {conv_count:,}\n")
     if stats["user"] or stats["assistant"]:
         out(f"Messages: {stats['total']:,} total ({stats['user']:,} user, {stats['assistant']:,} assistant)")
     else:
@@ -322,21 +322,22 @@ async def output_stats_sql(
     if stats["words_approx"]:
         out(f"Words: ~{stats['words_approx']:,}")
 
-    providers = stats.get("providers")
-    if providers:
-        provider_parts = [f"{name} ({count:,})" for name, count in providers.items()]
-        out(f"Providers: {', '.join(provider_parts)}")
+    raw_origins = stats.get("origins") or stats.get("providers")
+    origins = raw_origins if isinstance(raw_origins, Mapping) else None
+    if origins:
+        origin_parts = [f"{name} ({count:,})" for name, count in origins.items()]
+        out(f"Origins: {', '.join(origin_parts)}")
 
     out(f"Attachment refs: {stats['attachment_refs']:,}")
     out(f"Unique attachments: {stats['distinct_attachments']:,}")
     if not has_filters:
         assert archive_stats is not None
         embedding_line = (
-            f"Embeddings: {archive_stats.embedded_conversations:,}/{archive_stats.total_conversations:,} convs, "
+            f"Embeddings: {archive_stats.embedded_sessions:,}/{archive_stats.total_sessions:,} convs, "
             f"{archive_stats.embedded_messages:,} msgs ({archive_stats.embedding_coverage:.1f}%)"
         )
-        if pending_embedding_conversations:
-            embedding_line += f", pending {pending_embedding_conversations:,}"
+        if pending_embedding_sessions:
+            embedding_line += f", pending {pending_embedding_sessions:,}"
         if stale_embedding_messages:
             embedding_line += f", stale {stale_embedding_messages:,}"
         out(embedding_line)
@@ -345,23 +346,23 @@ async def output_stats_sql(
 
 
 # ---------------------------------------------------------------------------
-# Summary/date/provider grouped stats (from query_grouped_stats_summary.py)
+# Summary/date/origin grouped stats (from query_grouped_stats_summary.py)
 # ---------------------------------------------------------------------------
 
 
 def output_stats_by_summaries(
     env: AppEnv,
-    summaries: list[ConversationSummary],
+    summaries: list[SessionSummary],
     msg_counts: dict[str, int],
     dimension: str,
     *,
-    selection: ConversationQuerySpec | None = None,
+    selection: SessionQuerySpec | None = None,
     output_format: str = "text",
 ) -> None:
     if not summaries:
         emit_no_results(env, selection=selection, output_format=output_format)
 
-    groups: dict[str, list[ConversationSummary]] = defaultdict(list)
+    groups: dict[str, list[SessionSummary]] = defaultdict(list)
     for summary in summaries:
         groups[_summary_group_key(summary, dimension)].append(summary)
 
@@ -372,14 +373,14 @@ def output_stats_by_summaries(
         rows.append(
             {
                 "group": key,
-                "conversations": len(group_summaries),
+                "sessions": len(group_summaries),
                 "messages": sum(msg_counts.get(str(summary.id), 0) for summary in group_summaries),
             }
         )
 
     summary_row = {
         "group": "TOTAL",
-        "conversations": len(summaries),
+        "sessions": len(summaries),
         "messages": sum(msg_counts.get(str(summary.id), 0) for summary in summaries),
     }
     _emit_grouped_stats_table(
@@ -389,22 +390,22 @@ def output_stats_by_summaries(
         summary=summary_row,
         columns=GROUP_COUNT_COLUMNS,
         total_label="TOTAL",
-        matched_conversations=len(summaries),
+        matched_sessions=len(summaries),
         output_format=output_format,
-        color_provider=dimension == "provider",
+        color_origin=dimension == "origin",
     )
 
 
-def output_stats_by_grouped_conversations(
+def output_stats_by_grouped_sessions(
     env: AppEnv,
-    results: list[Conversation],
+    results: list[Session],
     dimension: str,
     *,
     output_format: str = "text",
 ) -> None:
-    groups: dict[str, list[Conversation]] = defaultdict(list)
+    groups: dict[str, list[Session]] = defaultdict(list)
     for conv in results:
-        groups[_conversation_group_key(conv, dimension)].append(conv)
+        groups[_session_group_key(conv, dimension)].append(conv)
 
     rows: list[dict[str, object]] = []
     for key in _sort_group_keys(groups, dimension):
@@ -412,7 +413,7 @@ def output_stats_by_grouped_conversations(
         rows.append(
             {
                 "group": key,
-                "conversations": len(convs),
+                "sessions": len(convs),
                 "messages": sum(len(conv.messages) for conv in convs),
                 "words": sum(sum(message.word_count for message in conv.messages) for conv in convs),
             }
@@ -420,7 +421,7 @@ def output_stats_by_grouped_conversations(
 
     summary = {
         "group": "TOTAL",
-        "conversations": len(results),
+        "sessions": len(results),
         "messages": sum(len(conv.messages) for conv in results),
         "words": sum(sum(message.word_count for message in conv.messages) for conv in results),
     }
@@ -431,9 +432,9 @@ def output_stats_by_grouped_conversations(
         summary=summary,
         columns=GROUP_WORD_COLUMNS,
         total_label="TOTAL",
-        matched_conversations=len(results),
+        matched_sessions=len(results),
         output_format=output_format,
-        color_provider=dimension == "provider",
+        color_origin=dimension == "origin",
     )
 
 
@@ -442,21 +443,21 @@ def output_stats_by_grouped_conversations(
 # ---------------------------------------------------------------------------
 
 
-def _action_kind_name(action: ActionEvent) -> str:
+def _action_kind_name(action: Action) -> str:
     return action.kind.value
 
 
 def _semantic_grouped_payload(
-    results: list[Conversation],
+    results: list[Session],
     *,
-    selection: ConversationQuerySpec | None,
-    key_for_action: Callable[[ActionEvent], str],
+    selection: SessionQuerySpec | None,
+    key_for_action: Callable[[Action], str],
 ) -> GroupedStatsPayload:
-    from polylogue.archive.semantic.facts import build_conversation_semantic_facts
+    from polylogue.archive.semantic.facts import build_session_semantic_facts
     from polylogue.cli.query_semantic import (
         SemanticStatsSlice,
         action_matches_slice,
-        filtered_action_events,
+        filtered_actions,
     )
 
     semantic_slice = SemanticStatsSlice.from_selection(selection)
@@ -465,9 +466,9 @@ def _semantic_grouped_payload(
     matched_messages = 0
 
     for conv in results:
-        facts = build_conversation_semantic_facts(conv)
-        filtered_actions = filtered_action_events(facts, semantic_slice)
-        fact_counts = Counter(key_for_action(action) for action in filtered_actions)
+        facts = build_session_semantic_facts(conv)
+        conv_actions = filtered_actions(facts, semantic_slice)
+        fact_counts = Counter(key_for_action(action) for action in conv_actions)
         if not fact_counts:
             groups["none"]["convs"] += 1
             continue
@@ -476,15 +477,13 @@ def _semantic_grouped_payload(
         matched_messages += sum(
             1
             for message in facts.message_facts
-            if any(action_matches_slice(action, semantic_slice) for action in message.action_events)
+            if any(action_matches_slice(action, semantic_slice) for action in message.actions)
         )
 
         message_groups: dict[str, set[str]] = defaultdict(set)
         for message in facts.message_facts:
             for key in {
-                key_for_action(action)
-                for action in message.action_events
-                if action_matches_slice(action, semantic_slice)
+                key_for_action(action) for action in message.actions if action_matches_slice(action, semantic_slice)
             }:
                 message_groups[key].add(message.message_id)
 
@@ -497,7 +496,7 @@ def _semantic_grouped_payload(
         rows=[
             {
                 "group": key,
-                "conversations": stats["convs"],
+                "sessions": stats["convs"],
                 "facts": stats["facts"],
                 "messages": stats["msgs"],
             }
@@ -505,7 +504,7 @@ def _semantic_grouped_payload(
         ],
         summary={
             "group": "MATCHED",
-            "conversations": len(results),
+            "sessions": len(results),
             "facts": matched_facts,
             "messages": matched_messages,
         },
@@ -514,20 +513,20 @@ def _semantic_grouped_payload(
 
 def output_semantic_grouped_stats(
     env: AppEnv,
-    results: list[Conversation],
+    results: list[Session],
     dimension: str,
     *,
-    selection: ConversationQuerySpec | None = None,
+    selection: SessionQuerySpec | None = None,
     output_format: str = "text",
 ) -> bool:
     from polylogue.cli.query_semantic import normalized_tool_name
 
     if dimension == "action":
         payload = _semantic_grouped_payload(results, selection=selection, key_for_action=_action_kind_name)
-        note = "Note: conversations may appear in multiple action groups."
+        note = "Note: sessions may appear in multiple action groups."
     elif dimension == "tool":
         payload = _semantic_grouped_payload(results, selection=selection, key_for_action=normalized_tool_name)
-        note = "Note: conversations may appear in multiple tool groups."
+        note = "Note: sessions may appear in multiple tool groups."
     else:
         return False
 
@@ -538,7 +537,7 @@ def output_semantic_grouped_stats(
         summary=payload.summary,
         columns=SEMANTIC_COLUMNS,
         total_label="MATCHED",
-        matched_conversations=len(results),
+        matched_sessions=len(results),
         output_format=output_format,
         multi_membership=True,
         note=note,
@@ -551,12 +550,12 @@ def output_semantic_grouped_stats(
 # ---------------------------------------------------------------------------
 
 
-def output_stats_by_conversations(
+def output_stats_by_sessions(
     env: AppEnv,
-    results: list[Conversation],
+    results: list[Session],
     dimension: str,
     *,
-    selection: ConversationQuerySpec | None = None,
+    selection: SessionQuerySpec | None = None,
     output_format: str = "text",
 ) -> None:
     if not results:
@@ -571,7 +570,7 @@ def output_stats_by_conversations(
     ):
         return
 
-    output_stats_by_grouped_conversations(
+    output_stats_by_grouped_sessions(
         env,
         results,
         dimension,
@@ -586,11 +585,11 @@ def output_stats_by_conversations(
 
 async def output_stats_by_profile_summaries(
     env: AppEnv,
-    summaries: list[ConversationSummary],
-    repo: ConversationArchiveStatsStore,
+    summaries: list[SessionSummary],
+    repo: SessionArchiveStatsStore,
     dimension: str,
     *,
-    selection: ConversationQuerySpec | None = None,
+    selection: SessionQuerySpec | None = None,
     output_format: str = "text",
     batch_size: int = 100,
 ) -> None:
@@ -607,17 +606,17 @@ async def output_stats_by_profile_summaries(
 
 async def output_stats_by_profile_query(
     env: AppEnv,
-    conversation_ids: list[str],
-    repo: ConversationArchiveStatsStore,
+    session_ids: list[str],
+    repo: SessionArchiveStatsStore,
     dimension: str,
     *,
-    selection: ConversationQuerySpec | None = None,
+    selection: SessionQuerySpec | None = None,
     output_format: str = "text",
     batch_size: int = 100,
 ) -> None:
     await output_stats_by_profile_ids(
         env,
-        conversation_ids,
+        session_ids,
         repo,
         dimension,
         selection=selection,
@@ -628,38 +627,38 @@ async def output_stats_by_profile_query(
 
 async def output_stats_by_profile_ids(
     env: AppEnv,
-    conversation_ids: list[str],
-    repo: ConversationArchiveStatsStore,
+    session_ids: list[str],
+    repo: SessionArchiveStatsStore,
     dimension: str,
     *,
-    selection: ConversationQuerySpec | None = None,
+    selection: SessionQuerySpec | None = None,
     output_format: str = "text",
     batch_size: int = 100,
 ) -> None:
     if dimension not in {"repo", "work-kind"}:
         raise ValueError(f"Unsupported profile stats dimension: {dimension}")
-    if not conversation_ids:
+    if not session_ids:
         emit_no_results(env, selection=selection, output_format=output_format)
 
     from polylogue.archive.session.session_profile import build_session_profile
 
-    groups: dict[str, dict[str, int]] = defaultdict(lambda: {"conversations": 0, "work_events": 0, "messages": 0})
-    matched_conversations = 0
+    groups: dict[str, dict[str, int]] = defaultdict(lambda: {"sessions": 0, "work_events": 0, "messages": 0})
+    matched_sessions = 0
     matched_work_events = 0
     matched_messages = 0
 
-    for offset in range(0, len(conversation_ids), batch_size):
-        batch_ids = conversation_ids[offset : offset + batch_size]
+    for offset in range(0, len(session_ids), batch_size):
+        batch_ids = session_ids[offset : offset + batch_size]
         profiles_by_id = await repo.get_session_profiles_batch(batch_ids)
-        missing_ids = [conversation_id for conversation_id in batch_ids if conversation_id not in profiles_by_id]
+        missing_ids = [session_id for session_id in batch_ids if session_id not in profiles_by_id]
         if missing_ids:
-            for conversation in await repo.get_many(missing_ids):
-                profiles_by_id[str(conversation.id)] = build_session_profile(conversation)
+            for session in await repo.get_many(missing_ids):
+                profiles_by_id[str(session.id)] = build_session_profile(session)
 
-        for conversation_id in batch_ids:
-            profile = profiles_by_id.get(conversation_id)
+        for session_id in batch_ids:
+            profile = profiles_by_id.get(session_id)
             if profile is None:
-                groups["none"]["conversations"] += 1
+                groups["none"]["sessions"] += 1
                 continue
 
             if dimension == "repo":
@@ -671,19 +670,19 @@ async def output_stats_by_profile_ids(
                 )
                 keys = (primary_kind or "none",)
 
-            matched_conversations += 1
+            matched_sessions += 1
             matched_work_events += len(profile.work_events)
             matched_messages += profile.message_count
 
             for key in keys:
-                groups[key]["conversations"] += 1
+                groups[key]["sessions"] += 1
                 groups[key]["work_events"] += len(profile.work_events)
                 groups[key]["messages"] += profile.message_count
 
     rows = [
         {
             "group": key,
-            "conversations": stats["conversations"],
+            "sessions": stats["sessions"],
             "work_events": stats["work_events"],
             "messages": stats["messages"],
         }
@@ -691,7 +690,7 @@ async def output_stats_by_profile_ids(
     ]
     summary = {
         "group": "MATCHED",
-        "conversations": matched_conversations,
+        "sessions": matched_sessions,
         "work_events": matched_work_events,
         "messages": matched_messages,
     }
@@ -703,18 +702,18 @@ async def output_stats_by_profile_ids(
         summary=summary,
         columns=PROFILE_COLUMNS,
         total_label="MATCHED",
-        matched_conversations=matched_conversations,
+        matched_sessions=matched_sessions,
         output_format=output_format,
         multi_membership=multi_membership,
-        note="Note: conversations may appear in multiple repo groups." if multi_membership else None,
+        note="Note: sessions may appear in multiple repo groups." if multi_membership else None,
     )
 
 
 __all__ = [
     "emit_structured_stats",
     "output_semantic_grouped_stats",
-    "output_stats_by_conversations",
-    "output_stats_by_grouped_conversations",
+    "output_stats_by_sessions",
+    "output_stats_by_grouped_sessions",
     "output_stats_by_profile_ids",
     "output_stats_by_profile_query",
     "output_stats_by_profile_summaries",

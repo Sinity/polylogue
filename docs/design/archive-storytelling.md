@@ -1,6 +1,6 @@
 # Archive Storytelling
 
-Narrative generation from AI conversation archives. Stories are not analytics
+Narrative generation from AI session archives. Stories are not analytics
 reports — they are readable narratives that answer "how did that happen" by
 tracing the archive for patterns, arcs, and origins.
 
@@ -26,7 +26,7 @@ a session through its implementation arc to production.
 The story follows this template:
 
 1. **Genesis**: first session where the feature is mentioned. The exact prompt
-   or conversation excerpt. Date, repo context, session link.
+   or session excerpt. Date, repo context, session link.
 2. **Design sessions**: sessions where the feature was discussed, planned, or
    explored but not yet implemented. Key decisions, alternatives rejected.
 3. **Implementation arc**: sessions where files were created or modified for
@@ -37,13 +37,13 @@ The story follows this template:
    2 weeks of completion.
 
 Discovery: the user provides a file path, branch name, or keyword. The story
-engine searches `action_events.affected_paths` and `session_profiles.repo_paths_json`
+engine searches `actions.affected_paths` and `session_profiles.repo_paths_json`
 for matches, traces the sessions forward in time, and assembles the narrative.
 
 CLI:
 
 ```
-polylogue story feature-birth --path polylogue/storage/sqlite/schema_ddl.py
+polylogue story feature-birth --path polylogue/storage/sqlite/archive_tiers/index.py
 polylogue story feature-birth --branch feature/feat/time-machine
 polylogue story feature-birth --keyword "content hash"
 ```
@@ -71,7 +71,7 @@ The story template:
 
 Discovery: the user provides a date. The story engine queries `session_profiles`
 with `canonical_session_date = :date`, orders by `first_message_at`, enriches
-with `action_events.affected_paths` for each session, and renders the template.
+with `actions.affected_paths` for each session, and renders the template.
 
 CLI:
 
@@ -105,7 +105,7 @@ Discovery: the user provides a branch name. The story engine:
 2. Orders them by date.
 3. Detects phase boundaries (gaps >2 days without a session touching the
    branch).
-4. For each phase, collects affected paths from `action_events`.
+4. For each phase, collects affected paths from `actions`.
 5. Computes cumulative word count, tool usage, and cost per phase.
 6. Renders the template.
 
@@ -168,10 +168,10 @@ no external services. Total implementation estimated at ~650 LOC of Python
 ```sql
 -- Find sessions touching a file, ordered by first occurrence
 SELECT
-    sp.conversation_id, sp.canonical_session_date, sp.title,
+    sp.session_id, sp.canonical_session_date, sp.title,
     ae.affected_paths
 FROM session_profiles sp
-JOIN action_events ae ON sp.conversation_id = ae.conversation_id
+JOIN actions ae ON sp.session_id = ae.session_id
 WHERE ae.affected_paths LIKE '%' || :file_path || '%'
 ORDER BY sp.canonical_session_date ASC;
 ```
@@ -181,14 +181,14 @@ ORDER BY sp.canonical_session_date ASC;
 ```sql
 -- Single day's sessions with enrichment
 SELECT
-    sp.conversation_id, sp.canonical_session_date, sp.title,
+    sp.session_id, sp.canonical_session_date, sp.title,
     sp.first_message_at, sp.last_message_at,
     sp.provider_name, sp.word_count, sp.tool_use_count,
     sp.thinking_count, sp.total_cost_usd, sp.total_duration_ms,
     sp.total_cost_usd, sp.repo_names_json, sp.tags_json,
     ae.affected_paths
 FROM session_profiles sp
-LEFT JOIN action_events ae ON sp.conversation_id = ae.conversation_id
+LEFT JOIN actions ae ON sp.session_id = ae.session_id
 WHERE sp.canonical_session_date = :date
 ORDER BY sp.first_message_at ASC;
 ```
@@ -198,13 +198,13 @@ ORDER BY sp.first_message_at ASC;
 ```sql
 -- Sessions spanning 3+ days on the same file set, with gap detection
 SELECT
-    sp.conversation_id, sp.canonical_session_date,
+    sp.session_id, sp.canonical_session_date,
     sp.first_message_at, sp.word_count, sp.tool_use_count,
     ae.affected_paths
 FROM session_profiles sp
-JOIN action_events ae ON sp.conversation_id = ae.conversation_id
-WHERE sp.conversation_id IN (
-    SELECT DISTINCT conversation_id
+JOIN actions ae ON sp.session_id = ae.session_id
+WHERE sp.session_id IN (
+    SELECT DISTINCT session_id
     FROM session_profiles
     WHERE auto_tags_json LIKE '%' || :branch || '%'
        OR search_text LIKE '%' || :branch || '%'
@@ -239,7 +239,7 @@ Stories are rendered as Markdown with embedded links to the web UI or
 local session files. No HTML, no JavaScript — the Markdown output is
 readable in any editor, viewable on GitHub, and shareable as-is.
 
-Each story section includes a "Verify" link pointing to the conversation
+Each story section includes a "Verify" link pointing to the session
 that sourced the claim. This is the provenance guarantee in action.
 
 Example output (Feature Birth):
@@ -251,15 +251,15 @@ Example output (Feature Birth):
 First mentioned in a session with Claude Code while debugging
 duplicate ingestion. The user asked:
 
-> "Why does ingestion re-import the same conversation twice?"
+> "Why does ingestion re-import the same session twice?"
 
-[See full session →](polylogue://conversation/claude-code:abc123)
+[See full session →](polylogue://session/claude-code:abc123)
 
 ## Design Sessions
 ### 2025-11-03 (later same day)
 Decision: use SHA-256 over NFC-normalized payload. Rejected
 content-addressable blob store as premature.
-[See full session →](polylogue://conversation/claude-code:def456)
+[See full session →](polylogue://session/claude-code:def456)
 ...
 ```
 

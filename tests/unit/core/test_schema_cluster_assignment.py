@@ -189,7 +189,7 @@ class TestClusterAssignment:
         manifest = registry.cluster_samples(
             "kind-prov",
             samples,
-            artifact_kinds=["conversation_record_stream", "subagent_conversation_stream"],
+            artifact_kinds=["session_record_stream", "subagent_session_stream"],
         )
         assert len(manifest.clusters) == 2
 

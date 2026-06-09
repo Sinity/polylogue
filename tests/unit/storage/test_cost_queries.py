@@ -9,10 +9,10 @@ from pathlib import Path
 def test_token_columns_exist_on_messages() -> None:
     """Messages table must have input_tokens, output_tokens, model_name columns."""
 
-    from polylogue.storage.sqlite.schema_ddl_archive import ARCHIVE_STORAGE_DDL
+    from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL
 
     conn = sqlite3.connect(":memory:")
-    conn.executescript(ARCHIVE_STORAGE_DDL)
+    conn.executescript(INDEX_DDL)
     cols = {row[1] for row in conn.execute("PRAGMA table_info('messages')").fetchall()}
     assert "input_tokens" in cols, "messages missing input_tokens column"
     assert "output_tokens" in cols, "messages missing output_tokens column"
@@ -23,15 +23,14 @@ def test_token_columns_exist_on_messages() -> None:
 def test_cost_summary_queryable_from_session_profiles(tmp_path: Path) -> None:
     """Session profile must carry per_model_cost_json for analytical queries."""
 
-    from polylogue.storage.sqlite.schema_ddl import SCHEMA_DDL
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
     db = tmp_path / "test.db"
-    conn = sqlite3.connect(str(db))
-    conn.executescript(SCHEMA_DDL)
-
-    cols = {row[1] for row in conn.execute("PRAGMA table_info('session_profiles')").fetchall()}
+    initialize_archive_database(db, ArchiveTier.INDEX)
+    with sqlite3.connect(str(db)) as conn:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info('session_profiles')").fetchall()}
     assert "per_model_cost_json" in cols, "session_profiles missing per_model_cost_json"
-    conn.close()
 
 
 def test_tokenizer_estimate() -> None:

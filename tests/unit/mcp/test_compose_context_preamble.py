@@ -16,17 +16,17 @@ def _make_candidate(
     date: str = "2026-05-01T10:00:00Z",
     terminal_state: str = "completed",
     summary: str | None = None,
-    provider: str = "claude-code",
+    origin: str = "claude-code-session",
 ) -> MagicMock:
     """Build a mock resume candidate with specified fields."""
     c = MagicMock()
-    c.logical_conversation_id = session_id
-    c.conversation_id = session_id
+    c.logical_session_id = session_id
+    c.session_id = session_id
     c.title = title
     c.date = date
     c.terminal_state = terminal_state
     c.summary = summary
-    c.provider = provider
+    c.origin = origin
     return c
 
 
@@ -83,7 +83,7 @@ class TestComposeContextPreambleHappyPath:
             title="Fix login bug",
             date="2026-05-01T10:00:00Z",
             terminal_state="completed",
-            provider="claude-code",
+            origin="claude-code-session",
         )
 
         with (
@@ -106,19 +106,19 @@ class TestComposeContextPreambleHappyPath:
         assert sessions[0]["title"] == "Fix login bug"
         assert sessions[0]["date"] == "2026-05-01T10:00:00Z"
         assert sessions[0]["terminal_state"] == "completed"
-        assert sessions[0]["provider"] == "claude-code"
+        assert sessions[0]["origin"] == "claude-code-session"
 
     @pytest.mark.asyncio
-    async def test_candidate_without_logical_conversation_id_falls_back(self, mcp_server: MCPServerUnderTest) -> None:
-        """When logical_conversation_id is absent, conversation_id is used."""
+    async def test_candidate_without_logical_session_id_falls_back(self, mcp_server: MCPServerUnderTest) -> None:
+        """When logical_session_id is absent, session_id is used."""
         c = MagicMock()
-        c.logical_conversation_id = None
-        c.conversation_id = "fallback-id"
+        c.logical_session_id = None
+        c.session_id = "fallback-id"
         c.title = None
         c.date = None
         c.terminal_state = None
         c.summary = None
-        c.provider = None
+        c.origin = None
 
         with (
             patch("polylogue.mcp.server._get_polylogue") as mock_get_poly,

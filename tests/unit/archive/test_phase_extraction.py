@@ -1,4 +1,4 @@
-"""Phase-extraction regression tests covering the provider-events fallback (#1624)."""
+"""Phase-extraction regression tests covering the session-events fallback (#1624)."""
 
 from __future__ import annotations
 
@@ -7,8 +7,9 @@ from datetime import datetime, timedelta, timezone
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.models import Message
 from polylogue.archive.phase.extraction import extract_phases
-from polylogue.archive.provider.events import ProviderEvent
-from polylogue.types import ConversationId, Provider, ProviderEventId
+from polylogue.archive.session.events import SessionEvent
+from polylogue.core.sources import origin_from_provider
+from polylogue.types import Provider, SessionEventId, SessionId
 from tests.infra.builders import make_conv, make_msg
 
 
@@ -16,34 +17,34 @@ def _untimed_msg(idx: int) -> Message:
     return make_msg(
         id=f"m{idx}",
         role="user" if idx % 2 == 0 else "assistant",
-        provider="codex",
+        origin="codex",
         text=f"message {idx}",
         timestamp=None,
     )
 
 
-def test_extract_phases_falls_back_to_provider_events_when_messages_have_no_timestamps() -> None:
+def test_extract_phases_falls_back_to_session_events_when_messages_have_no_timestamps() -> None:
     started_at = datetime(2026, 5, 24, 10, 0, tzinfo=timezone.utc)
     ended_at = started_at + timedelta(minutes=2)
-    conversation = make_conv(
+    session = make_conv(
         id="conv-codex-no-msg-ts",
-        provider=Provider.CODEX,
+        origin=Provider.CODEX,
         title="Codex pre-Dec-2025",
         messages=MessageCollection(messages=[_untimed_msg(0), _untimed_msg(1)]),
-        provider_events=(
-            ProviderEvent(
-                id=ProviderEventId("conv-codex-no-msg-ts:event-0"),
-                conversation_id=ConversationId("conv-codex-no-msg-ts"),
-                provider=Provider.CODEX,
+        session_events=(
+            SessionEvent(
+                id=SessionEventId("conv-codex-no-msg-ts:event-0"),
+                session_id=SessionId("conv-codex-no-msg-ts"),
+                origin=origin_from_provider(Provider.CODEX),
                 event_index=0,
                 event_type="function_call",
                 timestamp=started_at,
                 payload={"call_id": "c1", "name": "exec"},
             ),
-            ProviderEvent(
-                id=ProviderEventId("conv-codex-no-msg-ts:event-1"),
-                conversation_id=ConversationId("conv-codex-no-msg-ts"),
-                provider=Provider.CODEX,
+            SessionEvent(
+                id=SessionEventId("conv-codex-no-msg-ts:event-1"),
+                session_id=SessionId("conv-codex-no-msg-ts"),
+                origin=origin_from_provider(Provider.CODEX),
                 event_index=1,
                 event_type="function_call_output",
                 timestamp=ended_at,
@@ -52,7 +53,7 @@ def test_extract_phases_falls_back_to_provider_events_when_messages_have_no_time
         ),
     )
 
-    phases = extract_phases(conversation)
+    phases = extract_phases(session)
 
     assert len(phases) == 1
     phase = phases[0]
@@ -62,21 +63,21 @@ def test_extract_phases_falls_back_to_provider_events_when_messages_have_no_time
     assert phase.message_range == (0, 2)
 
 
-def test_extract_phases_splits_provider_events_on_idle_gap() -> None:
+def test_extract_phases_splits_session_events_on_idle_gap() -> None:
     burst_a_start = datetime(2026, 5, 24, 10, 0, tzinfo=timezone.utc)
     burst_a_end = burst_a_start + timedelta(minutes=1)
     burst_b_start = burst_a_end + timedelta(minutes=10)
     burst_b_end = burst_b_start + timedelta(minutes=1)
-    conversation = make_conv(
+    session = make_conv(
         id="conv-codex-bursts",
-        provider=Provider.CODEX,
+        origin=Provider.CODEX,
         title="Codex two bursts",
         messages=MessageCollection(messages=[_untimed_msg(i) for i in range(4)]),
-        provider_events=tuple(
-            ProviderEvent(
-                id=ProviderEventId(f"conv-codex-bursts:event-{i}"),
-                conversation_id=ConversationId("conv-codex-bursts"),
-                provider=Provider.CODEX,
+        session_events=tuple(
+            SessionEvent(
+                id=SessionEventId(f"conv-codex-bursts:event-{i}"),
+                session_id=SessionId("conv-codex-bursts"),
+                origin=origin_from_provider(Provider.CODEX),
                 event_index=i,
                 event_type="function_call",
                 timestamp=ts,
@@ -86,7 +87,7 @@ def test_extract_phases_splits_provider_events_on_idle_gap() -> None:
         ),
     )
 
-    phases = extract_phases(conversation)
+    phases = extract_phases(session)
 
     assert len(phases) == 2
     assert (phases[0].start_time, phases[0].end_time) == (burst_a_start, burst_a_end)
@@ -94,40 +95,40 @@ def test_extract_phases_splits_provider_events_on_idle_gap() -> None:
 
 
 def test_extract_phases_returns_empty_when_no_timestamps_anywhere() -> None:
-    conversation = make_conv(
+    session = make_conv(
         id="conv-codex-zero",
-        provider=Provider.CODEX,
+        origin=Provider.CODEX,
         title="No times at all",
         messages=MessageCollection(messages=[_untimed_msg(0)]),
-        provider_events=(),
+        session_events=(),
     )
 
-    assert extract_phases(conversation) == []
+    assert extract_phases(session) == []
 
 
 def test_extract_phases_prefers_message_timestamps_when_present() -> None:
     started_at = datetime(2026, 5, 24, 10, 0, tzinfo=timezone.utc)
-    conversation = make_conv(
+    session = make_conv(
         id="conv-claude-code",
-        provider=Provider.CLAUDE_CODE,
+        origin=Provider.CLAUDE_CODE,
         title="Normal claude-code",
         messages=MessageCollection(
             messages=[
-                make_msg(id="m0", role="user", provider="claude-code", text="hi", timestamp=started_at),
+                make_msg(id="m0", role="user", origin="claude-code", text="hi", timestamp=started_at),
                 make_msg(
                     id="m1",
                     role="assistant",
-                    provider="claude-code",
+                    origin="claude-code",
                     text="hello",
                     timestamp=started_at + timedelta(minutes=1),
                 ),
             ]
         ),
-        provider_events=(
-            ProviderEvent(
-                id=ProviderEventId("conv-claude-code:event-0"),
-                conversation_id=ConversationId("conv-claude-code"),
-                provider=Provider.CLAUDE_CODE,
+        session_events=(
+            SessionEvent(
+                id=SessionEventId("conv-claude-code:event-0"),
+                session_id=SessionId("conv-claude-code"),
+                origin=origin_from_provider(Provider.CLAUDE_CODE),
                 event_index=0,
                 event_type="session_meta",
                 timestamp=started_at - timedelta(hours=10),
@@ -136,7 +137,7 @@ def test_extract_phases_prefers_message_timestamps_when_present() -> None:
         ),
     )
 
-    phases = extract_phases(conversation)
+    phases = extract_phases(session)
 
     assert len(phases) == 1
     assert phases[0].start_time == started_at

@@ -261,13 +261,13 @@ def record_fts_invariant_snapshot_sync(conn: sqlite3.Connection, snapshot: Any) 
 
 def mark_all_fts_stale_sync(conn: sqlite3.Connection, *, detail: str) -> None:
     ensure_fts_freshness_table_sync(conn)
-    for surface in ("messages_fts", "action_events_fts", "session_work_events_fts", "work_threads_fts"):
+    for surface in ("messages_fts", "session_work_events_fts", "threads_fts"):
         record_fts_surface_state_sync(conn, surface=surface, state=STALE, detail=detail)
 
 
 async def mark_all_fts_stale_async(conn: aiosqlite.Connection, *, detail: str) -> None:
     await ensure_fts_freshness_table_async(conn)
-    for surface in ("messages_fts", "action_events_fts", "session_work_events_fts", "work_threads_fts"):
+    for surface in ("messages_fts", "session_work_events_fts", "threads_fts"):
         await record_fts_surface_state_async(conn, surface=surface, state=STALE, detail=detail)
 
 

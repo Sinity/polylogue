@@ -68,63 +68,62 @@ def _running_server(
         thread.join(timeout=2.0)
 
 
-def _archive_db_path(workspace: dict[str, Path]) -> Path:
-    return workspace["data_root"] / "polylogue" / "polylogue.db"
+def _index_db_path(workspace: dict[str, Path]) -> Path:
+    return workspace["data_root"] / "polylogue" / "index.db"
 
 
 def _seed_test_db(workspace: dict[str, Path]) -> None:
     import sqlite3
 
-    from polylogue.storage.sqlite.schema_ddl_archive import (
-        ARCHIVE_STORAGE_DDL,
-        MESSAGE_FTS_DDL,
-    )
+    from polylogue.core.sources import origin_from_provider
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.types import Provider
 
-    db = _archive_db_path(workspace)
+    db = _index_db_path(workspace)
     db.parent.mkdir(parents=True, exist_ok=True)
+    initialize_archive_database(db, ArchiveTier.INDEX)
     conn = sqlite3.connect(str(db))
-    conn.executescript(ARCHIVE_STORAGE_DDL)
-    conn.executescript(MESSAGE_FTS_DDL)
     for cid, prov, title in [
         ("c1", "claude-code", "Claude Code session about authentication"),
-        ("c2", "chatgpt", "ChatGPT debugging conversation"),
+        ("c2", "chatgpt", "ChatGPT debugging session"),
         ("c3", "claude-ai", "Claude AI brainstorm thread"),
     ]:
+        provider = Provider.from_string(prov)
+        origin = origin_from_provider(provider).value
         conn.execute(
-            "INSERT INTO conversations(conversation_id, source_name, provider_conversation_id, title, content_hash, version) VALUES(?,?,?,?,?,?)",
-            (cid, prov, f"p-{cid}", title, f"hash-{cid}", 1),
+            """
+            INSERT INTO sessions(native_id, origin, title, content_hash, created_at_ms, updated_at_ms)
+            VALUES(?, ?, ?, ?, 1770000000000, 1770000000000)
+            """,
+            (cid, origin, title, f"hash-{cid}".encode().ljust(32, b"x")[:32]),
+        )
+        session_id = f"{origin}:{cid}"
+        conn.execute(
+            """
+            INSERT INTO messages(session_id, native_id, position, role, content_hash)
+            VALUES(?, ?, 0, 'user', ?)
+            """,
+            (session_id, f"m-{cid}", f"mhash-{cid}".encode().ljust(32, b"y")[:32]),
         )
         conn.execute(
-            "INSERT INTO messages(message_id, conversation_id, role, text, source_name, content_hash, version) VALUES(?,?,?,?,?,?,?)",
-            (f"m-{cid}", cid, "user", "Hello reader", prov, f"mhash-{cid}", 1),
+            """
+            INSERT INTO blocks(message_id, session_id, position, block_type, text)
+            VALUES(?, ?, 0, 'text', 'Hello reader')
+            """,
+            (f"{session_id}:m-{cid}", session_id),
         )
     conn.commit()
     conn.close()
 
 
 def _seed_empty_schema(workspace: dict[str, Path]) -> None:
-    import sqlite3
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
-    from polylogue.storage.sqlite.schema_ddl_archive import (
-        ARCHIVE_STORAGE_DDL,
-        MESSAGE_FTS_DDL,
-        RECALL_PACKS_DDL,
-        SAVED_VIEWS_DDL,
-        USER_ANNOTATIONS_DDL,
-        USER_MARKS_DDL,
-    )
-
-    db = _archive_db_path(workspace)
+    db = _index_db_path(workspace)
     db.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db))
-    conn.executescript(ARCHIVE_STORAGE_DDL)
-    conn.executescript(MESSAGE_FTS_DDL)
-    conn.executescript(USER_MARKS_DDL)
-    conn.executescript(USER_ANNOTATIONS_DDL)
-    conn.executescript(SAVED_VIEWS_DDL)
-    conn.executescript(RECALL_PACKS_DDL)
-    conn.commit()
-    conn.close()
+    initialize_archive_database(db, ArchiveTier.INDEX)
 
 
 def _get_text(base_url: str, path: str) -> tuple[int, str, str]:
@@ -324,41 +323,41 @@ def _make_topology() -> SessionTopology:
         TopologyEdgeKind,
         TopologyNode,
     )
-    from polylogue.types import ConversationId
+    from polylogue.types import SessionId
 
-    cid = ConversationId
+    cid = SessionId
 
     nodes = (
         TopologyNode(
-            conversation_id=cid("root"),
+            session_id=cid("root"),
             source_name="claude-code",
             title="Root",
             depth=0,
             is_root=True,
         ),
         TopologyNode(
-            conversation_id=cid("target"),
+            session_id=cid("target"),
             source_name="claude-code",
             title="Target",
             depth=1,
             is_root=False,
         ),
         TopologyNode(
-            conversation_id=cid("sibling"),
+            session_id=cid("sibling"),
             source_name="claude-code",
             title="Sibling",
             depth=1,
             is_root=False,
         ),
         TopologyNode(
-            conversation_id=cid("child"),
+            session_id=cid("child"),
             source_name="claude-code",
             title="Child",
             depth=2,
             is_root=False,
         ),
         TopologyNode(
-            conversation_id=cid("orphan"),
+            session_id=cid("orphan"),
             source_name="claude-code",
             title="Orphan",
             depth=1,
@@ -434,7 +433,7 @@ class TestTopologyEdgeDetail:
     def test_lineage_js_renders_source_to_target_with_clickable_links(self) -> None:
         """The edge detail must show source → target with clickable links."""
         js = web_shell_lineage.LINEAGE_JS
-        assert "selectConversation" in js  # clickable links use this
+        assert "selectSession" in js  # clickable links use this
         assert "sourceLink" in js
         assert "targetLink" in js
         assert "→" in js  # arrow between source and target

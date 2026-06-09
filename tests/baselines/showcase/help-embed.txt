@@ -1,0 +1,14 @@
+Usage: polylogue embed [OPTIONS] COMMAND [ARGS]...
+
+  Manage the embedding pipeline (activation, preflight, backfill).
+
+Options:
+  -h, --help  Show this message and exit.
+
+Commands:
+  activate   Alias for ``embed enable`` retained as a discoverable verb.
+  backfill   Run the first embedding batch with per-session cost feedback.
+  disable    Disable the embedding pipeline without dropping existing...
+  enable     Turn on the embedding pipeline.
+  preflight  Estimate token count and Voyage cost for the pending backlog.
+  status     Show embedding coverage and freshness.

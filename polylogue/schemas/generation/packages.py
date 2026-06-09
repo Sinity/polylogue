@@ -13,8 +13,8 @@ from polylogue.schemas.generation.models import (
 )
 
 _ANCHOR_ELEMENT_KINDS = {
-    "conversation_document",
-    "conversation_record_stream",
+    "session_document",
+    "session_record_stream",
 }
 _PROFILE_MAX_TOKENS = 128
 

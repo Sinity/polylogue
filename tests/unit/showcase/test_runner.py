@@ -79,7 +79,7 @@ class TestShowcaseRunnerSeeding:
         fake_corpus.wire_format.encoding = "json"
         fake_corpus.generate_batch.return_value = SimpleNamespace(
             artifacts=[SimpleNamespace(raw_bytes=b"{}")],
-            report=SimpleNamespace(generated_count=1, element_kind="conversation_document"),
+            report=SimpleNamespace(generated_count=1, element_kind="session_document"),
         )
 
         with patch(

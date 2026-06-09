@@ -26,7 +26,7 @@ The parser extracts structured semantic data from content_blocks:
 ## Model & Token Extraction
 
 - Extracts model slug, token usage (input/output/cache), and stop reason from message content.
-- Builds conversation-level cost and duration aggregates from message metadata.
+- Builds session-level cost and duration aggregates from message metadata.
 - Detects sidechain sessions and branch types.
 
 ## Current Behavior
@@ -34,7 +34,7 @@ The parser extracts structured semantic data from content_blocks:
 - Normalizes roles via ClaudeCodeRecord.role property (user/assistant/system/unknown).
 - Extracts text via content_blocks_raw property with fallback to structured fields.
 - Captures working directories and models used across the session.
-- Enriches conversation metadata from sessions-index.json when available.
+- Enriches session metadata from sessions-index.json when available.
 
 ## Operational Notes
 

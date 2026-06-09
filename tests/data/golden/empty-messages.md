@@ -1,21 +1,21 @@
-# Conversation with Empty Messages
+# Session with Empty Messages
 
-Provider: chatgpt
-Conversation ID: golden-empty-messages
+Origin: chatgpt-export
+Session ID: chatgpt-export:ext-golden-empty-messages
 
 ## user
-_Timestamp: 2024-03-01T14:00:00Z_
+_Timestamp: 2024-03-01T14:00:00+00:00_
 
 Hello
 
 
 ## user
-_Timestamp: 2024-03-01T14:00:10Z_
+_Timestamp: 2024-03-01T14:00:10+00:00_
 
 Are you there?
 
 
 ## assistant
-_Timestamp: 2024-03-01T14:00:15Z_
+_Timestamp: 2024-03-01T14:00:15+00:00_
 
 Yes, I'm here!

@@ -1,4 +1,4 @@
-"""Canonical ranked SQL builders for conversation and action search."""
+"""Canonical ranked SQL builders for current archive search."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ from typing import TypeAlias
 from urllib.parse import quote
 
 from polylogue.storage.search.query_support import normalize_fts5_query
-from polylogue.storage.sqlite.connection import _build_provider_scope_filter
 
 SQLiteQueryParam: TypeAlias = str | int | float
 
@@ -20,19 +19,12 @@ class RankedSearchQuery:
     params: tuple[SQLiteQueryParam, ...]
 
 
-@dataclass(frozen=True, slots=True)
-class RankedSearchShape:
-    fts_table: str
-    candidate_columns: tuple[str, ...]
-    final_select_sql: str
+def session_web_url(session_id: str) -> str:
+    """Return the daemon web reader URL path for a session."""
+    return f"/?session={quote(session_id, safe='')}"
 
 
-def conversation_web_url(conversation_id: str) -> str:
-    """Return the daemon web reader URL path for a conversation."""
-    return f"/?conversation={quote(conversation_id, safe='')}"
-
-
-def build_ranked_conversation_search_query(
+def build_ranked_session_search_query(
     *,
     query: str,
     limit: int,
@@ -40,40 +32,59 @@ def build_ranked_conversation_search_query(
     since: str | None = None,
     include_snippet: bool = False,
 ) -> RankedSearchQuery | None:
-    """Build the canonical ranked conversation search query."""
+    """Build the canonical ranked session search query over blocks."""
     fts_query = normalize_fts5_query(query)
     if fts_query is None:
         return None
 
-    candidate_columns = [
-        "messages.message_id",
-        "messages.conversation_id",
-        "conversations.source_name",
-        "conversations.source_name",
-        "conversations.title",
-        "messages.sort_key",
-        "bm25(messages_fts) AS relevance",
-    ]
-    if include_snippet:
-        candidate_columns.append("snippet(messages_fts, 2, '[', ']', '…', 12) AS snippet")
-    return _build_ranked_search_query(
-        query=fts_query,
-        limit=limit,
+    snippet_sql = (
+        ", b.search_text AS fallback_text, snippet(messages_fts, 4, '[', ']', '...', 24) AS snippet"
+        if include_snippet
+        else ""
+    )
+    sql = f"""
+        WITH candidate_hits AS (
+            SELECT
+                b.message_id AS message_id,
+                b.session_id AS session_id,
+                s.origin AS source_name,
+                s.title AS title,
+                COALESCE(m.occurred_at_ms, s.sort_key_ms, s.updated_at_ms, s.created_at_ms, 0) / 1000.0 AS sort_key,
+                bm25(messages_fts) AS relevance
+                {snippet_sql}
+            FROM messages_fts
+            JOIN blocks AS b ON b.rowid = messages_fts.rowid
+            JOIN messages AS m ON m.message_id = b.message_id
+            JOIN sessions AS s ON s.session_id = b.session_id
+            WHERE messages_fts MATCH ?
+    """
+    params: list[SQLiteQueryParam] = [fts_query]
+    sql, params = _apply_scope_and_since(
+        sql,
+        params,
         scope_names=scope_names,
         since=since,
-        since_column="messages.sort_key",
-        shape=RankedSearchShape(
-            fts_table="messages_fts",
-            candidate_columns=tuple(candidate_columns),
-            final_select_sql="""
+        since_column="COALESCE(m.occurred_at_ms, s.sort_key_ms, s.updated_at_ms, s.created_at_ms, 0)",
+    )
+    sql += """
+        ),
+        ranked_hits AS (
+            SELECT
+                *,
+                ROW_NUMBER() OVER (
+                    PARTITION BY session_id
+                    ORDER BY relevance ASC, sort_key DESC, message_id ASC
+                ) AS session_rank
+            FROM candidate_hits
+        )
         SELECT *
         FROM ranked_hits
-        WHERE conversation_rank = 1
+        WHERE session_rank = 1
         ORDER BY relevance ASC, sort_key DESC, message_id ASC
         LIMIT ?
-    """,
-        ),
-    )
+    """
+    params.append(limit)
+    return RankedSearchQuery(sql=sql, params=tuple(params))
 
 
 def build_ranked_action_search_query(
@@ -84,50 +95,82 @@ def build_ranked_action_search_query(
     since: str | None = None,
     include_snippet: bool = False,
 ) -> RankedSearchQuery | None:
-    """Build the canonical ranked action-search query."""
+    """Build ranked action search over tool blocks in ``messages_fts``."""
     fts_query = normalize_fts5_query(query)
     if fts_query is None:
         return None
 
-    candidate_columns = [
-        "action_events_fts.event_id",
-        "action_events_fts.message_id",
-        "action_events_fts.conversation_id",
-        "action_events_fts.action_kind",
-        "action_events_fts.normalized_tool_name AS tool_name",
-        "conversations.source_name",
-        "conversations.source_name",
-        "conversations.title",
-        "messages.sort_key",
-        "bm25(action_events_fts) AS relevance",
-    ]
-    if include_snippet:
-        candidate_columns.append("snippet(action_events_fts, 5, '[', ']', '…', 12) AS snippet")
-    return _build_ranked_search_query(
-        query=fts_query,
-        limit=limit,
+    snippet_sql = ", snippet(messages_fts, 4, '[', ']', '...', 24) AS snippet" if include_snippet else ""
+    sql = f"""
+        WITH candidate_hits AS (
+            SELECT
+                b.message_id AS message_id,
+                b.session_id AS session_id,
+                COALESCE(NULLIF(b.semantic_type, ''), b.block_type) AS action_kind,
+                COALESCE(NULLIF(LOWER(b.tool_name), ''), 'unknown') AS tool_name,
+                s.origin AS source_name,
+                s.title AS title,
+                COALESCE(m.occurred_at_ms, s.sort_key_ms, s.updated_at_ms, s.created_at_ms, 0) / 1000.0 AS sort_key,
+                bm25(messages_fts) AS relevance
+                {snippet_sql}
+            FROM messages_fts
+            JOIN blocks AS b ON b.rowid = messages_fts.rowid
+            JOIN messages AS m ON m.message_id = b.message_id
+            JOIN sessions AS s ON s.session_id = b.session_id
+            WHERE messages_fts MATCH ?
+              AND b.block_type IN ('tool_use', 'tool_result')
+    """
+    params: list[SQLiteQueryParam] = [fts_query]
+    sql, params = _apply_scope_and_since(
+        sql,
+        params,
         scope_names=scope_names,
         since=since,
-        since_column="messages.sort_key",
-        shape=RankedSearchShape(
-            fts_table="action_events_fts",
-            candidate_columns=tuple(candidate_columns),
-            final_select_sql="""
+        since_column="COALESCE(m.occurred_at_ms, s.sort_key_ms, s.updated_at_ms, s.created_at_ms, 0)",
+    )
+    sql += """
+        ),
+        ranked_hits AS (
+            SELECT
+                *,
+                ROW_NUMBER() OVER (
+                    PARTITION BY session_id
+                    ORDER BY relevance ASC, sort_key DESC, message_id ASC
+                ) AS session_rank
+            FROM candidate_hits
+        )
         SELECT
-            conversation_id,
+            session_id,
             message_id,
-            source_name,
             source_name,
             title,
             sort_key,
             relevance
         FROM ranked_hits
-        WHERE conversation_rank = 1
+        WHERE session_rank = 1
         ORDER BY relevance ASC, sort_key DESC, message_id ASC
         LIMIT ?
-    """,
-        ),
-    )
+    """
+    params.append(limit)
+    return RankedSearchQuery(sql=sql, params=tuple(params))
+
+
+def _apply_scope_and_since(
+    sql: str,
+    params: list[SQLiteQueryParam],
+    *,
+    scope_names: Sequence[str] | None,
+    since: str | None,
+    since_column: str,
+) -> tuple[str, list[SQLiteQueryParam]]:
+    if scope_names:
+        placeholders = ",".join("?" for _ in scope_names)
+        sql += f" AND s.origin IN ({placeholders})"
+        params.extend(str(name) for name in scope_names)
+    if since:
+        sql += f" AND {since_column} >= ?"
+        params.append(_parse_since_timestamp(since) * 1000.0)
+    return sql, params
 
 
 def _parse_since_timestamp(since: str) -> float:
@@ -137,68 +180,9 @@ def _parse_since_timestamp(since: str) -> float:
         raise ValueError(f"Invalid --since date '{since}': {exc}. Use ISO format (e.g., 2023-01-01)") from exc
 
 
-def _build_ranked_search_query(
-    *,
-    query: str,
-    limit: int,
-    scope_names: Sequence[str] | None,
-    since: str | None,
-    since_column: str,
-    shape: RankedSearchShape,
-) -> RankedSearchQuery:
-    if shape.fts_table == "messages_fts":
-        from_join_sql = """
-            FROM messages_fts
-            JOIN messages ON messages.rowid = messages_fts.rowid
-            JOIN conversations ON conversations.conversation_id = messages.conversation_id
-        """
-    else:
-        from_join_sql = f"""
-            FROM {shape.fts_table}
-            JOIN conversations ON conversations.conversation_id = {shape.fts_table}.conversation_id
-            JOIN messages ON messages.message_id = {shape.fts_table}.message_id
-        """
-    sql = f"""
-        WITH candidate_hits AS (
-            SELECT
-                {", ".join(shape.candidate_columns)}
-            {from_join_sql}
-            WHERE {shape.fts_table} MATCH ?
-    """
-    params: list[SQLiteQueryParam] = [query]
-
-    if scope_names:
-        scope_sql, scope_params = _build_provider_scope_filter(
-            scope_names,
-            provider_column="conversations.source_name",
-        )
-        sql += f" AND {scope_sql}"
-        params.extend(scope_params)
-
-    if since:
-        sql += f" AND {since_column} >= ?"
-        params.append(_parse_since_timestamp(since))
-
-    sql += """
-        ),
-        ranked_hits AS (
-            SELECT
-                *,
-                ROW_NUMBER() OVER (
-                    PARTITION BY conversation_id
-                    ORDER BY relevance ASC, sort_key DESC, message_id ASC
-                ) AS conversation_rank
-            FROM candidate_hits
-        )
-    """
-    sql += shape.final_select_sql
-    params.append(limit)
-    return RankedSearchQuery(sql=sql, params=tuple(params))
-
-
 __all__ = [
     "RankedSearchQuery",
     "build_ranked_action_search_query",
-    "build_ranked_conversation_search_query",
-    "conversation_web_url",
+    "build_ranked_session_search_query",
+    "session_web_url",
 ]

@@ -30,23 +30,22 @@ from polylogue.storage.blob_gc import (
     sweep_orphaned_blob_leases,
 )
 from polylogue.storage.sqlite.connection_profile import open_connection
-from polylogue.storage.sqlite.schema import _ensure_schema
 
 
 @pytest.fixture
 def db_path(tmp_path: Path) -> Path:
-    db = tmp_path / "test.db"
-    conn = open_connection(db)
-    try:
-        _ensure_schema(conn)
-        conn.commit()
-    finally:
-        conn.close()
-    return db
+    # Bootstrap the full split-file archive: source.db carries raw_sessions
+    # (with blob_hash), blob_refs, pending_blob_refs, and gc_generations.
+    # open_connection attaches the source tier so unqualified blob-GC queries
+    # resolve cross-tier.
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    return tmp_path / "index.db"
 
 
 def _count_leases(db: Path) -> int:
-    conn = sqlite3.connect(str(db))
+    conn = open_connection(db)
     try:
         count: int = conn.execute("SELECT COUNT(*) FROM pending_blob_refs").fetchone()[0]
         return count
@@ -54,12 +53,12 @@ def _count_leases(db: Path) -> int:
         conn.close()
 
 
-def _set_lease_acquired_at(db: Path, operation_id: str, acquired_at: int) -> None:
-    conn = sqlite3.connect(str(db))
+def _set_lease_acquired_at(db: Path, operation_id: str, acquired_at_s: int) -> None:
+    conn = open_connection(db)
     try:
         conn.execute(
-            "UPDATE pending_blob_refs SET acquired_at = ? WHERE operation_id = ?",
-            (acquired_at, operation_id),
+            "UPDATE pending_blob_refs SET acquired_at_ms = ? WHERE operation_id = ?",
+            (acquired_at_s * 1000, operation_id),
         )
         conn.commit()
     finally:
@@ -104,7 +103,7 @@ def test_write_effects_releases_lease_on_failure(db_path: Path, monkeypatch: pyt
                 conn,
                 WriteOperation.INGEST,
                 {
-                    "changed_conversation_ids": ["conv-1"],
+                    "changed_session_ids": ["conv-1"],
                     "_blob_hashes": [blob_hash],
                     "_operation_id": "op-fail",
                     "_db_path": str(db_path),
@@ -125,7 +124,7 @@ def test_write_effects_releases_lease_on_success(db_path: Path) -> None:
             conn,
             WriteOperation.INGEST,
             {
-                "changed_conversation_ids": [],
+                "changed_session_ids": [],
                 "_blob_hashes": [blob_hash],
                 "_operation_id": "op-ok",
                 "_db_path": str(db_path),
@@ -148,7 +147,7 @@ def test_sweep_removes_orphaned_lease(db_path: Path) -> None:
 
     assert removed == 1
     assert _count_leases(db_path) == 1
-    conn = sqlite3.connect(str(db_path))
+    conn = open_connection(db_path)
     try:
         survivor = conn.execute("SELECT operation_id FROM pending_blob_refs").fetchone()[0]
     finally:
@@ -179,12 +178,16 @@ def test_gc_age_gate_respects_previous_generation(db_path: Path, tmp_path: Path)
     blob_hash = "12" + "3" * 62
 
     now = int(time.time())
-    # Previous generation completed 1000s ago.
-    conn = sqlite3.connect(str(db_path))
+    # Previous generation completed 1000s ago. gc_generations lives in the
+    # attached source tier; open_connection resolves the unqualified name.
+    completed_at_ms = (now - 1000) * 1000
+    conn = open_connection(db_path)
     try:
         conn.execute(
-            "INSERT INTO gc_generations (generation, completed_at, evidence) VALUES (?, ?, ?)",
-            (1, now - 1000, "{}"),
+            "INSERT INTO gc_generations "
+            "(generation_id, started_at_ms, completed_at_ms, reclaimed_count, reclaimed_bytes) "
+            "VALUES (?, ?, ?, 0, 0)",
+            ("gen-seed", completed_at_ms, completed_at_ms),
         )
         conn.commit()
     finally:

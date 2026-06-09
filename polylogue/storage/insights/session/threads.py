@@ -7,83 +7,83 @@ from collections.abc import AsyncIterator, Iterable, Iterator, Sequence
 
 import aiosqlite
 
-from polylogue.archive.conversation.threads import WorkThread, WorkThreadPayload, build_session_threads
-from polylogue.archive.session.documents import WorkThreadDocument
-from polylogue.insights.archive_models import WorkThreadPayload as ArchivedWorkThreadPayload
+from polylogue.archive.session.documents import ThreadDocument
+from polylogue.archive.session.threads import Thread, ThreadPayload, build_session_threads
+from polylogue.insights.archive_models import ThreadPayload as ArchivedThreadPayload
 from polylogue.insights.temporal_source import classify_thread_hwm_source
 from polylogue.storage.insights.session.profiles import hydrate_session_profile, now_iso
 from polylogue.storage.runtime import (
     SESSION_INSIGHT_MATERIALIZER_VERSION,
     SessionProfileRecord,
-    WorkThreadRecord,
+    ThreadRecord,
 )
 from polylogue.storage.sqlite.queries.mappers import _row_to_session_profile_record
-from polylogue.types import ConversationId
+from polylogue.types import SessionId
 
 _ROOT_THREAD_IDS_SQL = """
-    SELECT c.conversation_id
-    FROM conversations c
-    LEFT JOIN conversations parent ON c.parent_conversation_id = parent.conversation_id
-    WHERE parent.conversation_id IS NULL
-    ORDER BY c.conversation_id
+    SELECT c.session_id
+    FROM sessions c
+    LEFT JOIN sessions parent ON c.parent_session_id = parent.session_id
+    WHERE parent.session_id IS NULL
+    ORDER BY c.session_id
 """
 _THREAD_ROOT_ID_SQL = """
-    WITH RECURSIVE ancestors(conversation_id, parent_conversation_id) AS (
-        SELECT conversation_id, parent_conversation_id
-        FROM conversations
-        WHERE conversation_id = ?
+    WITH RECURSIVE ancestors(session_id, parent_session_id) AS (
+        SELECT session_id, parent_session_id
+        FROM sessions
+        WHERE session_id = ?
         UNION ALL
-        SELECT c.conversation_id, c.parent_conversation_id
-        FROM conversations c
-        JOIN ancestors a ON a.parent_conversation_id = c.conversation_id
+        SELECT c.session_id, c.parent_session_id
+        FROM sessions c
+        JOIN ancestors a ON a.parent_session_id = c.session_id
     )
-    SELECT conversation_id
+    SELECT session_id
     FROM ancestors
-    WHERE parent_conversation_id IS NULL
+    WHERE parent_session_id IS NULL
     LIMIT 1
 """
 _THREAD_ROOT_IDS_SQL_TEMPLATE = """
-    WITH RECURSIVE ancestors(target_id, conversation_id, parent_conversation_id) AS (
-        SELECT conversation_id, conversation_id, parent_conversation_id
-        FROM conversations
-        WHERE conversation_id IN ({placeholders})
+    WITH RECURSIVE ancestors(target_id, session_id, parent_session_id) AS (
+        SELECT session_id, session_id, parent_session_id
+        FROM sessions
+        WHERE session_id IN ({placeholders})
         UNION ALL
-        SELECT a.target_id, c.conversation_id, c.parent_conversation_id
-        FROM conversations c
-        JOIN ancestors a ON a.parent_conversation_id = c.conversation_id
+        SELECT a.target_id, c.session_id, c.parent_session_id
+        FROM sessions c
+        JOIN ancestors a ON a.parent_session_id = c.session_id
     )
-    SELECT target_id, conversation_id
+    SELECT target_id, session_id
     FROM ancestors
-    WHERE parent_conversation_id IS NULL
+    WHERE parent_session_id IS NULL
 """
-_THREAD_CONVERSATION_IDS_SQL = """
-    WITH RECURSIVE descendants(conversation_id) AS (
-        SELECT conversation_id
-        FROM conversations
-        WHERE conversation_id = ?
+_THREAD_SESSION_IDS_SQL = """
+    WITH RECURSIVE descendants(session_id) AS (
+        SELECT session_id
+        FROM sessions
+        WHERE session_id = ?
         UNION ALL
-        SELECT c.conversation_id
-        FROM conversations c
-        JOIN descendants d ON c.parent_conversation_id = d.conversation_id
+        SELECT c.session_id
+        FROM sessions c
+        JOIN descendants d ON c.parent_session_id = d.session_id
     )
-    SELECT conversation_id
+    SELECT session_id
     FROM descendants
-    ORDER BY conversation_id
+    ORDER BY session_id
 """
 _THREAD_PROFILE_RECORDS_BY_ROOT_SQL_TEMPLATE = """
-    WITH RECURSIVE descendants(root_id, conversation_id) AS (
-        SELECT conversation_id, conversation_id
-        FROM conversations
-        WHERE conversation_id IN ({placeholders})
+    WITH RECURSIVE descendants(root_id, session_id) AS (
+        SELECT session_id, session_id
+        FROM sessions
+        WHERE session_id IN ({placeholders})
         UNION ALL
-        SELECT d.root_id, c.conversation_id
-        FROM conversations c
-        JOIN descendants d ON c.parent_conversation_id = d.conversation_id
+        SELECT d.root_id, c.session_id
+        FROM sessions c
+        JOIN descendants d ON c.parent_session_id = d.session_id
     )
     SELECT d.root_id, sp.*
     FROM descendants d
-    JOIN session_profiles sp ON sp.conversation_id = d.conversation_id
-    ORDER BY d.root_id, COALESCE(sp.source_sort_key, 0) DESC, sp.conversation_id
+    JOIN session_profiles sp ON sp.session_id = d.session_id
+    ORDER BY d.root_id, COALESCE(sp.source_sort_key, 0) DESC, sp.session_id
 """
 _ROOT_BATCH_SIZE = 200
 
@@ -93,7 +93,7 @@ _ROOT_BATCH_SIZE = 200
 # ---------------------------------------------------------------------------
 
 
-def thread_search_text(thread: WorkThread) -> str:
+def thread_search_text(thread: Thread) -> str:
     parts = [
         thread.thread_id,
         thread.root_id,
@@ -108,17 +108,17 @@ def thread_search_text(thread: WorkThread) -> str:
     return search_text or thread.thread_id
 
 
-def build_work_thread_record(
-    thread: WorkThread,
+def build_thread_record(
+    thread: Thread,
     *,
     materialized_at: str | None = None,
-) -> WorkThreadRecord:
+) -> ThreadRecord:
     built_at = materialized_at or now_iso()
     payload = _thread_payload(thread)
     source_updated_at = thread.end_time.isoformat() if thread.end_time else None
-    return WorkThreadRecord(
+    return ThreadRecord(
         thread_id=thread.thread_id,
-        root_id=ConversationId(thread.root_id),
+        root_id=SessionId(thread.root_id),
         materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
         materialized_at=built_at,
         source_updated_at=source_updated_at,
@@ -136,20 +136,20 @@ def build_work_thread_record(
         total_cost_usd=thread.total_cost_usd,
         wall_duration_ms=thread.wall_duration_ms,
         work_event_breakdown=thread.work_event_breakdown,
-        payload=ArchivedWorkThreadPayload.model_validate(payload),
+        payload=ArchivedThreadPayload.model_validate(payload),
         search_text=thread_search_text(thread),
     )
 
 
-def hydrate_work_thread(record: WorkThreadRecord) -> WorkThread:
-    return WorkThread.from_payload(_thread_payload_document(record))
+def hydrate_thread(record: ThreadRecord) -> Thread:
+    return Thread.from_payload(_thread_payload_document(record))
 
 
-def _thread_payload(thread: WorkThread) -> WorkThreadPayload:
+def _thread_payload(thread: Thread) -> ThreadPayload:
     return thread.to_dict()
 
 
-def _thread_payload_document(record: WorkThreadRecord) -> WorkThreadDocument:
+def _thread_payload_document(record: ThreadRecord) -> ThreadDocument:
     payload = record.payload
     return {
         "thread_id": record.thread_id,
@@ -171,7 +171,7 @@ def _thread_payload_document(record: WorkThreadRecord) -> WorkThreadDocument:
         "support_signals": list(payload.support_signals),
         "member_evidence": [
             {
-                "conversation_id": member.conversation_id,
+                "session_id": member.session_id,
                 "parent_id": member.parent_id,
                 "role": member.role,
                 "depth": member.depth,
@@ -189,54 +189,54 @@ def _thread_payload_document(record: WorkThreadRecord) -> WorkThreadDocument:
 # ---------------------------------------------------------------------------
 
 
-def thread_root_id_sync(conn: sqlite3.Connection, conversation_id: str) -> str | None:
-    row = conn.execute(_THREAD_ROOT_ID_SQL, (conversation_id,)).fetchone()
-    return str(row["conversation_id"]) if row else None
+def thread_root_id_sync(conn: sqlite3.Connection, session_id: str) -> str | None:
+    row = conn.execute(_THREAD_ROOT_ID_SQL, (session_id,)).fetchone()
+    return str(row["session_id"]) if row else None
 
 
-async def thread_root_id_async(conn: aiosqlite.Connection, conversation_id: str) -> str | None:
-    row = await (await conn.execute(_THREAD_ROOT_ID_SQL, (conversation_id,))).fetchone()
-    return str(row["conversation_id"]) if row else None
+async def thread_root_id_async(conn: aiosqlite.Connection, session_id: str) -> str | None:
+    row = await (await conn.execute(_THREAD_ROOT_ID_SQL, (session_id,))).fetchone()
+    return str(row["session_id"]) if row else None
 
 
 async def thread_root_ids_async(
     conn: aiosqlite.Connection,
-    conversation_ids: Sequence[str],
+    session_ids: Sequence[str],
 ) -> dict[str, str]:
-    if not conversation_ids:
+    if not session_ids:
         return {}
-    placeholders = ", ".join("?" for _ in conversation_ids)
+    placeholders = ", ".join("?" for _ in session_ids)
     rows = await (
         await conn.execute(
             _THREAD_ROOT_IDS_SQL_TEMPLATE.format(placeholders=placeholders),
-            tuple(conversation_ids),
+            tuple(session_ids),
         )
     ).fetchall()
-    return {str(row["target_id"]): str(row["conversation_id"]) for row in rows}
+    return {str(row["target_id"]): str(row["session_id"]) for row in rows}
 
 
 def thread_root_ids_sync(
     conn: sqlite3.Connection,
-    conversation_ids: Sequence[str],
+    session_ids: Sequence[str],
 ) -> dict[str, str]:
-    if not conversation_ids:
+    if not session_ids:
         return {}
-    placeholders = ", ".join("?" for _ in conversation_ids)
+    placeholders = ", ".join("?" for _ in session_ids)
     rows = conn.execute(
         _THREAD_ROOT_IDS_SQL_TEMPLATE.format(placeholders=placeholders),
-        tuple(conversation_ids),
+        tuple(session_ids),
     ).fetchall()
-    return {str(row["target_id"]): str(row["conversation_id"]) for row in rows}
+    return {str(row["target_id"]): str(row["session_id"]) for row in rows}
 
 
-def thread_conversation_ids_sync(conn: sqlite3.Connection, root_id: str) -> list[str]:
-    rows = conn.execute(_THREAD_CONVERSATION_IDS_SQL, (root_id,)).fetchall()
-    return [str(row["conversation_id"]) for row in rows]
+def thread_session_ids_sync(conn: sqlite3.Connection, root_id: str) -> list[str]:
+    rows = conn.execute(_THREAD_SESSION_IDS_SQL, (root_id,)).fetchall()
+    return [str(row["session_id"]) for row in rows]
 
 
-async def thread_conversation_ids_async(conn: aiosqlite.Connection, root_id: str) -> list[str]:
-    rows = await (await conn.execute(_THREAD_CONVERSATION_IDS_SQL, (root_id,))).fetchall()
-    return [str(row["conversation_id"]) for row in rows]
+async def thread_session_ids_async(conn: aiosqlite.Connection, root_id: str) -> list[str]:
+    rows = await (await conn.execute(_THREAD_SESSION_IDS_SQL, (root_id,))).fetchall()
+    return [str(row["session_id"]) for row in rows]
 
 
 def iter_root_id_pages_sync(
@@ -249,7 +249,7 @@ def iter_root_id_pages_sync(
         rows = cursor.fetchmany(size)
         if not rows:
             break
-        yield [str(row["conversation_id"]) for row in rows]
+        yield [str(row["session_id"]) for row in rows]
 
 
 async def iter_root_id_pages_async(
@@ -262,7 +262,7 @@ async def iter_root_id_pages_async(
         rows = list(await cursor.fetchmany(size))
         if not rows:
             break
-        yield [str(row["conversation_id"]) for row in rows]
+        yield [str(row["session_id"]) for row in rows]
 
 
 def _chunk_root_ids(root_ids: Sequence[str], *, size: int = _ROOT_BATCH_SIZE) -> list[tuple[str, ...]]:
@@ -290,17 +290,17 @@ def _group_profile_records_by_root(
 
 def _thread_records_from_profile_records(
     profile_records: Sequence[SessionProfileRecord],
-) -> dict[str, WorkThreadRecord]:
+) -> dict[str, ThreadRecord]:
     if not profile_records:
         return {}
     profiles = [hydrate_session_profile(record) for record in profile_records]
-    return {thread.thread_id: build_work_thread_record(thread) for thread in build_session_threads(profiles)}
+    return {thread.thread_id: build_thread_record(thread) for thread in build_session_threads(profiles)}
 
 
 def _thread_record_for_root(
     root_id: str,
     profile_records: Sequence[SessionProfileRecord],
-) -> WorkThreadRecord | None:
+) -> ThreadRecord | None:
     return _thread_records_from_profile_records(profile_records).get(str(root_id))
 
 
@@ -361,7 +361,7 @@ async def load_thread_profile_records_by_root_async(
 def build_thread_records_for_roots_sync(
     conn: sqlite3.Connection,
     root_ids: Sequence[str],
-) -> dict[str, WorkThreadRecord]:
+) -> dict[str, ThreadRecord]:
     profile_records_by_root = load_thread_profile_records_by_root_sync(conn, root_ids)
     return {
         str(root_id): record
@@ -379,7 +379,7 @@ def build_thread_records_for_roots_sync(
 async def build_thread_records_for_roots_async(
     conn: aiosqlite.Connection,
     root_ids: Sequence[str],
-) -> dict[str, WorkThreadRecord]:
+) -> dict[str, ThreadRecord]:
     profile_records_by_root = await load_thread_profile_records_by_root_async(conn, root_ids)
     return {
         str(root_id): record
@@ -394,16 +394,16 @@ async def build_thread_records_for_roots_async(
     }
 
 
-def build_all_thread_records_sync(conn: sqlite3.Connection) -> list[WorkThreadRecord]:
-    records: list[WorkThreadRecord] = []
+def build_all_thread_records_sync(conn: sqlite3.Connection) -> list[ThreadRecord]:
+    records: list[ThreadRecord] = []
     for root_chunk in iter_root_id_pages_sync(conn):
         records_by_root = build_thread_records_for_roots_sync(conn, root_chunk)
         records.extend(records_by_root[root_id] for root_id in root_chunk if root_id in records_by_root)
     return records
 
 
-async def build_all_thread_records_async(conn: aiosqlite.Connection) -> list[WorkThreadRecord]:
-    records: list[WorkThreadRecord] = []
+async def build_all_thread_records_async(conn: aiosqlite.Connection) -> list[ThreadRecord]:
+    records: list[ThreadRecord] = []
     async for root_chunk in iter_root_id_pages_async(conn):
         records_by_root = await build_thread_records_for_roots_async(conn, root_chunk)
         records.extend(records_by_root[root_id] for root_id in root_chunk if root_id in records_by_root)
@@ -415,16 +415,16 @@ __all__ = [
     "build_all_thread_records_sync",
     "build_thread_records_for_roots_async",
     "build_thread_records_for_roots_sync",
-    "build_work_thread_record",
-    "hydrate_work_thread",
+    "build_thread_record",
+    "hydrate_thread",
     "iter_root_id_pages_async",
     "iter_root_id_pages_sync",
     "load_thread_profile_records_async",
     "load_thread_profile_records_by_root_async",
     "load_thread_profile_records_by_root_sync",
     "load_thread_profile_records_sync",
-    "thread_conversation_ids_async",
-    "thread_conversation_ids_sync",
+    "thread_session_ids_async",
+    "thread_session_ids_sync",
     "thread_root_id_async",
     "thread_root_ids_async",
     "thread_root_ids_sync",

@@ -149,7 +149,7 @@ rows:
       - polylogue/storage/repository/
       - polylogue/storage/sqlite/
     representative_tests:
-      - tests/unit/storage/test_backend.py
+      - tests/unit/storage/test_store_ops.py
       - tests/unit/storage/test_repository_lifecycle_laws.py
       - tests/unit/storage/test_repository_state_machine.py
     gate: required
@@ -195,7 +195,7 @@ rows:
   - domain: storage.tags
     target_files:
       - polylogue/storage/repository/archive/repository_writes.py
-      - polylogue/storage/sqlite/queries/conversations_identity.py
+      - polylogue/storage/sqlite/queries/sessions_identity.py
     representative_tests:
       - tests/unit/storage/test_tag_contracts.py
       - tests/integration/test_cli_tags_surface.py
@@ -204,14 +204,14 @@ rows:
   - domain: storage.schema_policy
     target_files:
       - polylogue/storage/sqlite/schema.py
-      - polylogue/storage/sqlite/schema_ddl.py
+      - polylogue/storage/sqlite/archive_tiers/index.py
       - polylogue/storage/sqlite/schema_bootstrap.py
     representative_tests:
       - tests/unit/storage/test_schema_safety.py
       - tests/unit/storage/test_schema_policy_contracts.py
     gate: required
     known_gaps:
-      - polylogue has no schema migration chain (#1212); version mismatch
+      - polylogue has no in-place schema upgrade chain (#1212); version mismatch
         is rejected and the operator re-ingests from source. There is no
         in-place upgrade path to validate.
 
@@ -244,7 +244,7 @@ rows:
     representative_tests:
       - tests/unit/cli/test_click_app.py
       - tests/unit/cli/test_cli_error_boundaries.py
-      - tests/unit/cli/test_query_exec.py
+      - tests/unit/cli/test_query_verbs_runtime.py
       - tests/unit/cli/test_deterministic_output.py
       - tests/unit/cli/test_json_envelope_contract.py
       - tests/unit/cli/test_terminal_snapshots.py

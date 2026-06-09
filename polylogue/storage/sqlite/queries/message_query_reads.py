@@ -14,14 +14,58 @@ from polylogue.storage.sqlite.queries.mappers import _row_to_message
 
 MessageTypeName = Literal["message", "summary", "tool_use", "tool_result", "thinking", "context", "protocol"]
 
+_MESSAGE_RECORD_SELECT = """
+    m.message_id,
+    m.session_id,
+    m.native_id AS provider_message_id,
+    m.role,
+    COALESCE((
+        SELECT group_concat(b.text, char(10))
+        FROM blocks b
+        WHERE b.message_id = m.message_id
+          AND b.text IS NOT NULL
+    ), '') AS text,
+    m.occurred_at_ms / 1000.0 AS sort_key,
+    lower(hex(m.content_hash)) AS content_hash,
+    1 AS version,
+    m.parent_message_id,
+    m.variant_index AS branch_index,
+    s.origin AS source_name,
+    m.word_count,
+    m.has_tool_use,
+    m.has_thinking,
+    m.has_paste,
+    m.message_type,
+    m.model_name,
+    m.input_tokens,
+    m.output_tokens,
+    m.cache_read_tokens,
+    m.cache_write_tokens
+"""
+
+
+async def _resolve_session_id(conn: aiosqlite.Connection, session_id: str) -> str:
+    cursor = await conn.execute(
+        "SELECT session_id FROM sessions WHERE session_id = ? OR native_id = ? LIMIT 1", (session_id, session_id)
+    )
+    row = await cursor.fetchone()
+    return str(row["session_id"]) if row is not None else session_id
+
 
 async def get_messages(
     conn: aiosqlite.Connection,
-    conversation_id: str,
+    session_id: str,
 ) -> list[MessageRecord]:
+    session_id = await _resolve_session_id(conn, session_id)
     cursor = await conn.execute(
-        "SELECT * FROM messages WHERE conversation_id = ? ORDER BY (sort_key IS NULL), sort_key, message_id",
-        (conversation_id,),
+        f"""
+        SELECT {_MESSAGE_RECORD_SELECT}
+        FROM messages m
+        JOIN sessions s ON s.session_id = m.session_id
+        WHERE m.session_id = ?
+        ORDER BY (m.occurred_at_ms IS NULL), m.occurred_at_ms, m.message_id
+        """,
+        (session_id,),
     )
     rows = await cursor.fetchall()
     return [_row_to_message(row) for row in rows]
@@ -29,36 +73,44 @@ async def get_messages(
 
 async def get_messages_batch(
     conn: aiosqlite.Connection,
-    conversation_ids: list[str],
+    session_ids: list[str],
     *,
     sort_key_since: float | None = None,
     sort_key_until: float | None = None,
     message_role: MessageRoleFilter = (),
 ) -> tuple[dict[str, list[MessageRecord]], list[MessageRecord]]:
-    if not conversation_ids:
+    if not session_ids:
         return {}, []
+    resolved_pairs = [(session_id, await _resolve_session_id(conn, session_id)) for session_id in session_ids]
+    resolved_ids = [resolved for _requested, resolved in resolved_pairs]
 
-    result: dict[str, list[MessageRecord]] = {cid: [] for cid in conversation_ids}
+    result: dict[str, list[MessageRecord]] = {cid: [] for cid in session_ids}
+    result.update({cid: [] for cid in resolved_ids})
     all_messages: list[MessageRecord] = []
-    placeholders = ",".join("?" for _ in conversation_ids)
-    query = f"SELECT * FROM messages WHERE conversation_id IN ({placeholders})"
-    params: list[str | float] = list(conversation_ids)
+    placeholders = ",".join("?" for _ in resolved_ids)
+    query = f"""
+        SELECT {_MESSAGE_RECORD_SELECT}
+        FROM messages m
+        JOIN sessions s ON s.session_id = m.session_id
+        WHERE m.session_id IN ({placeholders})
+    """
+    params: list[str | float] = list(resolved_ids)
 
     role_values = message_role_sql_values(message_role)
     if role_values:
         role_placeholders = ",".join("?" for _ in role_values)
-        query += f" AND role IN ({role_placeholders})"
+        query += f" AND m.role IN ({role_placeholders})"
         params.extend(role_values)
 
     if sort_key_since is not None:
-        query += " AND sort_key >= ?"
-        params.append(sort_key_since)
+        query += " AND m.occurred_at_ms >= ?"
+        params.append(sort_key_since * 1000.0)
 
     if sort_key_until is not None:
-        query += " AND sort_key <= ?"
-        params.append(sort_key_until)
+        query += " AND m.occurred_at_ms <= ?"
+        params.append(sort_key_until * 1000.0)
 
-    query += " ORDER BY (sort_key IS NULL), sort_key, message_id"
+    query += " ORDER BY (m.occurred_at_ms IS NULL), m.occurred_at_ms, m.message_id"
     cursor = await conn.execute(
         query,
         tuple(params),
@@ -66,10 +118,13 @@ async def get_messages_batch(
     rows = await cursor.fetchall()
 
     for row in rows:
-        cid = row["conversation_id"]
+        cid = row["session_id"]
         msg = _row_to_message(row)
         if cid in result:
             result[cid].append(msg)
+        for requested, resolved in resolved_pairs:
+            if requested != cid and resolved == cid and requested in result:
+                result[requested].append(msg)
         all_messages.append(msg)
 
     return result, all_messages
@@ -77,32 +132,38 @@ async def get_messages_batch(
 
 async def get_messages_paginated(
     conn: aiosqlite.Connection,
-    conversation_id: str,
+    session_id: str,
     *,
     message_role: MessageRoleFilter = (),
     message_type: MessageTypeName | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> tuple[list[MessageRecord], int]:
-    """Return paginated messages for a conversation with optional filters.
+    """Return paginated messages for a session with optional filters.
 
     Returns (messages, total_count) where total_count is the unfiltered
     count of messages matching the SQL-level filters (before limit/offset).
     """
-    query = "SELECT * FROM messages WHERE conversation_id = ?"
-    count_query = "SELECT COUNT(*) FROM messages WHERE conversation_id = ?"
-    params: list[str | int] = [conversation_id]
+    session_id = await _resolve_session_id(conn, session_id)
+    query = f"""
+        SELECT {_MESSAGE_RECORD_SELECT}
+        FROM messages m
+        JOIN sessions s ON s.session_id = m.session_id
+        WHERE m.session_id = ?
+    """
+    count_query = "SELECT COUNT(*) FROM messages WHERE session_id = ?"
+    params: list[str | int] = [session_id]
 
     role_values = message_role_sql_values(message_role)
     if role_values:
         placeholders = ",".join("?" for _ in role_values)
-        query += f" AND role IN ({placeholders})"
+        query += f" AND m.role IN ({placeholders})"
         count_query += f" AND role IN ({placeholders})"
         params.extend(role_values)
 
     if message_type:
         normalized_type = validate_message_type_filter(message_type).value
-        query += " AND message_type = ?"
+        query += " AND m.message_type = ?"
         count_query += " AND message_type = ?"
         params.append(normalized_type)
 
@@ -111,7 +172,7 @@ async def get_messages_paginated(
     count_row = await count_cursor.fetchone()
     total = count_row[0] if count_row else 0
 
-    query += " ORDER BY (sort_key IS NULL), sort_key, message_id"
+    query += " ORDER BY (m.occurred_at_ms IS NULL), m.occurred_at_ms, m.message_id"
     query += " LIMIT ? OFFSET ?"
     params.extend([limit, offset])
 
@@ -124,25 +185,26 @@ async def get_messages_paginated(
 
 async def iter_messages(
     conn: aiosqlite.Connection,
-    conversation_id: str,
+    session_id: str,
     *,
     chunk_size: int = 100,
     dialogue_only: bool = False,
     message_roles: MessageRoleFilter = (),
     limit: int | None = None,
 ) -> AsyncIterator[MessageRecord]:
-    """Stream a conversation's messages in deterministic order, chunked.
+    """Stream a session's messages in deterministic order, chunked.
 
     Pagination is keyset, not ``LIMIT/OFFSET``: each chunk is seeded by the
-    previous chunk's last ``(sort_key, message_id)`` so a single conversation's
+    previous chunk's last ``(sort_key, message_id)`` so a single session's
     stream stays linear instead of re-scanning and discarding all prior rows
     (O(M^2)) on every chunk. The ordering
     ``(sort_key IS NULL), sort_key, message_id`` is unchanged and served by
-    ``idx_messages_conversation_sortkey``. ``message_id`` is the table primary
+    ``idx_messages_session_sortkey``. ``message_id`` is the table primary
     key (globally unique), so the keyset cursor is a total order with no skipped
     or duplicated rows across chunk boundaries. NULL-``sort_key`` rows form the
     ordering tail and are advanced by a distinct cursor branch.
     """
+    session_id = await _resolve_session_id(conn, session_id)
     yielded = 0
     effective_roles = message_roles or ((Role.USER, Role.ASSISTANT) if dialogue_only else ())
     role_values = message_role_sql_values(effective_roles)
@@ -155,12 +217,17 @@ async def iter_messages(
     have_cursor = False
 
     while True:
-        query = "SELECT * FROM messages WHERE conversation_id = ?"
-        params: list[str | float] = [conversation_id]
+        query = f"""
+            SELECT {_MESSAGE_RECORD_SELECT}
+            FROM messages m
+            JOIN sessions s ON s.session_id = m.session_id
+            WHERE m.session_id = ?
+        """
+        params: list[str | float] = [session_id]
 
         if role_values:
             placeholders = ",".join("?" for _ in role_values)
-            query += f" AND role IN ({placeholders})"
+            query += f" AND m.role IN ({placeholders})"
             params.extend(role_values)
 
         if have_cursor:
@@ -169,19 +236,20 @@ async def iter_messages(
                 # always include the NULL group that follows in the ordering.
                 query += (
                     " AND ("
-                    "(sort_key IS NOT NULL"
-                    " AND (sort_key > ? OR (sort_key = ? AND message_id > ?)))"
-                    " OR sort_key IS NULL"
+                    "(m.occurred_at_ms IS NOT NULL"
+                    " AND (m.occurred_at_ms > ? OR (m.occurred_at_ms = ? AND m.message_id > ?)))"
+                    " OR m.occurred_at_ms IS NULL"
                     ")"
                 )
-                params.extend([last_sort, last_sort, last_id])
+                last_sort_ms = last_sort * 1000.0
+                params.extend([last_sort_ms, last_sort_ms, last_id])
             else:
                 # Cursor in the NULL sort_key group (ordering tail): only
                 # NULL-sort_key rows with a greater message_id remain.
-                query += " AND sort_key IS NULL AND message_id > ?"
+                query += " AND m.occurred_at_ms IS NULL AND m.message_id > ?"
                 params.append(last_id)
 
-        query += " ORDER BY (sort_key IS NULL), sort_key, message_id"
+        query += " ORDER BY (m.occurred_at_ms IS NULL), m.occurred_at_ms, m.message_id"
 
         fetch_limit = chunk_size
         if limit is not None:

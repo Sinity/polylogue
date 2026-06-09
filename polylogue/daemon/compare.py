@@ -1,15 +1,15 @@
-"""Side-by-side conversation comparison logic for the reader workspace.
+"""Side-by-side session comparison logic for the reader workspace.
 
 This module owns the diff/alignment semantics for ``/api/compare`` (issue
 #1124). The HTTP layer (``workspace_routes``) is a thin wrapper that loads two
-conversation payloads from the existing reader detail loader and forwards them
+session payloads from the existing reader detail loader and forwards them
 here. Keeping the diff in its own module means UI surfaces (``web_shell``) and
 tests can exercise alignment + metadata-diff behaviour without spinning up the
 daemon.
 
 The compare payload shape extends the original ``mode=compare`` envelope with:
 
-* ``metadata_diff`` — per-field deltas across provider, model, timestamps,
+* ``metadata_diff`` — per-field deltas across origin, model, timestamps,
   message_count, repo, tags. Each field carries ``left``/``right`` and a
   ``status`` of ``"equal"``, ``"changed"``, or ``"missing"``.
 * ``pairs`` — each pair now carries ``diff_status`` (``"equal"``,
@@ -21,7 +21,7 @@ The compare payload shape extends the original ``mode=compare`` envelope with:
   without changing the envelope.
 
 The diff stays intentionally simple — it operates on the already-projected
-reader message dicts, not on raw conversation models, so it is cheap to call
+reader message dicts, not on raw session models, so it is cheap to call
 from the request handler and easy to unit-test with dicts.
 """
 
@@ -32,7 +32,7 @@ from typing import Any, cast
 
 from polylogue.daemon.workspace_routes import (
     COMPARE_ALIGN_MODES,
-    missing_conversation_target,
+    missing_session_target,
 )
 
 Message = Mapping[str, Any]
@@ -40,7 +40,7 @@ Payload = Mapping[str, Any]
 
 
 METADATA_FIELDS: tuple[str, ...] = (
-    "provider",
+    "origin",
     "model",
     "created_at",
     "updated_at",
@@ -59,7 +59,7 @@ def _is_payload(value: object) -> bool:
 
 
 def _normalise_for_compare(value: object) -> object:
-    """Normalise a metadata value so equality is meaningful across providers.
+    """Normalise a metadata value so equality is meaningful across origins.
 
     Lists are compared as sets (tags) — order is irrelevant for equality but
     we keep the original ordering for display via ``left``/``right`` values.
@@ -73,7 +73,7 @@ def build_metadata_diff(left: Payload, right: Payload) -> dict[str, dict[str, An
     """Compute per-field metadata deltas for the compare header.
 
     Both sides are reader detail payloads as returned by
-    ``DaemonAPIHandler._do_get_conversation``. Each entry carries the raw
+    ``DaemonAPIHandler._do_get_session``. Each entry carries the raw
     left/right value for display plus a status:
 
     * ``equal`` — present on both sides and normalised values match
@@ -102,7 +102,7 @@ def _message_anchor(msg: Message) -> str | None:
     """Stable identity for a message used for alignment.
 
     Prefers the explicit reader ``anchor`` (e.g. ``"message-m-c1"``) so two
-    forked conversations that retained the same message ID line up. Falls back
+    forked sessions that retained the same message ID line up. Falls back
     to the raw ``id`` and finally to ``None`` for unidentifiable messages.
     """
     for key in ("anchor", "id"):
@@ -217,7 +217,7 @@ def _sequential_pairs(left_msgs: Sequence[Message], right_msgs: Sequence[Message
 
 
 def align_messages(left: Payload | None, right: Payload | None) -> tuple[str, list[dict[str, Any]]]:
-    """Return ``(alignment, pairs)`` for two reader conversation payloads.
+    """Return ``(alignment, pairs)`` for two reader session payloads.
 
     When at least one side is missing, falls back to whatever messages remain
     on the present side. The alignment string lets the UI show the operator
@@ -267,8 +267,8 @@ def build_compare_envelope(
         "mode": "compare",
         "align": align,
         "alignment": alignment,
-        "left": left if left_ok else missing_conversation_target(left_id),
-        "right": right if right_ok else missing_conversation_target(right_id),
+        "left": left if left_ok else missing_session_target(left_id),
+        "right": right if right_ok else missing_session_target(right_id),
         "pairs": pairs,
         "metadata_diff": metadata_diff,
         "total": len(pairs),

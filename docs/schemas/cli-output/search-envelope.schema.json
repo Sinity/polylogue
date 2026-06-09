@@ -1,26 +1,193 @@
 {
   "$defs": {
-    "ConversationSearchHitPayload": {
+    "QueryMissDiagnosticsPayload": {
       "additionalProperties": false,
-      "description": "Search-hit payload with summary identity and match evidence.",
+      "description": "Shared diagnostics payload for zero-result queries.",
       "properties": {
-        "conversation": {
-          "$ref": "#/$defs/ConversationSummaryPayload"
+        "archive_session_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Archive Session Count"
         },
-        "match": {
-          "$ref": "#/$defs/ConversationSearchMatchPayload"
+        "filters": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Filters",
+          "type": "array"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "raw_session_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Raw Session Count"
+        },
+        "reasons": {
+          "items": {
+            "$ref": "#/$defs/QueryMissReasonPayload"
+          },
+          "title": "Reasons",
+          "type": "array"
         }
       },
       "required": [
-        "conversation",
-        "match"
+        "message",
+        "filters",
+        "reasons"
       ],
-      "title": "ConversationSearchHitPayload",
+      "title": "QueryMissDiagnosticsPayload",
       "type": "object"
     },
-    "ConversationSearchMatchPayload": {
+    "QueryMissReasonPayload": {
       "additionalProperties": false,
-      "description": "Evidence explaining why a conversation appeared in search results.\n\n``score_kind`` describes the meaning of ``score`` so consumers don't\nhave to guess at ordering or comparability:\n\n- ``\"bm25\"`` \u2014 SQLite FTS5 raw BM25 (lower magnitude = better match;\n  values typically negative; never comparable across queries).\n- ``\"rrf\"`` \u2014 Reciprocal Rank Fusion (higher = stronger consensus;\n  ``score_components`` carries per-lane ``*_rank`` and ``*_rrf``\n  contributions).\n- ``\"vector_distance\"`` \u2014 semantic distance (lower = closer).\n- ``None`` \u2014 no numeric score (e.g. attachment-identity lane).",
+      "description": "Shared reason entry explaining why a query produced no results.",
+      "properties": {
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Count"
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detail"
+        },
+        "severity": {
+          "title": "Severity",
+          "type": "string"
+        },
+        "summary": {
+          "title": "Summary",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "severity",
+        "summary"
+      ],
+      "title": "QueryMissReasonPayload",
+      "type": "object"
+    },
+    "ReaderActionAvailabilityPayload": {
+      "additionalProperties": false,
+      "description": "Per-target reader action availability with explicit disabled reason.\n\nReader actions surface seven distinct states (see :data:`ReaderActionState`)\nso the UI can render \"disabled because X\" / \"loading\" / \"dangerous\"\nwithout conflating them under a single boolean (#1488). ``enabled``\nis kept as a back-compat alias derived from ``state`` so existing\ncall sites that only know about enabled/disabled continue to work.",
+      "properties": {
+        "disabled_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Disabled Reason"
+        },
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "inspect_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Inspect Path"
+        },
+        "repair_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Repair Path"
+        },
+        "state": {
+          "default": "enabled",
+          "enum": [
+            "enabled",
+            "disabled",
+            "partial",
+            "dangerous",
+            "loading",
+            "target",
+            "unavailable"
+          ],
+          "title": "State",
+          "type": "string"
+        }
+      },
+      "title": "ReaderActionAvailabilityPayload",
+      "type": "object"
+    },
+    "SessionSearchHitPayload": {
+      "additionalProperties": false,
+      "description": "Search-hit payload with summary identity and match evidence.",
+      "properties": {
+        "match": {
+          "$ref": "#/$defs/SessionSearchMatchPayload"
+        },
+        "session": {
+          "$ref": "#/$defs/SessionSummaryPayload"
+        }
+      },
+      "required": [
+        "session",
+        "match"
+      ],
+      "title": "SessionSearchHitPayload",
+      "type": "object"
+    },
+    "SessionSearchMatchPayload": {
+      "additionalProperties": false,
+      "description": "Evidence explaining why a session appeared in search results.\n\n``score_kind`` describes the meaning of ``score`` so consumers don't\nhave to guess at ordering or comparability:\n\n- ``\"bm25\"`` \u2014 SQLite FTS5 raw BM25 (lower magnitude = better match;\n  values typically negative; never comparable across queries).\n- ``\"rrf\"`` \u2014 Reciprocal Rank Fusion (higher = stronger consensus;\n  ``score_components`` carries per-lane ``*_rank`` and ``*_rrf``\n  contributions).\n- ``\"vector_distance\"`` \u2014 semantic distance (lower = closer).\n- ``None`` \u2014 no numeric score (e.g. attachment-identity lane).",
       "properties": {
         "actions": {
           "additionalProperties": {
@@ -172,12 +339,12 @@
         "retrieval_lane",
         "match_surface"
       ],
-      "title": "ConversationSearchMatchPayload",
+      "title": "SessionSearchMatchPayload",
       "type": "object"
     },
-    "ConversationSummaryPayload": {
+    "SessionSummaryPayload": {
       "additionalProperties": false,
-      "description": "Compact conversation summary payload used by MCP/search surfaces.",
+      "description": "Compact session summary payload used by MCP/search surfaces.",
       "properties": {
         "actions": {
           "additionalProperties": {
@@ -219,8 +386,8 @@
           "title": "Message Count",
           "type": "integer"
         },
-        "provider": {
-          "title": "Provider",
+        "origin": {
+          "title": "Origin",
           "type": "string"
         },
         "target_ref": {
@@ -254,178 +421,11 @@
       },
       "required": [
         "id",
-        "provider",
+        "origin",
         "title",
         "message_count"
       ],
-      "title": "ConversationSummaryPayload",
-      "type": "object"
-    },
-    "QueryMissDiagnosticsPayload": {
-      "additionalProperties": false,
-      "description": "Shared diagnostics payload for zero-result queries.",
-      "properties": {
-        "archive_conversation_count": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Archive Conversation Count"
-        },
-        "filters": {
-          "items": {
-            "type": "string"
-          },
-          "title": "Filters",
-          "type": "array"
-        },
-        "message": {
-          "title": "Message",
-          "type": "string"
-        },
-        "raw_conversation_count": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Raw Conversation Count"
-        },
-        "reasons": {
-          "items": {
-            "$ref": "#/$defs/QueryMissReasonPayload"
-          },
-          "title": "Reasons",
-          "type": "array"
-        }
-      },
-      "required": [
-        "message",
-        "filters",
-        "reasons"
-      ],
-      "title": "QueryMissDiagnosticsPayload",
-      "type": "object"
-    },
-    "QueryMissReasonPayload": {
-      "additionalProperties": false,
-      "description": "Shared reason entry explaining why a query produced no results.",
-      "properties": {
-        "code": {
-          "title": "Code",
-          "type": "string"
-        },
-        "count": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Count"
-        },
-        "detail": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Detail"
-        },
-        "severity": {
-          "title": "Severity",
-          "type": "string"
-        },
-        "summary": {
-          "title": "Summary",
-          "type": "string"
-        }
-      },
-      "required": [
-        "code",
-        "severity",
-        "summary"
-      ],
-      "title": "QueryMissReasonPayload",
-      "type": "object"
-    },
-    "ReaderActionAvailabilityPayload": {
-      "additionalProperties": false,
-      "description": "Per-target reader action availability with explicit disabled reason.\n\nReader actions surface seven distinct states (see :data:`ReaderActionState`)\nso the UI can render \"disabled because X\" / \"loading\" / \"dangerous\"\nwithout conflating them under a single boolean (#1488). ``enabled``\nis kept as a back-compat alias derived from ``state`` so existing\ncall sites that only know about enabled/disabled continue to work.",
-      "properties": {
-        "disabled_reason": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Disabled Reason"
-        },
-        "enabled": {
-          "default": true,
-          "title": "Enabled",
-          "type": "boolean"
-        },
-        "inspect_path": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Inspect Path"
-        },
-        "repair_path": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Repair Path"
-        },
-        "state": {
-          "default": "enabled",
-          "enum": [
-            "enabled",
-            "disabled",
-            "partial",
-            "dangerous",
-            "loading",
-            "target",
-            "unavailable"
-          ],
-          "title": "State",
-          "type": "string"
-        }
-      },
-      "title": "ReaderActionAvailabilityPayload",
+      "title": "SessionSummaryPayload",
       "type": "object"
     },
     "TargetRefPayload": {
@@ -443,18 +443,6 @@
           ],
           "default": null,
           "title": "Block Index"
-        },
-        "conversation_id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Conversation Id"
         },
         "identity_key": {
           "anyOf": [
@@ -480,13 +468,25 @@
           "default": null,
           "title": "Message Id"
         },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Id"
+        },
         "target_id": {
           "title": "Target Id",
           "type": "string"
         },
         "target_type": {
           "enum": [
-            "conversation",
+            "session",
             "message"
           ],
           "title": "Target Type",
@@ -504,7 +504,7 @@
   "$id": "https://polylogue.dev/schemas/cli-output/search-envelope.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "Typed ranked-result envelope (#1266) shared across CLI JSON, MCP, Python API, and daemon HTTP. Wraps the per-hit `ConversationSearchHit` array with `total`, `limit`, `offset`, `next_cursor`, `query`, `retrieval_lane`, and the `ranking_policy`/`ranking_policy_version` declaration.\n\nGenerated from `polylogue.surfaces.payloads.SearchEnvelope` by `devtools render-cli-output-schemas`. Do not edit by hand.",
+  "description": "Typed ranked-result envelope (#1266) shared across CLI JSON, MCP, Python API, and daemon HTTP. Wraps the per-hit `SessionSearchHit` array with `total`, `limit`, `offset`, `next_cursor`, `query`, `retrieval_lane`, and the `ranking_policy`/`ranking_policy_version` declaration.\n\nGenerated from `polylogue.surfaces.payloads.SearchEnvelope` by `devtools render-cli-output-schemas`. Do not edit by hand.",
   "properties": {
     "diagnostics": {
       "anyOf": [
@@ -519,7 +519,7 @@
     },
     "hits": {
       "items": {
-        "$ref": "#/$defs/ConversationSearchHitPayload"
+        "$ref": "#/$defs/SessionSearchHitPayload"
       },
       "title": "Hits",
       "type": "array"
@@ -610,7 +610,7 @@
   "type": "object",
   "x-polylogue-cli-surfaces": [
     "polylogue --format json <query>",
-    "GET /api/conversations?query=..."
+    "GET /api/sessions?query=..."
   ],
   "x-polylogue-source-model": "SearchEnvelope"
 }

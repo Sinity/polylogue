@@ -8,12 +8,12 @@ from __future__ import annotations
 from dataclasses import fields
 
 from polylogue.archive.query.fields import QUERY_FIELD_DESCRIPTORS
-from polylogue.mcp.query_contracts import MCPConversationQueryRequest
+from polylogue.mcp.query_contracts import MCPSessionQueryRequest
 
 
 def test_descriptor_mcp_names_match_mcp_query_request_fields() -> None:
-    """Every MCPConversationQueryRequest field with a descriptor must match."""
-    mcp_fields = {field.name for field in fields(MCPConversationQueryRequest)}
+    """Every MCPSessionQueryRequest field with a descriptor must match."""
+    mcp_fields = {field.name for field in fields(MCPSessionQueryRequest)}
     declared: set[str] = set()
     for d in QUERY_FIELD_DESCRIPTORS:
         declared.update(d.mcp_names)
@@ -41,7 +41,7 @@ def test_all_descriptors_have_mcp_or_api_name() -> None:
         "excluded_tags",
         "has_types",
         "similar_text",
-        "conversation_id",
+        "session_id",
         "latest",
         "parent_id",
         "continuation",
@@ -58,14 +58,14 @@ def test_all_descriptors_have_mcp_or_api_name() -> None:
         raise AssertionError(f"Selection filters without surface names: {actionable}")
 
 
-def test_conversation_query_spec_rejects_path_traversal() -> None:
+def test_session_query_spec_rejects_path_traversal() -> None:
     """cwd_prefix with ../ or absolute path must raise QuerySpecError."""
-    from polylogue.archive.query.spec import ConversationQuerySpec, QuerySpecError
+    from polylogue.archive.query.spec import QuerySpecError, SessionQuerySpec
 
     dangerous = ["../escape", "foo/../../bar", ".", ""]
     for value in dangerous:
         try:
-            ConversationQuerySpec.from_params({"cwd_prefix": value}, strict=True)
+            SessionQuerySpec.from_params({"cwd_prefix": value}, strict=True)
             # Must not succeed for dangerous values
             if value not in {".", ""}:
                 raise AssertionError(f"cwd_prefix={value!r} should have raised QuerySpecError")
@@ -73,25 +73,25 @@ def test_conversation_query_spec_rejects_path_traversal() -> None:
             pass
 
 
-def test_conversation_query_spec_accepts_safe_paths() -> None:
+def test_session_query_spec_accepts_safe_paths() -> None:
     """Normal relative paths in cwd_prefix should pass validation."""
-    from polylogue.archive.query.spec import ConversationQuerySpec
+    from polylogue.archive.query.spec import SessionQuerySpec
 
     safe = ["realm/project/polylogue", "home/user", None]
     for value in safe:
-        spec = ConversationQuerySpec.from_params(
+        spec = SessionQuerySpec.from_params(
             {"cwd_prefix": value} if value is not None else {},
             strict=True,
         )
         assert spec.cwd_prefix == value
 
 
-def test_conversation_query_spec_rejects_unknown_params_in_strict_mode() -> None:
+def test_session_query_spec_rejects_unknown_params_in_strict_mode() -> None:
     """Unknown parameter names must raise QuerySpecError in strict mode."""
-    from polylogue.archive.query.spec import ConversationQuerySpec, QuerySpecError
+    from polylogue.archive.query.spec import QuerySpecError, SessionQuerySpec
 
     try:
-        ConversationQuerySpec.from_params({"providr": "chatgpt"}, strict=True)
+        SessionQuerySpec.from_params({"providr": "chatgpt"}, strict=True)
         raise AssertionError("typo 'providr' should have been rejected")
     except QuerySpecError:
         pass

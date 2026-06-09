@@ -1,6 +1,6 @@
 # Time Machine
 
-Chronological browsing of AI conversation archives. "What was I working on in
+Chronological browsing of AI session archives. "What was I working on in
 March 2025?" — answered by navigating the archive as a temporal document, not
 a query language.
 
@@ -10,7 +10,7 @@ Answer "what was I doing then" without constructing a search query. The user
 knows *when* but not *what*. Existing search tools require filtering on
 content; time-based navigation should require only a date or month.
 
-The data is already there — `created_at` and `updated_at` on conversations,
+The data is already there — `created_at` and `updated_at` on sessions,
 `canonical_session_date` on session profiles, timestamps on messages. The
 missing piece is temporal presentation surfaces that let the user pan and zoom
 through their own history.
@@ -97,7 +97,7 @@ The query:
 
 ```sql
 SELECT
-    sp.conversation_id,
+    sp.session_id,
     sp.title,
     sp.canonical_session_date,
     sp.provider_name,
@@ -122,7 +122,7 @@ the top sessions from that week across all past years.
 
 A horizontal chronological view of sessions as a scrollable strip. Each session
 is a card (title, date, duration, repo, cost). The user pans left and right
-through time; clicking a card shows the full conversation.
+through time; clicking a card shows the full session.
 
 The filmstrip is the "zoom in" companion to the heatmap's "pan out." The
 heatmap shows the year at a glance; the filmstrip shows a month or week in
@@ -134,7 +134,7 @@ as a horizontal strip with Prev/Next pagination.
 
 ```sql
 SELECT
-    conversation_id, title, canonical_session_date,
+    session_id, title, canonical_session_date,
     provider_name, word_count, tool_use_count,
     total_cost_usd, total_duration_ms,
     repo_names_json, tags_json
@@ -175,7 +175,7 @@ polylogue calendar --year 2025
 ### `polylogue eras`
 
 Lists detected eras with date ranges, labels, and session counts. Accepts
-`--rename` to assign a custom name to an era (stored in conversation metadata
+`--rename` to assign a custom name to an era (stored in session metadata
 and honored on subsequent pipeline runs).
 
 ### `polylogue this-day`
@@ -196,8 +196,8 @@ All queries run over existing tables. Zero new collection, zero new tables.
 
 | Surface | Primary table | Secondary table |
 |---------|--------------|-----------------|
-| Calendar heatmap | `session_profiles` | `conversation_stats` (for word counts) |
-| Era detection | `session_profiles` | `conversations` (for provider distribution) |
+| Calendar heatmap | `session_profiles` | `session_stats` (for word counts) |
+| Era detection | `session_profiles` | `sessions` (for provider distribution) |
 | This day in history | `session_profiles` | — |
 | Session filmstrip | `session_profiles` | — |
 

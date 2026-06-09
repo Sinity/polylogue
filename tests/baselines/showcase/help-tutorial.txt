@@ -1,0 +1,11 @@
+Usage: polylogue tutorial [OPTIONS]
+
+  Walk through a fresh polylogue install end-to-end.
+
+  Each stage is idempotent — already-satisfied stages are marked ``[skip]``.
+  Use ``--non-interactive`` to print the current state without prompting
+  (suitable for scripts and CI).
+
+Options:
+  --non-interactive  Skip prompts; print the stage diagnostic and exit.
+  -h, --help         Show this message and exit.

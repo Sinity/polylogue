@@ -12,12 +12,12 @@ from typing import TypeAlias
 
 import click
 
-from polylogue.core.provider_identity import CORE_SCHEMA_PROVIDERS
+from polylogue.core.sources import CORE_SCHEMA_ORIGINS
 
 ClickCallable: TypeAlias = Callable[..., object]
 
-# Providers the user can filter by (excludes "unknown" and "drive" which are internal).
-_CLI_PROVIDER_CHOICES: tuple[str, ...] = CORE_SCHEMA_PROVIDERS
+# Origins the user can filter by (excludes the internal "unknown-export").
+_CLI_ORIGIN_CHOICES: tuple[str, ...] = CORE_SCHEMA_ORIGINS
 
 
 def _lazy_shell_complete(source: str) -> Callable[..., object]:
@@ -34,10 +34,10 @@ def _lazy_shell_complete(source: str) -> Callable[..., object]:
 
 _complete_action = _lazy_shell_complete("action")
 _complete_action_sequence = _lazy_shell_complete("action_sequence")
-_complete_conversation_id = _lazy_shell_complete("conversation_id")
+_complete_session_id = _lazy_shell_complete("session_id")
 _complete_cwd_prefix = _lazy_shell_complete("cwd_prefix")
 _complete_message_type = _lazy_shell_complete("message_type")
-_complete_provider = _lazy_shell_complete("provider")
+_complete_origin = _lazy_shell_complete("origin")
 _complete_repo = _lazy_shell_complete("repo")
 _complete_retrieval_lane = _lazy_shell_complete("retrieval_lane")
 _complete_tag = _lazy_shell_complete("tag")
@@ -86,7 +86,7 @@ def _load_action_types() -> list[str]:
     return list(QUERY_ACTION_TYPES)
 
 
-def _validate_provider_tokens(
+def _validate_origin_tokens(
     ctx: click.Context,
     param: click.Parameter,
     value: str | None,
@@ -94,11 +94,11 @@ def _validate_provider_tokens(
     if not value:
         return None
     tokens = [t.strip() for t in value.split(",") if t.strip()]
-    bad = [t for t in tokens if t not in _CLI_PROVIDER_CHOICES]
+    bad = [t for t in tokens if t not in _CLI_ORIGIN_CHOICES]
     if bad:
-        param_name = f"--{param.name.replace(chr(95), chr(45))}" if param.name else "--provider"
+        param_name = f"--{param.name.replace(chr(95), chr(45))}" if param.name else "--origin"
         raise click.BadParameter(
-            f"Unknown provider(s): {', '.join(bad)}. Valid: {', '.join(_CLI_PROVIDER_CHOICES)}",
+            f"Unknown origin(s): {', '.join(bad)}. Valid: {', '.join(_CLI_ORIGIN_CHOICES)}",
             param_hint=param_name,
         )
     return value
@@ -122,8 +122,8 @@ FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
         "--id",
         "-i",
         "conv_id",
-        help="Conversation ID (exact or prefix match)",
-        shell_complete=_complete_conversation_id,
+        help="Session ID (exact or prefix match)",
+        shell_complete=_complete_session_id,
     ),
     click.option("--contains", "-c", multiple=True, help="FTS term (repeatable = AND)"),
     click.option("--exclude-text", multiple=True, help="Exclude FTS term"),
@@ -148,17 +148,16 @@ FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
         help="Treat the query as a similarity prompt (vector-only; requires embeddings).",
     ),
     click.option(
-        "--provider",
-        "-p",
-        help="Include providers (comma = OR)",
-        callback=_validate_provider_tokens,
-        shell_complete=_complete_provider,
+        "--origin",
+        help="Include origins (comma = OR)",
+        callback=_validate_origin_tokens,
+        shell_complete=_complete_origin,
     ),
     click.option(
-        "--exclude-provider",
-        help="Exclude providers",
-        callback=_validate_provider_tokens,
-        shell_complete=_complete_provider,
+        "--exclude-origin",
+        help="Exclude origins",
+        callback=_validate_origin_tokens,
+        shell_complete=_complete_origin,
     ),
     click.option(
         "--repo",
@@ -179,7 +178,7 @@ FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
         "--cwd-prefix",
         "cwd_prefix",
         default=None,
-        help="Filter conversations whose recorded working directory starts with this prefix",
+        help="Filter sessions whose recorded working directory starts with this prefix",
         shell_complete=_complete_cwd_prefix,
     ),
     click.option(
@@ -229,25 +228,25 @@ FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
         "--has-tool-use",
         "filter_has_tool_use",
         is_flag=True,
-        help="Only conversations with tool use (SQL pushdown)",
+        help="Only sessions with tool use (SQL pushdown)",
     ),
     click.option(
         "--has-thinking",
         "filter_has_thinking",
         is_flag=True,
-        help="Only conversations with thinking blocks (SQL pushdown)",
+        help="Only sessions with thinking blocks (SQL pushdown)",
     ),
     click.option(
         "--has-paste",
         "filter_has_paste",
         is_flag=True,
-        help="Only conversations with pasted content (SQL pushdown)",
+        help="Only sessions with pasted content (SQL pushdown)",
     ),
     click.option(
         "--typed-only",
         "typed_only",
         is_flag=True,
-        help="Only conversations without pasted content (typed prose only)",
+        help="Only sessions without pasted content (typed prose only)",
     ),
     click.option("--min-messages", type=int, help="Minimum message count"),
     click.option("--max-messages", type=int, help="Maximum message count"),
@@ -262,7 +261,7 @@ FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
     click.option(
         "--since-session",
         "since_session_id",
-        help="Show sessions in same cwd after this conversation ID",
+        help="Show sessions in same cwd after this session ID",
     ),
     click.option("--since", help="After date (ISO, 'yesterday', 'last week')"),
     click.option("--until", help="Before date"),
@@ -285,7 +284,7 @@ FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
         help="Sort by field",
     ),
     click.option("--reverse", is_flag=True, help="Reverse sort order"),
-    click.option("--sample", type=int, help="Random sample of N conversations"),
+    click.option("--sample", type=int, help="Random sample of N sessions"),
 )
 
 OUTPUT_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] = (

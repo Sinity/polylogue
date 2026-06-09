@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
-from polylogue.archive.query.spec import ConversationQuerySpec
+from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.cli.query_contracts import coerce_query_terms
 
 if TYPE_CHECKING:
@@ -65,8 +65,8 @@ class RootModeRequest:
         params["query"] = self.query_terms
         return params
 
-    def query_spec(self) -> ConversationQuerySpec:
-        return ConversationQuerySpec.from_params(self.query_params())
+    def query_spec(self) -> SessionQuerySpec:
+        return SessionQuerySpec.from_params(self.query_params())
 
     @property
     def verbose(self) -> bool:

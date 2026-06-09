@@ -78,7 +78,7 @@ exit 2`}</pre>
         </StateRow>
         <StateRow tone="failure" title="schema drift">
           <KV k="schema" v={<><StateDot state="err" /> v17 archive · v18 expected</>} />
-          <Mono className="cta">polylogue schema migrate</Mono>
+          <Mono className="cta">polylogue schema rebuild</Mono>
         </StateRow>
         <StateRow tone="privacy" title="capture paused">
           <KV k="capture" v={<><StateDot state="idle" /> paused · private window</>} />

@@ -27,11 +27,11 @@ _BUNDLED_REGISTRY = SchemaRegistry(storage_root=SCHEMA_DIR)
 # Expected annotations per provider — all providers now consistently detect
 # the same 5 roles after the semantic inference overhaul (2026-03-16).
 EXPECTED_ANNOTATIONS: dict[str, list[str]] = {
-    "chatgpt": ["conversation_title", "message_body", "message_container", "message_role", "message_timestamp"],
-    "claude-ai": ["conversation_title", "message_body", "message_container", "message_role", "message_timestamp"],
-    "claude-code": ["conversation_title", "message_body", "message_container", "message_role", "message_timestamp"],
-    "codex": ["conversation_title", "message_body", "message_container", "message_role", "message_timestamp"],
-    "gemini": ["conversation_title", "message_body", "message_container", "message_role", "message_timestamp"],
+    "chatgpt": ["session_title", "message_body", "message_container", "message_role", "message_timestamp"],
+    "claude-ai": ["session_title", "message_body", "message_container", "message_role", "message_timestamp"],
+    "claude-code": ["session_title", "message_body", "message_container", "message_role", "message_timestamp"],
+    "codex": ["session_title", "message_body", "message_container", "message_role", "message_timestamp"],
+    "gemini": ["session_title", "message_body", "message_container", "message_role", "message_timestamp"],
 }
 
 
@@ -124,7 +124,7 @@ class TestSemanticGeneratorActivation:
     def test_semantic_gen_set_after_generate(self, provider: str) -> None:
         """After generate(), _semantic_gen attribute is set on the corpus."""
         corpus = SyntheticCorpus.for_provider(provider)
-        corpus.generate(count=1, seed=42, messages_per_conversation=range(3, 5))
+        corpus.generate(count=1, seed=42, messages_per_session=range(3, 5))
 
         semantic_gen = getattr(corpus, "_semantic_gen", None)
         assert semantic_gen is not None, f"_semantic_gen not set after generation for {provider}"
@@ -134,7 +134,7 @@ class TestSemanticGeneratorActivation:
     def test_semantic_gen_has_correct_role_cycle(self, provider: str) -> None:
         """SemanticValueGenerator uses the provider's role cycle."""
         corpus = SyntheticCorpus.for_provider(provider)
-        corpus.generate(count=1, seed=42, messages_per_conversation=range(3, 5))
+        corpus.generate(count=1, seed=42, messages_per_session=range(3, 5))
 
         expected_roles = corpus._role_cycle()
         semantic_gen = getattr(corpus, "_semantic_gen", None)
@@ -157,11 +157,11 @@ class TestSemanticRoundtrip:
         synthetic_source: Callable[..., object],
     ) -> None:
         """Synthetic data with semantic annotations roundtrips through parsers."""
-        from polylogue.sources import iter_source_conversations
+        from polylogue.sources import iter_source_sessions
 
         source = _synthetic_source(synthetic_source, provider, count=3, seed=42)
-        convos = list(iter_source_conversations(source))
-        assert convos, f"No conversations parsed for {provider}"
+        convos = list(iter_source_sessions(source))
+        assert convos, f"No sessions parsed for {provider}"
 
     @pytest.mark.parametrize("provider", SyntheticCorpus.available_providers())
     def test_roundtrip_different_seed(
@@ -170,11 +170,11 @@ class TestSemanticRoundtrip:
         synthetic_source: Callable[..., object],
     ) -> None:
         """Roundtrip with a different seed to catch seed-dependent issues."""
-        from polylogue.sources import iter_source_conversations
+        from polylogue.sources import iter_source_sessions
 
         source = _synthetic_source(synthetic_source, provider, count=2, seed=99)
-        convos = list(iter_source_conversations(source))
-        assert convos, f"No conversations parsed for {provider} (seed=99)"
+        convos = list(iter_source_sessions(source))
+        assert convos, f"No sessions parsed for {provider} (seed=99)"
 
 
 # =============================================================================
@@ -189,7 +189,7 @@ class TestWireFormatFallback:
     def test_generation_without_annotations_still_parses(self, provider: str, tmp_path: Path) -> None:
         """Stripping semantic annotations from schema still produces parseable output."""
         from polylogue.config import Source
-        from polylogue.sources import iter_source_conversations
+        from polylogue.sources import iter_source_sessions
 
         # Build corpus with annotations stripped
         corpus = SyntheticCorpus.for_provider(provider)
@@ -199,7 +199,7 @@ class TestWireFormatFallback:
 
         # Generate data using the stripped corpus directly
         ext = ".json" if corpus.wire_format.encoding == "json" else ".jsonl"
-        raw_items = corpus.generate(count=2, seed=77, messages_per_conversation=range(4, 12))
+        raw_items = corpus.generate(count=2, seed=77, messages_per_session=range(4, 12))
 
         provider_dir = tmp_path / "synthetic" / provider
         provider_dir.mkdir(parents=True, exist_ok=True)
@@ -207,8 +207,8 @@ class TestWireFormatFallback:
             (provider_dir / f"synth-{idx:02d}{ext}").write_bytes(raw_bytes)
 
         source = Source(name=f"{provider}-test", path=provider_dir / f"synth-00{ext}")
-        convos = list(iter_source_conversations(source))
-        assert convos, f"No conversations parsed without annotations for {provider}"
+        convos = list(iter_source_sessions(source))
+        assert convos, f"No sessions parsed without annotations for {provider}"
 
 
 def _strip_semantic_roles(schema: JSONValue) -> None:

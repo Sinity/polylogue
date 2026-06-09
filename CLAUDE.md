@@ -32,6 +32,29 @@ on push, but the default baseline must pass before the PR is opened.
 Do not treat CI as the first verification pass. Anticipate failures
 locally.
 
+### Inner-loop verification — use testmon, never blanket-run
+
+The default verification path is `devtools verify`, which uses **pytest-testmon
+affected-selection** ("pymon"): it runs only the tests whose dependency graph
+touches your changed files, finishing in seconds-to-minutes. This is the normal
+way to check a change. For a single target while iterating, use
+`devtools test <file>` or `devtools test -k <expr>`.
+
+Anti-pattern (do NOT do this): `devtools test tests/unit/<dir>` over whole
+directories, or blanket `pytest tests/unit ...`. Running broad directories is
+effectively the full suite — it takes well over an hour and burns the budget to
+re-confirm tests your change never touched. A behavior-preserving refactor that
+is mypy-green needs only its testmon-affected set, not the whole tree.
+
+- mypy `--strict` is the primary net for type/identifier refactors; trust it.
+- `devtools verify` (testmon) is the behavioral net for the affected slice.
+- Reserve a full run (`devtools verify --all`) for harness/dependency changes or
+  a final pre-PR diagnostic — not the inner loop.
+
+If `devtools verify` reports failures in files your change did not touch and
+that testmon did not select for your diff, classify them as pre-existing or
+flaky (re-run the exact node) before assuming they are yours.
+
 ### PR body discipline
 
 The PR template requires sections: Summary, Problem, Solution,

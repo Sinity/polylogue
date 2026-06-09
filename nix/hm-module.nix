@@ -49,7 +49,7 @@ let
 in
 {
   options.programs.polylogued = {
-    enable = mkEnableOption "Polylogue AI conversation archive daemon (user-mode)";
+    enable = mkEnableOption "Polylogue AI session archive daemon (user-mode)";
 
     package = mkOption {
       type = types.package;

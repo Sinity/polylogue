@@ -110,7 +110,6 @@ def test_executable_scenario_infers_embed_stats_metadata_from_polylogue_executio
         "embedding_metadata_rows",
         "embedding_status_rows",
         "message_embedding_vectors",
-        "action_event_readiness",
         "session_insight_readiness",
         "retrieval_band_readiness",
         "embedding_status_results",

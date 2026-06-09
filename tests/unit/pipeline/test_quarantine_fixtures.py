@@ -17,7 +17,7 @@ Two patterns dominate:
 
 These tests pin the quarantine contract: ``ingest_record`` must produce
 ``error``/``parse_error`` in both cases, and when the result is
-persisted via ``mark_raw_parsed`` the raw conversation lands in a
+persisted via ``mark_raw_parsed`` the raw session lands in a
 quarantined state (``parsed_at is None AND parse_error is not None``).
 
 If the quarantine policy ever shifts — say a future decoder starts
@@ -38,18 +38,18 @@ from polylogue.pipeline.services.ingest_worker import ingest_record
 from polylogue.pipeline.services.validation_flow import validate_raw_ids
 from polylogue.storage.blob_store import get_blob_store
 from polylogue.storage.raw.artifacts import RawIngestArtifactState
-from polylogue.storage.raw.models import RawConversationState
-from polylogue.storage.runtime import RawConversationRecord
+from polylogue.storage.raw.models import RawSessionState
+from polylogue.storage.runtime import RawSessionRecord
 from polylogue.types import ValidationMode, ValidationStatus
 
 EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 
-def _make_raw_record(content: bytes, provider: str, path: str) -> RawConversationRecord:
-    """Store ``content`` in the blob store and wrap a RawConversationRecord."""
+def _make_raw_record(content: bytes, provider: str, path: str) -> RawSessionRecord:
+    """Store ``content`` in the blob store and wrap a RawSessionRecord."""
     raw_id, size = get_blob_store().write_from_bytes(content)
     now = datetime.now(timezone.utc).isoformat()
-    return RawConversationRecord(
+    return RawSessionRecord(
         raw_id=raw_id,
         source_name="quarantine-fixture",
         source_path=path,
@@ -138,7 +138,7 @@ def test_zero_length_blob_quarantines_across_providers(tmp_path: Path, provider:
     The error originates in ``build_raw_payload_envelope`` and surfaces
     identically regardless of provider — it's a pre-parser failure that
     all provider paths share. Contract: ``error`` and ``parse_error``
-    set, ``validation_status == FAILED``, no conversations produced.
+    set, ``validation_status == FAILED``, no sessions produced.
     """
     record = _make_raw_record(zero_length_bytes(), provider, source_path)
     assert record.raw_id == EMPTY_SHA256
@@ -150,7 +150,7 @@ def test_zero_length_blob_quarantines_across_providers(tmp_path: Path, provider:
     assert "zero-length" in result.error
     assert result.parse_error == result.error
     assert result.validation_status == ValidationStatus.FAILED.value
-    assert result.conversations == []
+    assert result.sessions == []
 
 
 def test_zero_length_blob_quarantine_survives_non_strict_mode(tmp_path: Path) -> None:
@@ -199,7 +199,7 @@ def test_malformed_jsonl_mid_stream_quarantines_in_strict_mode(
     assert result.error.startswith("Malformed JSONL lines:")
     assert result.parse_error == result.error
     assert result.validation_status == ValidationStatus.FAILED.value
-    assert result.conversations == []
+    assert result.sessions == []
 
 
 def test_malformed_jsonl_tolerated_in_validation_off_mode(tmp_path: Path) -> None:
@@ -207,7 +207,7 @@ def test_malformed_jsonl_tolerated_in_validation_off_mode(tmp_path: Path) -> Non
 
     STRICT is the only mode that promotes malformed-line detection to a
     fatal parse error. With validation OFF the bad line is silently
-    skipped and the surrounding records produce one conversation. This
+    skipped and the surrounding records produce one session. This
     test pins that asymmetry so a future "always strict" change would
     fail here rather than silently break the OFF contract.
     """
@@ -219,7 +219,7 @@ def test_malformed_jsonl_tolerated_in_validation_off_mode(tmp_path: Path) -> Non
     result = ingest_record(record, str(tmp_path / "archive"), "off")
 
     assert result.error is None
-    assert result.conversations, "valid surrounding records should still parse"
+    assert result.sessions, "valid surrounding records should still parse"
 
 
 # ---------------------------------------------------------------------------
@@ -233,7 +233,7 @@ async def test_quarantine_state_round_trip_through_mark_raw_parsed(tmp_path: Pat
     Quarantine = ``parsed_at is None AND parse_error is not None`` (see
     ``RawIngestArtifactState.quarantined``). Verifies the full lifecycle:
     ``ingest_record`` surfaces the error, ``mark_raw_parsed`` persists it,
-    ``RawConversationState`` round-trips, and the derived artifact state
+    ``RawSessionState`` round-trips, and the derived artifact state
     classifies the row as quarantined.
     """
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
@@ -245,16 +245,16 @@ async def test_quarantine_state_round_trip_through_mark_raw_parsed(tmp_path: Pat
 
     backend = SQLiteBackend(db_path=tmp_path / "archive.db")
     try:
-        await backend.save_raw_conversation(record)
+        await backend.save_raw_session(record)
         await backend.mark_raw_parsed(record.raw_id, error=result.error)
 
-        stored = await backend.get_raw_conversation(record.raw_id)
+        stored = await backend.get_raw_session(record.raw_id)
         assert stored is not None
         assert stored.parse_error is not None
         assert stored.parsed_at is None
 
         state = RawIngestArtifactState.from_state(
-            RawConversationState(
+            RawSessionState(
                 raw_id=stored.raw_id,
                 parsed_at=stored.parsed_at,
                 parse_error=stored.parse_error,
@@ -284,7 +284,7 @@ async def test_validation_flow_persists_decode_quarantine_state(tmp_path: Path) 
     backend = SQLiteBackend(db_path=tmp_path / "archive.db")
     try:
         for record, _expected_error in cases:
-            await backend.save_raw_conversation(record)
+            await backend.save_raw_session(record)
 
         result = await validate_raw_ids(
             repository=backend,
@@ -304,7 +304,7 @@ async def test_validation_flow_persists_decode_quarantine_state(tmp_path: Path) 
             assert validation_record.parse_error is not None
             assert expected_error in validation_record.parse_error
 
-            stored = await backend.get_raw_conversation(record.raw_id)
+            stored = await backend.get_raw_session(record.raw_id)
             assert stored is not None
             assert stored.validation_status == ValidationStatus.FAILED
             assert stored.validation_error is not None
@@ -314,7 +314,7 @@ async def test_validation_flow_persists_decode_quarantine_state(tmp_path: Path) 
             assert stored.parsed_at is None
 
             state = RawIngestArtifactState.from_state(
-                RawConversationState(
+                RawSessionState(
                     raw_id=stored.raw_id,
                     parsed_at=stored.parsed_at,
                     parse_error=stored.parse_error,
@@ -337,9 +337,9 @@ def test_quarantine_error_does_not_leak_payload_text(tmp_path: Path) -> None:
 
     The error message surfaces to operators and may be logged or displayed.
     It must describe the *structural* problem (line number, column, type of
-    failure) without echoing the actual message content from the conversation.
+    failure) without echoing the actual message content from the session.
     """
-    private_content = "PRIVATE_CONVERSATION_SECRET_XYZZY_DO_NOT_LOG"
+    private_content = "PRIVATE_SESSION_SECRET_XYZZY_DO_NOT_LOG"
     good_a = (
         f'{{"parentUuid":null,"type":"user",'
         f'"message":{{"role":"user","content":"{private_content}"}},'

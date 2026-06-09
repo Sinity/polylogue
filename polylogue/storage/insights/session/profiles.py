@@ -6,13 +6,13 @@ import json as _json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from polylogue.archive.conversation.extraction import WorkEvent, WorkEventPayload
 from polylogue.archive.phase.extraction import SessionPhase
 from polylogue.archive.session.documents import (
     SessionPhaseDocument,
     SessionProfileDocument,
     WorkEventDocument,
 )
+from polylogue.archive.session.extraction import WorkEvent, WorkEventPayload
 from polylogue.archive.session.models import SessionPhasePayload
 from polylogue.archive.session.session_profile import SessionAnalysis, SessionProfile
 from polylogue.core.payload_coercion import (
@@ -40,7 +40,7 @@ from polylogue.storage.runtime import (
     SESSION_INSIGHT_MATERIALIZER_VERSION,
     SessionProfileRecord,
 )
-from polylogue.types import ConversationId
+from polylogue.types import SessionId
 
 
 def _serialize_percentiles(percentiles: dict[str, int]) -> str:
@@ -54,7 +54,7 @@ def _serialize_percentiles(percentiles: dict[str, int]) -> str:
 
 def profile_evidence_search_text(profile: SessionProfile) -> str:
     parts = [
-        profile.provider,
+        profile.origin,
         profile.title or "",
         profile.inferred_topic or "",
         profile.workflow_shape,
@@ -67,12 +67,12 @@ def profile_evidence_search_text(profile: SessionProfile) -> str:
         *profile.languages_detected,
     ]
     search_text = " \n".join(part.strip() for part in parts if part and str(part).strip())
-    return search_text or profile.conversation_id
+    return search_text or profile.session_id
 
 
 def profile_inference_search_text(profile: SessionProfile) -> str:
     parts = [
-        profile.provider,
+        profile.origin,
         profile.title or "",
         profile.inferred_topic or "",
         profile.workflow_shape,
@@ -83,7 +83,7 @@ def profile_inference_search_text(profile: SessionProfile) -> str:
         *(event.heuristic_label.value for event in profile.work_events),
     ]
     search_text = " \n".join(part.strip() for part in parts if part and str(part).strip())
-    return search_text or profile.conversation_id
+    return search_text or profile.session_id
 
 
 def profile_search_text(profile: SessionProfile) -> str:
@@ -96,7 +96,7 @@ def profile_search_text(profile: SessionProfile) -> str:
             )
             if part
         )
-        or profile.conversation_id
+        or profile.session_id
     )
 
 
@@ -107,7 +107,7 @@ def profile_enrichment_search_text(
     blockers = enrichment_payload.blockers
     support_signals_list = enrichment_payload.support_signals
     parts = [
-        profile.provider,
+        profile.origin,
         profile.title or "",
         profile.inferred_topic or "",
         enrichment_payload.intent_summary or "",
@@ -118,7 +118,7 @@ def profile_enrichment_search_text(
         *support_signals_list,
     ]
     search_text = " \n".join(part.strip() for part in parts if part and str(part).strip())
-    return search_text or profile.conversation_id
+    return search_text or profile.session_id
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +138,7 @@ def session_enrichment_payload(
     input_band_summary = {
         "user_turns": len(user_turns),
         "assistant_turns": len(assistant_turns),
-        "action_events": len(analysis.facts.action_events) if analysis is not None else 0,
+        "actions": len(analysis.facts.actions) if analysis is not None else 0,
         "touched_paths": len(profile.file_paths_touched),
         "repo_names": len(profile.repo_names),
     }
@@ -146,7 +146,7 @@ def session_enrichment_payload(
         0.95,
         0.2
         + (0.2 if user_turns else 0.0)
-        + (0.15 if analysis is not None and analysis.facts.action_events else 0.0)
+        + (0.15 if analysis is not None and analysis.facts.actions else 0.0)
         + (0.15 if profile.file_paths_touched else 0.0)
         + (0.15 if profile.repo_names else 0.0)
         + (0.1 if profile.work_events else 0.0)
@@ -254,7 +254,7 @@ def profile_evidence_payload(profile: SessionProfile) -> SessionEvidencePayload:
         tags=profile.tags,
         is_continuation=profile.is_continuation,
         parent_id=profile.parent_id,
-        logical_conversation_id=profile.logical_conversation_id,
+        logical_session_id=profile.logical_session_id,
         thinking_duration_ms=profile.thinking_duration_ms,
         output_duration_ms=profile.output_duration_ms,
         tool_duration_ms=profile.tool_duration_ms,
@@ -313,23 +313,21 @@ def build_session_profile_record(
     profile: SessionProfile,
     *,
     analysis: SessionAnalysis | None = None,
-    logical_conversation_id: str | None = None,
+    logical_session_id: str | None = None,
     materialized_at: str | None = None,
 ) -> SessionProfileRecord:
     built_at = materialized_at or now_iso()
     evidence = profile_evidence_payload(profile)
-    resolved_logical_conversation_id = (
-        logical_conversation_id or profile.logical_conversation_id or profile.conversation_id
-    )
-    evidence = evidence.model_copy(update={"logical_conversation_id": resolved_logical_conversation_id})
+    resolved_logical_session_id = logical_session_id or profile.logical_session_id or profile.session_id
+    evidence = evidence.model_copy(update={"logical_session_id": resolved_logical_session_id})
     inference = profile_inference_payload(profile)
     enrichment = session_enrichment_payload(profile, analysis)
     evidence_search_text = profile_evidence_search_text(profile)
     inference_search_text = profile_inference_search_text(profile)
     source_updated_at = profile.updated_at.isoformat() if profile.updated_at else None
     return SessionProfileRecord(
-        conversation_id=ConversationId(profile.conversation_id),
-        logical_conversation_id=ConversationId(resolved_logical_conversation_id),
+        session_id=SessionId(profile.session_id),
+        logical_session_id=SessionId(resolved_logical_session_id),
         materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
         materialized_at=built_at,
         source_updated_at=source_updated_at,
@@ -337,7 +335,7 @@ def build_session_profile_record(
         input_high_water_mark=source_updated_at,
         input_high_water_mark_source=classify_profile_hwm_source(profile.updated_at),
         input_row_count=profile.message_count,
-        source_name=profile.provider,
+        source_name=profile.origin,
         title=profile.title,
         first_message_at=profile.first_message_at.isoformat() if profile.first_message_at else None,
         last_message_at=profile.last_message_at.isoformat() if profile.last_message_at else None,
@@ -383,7 +381,7 @@ def build_session_profile_record(
         inference_payload=inference,
         enrichment_payload=enrichment,
         search_text=" \n".join(part for part in (evidence_search_text, inference_search_text) if part)
-        or profile.conversation_id,
+        or profile.session_id,
         evidence_search_text=evidence_search_text,
         inference_search_text=inference_search_text,
         enrichment_search_text=profile_enrichment_search_text(profile, enrichment),
@@ -396,9 +394,9 @@ def build_session_profile_record(
 
 def hydrate_session_profile(record: SessionProfileRecord) -> SessionProfile:
     merged_payload: SessionProfileDocument = {
-        "conversation_id": str(record.conversation_id),
-        "logical_conversation_id": str(record.logical_conversation_id),
-        "provider": record.source_name,
+        "session_id": str(record.session_id),
+        "logical_session_id": str(record.logical_session_id),
+        "origin": record.source_name,
         "title": record.title,
         "inferred_topic": record.inference_payload.inferred_topic,
         "inferred_topic_source": record.inference_payload.inferred_topic_source,
@@ -768,8 +766,8 @@ def enrichment_support_signals(
     bands = text_bands or _collect_enrichment_text_bands(analysis)
     if bands.user_turns:
         signals.append("user_turns")
-    if analysis is not None and analysis.facts.action_events:
-        signals.append("action_events")
+    if analysis is not None and analysis.facts.actions:
+        signals.append("actions")
     if profile.file_paths_touched:
         signals.append("touched_paths")
     if profile.repo_names:

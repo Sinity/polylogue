@@ -16,7 +16,7 @@ def test_write_gateway_commits_effects_on_caller_owned_connection(tmp_path: Path
             WriteOperation.INGEST,
             {
                 "_connection": conn,
-                "changed_conversation_ids": (),
+                "changed_session_ids": (),
             },
         )
 
@@ -47,7 +47,7 @@ def test_write_gateway_normal_commit_does_not_drop_fts_triggers(
             WriteOperation.INGEST,
             {
                 "_connection": conn,
-                "changed_conversation_ids": (),
+                "changed_session_ids": (),
             },
         )
 
@@ -67,10 +67,6 @@ def test_write_gateway_can_skip_fts_repairs_when_triggers_maintained_rows(
         "polylogue.storage.fts.fts_lifecycle.repair_message_fts_index_sync",
         lambda _conn, _ids: repaired.append("messages"),
     )
-    monkeypatch.setattr(
-        "polylogue.storage.fts.fts_lifecycle.repair_action_fts_index_sync",
-        lambda _conn, _ids: repaired.append("actions"),
-    )
 
     with open_connection(db_path) as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -78,9 +74,8 @@ def test_write_gateway_can_skip_fts_repairs_when_triggers_maintained_rows(
             WriteOperation.INGEST,
             {
                 "_connection": conn,
-                "changed_conversation_ids": ("c1",),
+                "changed_session_ids": ("c1",),
                 "repair_message_fts": False,
-                "repair_action_fts": False,
             },
         )
 
@@ -99,10 +94,6 @@ def test_write_gateway_repairs_fts_when_requested_even_if_live_triggers_exist(
         "polylogue.storage.fts.fts_lifecycle.repair_message_fts_index_sync",
         lambda _conn, _ids: repaired.append("messages"),
     )
-    monkeypatch.setattr(
-        "polylogue.storage.fts.fts_lifecycle.repair_action_fts_index_sync",
-        lambda _conn, _ids: repaired.append("actions"),
-    )
 
     with open_connection(db_path) as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -110,12 +101,12 @@ def test_write_gateway_repairs_fts_when_requested_even_if_live_triggers_exist(
             WriteOperation.INGEST,
             {
                 "_connection": conn,
-                "changed_conversation_ids": ("c1",),
+                "changed_session_ids": ("c1",),
             },
         )
 
     assert result.status == "committed"
-    assert repaired == ["messages", "actions"]
+    assert repaired == ["messages"]
 
 
 def test_write_gateway_repairs_fts_when_live_triggers_were_missing(
@@ -129,26 +120,21 @@ def test_write_gateway_repairs_fts_when_live_triggers_were_missing(
         "polylogue.storage.fts.fts_lifecycle.repair_message_fts_index_sync",
         lambda _conn, _ids: repaired.append("messages"),
     )
-    monkeypatch.setattr(
-        "polylogue.storage.fts.fts_lifecycle.repair_action_fts_index_sync",
-        lambda _conn, _ids: repaired.append("actions"),
-    )
 
     with open_connection(db_path) as conn:
         conn.execute("DROP TRIGGER messages_fts_ai")
-        conn.execute("DROP TRIGGER action_events_fts_ai")
         conn.commit()
         conn.execute("BEGIN IMMEDIATE")
         result = ArchiveWriteGateway(db_path).commit_write_sync(
             WriteOperation.INGEST,
             {
                 "_connection": conn,
-                "changed_conversation_ids": ("c1",),
+                "changed_session_ids": ("c1",),
             },
         )
 
     assert result.status == "committed"
-    assert repaired == ["messages", "actions"]
+    assert repaired == ["messages"]
 
 
 @pytest.mark.asyncio
@@ -159,7 +145,7 @@ async def test_write_gateway_async_commit_uses_same_local_effects_path(tmp_path:
             WriteOperation.INGEST,
             {
                 "_connection": conn,
-                "changed_conversation_ids": (),
+                "changed_session_ids": (),
             },
         )
 

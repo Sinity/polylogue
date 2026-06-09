@@ -17,7 +17,7 @@ def _probe_summary() -> JSONDocument:
         "provenance": {"git_commit": "abc123", "worktree_dirty": False},
         "result": {"ok": False, "error": "parse drift"},
         "run_payload": {"metrics": {"total_duration_ms": 12.5}},
-        "db_stats": {"conversations": 0, "raw_conversations": 1},
+        "db_stats": {"sessions": 0, "raw_sessions": 1},
         "raw_fanout": [{"raw_id": "raw-1", "parse_error": "boom"}],
         "budgets": {"ok": False, "violations": ["rss"]},
     }
@@ -79,4 +79,4 @@ def test_regression_capture_json_output_includes_path(tmp_path: Path, capsys: py
     payload = json.loads(capsys.readouterr().out)
     assert payload["source"] == "pipeline-probe"
     assert Path(payload["path"]).exists()
-    assert payload["summary"]["db_stats"] == {"conversations": 0, "raw_conversations": 1}
+    assert payload["summary"]["db_stats"] == {"sessions": 0, "raw_sessions": 1}

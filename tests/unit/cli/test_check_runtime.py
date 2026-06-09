@@ -14,7 +14,6 @@ Validates readiness checks for the runtime environment, including:
 
 from __future__ import annotations
 
-import importlib
 import sqlite3
 from pathlib import Path
 
@@ -373,28 +372,36 @@ class TestRuntimeHealthReadOnlyPaths:
             archive_root.chmod(0o755)
 
 
-class TestRuntimeHealthLegacySchema:
-    """Tests for explicit reporting of unsupported legacy archive layouts."""
+class TestRuntimeHealthSchemaVersion:
+    """Tests for explicit reporting of unexpected archive schema versions."""
 
-    def test_runtime_health_reports_legacy_schema_version(
+    def test_runtime_health_reports_unexpected_schema_version(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Polylogue collapsed the migration chain in #1212; any non-canonical
+        """Polylogue rejects non-canonical schema shapes in #1212; any non-canonical
         user_version surfaces as a runtime-health error so the operator
         re-ingests from source instead of silently opening a foreign archive.
         """
-        import polylogue.paths
-
         monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-        importlib.reload(polylogue.paths)
 
-        db_path = polylogue.paths.db_path()
+        config = Config(
+            archive_root=tmp_path / "archive",
+            render_root=tmp_path / "render",
+            sources=[Source(name="test", path=tmp_path / "inbox")],
+        )
+        (tmp_path / "archive").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "render").mkdir(parents=True, exist_ok=True)
+
+        # The runtime readiness probe reads the configured index.db. Seed
+        # an archive-version database at that exact path so a non-canonical
+        # user_version surfaces as a runtime-health error (#1212).
+        db_path = config.db_path
         db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(db_path)
         conn.executescript(
             """
-            CREATE TABLE raw_conversations (
+            CREATE TABLE raw_sessions (
                 raw_id TEXT PRIMARY KEY,
                 source_name TEXT NOT NULL,
                 source_path TEXT NOT NULL,
@@ -406,14 +413,6 @@ class TestRuntimeHealthLegacySchema:
         )
         conn.commit()
         conn.close()
-
-        config = Config(
-            archive_root=tmp_path / "archive",
-            render_root=tmp_path / "render",
-            sources=[Source(name="test", path=tmp_path / "inbox")],
-        )
-        (tmp_path / "archive").mkdir(parents=True, exist_ok=True)
-        (tmp_path / "render").mkdir(parents=True, exist_ok=True)
 
         report = run_runtime_readiness(config)
 

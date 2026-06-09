@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from polylogue.archive.conversation.extraction import WorkEvent
 from polylogue.archive.phase.extraction import SessionPhase
+from polylogue.archive.session.extraction import WorkEvent
 from polylogue.storage.insights.insight_read_support import hydrate_sequence
 from polylogue.storage.insights.session.timeline_rows import hydrate_session_phase, hydrate_work_event
 from polylogue.storage.query_models import SessionTimelineListQuery
@@ -21,22 +21,22 @@ class RepositoryInsightTimelineReadMixin:
 
     async def get_session_work_event_records(
         self,
-        conversation_id: str,
+        session_id: str,
     ) -> list[SessionWorkEventRecord]:
-        return await self.queries.get_session_work_events(conversation_id)
+        return await self.queries.get_session_work_events(session_id)
 
-    async def get_session_phase_records(self, conversation_id: str) -> list[SessionPhaseRecord]:
-        return await self.queries.get_session_phases(conversation_id)
+    async def get_session_phase_records(self, session_id: str) -> list[SessionPhaseRecord]:
+        return await self.queries.get_session_phases(session_id)
 
-    async def get_session_work_events(self, conversation_id: str) -> list[WorkEvent]:
+    async def get_session_work_events(self, session_id: str) -> list[WorkEvent]:
         return hydrate_sequence(
-            await self.get_session_work_event_records(conversation_id),
+            await self.get_session_work_event_records(session_id),
             hydrate_work_event,
         )
 
-    async def get_session_phases(self, conversation_id: str) -> list[SessionPhase]:
+    async def get_session_phases(self, session_id: str) -> list[SessionPhase]:
         return hydrate_sequence(
-            await self.get_session_phase_records(conversation_id),
+            await self.get_session_phase_records(session_id),
             hydrate_session_phase,
         )
 
@@ -55,7 +55,7 @@ class RepositoryInsightTimelineReadMixin:
     async def list_session_work_events(
         self,
         *,
-        conversation_id: str | None = None,
+        session_id: str | None = None,
         provider: str | None = None,
         since: str | None = None,
         until: str | None = None,
@@ -68,7 +68,7 @@ class RepositoryInsightTimelineReadMixin:
     ) -> list[WorkEvent]:
         records = await self._list_session_work_event_records_query(
             SessionTimelineListQuery(
-                conversation_id=conversation_id,
+                session_id=session_id,
                 provider=provider,
                 since=since,
                 until=until,
@@ -85,7 +85,7 @@ class RepositoryInsightTimelineReadMixin:
     async def list_session_work_event_records(
         self,
         *,
-        conversation_id: str | None = None,
+        session_id: str | None = None,
         provider: str | None = None,
         since: str | None = None,
         until: str | None = None,
@@ -98,7 +98,7 @@ class RepositoryInsightTimelineReadMixin:
     ) -> list[SessionWorkEventRecord]:
         return await self._list_session_work_event_records_query(
             SessionTimelineListQuery(
-                conversation_id=conversation_id,
+                session_id=session_id,
                 provider=provider,
                 since=since,
                 until=until,
@@ -114,7 +114,7 @@ class RepositoryInsightTimelineReadMixin:
     async def list_session_phases(
         self,
         *,
-        conversation_id: str | None = None,
+        session_id: str | None = None,
         provider: str | None = None,
         since: str | None = None,
         until: str | None = None,
@@ -124,7 +124,7 @@ class RepositoryInsightTimelineReadMixin:
     ) -> list[SessionPhase]:
         records = await self._list_session_phase_records_query(
             SessionTimelineListQuery(
-                conversation_id=conversation_id,
+                session_id=session_id,
                 provider=provider,
                 since=since,
                 until=until,
@@ -138,7 +138,7 @@ class RepositoryInsightTimelineReadMixin:
     async def list_session_phase_records(
         self,
         *,
-        conversation_id: str | None = None,
+        session_id: str | None = None,
         provider: str | None = None,
         since: str | None = None,
         until: str | None = None,
@@ -148,7 +148,7 @@ class RepositoryInsightTimelineReadMixin:
     ) -> list[SessionPhaseRecord]:
         return await self._list_session_phase_records_query(
             SessionTimelineListQuery(
-                conversation_id=conversation_id,
+                session_id=session_id,
                 provider=provider,
                 since=since,
                 until=until,

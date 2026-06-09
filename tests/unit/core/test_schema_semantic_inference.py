@@ -144,7 +144,7 @@ class TestInferSemanticRoles:
         assert "message_role" in roles_seen
         assert "message_body" in roles_seen
         assert "message_timestamp" in roles_seen
-        assert "conversation_title" in roles_seen
+        assert "session_title" in roles_seen
 
 
 class TestSelectBestRoles:
@@ -209,14 +209,14 @@ class TestScoreMessageContainer:
 
     def test_dict_based_container_with_dynamic_keys(self) -> None:
         stats = {
-            "$.conversation_map": FieldStats(
-                path="$.conversation_map",
+            "$.session_map": FieldStats(
+                path="$.session_map",
                 object_key_counts=[5, 7, 6],
                 total_samples=3,
                 present_count=3,
             ),
-            "$.conversation_map.*": FieldStats(
-                path="$.conversation_map.*",
+            "$.session_map.*": FieldStats(
+                path="$.session_map.*",
             ),
         }
         candidates = infer_semantic_roles(stats)
@@ -557,8 +557,8 @@ class TestScoreMessageTimestamp:
             assert ts.confidence < 0.6
 
 
-class TestScoreConversationTitle:
-    """_score_title scoring for conversation_title role."""
+class TestScoreSessionTitle:
+    """_score_title scoring for session_title role."""
 
     def test_short_high_cardinality_string(self) -> None:
         stats = {
@@ -574,7 +574,7 @@ class TestScoreConversationTitle:
             ),
         }
         candidates = infer_semantic_roles(stats)
-        title = _candidate_for_role(candidates, "conversation_title")
+        title = _candidate_for_role(candidates, "session_title")
         assert title is not None
         assert title.confidence > 0.2
         assert "avg_length" in title.evidence
@@ -595,7 +595,7 @@ class TestScoreConversationTitle:
             ),
         }
         candidates = infer_semantic_roles(stats)
-        title = _candidate_for_role(candidates, "conversation_title")
+        title = _candidate_for_role(candidates, "session_title")
         assert title is not None
         assert "name_signal" in title.evidence
 
@@ -614,7 +614,7 @@ class TestScoreConversationTitle:
             ),
         }
         candidates = infer_semantic_roles(stats)
-        title = _candidate_for_role(candidates, "conversation_title")
+        title = _candidate_for_role(candidates, "session_title")
         assert title is None
 
     def test_multiline_penalizes(self) -> None:
@@ -632,7 +632,7 @@ class TestScoreConversationTitle:
             ),
         }
         candidates = infer_semantic_roles(stats)
-        title = _candidate_for_role(candidates, "conversation_title")
+        title = _candidate_for_role(candidates, "session_title")
         # Title with multiline should exist but multiline is tracked in evidence
         if title is not None:
             assert "newline_rate" in title.evidence
@@ -655,7 +655,7 @@ class TestScoreConversationTitle:
             ),
         }
         candidates = infer_semantic_roles(stats)
-        title = _candidate_for_role(candidates, "conversation_title")
+        title = _candidate_for_role(candidates, "session_title")
         # Array items are penalized but may still score if other factors strong
         if title is not None:
             assert title.confidence < 0.5
@@ -675,7 +675,7 @@ class TestScoreConversationTitle:
             ),
         }
         candidates = infer_semantic_roles(stats)
-        title = _candidate_for_role(candidates, "conversation_title")
+        title = _candidate_for_role(candidates, "session_title")
         # Deep paths are penalized via the scoring function
         # The 0.5x multiplier for depth > 4 should be applied
         if title is not None:

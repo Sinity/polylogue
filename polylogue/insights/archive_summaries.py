@@ -24,7 +24,7 @@ from polylogue.storage.runtime import DaySessionSummaryRecord
 @dataclass(slots=True)
 class _DayAggregateBucket:
     session_count: int = 0
-    logical_conversation_ids: set[str] = field(default_factory=set)
+    logical_session_ids: set[str] = field(default_factory=set)
     total_cost_usd: float = 0.0
     total_duration_ms: int = 0
     total_tool_active_duration_ms: int = 0
@@ -48,7 +48,7 @@ def build_day_session_summary_records(
         bucket_day = profile_bucket_day(profile)
         if bucket_day is None:
             continue
-        by_provider_day[(profile.provider, bucket_day)].append(profile)
+        by_provider_day[(profile.origin, bucket_day)].append(profile)
 
     rows: list[DaySessionSummaryRecord] = []
     for (source_name, bucket_day), day_profiles in sorted(
@@ -84,9 +84,9 @@ def build_day_session_summary_records(
                 input_high_water_mark=hwm,
                 input_high_water_mark_source=classify_aggregate_hwm_source(source_updates),
                 input_row_count=summary.session_count,
-                conversation_count=summary.session_count,
+                session_count=summary.session_count,
                 logical_session_count=summary.logical_session_count,
-                logical_conversation_ids=summary.logical_conversation_ids,
+                logical_session_ids=summary.logical_session_ids,
                 total_cost_usd=summary.total_cost_usd,
                 total_duration_ms=summary.total_duration_ms,
                 total_tool_active_duration_ms=summary.total_tool_active_duration_ms,
@@ -108,8 +108,8 @@ def _aggregate_day_buckets(
     grouped: dict[str, _DayAggregateBucket] = {}
     for row in rows:
         bucket = grouped.setdefault(row.day, _DayAggregateBucket())
-        bucket.session_count += row.conversation_count
-        bucket.logical_conversation_ids.update(row.logical_conversation_ids)
+        bucket.session_count += row.session_count
+        bucket.logical_session_ids.update(row.logical_session_ids)
         bucket.total_cost_usd += row.total_cost_usd
         bucket.total_duration_ms += row.total_duration_ms
         bucket.total_tool_active_duration_ms += row.total_tool_active_duration_ms
@@ -118,7 +118,7 @@ def _aggregate_day_buckets(
         bucket.total_words += row.total_words
         bucket.work_event_breakdown.update(row.work_event_breakdown)
         bucket.repos_active.update(str(name) for name in row.repos_active if str(name).strip())
-        bucket.providers[row.source_name] += row.conversation_count
+        bucket.providers[row.source_name] += row.session_count
         bucket.rows.append(row)
     return grouped
 
@@ -133,8 +133,8 @@ def _aggregate_day_summaries(
         summary = DaySessionSummary(
             date=datetime.fromisoformat(day).date(),
             session_count=bucket.session_count,
-            logical_session_count=len(bucket.logical_conversation_ids),
-            logical_conversation_ids=tuple(sorted(bucket.logical_conversation_ids)),
+            logical_session_count=len(bucket.logical_session_ids),
+            logical_session_ids=tuple(sorted(bucket.logical_session_ids)),
             total_cost_usd=bucket.total_cost_usd,
             total_duration_ms=bucket.total_duration_ms,
             total_tool_active_duration_ms=bucket.total_tool_active_duration_ms,

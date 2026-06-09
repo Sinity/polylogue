@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from polylogue.storage.raw.models import RawConversationState
+from polylogue.storage.raw.models import RawSessionState
 from polylogue.types import ValidationStatus
 
 _PARSEABLE_VALIDATION_STATUSES = (
@@ -31,7 +31,7 @@ class RawIngestArtifactState:
     validation_status: ValidationStatus | None = None
 
     @classmethod
-    def from_state(cls, state: RawConversationState | None) -> RawIngestArtifactState:
+    def from_state(cls, state: RawSessionState | None) -> RawIngestArtifactState:
         if state is None:
             return cls()
         return cls(

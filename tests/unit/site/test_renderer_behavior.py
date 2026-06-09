@@ -18,7 +18,7 @@ stale anchors would ship unnoticed. The tests below cover:
 The tests work directly against ``build_site`` / ``load_pages_config``
 without invoking the ``devtools`` CLI wrapper, so they stay fast and
 deterministic and do not depend on the user's archive database. The
-hero-stat path is forced empty by pointing ``polylogue.paths.db_path`` at
+hero-stat path is forced empty by pointing ``active_index_db_path`` at
 a non-existent file via monkeypatch.
 """
 
@@ -71,7 +71,7 @@ source = "docs/search.md"
 def _no_archive_stats(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Force ``_site_archive_stats`` to see a missing database."""
     missing = tmp_path / "definitely-does-not-exist.sqlite"
-    monkeypatch.setattr("devtools.pages_builder.db_path", lambda: missing)
+    monkeypatch.setattr("devtools.pages_builder.active_index_db_path", lambda: missing)
 
 
 @pytest.fixture
@@ -297,7 +297,7 @@ def test_per_page_data_parsed_and_passed_to_template(tmp_path: Path, monkeypatch
     fake_root.mkdir()
     monkeypatch.setattr(pages_builder, "ROOT", fake_root)
     monkeypatch.setattr(
-        "devtools.pages_builder.db_path",
+        "devtools.pages_builder.active_index_db_path",
         lambda: fake_root / "missing.sqlite",
     )
     config_path = fake_root / "pages.toml"
@@ -382,7 +382,7 @@ def test_missing_source_file_produces_placeholder(tmp_path: Path, monkeypatch: p
     fake_root.mkdir()
     monkeypatch.setattr(pages_builder, "ROOT", fake_root)
     monkeypatch.setattr(
-        "devtools.pages_builder.db_path",
+        "devtools.pages_builder.active_index_db_path",
         lambda: fake_root / "missing.sqlite",
     )
     config_path = fake_root / "pages.toml"
@@ -420,7 +420,7 @@ def test_unknown_template_is_rejected(tmp_path: Path, monkeypatch: pytest.Monkey
     fake_root.mkdir()
     monkeypatch.setattr(pages_builder, "ROOT", fake_root)
     monkeypatch.setattr(
-        "devtools.pages_builder.db_path",
+        "devtools.pages_builder.active_index_db_path",
         lambda: fake_root / "missing.sqlite",
     )
     config_path = fake_root / "pages.toml"

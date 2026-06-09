@@ -1,4 +1,4 @@
-"""Eager message collection for conversation handling.
+"""Eager message collection for session handling.
 
 This module provides `MessageCollection`, an eager container for messages that
 supports iteration, len(), boolean coercion, indexing, and Pydantic

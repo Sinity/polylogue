@@ -128,42 +128,42 @@ def test_converger_keeps_bounded_false_as_pending_debt(tmp_path: Path) -> None:
     assert set(converger._file_states) == {path}
 
 
-def test_converger_batches_conversation_execution() -> None:
+def test_converger_batches_session_execution() -> None:
     checked: list[tuple[str, ...]] = []
     executed: list[tuple[str, ...]] = []
 
-    def check_conversations(conversation_ids: Sequence[str]) -> set[str]:
-        checked.append(tuple(conversation_ids))
-        return set(conversation_ids)
+    def check_sessions(session_ids: Sequence[str]) -> set[str]:
+        checked.append(tuple(session_ids))
+        return set(session_ids)
 
-    def execute_conversations(conversation_ids: Sequence[str]) -> bool:
-        executed.append(tuple(conversation_ids))
+    def execute_sessions(session_ids: Sequence[str]) -> bool:
+        executed.append(tuple(session_ids))
         return True
 
     converger = DaemonConverger(
         [
             ConvergenceStage(
                 name="insights",
-                description="test conversation stage",
+                description="test session stage",
                 check=lambda _candidate: False,
                 execute=lambda _candidate: False,
-                check_conversations=check_conversations,
-                execute_conversations=execute_conversations,
+                check_sessions=check_sessions,
+                execute_sessions=execute_sessions,
             )
         ]
     )
 
-    states, stage_times = converger.converge_conversations(["conv-a", "conv-b", "conv-a"])
+    states, stage_times = converger.converge_sessions(["conv-a", "conv-b", "conv-a"])
 
     assert checked == [("conv-a", "conv-b")]
     assert [set(candidates) for candidates in executed] == [{"conv-a", "conv-b"}]
     assert set(states) == {"conv-a", "conv-b"}
     assert set(stage_times) == {"insights"}
     assert all(state.converged for state in states.values())
-    assert converger._conversation_states == {}
+    assert converger._session_states == {}
 
 
-def test_converger_keeps_bounded_conversation_false_as_pending_debt() -> None:
+def test_converger_keeps_bounded_session_false_as_pending_debt() -> None:
     converger = DaemonConverger(
         [
             ConvergenceStage(
@@ -171,19 +171,19 @@ def test_converger_keeps_bounded_conversation_false_as_pending_debt() -> None:
                 description="bounded embedding catch-up",
                 check=lambda _candidate: False,
                 execute=lambda _candidate: False,
-                check_conversations=lambda conversation_ids: set(conversation_ids),
-                execute_conversations=lambda _conversation_ids: False,
+                check_sessions=lambda session_ids: set(session_ids),
+                execute_sessions=lambda _session_ids: False,
                 false_means_pending=True,
             )
         ]
     )
 
-    states, _stage_times = converger.converge_conversations(["conv-a"])
+    states, _stage_times = converger.converge_sessions(["conv-a"])
 
     assert states["conv-a"].stages["embed"] is StageState.PENDING
     assert states["conv-a"].error_count == 0
-    assert states["conv-a"].last_error == "conversation stage embed returned False"
-    assert set(converger._conversation_states) == {"conv-a"}
+    assert states["conv-a"].last_error == "session stage embed returned False"
+    assert set(converger._session_states) == {"conv-a"}
 
 
 @pytest.mark.asyncio

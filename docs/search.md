@@ -28,7 +28,7 @@ polylogue [<terms>] [filters] [verb]
 
 - **terms**: space-separated words matched by full-text search (AND when
   repeated with `--contains`)
-- **filters**: `--flag` filters that narrow the conversation set
+- **filters**: `--flag` filters that narrow the session set
 - **verb**: optional trailing subcommand (`list`, `stats`, `count`, etc.)
 
 ## Filters
@@ -37,12 +37,12 @@ polylogue [<terms>] [filters] [verb]
 
 | Flag | Description |
 |------|-------------|
-| `--id`, `-i` | Conversation ID (exact or prefix match) |
+| `--id`, `-i` | Session ID (exact or prefix match) |
 | `--contains`, `-c` | FTS term (repeatable = AND) |
-| `--exclude-text` | Exclude conversations matching this term |
+| `--exclude-text` | Exclude sessions matching this term |
 | `--title` | Title contains substring |
-| `--provider`, `-p` | Include providers (comma = OR) |
-| `--exclude-provider` | Exclude providers |
+| `--origin`, `-o` | Include origins (comma = OR) |
+| `--exclude-origin` | Exclude origins |
 | `--repo`, `-r` | Filter by repository name |
 | `--referenced-path` | File path contains substring (repeatable = AND) |
 | `--cwd-prefix` | Working directory starts with this prefix |
@@ -51,9 +51,9 @@ polylogue [<terms>] [filters] [verb]
 
 | Flag | Description |
 |------|-------------|
-| `--has-tool-use` | Only conversations with tool calls |
-| `--has-thinking` | Only conversations with reasoning/thinking blocks |
-| `--has-paste` | Only conversations with pasted content |
+| `--has-tool-use` | Only sessions with tool calls |
+| `--has-thinking` | Only sessions with reasoning/thinking blocks |
+| `--has-paste` | Only sessions with pasted content |
 | `--typed-only` | Only typed (non-pasted) content |
 | `--has`, `--has-type` | Filter by content type: `thinking`, `tools`, `summary`, `attachments` |
 
@@ -81,14 +81,14 @@ polylogue [<terms>] [filters] [verb]
 
 | Flag | Description |
 |------|-------------|
-| `--since` | Only conversations on or after this date/time |
-| `--until` | Only conversations on or before this date/time |
+| `--since` | Only sessions on or after this date/time |
+| `--until` | Only sessions on or before this date/time |
 | `--limit`, `-n` | Maximum results |
 | `--offset` | Start offset |
 | `--latest` | Newest-first sort |
 | `--sort` | Sort order |
 | `--reverse` | Reverse sort direction |
-| `--sample` | Random sample of N conversations |
+| `--sample` | Random sample of N sessions |
 
 ### Tags
 
@@ -118,20 +118,20 @@ polylogue [<terms>] [filters] [verb]
 
 ## Verbs
 
-Verbs determine the action applied to the matched conversation set.
+Verbs determine the action applied to the matched session set.
 
 | Verb | Description |
 |------|-------------|
-| `list` | List matched conversations with metadata |
-| `count` | Print count of matched conversations |
-| `stats` | Grouped statistics (`--by provider`, `month`, `year`, `day`, `action`, `tool`, `repo`, `work-kind`) |
-| `show` | Display full conversation content |
-| `open` | Open conversation in browser/editor |
-| `bulk-export` | Export matched conversations to file |
+| `list` | List matched sessions with metadata |
+| `count` | Print count of matched sessions |
+| `stats` | Grouped statistics (`--by origin`, `month`, `year`, `day`, `action`, `tool`, `repo`, `work-kind`) |
+| `show` | Display full session content |
+| `open` | Open session in browser/editor |
+| `bulk-export` | Export matched sessions to file |
 | `messages` | Show individual messages |
-| `raw` | Show raw (unparsed) conversation data |
+| `raw` | Show raw (unparsed) session data |
 | `select` | Select and print a single field |
-| `delete` | Delete matched conversations (requires `--dry-run` confirmation) |
+| `delete` | Delete matched sessions (requires `--dry-run` confirmation) |
 
 ## Retrieval Lanes
 
@@ -144,7 +144,7 @@ elevate — see below).
 |------|-------------|------------|
 | `auto` | Surface left the lane to the planner. May elevate to `hybrid` when embeddings are enabled and an FTS query is present (see [Auto Elevation](#auto-elevation)). | depends on chosen lane |
 | `dialogue` | FTS5 over message text (`messages_fts` virtual table, `unicode61` tokenizer). Default lexical lane. | `bm25` |
-| `actions` | FTS5 over action event text (`action_events_fts`). Targets tool/file/shell evidence rather than prose. Public ranked-hit payloads currently carry action rank/evidence without a numeric action BM25 score. | `null` |
+| `actions` | FTS5 over tool-use/tool-result block text in `messages_fts`. Targets tool/file/shell evidence rather than prose. Public ranked-hit payloads currently carry action rank/evidence without a numeric action BM25 score. | `null` |
 | `hybrid` | Reciprocal Rank Fusion combining FTS5 and vector similarity (requires embeddings). | `rrf` |
 | `semantic` | Pure vector similarity over Voyage-4 embeddings via sqlite-vec. Triggered by `--similar` or `--semantic`. | `vector_distance` |
 
@@ -166,17 +166,17 @@ Implementation: `polylogue/storage/search_providers/fts5.py`,
 - Match evidence: `matched_terms`, `snippet`, `match_surface="message"`,
   `message_id`, and `target_ref` point at the hit message.
 
-#### `actions` (FTS5 over action events)
+#### `actions` (FTS5 over action blocks)
 
-- Same FTS5 mechanics as `dialogue`, but the indexed surface is
-  `action_events_fts` — normalized records of file reads/writes/edits,
-  shell commands, web fetches, agent invocations, and other tool
-  evidence (see `--action` / `--tool` filters above).
+- Same FTS5 mechanics as `dialogue`, but the query is restricted to
+  `tool_use` and `tool_result` blocks inside `messages_fts`. The normalized
+  `actions` view remains the structured action surface for filters and
+  analytics.
 - Current public action-lane hits preserve rank and action match surface
   but do not expose the underlying action FTS BM25 score in the shared
   `SearchEnvelope`; consumers should treat `score_kind=null` as the
   contract for action-only hits until the action evidence path is widened.
-- Useful when you remember an action ("the conversation where I edited
+- Useful when you remember an action ("the session where I edited
   `connection_profile.py`") rather than its prose.
 
 #### `hybrid` (RRF fusion)
@@ -185,7 +185,7 @@ Implementation: `polylogue/storage/search_providers/fts5.py`,
   with **Reciprocal Rank Fusion** at `k=60`:
   `fused_score = Σ 1 / (k + rank_in_lane)`.
 - Tie-breaking is deterministic: descending fused score, then ascending
-  `conversation_id`. This makes cursor and offset pagination stable
+  `session_id`. This makes cursor and offset pagination stable
   across runs even when scores tie.
 - Reported `score_kind` is `"rrf"`. Higher fused scores indicate stronger
   cross-lane consensus.
@@ -195,7 +195,7 @@ Implementation: `polylogue/storage/search_providers/fts5.py`,
   that contributed adds a `<lane>_rank` (1-based rank within that lane)
   and a matching `<lane>_rrf` (the `1 / (k + rank)` contribution that was
   summed into the fused score). Lane names are `text` (FTS5 dialogue),
-  `action` (FTS5 action events), and `vector` (semantic). A hit that
+  `action` (FTS5 action blocks), and `vector` (semantic). A hit that
   appeared only in the lexical lane carries `{text_rank, text_rrf}` and
   nothing else; a hit that survived both lanes carries the full
   `(text|action|vector)_(rank|rrf)` set, so consumers can show "ranked
@@ -227,7 +227,7 @@ materialized. The activation path is deliberately bounded:
 1. `polylogue embed status` shows config state, key presence, coverage,
    configured model/dimension, monthly cost cap, backlog, latest catch-up
    progress, and `next_action` (`code`, `reason`, `command`) for automation.
-2. `polylogue embed preflight --max-conversations 10` estimates the next
+2. `polylogue embed preflight --max-sessions 10` estimates the next
    bounded window without contacting Voyage. Use `--format json` for the
    scriptable form: it reports the exact window, pricing assumptions,
    effective cost cap, and a ready-to-run `backfill_args` list for the same
@@ -235,13 +235,13 @@ materialized. The activation path is deliberately bounded:
 3. `polylogue embed enable --yes` enables the daemon stage when a Voyage key is
    already configured, or `polylogue embed enable --voyage-api-key ...` records
    the key and enables the stage.
-4. `polylogue embed backfill --max-conversations 10` runs an explicit bounded
+4. `polylogue embed backfill --max-sessions 10` runs an explicit bounded
    catch-up batch; after enablement, `polylogued` also processes bounded daemon
-   batches for new or stale conversations.
+   batches for new or stale sessions.
 
 `--max-messages` is a hard message-count window and uses live message counts
-rather than potentially stale `conversation_stats`. `--max-conversations` may
-use materialized conversation stats so small first batches remain fast on large
+rather than potentially stale `session_stats`. `--max-sessions` may
+use materialized session stats so small first batches remain fast on large
 archives.
 
 MCP clients should use `embedding_status` for readiness/next-action state and
@@ -286,12 +286,12 @@ Every `SearchEnvelope` declares its `ranking_policy` and
 
 - `dialogue` orders hits by FTS5 BM25 (lower is better; raw scores are
   usually negative).
-- `actions` orders through the action-event FTS read model, but the
+- `actions` orders through the action FTS read model, but the
   public action-lane hit payload does not currently expose a numeric
   action score.
 - `hybrid` fuses dialogue + action + semantic lanes with RRF at `k=60`
   and orders by fused score, breaking ties on `(−fused_score,
-  conversation_id)`.
+  session_id)`.
 - `semantic` orders by ascending vector distance.
 
 Consumers should pin the `ranking_policy_version` they validate against
@@ -302,26 +302,26 @@ for the machine-readable declaration.
 
 ## SearchEnvelope Contract
 
-All ranked surfaces (CLI `--format json`, MCP `search`/`list_conversations`,
-daemon `GET /api/conversations?query=…`, Python API) return the typed
+All ranked surfaces (CLI `--format json`, MCP `search`/`list_sessions`,
+daemon `GET /api/sessions?query=…`, Python API) return the typed
 `SearchEnvelope` defined in `polylogue/surfaces/payloads.py` and emitted
 via the daemon under
 [`docs/openapi/search.yaml`](openapi/search.yaml) ([#1266](https://github.com/Sinity/polylogue/issues/1266)).
 
 | Field | Meaning |
 |-------|---------|
-| `hits` | Ordered list of `ConversationSearchHitPayload`. Each hit carries a `conversation` summary plus a `match` evidence block. |
-| `total` | Total matching conversations, or `null` when the lane cannot compute it cheaply. |
+| `hits` | Ordered list of `SessionSearchHitPayload`. Each hit carries a `session` summary plus a `match` evidence block. |
+| `total` | Total matching sessions, or `null` when the lane cannot compute it cheaply. |
 | `limit` / `offset` | Applied page size and row offset. Offset-based pagination is **best-effort** for ranked results. |
 | `next_offset` | Convenience offset pointer; only set when more results are likely. |
-| `next_cursor` | Opaque keyset cursor encoding rank, score, conversation id, and resolved retrieval lane. **Preferred** for stable rank-first pagination across pages — pass it back unchanged in the next request. |
+| `next_cursor` | Opaque keyset cursor encoding rank, score, session id, and resolved retrieval lane. **Preferred** for stable rank-first pagination across pages — pass it back unchanged in the next request. |
 | `query` | The FTS query text actually applied after CLI/MCP/HTTP coercion. Empty when no FTS query was given. |
 | `sort` | Applied explicit sort field (`"date"`, `"messages"`, `"words"`, etc.) or `null` to preserve the lane's natural rank order. Ranked search will not silently fall back to date sort. |
 | `retrieval_lane` | Resolved lane that actually ran (`dialogue` / `actions` / `hybrid` / `semantic` / `auto`). |
 | `ranking_policy` / `ranking_policy_version` | Declared ordering semantics; see above. |
 | `diagnostics` | Optional `QueryMissDiagnosticsPayload` when the query produced zero hits but filters were applied. |
 
-Each hit's `match` (a `ConversationSearchMatchPayload`) carries:
+Each hit's `match` (a `SessionSearchMatchPayload`) carries:
 
 | Field | Meaning |
 |-------|---------|
@@ -362,7 +362,7 @@ the hit:
 | Lane | `matched_terms` | `score_kind` | `score_components` |
 |------|-----------------|--------------|--------------------|
 | `dialogue` (FTS5 over messages) | tokenized query terms (lowercased, FTS5 operators stripped) | `bm25` | `{"bm25_raw": <relevance>}` |
-| `actions` (FTS5 over action events) | tokenized query terms | `null` today | `{}` today; action rank is preserved, but action BM25 is not part of the public hit evidence contract yet |
+| `actions` (FTS5 over action blocks) | tokenized query terms | `null` today | `{}` today; action rank is preserved, but action BM25 is not part of the public hit evidence contract yet |
 | `hybrid` (RRF fusion) | tokenized query terms | `rrf` | `<lane>_rank` and `<lane>_rrf` for every contributing lane (`text` / `action` / `vector`); `score` equals the sum of `*_rrf` |
 | `semantic` (vector-only) | the query string passed to `--similar` / `--semantic` (single term) | `vector_distance` | `{}` (raw distance lives in `score`) |
 | `attachment` (identity lookup) | the matched identifier (single term) | `null` | `{}` (identity hits have no numeric rank) |
@@ -395,7 +395,7 @@ search.
 
 For ranked queries, prefer `next_cursor` over `offset`. Cursor
 pagination encodes the rank tie-breaker
-(`(rank, score, conversation_id, retrieval_lane)`) and is stable under
+(`(rank, score, session_id, retrieval_lane)`) and is stable under
 archive growth between page fetches. Offset pagination is supported for
 non-ranked list paths and as a best-effort fallback for ranked paths.
 
@@ -411,7 +411,7 @@ polylogue "sqlite" list --format json --limit 25 \
     --cursor "$NEXT_CURSOR"
 ```
 
-MCP search and the daemon `/api/conversations` endpoint accept the same
+MCP search and the daemon `/api/sessions` endpoint accept the same
 `cursor` parameter; the Python API exposes `Polylogue.search_envelope(
 query, cursor=...)`. The cursor carries the retrieval lane it was
 minted in, so a `dialogue` cursor passed back to a `hybrid` request is
@@ -452,7 +452,7 @@ polylogue "refactor AND schema NOT test"
 Column filters restrict matches:
 
 ```bash
-polylogue 'text:css {conversation_id claude-code}: refactor'
+polylogue 'text:css {session_id claude-code}: refactor'
 ```
 
 ## Output Formats
@@ -460,7 +460,7 @@ polylogue 'text:css {conversation_id claude-code}: refactor'
 | Format | Description |
 |--------|-------------|
 | `markdown` | Default -- formatted markdown with syntax-highlighted code blocks |
-| `json` | Full conversation as JSON |
+| `json` | Full session as JSON |
 | `jsonl` | One JSON object per line (used by `bulk-export`) |
 | `yaml` | YAML representation |
 | `plaintext` | Plain text, no formatting |
@@ -492,17 +492,17 @@ A facets response carries both views explicitly:
 - `scoped_to_query` — `true` whenever any filter narrowed the view.
 - `idf` — inverse-document-frequency per facet value, computed against
   the global universe. Higher = rarer = stronger signal; near zero =
-  value appears in almost every conversation. Disable with
+  value appears in almost every session. Disable with
   `--no-idf` on the CLI.
 
-Top-level fields (`providers`, `tags`, `total_conversations` etc.)
+Top-level fields (`origins`, `tags`, `total_sessions` etc.)
 mirror the *active* view (scoped when filtered, global otherwise) for
 backward compatibility with surfaces written before #1269. Consumers
 that need both views should read `scoped` and `global` directly.
 
 ```bash
 polylogue facets                     # global only (no filters)
-polylogue facets -p chatgpt          # scoped to ChatGPT + global side-by-side
+polylogue facets -o chatgpt-export   # scoped to ChatGPT exports + global side-by-side
 polylogue facets -q "vector store"   # scoped to FTS hits
 polylogue facets -f json --no-idf    # FacetsResponse, no IDF weighting
 ```
@@ -511,7 +511,7 @@ polylogue facets -f json --no-idf    # FacetsResponse, no IDF weighting
 
 When a query returns no results:
 
-1. Check provider spelling: `polylogue -p claude-code list` (not `claude_code`)
+1. Check origin spelling: `polylogue --origin claude-code-session list` (not `claude_code`)
 2. Expand the time window: `--since 2024-01` instead of `--since yesterday`
 3. Verify the archive has data: `polylogue count` (no filters)
 4. Check FTS index health: `polylogued status` shows `fts_readiness`

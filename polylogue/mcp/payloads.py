@@ -13,9 +13,6 @@ from polylogue.mcp.context_pack import (
     ContextPackActionSummary as MCPContextPackActionSummary,
 )
 from polylogue.mcp.context_pack import (
-    ContextPackConversation as MCPContextPackConversation,
-)
-from polylogue.mcp.context_pack import (
     ContextPackDateRange as MCPContextPackDateRange,
 )
 from polylogue.mcp.context_pack import (
@@ -34,22 +31,10 @@ from polylogue.mcp.context_pack import (
     ContextPackQueryContext as MCPContextPackQueryContext,
 )
 from polylogue.mcp.context_pack import (
+    ContextPackSession as MCPContextPackSession,
+)
+from polylogue.mcp.context_pack import (
     ContextPackUnresolvedWork as MCPContextPackUnresolvedWork,
-)
-from polylogue.surfaces.payloads import (
-    ConversationDetailPayload as MCPConversationDetailPayload,
-)
-from polylogue.surfaces.payloads import (
-    ConversationMessagePayload as MCPMessagePayload,
-)
-from polylogue.surfaces.payloads import (
-    ConversationNeighborCandidatePayload as MCPConversationNeighborCandidatePayload,
-)
-from polylogue.surfaces.payloads import (
-    ConversationSearchHitPayload as MCPConversationSearchHitPayload,
-)
-from polylogue.surfaces.payloads import (
-    ConversationSummaryPayload as MCPConversationSummaryPayload,
 )
 from polylogue.surfaces.payloads import (
     MutationResultPayload,
@@ -64,19 +49,36 @@ from polylogue.surfaces.payloads import (
     ReaderActionAvailabilityPayload as MCPReaderActionAvailabilityPayload,
 )
 from polylogue.surfaces.payloads import (
+    SessionDetailPayload as MCPSessionDetailPayload,
+)
+from polylogue.surfaces.payloads import (
+    SessionMessagePayload as MCPMessagePayload,
+)
+from polylogue.surfaces.payloads import (
+    SessionNeighborCandidatePayload as MCPSessionNeighborCandidatePayload,
+)
+from polylogue.surfaces.payloads import (
+    SessionSearchHitPayload as MCPSessionSearchHitPayload,
+)
+from polylogue.surfaces.payloads import (
+    SessionSummaryPayload as MCPSessionSummaryPayload,
+)
+from polylogue.surfaces.payloads import (
     TargetRefPayload as MCPTargetRefPayload,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from polylogue.archive.conversation.neighbor_candidates import ConversationNeighborCandidate
-    from polylogue.archive.models import Conversation
+    from polylogue.archive.models import Session
     from polylogue.archive.query.miss_diagnostics import QueryMissDiagnostics, QueryMissReason
-    from polylogue.archive.query.search_hits import ConversationSearchHit
+    from polylogue.archive.query.search_hits import SessionSearchHit
+    from polylogue.archive.session.neighbor_candidates import SessionNeighborCandidate
     from polylogue.archive.stats import ArchiveStats
     from polylogue.readiness import ReadinessCheck, ReadinessReport
-    from polylogue.storage.runtime import RawConversationRecord
+    from polylogue.storage.runtime import RawSessionRecord
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
+    from polylogue.storage.sqlite.archive_tiers.write import ArchiveBlockRow, ArchiveMessageRow, ArchiveSessionEnvelope
 
 TRoot = TypeVar("TRoot")
 
@@ -93,9 +95,9 @@ class MCPErrorPayload(SurfacePayloadModel):
     code: int | str | None = None
     detail: str | None = None
     tool: str | None = None
-    conversation_id: str | None = None
+    session_id: str | None = None
     # Schema-mismatch surface (#1611): when an MCP tool body raises
-    # ``SchemaIncompatibleError`` the typed payload exposes both versions
+    # ``SchemaVersionMismatchError`` the typed payload exposes both versions
     # so clients can render the actionable operator message without
     # re-parsing the error string.
     current_version: int | None = None
@@ -113,16 +115,16 @@ class MCPFencedCodeBlock(TypedDict):
     code: str
 
 
-class MCPConversationSummaryListPayload(MCPRootPayload[list[MCPConversationSummaryPayload]]):
-    root: list[MCPConversationSummaryPayload]
+class MCPSessionSummaryListPayload(MCPRootPayload[list[MCPSessionSummaryPayload]]):
+    root: list[MCPSessionSummaryPayload]
 
 
-class MCPConversationSearchHitListPayload(MCPRootPayload[list[MCPConversationSearchHitPayload]]):
-    root: list[MCPConversationSearchHitPayload]
+class MCPSessionSearchHitListPayload(MCPRootPayload[list[MCPSessionSearchHitPayload]]):
+    root: list[MCPSessionSearchHitPayload]
 
 
-class MCPConversationNeighborCandidateListPayload(MCPRootPayload[list[MCPConversationNeighborCandidatePayload]]):
-    root: list[MCPConversationNeighborCandidatePayload]
+class MCPSessionNeighborCandidateListPayload(MCPRootPayload[list[MCPSessionNeighborCandidatePayload]]):
+    root: list[MCPSessionNeighborCandidatePayload]
 
 
 class MCPQueryMissReasonPayload(SurfacePayloadModel):
@@ -147,8 +149,8 @@ class MCPQueryMissDiagnosticsPayload(SurfacePayloadModel):
     message: str
     filters: tuple[str, ...]
     reasons: tuple[MCPQueryMissReasonPayload, ...]
-    archive_conversation_count: int | None = None
-    raw_conversation_count: int | None = None
+    archive_session_count: int | None = None
+    raw_session_count: int | None = None
 
     @classmethod
     def from_diagnostics(cls, diagnostics: QueryMissDiagnostics) -> MCPQueryMissDiagnosticsPayload:
@@ -156,25 +158,25 @@ class MCPQueryMissDiagnosticsPayload(SurfacePayloadModel):
             message=diagnostics.message,
             filters=diagnostics.filters,
             reasons=tuple(MCPQueryMissReasonPayload.from_reason(reason) for reason in diagnostics.reasons),
-            archive_conversation_count=diagnostics.archive_conversation_count,
-            raw_conversation_count=diagnostics.raw_conversation_count,
+            archive_session_count=diagnostics.archive_session_count,
+            raw_session_count=diagnostics.raw_session_count,
         )
 
 
-class MCPConversationQueryNoResultsPayload(SurfacePayloadModel):
-    results: tuple[MCPConversationSummaryPayload, ...] = ()
+class MCPSessionQueryNoResultsPayload(SurfacePayloadModel):
+    results: tuple[MCPSessionSummaryPayload, ...] = ()
     diagnostics: MCPQueryMissDiagnosticsPayload
 
 
-class MCPConversationSearchNoResultsPayload(SurfacePayloadModel):
-    results: tuple[MCPConversationSearchHitPayload, ...] = ()
+class MCPSessionSearchNoResultsPayload(SurfacePayloadModel):
+    results: tuple[MCPSessionSearchHitPayload, ...] = ()
     diagnostics: MCPQueryMissDiagnosticsPayload
 
 
 class MCPPaginatedQueryResultPayload(SurfacePayloadModel):
-    """Paginated query result envelope for list_conversations."""
+    """Paginated query result envelope for list_sessions."""
 
-    items: tuple[MCPConversationSummaryPayload, ...]
+    items: tuple[MCPSessionSummaryPayload, ...]
     total: int
     limit: int
     offset: int
@@ -183,7 +185,7 @@ class MCPPaginatedQueryResultPayload(SurfacePayloadModel):
 
 
 #: MCP search uses the canonical :class:`~polylogue.surfaces.payloads.SearchEnvelope`
-#: shape (#1266). The legacy alias is retained so existing call sites keep
+#: shape (#1266). The compatibility alias is retained so existing call sites keep
 #: working; new code should import :class:`SearchEnvelope` directly from
 #: ``polylogue.surfaces.payloads``.
 MCPPaginatedSearchResultPayload = SearchEnvelope
@@ -192,20 +194,20 @@ MCPPaginatedSearchResultPayload = SearchEnvelope
 class MCPSessionTreePayload(SurfacePayloadModel):
     """Bounded envelope for ``get_session_tree``.
 
-    The tree of related conversations can be unbounded in principle; the
+    The tree of related sessions can be unbounded in principle; the
     envelope makes the size visible to callers and preserves room for
     future ``limit``/``offset`` pagination without breaking the response
     shape.
     """
 
-    items: tuple[MCPConversationSummaryPayload, ...]
+    items: tuple[MCPSessionSummaryPayload, ...]
     total: int
 
 
-class MCPConversationRefPayload(SurfacePayloadModel):
-    """One conversation reference inside a topology payload (#1261)."""
+class MCPSessionRefPayload(SurfacePayloadModel):
+    """One session reference inside a topology payload (#1261)."""
 
-    conversation_id: str
+    session_id: str
     source_name: str = ""
     title: str | None = None
     depth: int = 0
@@ -232,22 +234,22 @@ class MCPSessionTopologyPayload(SurfacePayloadModel):
     target_id: str
     root_id: str
     cycle_detected: bool
-    nodes: tuple[MCPConversationRefPayload, ...]
+    nodes: tuple[MCPSessionRefPayload, ...]
     edges: tuple[MCPTopologyEdgePayload, ...]
-    ancestors: tuple[MCPConversationRefPayload, ...]
-    descendants: tuple[MCPConversationRefPayload, ...]
-    siblings: tuple[MCPConversationRefPayload, ...]
-    thread: tuple[MCPConversationRefPayload, ...]
+    ancestors: tuple[MCPSessionRefPayload, ...]
+    descendants: tuple[MCPSessionRefPayload, ...]
+    siblings: tuple[MCPSessionRefPayload, ...]
+    thread: tuple[MCPSessionRefPayload, ...]
 
 
 class MCPLogicalSessionPayload(SurfacePayloadModel):
     """Compact envelope for ``get_logical_session`` (#866)."""
 
-    conversation_id: str
+    session_id: str
     root_id: str
-    thread: tuple[MCPConversationRefPayload, ...]
-    siblings: tuple[MCPConversationRefPayload, ...]
-    descendants: tuple[MCPConversationRefPayload, ...]
+    thread: tuple[MCPSessionRefPayload, ...]
+    siblings: tuple[MCPSessionRefPayload, ...]
+    descendants: tuple[MCPSessionRefPayload, ...]
     cycle_detected: bool = False
 
 
@@ -258,30 +260,172 @@ class MCPNeighborCandidatesPayload(SurfacePayloadModel):
     truncation and decide whether to widen the request.
     """
 
-    items: tuple[MCPConversationNeighborCandidatePayload, ...]
+    items: tuple[MCPSessionNeighborCandidatePayload, ...]
     total: int
     limit: int
 
 
-def conversation_summary_list_payload(
-    conversations: Sequence[Conversation],
-) -> MCPConversationSummaryListPayload:
-    return MCPConversationSummaryListPayload(
-        root=[MCPConversationSummaryPayload.from_conversation(conv) for conv in conversations]
-    )
+class MCPArchiveSessionSummaryPayload(SurfacePayloadModel):
+    """Archive session summary payload."""
+
+    session_id: str
+    native_id: str
+    origin: str
+    source: str
+    title: str | None
+    created_at: str | None
+    updated_at: str | None
+    message_count: int
+    word_count: int
+    tags: tuple[str, ...]
+
+    @classmethod
+    def from_summary(cls, summary: ArchiveSessionSummary) -> MCPArchiveSessionSummaryPayload:
+        return cls(
+            session_id=summary.session_id,
+            native_id=summary.native_id,
+            origin=summary.origin,
+            source=summary.origin,
+            title=summary.title,
+            created_at=summary.created_at,
+            updated_at=summary.updated_at,
+            message_count=summary.message_count,
+            word_count=summary.word_count,
+            tags=summary.tags,
+        )
 
 
-def conversation_query_result_payload(
-    conversations: Sequence[Conversation],
+class MCPArchiveSessionListPayload(SurfacePayloadModel):
+    """Paginated envelope for archive session summaries."""
+
+    items: tuple[MCPArchiveSessionSummaryPayload, ...]
+    total: int
+    limit: int
+    offset: int
+    origin: str | None = None
+
+
+class MCPArchiveSearchHitPayload(SurfacePayloadModel):
+    """Archive block-search hit payload."""
+
+    rank: int
+    session_id: str
+    block_id: str
+    message_id: str
+    origin: str
+    source: str
+    title: str | None
+    snippet: str
+
+    @classmethod
+    def from_hit(cls, hit: ArchiveSessionSearchHit) -> MCPArchiveSearchHitPayload:
+        return cls(
+            rank=hit.rank,
+            session_id=hit.session_id,
+            block_id=hit.block_id,
+            message_id=hit.message_id,
+            origin=hit.origin,
+            source=hit.origin,
+            title=hit.title,
+            snippet=hit.snippet,
+        )
+
+
+class MCPArchiveSearchPayload(SurfacePayloadModel):
+    """Paginated envelope for archive block-search hits."""
+
+    items: tuple[MCPArchiveSearchHitPayload, ...]
+    total: int
+    limit: int
+    query: str
+    origin: str | None = None
+
+
+class MCPArchiveBlockPayload(SurfacePayloadModel):
+    """Archive message block payload."""
+
+    block_id: str
+    message_id: str
+    block_type: str
+    text: str | None
+
+    @classmethod
+    def from_block(cls, block: ArchiveBlockRow) -> MCPArchiveBlockPayload:
+        return cls(
+            block_id=block.block_id,
+            message_id=block.message_id,
+            block_type=block.block_type,
+            text=block.text,
+        )
+
+
+class MCPArchiveMessagePayload(SurfacePayloadModel):
+    """Archive message payload."""
+
+    message_id: str
+    native_id: str | None
+    role: str
+    position: int
+    variant_index: int
+    is_active_path: bool
+    is_active_leaf: bool
+    blocks: tuple[MCPArchiveBlockPayload, ...]
+
+    @classmethod
+    def from_message(cls, message: ArchiveMessageRow) -> MCPArchiveMessagePayload:
+        return cls(
+            message_id=message.message_id,
+            native_id=message.native_id,
+            role=message.role,
+            position=message.position,
+            variant_index=message.variant_index,
+            is_active_path=message.is_active_path,
+            is_active_leaf=message.is_active_leaf,
+            blocks=tuple(MCPArchiveBlockPayload.from_block(block) for block in message.blocks),
+        )
+
+
+class MCPArchiveSessionPayload(SurfacePayloadModel):
+    """Archive full session envelope."""
+
+    session_id: str
+    native_id: str
+    origin: str
+    source: str
+    title: str | None
+    active_leaf_message_id: str | None
+    messages: tuple[MCPArchiveMessagePayload, ...]
+
+    @classmethod
+    def from_session(cls, session: ArchiveSessionEnvelope) -> MCPArchiveSessionPayload:
+        return cls(
+            session_id=session.session_id,
+            native_id=session.native_id,
+            origin=session.origin,
+            source=session.origin,
+            title=session.title,
+            active_leaf_message_id=session.active_leaf_message_id,
+            messages=tuple(MCPArchiveMessagePayload.from_message(message) for message in session.messages),
+        )
+
+
+def session_summary_list_payload(
+    sessions: Sequence[Session],
+) -> MCPSessionSummaryListPayload:
+    return MCPSessionSummaryListPayload(root=[MCPSessionSummaryPayload.from_session(conv) for conv in sessions])
+
+
+def session_query_result_payload(
+    sessions: Sequence[Session],
     *,
     total: int,
     limit: int,
     offset: int,
     diagnostics: QueryMissDiagnostics | None = None,
 ) -> MCPPaginatedQueryResultPayload:
-    next_offset = offset + len(conversations) if len(conversations) == limit and offset + limit < total else None
+    next_offset = offset + len(sessions) if len(sessions) == limit and offset + limit < total else None
     return MCPPaginatedQueryResultPayload(
-        items=tuple(MCPConversationSummaryPayload.from_conversation(conv) for conv in conversations),
+        items=tuple(MCPSessionSummaryPayload.from_session(conv) for conv in sessions),
         total=total,
         limit=limit,
         offset=offset,
@@ -290,12 +434,12 @@ def conversation_query_result_payload(
     )
 
 
-def conversation_search_hit_list_payload(
-    hits: Sequence[ConversationSearchHit],
-) -> MCPConversationSearchHitListPayload:
-    return MCPConversationSearchHitListPayload(
+def session_search_hit_list_payload(
+    hits: Sequence[SessionSearchHit],
+) -> MCPSessionSearchHitListPayload:
+    return MCPSessionSearchHitListPayload(
         root=[
-            MCPConversationSearchHitPayload.from_search_hit(
+            MCPSessionSearchHitPayload.from_search_hit(
                 hit,
                 message_count=hit.summary.message_count,
             )
@@ -304,36 +448,36 @@ def conversation_search_hit_list_payload(
     )
 
 
-def conversation_neighbor_candidate_list_payload(
-    candidates: Sequence[ConversationNeighborCandidate],
-) -> MCPConversationNeighborCandidateListPayload:
-    return MCPConversationNeighborCandidateListPayload(
-        root=[MCPConversationNeighborCandidatePayload.from_candidate(candidate) for candidate in candidates]
+def session_neighbor_candidate_list_payload(
+    candidates: Sequence[SessionNeighborCandidate],
+) -> MCPSessionNeighborCandidateListPayload:
+    return MCPSessionNeighborCandidateListPayload(
+        root=[MCPSessionNeighborCandidatePayload.from_candidate(candidate) for candidate in candidates]
     )
 
 
 def session_tree_payload(
-    conversations: Sequence[Conversation],
+    sessions: Sequence[Session],
 ) -> MCPSessionTreePayload:
-    items = tuple(MCPConversationSummaryPayload.from_conversation(conv) for conv in conversations)
+    items = tuple(MCPSessionSummaryPayload.from_session(conv) for conv in sessions)
     return MCPSessionTreePayload(items=items, total=len(items))
 
 
-def _ref_payload(ref: object) -> MCPConversationRefPayload:
+def _ref_payload(ref: object) -> MCPSessionRefPayload:
     # Imported lazily to avoid pulling insights/topology into the module
     # import graph at module load time.
-    from polylogue.insights.topology import ConversationRef
+    from polylogue.insights.topology import SessionRef
 
-    assert isinstance(ref, ConversationRef)
-    return MCPConversationRefPayload(
-        conversation_id=str(ref.conversation_id),
+    assert isinstance(ref, SessionRef)
+    return MCPSessionRefPayload(
+        session_id=str(ref.session_id),
         source_name=ref.source_name,
         title=ref.title,
         depth=ref.depth,
     )
 
 
-def session_topology_payload(topology: object, *, conversation_id: str) -> MCPSessionTopologyPayload:
+def session_topology_payload(topology: object, *, session_id: str) -> MCPSessionTopologyPayload:
     """Build the typed MCP payload for ``get_session_topology`` (#1261)."""
     from polylogue.insights.topology import SessionTopology
 
@@ -355,10 +499,10 @@ def session_topology_payload(topology: object, *, conversation_id: str) -> MCPSe
         cycle_detected=topology.cycle_detected,
         nodes=nodes,
         edges=edges,
-        ancestors=tuple(_ref_payload(ref) for ref in topology.ancestor_refs(conversation_id)),
-        descendants=tuple(_ref_payload(ref) for ref in topology.descendant_refs(conversation_id)),
-        siblings=tuple(_ref_payload(ref) for ref in topology.sibling_refs(conversation_id)),
-        thread=tuple(_ref_payload(ref) for ref in topology.thread_refs(conversation_id)),
+        ancestors=tuple(_ref_payload(ref) for ref in topology.ancestor_refs(session_id)),
+        descendants=tuple(_ref_payload(ref) for ref in topology.descendant_refs(session_id)),
+        siblings=tuple(_ref_payload(ref) for ref in topology.sibling_refs(session_id)),
+        thread=tuple(_ref_payload(ref) for ref in topology.thread_refs(session_id)),
     )
 
 
@@ -368,7 +512,7 @@ def logical_session_payload(logical_session: object) -> MCPLogicalSessionPayload
 
     assert isinstance(logical_session, LogicalSession)
     return MCPLogicalSessionPayload(
-        conversation_id=str(logical_session.conversation_id),
+        session_id=str(logical_session.session_id),
         root_id=str(logical_session.root_id),
         thread=tuple(_ref_payload(ref) for ref in logical_session.thread),
         siblings=tuple(_ref_payload(ref) for ref in logical_session.siblings),
@@ -378,16 +522,16 @@ def logical_session_payload(logical_session: object) -> MCPLogicalSessionPayload
 
 
 def neighbor_candidates_payload(
-    candidates: Sequence[ConversationNeighborCandidate],
+    candidates: Sequence[SessionNeighborCandidate],
     *,
     limit: int,
 ) -> MCPNeighborCandidatesPayload:
-    items = tuple(MCPConversationNeighborCandidatePayload.from_candidate(candidate) for candidate in candidates)
+    items = tuple(MCPSessionNeighborCandidatePayload.from_candidate(candidate) for candidate in candidates)
     return MCPNeighborCandidatesPayload(items=items, total=len(items), limit=limit)
 
 
-def conversation_search_result_payload(
-    hits: Sequence[ConversationSearchHit],
+def session_search_result_payload(
+    hits: Sequence[SessionSearchHit],
     *,
     total: int,
     limit: int,
@@ -412,7 +556,7 @@ def conversation_search_result_payload(
     if resolved_lane in {"", "auto"} and hits:
         resolved_lane = hits[0].retrieval_lane
     hit_payloads = [
-        MCPConversationSearchHitPayload.from_search_hit(
+        MCPSessionSearchHitPayload.from_search_hit(
             hit,
             message_count=hit.summary.message_count,
         )
@@ -433,12 +577,12 @@ def conversation_search_result_payload(
 
 
 class MCPArchiveStatsPayload(SurfacePayloadModel):
-    total_conversations: int
+    total_sessions: int
     total_messages: int
-    providers: dict[str, int]
-    embedded_conversations: int | None = None
+    origins: dict[str, int]
+    embedded_sessions: int | None = None
     embedded_messages: int | None = None
-    pending_embedding_conversations: int | None = None
+    pending_embedding_sessions: int | None = None
     embedding_coverage_percent: float | None = None
     stale_embedding_messages: int | None = None
     messages_missing_embedding_provenance: int | None = None
@@ -458,14 +602,12 @@ class MCPArchiveStatsPayload(SurfacePayloadModel):
         include_db_size: bool,
     ) -> MCPArchiveStatsPayload:
         return cls(
-            total_conversations=archive_stats.total_conversations,
+            total_sessions=archive_stats.total_sessions,
             total_messages=archive_stats.total_messages,
-            providers=archive_stats.providers,
-            embedded_conversations=archive_stats.embedded_conversations if include_embedded else None,
+            origins=archive_stats.origins,
+            embedded_sessions=archive_stats.embedded_sessions if include_embedded else None,
             embedded_messages=archive_stats.embedded_messages if include_embedded else None,
-            pending_embedding_conversations=(
-                archive_stats.pending_embedding_conversations if include_embedded else None
-            ),
+            pending_embedding_sessions=(archive_stats.pending_embedding_sessions if include_embedded else None),
             embedding_coverage_percent=(
                 round(float(archive_stats.embedding_coverage), 1) if include_embedded else None
             ),
@@ -490,12 +632,12 @@ class MCPArchiveStatsPayload(SurfacePayloadModel):
 
 class MCPMutationStatusPayload(SurfacePayloadModel):
     status: str
-    conversation_id: str | None = None
+    session_id: str | None = None
     tag: str | None = None
     key: str | None = None
     index_exists: bool | None = None
     indexed_messages: int | None = None
-    conversation_count: int | None = None
+    session_count: int | None = None
     outcome: str | None = None
     """Tag idempotency outcome: ``added``, ``no_op``, ``removed``, or ``not_present``."""
 
@@ -545,9 +687,9 @@ class MCPEmbeddingPreflightPayload(SurfacePayloadModel):
 
 
 class MCPUserMarkPayload(SurfacePayloadModel):
-    target_type: str = "conversation"
+    target_type: str = "session"
     target_id: str
-    conversation_id: str
+    session_id: str
     message_id: str | None = None
     mark_type: str
     created_at: str
@@ -562,7 +704,7 @@ class MCPUserAnnotationPayload(SurfacePayloadModel):
     annotation_id: str
     target_type: str
     target_id: str
-    conversation_id: str
+    session_id: str
     message_id: str | None = None
     note_text: str
     created_at: str
@@ -589,7 +731,7 @@ class MCPSavedViewListPayload(SurfacePayloadModel):
 class MCPRecallPackPayload(SurfacePayloadModel):
     pack_id: str
     label: str
-    conversation_ids: tuple[str, ...]
+    session_ids: tuple[str, ...]
     payload: dict[str, object]
     created_at: str
 
@@ -622,7 +764,7 @@ class MCPStatsByPayload(MCPRootPayload[dict[str, int]]):
 class MCPMessagesListPayload(SurfacePayloadModel):
     """Paginated message list response for get_messages tool."""
 
-    conversation_id: str
+    session_id: str
     messages: tuple[MCPMessagePayload, ...]
     total: int
     limit: int
@@ -644,7 +786,7 @@ class MCPRawArtifactPayload(SurfacePayloadModel):
     validation_error: str | None = None
 
     @classmethod
-    def from_record(cls, record: RawConversationRecord) -> MCPRawArtifactPayload:
+    def from_record(cls, record: RawSessionRecord) -> MCPRawArtifactPayload:
         return cls(
             raw_id=record.raw_id,
             source_name=record.source_name,
@@ -662,7 +804,7 @@ class MCPRawArtifactPayload(SurfacePayloadModel):
 class MCPRawArtifactsListPayload(SurfacePayloadModel):
     """Paginated raw archive artifact response for the raw_artifacts tool."""
 
-    conversation_id: str
+    session_id: str
     raw_artifacts: tuple[MCPRawArtifactPayload, ...]
     total: int
     limit: int
@@ -729,7 +871,7 @@ class MCPReadinessReportPayload(SurfacePayloadModel):
 __all__ = [
     "MCPArchiveStatsPayload",
     "MCPContextPackActionSummary",
-    "MCPContextPackConversation",
+    "MCPContextPackSession",
     "MCPContextPackDateRange",
     "MCPContextPackMessage",
     "MCPContextPackPayload",
@@ -737,15 +879,15 @@ __all__ = [
     "MCPContextPackProvenance",
     "MCPContextPackQueryContext",
     "MCPContextPackUnresolvedWork",
-    "MCPConversationDetailPayload",
-    "MCPConversationNeighborCandidateListPayload",
-    "MCPConversationNeighborCandidatePayload",
-    "MCPConversationQueryNoResultsPayload",
-    "MCPConversationSearchHitListPayload",
-    "MCPConversationSearchHitPayload",
-    "MCPConversationSearchNoResultsPayload",
-    "MCPConversationSummaryListPayload",
-    "MCPConversationSummaryPayload",
+    "MCPSessionDetailPayload",
+    "MCPSessionNeighborCandidateListPayload",
+    "MCPSessionNeighborCandidatePayload",
+    "MCPSessionQueryNoResultsPayload",
+    "MCPSessionSearchHitListPayload",
+    "MCPSessionSearchHitPayload",
+    "MCPSessionSearchNoResultsPayload",
+    "MCPSessionSummaryListPayload",
+    "MCPSessionSummaryPayload",
     "MCPErrorPayload",
     "MCPFencedCodeBlock",
     "MCPMessagePayload",
@@ -765,6 +907,13 @@ __all__ = [
     "MCPReadinessCheckPayload",
     "MCPReadinessReportPayload",
     "MCPRootPayload",
+    "MCPArchiveBlockPayload",
+    "MCPArchiveMessagePayload",
+    "MCPArchiveSearchHitPayload",
+    "MCPArchiveSearchPayload",
+    "MCPArchiveSessionListPayload",
+    "MCPArchiveSessionPayload",
+    "MCPArchiveSessionSummaryPayload",
     "MCPSessionTreePayload",
     "MCPStatsByPayload",
     "MCPTagCountsPayload",
@@ -777,11 +926,11 @@ __all__ = [
     "MCPUserAnnotationListPayload",
     "MCPUserAnnotationPayload",
     "MCPTargetRefPayload",
-    "conversation_neighbor_candidate_list_payload",
-    "conversation_query_result_payload",
-    "conversation_search_hit_list_payload",
-    "conversation_search_result_payload",
-    "conversation_summary_list_payload",
+    "session_neighbor_candidate_list_payload",
+    "session_query_result_payload",
+    "session_search_hit_list_payload",
+    "session_search_result_payload",
+    "session_summary_list_payload",
     "model_json_document",
     "neighbor_candidates_payload",
     "logical_session_payload",

@@ -93,7 +93,7 @@ def resolve_provider_schema(
         if named_schema is None:
             raise FileNotFoundError(f"No schema found for provider: {canonical}")
         schema, version = named_schema
-        return canonical, schema, (str(canonical), version, "conversation_document")
+        return canonical, schema, (str(canonical), version, "session_document")
     package_registry = cast(SchemaRegistry, registry)
     package = _load_package(package_registry, canonical, version="default")
     package_version = package.version
@@ -122,7 +122,7 @@ def resolve_payload_schema(
         if named_schema is None:
             raise FileNotFoundError(f"No schema found for provider: {canonical}")
         schema, version = named_schema
-        return canonical, schema, (str(canonical), version, "conversation_document")
+        return canonical, schema, (str(canonical), version, "session_document")
 
     package_registry = cast(SchemaRegistry, registry)
     resolution = schema_resolution

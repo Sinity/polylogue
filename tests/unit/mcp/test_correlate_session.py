@@ -8,13 +8,13 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from polylogue.archive.models import Conversation
+from polylogue.archive.models import Session
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.mcp import MCPServerUnderTest, invoke_surface_async, make_polylogue_mock
 
 
-def _make_conversation_with_messages() -> Conversation:
-    """Build a mock conversation with tool-call messages for testing."""
+def _make_session_with_messages() -> Session:
+    """Build a mock session with tool-call messages for testing."""
     conv = make_conv(
         id="test-session-1",
         provider="claude-code",
@@ -55,7 +55,7 @@ def _make_conversation_with_messages() -> Conversation:
 async def test_correlate_session_not_found(mcp_server: MCPServerUnderTest) -> None:
     with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
         mock_poly = make_polylogue_mock()
-        mock_poly.get_conversation = AsyncMock(return_value=None)
+        mock_poly.get_session = AsyncMock(return_value=None)
         mock_get_polylogue.return_value = mock_poly
 
         raw = await invoke_surface_async(
@@ -71,10 +71,10 @@ async def test_correlate_session_not_found(mcp_server: MCPServerUnderTest) -> No
 async def test_correlate_session_returns_result_shape(
     mcp_server: MCPServerUnderTest,
 ) -> None:
-    conv = _make_conversation_with_messages()
+    conv = _make_session_with_messages()
     with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
         mock_poly = make_polylogue_mock()
-        mock_poly.get_conversation = AsyncMock(return_value=conv)
+        mock_poly.get_session = AsyncMock(return_value=conv)
         mock_get_polylogue.return_value = mock_poly
 
         raw = await invoke_surface_async(
@@ -99,10 +99,10 @@ async def test_correlate_session_returns_result_shape(
 async def test_correlate_session_extracts_issue_refs(
     mcp_server: MCPServerUnderTest,
 ) -> None:
-    conv = _make_conversation_with_messages()
+    conv = _make_session_with_messages()
     with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
         mock_poly = make_polylogue_mock()
-        mock_poly.get_conversation = AsyncMock(return_value=conv)
+        mock_poly.get_session = AsyncMock(return_value=conv)
         mock_get_polylogue.return_value = mock_poly
 
         raw = await invoke_surface_async(
@@ -126,10 +126,10 @@ async def test_correlate_session_no_git_graceful(
     mcp_server: MCPServerUnderTest,
 ) -> None:
     """When git is not available, the tool still returns a valid result."""
-    conv = _make_conversation_with_messages()
+    conv = _make_session_with_messages()
     with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
         mock_poly = make_polylogue_mock()
-        mock_poly.get_conversation = AsyncMock(return_value=conv)
+        mock_poly.get_session = AsyncMock(return_value=conv)
         mock_get_polylogue.return_value = mock_poly
 
         raw = await invoke_surface_async(
@@ -147,10 +147,10 @@ async def test_correlate_session_no_git_graceful(
 async def test_correlate_session_respects_confidence_threshold(
     mcp_server: MCPServerUnderTest,
 ) -> None:
-    conv = _make_conversation_with_messages()
+    conv = _make_session_with_messages()
     with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
         mock_poly = make_polylogue_mock()
-        mock_poly.get_conversation = AsyncMock(return_value=conv)
+        mock_poly.get_session = AsyncMock(return_value=conv)
         mock_get_polylogue.return_value = mock_poly
 
         raw = await invoke_surface_async(

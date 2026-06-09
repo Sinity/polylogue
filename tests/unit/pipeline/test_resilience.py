@@ -7,7 +7,9 @@ verifies the pipeline recovers, logs, or surfaces the error cleanly.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import sqlite3
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,13 +29,16 @@ from polylogue.pipeline.services.parsing import ParseResult, ParsingService
 from polylogue.pipeline.services.validation import ValidationService
 from polylogue.sources.parsers.base import (
     ParsedContentBlock,
-    ParsedConversation,
     ParsedMessage,
-    RawConversationData,
+    ParsedSession,
+    RawSessionData,
 )
-from polylogue.storage.runtime import RawConversationRecord
+from polylogue.storage.runtime import RawSessionRecord
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-from polylogue.types import ContentBlockType, Provider, ValidationStatus
+from polylogue.types import BlockType, Provider, ValidationStatus
 from tests.infra.strategies import (
     AcquisitionInputSpec,
     ParseMergeEvent,
@@ -47,10 +52,10 @@ from tests.infra.strategies import (
     validation_case_strategy,
 )
 
-ConversationJson = dict[str, JSONValue]
+SessionJson = dict[str, JSONValue]
 
 
-class ConversationNode(TypedDict):
+class SessionNode(TypedDict):
     message: dict[str, JSONValue]
     parent: str | None
     children: list[str]
@@ -61,7 +66,7 @@ def _make_raw_record(
     provider: str,
     content: bytes,
     path: str = "/exports/test.json",
-) -> RawConversationRecord:
+) -> RawSessionRecord:
     from polylogue.storage.blob_store import get_blob_store
 
     # Write content to blob store
@@ -69,7 +74,7 @@ def _make_raw_record(
     actual_raw_id, blob_size = blob_store.write_from_bytes(content)
     now = datetime.now(timezone.utc).isoformat()
 
-    return RawConversationRecord(
+    return RawSessionRecord(
         raw_id=actual_raw_id,  # Use the actual hash as raw_id
         source_name=provider,
         source_path=path,
@@ -83,7 +88,7 @@ def _make_raw_record(
 def _make_parsing_service(tmp_path: Path) -> ParsingService:
     """Shared factory to avoid boilerplate in each test."""
     from polylogue.config import Config
-    from polylogue.storage.repository import ConversationRepository
+    from polylogue.storage.repository import SessionRepository
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
     db = SQLiteBackend(db_path=tmp_path / "test.db")
@@ -93,7 +98,7 @@ def _make_parsing_service(tmp_path: Path) -> ParsingService:
         render_root=tmp_path / "render",
     )
     return ParsingService(
-        repository=ConversationRepository(backend=db),
+        repository=SessionRepository(backend=db),
         archive_root=tmp_path / "archive",
         config=config,
     )
@@ -115,7 +120,7 @@ def test_parse_unknown_chatgpt_structure_returns_empty(tmp_path: Path) -> None:
     payload = json.dumps({"unexpected": "structure", "no_mapping": True}).encode()
     record = _make_raw_record("unknown-struct", "chatgpt", payload)
     result = ingest_record(record, str(tmp_path / "archive"), "off")
-    assert result.error is None or isinstance(result.conversations, list)
+    assert result.error is None or isinstance(result.sessions, list)
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +142,7 @@ def test_parse_chatgpt_no_messages_returns_empty(tmp_path: Path) -> None:
     ).encode()
     record = _make_raw_record("no-messages", "chatgpt", payload)
     result = ingest_record(record, str(tmp_path / "archive"), "off")
-    assert result.error is None or isinstance(result.conversations, list)
+    assert result.error is None or isinstance(result.sessions, list)
 
 
 # ---------------------------------------------------------------------------
@@ -178,9 +183,9 @@ def test_parse_mixed_valid_invalid_jsonl_lines(tmp_path: Path) -> None:
     )
     record = _make_raw_record("mixed-jsonl", "claude-code", content, "/exports/session.jsonl")
     result = ingest_record(record, str(tmp_path / "archive"), "off")
-    assert result.conversations is not None
-    if result.conversations:
-        assert result.conversations[0].source_name == "claude-code"
+    assert result.sessions is not None
+    if result.sessions:
+        assert result.sessions[0].parsed_session.source_name == "claude-code"
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +203,7 @@ def test_parse_unknown_source_name(tmp_path: Path) -> None:
         json.dumps({"id": "conv-1", "title": "Test"}).encode(),
     )
     result = ingest_record(record, str(tmp_path / "archive"), "off")
-    assert result.conversations is not None or result.error is not None
+    assert result.sessions is not None or result.error is not None
 
 
 # ---------------------------------------------------------------------------
@@ -216,19 +221,19 @@ def test_parse_claude_code_jsonl_with_null_fields(tmp_path: Path) -> None:
     )
     record = _make_raw_record("null-fields", "claude-code", content, "/exports/session.jsonl")
     result = ingest_record(record, str(tmp_path / "archive"), "off")
-    assert result.conversations is not None or result.error is not None
+    assert result.sessions is not None or result.error is not None
 
 
 # ---------------------------------------------------------------------------
-# Fault 7: Parsing handles very large valid conversation
+# Fault 7: Parsing handles very large valid session
 # ---------------------------------------------------------------------------
 
 
-def test_parse_very_large_conversation_does_not_crash(tmp_path: Path) -> None:
+def test_parse_very_large_session_does_not_crash(tmp_path: Path) -> None:
     """Very large valid chatgpt payload is handled without crashing."""
     from polylogue.pipeline.services.ingest_worker import ingest_record
 
-    messages: dict[str, ConversationNode] = {}
+    messages: dict[str, SessionNode] = {}
     prev_id: str | None = None
     for i in range(50):
         node_id = f"node-{i}"
@@ -248,7 +253,7 @@ def test_parse_very_large_conversation_does_not_crash(tmp_path: Path) -> None:
 
     payload = json.dumps(
         {
-            "title": "Large Conversation",
+            "title": "Large Session",
             "mapping": messages,
             "create_time": 1700000000,
             "update_time": 1700000100,
@@ -257,8 +262,8 @@ def test_parse_very_large_conversation_does_not_crash(tmp_path: Path) -> None:
 
     record = _make_raw_record("large-content", "chatgpt", payload)
     result = ingest_record(record, str(tmp_path / "archive"), "off")
-    assert result.conversations is not None
-    assert len(result.conversations) > 0
+    assert result.sessions is not None
+    assert len(result.sessions) > 0
 
 
 # ---------------------------------------------------------------------------
@@ -284,7 +289,7 @@ def test_parse_chatgpt_deeply_nested_malformed_nodes(tmp_path: Path) -> None:
     ).encode()
     record = _make_raw_record("malformed-nodes", "chatgpt", payload)
     result = ingest_record(record, str(tmp_path / "archive"), "off")
-    assert result.conversations is not None or result.error is not None
+    assert result.sessions is not None or result.error is not None
 
 
 # ---------------------------------------------------------------------------
@@ -300,7 +305,7 @@ def test_parse_chatgpt_bundle_with_one_invalid_item(tmp_path: Path) -> None:
         [
             {
                 "id": "conv-1",
-                "title": "Valid Conversation",
+                "title": "Valid Session",
                 "mapping": {
                     "m1": {
                         "message": {
@@ -321,7 +326,7 @@ def test_parse_chatgpt_bundle_with_one_invalid_item(tmp_path: Path) -> None:
     ).encode()
     record = _make_raw_record("bundle-one-invalid", "chatgpt", payload)
     result = ingest_record(record, str(tmp_path / "archive"), "off")
-    assert result.conversations is not None or result.error is not None
+    assert result.sessions is not None or result.error is not None
 
 
 # ---------------------------------------------------------------------------
@@ -335,7 +340,7 @@ def test_parse_gemini_missing_text_fields(tmp_path: Path) -> None:
 
     payload = json.dumps(
         {
-            "conversations": [
+            "sessions": [
                 {
                     "chunks": [
                         {"role": "user"},  # no text field
@@ -347,7 +352,7 @@ def test_parse_gemini_missing_text_fields(tmp_path: Path) -> None:
     ).encode()
     record = _make_raw_record("gemini-no-text", "gemini", payload)
     result = ingest_record(record, str(tmp_path / "archive"), "off")
-    assert result.conversations is not None or result.error is not None
+    assert result.sessions is not None or result.error is not None
 
 
 # =====================================================================
@@ -366,7 +371,7 @@ async def test_acquisition_law_counts_unique_raws_and_normalizes_provider_hints(
         source_name = "generated-source"
 
         raw_items = [
-            RawConversationData(
+            RawSessionData(
                 raw_bytes=build_acquisition_raw_bytes(spec),
                 source_path=f"/tmp/{index}.json",
                 source_index=index,
@@ -391,14 +396,18 @@ async def test_acquisition_law_counts_unique_raws_and_normalizes_provider_hints(
             assert len(result.raw_ids) == len(unique_payloads)
 
             for raw_id in result.raw_ids:
-                stored = await backend.get_raw_conversation(raw_id)
+                stored = await backend.get_raw_session(raw_id)
                 assert stored is not None
                 from polylogue.storage.blob_store import load_raw_content
 
                 raw_bytes = load_raw_content(raw_id)
                 payload_id = json.loads(raw_bytes)["id"]
                 assert stored.source_name == expected_first_provider[payload_id]
-                assert stored.payload_provider is None
+                # #1743: raw_sessions stores a single origin column; payload_provider
+                # projects from it on read (no separate nullable hint column), so the
+                # normalized hint surfaces through both source_name and payload_provider.
+                assert stored.payload_provider is not None
+                assert stored.payload_provider.value == expected_first_provider[payload_id]
         finally:
             await backend.close()
 
@@ -428,7 +437,7 @@ async def test_validation_law_matches_mode_and_payload_contract(case: Validation
     get_batch = AsyncMock(return_value=[raw_record])
     mark_validated = AsyncMock()
     mark_parsed = AsyncMock()
-    object.__setattr__(service.repository, "get_raw_conversations_batch", get_batch)
+    object.__setattr__(service.repository, "get_raw_sessions_batch", get_batch)
     object.__setattr__(service.repository, "mark_raw_validated", mark_validated)
     object.__setattr__(service.repository, "mark_raw_parsed", mark_parsed)
 
@@ -490,7 +499,7 @@ async def test_parse_result_merge_law_accumulates_counts_and_processed_ids(event
     result = ParseResult()
     for event in events:
         await result.merge_result(
-            conversation_id=event.conversation_id,
+            session_id=event.session_id,
             result_counts=event.result_counts,
             content_changed=event.content_changed,
         )
@@ -509,7 +518,7 @@ def test_ingest_worker_decodes_and_dispatches_provider(tmp_path: Path) -> None:
     payload = json.dumps(
         {
             "id": "conv-1",
-            "title": "Test Conversation",
+            "title": "Test Session",
             "mapping": {},
             "create_time": 1700000000,
             "update_time": 1700000001,
@@ -520,7 +529,7 @@ def test_ingest_worker_decodes_and_dispatches_provider(tmp_path: Path) -> None:
         raw_id="ignored",  # _make_raw_record uses actual content hash
         provider="chatgpt",
         content=payload,
-        path="/tmp/conversation.json",
+        path="/tmp/session.json",
     )
 
     # Call ingest_record directly without mocking (tests real code path)
@@ -529,8 +538,8 @@ def test_ingest_worker_decodes_and_dispatches_provider(tmp_path: Path) -> None:
     # Verify the result structure
     assert result.raw_id is not None  # Should be the actual hash
     assert result.payload_provider is not None  # Provider detected
-    # ingest_record returns ConversationData list; empty mapping results in empty conversations
-    assert isinstance(result.conversations, list)
+    # ingest_record returns SessionData list; empty mapping results in empty sessions
+    assert isinstance(result.sessions, list)
     # Result should be clean with no errors
     assert result.error is None
 
@@ -546,7 +555,7 @@ def test_ingest_worker_reuses_schema_resolution_and_skips_drift_walk(
     payload = json.dumps(
         {
             "id": "conv-1",
-            "title": "Test Conversation",
+            "title": "Test Session",
             "mapping": {},
             "create_time": 1700000000,
             "update_time": 1700000001,
@@ -556,13 +565,13 @@ def test_ingest_worker_reuses_schema_resolution_and_skips_drift_walk(
         raw_id="ignored",
         provider="chatgpt",
         content=payload,
-        path="/tmp/conversation.json",
+        path="/tmp/session.json",
     )
 
     resolution = SchemaResolution(
         provider="chatgpt",
         package_version="v1",
-        element_kind="conversation_document",
+        element_kind="session_document",
         exact_structure_id="shape-1",
         bundle_scope=None,
         reason="exact_structure",
@@ -622,7 +631,7 @@ def test_ingest_worker_reuses_schema_resolution_and_skips_drift_walk(
         *,
         schema_resolution: SchemaResolution | None = None,
         source_path: str | None = None,
-    ) -> Sequence[ParsedConversation]:
+    ) -> Sequence[ParsedSession]:
         del source_path
         observed["parse_provider"] = provider
         observed["parse_schema_resolution"] = schema_resolution
@@ -641,13 +650,20 @@ def test_ingest_worker_reuses_schema_resolution_and_skips_drift_walk(
     assert observed["include_drift"] is False
 
 
-def test_transform_with_tool_use_message_keeps_non_empty_message_hash(tmp_path: Path) -> None:
-    from polylogue.pipeline.services.ingest_worker import _transform_to_tuples
+def _open_index_archive(tmp_path: Path) -> sqlite3.Connection:
+    index_path = tmp_path / "archive" / "index.db"
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(index_path)
+    conn.row_factory = sqlite3.Row
+    initialize_archive_tier(conn, ArchiveTier.INDEX)
+    return conn
 
-    conversation = ParsedConversation(
+
+def test_transform_with_tool_use_message_keeps_non_empty_message_hash(tmp_path: Path) -> None:
+    session = ParsedSession(
         source_name=Provider.CODEX,
-        provider_conversation_id="tool-conv-1",
-        title="Tool Conversation",
+        provider_session_id="tool-conv-1",
+        title="Tool Session",
         created_at="2026-04-02T00:00:00Z",
         updated_at="2026-04-02T00:00:01Z",
         messages=[
@@ -658,7 +674,7 @@ def test_transform_with_tool_use_message_keeps_non_empty_message_hash(tmp_path: 
                 timestamp="2026-04-02T00:00:01Z",
                 content_blocks=[
                     ParsedContentBlock(
-                        type=ContentBlockType.TOOL_USE,
+                        type=BlockType.TOOL_USE,
                         tool_name="bash",
                         tool_id="tool-1",
                         tool_input={"command": "ls /tmp"},
@@ -669,24 +685,31 @@ def test_transform_with_tool_use_message_keeps_non_empty_message_hash(tmp_path: 
         attachments=[],
     )
 
-    cdata = _transform_to_tuples(
-        conversation,
-        source_name="test-source",
-        archive_root=tmp_path / "archive",
-        raw_id="raw-1",
-    )
+    conn = _open_index_archive(tmp_path)
+    try:
+        session_id = write_parsed_session_to_archive(
+            conn,
+            session,
+            content_hash=hashlib.sha256(b"tool-conv-1").hexdigest(),
+            raw_id="raw-1",
+        )
+        message_hashes = conn.execute(
+            "SELECT content_hash FROM messages WHERE session_id = ?", (session_id,)
+        ).fetchall()
+        action_count = conn.execute("SELECT COUNT(*) FROM actions WHERE session_id = ?", (session_id,)).fetchone()[0]
+    finally:
+        conn.close()
 
-    assert cdata.message_tuples[0][6]
-    assert len(cdata.action_event_tuples) == 1
+    assert len(message_hashes) == 1
+    assert message_hashes[0]["content_hash"]
+    assert action_count == 1
 
 
 def test_transform_deduplicates_materialized_message_rows_by_primary_key(tmp_path: Path) -> None:
-    from polylogue.pipeline.services.ingest_worker import _transform_to_tuples
-
-    conversation = ParsedConversation(
+    session = ParsedSession(
         source_name=Provider.CODEX,
-        provider_conversation_id="duplicate-message-conv",
-        title="Duplicate Message Conversation",
+        provider_session_id="duplicate-message-conv",
+        title="Duplicate Message Session",
         created_at="2026-04-02T00:00:00Z",
         updated_at="2026-04-02T00:00:02Z",
         messages=[
@@ -695,32 +718,40 @@ def test_transform_deduplicates_materialized_message_rows_by_primary_key(tmp_pat
                 role=Role.USER,
                 text="older text",
                 timestamp="2026-04-02T00:00:01Z",
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="older text")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="older text")],
             ),
             ParsedMessage(
                 provider_message_id="msg-1",
                 role=Role.USER,
                 text="newer text",
                 timestamp="2026-04-02T00:00:02Z",
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="newer text")],
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="newer text")],
             ),
         ],
         attachments=[],
     )
 
-    cdata = _transform_to_tuples(
-        conversation,
-        source_name="test-source",
-        archive_root=tmp_path / "archive",
-        raw_id="raw-1",
-    )
+    conn = _open_index_archive(tmp_path)
+    try:
+        session_id = write_parsed_session_to_archive(
+            conn,
+            session,
+            content_hash=hashlib.sha256(b"duplicate-message-conv").hexdigest(),
+            raw_id="raw-1",
+        )
+        message_rows = conn.execute("SELECT native_id FROM messages WHERE session_id = ?", (session_id,)).fetchall()
+        block_rows = conn.execute("SELECT text FROM blocks WHERE session_id = ?", (session_id,)).fetchall()
+        session_message_count = conn.execute(
+            "SELECT message_count FROM sessions WHERE session_id = ?", (session_id,)
+        ).fetchone()[0]
+    finally:
+        conn.close()
 
-    assert len(cdata.message_tuples) == 1
-    assert cdata.message_tuples[0][4] is None
-    assert len(cdata.block_tuples) == 1
-    assert cdata.block_tuples[0][5] == "newer text"
-    assert cdata.stats_tuple
-    assert cdata.stats_tuple[2] == 1
+    assert len(message_rows) == 1
+    assert message_rows[0]["native_id"] == "msg-1"
+    assert len(block_rows) == 1
+    assert block_rows[0]["text"] == "newer text"
+    assert session_message_count == 1
 
 
 def test_ingest_record_streams_codex_jsonl_without_full_envelope_decode(tmp_path: Path) -> None:
@@ -748,8 +779,8 @@ def test_ingest_record_streams_codex_jsonl_without_full_envelope_decode(tmp_path
         result = ingest_record(record, str(tmp_path / "archive"), "off")
 
     assert result.error is None
-    assert len(result.conversations) == 1
-    assert result.conversations[0].source_name == "codex"
+    assert len(result.sessions) == 1
+    assert result.sessions[0].parsed_session.source_name == "codex"
 
 
 def test_ingest_record_streams_detected_codex_jsonl_without_full_envelope_decode(tmp_path: Path) -> None:
@@ -769,8 +800,8 @@ def test_ingest_record_streams_detected_codex_jsonl_without_full_envelope_decode
         result = ingest_record(record, str(tmp_path / "archive"), "advisory")
 
     assert result.error is None
-    assert len(result.conversations) == 1
-    assert result.conversations[0].source_name == "codex"
+    assert len(result.sessions) == 1
+    assert result.sessions[0].parsed_session.source_name == "codex"
 
 
 def test_ingest_record_stream_plan_trusts_known_provider(tmp_path: Path) -> None:
@@ -790,5 +821,5 @@ def test_ingest_record_stream_plan_trusts_known_provider(tmp_path: Path) -> None
         result = ingest_record(record, str(tmp_path / "archive"), "off")
 
     assert result.error is None
-    assert len(result.conversations) == 1
-    assert result.conversations[0].source_name == "codex"
+    assert len(result.sessions) == 1
+    assert result.sessions[0].parsed_session.source_name == "codex"

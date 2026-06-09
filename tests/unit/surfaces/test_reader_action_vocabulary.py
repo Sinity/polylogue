@@ -26,8 +26,8 @@ from polylogue.surfaces.payloads import (
     READER_ACTION_IDS,
     ReaderActionAvailabilityPayload,
     ReaderActionState,
-    reader_conversation_actions,
     reader_message_actions,
+    reader_session_actions,
 )
 
 # ---------------------------------------------------------------------------
@@ -70,9 +70,9 @@ def test_action_id_registry_includes_the_canonical_actions_from_issue() -> None:
     assert not missing, f"missing canonical action ids: {sorted(missing)}"
 
 
-def test_default_conversation_action_ids_are_in_registry() -> None:
-    """The defaults for conversation-level rendering use registered ids only."""
-    for action_id in reader_conversation_actions():
+def test_default_session_action_ids_are_in_registry() -> None:
+    """The defaults for session-level rendering use registered ids only."""
+    for action_id in reader_session_actions():
         assert action_id in READER_ACTION_IDS, f"{action_id!r} not in READER_ACTION_IDS"
 
 

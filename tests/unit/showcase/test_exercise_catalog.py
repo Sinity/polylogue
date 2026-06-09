@@ -90,15 +90,7 @@ class TestExercisesByGroup:
             for exercise in EXERCISES
             if exercise.group == "subcommands" and exercise.name.startswith("json-")
         }
-        assert observed["json-doctor-action-event-preview"].args == [
-            "doctor",
-            "--format",
-            "json",
-            "--repair",
-            "--preview",
-            "--target",
-            "action_event_read_model",
-        ]
+        assert "json-doctor-action-preview" not in observed
         assert observed["json-doctor-session-insights-preview"].args == [
             "doctor",
             "--format",
@@ -118,25 +110,6 @@ class TestExercisesByGroup:
             for exercise in EXERCISES
             if exercise.group == "subcommands" and exercise.name.startswith("json-")
         }
-
-        action_preview = observed["json-doctor-action-event-preview"]
-
-        assert action_preview.path_targets == ("action-event-repair-loop",)
-        assert action_preview.artifact_targets == (
-            "action_event_rows",
-            "action_event_fts",
-            "action_event_readiness",
-        )
-        assert action_preview.operation_targets == (
-            "cli.json-contract",
-            "project-action-event-readiness",
-        )
-        assert action_preview.tags == (
-            "generated",
-            "json-contract",
-            "maintenance",
-            "action-events",
-        )
 
         session_preview = observed["json-doctor-session-insights-preview"]
         assert session_preview.path_targets == ("session-insight-repair-loop",)
@@ -174,11 +147,11 @@ class TestExercisesByGroup:
         )
 
         threads = observed["json-insights-threads"]
-        assert threads.path_targets == ("work-thread-query-loop",)
-        assert threads.artifact_targets == ("work_thread_rows", "work_thread_fts", "work_thread_results")
+        assert threads.path_targets == ("thread-query-loop",)
+        assert threads.artifact_targets == ("thread_rows", "thread_fts", "thread_results")
         assert threads.operation_targets == (
             "cli.json-contract",
-            "query-work-threads",
+            "query-threads",
         )
         assert threads.tags == (
             "generated",

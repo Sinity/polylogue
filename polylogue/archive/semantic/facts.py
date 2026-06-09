@@ -7,14 +7,14 @@ from collections.abc import Collection, Iterator, Sequence
 from datetime import datetime
 from typing import Protocol
 
-from polylogue.archive.action_event.action_events import ActionEvent, build_action_events
+from polylogue.archive.actions.actions import Action, build_actions
 from polylogue.archive.message.roles import MessageRoleFilter, Role, message_role_labels
 from polylogue.archive.semantic.models import (
-    ConversationSemanticFacts,
     MCPDetailSemanticFacts,
     MCPSummarySemanticFacts,
     MessageSemanticFacts,
     ProjectionSemanticFacts,
+    SessionSemanticFacts,
     StreamSemanticFacts,
     SummarySemanticFacts,
 )
@@ -65,18 +65,18 @@ class ProjectionLike(Protocol):
     def attachments(self) -> Collection[ProjectionAttachmentLike]: ...
 
 
-class SemanticConversationMessagesLike(Protocol):
-    def __iter__(self) -> Iterator[SemanticConversationMessageLike]: ...
+class SemanticSessionMessagesLike(Protocol):
+    def __iter__(self) -> Iterator[SemanticSessionMessageLike]: ...
 
     def __len__(self) -> int: ...
 
 
-class SemanticConversationLike(Protocol):
+class SemanticSessionLike(Protocol):
     @property
     def id(self) -> object: ...
 
     @property
-    def provider(self) -> object: ...
+    def origin(self) -> object: ...
 
     @property
     def display_title(self) -> str: ...
@@ -91,10 +91,10 @@ class SemanticConversationLike(Protocol):
     def updated_at(self) -> datetime | None: ...
 
     @property
-    def messages(self) -> SemanticConversationMessagesLike: ...
+    def messages(self) -> SemanticSessionMessagesLike: ...
 
 
-class SemanticConversationMessageLike(SemanticMessageLike, Protocol):
+class SemanticSessionMessageLike(SemanticMessageLike, Protocol):
     @property
     def id(self) -> object: ...
 
@@ -146,7 +146,7 @@ class SemanticSummaryLike(Protocol):
     def id(self) -> object: ...
 
     @property
-    def provider(self) -> object: ...
+    def origin(self) -> object: ...
 
     @property
     def display_title(self) -> str: ...
@@ -205,10 +205,10 @@ def build_projection_semantic_facts(projection: ProjectionLike) -> ProjectionSem
     )
 
 
-def build_message_semantic_facts(message: SemanticConversationMessageLike) -> MessageSemanticFacts:
+def build_message_semantic_facts(message: SemanticSessionMessageLike) -> MessageSemanticFacts:
     tool_calls = message_tool_calls(message)
-    action_events = build_action_events(message, tool_calls)
-    tool_category_counts = Counter(action.kind.value for action in action_events)
+    actions = build_actions(message, tool_calls)
+    tool_category_counts = Counter(action.kind.value for action in actions)
     return MessageSemanticFacts(
         message_id=str(message.id),
         role=normalized_role_label(message.role),
@@ -227,14 +227,14 @@ def build_message_semantic_facts(message: SemanticConversationMessageLike) -> Me
         is_tool_use=message.is_tool_use,
         is_substantive=message.is_substantive,
         tool_calls=tool_calls,
-        action_events=action_events,
+        actions=actions,
         tool_category_counts=sorted_counts(dict(tool_category_counts)),
         reasoning_traces=message_reasoning_traces(message),
     )
 
 
 # ---------------------------------------------------------------------------
-# Conversation / detail builders
+# Session / detail builders
 # ---------------------------------------------------------------------------
 
 
@@ -246,10 +246,10 @@ def _timestamp_coverage(*, total_messages: int, timestamped_messages: int) -> st
     return "partial"
 
 
-def build_conversation_semantic_facts(conversation: SemanticConversationLike) -> ConversationSemanticFacts:
+def build_session_semantic_facts(session: SemanticSessionLike) -> SessionSemanticFacts:
     role_counts: Counter[str] = Counter()
     tool_categories: Counter[str] = Counter()
-    message_facts = tuple(build_message_semantic_facts(message) for message in conversation.messages)
+    message_facts = tuple(build_message_semantic_facts(message) for message in session.messages)
     message_ids: list[str] = []
     text_message_ids: list[str] = []
     timestamped_text_messages = 0
@@ -260,7 +260,7 @@ def build_conversation_semantic_facts(conversation: SemanticConversationLike) ->
     substantive_messages = 0
     word_count = 0
     timestamps: list[datetime] = []
-    action_events: list[ActionEvent] = []
+    actions: list[Action] = []
     timestamped_messages = 0
 
     for message_fact in message_facts:
@@ -275,7 +275,7 @@ def build_conversation_semantic_facts(conversation: SemanticConversationLike) ->
         if message_fact.is_substantive:
             substantive_messages += 1
         word_count += message_fact.word_count
-        action_events.extend(message_fact.action_events)
+        actions.extend(message_fact.actions)
         if message_fact.timestamp is not None:
             timestamps.append(message_fact.timestamp)
             timestamped_messages += 1
@@ -294,12 +294,12 @@ def build_conversation_semantic_facts(conversation: SemanticConversationLike) ->
         wall_duration_ms = max(int((last_message_at - first_message_at).total_seconds() * 1000), 0)
     untimestamped_messages = max(len(message_facts) - timestamped_messages, 0)
 
-    return ConversationSemanticFacts(
-        conversation_id=str(conversation.id),
-        provider=str(conversation.provider),
-        title=conversation.display_title,
-        date=conversation.display_date.isoformat() if conversation.display_date else None,
-        total_messages=len(conversation.messages),
+    return SessionSemanticFacts(
+        session_id=str(session.id),
+        origin=str(session.origin),
+        title=session.display_title,
+        date=session.display_date.isoformat() if session.display_date else None,
+        total_messages=len(session.messages),
         substantive_messages=substantive_messages,
         text_messages=len(text_message_ids),
         message_ids=tuple(message_ids),
@@ -318,7 +318,7 @@ def build_conversation_semantic_facts(conversation: SemanticConversationLike) ->
         branch_messages=branch_messages,
         word_count=word_count,
         tool_category_counts=sorted_counts(dict(tool_categories)),
-        action_events=tuple(action_events),
+        actions=tuple(actions),
         first_message_at=first_message_at,
         last_message_at=last_message_at,
         wall_duration_ms=wall_duration_ms,
@@ -326,14 +326,14 @@ def build_conversation_semantic_facts(conversation: SemanticConversationLike) ->
     )
 
 
-def build_mcp_detail_semantic_facts(conversation: SemanticConversationLike) -> MCPDetailSemanticFacts:
-    facts = build_conversation_semantic_facts(conversation)
+def build_mcp_detail_semantic_facts(session: SemanticSessionLike) -> MCPDetailSemanticFacts:
+    facts = build_session_semantic_facts(session)
     return MCPDetailSemanticFacts(
-        conversation_id=facts.conversation_id,
-        provider=facts.provider,
+        session_id=facts.session_id,
+        origin=facts.origin,
         title=facts.title,
-        created_at=conversation.created_at.isoformat() if conversation.created_at else None,
-        updated_at=conversation.updated_at.isoformat() if conversation.updated_at else None,
+        created_at=session.created_at.isoformat() if session.created_at else None,
+        updated_at=session.updated_at.isoformat() if session.updated_at else None,
         messages=facts.total_messages,
         message_ids=facts.message_ids,
         role_counts=facts.text_role_counts,
@@ -352,8 +352,8 @@ def build_mcp_detail_semantic_facts(conversation: SemanticConversationLike) -> M
 
 def build_summary_semantic_facts(summary: SemanticSummaryLike, *, message_count: int) -> SummarySemanticFacts:
     return SummarySemanticFacts(
-        conversation_id=str(summary.id),
-        provider=str(summary.provider),
+        session_id=str(summary.id),
+        origin=str(summary.origin),
         title=summary.display_title,
         date=summary.display_date.isoformat() if summary.display_date else None,
         messages=message_count,
@@ -368,8 +368,8 @@ def build_mcp_summary_semantic_facts(
     message_count: int,
 ) -> MCPSummarySemanticFacts:
     return MCPSummarySemanticFacts(
-        conversation_id=str(summary.id),
-        provider=str(summary.provider),
+        session_id=str(summary.id),
+        origin=str(summary.origin),
         title=summary.display_title,
         messages=message_count,
         created_at=summary.created_at.isoformat() if summary.created_at else None,
@@ -380,7 +380,7 @@ def build_mcp_summary_semantic_facts(
 
 
 def build_stream_semantic_facts(
-    conversation: SemanticConversationLike,
+    session: SemanticSessionLike,
     *,
     dialogue_only: bool = False,
     message_roles: MessageRoleFilter = (),
@@ -388,10 +388,10 @@ def build_stream_semantic_facts(
 ) -> StreamSemanticFacts:
     effective_roles = message_roles or ((Role.USER, Role.ASSISTANT) if dialogue_only else ())
 
-    def _passes_role_filter(message: SemanticConversationMessageLike) -> bool:
+    def _passes_role_filter(message: SemanticSessionMessageLike) -> bool:
         return not effective_roles or Role.normalize(str(message.role)) in effective_roles
 
-    filtered_messages = [message for message in conversation.messages if _passes_role_filter(message)]
+    filtered_messages = [message for message in session.messages if _passes_role_filter(message)]
     if message_limit is not None:
         filtered_messages = filtered_messages[:message_limit]
 
@@ -400,10 +400,10 @@ def build_stream_semantic_facts(
     timestamped_messages = sum(1 for message in visible_messages if message.timestamp is not None)
 
     return StreamSemanticFacts(
-        conversation_id=str(conversation.id),
-        provider=str(conversation.provider),
-        title=conversation.display_title,
-        date=conversation.display_date.isoformat() if conversation.display_date else None,
+        session_id=str(session.id),
+        origin=str(session.origin),
+        title=session.display_title,
+        date=session.display_date.isoformat() if session.display_date else None,
         text_messages=len(visible_messages),
         text_message_ids=tuple(str(message.id) for message in visible_messages),
         text_role_counts=sorted_counts(dict(role_counts)),
@@ -422,17 +422,17 @@ __all__ = [
     "ProjectionAttachmentLike",
     "ProjectionLike",
     "ProjectionMessageLike",
-    "SemanticConversationLike",
-    "SemanticConversationMessageLike",
+    "SemanticSessionLike",
+    "SemanticSessionMessageLike",
     "SemanticSummaryLike",
-    "ConversationSemanticFacts",
+    "SessionSemanticFacts",
     "MCPDetailSemanticFacts",
     "MCPSummarySemanticFacts",
     "MessageSemanticFacts",
     "ProjectionSemanticFacts",
     "StreamSemanticFacts",
     "SummarySemanticFacts",
-    "build_conversation_semantic_facts",
+    "build_session_semantic_facts",
     "build_mcp_detail_semantic_facts",
     "build_mcp_summary_semantic_facts",
     "build_message_semantic_facts",

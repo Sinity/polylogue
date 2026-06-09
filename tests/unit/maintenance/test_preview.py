@@ -30,7 +30,7 @@ from polylogue.maintenance.preview import (
     StalenessItem,
     staleness_inventory,
 )
-from tests.infra.storage_records import ConversationBuilder, db_setup
+from tests.infra.storage_records import SessionBuilder, db_setup
 
 # ---------------------------------------------------------------------------
 # Pure projection tests (no DB)
@@ -163,10 +163,10 @@ def test_staleness_inventory_performs_no_writes(workspace_env: dict[str, Path]) 
 
     db_path = db_setup(workspace_env)
     # Seed a small archive so we have a real DB to preview against.
-    ConversationBuilder(db_path, "preview-1").provider("chatgpt").title("seed").add_message(
+    SessionBuilder(db_path, "preview-1").provider("chatgpt").title("seed").add_message(
         role="user", text="hello"
     ).add_message(role="assistant", text="world").save()
-    ConversationBuilder(db_path, "preview-2").provider("claude-code").title("seed2").add_message(
+    SessionBuilder(db_path, "preview-2").provider("claude-code").title("seed2").add_message(
         role="user", text="one"
     ).save()
 
@@ -202,7 +202,9 @@ def test_staleness_inventory_performs_no_writes(workspace_env: dict[str, Path]) 
 
     sanity.set_authorizer(_authorizer)
     # Probing read on the authorized connection just to confirm the hook works.
-    sanity.execute("SELECT COUNT(*) FROM conversations").fetchone()
+    # ``db_setup`` returns the ``index.db``; the session tree
+    # lives in ``sessions`` (no legacy ``sessions`` table).
+    sanity.execute("SELECT COUNT(*) FROM sessions").fetchone()
     sanity.close()
     assert write_attempts == []
 
@@ -228,7 +230,10 @@ def test_staleness_inventory_performs_no_writes(workspace_env: dict[str, Path]) 
 
     assert before == after, "preview mutated row counts"
     assert isinstance(inv, StalenessInventory)
-    assert inv.db_path.endswith("polylogue.db")
+    # The active archive is the archive store; the inventory reads
+    # the session/message/block tree from ``index.db`` (not the legacy
+    # single-file ``index.db``).
+    assert inv.db_path.endswith("index.db")
 
 
 # ---------------------------------------------------------------------------
@@ -238,9 +243,7 @@ def test_staleness_inventory_performs_no_writes(workspace_env: dict[str, Path]) 
 
 def test_inventory_emits_zero_rows_for_clean_models(workspace_env: dict[str, Path]) -> None:
     db_path = db_setup(workspace_env)
-    ConversationBuilder(db_path, "clean-1").provider("chatgpt").title("clean").add_message(
-        role="user", text="hi"
-    ).save()
+    SessionBuilder(db_path, "clean-1").provider("chatgpt").title("clean").add_message(role="user", text="hi").save()
 
     inv = staleness_inventory(db_path)
 
@@ -253,8 +256,7 @@ def test_inventory_emits_zero_rows_for_clean_models(workspace_env: dict[str, Pat
     for model, items in grouped.items():
         if model in {
             "orphaned_messages",
-            "orphaned_content_blocks",
-            "empty_conversations",
+            "empty_sessions",
             "orphaned_attachments",
             "orphaned_blobs",
         }:
@@ -358,7 +360,7 @@ def test_inventory_exercises_multiple_invalidation_reasons(monkeypatch: pytest.M
 
 def test_inventory_rejects_unknown_scope(workspace_env: dict[str, Path]) -> None:
     db_path = db_setup(workspace_env)
-    ConversationBuilder(db_path, "x").add_message(role="user", text="hi").save()
+    SessionBuilder(db_path, "x").add_message(role="user", text="hi").save()
 
     with pytest.raises(ValueError, match="Unknown preview scopes"):
         staleness_inventory(db_path, scopes=("bogus",))
@@ -366,7 +368,7 @@ def test_inventory_rejects_unknown_scope(workspace_env: dict[str, Path]) -> None
 
 def test_inventory_respects_scope_filtering(workspace_env: dict[str, Path]) -> None:
     db_path = db_setup(workspace_env)
-    ConversationBuilder(db_path, "scope-1").add_message(role="user", text="hi").save()
+    SessionBuilder(db_path, "scope-1").add_message(role="user", text="hi").save()
 
     derived_only = staleness_inventory(db_path, scopes=("derived",))
     scopes_emitted = {item.scope for item in derived_only.items}
@@ -400,7 +402,7 @@ def test_cli_preview_json_renders_inventory(workspace_env: dict[str, Path]) -> N
 
 def test_cli_preview_plain_renders_per_model_sections(workspace_env: dict[str, Path]) -> None:
     db_path = db_setup(workspace_env)
-    ConversationBuilder(db_path, "plain-1").add_message(role="user", text="hi").save()
+    SessionBuilder(db_path, "plain-1").add_message(role="user", text="hi").save()
 
     runner = CliRunner()
     result = runner.invoke(

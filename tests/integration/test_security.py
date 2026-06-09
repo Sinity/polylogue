@@ -10,7 +10,7 @@ import pytest
 
 from polylogue.config import Source
 from polylogue.sources.decoders import MAX_UNCOMPRESSED_SIZE
-from polylogue.sources.source_parsing import iter_source_conversations
+from polylogue.sources.source_parsing import iter_source_sessions
 from polylogue.storage.cursor_state import CursorFailurePayload, CursorStatePayload
 
 
@@ -84,7 +84,7 @@ def test_zip_bomb_compression_ratio_blocked(tmp_path: Path) -> None:
 
     source = Source(name="test", path=tmp_path)
     cursor_state: CursorStatePayload = _empty_cursor_state()
-    list(iter_source_conversations(source, cursor_state=cursor_state))
+    list(iter_source_sessions(source, cursor_state=cursor_state))
     failed = _failed_files(cursor_state)
     failed_count = _failed_count(cursor_state)
     assert failed_count >= 1 or not failed
@@ -109,5 +109,5 @@ def test_zip_path_traversal_filenames_handled(tmp_path: Path) -> None:
 
     source = Source(name="test", path=tmp_path)
     cursor_state: CursorStatePayload = _empty_cursor_state()
-    payloads = list(iter_source_conversations(source, cursor_state=cursor_state))
+    payloads = list(iter_source_sessions(source, cursor_state=cursor_state))
     assert len(payloads) >= 1

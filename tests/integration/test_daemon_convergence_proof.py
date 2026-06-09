@@ -15,7 +15,7 @@ but never landed as a final acceptance test. The shape proved here:
    (``ok=True``, expected FTS triggers present on a fresh schema).
 2. After convergence over an N-session real-shape corpus:
 
-   - ``conversations`` and ``messages`` rows grew by the expected
+   - ``sessions`` and ``messages`` rows grew by the expected
      deltas (no silently dropped sessions);
    - zero ``failed`` / ``running`` live-ingest attempts remain;
    - zero ``live_convergence_debt`` rows remain;
@@ -153,7 +153,7 @@ def test_daemon_convergence_proof_full_archive_state(
     asserts the resulting archive state via ``daemon_workload_probe``.
     """
     corpus_root = tmp_path / "corpus" / "projects"
-    db_path = tmp_path / "polylogue.db"
+    db_path = tmp_path / "index.db"
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
     monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "off")
 
@@ -165,12 +165,10 @@ def test_daemon_convergence_proof_full_archive_state(
         _write_claude_code_session(path, session_id, MESSAGES_PER_SESSION)
         files.append(path)
 
-    # ── Bootstrap the schema so the BEFORE probe sees a real DB ──────
-    # Open via the canonical connection helper so user_version + DDL are
-    # applied identically to a real polylogued startup.
-    from polylogue.storage.sqlite.connection import open_connection
+    # ── Bootstrap the archive tiers so the BEFORE probe sees a real DB ──────
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-    with open_connection(db_path):
+    with ArchiveStore(tmp_path):
         pass
 
     # ── BEFORE snapshot ──────────────────────────────────────────────
@@ -179,7 +177,7 @@ def test_daemon_convergence_proof_full_archive_state(
     assert before["report_version"] == REPORT_VERSION
 
     before_counts = before["boundary_table_counts"]
-    assert before_counts["conversations"] == 0, before_counts
+    assert before_counts["sessions"] == 0, before_counts
     assert before_counts["messages"] == 0, before_counts
     assert before["fts_trigger_state"]["all_present"] is True, before["fts_trigger_state"]
 
@@ -229,12 +227,12 @@ def test_daemon_convergence_proof_full_archive_state(
     after_counts = after["boundary_table_counts"]
 
     # ── Convergence shape — strict acceptance criteria ──────────────
-    # Conversations grew by exactly SESSION_COUNT. The corpus is fresh
+    # Sessions grew by exactly SESSION_COUNT. The corpus is fresh
     # (no pre-existing rows) so this is a hard equality, not a lower bound.
-    assert after_counts["conversations"] == SESSION_COUNT, (
-        f"expected {SESSION_COUNT} conversations after convergence, "
-        f"got {after_counts['conversations']}; "
-        f"diff={diff['boundary_table_counts'].get('conversations')}"
+    assert after_counts["sessions"] == SESSION_COUNT, (
+        f"expected {SESSION_COUNT} sessions after convergence, "
+        f"got {after_counts['sessions']}; "
+        f"diff={diff['boundary_table_counts'].get('sessions')}"
     )
 
     # Each session contributes MESSAGES_PER_SESSION messages; provider
@@ -250,10 +248,9 @@ def test_daemon_convergence_proof_full_archive_state(
         f"messages from {expected_messages} input records"
     )
 
-    # raw_conversations is the ingest landing table — one per source file.
-    assert after_counts["raw_conversations"] == SESSION_COUNT, (
-        f"expected {SESSION_COUNT} raw_conversations, got {after_counts['raw_conversations']}"
-    )
+    # raw_sessions is the ingest landing table in source.db — one per source file.
+    raw_count = after["archive_tiers"]["tiers"]["source"]["table_counts"]["raw_sessions"]
+    assert raw_count == SESSION_COUNT, f"expected {SESSION_COUNT} raw_sessions, got {raw_count}"
 
     # ── No stuck or failed live-ingest attempts ─────────────────────
     attempt_counts = after["attempt_counts"]
@@ -283,7 +280,7 @@ def test_daemon_convergence_proof_full_archive_state(
     # The strongest end-to-end signal that the write path stayed
     # consistent with the FTS triggers throughout convergence.
     with sqlite3.connect(db_path) as conn:
-        (fts_rows,) = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()
+        (fts_rows,) = conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()
     assert fts_rows >= expected_messages, (
         f"FTS index under-populated: {fts_rows} rows vs {expected_messages} expected messages"
     )

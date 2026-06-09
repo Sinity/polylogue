@@ -1,7 +1,7 @@
-"""Per-conversation session-topology HTTP envelope (#1121).
+"""Per-session session-topology HTTP envelope (#1121).
 
 Builds the JSON envelope shipped by
-``GET /api/conversations/{id}/topology``. Kept in its own module so the
+``GET /api/sessions/{id}/topology``. Kept in its own module so the
 route handler in :mod:`polylogue.daemon.http` stays inside its declared
 file-size budget.
 
@@ -59,7 +59,7 @@ def coerce_node_limit(raw: str | None) -> int | None:
 
 def _node_dict(node: TopologyNode) -> dict[str, object]:
     return {
-        "conversation_id": str(node.conversation_id),
+        "session_id": str(node.session_id),
         "source_name": node.source_name,
         "title": node.title,
         "depth": node.depth,
@@ -86,7 +86,7 @@ def _readiness(
 ) -> str:
     """Map structural state to the chip vocabulary.
 
-    A lineage rooted at one isolated conversation (one node, zero edges,
+    A lineage rooted at one isolated session (one node, zero edges,
     no unresolved pointers, no truncation, no cycle) is reported as
     ``empty`` so the reader can render the dedicated empty state. Any
     truncation, unresolved edge, or cycle is ``partial``. Everything else
@@ -121,7 +121,7 @@ def build_topology_envelope(
     effective_limit = max(1, min(node_limit, MAX_NODE_LIMIT))
     full_nodes = list(topology.nodes)
     kept_nodes = full_nodes[:effective_limit]
-    kept_ids = {str(node.conversation_id) for node in kept_nodes}
+    kept_ids = {str(node.session_id) for node in kept_nodes}
     truncated_count = len(full_nodes) - len(kept_nodes)
 
     kept_edges: list[dict[str, object]] = []
@@ -167,14 +167,14 @@ def build_parent_chain_envelope(
 ) -> dict[str, object]:
     """Project a :class:`SessionTopology` into a stack-ready chain envelope.
 
-    Returns the ordered chain of conversation IDs from the topology root
+    Returns the ordered chain of session IDs from the topology root
     down to ``topology.target_id``, optionally followed by the BFS-ordered
     descendants of the target. The returned envelope is shaped to seed
     the reader's stack workspace route:
 
     - ``chain_ids`` is the canonical oldest-to-newest list the stack
       workspace consumes via ``/w/stack?ids=...``;
-    - ``focus_id`` is the conversation the operator clicked from (the
+    - ``focus_id`` is the session the operator clicked from (the
       target), so the stack view auto-scrolls to it;
     - ``ancestors`` / ``descendants`` are split out so the popover can
       label the chain segments distinctly;
@@ -196,7 +196,7 @@ def build_parent_chain_envelope(
         descendants_ordered = [str(node_id) for node_id in topology.descendants(target_id)]
         chain_ids.extend(descendants_ordered)
 
-    # Resolved incoming edge kind (if any) for the target conversation.
+    # Resolved incoming edge kind (if any) for the target session.
     branch_kind: str | None = None
     parent_id: str | None = None
     for edge in topology.edges:

@@ -85,47 +85,24 @@ def _capture(handler: DaemonAPIHandler) -> tuple[MagicMock, MagicMock]:
     return send_error, send_json
 
 
-def _seed_conversation(conversation_id: str = "c-test") -> None:
-    """Seed a single conversation so resolve_id can find a target.
+def _seed_session(session_id: str, workspace_env: dict[str, Path]) -> str:
+    """Seed a single native session so resolve_id can find a target.
 
     Several handlers (``add_mark``, ``save_annotation``) call
-    ``_resolve_user_state_target`` which expects the conversation to
-    exist. Seeding via direct SQL avoids dragging the whole ingest
-    pipeline into a HTTP test.
+    ``_resolve_user_state_target`` which requires the session to exist
+    in the archive store. Returns the archive session id
+    (``origin:native_id``) to address the session in requests.
     """
-    import sqlite3
+    from tests.infra.storage_records import SessionBuilder, db_setup
 
-    from polylogue.paths import db_path
-    from polylogue.storage.sqlite.schema_ddl_archive import (
-        ARCHIVE_STORAGE_DDL,
-        MESSAGE_FTS_DDL,
-        READER_WORKSPACES_DDL,
-        RECALL_PACKS_DDL,
-        SAVED_VIEWS_DDL,
-        USER_ANNOTATIONS_DDL,
-        USER_MARKS_DDL,
+    builder = (
+        SessionBuilder(db_setup(workspace_env), session_id)
+        .provider("claude-code")
+        .title("Test")
+        .add_message(message_id=f"m-{session_id}", role="user", text="hello")
     )
-
-    dbp = db_path()
-    dbp.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(dbp))
-    try:
-        conn.executescript(ARCHIVE_STORAGE_DDL)
-        conn.executescript(MESSAGE_FTS_DDL)
-        conn.executescript(USER_MARKS_DDL)
-        conn.executescript(USER_ANNOTATIONS_DDL)
-        conn.executescript(SAVED_VIEWS_DDL)
-        conn.executescript(RECALL_PACKS_DDL)
-        conn.executescript(READER_WORKSPACES_DDL)
-        conn.execute(
-            "INSERT OR IGNORE INTO conversations(conversation_id, source_name, "
-            "provider_conversation_id, title, content_hash, version) "
-            "VALUES(?,?,?,?,?,?)",
-            (conversation_id, "claude-code", f"p-{conversation_id}", "Test", f"h-{conversation_id}", 1),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    builder.save()
+    return builder.native_session_id()
 
 
 # ---------------------------------------------------------------------------
@@ -312,10 +289,10 @@ class TestMarksContract:
         self,
         workspace_env: dict[str, Path],
     ) -> None:
-        _seed_conversation("c-mark")
+        conv_id = _seed_session("c-mark", workspace_env)
 
         # CREATE
-        body = json.dumps({"conversation_id": "c-mark", "mark_type": "star"}).encode()
+        body = json.dumps({"session_id": conv_id, "mark_type": "star"}).encode()
         handler = _make_handler("POST", "/api/user/marks", body=body)
         send_error, send_json = _capture(handler)
         handler.do_POST()
@@ -323,7 +300,7 @@ class TestMarksContract:
         status, payload = send_json.call_args.args
         assert status == HTTPStatus.CREATED
         assert payload["mark_type"] == "star"
-        assert payload["conversation_id"] == "c-mark"
+        assert payload["session_id"] == conv_id
         assert payload["created"] is True
 
         # CREATE again — idempotent, ``created=False`` and OK (not CREATED)
@@ -345,7 +322,7 @@ class TestMarksContract:
         # DELETE
         handler = _make_handler(
             "DELETE",
-            "/api/user/marks?conversation_id=c-mark&mark_type=star",
+            f"/api/user/marks?session_id={conv_id}&mark_type=star",
         )
         _, send_json = _capture(handler)
         handler.do_DELETE()
@@ -357,10 +334,10 @@ class TestMarksContract:
     @pytest.mark.parametrize(
         "body",
         [
-            {},  # no conversation_id
-            {"conversation_id": "c-x"},  # no mark_type
-            {"conversation_id": "c-x", "mark_type": "invalid"},  # bad mark_type
-            {"conversation_id": "c-x", "mark_type": "star", "target_type": "nonsense"},
+            {},  # no session_id
+            {"session_id": "c-x"},  # no mark_type
+            {"session_id": "c-x", "mark_type": "invalid"},  # bad mark_type
+            {"session_id": "c-x", "mark_type": "star", "target_type": "nonsense"},
         ],
     )
     def test_create_validates_body(
@@ -399,7 +376,7 @@ class TestMarksContract:
         send_error.assert_called_once_with(HTTPStatus.BAD_REQUEST, "invalid_request")
         send_json.assert_not_called()
 
-    def test_delete_requires_conversation_id_and_mark_type(
+    def test_delete_requires_session_id_and_mark_type(
         self,
         workspace_env: dict[str, Path],
     ) -> None:
@@ -422,12 +399,12 @@ class TestAnnotationsContract:
         self,
         workspace_env: dict[str, Path],
     ) -> None:
-        _seed_conversation("c-ann")
+        conv_id = _seed_session("c-ann", workspace_env)
 
         body = json.dumps(
             {
                 "annotation_id": "ann-1",
-                "conversation_id": "c-ann",
+                "session_id": conv_id,
                 "note_text": "first note",
             }
         ).encode()
@@ -483,11 +460,11 @@ class TestAnnotationsContract:
     @pytest.mark.parametrize(
         "body",
         [
-            {},  # no conversation_id, no note
-            {"conversation_id": "c-x"},  # missing note
-            {"conversation_id": "c-x", "note_text": "  "},  # blank note
-            {"conversation_id": "", "note_text": "x"},  # blank conv id
-            {"conversation_id": "c-x", "note_text": "x", "target_type": "nonsense"},
+            {},  # no session_id, no note
+            {"session_id": "c-x"},  # missing note
+            {"session_id": "c-x", "note_text": "  "},  # blank note
+            {"session_id": "", "note_text": "x"},  # blank conv id
+            {"session_id": "c-x", "note_text": "x", "target_type": "nonsense"},
         ],
     )
     def test_save_validates_body(
@@ -604,16 +581,16 @@ class TestRecallPacksContract:
         self,
         workspace_env: dict[str, Path],
     ) -> None:
-        _seed_conversation("c-pack")
+        conv_id = _seed_session("c-pack", workspace_env)
 
-        # Recall packs allow item resolution against the seeded conversation.
+        # Recall packs allow item resolution against the seeded session.
         body = json.dumps(
             {
                 "pack_id": "rp-1",
                 "label": "First pack",
                 "payload": {
                     "items": [
-                        {"type": "conversation", "conversation_id": "c-pack"},
+                        {"type": "session", "session_id": conv_id},
                     ]
                 },
             }
@@ -636,7 +613,7 @@ class TestRecallPacksContract:
         assert status == HTTPStatus.OK
         assert payload["pack_id"] == "rp-1"
         assert isinstance(payload["payload"], dict)
-        assert isinstance(payload["conversation_ids"], list)
+        assert isinstance(payload["session_ids"], list)
 
         # LIST
         handler = _make_handler("GET", "/api/user/recall-packs")
@@ -704,9 +681,9 @@ class TestWorkspacesContract:
                 "workspace_id": "ws-1",
                 "name": "Daily work",
                 "mode": "tabs",
-                "open_targets": [{"target_type": "conversation", "target_id": "c-1"}],
+                "open_targets": [{"target_type": "session", "target_id": "c-1"}],
                 "layout": {"split": "horizontal"},
-                "active_target": {"target_type": "conversation", "target_id": "c-1"},
+                "active_target": {"target_type": "session", "target_id": "c-1"},
             }
         ).encode()
         handler = _make_handler("POST", "/api/user/workspaces", body=body)
@@ -816,12 +793,12 @@ class TestPayloadNormalization:
         row = {
             "pack_id": "p",
             "label": "l",
-            "conversation_ids_json": "broken",
+            "session_ids_json": "broken",
             "payload_json": "broken",
             "created_at": "2026-01-01T00:00:00Z",
         }
         payload = cast(dict[str, Any], user_state_http._recall_pack_payload(row))
-        assert payload["conversation_ids"] == []
+        assert payload["session_ids"] == []
         assert payload["payload"] == {}
 
     def test_workspace_payload_handles_corrupt_json(self) -> None:
@@ -871,16 +848,16 @@ class TestPayloadNormalization:
         """
         from polylogue.daemon import user_state_http
 
-        v1 = user_state_http._default_saved_view_id("name", '{"a":1}')
+        archive = user_state_http._default_saved_view_id("name", '{"a":1}')
         v2 = user_state_http._default_saved_view_id("name", '{"a":1}')
-        assert v1 == v2
-        assert v1.startswith("view-")
+        assert archive == v2
+        assert archive.startswith("view-")
 
-        a1 = user_state_http._default_annotation_id("conversation", "c", "note")
-        a2 = user_state_http._default_annotation_id("conversation", "c", "note")
+        a1 = user_state_http._default_annotation_id("session", "c", "note")
+        a2 = user_state_http._default_annotation_id("session", "c", "note")
         assert a1 == a2
         assert a1.startswith("annotation-")
 
         # Different inputs → different ids.
-        assert v1 != user_state_http._default_saved_view_id("other", '{"a":1}')
-        assert a1 != user_state_http._default_annotation_id("conversation", "c", "different")
+        assert archive != user_state_http._default_saved_view_id("other", '{"a":1}')
+        assert a1 != user_state_http._default_annotation_id("session", "c", "different")

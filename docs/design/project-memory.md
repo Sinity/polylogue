@@ -34,7 +34,7 @@ Fields: `summary`, `failure_mode`, `session_id`, `recorded_at`.
 
 ### HotFile
 A file that consistently causes issues or is central to the architecture.
-Example: "schema_ddl.py — changing this requires schema version bump and
+Example: "archive_tiers/index.py — changing this requires index-tier version bump and
 regenerating all test fixtures."
 Fields: `path`, `why_hot`, `last_modified_session_id`, `recorded_at`.
 
@@ -77,7 +77,7 @@ The hook injects project memory into `additionalContext`:
 [Project Memory — polylogue]
 Recent decisions (2):
 - Chose WAL mode over rollback journal (2026-04-15)
-- Schema is fresh-only, no migration chain (2026-03-10)
+- Schema is fresh-only, no in-place upgrade chain (2026-03-10)
 
 Active patterns (3):
 - All SQLite writes use BEGIN IMMEDIATE
@@ -85,7 +85,7 @@ Active patterns (3):
 - ...
 
 Hot files (3):
-- polylogue/storage/sqlite/schema_ddl.py — schema version authority
+- polylogue/storage/sqlite/archive_tiers/index.py — index-tier schema authority
 - ...
 
 Stale warnings (1):
@@ -151,7 +151,7 @@ says "we tried switching to rollback journal in session X and it caused Y."
 
 ## Build Order
 
-1. `project_memory` table + migration
+1. `project_memory` table + backfill
 2. MCP tools (read-only first: search + get)
 3. SessionStart hook injection with ranking formula
 4. Agent-initiated recording (write tool)

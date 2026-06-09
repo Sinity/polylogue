@@ -38,7 +38,7 @@ class PolylogueEmbeddingsMixin:
         self,
         *,
         rebuild: bool = False,
-        max_conversations: int | None = None,
+        max_sessions: int | None = None,
         max_messages: int | None = None,
         max_cost_usd: float | None = None,
     ) -> dict[str, object]:
@@ -49,7 +49,7 @@ class PolylogueEmbeddingsMixin:
             build_preflight_report(
                 self.backend.db_path,
                 rebuild=rebuild,
-                max_conversations=max_conversations,
+                max_sessions=max_sessions,
                 max_messages=max_messages,
                 max_cost_usd=max_cost_usd,
             )

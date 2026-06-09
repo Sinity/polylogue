@@ -1,4 +1,4 @@
-"""Helpers for honest conversation-activity accounting in run results."""
+"""Helpers for honest session-activity accounting in run results."""
 
 from __future__ import annotations
 
@@ -29,15 +29,15 @@ def _drift_value(
     return value if isinstance(value, int) else 0
 
 
-def conversation_activity_counts(
+def session_activity_counts(
     counts: RunCountLike,
     drift: RunDriftLike | None = None,
 ) -> tuple[int, int, int]:
-    """Return total, new, and changed conversation counts for one run."""
+    """Return total, new, and changed session counts for one run."""
 
-    total = _int_value(counts, "conversations")
-    new = _drift_value(drift, "new", "conversations") or _int_value(counts, "new_conversations")
-    changed = _drift_value(drift, "changed", "conversations") or _int_value(counts, "changed_conversations")
+    total = _int_value(counts, "sessions")
+    new = _drift_value(drift, "new", "sessions") or _int_value(counts, "new_sessions")
+    changed = _drift_value(drift, "changed", "sessions") or _int_value(counts, "changed_sessions")
 
     if new == 0 and changed == 0 and total:
         new = total
@@ -46,4 +46,4 @@ def conversation_activity_counts(
     return total, new, changed
 
 
-__all__ = ["conversation_activity_counts"]
+__all__ = ["session_activity_counts"]

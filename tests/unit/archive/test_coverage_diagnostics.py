@@ -2,21 +2,22 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from polylogue.archive.conversation.models import ConversationSummary
 from polylogue.archive.coverage import analyze_coverage
-from polylogue.types import ConversationId, Provider
+from polylogue.archive.session.domain_models import SessionSummary
+from polylogue.core.sources import origin_from_provider
+from polylogue.types import Provider, SessionId
 
 
 def _summary(
-    conversation_id: str,
+    session_id: str,
     *,
     provider: Provider,
     updated_at: datetime | None,
     message_count: int | None,
-) -> ConversationSummary:
-    return ConversationSummary(
-        id=ConversationId(conversation_id),
-        provider=provider,
+) -> SessionSummary:
+    return SessionSummary(
+        id=SessionId(session_id),
+        origin=origin_from_provider(provider),
         updated_at=updated_at,
         message_count=message_count,
     )
@@ -29,7 +30,7 @@ def test_analyze_coverage_handles_empty_archive() -> None:
     assert coverage.provider_counts == {}
     assert coverage.gaps == ()
     assert coverage.truncated_sessions == 0
-    assert coverage.total_conversations == 0
+    assert coverage.total_sessions == 0
     assert coverage.total_messages == 0
     assert coverage.date_range == (None, None)
 
@@ -70,6 +71,6 @@ def test_analyze_coverage_reports_provider_ranges_gaps_and_truncation() -> None:
         ("2026-01-02", "2026-01-03", 2)
     ]
     assert coverage.truncated_sessions == 2
-    assert coverage.total_conversations == 3
+    assert coverage.total_sessions == 3
     assert coverage.total_messages == 6
     assert tuple(item.isoformat() for item in coverage.date_range if item is not None) == ("2026-01-01", "2026-01-04")

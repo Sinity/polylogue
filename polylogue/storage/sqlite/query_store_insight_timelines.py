@@ -21,17 +21,17 @@ class SQLiteQueryStoreInsightTimelinesMixin:
 
     async def get_session_work_events(
         self,
-        conversation_id: str,
+        session_id: str,
     ) -> list[SessionWorkEventRecord]:
         async with self._connection_factory() as conn:
-            return await session_insight_timelines_q.get_work_events(conn, conversation_id)
+            return await session_insight_timelines_q.get_work_events(conn, session_id)
 
     async def get_session_phases(
         self,
-        conversation_id: str,
+        session_id: str,
     ) -> list[SessionPhaseRecord]:
         async with self._connection_factory() as conn:
-            return await session_insight_timelines_q.get_session_phases(conn, conversation_id)
+            return await session_insight_timelines_q.get_session_phases(conn, session_id)
 
     async def _list_session_work_events_query(
         self,
@@ -50,7 +50,7 @@ class SQLiteQueryStoreInsightTimelinesMixin:
     async def list_session_work_events(
         self,
         *,
-        conversation_id: str | None = None,
+        session_id: str | None = None,
         provider: str | None = None,
         since: str | None = None,
         until: str | None = None,
@@ -61,7 +61,7 @@ class SQLiteQueryStoreInsightTimelinesMixin:
     ) -> list[SessionWorkEventRecord]:
         return await self._list_session_work_events_query(
             SessionTimelineListQuery(
-                conversation_id=conversation_id,
+                session_id=session_id,
                 provider=provider,
                 since=since,
                 until=until,
@@ -75,7 +75,7 @@ class SQLiteQueryStoreInsightTimelinesMixin:
     async def list_session_phases(
         self,
         *,
-        conversation_id: str | None = None,
+        session_id: str | None = None,
         provider: str | None = None,
         since: str | None = None,
         until: str | None = None,
@@ -85,7 +85,7 @@ class SQLiteQueryStoreInsightTimelinesMixin:
     ) -> list[SessionPhaseRecord]:
         return await self._list_session_phases_query(
             SessionTimelineListQuery(
-                conversation_id=conversation_id,
+                session_id=session_id,
                 provider=provider,
                 since=since,
                 until=until,

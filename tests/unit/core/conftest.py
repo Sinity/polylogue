@@ -1,9 +1,9 @@
 """Fixtures for core module tests.
 
 Module-level fixtures for test consolidation:
-- populated_db: Database with test conversations
+- populated_db: Database with test sessions
 - mock_schema_dir: Mock schema directory for validation tests
-- make_filter_repo: Factory fixture for building a ConversationRepository with custom conversations
+- make_filter_repo: Factory fixture for building a SessionRepository with custom sessions
 """
 
 from __future__ import annotations
@@ -14,11 +14,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.schemas.registry import SchemaRegistry
-from polylogue.storage.index import rebuild_index
-from polylogue.storage.repository import ConversationRepository
-from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-from polylogue.storage.sqlite.connection import open_connection
-from tests.infra.storage_records import ConversationBuilder
+from tests.infra.storage_records import SessionBuilder
 
 
 def _metadata_payload(value: object) -> dict[str, object]:
@@ -41,16 +37,16 @@ def _message_specs(value: object) -> list[dict[str, object]]:
 def populated_db(db_path: Path) -> Path:
     """Provide a database populated with test data."""
     (
-        ConversationBuilder(db_path, "conv-1")
+        SessionBuilder(db_path, "conv-1")
         .provider("chatgpt")
-        .title("First Conversation")
+        .title("First Session")
         .add_message("msg-1-1", role="user", text="Hello")
         .add_message("msg-1-2", role="assistant", text="Hi there")
         .save()
     )
 
     (
-        ConversationBuilder(db_path, "conv-2")
+        SessionBuilder(db_path, "conv-2")
         .provider("claude-ai")
         .title("With Attachments")
         .add_message("msg-2-1", role="user", text="Here is an image")
@@ -92,19 +88,22 @@ def mock_schema_dir(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def make_filter_repo(tmp_path: Path) -> Callable[[list[dict[str, object]]], ConversationRepository]:
-    """Factory fixture: build a ConversationRepository with custom conversations.
+def make_filter_repo(tmp_path: Path) -> Callable[[list[dict[str, object]]], Path]:
+    """Factory fixture: build a archive with custom sessions.
+
+    Returns the archive root, which is what the native ``SessionFilter``
+    reads from.
 
     Usage::
 
         async def test_something(make_filter_repo):
-            repo = make_filter_repo([
+            root = make_filter_repo([
                 {"id": "c1", "provider": "claude-ai", "title": "Test Conv",
                  "messages": [{"id": "m1", "role": "user", "text": "hello"}]},
             ])
-            result = await ConversationFilter(repo).provider("claude-ai").list()
+            result = await SessionFilter(archive_root=root).origin("claude-ai-export").list()
 
-    Each conversation dict accepts:
+    Each session dict accepts:
         id (str): required
         provider (str): required
         title (str): optional
@@ -112,18 +111,18 @@ def make_filter_repo(tmp_path: Path) -> Callable[[list[dict[str, object]]], Conv
         metadata (dict): optional
         created_at (str): optional ISO timestamp
         branch_type (str): optional
-        parent_conversation (str): optional
+        parent_session (str): optional
     """
 
-    def _factory(conversations: list[dict[str, object]]) -> ConversationRepository:
-        db_path = tmp_path / "test.db"
-        with open_connection(db_path) as conn:
-            rebuild_index(conn)
+    def _factory(sessions: list[dict[str, object]]) -> Path:
+        root = tmp_path / "make_filter_archive"
+        root.mkdir(exist_ok=True)
+        db_path = root / "index.db"
 
-        for spec in conversations:
+        for spec in sessions:
             cid = str(spec["id"])
             provider = str(spec.get("provider", "test"))
-            builder = ConversationBuilder(db_path, cid).provider(provider)
+            builder = SessionBuilder(db_path, cid).provider(provider)
 
             if title := spec.get("title"):
                 builder = builder.title(str(title))
@@ -133,8 +132,8 @@ def make_filter_repo(tmp_path: Path) -> Callable[[list[dict[str, object]]], Conv
                 builder = builder.created_at(str(created_at))
             if branch_type := spec.get("branch_type"):
                 builder = builder.branch_type(str(branch_type))
-            if parent := spec.get("parent_conversation"):
-                builder = builder.parent_conversation(str(parent))
+            if parent := spec.get("parent_session"):
+                builder = builder.parent_session(str(parent))
 
             for msg in _message_specs(spec.get("messages")):
                 builder = builder.add_message(
@@ -145,6 +144,6 @@ def make_filter_repo(tmp_path: Path) -> Callable[[list[dict[str, object]]], Conv
 
             builder.save()
 
-        return ConversationRepository(SQLiteBackend(db_path))
+        return root
 
     return _factory

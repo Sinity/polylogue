@@ -3,7 +3,7 @@
   "generated_at": "2026-05-11T04:14:45.729400+00:00",
   "cluster_count": 1,
   "artifact_counts": {
-    "conversation_document": 37
+    "session_document": 37
   },
   "default_version": "v1",
   "clusters": [
@@ -33,7 +33,7 @@
         "tools"
       ],
       "confidence": 1.0,
-      "artifact_kind": "conversation_document",
+      "artifact_kind": "session_document",
       "profile_tokens": [
         "anchor:messages",
         "field:base_url",

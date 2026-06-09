@@ -1,6 +1,6 @@
 """Canonical SQLite schema runtime for sync and async backends.
 
-Polylogue has no schema migration chain. Databases are either at the
+Polylogue has no in-place schema upgrade chain. Databases are either at the
 canonical :data:`SCHEMA_VERSION` (open as-is), fresh (bootstrap from
 :data:`SCHEMA_DDL`), or rejected. The operator handles rejection by
 re-ingesting from source; the runtime never patches an out-of-band shape
@@ -13,7 +13,7 @@ import sqlite3
 
 import aiosqlite
 
-from polylogue.errors import SchemaIncompatibleError
+from polylogue.errors import SchemaVersionMismatchError
 from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_async, ensure_runtime_indexes_sync
 from polylogue.storage.sqlite.schema_bootstrap import (
     SCHEMA_DDL,
@@ -30,13 +30,13 @@ from polylogue.storage.sqlite.schema_bootstrap import (
 def assert_supported_archive_layout(conn: sqlite3.Connection) -> None:
     """Reject archive layouts that cannot be written safely.
 
-    Polylogue has no schema migration chain; layout is determined entirely by
+    Polylogue has no in-place schema upgrade chain; layout is determined entirely by
     the on-disk ``user_version``. Anything outside ``{0, SCHEMA_VERSION}`` is
     rejected and the operator re-ingests from source.
     """
     snapshot = capture_schema_snapshot(conn)
     if snapshot.current_version not in (0, SCHEMA_VERSION):
-        raise SchemaIncompatibleError(
+        raise SchemaVersionMismatchError(
             schema_version_mismatch_message(snapshot.current_version),
             current_version=snapshot.current_version,
             expected_version=SCHEMA_VERSION,
@@ -51,7 +51,7 @@ def assert_readable_archive_layout(conn: sqlite3.Connection) -> None:
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     """Ensure the database is at the current schema version.
 
-    Polylogue has no versioned migration chain. Databases with a mismatched
+    Polylogue has no versioned in-place upgrade chain. Databases with a mismatched
     schema version are rejected; the operator re-ingests from source.
     """
     snapshot = capture_schema_snapshot(conn)
@@ -69,7 +69,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
 
     if decision.action == "version_mismatch":
         current = decision.current_version or 0
-        raise SchemaIncompatibleError(
+        raise SchemaVersionMismatchError(
             schema_version_mismatch_message(current),
             current_version=current,
             expected_version=SCHEMA_VERSION,
@@ -98,7 +98,7 @@ async def ensure_schema_async(conn: aiosqlite.Connection) -> None:
 
     if decision.action == "version_mismatch":
         current = decision.current_version or 0
-        raise SchemaIncompatibleError(
+        raise SchemaVersionMismatchError(
             schema_version_mismatch_message(current),
             current_version=current,
             expected_version=SCHEMA_VERSION,

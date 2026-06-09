@@ -2,24 +2,24 @@
 
 # Database Schema
 
-Polylogue stores all data in a single SQLite database with WAL mode enabled. The
-schema is versioned and uses fresh-first initialization: version mismatches are
-rejected unless an explicit upgrade migration exists for that exact transition.
+Polylogue stores archive data in split SQLite files with WAL mode enabled. The
+schema is fresh-first: version mismatches are rejected; the operator rebuilds
+the archive from source.
 
 **Current schema version: 6.**
 
 ## Core Tables
 
-### conversations
+### sessions
 
-The primary archive entity. One row per imported conversation.
+The primary archive entity. One row per imported session.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `conversation_id` | TEXT PK | Composite ID (`provider:provider_id`) |
+| `session_id` | TEXT PK | Composite ID (`provider:provider_id`) |
 | `provider_name` | TEXT | Provider enum value |
-| `provider_conversation_id` | TEXT | Provider's native ID |
-| `title` | TEXT | Conversation title |
+| `provider_session_id` | TEXT | Provider's native ID |
+| `title` | TEXT | Session title |
 | `created_at` | TEXT | Creation timestamp (ISO 8601) |
 | `updated_at` | TEXT | Last update timestamp |
 | `sort_key` | REAL | Sortable timeline key |
@@ -27,21 +27,21 @@ The primary archive entity. One row per imported conversation.
 | `provider_meta` | TEXT | Provider-specific metadata (JSON) |
 | `metadata` | TEXT | User metadata: tags, summaries, titles (JSON) |
 | `version` | INTEGER | Schema version at write time |
-| `parent_conversation_id` | TEXT FK | Parent conversation (branches/continuations) |
+| `parent_session_id` | TEXT FK | Parent session (branches/continuations) |
 | `branch_type` | TEXT | `continuation`, `sidechain`, `fork`, `subagent` |
 | `raw_id` | TEXT FK | Source raw record |
 
 ### messages
 
-Individual messages within a conversation.
+Individual messages within a session.
 
 | Column | Type | Description |
 |--------|------|-------------|
 | `message_id` | TEXT PK | Unique message ID |
-| `conversation_id` | TEXT FK | Parent conversation |
+| `session_id` | TEXT FK | Parent session |
 | `role` | TEXT | `user`, `assistant`, `system`, `tool` |
 | `text` | TEXT | Message text content |
-| `sort_key` | REAL | Message order within conversation |
+| `sort_key` | REAL | Message order within session |
 | `content_hash` | TEXT | SHA-256 for dedup |
 | `parent_message_id` | TEXT FK | Parent message (branching) |
 | `branch_index` | INTEGER | Branch position |
@@ -63,7 +63,7 @@ First-class structured content within messages. One row per block.
 |--------|------|-------------|
 | `block_id` | TEXT PK | Unique block ID |
 | `message_id` | TEXT FK | Parent message |
-| `conversation_id` | TEXT FK | Denormalized parent conversation |
+| `session_id` | TEXT FK | Denormalized parent session |
 | `block_index` | INTEGER | Order within message |
 | `type` | TEXT | `text`, `thinking`, `tool_use`, `tool_result`, `image`, `code`, `document` |
 | `text` | TEXT | Block text content |
@@ -73,14 +73,14 @@ First-class structured content within messages. One row per block.
 | `metadata` | TEXT | Block metadata JSON; carries media type for image/document blocks |
 | `semantic_type` | TEXT | Inferred semantic type: `file_read`, `file_write`, `file_edit`, `shell`, `git`, `search`, `web`, `agent`, `subagent`, `thinking`, `other` |
 
-### action_events
+### actions
 
 Normalized action records derived from content blocks.
 
 | Column | Type | Description |
 |--------|------|-------------|
 | `event_id` | TEXT PK | Unique event ID |
-| `conversation_id` | TEXT FK | Parent conversation |
+| `session_id` | TEXT FK | Parent session |
 | `message_id` | TEXT FK | Parent message |
 | `kind` | TEXT | Action kind (same vocabulary as `semantic_type`) |
 | `tool_name` | TEXT | Normalized tool name |
@@ -89,13 +89,13 @@ Normalized action records derived from content blocks.
 | `end_time` | TEXT | Action end timestamp |
 | `file_paths_json` | TEXT | Referenced file paths (JSON array) |
 
-### conversation_stats
+### session_stats
 
-Precomputed per-conversation aggregates, updated atomically with message writes.
+Precomputed per-session aggregates, updated atomically with message writes.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `conversation_id` | TEXT PK FK | Parent conversation |
+| `session_id` | TEXT PK FK | Parent session |
 | `provider_name` | TEXT | Denormalized |
 | `message_count` | INTEGER | Total messages |
 | `word_count` | INTEGER | Total words |
@@ -111,22 +111,20 @@ Used for pushdown filters (`--min-messages`, `--min-words`, `--has-tool-use`,
 | Table | Purpose |
 |-------|---------|
 | `attachments` / `attachment_refs` | File attachments with M:N message refs |
-| `tags` / `conversation_tags` | M:N tag assignments (replaced JSON `metadata.tags`) |
-| `raw_conversations` | Raw import records before parsing |
+| `tags` / `session_tags` | M:N tag assignments (replaced JSON `metadata.tags`) |
+| `raw_sessions` | Raw import records before parsing |
 
 ## FTS5 Tables
 
 | Virtual Table | Content | Tokenizer |
 |---------------|---------|-----------|
-| `messages_fts` | Message text | `unicode61` |
-| `action_events_fts` | Action event text | `unicode61` |
+| `messages_fts` | Block text, including tool-use/tool-result action evidence | `unicode61` |
 | `session_work_events_fts` | Work event search text | `unicode61` |
 | `work_threads_fts` | Thread search text | `unicode61` |
 
-All FTS tables use `unicode61` tokenizer (no porter stemmer). The message and
-action-event indexes are external-content FTS5 tables backed by
-`messages`/`action_events`; FTS sync triggers maintain the indexes and startup
-repair verifies the trigger set.
+All FTS tables use `unicode61` tokenizer (no porter stemmer). `messages_fts`
+is contentless and populated from `blocks`; action search is a filtered read
+over tool-use/tool-result blocks in that same index.
 
 ## Vector Table
 
@@ -136,7 +134,7 @@ repair verifies the trigger set.
 message_id TEXT PRIMARY KEY
 embedding float[1024]
 +provider_name TEXT
-+conversation_id TEXT
++session_id TEXT
 ```
 
 1024-dimensional float embeddings. Populated when `VOYAGE_API_KEY` is set and
@@ -164,20 +162,19 @@ a `search_text` column for FTS indexing.
 | `pending_blob_refs` | Blob store leases (prevents GC races) |
 | `gc_generations` | Garbage collection generation tracking |
 | `source_file_cursors` | Per-file ingestion progress (idempotent resume) |
-| `identity_ledger` | Conversation content-hash identity ledger |
+| `identity_ledger` | Session content-hash identity ledger |
 
 ## Schema Versioning
 
 Polylogue uses fresh-first schema initialization:
 
 - **Version match**: open database normally
-- **New database**: create all tables at current `SCHEMA_VERSION`
-- **Version mismatch**: rejected with an error unless an explicit migration
-  exists for that exact version transition
+- **New database**: create the current split archive tier files
+- **Version mismatch**: rejected with an error; rebuild the archive from source
 
-Schema version is declared in `polylogue/storage/sqlite/schema_ddl.py` as
-`SCHEMA_VERSION`. The bootstrap branching logic in `schema_bootstrap.py` handles
-both sync and async backends.
+Tier schema versions and DDL live under
+`polylogue/storage/sqlite/archive_tiers/`. The bootstrap branching logic in
+`schema_bootstrap.py` handles sync and async index-tier backends.
 
 ## Schema Drift Detection
 

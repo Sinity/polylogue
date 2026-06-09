@@ -1,0 +1,17 @@
+Usage: polylogue maintenance gc-history [OPTIONS]
+
+  Show recent blob-GC passes recorded in ``gc_generations``.
+
+  Surfaces the typed reclaim counters (``reclaimed_count`` /
+  ``reclaimed_bytes``) and start/completion timestamps written by
+  ``run_blob_gc`` so operators can audit GC reclamation over time without
+  bespoke SQLite tooling.
+
+  A pass whose ``completed_at_ms`` is null crashed mid-run; the row is still
+  surfaced so operators can see it happened.
+
+Options:
+  -l, --limit INTEGER           Maximum number of recent GC passes to display.
+                                [default: 20]
+  --output-format [plain|json]  Output format.  [default: plain]
+  -h, --help                    Show this message and exit.

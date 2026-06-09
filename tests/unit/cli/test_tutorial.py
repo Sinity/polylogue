@@ -12,6 +12,7 @@ from click.testing import CliRunner
 
 from polylogue.cli.commands.tutorial import STAGES, tutorial_command
 from polylogue.cli.shared.types import AppEnv
+from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 
 
 class _CapturingConsole:
@@ -82,14 +83,55 @@ def test_stage_first_search_empty_archive(monkeypatch: pytest.MonkeyPatch, tmp_p
     _set_xdg(monkeypatch, tmp_path)
     data_dir = tmp_path / "xdg-data" / "polylogue"
     data_dir.mkdir(parents=True, exist_ok=True)
-    db = data_dir / "polylogue.db"
+    db = data_dir / "index.db"
     conn = sqlite3.connect(db)
-    conn.execute("CREATE TABLE conversations (id INTEGER PRIMARY KEY)")
+    conn.execute(f"PRAGMA user_version = {INDEX_SCHEMA_VERSION}")
+    conn.execute("CREATE TABLE sessions (id INTEGER PRIMARY KEY)")
     conn.commit()
     conn.close()
     satisfied, message = _stage_first_search()
     assert satisfied is False
     assert "empty" in message.lower()
+
+
+def test_stage_first_search_reads_archive_file_set(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from polylogue.cli.commands.tutorial import _stage_first_search
+
+    _set_xdg(monkeypatch, tmp_path)
+    data_dir = tmp_path / "xdg-data" / "polylogue"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    db = data_dir / "index.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
+    conn.execute("INSERT INTO sessions VALUES ('codex-session:one')")
+    conn.commit()
+    conn.close()
+    satisfied, message = _stage_first_search()
+    assert satisfied is True
+    assert "1" in message
+
+
+def test_stage_first_search_ignores_retired_single_file_db(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from polylogue.cli.commands.tutorial import _stage_first_search
+
+    _set_xdg(monkeypatch, tmp_path)
+    data_dir = tmp_path / "xdg-data" / "polylogue"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    retired = sqlite3.connect(data_dir / "retired.sqlite")
+    retired.execute("CREATE TABLE sessions (id INTEGER PRIMARY KEY)")
+    retired.commit()
+    retired.close()
+    archive = sqlite3.connect(data_dir / "index.db")
+    archive.execute(f"PRAGMA user_version = {INDEX_SCHEMA_VERSION}")
+    archive.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
+    archive.execute("INSERT INTO sessions VALUES ('codex-session:one')")
+    archive.commit()
+    archive.close()
+
+    satisfied, message = _stage_first_search()
+
+    assert satisfied is True
+    assert "1" in message
 
 
 def test_stage_first_search_no_archive(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

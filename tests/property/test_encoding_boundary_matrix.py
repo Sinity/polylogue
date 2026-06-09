@@ -32,18 +32,16 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.hashing import hash_text
 from polylogue.pipeline.ids import (
     _normalize_for_hash,
-    conversation_content_hash,
-    message_content_hash,
+    session_content_hash,
 )
-from polylogue.pipeline.prepare import RecordBundle, save_bundle
 from polylogue.sources.decoder_json import decode_json_bytes
-from polylogue.sources.parsers.base import ParsedConversation, ParsedMessage
+from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.index import rebuild_index
-from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.repository import SessionRepository
 from polylogue.storage.search import search_messages
 from polylogue.storage.search.query_support import escape_fts5_query
 from polylogue.types import Provider
-from tests.infra.storage_records import make_conversation, make_message
+from tests.infra.storage_records import make_message, make_session, save_current_archive_records
 
 # ---------------------------------------------------------------------------
 # Edge-case catalog
@@ -153,9 +151,9 @@ class TestContentHashNormalization:
 
     Contracts:
       - ``hash_text(NFC) == hash_text(NFD)`` for the same visual string.
-      - Conversation and message content hashes apply the same normalization
+      - Session and message content hashes apply the same normalization
         to their textual fields (title, message text), so re-ingesting an
-        otherwise-identical conversation in a different normalization form
+        otherwise-identical session in a different normalization form
         does NOT trigger a re-write.
       - Distinct edge-case strings produce distinct hashes (no accidental
         collisions across the matrix).
@@ -173,26 +171,33 @@ class TestContentHashNormalization:
         nfc = unicodedata.normalize("NFC", original)
         assert hash_text(nfd) == hash_text(nfc) == hash_text(original)
 
-    def test_message_content_hash_normalizes_text(self) -> None:
-        nfc_msg = ParsedMessage(
-            provider_message_id="m1",
-            role=Role.USER,
-            text=NFC_CAFE,
-            timestamp="2026-01-01T00:00:00Z",
-        )
-        nfd_msg = ParsedMessage(
-            provider_message_id="m1",
-            role=Role.USER,
-            text=NFD_CAFE,
-            timestamp="2026-01-01T00:00:00Z",
-        )
-        assert message_content_hash(nfc_msg, "m1") == message_content_hash(nfd_msg, "m1")
-
-    def test_conversation_content_hash_normalizes_title_and_text(self) -> None:
-        def _build(title: str, text: str) -> ParsedConversation:
-            return ParsedConversation(
+    def test_session_hash_normalizes_message_text(self) -> None:
+        # Isolate message-text normalization: title is constant ASCII, only the
+        # message text differs by NFC/NFD form. The session hash must collapse them.
+        def _build(text: str) -> ParsedSession:
+            return ParsedSession(
                 source_name=Provider.CHATGPT,
-                provider_conversation_id="conv-1",
+                provider_session_id="conv-1",
+                title="constant",
+                created_at="2026-01-01T00:00:00Z",
+                updated_at="2026-01-01T00:00:00Z",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.USER,
+                        text=text,
+                        timestamp="2026-01-01T00:00:00Z",
+                    )
+                ],
+            )
+
+        assert session_content_hash(_build(NFC_CAFE)) == session_content_hash(_build(NFD_CAFE))
+
+    def test_session_content_hash_normalizes_title_and_text(self) -> None:
+        def _build(title: str, text: str) -> ParsedSession:
+            return ParsedSession(
+                source_name=Provider.CHATGPT,
+                provider_session_id="conv-1",
                 title=title,
                 created_at="2026-01-01T00:00:00Z",
                 updated_at="2026-01-01T00:00:00Z",
@@ -206,8 +211,8 @@ class TestContentHashNormalization:
                 ],
             )
 
-        nfc = conversation_content_hash(_build(NFC_CAFE, NFC_CAFE))
-        nfd = conversation_content_hash(_build(NFD_CAFE, NFD_CAFE))
+        nfc = session_content_hash(_build(NFC_CAFE, NFC_CAFE))
+        nfd = session_content_hash(_build(NFD_CAFE, NFD_CAFE))
         assert nfc == nfd
 
     def test_normalize_for_hash_applies_nfc(self) -> None:
@@ -277,54 +282,60 @@ class TestFtsUnicodeTokenizer:
     async def test_indexes_arabic_text(
         self,
         workspace_env: dict[str, Path],
-        storage_repository: ConversationRepository,
+        storage_repository: SessionRepository,
     ) -> None:
-        conv = make_conversation("conv-ar", source_name="claude-ai", title="Arabic")
+        conv = make_session("conv-ar", source_name="claude-ai", title="Arabic")
         msg = make_message("conv-ar-m1", "conv-ar", text=ARABIC_HELLO)
-        await save_bundle(
-            RecordBundle(conversation=conv, messages=[msg], attachments=[]),
-            repository=storage_repository,
+        await save_current_archive_records(
+            storage_repository,
+            session=conv,
+            messages=[msg],
+            attachments=[],
         )
         rebuild_index()
         results = search_messages(ARABIC_HELLO, archive_root=workspace_env["archive_root"], limit=10)
         assert len(results.hits) == 1
-        assert results.hits[0].conversation_id == "conv-ar"
+        assert results.hits[0].session_id == "claude-ai-export:conv-ar"
 
     async def test_indexes_cjk_text_without_crashing(
         self,
         workspace_env: dict[str, Path],
-        storage_repository: ConversationRepository,
+        storage_repository: SessionRepository,
     ) -> None:
         # SQLite ``unicode61`` does NOT treat CJK characters as word
         # boundaries — a CJK run is a single token. We therefore assert the
         # weaker "stores and indexes without crashing, regardless of whether
         # a substring query resolves" contract, with a stable English-word
         # sentinel mixed in to give the test a positive observation.
-        conv = make_conversation("conv-cjk", source_name="claude-ai", title="CJK")
+        conv = make_session("conv-cjk", source_name="claude-ai", title="CJK")
         msg = make_message("conv-cjk-m1", "conv-cjk", text=f"{CJK_TEXT} cjkmarker")
-        await save_bundle(
-            RecordBundle(conversation=conv, messages=[msg], attachments=[]),
-            repository=storage_repository,
+        await save_current_archive_records(
+            storage_repository,
+            session=conv,
+            messages=[msg],
+            attachments=[],
         )
         rebuild_index()
         # The English sentinel proves the row reached the FTS index even
         # though the CJK run itself is not substring-searchable.
         results = search_messages("cjkmarker", archive_root=workspace_env["archive_root"], limit=10)
         assert len(results.hits) == 1
-        assert results.hits[0].conversation_id == "conv-cjk"
+        assert results.hits[0].session_id == "claude-ai-export:conv-cjk"
 
     async def test_indexing_zero_width_and_bidi_does_not_crash(
         self,
         workspace_env: dict[str, Path],
-        storage_repository: ConversationRepository,
+        storage_repository: SessionRepository,
     ) -> None:
         # Whitespace-tokenized "visible" + "spaces" should remain searchable
         # even though zero-width characters are interleaved.
-        conv = make_conversation("conv-zw", source_name="claude-ai", title="zerowidth")
+        conv = make_session("conv-zw", source_name="claude-ai", title="zerowidth")
         msg = make_message("conv-zw-m1", "conv-zw", text=ZERO_WIDTH + " " + BIDI_OVERRIDE)
-        await save_bundle(
-            RecordBundle(conversation=conv, messages=[msg], attachments=[]),
-            repository=storage_repository,
+        await save_current_archive_records(
+            storage_repository,
+            session=conv,
+            messages=[msg],
+            attachments=[],
         )
         # Indexing must not raise. We do not assert on tokenizer-internal
         # decisions about whether ZWJ/ZWNJ split tokens.
@@ -333,16 +344,18 @@ class TestFtsUnicodeTokenizer:
     async def test_indexes_nfc_and_nfd_independently(
         self,
         workspace_env: dict[str, Path],
-        storage_repository: ConversationRepository,
+        storage_repository: SessionRepository,
     ) -> None:
         # FTS index stores the raw text bytes that hit it. Storage does NOT
         # normalize text before indexing (only content_hash does). This test
         # documents that contract.
-        conv = make_conversation("conv-nfc", source_name="claude-ai", title="cafe")
+        conv = make_session("conv-nfc", source_name="claude-ai", title="cafe")
         msg = make_message("conv-nfc-m1", "conv-nfc", text=NFC_CAFE)
-        await save_bundle(
-            RecordBundle(conversation=conv, messages=[msg], attachments=[]),
-            repository=storage_repository,
+        await save_current_archive_records(
+            storage_repository,
+            session=conv,
+            messages=[msg],
+            attachments=[],
         )
         rebuild_index()
         results = search_messages(NFC_CAFE, archive_root=workspace_env["archive_root"], limit=10)

@@ -1,261 +1,351 @@
-"""Retrieval readiness laws over shared archive scenarios.
+"""Retrieval readiness laws over the archive.
 
-These tests prove provider filters, FTS search, counts, and aggregate archive
-facts agree across direct SQL, hydrated records, repository, and facade
-surfaces.
+These tests prove that origin filters, FTS search, counts, and aggregate
+archive facts are consistent across the archive read surfaces (the ``ArchiveStore``
+substrate, the async ``Polylogue`` facade, and the MCP ``list_sessions`` /
+``search`` tools), and that the archive FTS index covers exactly the indexable
+content blocks.
+
+The FTS readiness contract (``check_fts_readiness``) is a pure guard and is
+asserted directly.
 """
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
+import json
+import sqlite3
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
+from polylogue.api import Polylogue
 from polylogue.errors import DatabaseError
 from polylogue.storage.fts.fts_lifecycle import check_fts_readiness
-from tests.infra.archive_scenarios import ArchiveScenario, ScenarioMessage, seed_workspace_scenarios
-from tests.infra.oracles import assert_archive_surfaces_agree, assert_provider_partition_exhaustive
-from tests.infra.query_cases import ArchiveQueryCase
-from tests.infra.surfaces import ArchiveSurfaceSet, build_archive_surface_set
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.storage_records import SessionBuilder, _record_to_parsed_session, db_setup
 
 
-@pytest.fixture()
-def retrieval_archive(workspace_env: Mapping[str, Path]) -> tuple[Path, tuple[ArchiveScenario, ...]]:
-    """Seed provider-diverse conversations with stable search terms."""
-    scenarios = (
-        ArchiveScenario(
+@dataclass(frozen=True)
+class _Scenario:
+    name: str
+    provider: str
+    title: str
+    messages: tuple[tuple[str, str], ...]
+
+
+def _scenarios() -> tuple[_Scenario, ...]:
+    return (
+        _Scenario(
             name="chatgpt-retrieval-1",
             provider="chatgpt",
-            title="ChatGPT conversation about testing",
+            title="ChatGPT session about testing",
             messages=(
-                ScenarioMessage(role="user", text="How do I write property tests?", message_id="chatgpt-u1"),
-                ScenarioMessage(
-                    role="assistant",
-                    text="Property tests verify invariants using random inputs",
-                    message_id="chatgpt-a1",
-                ),
+                ("user", "How do I write property tests?"),
+                ("assistant", "Property tests verify invariants using random inputs"),
             ),
         ),
-        ArchiveScenario(
+        _Scenario(
             name="claude-retrieval-1",
             provider="claude-code",
             title="Claude Code session on refactoring",
             messages=(
-                ScenarioMessage(role="user", text="Refactor the storage module", message_id="claude1-u1"),
-                ScenarioMessage(role="assistant", text="I will restructure the query layer", message_id="claude1-a1"),
-                ScenarioMessage(role="user", text="Also fix the property tests", message_id="claude1-u2"),
+                ("user", "Refactor the storage module"),
+                ("assistant", "I will restructure the query layer"),
+                ("user", "Also fix the property tests"),
             ),
         ),
-        ArchiveScenario(
+        _Scenario(
             name="claude-retrieval-2",
             provider="claude-code",
             title="Claude debugging memory leak",
             messages=(
-                ScenarioMessage(role="user", text="Memory keeps growing during ingest", message_id="claude2-u1"),
-                ScenarioMessage(role="assistant", text="The blob store path has a leak", message_id="claude2-a1"),
+                ("user", "Memory keeps growing during ingest"),
+                ("assistant", "The blob store path has a leak"),
             ),
         ),
-        ArchiveScenario(
+        _Scenario(
             name="codex-retrieval-1",
             provider="codex",
             title="Codex adding authentication",
-            messages=(ScenarioMessage(role="user", text="Add OAuth2 authentication", message_id="codex-u1"),),
+            messages=(("user", "Add OAuth2 authentication"),),
         ),
     )
-    db_path, _ = seed_workspace_scenarios(workspace_env, scenarios)
-    return db_path, scenarios
+
+
+def _seed(workspace_env: dict[str, Path]) -> tuple[Path, dict[str, str]]:
+    db_path = db_setup(workspace_env)
+    ids: dict[str, str] = {}
+    with ArchiveStore(workspace_env["archive_root"]) as archive:
+        for scenario in _scenarios():
+            builder = SessionBuilder(db_path, scenario.name).provider(scenario.provider).title(scenario.title)
+            for role, text in scenario.messages:
+                builder.add_message(role=role, text=text)
+            archive.write_parsed(_record_to_parsed_session(builder.conv, builder.messages, builder.attachments))
+            ids[scenario.name] = builder.native_session_id()
+    return db_path, ids
+
+
+# ---------------------------------------------------------------------------
+# Archive read surfaces
+# ---------------------------------------------------------------------------
+
+
+class _SubstrateSurface:
+    name = "substrate"
+
+    def __init__(self, *, archive_root: Path) -> None:
+        self._archive_root = archive_root
+
+    async def provider_ids(self, origin: str) -> tuple[str, ...]:
+        with ArchiveStore.open_existing(self._archive_root) as archive:
+            return tuple(sorted(s.session_id for s in archive.list_summaries(origin=origin, limit=100)))
+
+    async def search_ids(self, query: str) -> tuple[str, ...]:
+        with ArchiveStore.open_existing(self._archive_root) as archive:
+            return tuple(sorted({hit.session_id for hit in archive.search_summaries(query, limit=100)}))
+
+    async def archive_facts(self) -> tuple[int, int, dict[str, int], tuple[str, ...]]:
+        with ArchiveStore.open_existing(self._archive_root) as archive:
+            summaries = archive.list_summaries(limit=1000)
+        ids = tuple(sorted(s.session_id for s in summaries))
+        origin_counts: dict[str, int] = {}
+        total_messages = 0
+        for s in summaries:
+            total_messages += s.message_count
+            origin_counts[s.origin] = origin_counts.get(s.origin, 0) + 1
+        return len(summaries), total_messages, origin_counts, ids
+
+    async def close(self) -> None:
+        return None
+
+
+class _FacadeSurface:
+    name = "facade"
+
+    def __init__(self, *, archive_root: Path, db_path: Path) -> None:
+        self._archive = Polylogue(archive_root=archive_root, db_path=db_path)
+
+    async def provider_ids(self, origin: str) -> tuple[str, ...]:
+        convs = await self._archive.list_sessions(origin=origin, limit=100)
+        return tuple(sorted(str(c.id) for c in convs))
+
+    async def search_ids(self, query: str) -> tuple[str, ...]:
+        result = await self._archive.search(query, limit=100)
+        return tuple(sorted({str(hit.session_id) for hit in result.hits}))
+
+    async def archive_facts(self) -> tuple[int, int, dict[str, int], tuple[str, ...]]:
+        stats = await self._archive.stats()
+        convs = await self._archive.list_sessions(limit=1000)
+        ids = tuple(sorted(str(c.id) for c in convs))
+        return stats.session_count, stats.message_count, dict(stats.origins), ids
+
+    async def close(self) -> None:
+        await self._archive.close()
+
+
+class _MCPSurface:
+    name = "mcp"
+
+    def __init__(self, *, db_path: Path) -> None:
+        from polylogue.mcp.server import build_server
+        from polylogue.mcp.server_support import _set_runtime_services
+        from polylogue.services import build_runtime_services
+
+        self._services = build_runtime_services(db_path=db_path)
+        _set_runtime_services(self._services)
+        self._server = build_server(role="admin")
+
+    async def provider_ids(self, origin: str) -> tuple[str, ...]:
+        payload = await self._server._tool_manager._tools["list_sessions"].fn(limit=100, origin=origin)
+        items = json.loads(payload).get("items", [])
+        return tuple(sorted({str(i["id"]) for i in items}))
+
+    async def search_ids(self, query: str) -> tuple[str, ...]:
+        payload = await self._server._tool_manager._tools["search"].fn(query=query, limit=100)
+        parsed = json.loads(payload)
+        hits = parsed.get("hits", parsed.get("items", []))
+        ids: list[str] = []
+        for hit in hits:
+            if "session_id" in hit:
+                ids.append(str(hit["session_id"]))
+            elif isinstance(hit.get("session"), dict) and "id" in hit["session"]:
+                ids.append(str(hit["session"]["id"]))
+        return tuple(sorted(set(ids)))
+
+    async def archive_facts(self) -> tuple[int, int, dict[str, int], tuple[str, ...]]:
+        payload = await self._server._tool_manager._tools["list_sessions"].fn(limit=1000)
+        items = json.loads(payload).get("items", [])
+        ids = tuple(sorted(str(i["id"]) for i in items))
+        origin_counts: dict[str, int] = {}
+        total_messages = 0
+        for item in items:
+            total_messages += int(item.get("message_count", 0))
+            origin = str(item["origin"])
+            origin_counts[origin] = origin_counts.get(origin, 0) + 1
+        return len(items), total_messages, origin_counts, ids
+
+    async def close(self) -> None:
+        from polylogue.mcp.server_support import _set_runtime_services
+
+        await self._services.close()
+        _set_runtime_services(None)
+
+
+@dataclass
+class _SurfaceSet:
+    substrate: _SubstrateSurface
+    facade: _FacadeSurface
+    mcp: _MCPSurface
+    ids: dict[str, str]
+
+    @property
+    def all(self) -> tuple[object, ...]:
+        return (self.substrate, self.facade, self.mcp)
+
+    async def close(self) -> None:
+        await self.facade.close()
+        await self.mcp.close()
+        await self.substrate.close()
 
 
 @pytest.fixture()
-async def retrieval_surfaces(
-    workspace_env: Mapping[str, Path],
-    retrieval_archive: tuple[Path, tuple[ArchiveScenario, ...]],
-) -> AsyncIterator[ArchiveSurfaceSet]:
-    db_path, scenarios = retrieval_archive
-    surfaces = build_archive_surface_set(
-        db_path=db_path,
-        archive_root=workspace_env["archive_root"],
-        scenarios=scenarios,
+def retrieval_archive(workspace_env: dict[str, Path]) -> tuple[Path, dict[str, str]]:
+    return _seed(workspace_env)
+
+
+@pytest.fixture()
+async def surfaces(
+    workspace_env: dict[str, Path],
+    retrieval_archive: tuple[Path, dict[str, str]],
+) -> AsyncIterator[_SurfaceSet]:
+    db_path, ids = retrieval_archive
+    s = _SurfaceSet(
+        substrate=_SubstrateSurface(archive_root=workspace_env["archive_root"]),
+        facade=_FacadeSurface(archive_root=workspace_env["archive_root"], db_path=db_path),
+        mcp=_MCPSurface(db_path=db_path),
+        ids=ids,
     )
     try:
-        yield surfaces
+        yield s
     finally:
-        await surfaces.close()
+        await s.close()
 
 
-def _provider_cases() -> tuple[ArchiveQueryCase, ...]:
-    return (
-        ArchiveQueryCase(
-            name="provider-chatgpt",
-            provider="chatgpt",
-            expected_ids=("chatgpt-retrieval-1",),
-        ),
-        ArchiveQueryCase(
-            name="provider-claude",
-            provider="claude-code",
-            expected_ids=("claude-retrieval-1", "claude-retrieval-2"),
-        ),
-        ArchiveQueryCase(
-            name="provider-codex",
-            provider="codex",
-            expected_ids=("codex-retrieval-1",),
-        ),
-    )
-
-
-def _search_cases() -> tuple[ArchiveQueryCase, ...]:
-    return (
-        ArchiveQueryCase(
-            name="search-property",
-            search_text="property",
-            expected_ids=("chatgpt-retrieval-1", "claude-retrieval-1"),
-        ),
-        ArchiveQueryCase(
-            name="search-memory",
-            search_text="memory",
-            expected_ids=("claude-retrieval-2",),
-        ),
-        ArchiveQueryCase(
-            name="search-authentication",
-            search_text="authentication",
-            expected_ids=("codex-retrieval-1",),
-        ),
-    )
+# ---------------------------------------------------------------------------
+# FTS readiness contract (pure)
+# ---------------------------------------------------------------------------
 
 
 def test_fts_readiness_rejects_negative_gap_and_missing_triggers() -> None:
     with pytest.raises(DatabaseError):
         check_fts_readiness(
-            {
-                "exists": True,
-                "ready": False,
-                "indexed_rows": 110,
-                "total_rows": 100,
-                "triggers_present": True,
-            }
+            {"exists": True, "ready": False, "indexed_rows": 110, "total_rows": 100, "triggers_present": True}
         )
-
     with pytest.raises(DatabaseError):
         check_fts_readiness(
-            {
-                "exists": True,
-                "ready": False,
-                "indexed_rows": 99,
-                "total_rows": 100,
-                "triggers_present": False,
-            }
+            {"exists": True, "ready": False, "indexed_rows": 99, "total_rows": 100, "triggers_present": False}
         )
-
     with pytest.raises(DatabaseError):
         check_fts_readiness(
-            {
-                "exists": True,
-                "ready": False,
-                "indexed_rows": 99,
-                "total_rows": 100,
-                "triggers_present": True,
-            }
+            {"exists": True, "ready": False, "indexed_rows": 99, "total_rows": 100, "triggers_present": True}
         )
+
+
+# ---------------------------------------------------------------------------
+# Cross-surface retrieval agreement
+# ---------------------------------------------------------------------------
 
 
 class TestRetrievalSurfaceAgreement:
-    @pytest.mark.asyncio()
-    async def test_archive_facts_agree_across_surfaces(self, retrieval_surfaces: ArchiveSurfaceSet) -> None:
-        facts = [await surface.archive_facts() for surface in retrieval_surfaces.surfaces]
+    @pytest.mark.asyncio
+    async def test_archive_facts_agree_across_surfaces(self, surfaces: _SurfaceSet) -> None:
+        facts = [await surface.archive_facts() for surface in surfaces.all]  # type: ignore[attr-defined]
+        reference = facts[0]
+        for surface, fact in zip(surfaces.all, facts, strict=True):
+            assert fact == reference, f"{surface.name} disagrees: {fact} != {reference}"  # type: ignore[attr-defined]
+        total_sessions, total_messages, origin_counts, _ids = reference
+        assert total_sessions == 4
+        assert total_messages == 8
+        assert origin_counts == {"chatgpt-export": 1, "claude-code-session": 2, "codex-session": 1}
 
-        assert_archive_surfaces_agree(*facts)
-        assert facts[0].total_conversations == 4
-        assert facts[0].total_messages == 8
-        assert facts[0].provider_counts == {"chatgpt": 1, "claude-code": 2, "codex": 1}
+    @pytest.mark.asyncio
+    async def test_origin_filters_partition_the_archive(self, surfaces: _SurfaceSet) -> None:
+        _conv, _msg, _prov, all_ids = await surfaces.facade.archive_facts()
+        all_set = set(all_ids)
+        partitions: dict[str, tuple[str, ...]] = {}
+        for origin, names in (
+            ("chatgpt-export", ("chatgpt-retrieval-1",)),
+            ("claude-code-session", ("claude-retrieval-1", "claude-retrieval-2")),
+            ("codex-session", ("codex-retrieval-1",)),
+        ):
+            expected = tuple(sorted(surfaces.ids[name] for name in names))
+            for surface in surfaces.all:
+                ids = await surface.provider_ids(origin)  # type: ignore[attr-defined]
+                assert ids == expected, f"{surface.name} returned {ids} for origin {origin}"  # type: ignore[attr-defined]
+            partitions[origin] = expected
+        # disjoint + exhaustive
+        union: set[str] = set()
+        for ids in partitions.values():
+            assert union.isdisjoint(ids)
+            union |= set(ids)
+        assert union == all_set
 
-    @pytest.mark.asyncio()
-    async def test_provider_filters_partition_the_archive(self, retrieval_surfaces: ArchiveSurfaceSet) -> None:
-        all_ids = set((await retrieval_surfaces.surfaces[0].archive_facts()).conversation_ids)
-        ids_by_provider: dict[str, tuple[str, ...]] = {}
+    @pytest.mark.asyncio
+    async def test_fts_search_is_consistent_across_surfaces(self, surfaces: _SurfaceSet) -> None:
+        cases = (
+            ("property", ("chatgpt-retrieval-1", "claude-retrieval-1")),
+            ("memory", ("claude-retrieval-2",)),
+            ("authentication", ("codex-retrieval-1",)),
+        )
+        for query, names in cases:
+            expected = tuple(sorted(surfaces.ids[name] for name in names))
+            for surface in surfaces.all:
+                ids = await surface.search_ids(query)  # type: ignore[attr-defined]
+                assert ids == expected, f"{surface.name} returned {ids} for query {query!r}"  # type: ignore[attr-defined]
 
-        for case in _provider_cases():
-            assert case.provider is not None
-            projected_ids = [await surface.query_ids(case) for surface in retrieval_surfaces.surfaces]
-            expected_ids = tuple(sorted(case.expected_ids))
-            for surface, ids in zip(retrieval_surfaces.surfaces, projected_ids, strict=True):
-                assert ids == expected_ids, f"{surface.name} returned {ids} for {case.name}"
-                assert await surface.query_count(case) == len(expected_ids)
-            ids_by_provider[case.provider] = expected_ids
 
-        assert_provider_partition_exhaustive(all_conversation_ids=all_ids, ids_by_provider=ids_by_provider)
-
-    @pytest.mark.asyncio()
-    async def test_fts_search_is_consistent_across_surfaces(self, retrieval_surfaces: ArchiveSurfaceSet) -> None:
-        for case in _search_cases():
-            expected_ids = tuple(sorted(case.expected_ids))
-            for surface in retrieval_surfaces.surfaces:
-                ids = await surface.query_ids(case)
-                assert ids == expected_ids, f"{surface.name} returned {ids} for {case.name}"
-                assert await surface.query_count(case) == len(expected_ids)
+# ---------------------------------------------------------------------------
+# Archive FTS index invariant
+# ---------------------------------------------------------------------------
 
 
 class TestRetrievalIndexInvariants:
-    def test_fts_index_contains_exactly_text_messages(
+    def test_fts_index_covers_exactly_indexable_blocks(
         self,
-        retrieval_archive: tuple[Path, tuple[ArchiveScenario, ...]],
+        retrieval_archive: tuple[Path, dict[str, str]],
     ) -> None:
-        from polylogue.storage.sqlite.connection import open_connection
-
         db_path, _ = retrieval_archive
-        with open_connection(db_path) as conn:
-            expected_text_messages = {
-                str(row["message_id"])
+        with sqlite3.connect(db_path) as conn:
+            indexable_blocks = {
+                str(row[0])
+                for row in conn.execute("SELECT block_id FROM blocks WHERE NULLIF(text, '') IS NOT NULL").fetchall()
+            }
+            indexed_blocks = {
+                str(row[0])
                 for row in conn.execute(
-                    """
-                    SELECT DISTINCT m.message_id
-                    FROM messages AS m
-                    WHERE NULLIF(m.text, '') IS NOT NULL
-                       OR EXISTS (
-                           SELECT 1
-                           FROM content_blocks AS cb
-                           WHERE cb.message_id = m.message_id
-                             AND (
-                                 NULLIF(cb.text, '') IS NOT NULL
-                                 OR NULLIF(cb.tool_input, '') IS NOT NULL
-                                 OR NULLIF(cb.metadata, '') IS NOT NULL
-                             )
-                       )
-                    """
+                    "SELECT b.block_id FROM messages_fts f JOIN blocks b ON b.rowid = f.rowid"
                 ).fetchall()
             }
-            indexed_messages = {
-                str(row["message_id"])
-                for row in conn.execute(
-                    """
-                    SELECT messages.message_id
-                    FROM messages_fts
-                    JOIN messages ON messages.rowid = messages_fts.rowid
-                    """
-                ).fetchall()
-            }
+        assert indexed_blocks == indexable_blocks
 
-        assert indexed_messages == expected_text_messages
-
-    @pytest.mark.asyncio()
-    async def test_repository_message_counts_match_storage_facts(
+    @pytest.mark.asyncio
+    async def test_message_counts_match_across_surfaces(
         self,
-        retrieval_archive: tuple[Path, tuple[ArchiveScenario, ...]],
+        retrieval_archive: tuple[Path, dict[str, str]],
+        workspace_env: dict[str, Path],
     ) -> None:
-        from polylogue.storage.sqlite.connection import open_connection
-        from tests.infra.archive_scenarios import repository_for_scenario_db
+        db_path, ids = retrieval_archive
+        # Substrate per-session message counts.
+        with ArchiveStore.open_existing(workspace_env["archive_root"]) as archive:
+            substrate_counts = {s.session_id: s.message_count for s in archive.list_summaries(limit=1000)}
 
-        db_path, scenarios = retrieval_archive
-        expected_counts: dict[str, int] = {}
-        with open_connection(db_path) as conn:
-            for scenario in scenarios:
-                facts = scenario.facts_from_connection(conn)
-                expected_counts[facts.conversation_id] = facts.message_count
+        async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
+            facade_counts: dict[str, int] = {}
+            for session_id in ids.values():
+                session = await poly.get_session(session_id)
+                assert session is not None
+                facade_counts[session_id] = len(session.messages)
 
-        repository = repository_for_scenario_db(db_path)
-        try:
-            observed_counts = await repository.get_message_counts_batch(list(expected_counts))
-        finally:
-            await repository.close()
-
-        assert observed_counts == expected_counts
+        assert facade_counts == substrate_counts

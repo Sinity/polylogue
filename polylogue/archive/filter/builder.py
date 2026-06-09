@@ -7,21 +7,21 @@ from typing import TYPE_CHECKING, Protocol, Self, TypeVar
 
 from polylogue.archive.filter.types import SortField
 from polylogue.core.dates import parse_date
-from polylogue.types import Provider
+from polylogue.core.enums import Origin
 
 if TYPE_CHECKING:
-    from polylogue.archive.models import Conversation
-    from polylogue.archive.query.plan import ConversationQueryPlan
+    from polylogue.archive.models import Session
+    from polylogue.archive.query.plan import SessionQueryPlan
 
 _T = TypeVar("_T")
 
 
 class _HasQueryPlan(Protocol):
-    _plan: ConversationQueryPlan
+    _plan: SessionQueryPlan
 
 
 _PlanOwner = TypeVar("_PlanOwner", bound=_HasQueryPlan)
-_ReplacePlan: Callable[..., ConversationQueryPlan] = replace
+_ReplacePlan: Callable[..., SessionQueryPlan] = replace
 
 
 def _extend_tuple(values: tuple[_T, ...], additions: tuple[_T, ...]) -> tuple[_T, ...]:
@@ -39,10 +39,10 @@ def _replace_plan(
     return filter_obj
 
 
-class ConversationFilterBuilderMixin:
-    """Fluent mutators for ConversationFilter backed by the canonical plan."""
+class SessionFilterBuilderMixin:
+    """Fluent mutators for SessionFilter backed by the canonical plan."""
 
-    _plan: ConversationQueryPlan
+    _plan: SessionQueryPlan
 
     def contains(self, text: str) -> Self:
         return _replace_plan(
@@ -56,28 +56,28 @@ class ConversationFilterBuilderMixin:
             negative_terms=_extend_tuple(self._plan.negative_terms, (text,)),
         )
 
-    def provider(self, *names: Provider | str) -> Self:
-        """Restrict results to one or more providers.
+    def origin(self, *names: Origin | str) -> Self:
+        """Restrict results to one or more origins.
 
         Multiple calls *accumulate* into a single IN-list with OR
-        semantics — ``.provider("chatgpt").provider("claude-ai")`` yields
-        rows whose provider is chatgpt OR claude-ai, not the empty set.
-        Callers that need replace-on-disagreement semantics must rewrite
-        the plan's ``providers`` field directly. The same OR-accumulation
-        rule applies to :meth:`exclude_provider`.
+        semantics — ``.origin("chatgpt-export").origin("claude-ai-export")``
+        yields rows whose origin is chatgpt-export OR claude-ai-export, not
+        the empty set. Callers that need replace-on-disagreement semantics
+        must rewrite the plan's ``origins`` field directly. The same
+        OR-accumulation rule applies to :meth:`exclude_origin`.
         """
-        providers = tuple(name if isinstance(name, Provider) else Provider.from_string(name) for name in names)
+        origins = tuple(Origin.from_string(name).value for name in names)
         return _replace_plan(
             self,
-            providers=_extend_tuple(self._plan.providers, providers),
+            origins=_extend_tuple(self._plan.origins, origins),
         )
 
-    def exclude_provider(self, *names: Provider | str) -> Self:
-        """Exclude one or more providers (OR-accumulating; see :meth:`provider`)."""
-        providers = tuple(name if isinstance(name, Provider) else Provider.from_string(name) for name in names)
+    def exclude_origin(self, *names: Origin | str) -> Self:
+        """Exclude one or more origins (OR-accumulating; see :meth:`origin`)."""
+        origins = tuple(Origin.from_string(name).value for name in names)
         return _replace_plan(
             self,
-            excluded_providers=_extend_tuple(self._plan.excluded_providers, providers),
+            excluded_origins=_extend_tuple(self._plan.excluded_origins, origins),
         )
 
     def repo(self, *names: str) -> Self:
@@ -157,7 +157,7 @@ class ConversationFilterBuilderMixin:
         )
 
     def id(self, prefix: str) -> Self:
-        return _replace_plan(self, conversation_id=prefix)
+        return _replace_plan(self, session_id=prefix)
 
     def sort(self, field: SortField) -> Self:
         return _replace_plan(self, sort=field)
@@ -174,7 +174,7 @@ class ConversationFilterBuilderMixin:
     def similar(self, text: str) -> Self:
         return _replace_plan(self, similar_text=text)
 
-    def where(self, predicate: Callable[[Conversation], bool]) -> Self:
+    def where(self, predicate: Callable[[Session], bool]) -> Self:
         return _replace_plan(
             self,
             predicates=_extend_tuple(self._plan.predicates, (predicate,)),
@@ -219,14 +219,14 @@ class ConversationFilterBuilderMixin:
     def has_subagent_spawns(self) -> Self:
         return self.action("subagent")
 
-    def parent(self, conversation_id: str) -> Self:
-        return _replace_plan(self, parent_id=conversation_id)
+    def parent(self, session_id: str) -> Self:
+        return _replace_plan(self, parent_id=session_id)
 
     def has_branches(self, value: bool = True) -> Self:
         return _replace_plan(self, has_branches=value)
 
-    def since_session(self, conversation_id: str) -> Self:
-        return _replace_plan(self, since_session_id=conversation_id)
+    def since_session(self, session_id: str) -> Self:
+        return _replace_plan(self, since_session_id=session_id)
 
     def message_type(self, value: str) -> Self:
         return _replace_plan(self, message_type=value)
@@ -235,4 +235,4 @@ class ConversationFilterBuilderMixin:
         return _replace_plan(self, offset=n)
 
 
-__all__ = ["ConversationFilterBuilderMixin"]
+__all__ = ["SessionFilterBuilderMixin"]

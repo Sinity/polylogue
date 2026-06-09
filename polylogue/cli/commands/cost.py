@@ -132,7 +132,7 @@ def rollup_command(env: AppEnv, plan: str, anomaly_threshold: float, output_form
             from polylogue.api import Polylogue
 
             async with Polylogue() as poly:
-                summaries = await poly.repository.list_summaries(limit=1000)
+                summaries = await poly.list_summaries(limit=1000)
                 for s in summaries:
                     cost_data.append(
                         {

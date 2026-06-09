@@ -12,7 +12,7 @@
     "capture-posted",
     "spool-record-written",
     "source-ingested",
-    "conversation-queryable"
+    "session-queryable"
   ],
   "forbidden_public_terms": ["inbox"],
   "required_diagnostics": [

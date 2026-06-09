@@ -2,7 +2,7 @@
 
 Pins the operator-facing closure for blob orphan cleanup and integrity
 verification. Each test exercises a real ``BlobStore`` against a real
-SQLite ``raw_conversations`` table — no mocks of the storage layer —
+SQLite ``raw_sessions`` table — no mocks of the storage layer —
 and asserts the round-trip:
 
   ingest a referenced blob and an orphaned blob
@@ -26,20 +26,21 @@ from typing import TypeAlias
 CliWorkspace: TypeAlias = dict[str, Path]
 
 
-_REFERENCED_BLOB = b"referenced raw conversation content"
-_ORPHAN_BLOB = b"this blob has no raw_conversations row"
+_REFERENCED_BLOB = b"referenced raw session content"
+_ORPHAN_BLOB = b"this blob has no raw_sessions row"
 
 
 def _seed_raw_row(db_path: Path, raw_id: str, source_path: Path, blob_size: int) -> None:
-    """Insert a minimum-viable raw_conversations row pointing at *raw_id*."""
-    with sqlite3.connect(db_path) as conn:
+    """Insert a minimum-viable raw_sessions row pointing at *raw_id*."""
+    source_db_path = db_path.with_name("source.db")
+    with sqlite3.connect(source_db_path) as conn:
         conn.execute(
             """
-            INSERT INTO raw_conversations (
-                raw_id, source_name, source_path, blob_size, acquired_at
-            ) VALUES (?, ?, ?, ?, ?)
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (raw_id, "test", str(source_path), blob_size, "2026-05-10T00:00:00Z"),
+            (raw_id, "unknown-export", raw_id, str(source_path), bytes.fromhex(raw_id), blob_size, 1_746_830_400_000),
         )
         conn.commit()
 
@@ -60,7 +61,7 @@ class TestBlobOrphanLifecycle:
 
         # Only the referenced blob is registered in the DB. The orphan
         # is intentionally absent — the GC contract is "anything on disk
-        # without a raw_conversations.raw_id row is an orphan".
+        # without a raw_sessions.raw_id row is an orphan".
         _seed_raw_row(
             cli_workspace["db_path"],
             referenced_hash,

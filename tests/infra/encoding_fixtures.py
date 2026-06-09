@@ -30,8 +30,8 @@ def _valid_codex_session_header() -> JsonObject:
     return {"id": "session-encoding-test", "timestamp": "2025-01-01T00:00:00Z"}
 
 
-def _valid_chatgpt_conversation() -> JsonObject:
-    """Minimal valid ChatGPT conversation JSON."""
+def _valid_chatgpt_session() -> JsonObject:
+    """Minimal valid ChatGPT session JSON."""
     return {
         "title": "Encoding Test",
         "mapping": {
@@ -71,12 +71,12 @@ class EncodingFixtureBuilder:
 
         Tests: json.load() handling of BOM in non-JSONL files inside ZIPs.
         """
-        conv = _valid_chatgpt_conversation()
+        conv = _valid_chatgpt_session()
         content = b"\xef\xbb\xbf" + json.dumps(conv).encode("utf-8")
 
         zip_path = dest / "bom_utf8.zip"
         with zipfile.ZipFile(zip_path, "w") as zf:
-            zf.writestr("conversations.json", content)
+            zf.writestr("sessions.json", content)
         return zip_path
 
     @staticmethod
@@ -131,7 +131,7 @@ class EncodingFixtureBuilder:
 
         Tests: valid entries parsed despite corrupt siblings in same ZIP.
         """
-        valid_conv = json.dumps(_valid_chatgpt_conversation()).encode("utf-8")
+        valid_conv = json.dumps(_valid_chatgpt_session()).encode("utf-8")
         corrupt = b'{"broken": true, "no_closing_brace'
 
         zip_path = dest / "partial_corrupt.zip"
@@ -146,10 +146,10 @@ class EncodingFixtureBuilder:
 
         Tests: _decode_json_bytes() multi-encoding fallback for non-UTF-8.
         """
-        conv = _valid_chatgpt_conversation()
+        conv = _valid_chatgpt_session()
         content = json.dumps(conv).encode("utf-16")  # includes BOM
 
         zip_path = dest / "utf16_bom.zip"
         with zipfile.ZipFile(zip_path, "w") as zf:
-            zf.writestr("conversations.json", content)
+            zf.writestr("sessions.json", content)
         return zip_path

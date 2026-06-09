@@ -11,8 +11,8 @@ comment have explicit, fast unit coverage:
 5. cost-cap exhaustion halts further embedding work
 
 The production code is exercised directly: ``_reconcile_embedding_config_change``
-and ``_embed_conversations_sync`` operate on real (in-memory) SQLite handles
-plus a mocked ``EmbedConversationOutcome`` stream for the embed loop, and
+operate on real (in-memory) SQLite handles
+plus a mocked ``EmbedSessionOutcome`` stream for the embed loop, and
 ``embedding_readiness_info`` is exercised through the tiny ``cfg``/db seam.
 """
 
@@ -27,11 +27,9 @@ import pytest
 
 import polylogue.daemon.convergence_stages as stages
 from polylogue.daemon.convergence_stages import (
-    _embed_conversations_sync,
     _reconcile_embedding_config_change,
 )
 from polylogue.daemon.embedding_readiness import embedding_readiness_info
-from polylogue.storage.embeddings.materialization import EmbedConversationOutcome
 from polylogue.storage.search_providers.sqlite_vec_runtime import (
     _reconcile_vec0_dimension,
     _vec0_table_dimension,
@@ -67,7 +65,7 @@ def _seed_embedding_tables(
     *,
     model: str,
     dimension: int,
-    conversation_ids: tuple[str, ...] = (),
+    session_ids: tuple[str, ...] = (),
 ) -> None:
     """Create embeddings_meta + embedding_status with seeded rows."""
     conn.execute(
@@ -85,7 +83,7 @@ def _seed_embedding_tables(
     conn.execute(
         """
         CREATE TABLE embedding_status (
-            conversation_id TEXT PRIMARY KEY,
+            session_id TEXT PRIMARY KEY,
             message_count_embedded INTEGER DEFAULT 0,
             last_embedded_at TEXT,
             needs_reindex INTEGER DEFAULT 0,
@@ -98,9 +96,9 @@ def _seed_embedding_tables(
         "VALUES (?, 'message', ?, ?, '2026-01-01T00:00:00Z')",
         ("msg-1", model, dimension),
     )
-    for conv_id in conversation_ids:
+    for conv_id in session_ids:
         conn.execute(
-            "INSERT INTO embedding_status(conversation_id, needs_reindex) VALUES (?, 0)",
+            "INSERT INTO embedding_status(session_id, needs_reindex) VALUES (?, 0)",
             (conv_id,),
         )
     conn.commit()
@@ -123,6 +121,63 @@ def _create_vec0_table(conn: sqlite3.Connection, dimension: int) -> None:
     conn.commit()
 
 
+def _seed_archive_embedding_readiness_db(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    embeddings_path = path.with_name("embeddings.db")
+    with sqlite3.connect(path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE sessions (
+                session_id TEXT PRIMARY KEY,
+                message_count INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE messages (
+                message_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                content_hash BLOB NOT NULL
+            );
+            INSERT INTO sessions VALUES ('codex-session:complete', 1);
+            INSERT INTO sessions VALUES ('codex-session:pending', 2);
+            INSERT INTO sessions VALUES ('codex-session:error', 1);
+            INSERT INTO messages VALUES ('codex-session:complete:m1', 'codex-session:complete', x'01');
+            INSERT INTO messages VALUES ('codex-session:pending:m1', 'codex-session:pending', x'02');
+            INSERT INTO messages VALUES ('codex-session:pending:m2', 'codex-session:pending', x'03');
+            INSERT INTO messages VALUES ('codex-session:error:m1', 'codex-session:error', x'04');
+            """
+        )
+        conn.commit()
+    with sqlite3.connect(embeddings_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE message_embeddings (
+                message_id TEXT PRIMARY KEY
+            );
+            CREATE TABLE embeddings_meta (
+                target_id TEXT PRIMARY KEY,
+                target_type TEXT NOT NULL,
+                model TEXT NOT NULL,
+                dimension INTEGER NOT NULL,
+                embedded_at_ms INTEGER NOT NULL,
+                content_hash BLOB
+            );
+            CREATE TABLE embedding_status (
+                session_id TEXT PRIMARY KEY,
+                origin TEXT NOT NULL,
+                message_count_embedded INTEGER NOT NULL DEFAULT 0,
+                needs_reindex INTEGER NOT NULL DEFAULT 0,
+                error_message TEXT
+            );
+            INSERT INTO message_embeddings VALUES ('codex-session:complete:m1');
+            INSERT INTO embeddings_meta VALUES (
+                'codex-session:complete:m1', 'message', 'voyage-4', 1024, 1767225700000, x'01'
+            );
+            INSERT INTO embedding_status VALUES ('codex-session:complete', 'codex-session', 1, 0, NULL);
+            INSERT INTO embedding_status VALUES ('codex-session:error', 'codex-session', 0, 1, 'voyage timeout');
+            """
+        )
+        conn.commit()
+
+
 # ── 1. configured readiness branch ─────────────────────────────────
 
 
@@ -130,10 +185,10 @@ def test_readiness_configured_reports_enabled_with_model_and_dimension(
     workspace_env: dict[str, Path],
 ) -> None:
     """When config is enabled and key is present, readiness reports the configured model/dim."""
-    db = workspace_env["data_root"] / "polylogue" / "polylogue.db"
+    db = workspace_env["data_root"] / "polylogue" / "index.db"
     db.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db) as conn:
-        conn.execute("CREATE TABLE conversations (conversation_id TEXT PRIMARY KEY)")
+        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
         conn.commit()
 
     cfg = _FakeCfg(
@@ -160,7 +215,7 @@ def test_readiness_unconfigured_reports_disabled_when_no_api_key(
     workspace_env: dict[str, Path],
 ) -> None:
     """When no API key is present, ``embedding_enabled`` is False and counts are zero."""
-    db = workspace_env["data_root"] / "polylogue" / "polylogue.db"
+    db = workspace_env["data_root"] / "polylogue" / "index.db"
     db.parent.mkdir(parents=True, exist_ok=True)
     db.touch()
 
@@ -179,13 +234,13 @@ def test_readiness_unconfigured_when_enabled_flag_off(
     workspace_env: dict[str, Path],
 ) -> None:
     """Even disabled config still exposes the backlog instead of hiding it."""
-    db = workspace_env["data_root"] / "polylogue" / "polylogue.db"
+    db = workspace_env["data_root"] / "polylogue" / "index.db"
     db.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db) as conn:
-        conn.execute("CREATE TABLE conversations (conversation_id TEXT PRIMARY KEY)")
-        conn.execute("CREATE TABLE messages (message_id TEXT PRIMARY KEY, conversation_id TEXT)")
-        conn.execute("CREATE TABLE embedding_status (conversation_id TEXT PRIMARY KEY, needs_reindex INTEGER)")
-        conn.execute("INSERT INTO conversations VALUES ('conv-1')")
+        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
+        conn.execute("CREATE TABLE messages (message_id TEXT PRIMARY KEY, session_id TEXT)")
+        conn.execute("CREATE TABLE embedding_status (session_id TEXT PRIMARY KEY, needs_reindex INTEGER)")
+        conn.execute("INSERT INTO sessions VALUES ('conv-1')")
         conn.execute("INSERT INTO messages VALUES ('msg-1', 'conv-1')")
         conn.commit()
 
@@ -211,23 +266,73 @@ def test_readiness_unconfigured_when_enabled_flag_off(
     assert detailed["embedding_pending_message_count_exact"] is True
 
 
+def test_readiness_reads_archive_index(tmp_path: Path) -> None:
+    db_anchor = tmp_path / "custom.sqlite"
+    archive_db = tmp_path / "index.db"
+    _seed_archive_embedding_readiness_db(archive_db)
+
+    cfg = _FakeCfg(embedding_enabled=True, voyage_api_key="vk-live")
+    with patch("polylogue.config.load_polylogue_config", return_value=cfg):
+        info = embedding_readiness_info(db_anchor)
+
+    assert info["embedding_enabled"] is True
+    assert info["embedding_status"] == "partial"
+    assert info["embedding_freshness_status"] == "partial"
+    assert info["embedding_retrieval_ready"] is True
+    assert info["embedding_pending_count"] == 2
+    assert info["embedding_pending_message_count"] == 0
+    assert info["embedding_pending_message_count_exact"] is False
+    assert info["embedding_failure_count"] == 1
+    assert info["embedding_coverage_percent"] == 33.3
+
+
+def test_readiness_reads_archive_file_set_detail_counts_pending_messages(tmp_path: Path) -> None:
+    archive_db = tmp_path / "index.db"
+    _seed_archive_embedding_readiness_db(archive_db)
+
+    cfg = _FakeCfg(embedding_enabled=True, voyage_api_key="vk-live")
+    with patch("polylogue.config.load_polylogue_config", return_value=cfg):
+        info = embedding_readiness_info(archive_db, detail=True)
+
+    assert info["embedding_pending_count"] == 2
+    assert info["embedding_pending_message_count"] == 3
+    assert info["embedding_pending_message_count_exact"] is True
+    assert info["embedding_stale_count"] == 0
+    assert info["embedding_estimated_cost_usd"] == 0.0
+
+
+def test_readiness_reads_index_when_db_anchor_exists(tmp_path: Path) -> None:
+    db_anchor = tmp_path / "custom.sqlite"
+    archive_db = tmp_path / "index.db"
+    with sqlite3.connect(db_anchor) as conn:
+        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
+        conn.execute("INSERT INTO sessions VALUES ('legacy-pending')")
+        conn.commit()
+    _seed_archive_embedding_readiness_db(archive_db)
+
+    cfg = _FakeCfg(embedding_enabled=True, voyage_api_key="vk-live")
+    with patch("polylogue.config.load_polylogue_config", return_value=cfg):
+        info = embedding_readiness_info(db_anchor)
+
+    assert info["embedding_status"] == "partial"
+    assert info["embedding_pending_count"] == 2
+
+
 # ── 3. embedding failure branch ────────────────────────────────────
 
 
-def test_readiness_failure_branch_counts_error_message_rows(
-    workspace_env: dict[str, Path],
-) -> None:
+def test_readiness_failure_branch_counts_error_message_rows(tmp_path: Path) -> None:
     """Rows with non-null ``error_message`` show up in ``embedding_failure_count``."""
-    db = workspace_env["data_root"] / "polylogue" / "polylogue.db"
+    db = tmp_path / "status.sqlite"
     db.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db) as conn:
-        conn.execute("CREATE TABLE conversations (conversation_id TEXT PRIMARY KEY)")
-        conn.execute("INSERT INTO conversations VALUES ('conv-1')")
-        conn.execute("INSERT INTO conversations VALUES ('conv-2')")
-        _seed_embedding_tables(conn, model="voyage-4", dimension=1024, conversation_ids=("conv-1", "conv-2"))
-        conn.execute("UPDATE embedding_status SET error_message = 'voyage api 429' WHERE conversation_id = 'conv-1'")
+        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
+        conn.execute("INSERT INTO sessions VALUES ('conv-1')")
+        conn.execute("INSERT INTO sessions VALUES ('conv-2')")
+        _seed_embedding_tables(conn, model="voyage-4", dimension=1024, session_ids=("conv-1", "conv-2"))
+        conn.execute("UPDATE embedding_status SET error_message = 'voyage api 429' WHERE session_id = 'conv-1'")
         conn.execute("CREATE TABLE message_embeddings (message_id TEXT PRIMARY KEY)")
-        conn.execute("CREATE TABLE messages (message_id TEXT PRIMARY KEY, conversation_id TEXT, content_hash TEXT)")
+        conn.execute("CREATE TABLE messages (message_id TEXT PRIMARY KEY, session_id TEXT, content_hash TEXT)")
         conn.commit()
 
     cfg = _FakeCfg(embedding_enabled=True, voyage_api_key="vk-live")
@@ -235,54 +340,6 @@ def test_readiness_failure_branch_counts_error_message_rows(
         info = embedding_readiness_info(db)
 
     assert info["embedding_failure_count"] == 1
-
-
-def test_embed_loop_counts_errors_and_returns_false(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """A single error outcome from ``embed_conversation_sync`` causes ``_embed_conversations_sync`` to return False."""
-    db_path = tmp_path / "archive.sqlite"
-    db_path.touch()
-
-    cfg = _FakeCfg(embedding_max_cost_usd=0.0)
-    monkeypatch.setattr(stages, "load_polylogue_config", lambda: cfg)
-
-    fake_provider = object()
-    monkeypatch.setattr(
-        "polylogue.storage.search_providers.create_vector_provider",
-        lambda **kwargs: fake_provider,
-    )
-
-    class _Repo:
-        def __init__(self, *a: object, **kw: object) -> None:
-            pass
-
-        def close(self) -> None:  # not async — keeps run_coroutine_sync stub trivial
-            return None
-
-    monkeypatch.setattr("polylogue.storage.repository.ConversationRepository", _Repo)
-    monkeypatch.setattr("polylogue.storage.sqlite.async_sqlite.SQLiteBackend", lambda **kw: object())
-    monkeypatch.setattr("polylogue.api.sync.bridge.run_coroutine_sync", lambda coro: None)
-
-    outcomes = iter(
-        [
-            EmbedConversationOutcome(
-                status="error", conversation_id="conv-a", embedded_message_count=0, error="429 rate limit"
-            ),
-            EmbedConversationOutcome(status="embedded", conversation_id="conv-b", embedded_message_count=10),
-        ]
-    )
-    monkeypatch.setattr(
-        "polylogue.storage.embeddings.materialization.embed_conversation_sync",
-        lambda repo, vec_provider, conversation_id: next(outcomes),
-    )
-
-    result = _embed_conversations_sync(db_path, ["conv-a", "conv-b"])
-    assert result is False  # one error → overall failure
-
-
-# ── 4. dimension / model mismatch triggers needs_reindex ───────────
 
 
 def test_reconcile_embedding_dimension_mismatch_marks_reindex_and_drops_vec0(
@@ -295,7 +352,7 @@ def test_reconcile_embedding_dimension_mismatch_marks_reindex_and_drops_vec0(
             conn,
             model="voyage-4",
             dimension=1024,
-            conversation_ids=("conv-a", "conv-b"),
+            session_ids=("conv-a", "conv-b"),
         )
         _create_vec0_table(conn, dimension=1024)
         assert _vec0_table_dimension(conn) == 1024
@@ -311,7 +368,7 @@ def test_reconcile_embedding_dimension_mismatch_marks_reindex_and_drops_vec0(
         _reconcile_embedding_config_change(conn)
 
         rows = conn.execute(
-            "SELECT conversation_id, needs_reindex, error_message FROM embedding_status ORDER BY conversation_id"
+            "SELECT session_id, needs_reindex, error_message FROM embedding_status ORDER BY session_id"
         ).fetchall()
         assert [(r[0], r[1], r[2]) for r in rows] == [("conv-a", 1, None), ("conv-b", 1, None)]
         # vec0 dropped because dimension differed.
@@ -330,7 +387,7 @@ def test_reconcile_embedding_model_mismatch_marks_reindex_without_dropping_vec0(
             conn,
             model="voyage-3",
             dimension=1024,
-            conversation_ids=("conv-a",),
+            session_ids=("conv-a",),
         )
         _create_vec0_table(conn, dimension=1024)
 
@@ -345,7 +402,7 @@ def test_reconcile_embedding_model_mismatch_marks_reindex_without_dropping_vec0(
         _reconcile_embedding_config_change(conn)
 
         (needs_reindex,) = conn.execute(
-            "SELECT needs_reindex FROM embedding_status WHERE conversation_id='conv-a'"
+            "SELECT needs_reindex FROM embedding_status WHERE session_id='conv-a'"
         ).fetchone()
         assert needs_reindex == 1
         # vec0 untouched — dimension still matches configured.
@@ -364,7 +421,7 @@ def test_reconcile_embedding_no_change_keeps_status_clean(
             conn,
             model="voyage-4",
             dimension=1024,
-            conversation_ids=("conv-a",),
+            session_ids=("conv-a",),
         )
         cfg = _FakeCfg(
             embedding_enabled=True,
@@ -377,7 +434,7 @@ def test_reconcile_embedding_no_change_keeps_status_clean(
         _reconcile_embedding_config_change(conn)
 
         (needs_reindex,) = conn.execute(
-            "SELECT needs_reindex FROM embedding_status WHERE conversation_id='conv-a'"
+            "SELECT needs_reindex FROM embedding_status WHERE session_id='conv-a'"
         ).fetchone()
         assert needs_reindex == 0
     finally:
@@ -399,96 +456,3 @@ def test_reconcile_vec0_dimension_drop_helper() -> None:
 
 
 # ── 5. cost-cap exhaustion ─────────────────────────────────────────
-
-
-def test_embed_loop_halts_when_cost_cap_exceeded(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """``_embed_conversations_sync`` stops calling embed_conversation_sync past the cost cap."""
-    db_path = tmp_path / "archive.sqlite"
-    db_path.touch()
-
-    # Tiny cap: cost per 10 messages ≈ 10 * 500 * 0.10 / 1e6 = $0.0005
-    # Set cap = $0.0003 → first batch already exceeds, loop should break after 1 conversation.
-    cfg = _FakeCfg(embedding_max_cost_usd=0.0003)
-    monkeypatch.setattr(stages, "load_polylogue_config", lambda: cfg)
-
-    monkeypatch.setattr(
-        "polylogue.storage.search_providers.create_vector_provider",
-        lambda **kwargs: object(),
-    )
-
-    class _Repo:
-        def __init__(self, *a: object, **kw: object) -> None:
-            pass
-
-        def close(self) -> None:  # not async — keeps run_coroutine_sync stub trivial
-            return None
-
-    monkeypatch.setattr("polylogue.storage.repository.ConversationRepository", _Repo)
-    monkeypatch.setattr("polylogue.storage.sqlite.async_sqlite.SQLiteBackend", lambda **kw: object())
-    monkeypatch.setattr("polylogue.api.sync.bridge.run_coroutine_sync", lambda coro: None)
-
-    calls: list[str] = []
-
-    def fake_embed(repo: object, vec_provider: object, conversation_id: str) -> EmbedConversationOutcome:
-        calls.append(conversation_id)
-        return EmbedConversationOutcome(status="embedded", conversation_id=conversation_id, embedded_message_count=10)
-
-    monkeypatch.setattr(
-        "polylogue.storage.embeddings.materialization.embed_conversation_sync",
-        fake_embed,
-    )
-
-    result = _embed_conversations_sync(db_path, ["conv-a", "conv-b", "conv-c"])
-
-    # First conversation is embedded; cost cap then halts the loop.
-    assert calls == ["conv-a"]
-    # No errors were observed → returns True even though loop short-circuited.
-    assert result is True
-
-
-def test_embed_loop_no_cost_cap_processes_all(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """``embedding_max_cost_usd = 0`` means unlimited — every conversation is embedded."""
-    db_path = tmp_path / "archive.sqlite"
-    db_path.touch()
-
-    cfg = _FakeCfg(embedding_max_cost_usd=0.0)
-    monkeypatch.setattr(stages, "load_polylogue_config", lambda: cfg)
-    monkeypatch.setattr(
-        "polylogue.storage.search_providers.create_vector_provider",
-        lambda **kwargs: object(),
-    )
-
-    class _Repo:
-        def __init__(self, *a: object, **kw: object) -> None:
-            pass
-
-        def close(self) -> None:  # not async — keeps run_coroutine_sync stub trivial
-            return None
-
-    monkeypatch.setattr("polylogue.storage.repository.ConversationRepository", _Repo)
-    monkeypatch.setattr("polylogue.storage.sqlite.async_sqlite.SQLiteBackend", lambda **kw: object())
-    monkeypatch.setattr("polylogue.api.sync.bridge.run_coroutine_sync", lambda coro: None)
-
-    calls: list[str] = []
-
-    def fake_embed(repo: object, vec_provider: object, conversation_id: str) -> EmbedConversationOutcome:
-        calls.append(conversation_id)
-        return EmbedConversationOutcome(
-            status="embedded",
-            conversation_id=conversation_id,
-            embedded_message_count=10_000,  # high message count, no cap
-        )
-
-    monkeypatch.setattr(
-        "polylogue.storage.embeddings.materialization.embed_conversation_sync",
-        fake_embed,
-    )
-
-    assert _embed_conversations_sync(db_path, ["conv-a", "conv-b", "conv-c"]) is True
-    assert calls == ["conv-a", "conv-b", "conv-c"]

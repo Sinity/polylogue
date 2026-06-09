@@ -1,7 +1,7 @@
-"""Tests for migration safety, schema DDL parity, and SQL edge cases.
+"""Tests for schema bootstrap safety, schema DDL parity, and SQL edge cases.
 
 Covers:
-- 447d765: executescript() issues implicit COMMIT, breaking migration rollback
+- 447d765: executescript() issues implicit COMMIT, breaking transactional rollback
 - f33ef29: Async SQLite schema diverged from sync (DDL was duplicated)
 - 7ebfd71: OFFSET without LIMIT → SQLite error
 - 177195c: LIKE wildcards (%, _) not escaped in title search
@@ -47,9 +47,9 @@ class TestSchemaDDLParity:
     def test_schema_ddl_has_all_required_tables(self) -> None:
         """SCHEMA_DDL must create all required tables."""
         required_tables = [
-            "raw_conversations",
-            "conversations",
+            "sessions",
             "messages",
+            "blocks",
             "attachments",
         ]
         ddl_lower = SCHEMA_DDL.lower()
@@ -58,13 +58,9 @@ class TestSchemaDDLParity:
 
     def test_schema_ddl_has_all_required_indexes(self) -> None:
         """SCHEMA_DDL must create required indexes."""
-        # idx_conversations_provider was renamed to idx_conversations_source_name
-        # when ``provider_name`` graduated to ``source_name`` as the canonical
-        # storage column (#635 umbrella, provider/source vocabulary
-        # transition documented in docs/architecture.md).
         required_indexes = [
-            "idx_conversations_source_name",
-            "idx_messages_conversation",
+            "idx_sessions_origin_sort",
+            "idx_messages_session_position",
         ]
         ddl_lower = SCHEMA_DDL.lower()
         for idx in required_indexes:
@@ -83,7 +79,7 @@ class TestSchemaDDLParity:
             # Verify tables exist
             cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
             tables = {row[0] for row in cursor.fetchall()}
-            assert "conversations" in tables
+            assert "sessions" in tables
             assert "messages" in tables
         finally:
             conn.close()
@@ -96,23 +92,23 @@ class TestSchemaDDLParity:
             conn.executescript(SCHEMA_DDL)
             conn.executescript(SCHEMA_DDL)  # second application
             # Verify still works
-            cursor = conn.execute("SELECT COUNT(*) FROM conversations")
+            cursor = conn.execute("SELECT COUNT(*) FROM sessions")
             assert cursor.fetchone()[0] == 0
         finally:
             conn.close()
 
 
 # =============================================================================
-# Migration rollback safety (447d765)
+# Transaction rollback safety (447d765)
 # =============================================================================
 
 
-class TestMigrationRollbackSafety:
-    """Migrations must be transactional — failure must leave DB unchanged.
+class TestTransactionRollbackSafety:
+    """Schema edits that run inside a transaction must leave DB unchanged on failure.
 
     The original bug (447d765) was that `executescript()` issues an implicit
     COMMIT before executing, which breaks transaction isolation. If a
-    migration fails mid-way after executescript, the partial changes are
+    script fails mid-way after executescript, the partial changes are
     committed and can't be rolled back.
 
     The fix was to use `execute()` calls within a BEGIN/COMMIT block
@@ -174,23 +170,21 @@ class TestMigrationRollbackSafety:
         finally:
             conn.close()
 
-    def test_fresh_db_schema_matches_migrated_db(self, tmp_path: Path) -> None:
-        """A fresh database and a migrated database must have the same schema.
+    def test_open_connection_schema_matches_index_tier_ddl(self, tmp_path: Path) -> None:
+        """The normal index bootstrap path and index-tier DDL create the same schema.
 
-        This catches drift between the DDL (for fresh installs) and the
-        migration path (for upgrades).
+        This catches drift between the current archive-root bootstrap path and
+        the index-tier DDL.
         """
         from polylogue.storage.sqlite.connection import open_connection
 
-        # Create via open_connection (applies migrations)
-        migrated_path = tmp_path / "migrated.db"
-        with open_connection(migrated_path) as conn:
+        bootstrapped_path = tmp_path / "archive" / "index.db"
+        with open_connection(bootstrapped_path) as conn:
             cursor = conn.execute(
                 "SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
             )
-            migrated_tables = {row[0]: row[1] for row in cursor.fetchall()}
+            bootstrapped_tables = {row[0]: row[1] for row in cursor.fetchall()}
 
-        # Create via raw DDL
         fresh_path = tmp_path / "fresh.db"
         fresh_conn = sqlite3.connect(str(fresh_path))
         try:
@@ -202,25 +196,13 @@ class TestMigrationRollbackSafety:
         finally:
             fresh_conn.close()
 
-        # Same set of tables (excluding FTS, vec0 virtual tables and their
-        # internal subtables which may or may not be created depending on
-        # available extensions). vec0 creates internal tables like
-        # message_embeddings_info, _chunks, _rowids, _vector_chunks00, _auxiliary.
-        skip_prefixes = ("messages_fts", "message_embeddings")
-        migrated_names = {
-            t
-            for t in migrated_tables
-            if not any(t.startswith(p) for p in skip_prefixes) and t not in {"embeddings_meta", "embedding_status"}
-        }
-        fresh_names = {
-            t
-            for t in fresh_tables
-            if not any(t.startswith(p) for p in skip_prefixes) and t not in {"embeddings_meta", "embedding_status"}
-        }
+        skip_prefixes = ("messages_fts",)
+        bootstrapped_names = {t for t in bootstrapped_tables if not any(t.startswith(p) for p in skip_prefixes)}
+        fresh_names = {t for t in fresh_tables if not any(t.startswith(p) for p in skip_prefixes)}
 
-        assert migrated_names == fresh_names, (
-            f"Table mismatch. Only in migrated: {migrated_names - fresh_names}. "
-            f"Only in fresh: {fresh_names - migrated_names}"
+        assert bootstrapped_names == fresh_names, (
+            f"Table mismatch. Only in bootstrapped: {bootstrapped_names - fresh_names}. "
+            f"Only in raw DDL: {fresh_names - bootstrapped_names}"
         )
 
 
@@ -263,15 +245,15 @@ class TestSQLEdgeCases:
         conn = sqlite3.connect(str(db_path))
         conn.row_factory = sqlite3.Row
         try:
-            conn.execute("CREATE TABLE conversations (id TEXT, title TEXT)")
-            conn.execute("INSERT INTO conversations VALUES ('1', '100% done')")
-            conn.execute("INSERT INTO conversations VALUES ('2', 'normal title')")
-            conn.execute("INSERT INTO conversations VALUES ('3', '100 percent done')")
+            conn.execute("CREATE TABLE sessions (id TEXT, title TEXT)")
+            conn.execute("INSERT INTO sessions VALUES ('1', '100% done')")
+            conn.execute("INSERT INTO sessions VALUES ('2', 'normal title')")
+            conn.execute("INSERT INTO sessions VALUES ('3', '100 percent done')")
             conn.commit()
 
             # Unescaped: "100%" would match "100 percent done" too (% is wildcard)
             cursor = conn.execute(
-                "SELECT id FROM conversations WHERE title LIKE ?",
+                "SELECT id FROM sessions WHERE title LIKE ?",
                 ("%100%%",),  # unescaped % acts as wildcard
             )
             unescaped_results = cursor.fetchall()
@@ -280,7 +262,7 @@ class TestSQLEdgeCases:
 
             # Escaped: only match literal "100%"
             cursor = conn.execute(
-                "SELECT id FROM conversations WHERE title LIKE ? ESCAPE '\\'",
+                "SELECT id FROM sessions WHERE title LIKE ? ESCAPE '\\'",
                 ("%100\\%%",),  # escaped % matches literal %
             )
             escaped_results = cursor.fetchall()
@@ -295,21 +277,21 @@ class TestSQLEdgeCases:
         conn = sqlite3.connect(str(db_path))
         conn.row_factory = sqlite3.Row
         try:
-            conn.execute("CREATE TABLE conversations (id TEXT, title TEXT)")
-            conn.execute("INSERT INTO conversations VALUES ('1', 'test_case')")
-            conn.execute("INSERT INTO conversations VALUES ('2', 'testXcase')")
+            conn.execute("CREATE TABLE sessions (id TEXT, title TEXT)")
+            conn.execute("INSERT INTO sessions VALUES ('1', 'test_case')")
+            conn.execute("INSERT INTO sessions VALUES ('2', 'testXcase')")
             conn.commit()
 
             # Unescaped: _ matches any single character
             cursor = conn.execute(
-                "SELECT id FROM conversations WHERE title LIKE ?",
+                "SELECT id FROM sessions WHERE title LIKE ?",
                 ("%test_case%",),
             )
             assert len(cursor.fetchall()) == 2  # matches both
 
             # Escaped: only match literal underscore
             cursor = conn.execute(
-                "SELECT id FROM conversations WHERE title LIKE ? ESCAPE '\\'",
+                "SELECT id FROM sessions WHERE title LIKE ? ESCAPE '\\'",
                 ("%test\\_case%",),
             )
             assert len(cursor.fetchall()) == 1  # only the real underscore
@@ -335,17 +317,26 @@ class TestFTS5CountGuard:
         from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(test_db) as conn:
-            # Insert test data
             conn.execute("""
-                INSERT INTO conversations (conversation_id, source_name,
-                    provider_conversation_id, content_hash, version)
-                VALUES ('c1', 'test', 'pc1', 'hash1', 1)
+                INSERT INTO sessions (native_id, origin, content_hash)
+                VALUES ('pc1', 'unknown-export', zeroblob(32))
             """)
-            conn.execute("""
-                INSERT INTO messages (message_id, conversation_id, role, text,
-                    content_hash, version)
-                VALUES ('m1', 'c1', 'user', 'hello world', 'mhash1', 1)
-            """)
+            session_id = "unknown-export:pc1"
+            conn.execute(
+                """
+                INSERT INTO messages (session_id, native_id, position, role, content_hash)
+                VALUES (?, 'm1', 0, 'user', zeroblob(32))
+                """,
+                (session_id,),
+            )
+            message_id = f"{session_id}:m1"
+            conn.execute(
+                """
+                INSERT INTO blocks (message_id, session_id, position, block_type, text)
+                VALUES (?, ?, 0, 'text', 'hello world')
+                """,
+                (message_id, session_id),
+            )
             conn.commit()
 
             # COUNT on regular table (fast, O(1) with SQLite's page count optimization)
@@ -363,69 +354,68 @@ class TestFTS5CountGuard:
 
 
 # =============================================================================
-# SQL: Conversation filters with edge case inputs
+# SQL: Session filters with edge case inputs
 # =============================================================================
 
 
-class TestConversationFilterSQL:
+class TestSessionFilterSQL:
     """Test SQL filter generation with adversarial inputs."""
 
     def test_build_filters_with_special_characters(self) -> None:
         """Filter builder must handle SQL-special characters in input.
 
-        _build_conversation_filters returns (where_clause_str, params_list).
+        _build_session_filters returns (where_clause_str, params_list).
         It uses parameterized queries, so special chars in input are safe.
         """
-        from polylogue.storage.sqlite.queries.filter_builder import _build_conversation_filters
+        from polylogue.storage.sqlite.queries.filter_builder import _build_session_filters
 
-        # Provider name with quotes
-        where_clause, params = _build_conversation_filters(provider="test'provider")
+        where_clause, params = _build_session_filters(title_contains="test'provider")
         assert isinstance(where_clause, str)
         assert isinstance(params, list)
         # The quote should be in params (handled by parameterization), not in SQL
-        assert "test'provider" in params
+        assert "%test'provider%" in params
         # SQL clause must use ? placeholder, not string interpolation
         assert "?" in where_clause
 
     def test_build_filters_with_empty_provider(self) -> None:
         """Empty provider should still produce valid SQL."""
-        from polylogue.storage.sqlite.queries.filter_builder import _build_conversation_filters
+        from polylogue.storage.sqlite.queries.filter_builder import _build_session_filters
 
-        where_clause, params = _build_conversation_filters(provider="")
+        where_clause, params = _build_session_filters(provider="")
         assert isinstance(where_clause, str)
         assert isinstance(params, list)
 
     def test_build_filters_with_no_args(self) -> None:
         """No filters should produce empty/trivial WHERE clause."""
-        from polylogue.storage.sqlite.queries.filter_builder import _build_conversation_filters
+        from polylogue.storage.sqlite.queries.filter_builder import _build_session_filters
 
-        where_clause, params = _build_conversation_filters()
+        where_clause, params = _build_session_filters()
         assert isinstance(where_clause, str)
         assert isinstance(params, list)
         assert len(params) == 0
 
     def test_build_filters_with_title_contains_special(self) -> None:
         """Title search with SQL LIKE special characters must be safe."""
-        from polylogue.storage.sqlite.queries.filter_builder import _build_conversation_filters
+        from polylogue.storage.sqlite.queries.filter_builder import _build_session_filters
 
-        where_clause, params = _build_conversation_filters(title_contains="100% done")
+        where_clause, params = _build_session_filters(title_contains="100% done")
         assert isinstance(where_clause, str)
         # The special chars should be in params, not embedded in SQL
         assert len(params) > 0
 
     def test_build_filters_rejects_invalid_since_filter(self) -> None:
         """Invalid date filters should not silently broaden to epoch zero."""
-        from polylogue.storage.sqlite.queries.filter_builder import _build_conversation_filters
+        from polylogue.storage.sqlite.queries.filter_builder import _build_session_filters
 
         with pytest.raises(ValueError, match="Invalid date filter value"):
-            _build_conversation_filters(since="not-a-date")
+            _build_session_filters(since="not-a-date")
 
     def test_build_filters_rejects_invalid_until_filter(self) -> None:
         """Invalid date filters should not silently broaden to epoch zero."""
-        from polylogue.storage.sqlite.queries.filter_builder import _build_conversation_filters
+        from polylogue.storage.sqlite.queries.filter_builder import _build_session_filters
 
         with pytest.raises(ValueError, match="Invalid date filter value"):
-            _build_conversation_filters(until="not-a-date")
+            _build_session_filters(until="not-a-date")
 
 
 # =============================================================================
@@ -528,54 +518,52 @@ class TestAnalyticsQueryPlan:
     """Analytics queries must use indexes, not full table scans.
 
     The provider breakdown query (GROUP BY source_name) should use
-    idx_conversations_provider. Without this index, large archives
+    idx_sessions_provider. Without this index, large archives
     would require a full table scan.
     """
 
     def test_provider_group_by_uses_index(self, tmp_path: Path) -> None:
-        """GROUP BY source_name should use idx_conversations_provider."""
+        """GROUP BY source_name should use idx_sessions_provider."""
         db_path = tmp_path / "test.db"
         conn = sqlite3.connect(str(db_path))
         try:
             conn.executescript(SCHEMA_DDL)
             # EXPLAIN QUERY PLAN shows the access method
-            cursor = conn.execute(
-                "EXPLAIN QUERY PLAN SELECT source_name, COUNT(*) FROM conversations GROUP BY source_name"
-            )
+            cursor = conn.execute("EXPLAIN QUERY PLAN SELECT origin, COUNT(*) FROM sessions GROUP BY origin")
             plan = " ".join(row[3] if len(row) > 3 else str(row) for row in cursor.fetchall())
             # Should scan the covering index, not the table
-            assert "idx_conversations_provider" in plan or "COVERING" in plan or "INDEX" in plan.upper(), (
-                f"Expected index usage for GROUP BY source_name, got: {plan}"
+            assert "idx_sessions_origin_sort" in plan or "COVERING" in plan or "INDEX" in plan.upper(), (
+                f"Expected index usage for GROUP BY origin, got: {plan}"
             )
         finally:
             conn.close()
 
-    def test_messages_by_conversation_uses_index(self, tmp_path: Path) -> None:
-        """WHERE conversation_id = ? should use idx_messages_conversation."""
+    def test_messages_by_session_uses_index(self, tmp_path: Path) -> None:
+        """WHERE session_id = ? should use idx_messages_session."""
         db_path = tmp_path / "test.db"
         conn = sqlite3.connect(str(db_path))
         try:
             conn.executescript(SCHEMA_DDL)
             cursor = conn.execute(
-                "EXPLAIN QUERY PLAN SELECT COUNT(*) FROM messages WHERE conversation_id = ?",
+                "EXPLAIN QUERY PLAN SELECT COUNT(*) FROM messages WHERE session_id = ?",
                 ("test-id",),
             )
             plan = " ".join(row[3] if len(row) > 3 else str(row) for row in cursor.fetchall())
-            assert "idx_messages_conversation" in plan or "INDEX" in plan.upper(), (
-                f"Expected index usage for WHERE conversation_id, got: {plan}"
+            assert "idx_messages_session_position" in plan or "INDEX" in plan.upper(), (
+                f"Expected index usage for WHERE session_id, got: {plan}"
             )
         finally:
             conn.close()
 
-    def test_conversation_count_is_cheap(self, tmp_path: Path) -> None:
-        """COUNT(*) on conversations table should not require FTS scan."""
+    def test_session_count_is_cheap(self, tmp_path: Path) -> None:
+        """COUNT(*) on sessions table should not require FTS scan."""
         db_path = tmp_path / "test.db"
         conn = sqlite3.connect(str(db_path))
         try:
             conn.executescript(SCHEMA_DDL)
-            cursor = conn.execute("EXPLAIN QUERY PLAN SELECT COUNT(*) FROM conversations")
+            cursor = conn.execute("EXPLAIN QUERY PLAN SELECT COUNT(*) FROM sessions")
             plan = " ".join(row[3] if len(row) > 3 else str(row) for row in cursor.fetchall())
-            # Must scan the conversations table, NOT messages_fts
-            assert "messages_fts" not in plan.lower(), f"COUNT(*) on conversations should not touch FTS: {plan}"
+            # Must scan the sessions table, NOT messages_fts
+            assert "messages_fts" not in plan.lower(), f"COUNT(*) on sessions should not touch FTS: {plan}"
         finally:
             conn.close()

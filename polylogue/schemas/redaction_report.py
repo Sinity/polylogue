@@ -22,7 +22,7 @@ class RedactionDecision:
     action: Literal["included", "rejected", "overridden_allow", "overridden_deny"]
     reason: str | None = None  # "high_entropy", "identifier_field", etc.
     count: int = 0  # occurrences in corpus
-    conversation_count: int | None = None
+    session_count: int | None = None
     risk: Literal["none", "low", "medium", "high"] | None = None
 
     def to_json(self) -> JSONDocument:
@@ -33,7 +33,7 @@ class RedactionDecision:
             "action": self.action,
             "reason": self.reason,
             "count": self.count,
-            "conversation_count": self.conversation_count,
+            "session_count": self.session_count,
             "risk": self.risk,
         }
         return payload

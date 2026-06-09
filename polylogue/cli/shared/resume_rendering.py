@@ -26,7 +26,7 @@ def render_resume_brief(brief: ResumeBrief) -> None:
     inferences = brief.inferences
 
     click.echo("Resume Brief")
-    click.echo(f"Session: {facts.conversation_id}")
+    click.echo(f"Session: {facts.session_id}")
     _line("Title", facts.title)
     _line("Provider", facts.source_name)
     _line("Updated", facts.updated_at)
@@ -59,8 +59,8 @@ def render_resume_brief(brief: ResumeBrief) -> None:
             f"  Phase {phase.phase_index}: messages {phase.message_range[0]}-{phase.message_range[1]} "
             f"support={phase.support_level}"
         )
-    if inferences.work_thread is not None:
-        thread = inferences.work_thread
+    if inferences.thread is not None:
+        thread = inferences.thread
         click.echo(
             f"  Work thread: {thread.thread_id} sessions={thread.session_count} repo={thread.dominant_repo or '-'}"
         )
@@ -69,7 +69,7 @@ def render_resume_brief(brief: ResumeBrief) -> None:
         click.echo("\nRelated Sessions")
         for related in brief.related_sessions:
             title = f" - {related.title}" if related.title else ""
-            click.echo(f"  {related.relation}: {related.conversation_id}{title}")
+            click.echo(f"  {related.relation}: {related.session_id}{title}")
 
     if brief.uncertainties:
         click.echo("\nUncertainties")

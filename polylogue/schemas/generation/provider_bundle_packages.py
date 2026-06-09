@@ -101,7 +101,7 @@ def build_provider_catalog_artifacts(
             element_first_seen, element_last_seen = _membership_observed_window(kind_memberships)
             for membership in kind_memberships:
                 schema_samples.extend(membership.unit.schema_samples)
-                conv_ids.extend([membership.unit.conversation_id] * len(membership.unit.schema_samples))
+                conv_ids.extend([membership.unit.session_id] * len(membership.unit.schema_samples))
                 if membership.unit.source_path:
                     _merge_representative_paths(representative_paths, [membership.unit.source_path])
 

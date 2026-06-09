@@ -1,0 +1,15 @@
+Usage: polylogue insights audit [OPTIONS]
+
+  Report per-product rigor profile across materialized insights (#1275).
+
+  For each contracted product, reports the share of rows that carry an
+  evidence payload, an inference payload, and a fallback marker, plus the
+  stale-version row count and a confidence-bucket distribution.
+
+Options:
+  --insight TEXT          Limit the audit to one or more registered insight
+                          names. Default: every contracted product.
+  --sample-limit INTEGER  Maximum rows per product to sample for the rigor
+                          profile.  [default: 500]
+  -f, --format [json]     Output format.
+  -h, --help              Show this message and exit.

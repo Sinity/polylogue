@@ -1,4 +1,4 @@
-"""Raw conversation read and selection helpers."""
+"""Raw session read and selection helpers."""
 
 from __future__ import annotations
 
@@ -6,11 +6,13 @@ from collections.abc import AsyncIterator, Iterable, Sequence
 
 import aiosqlite
 
-from polylogue.storage.raw.models import RawConversationState
-from polylogue.storage.runtime import RawConversationRecord
-from polylogue.storage.sqlite.connection import _build_source_scope_filter
-from polylogue.storage.sqlite.queries.mappers import _row_to_raw_conversation
-from polylogue.storage.sqlite.queries.raw_state import EFFECTIVE_RAW_PROVIDER_SQL
+from polylogue.core.enums import Origin
+from polylogue.core.sources import provider_from_origin
+from polylogue.storage.raw.models import RawSessionState
+from polylogue.storage.runtime import RawSessionRecord
+from polylogue.storage.sqlite.connection import _build_source_path_scope_filter
+from polylogue.storage.sqlite.queries.mappers import _ms_to_iso, _row_to_raw_session
+from polylogue.storage.sqlite.queries.raw_state import RAW_ORIGIN_FILTER_SQL, origin_filter_value
 
 
 def _raw_rows(rows: Iterable[object]) -> list[aiosqlite.Row]:
@@ -25,7 +27,7 @@ def _raw_rows(rows: Iterable[object]) -> list[aiosqlite.Row]:
 def _raw_select_query(
     select_columns: str,
     *,
-    source_names: list[str] | None = None,
+    source_paths: list[str] | None = None,
     source_name: str | None = None,
     require_unparsed: bool = False,
     require_unvalidated: bool = False,
@@ -35,35 +37,32 @@ def _raw_select_query(
     params: list[str] = []
 
     if require_unparsed:
-        where_clauses.append("parsed_at IS NULL")
+        where_clauses.append("parsed_at_ms IS NULL")
     if require_unvalidated:
-        where_clauses.append("validated_at IS NULL")
+        where_clauses.append("validated_at_ms IS NULL")
     if source_name:
-        where_clauses.append(f"{EFFECTIVE_RAW_PROVIDER_SQL} = ?")
-        params.append(source_name)
+        where_clauses.append(f"{RAW_ORIGIN_FILTER_SQL} = ?")
+        params.append(origin_filter_value(source_name))
     if validation_statuses:
         placeholders = ",".join("?" for _ in validation_statuses)
         where_clauses.append(f"validation_status IN ({placeholders})")
         params.extend(validation_statuses)
 
-    predicate, scope_params = _build_source_scope_filter(
-        source_names,
-        source_column="source_name",
-    )
+    predicate, scope_params = _build_source_path_scope_filter(source_paths)
     if predicate:
         where_clauses.append(predicate)
         params.extend(scope_params)
 
-    sql = f"SELECT {select_columns} FROM raw_conversations"
+    sql = f"SELECT {select_columns} FROM raw_sessions"
     if where_clauses:
         sql += f" WHERE {' AND '.join(where_clauses)}"
-    sql += " ORDER BY acquired_at DESC, raw_id ASC"
+    sql += " ORDER BY acquired_at_ms DESC, raw_id ASC"
     return sql, tuple(params)
 
 
 def raw_id_query(
     *,
-    source_names: list[str] | None = None,
+    source_paths: list[str] | None = None,
     source_name: str | None = None,
     require_unparsed: bool = False,
     require_unvalidated: bool = False,
@@ -71,7 +70,7 @@ def raw_id_query(
 ) -> tuple[str, tuple[str, ...]]:
     return _raw_select_query(
         "raw_id",
-        source_names=source_names,
+        source_paths=source_paths,
         source_name=source_name,
         require_unparsed=require_unparsed,
         require_unvalidated=require_unvalidated,
@@ -81,7 +80,7 @@ def raw_id_query(
 
 def raw_header_query(
     *,
-    source_names: list[str] | None = None,
+    source_paths: list[str] | None = None,
     source_name: str | None = None,
     require_unparsed: bool = False,
     require_unvalidated: bool = False,
@@ -89,7 +88,7 @@ def raw_header_query(
 ) -> tuple[str, tuple[str, ...]]:
     return _raw_select_query(
         "raw_id, blob_size",
-        source_names=source_names,
+        source_paths=source_paths,
         source_name=source_name,
         require_unparsed=require_unparsed,
         require_unvalidated=require_unvalidated,
@@ -100,7 +99,7 @@ def raw_header_query(
 async def iter_raw_ids(
     conn: aiosqlite.Connection,
     *,
-    source_names: list[str] | None = None,
+    source_paths: list[str] | None = None,
     source_name: str | None = None,
     require_unparsed: bool = False,
     require_unvalidated: bool = False,
@@ -108,7 +107,7 @@ async def iter_raw_ids(
     page_size: int = 1000,
 ) -> AsyncIterator[str]:
     sql, params = raw_id_query(
-        source_names=source_names,
+        source_paths=source_paths,
         source_name=source_name,
         require_unparsed=require_unparsed,
         require_unvalidated=require_unvalidated,
@@ -126,7 +125,7 @@ async def iter_raw_ids(
 async def iter_raw_headers(
     conn: aiosqlite.Connection,
     *,
-    source_names: list[str] | None = None,
+    source_paths: list[str] | None = None,
     source_name: str | None = None,
     require_unparsed: bool = False,
     require_unvalidated: bool = False,
@@ -134,7 +133,7 @@ async def iter_raw_headers(
     page_size: int = 1000,
 ) -> AsyncIterator[tuple[str, int]]:
     sql, params = raw_header_query(
-        source_names=source_names,
+        source_paths=source_paths,
         source_name=source_name,
         require_unparsed=require_unparsed,
         require_unvalidated=require_unvalidated,
@@ -149,43 +148,45 @@ async def iter_raw_headers(
             yield (str(row["raw_id"]), int(row["blob_size"]))
 
 
-async def get_raw_conversation(conn: aiosqlite.Connection, raw_id: str) -> RawConversationRecord | None:
+async def get_raw_session(conn: aiosqlite.Connection, raw_id: str) -> RawSessionRecord | None:
     cursor = await conn.execute(
-        "SELECT * FROM raw_conversations WHERE raw_id = ?",
+        "SELECT * FROM raw_sessions WHERE raw_id = ?",
         (raw_id,),
     )
     row = await cursor.fetchone()
     if row is None:
         return None
-    return _row_to_raw_conversation(row)
+    return _row_to_raw_session(row)
 
 
 async def get_known_source_mtimes(conn: aiosqlite.Connection) -> dict[str, str]:
     result: dict[str, str] = {}
-    cursor = await conn.execute("SELECT source_path, file_mtime FROM raw_conversations WHERE file_mtime IS NOT NULL")
+    cursor = await conn.execute("SELECT source_path, file_mtime_ms FROM raw_sessions WHERE file_mtime_ms IS NOT NULL")
     while True:
         rows = list(await cursor.fetchmany(1000))
         if not rows:
             break
         for row in rows:
-            result[row["source_path"]] = row["file_mtime"]
+            mtime = _ms_to_iso(row["file_mtime_ms"])
+            if mtime is not None:
+                result[row["source_path"]] = mtime
     return result
 
 
-async def get_raw_conversations_batch(conn: aiosqlite.Connection, raw_ids: list[str]) -> list[RawConversationRecord]:
+async def get_raw_sessions_batch(conn: aiosqlite.Connection, raw_ids: list[str]) -> list[RawSessionRecord]:
     if not raw_ids:
         return []
     placeholders = ",".join("?" * len(raw_ids))
     cursor = await conn.execute(
-        f"SELECT * FROM raw_conversations WHERE raw_id IN ({placeholders})",
+        f"SELECT * FROM raw_sessions WHERE raw_id IN ({placeholders})",
         raw_ids,
     )
-    records: list[RawConversationRecord] = []
+    records: list[RawSessionRecord] = []
     while True:
         rows = list(await cursor.fetchmany(200))
         if not rows:
             break
-        records.extend(_row_to_raw_conversation(row) for row in rows)
+        records.extend(_row_to_raw_session(row) for row in rows)
     return records
 
 
@@ -197,16 +198,14 @@ async def get_raw_blob_sizes(
         return []
     placeholders = ",".join("?" * len(raw_ids))
     cursor = await conn.execute(
-        f"SELECT raw_id, blob_size FROM raw_conversations WHERE raw_id IN ({placeholders})",
+        f"SELECT raw_id, blob_size FROM raw_sessions WHERE raw_id IN ({placeholders})",
         tuple(raw_ids),
     )
     sizes = {str(row["raw_id"]): int(row["blob_size"]) for row in await cursor.fetchall()}
     return [(raw_id, sizes[raw_id]) for raw_id in raw_ids if raw_id in sizes]
 
 
-async def get_raw_conversation_states(
-    conn: aiosqlite.Connection, raw_ids: list[str]
-) -> dict[str, RawConversationState]:
+async def get_raw_session_states(conn: aiosqlite.Connection, raw_ids: list[str]) -> dict[str, RawSessionState]:
     if not raw_ids:
         return {}
     placeholders = ",".join("?" * len(raw_ids))
@@ -214,49 +213,49 @@ async def get_raw_conversation_states(
         f"""
         SELECT
             raw_id,
-            source_name,
+            origin,
             source_path,
-            parsed_at,
+            parsed_at_ms,
             parse_error,
-            payload_provider,
-            validation_status,
-            validation_provider
-        FROM raw_conversations
+            validation_status
+        FROM raw_sessions
         WHERE raw_id IN ({placeholders})
         """,
         raw_ids,
     )
     rows = await cursor.fetchall()
-    return {
-        row["raw_id"]: RawConversationState(
+
+    def _state(row: aiosqlite.Row) -> RawSessionState:
+        provider = provider_from_origin(Origin.from_string(row["origin"]))
+        return RawSessionState(
             raw_id=row["raw_id"],
-            source_name=row["source_name"],
+            source_name=provider.value,
             source_path=row["source_path"],
-            parsed_at=row["parsed_at"],
+            parsed_at=_ms_to_iso(row["parsed_at_ms"]),
             parse_error=row["parse_error"],
-            payload_provider=row["payload_provider"],
+            payload_provider=provider,
             validation_status=row["validation_status"],
-            validation_provider=row["validation_provider"],
+            validation_provider=provider,
         )
-        for row in rows
-    }
+
+    return {row["raw_id"]: _state(row) for row in rows}
 
 
-async def iter_raw_conversations(
+async def iter_raw_sessions(
     conn: aiosqlite.Connection,
     provider: str | None = None,
     limit: int | None = None,
-) -> AsyncIterator[RawConversationRecord]:
+) -> AsyncIterator[RawSessionRecord]:
     offset = 0
     yielded = 0
 
     while True:
-        query = "SELECT * FROM raw_conversations"
+        query = "SELECT * FROM raw_sessions"
         params: list[str | int] = []
         if provider is not None:
-            query += f" WHERE {EFFECTIVE_RAW_PROVIDER_SQL} = ?"
-            params.append(provider)
-        query += " ORDER BY acquired_at DESC"
+            query += f" WHERE {RAW_ORIGIN_FILTER_SQL} = ?"
+            params.append(origin_filter_value(provider))
+        query += " ORDER BY acquired_at_ms DESC"
         chunk_size = 100
         query_with_limit = query + " LIMIT ? OFFSET ?"
         params.extend([chunk_size, offset])
@@ -266,7 +265,7 @@ async def iter_raw_conversations(
         if not rows:
             break
         for row in rows:
-            yield _row_to_raw_conversation(row)
+            yield _row_to_raw_session(row)
             yielded += 1
             if limit is not None and yielded >= limit:
                 return
@@ -275,22 +274,22 @@ async def iter_raw_conversations(
             break
 
 
-async def get_raw_records_for_conversation(
+async def get_raw_records_for_session(
     conn: aiosqlite.Connection,
-    conversation_id: str,
+    session_id: str,
     *,
     limit: int = 50,
     offset: int = 0,
-) -> tuple[list[RawConversationRecord], int]:
-    """Look up raw conversation records for a given conversation ID.
+) -> tuple[list[RawSessionRecord], int]:
+    """Look up raw session records for a given session ID.
 
-    Resolves the raw_id from the conversations table and queries the
-    raw_conversations table. Returns ([], 0) if the conversation has no
+    Resolves the raw_id from the sessions table and queries the
+    raw_sessions table. Returns ([], 0) if the session has no
     associated raw record.
     """
     cursor = await conn.execute(
-        "SELECT raw_id FROM conversations WHERE conversation_id = ?",
-        (conversation_id,),
+        "SELECT raw_id FROM sessions WHERE session_id = ?",
+        (session_id,),
     )
     row = await cursor.fetchone()
     if row is None or row["raw_id"] is None:
@@ -299,26 +298,26 @@ async def get_raw_records_for_conversation(
     raw_id: str = str(row["raw_id"])
 
     cursor = await conn.execute(
-        "SELECT COUNT(*) as cnt FROM raw_conversations WHERE raw_id = ?",
+        "SELECT COUNT(*) as cnt FROM raw_sessions WHERE raw_id = ?",
         (raw_id,),
     )
     total_row = await cursor.fetchone()
     total = int(total_row["cnt"]) if total_row is not None else 0
 
     cursor = await conn.execute(
-        "SELECT * FROM raw_conversations WHERE raw_id = ? ORDER BY acquired_at DESC, raw_id ASC LIMIT ? OFFSET ?",
+        "SELECT * FROM raw_sessions WHERE raw_id = ? ORDER BY acquired_at_ms DESC, raw_id ASC LIMIT ? OFFSET ?",
         (raw_id, limit, offset),
     )
-    records = [_row_to_raw_conversation(row) for row in await cursor.fetchall()]
+    records = [_row_to_raw_session(row) for row in await cursor.fetchall()]
     return records, total
 
 
-async def get_raw_conversation_count(conn: aiosqlite.Connection, provider: str | None = None) -> int:
-    query = "SELECT COUNT(*) as cnt FROM raw_conversations"
+async def get_raw_session_count(conn: aiosqlite.Connection, provider: str | None = None) -> int:
+    query = "SELECT COUNT(*) as cnt FROM raw_sessions"
     params: tuple[str, ...] = ()
     if provider is not None:
-        query += f" WHERE {EFFECTIVE_RAW_PROVIDER_SQL} = ?"
-        params = (provider,)
+        query += f" WHERE {RAW_ORIGIN_FILTER_SQL} = ?"
+        params = (origin_filter_value(provider),)
     cursor = await conn.execute(query, params)
     row = await cursor.fetchone()
     return int(row["cnt"]) if row is not None else 0
@@ -327,13 +326,13 @@ async def get_raw_conversation_count(conn: aiosqlite.Connection, provider: str |
 __all__ = [
     "get_known_source_mtimes",
     "get_raw_blob_sizes",
-    "get_raw_conversation",
-    "get_raw_conversation_count",
-    "get_raw_conversation_states",
-    "get_raw_conversations_batch",
-    "get_raw_records_for_conversation",
+    "get_raw_session",
+    "get_raw_session_count",
+    "get_raw_session_states",
+    "get_raw_sessions_batch",
+    "get_raw_records_for_session",
     "iter_raw_headers",
-    "iter_raw_conversations",
+    "iter_raw_sessions",
     "iter_raw_ids",
     "raw_header_query",
     "raw_id_query",

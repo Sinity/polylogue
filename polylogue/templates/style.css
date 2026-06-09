@@ -72,14 +72,14 @@ h1 {
     transform: translateY(-4px);
 }
 
-/* Conversation List */
-.conversation-list {
+/* Session List */
+.session-list {
     display: grid;
     gap: 1.5rem;
     list-style: none;
 }
 
-.conversation-link {
+.session-link {
     text-decoration: none;
     color: inherit;
     display: flex;
@@ -87,13 +87,13 @@ h1 {
     gap: 1rem;
 }
 
-.conversation-title {
+.session-title {
     font-size: 1.4rem;
     font-weight: 700;
     color: var(--text-primary);
 }
 
-.conversation-meta {
+.session-meta {
     display: flex;
     align-items: center;
     gap: 1.5rem;

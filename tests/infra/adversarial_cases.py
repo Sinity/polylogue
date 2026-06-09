@@ -66,7 +66,7 @@ SQL_INJECTION_PAYLOADS: tuple[str, ...] = (
     "'; DROP TABLE messages; --",
     "' OR '1'='1",
     "' OR 1=1 --",
-    "'; DELETE FROM conversations; --",
+    "'; DELETE FROM sessions; --",
     "' UNION SELECT * FROM sqlite_master --",
     "test OR 1=1",
     'test" OR "1"="1',

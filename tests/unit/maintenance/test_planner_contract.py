@@ -12,7 +12,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -53,7 +53,6 @@ class TestBackfillKindCoverage:
     @pytest.mark.parametrize(
         "kind",
         [
-            BackfillKind.SOURCE_REPLAY,
             BackfillKind.ARCHIVE_SUBSET,
             BackfillKind.DERIVED_REBUILD,
             BackfillKind.INDEX_REPAIR,
@@ -107,7 +106,7 @@ class TestMaintenanceScope:
         assert payload["targets"] == ["a", "b"]
         filter_payload = cast(dict[str, object], payload["filter"])
         # Every typed scope dimension is present with a None default.
-        assert filter_payload["conversation_ids"] is None
+        assert filter_payload["session_ids"] is None
         assert filter_payload["provider"] is None
 
     def test_scope_filter_roundtrips(self) -> None:
@@ -116,13 +115,13 @@ class TestMaintenanceScope:
         scope = MaintenanceScope(
             targets=("session_insights",),
             filter=MaintenanceScopeFilter(
-                conversation_ids=("c1", "c2"),
+                session_ids=("c1", "c2"),
                 provider="claude",
             ),
         )
         payload = scope.to_dict()
         filter_payload = cast(dict[str, object], payload["filter"])
-        assert filter_payload["conversation_ids"] == ["c1", "c2"]
+        assert filter_payload["session_ids"] == ["c1", "c2"]
         assert filter_payload["provider"] == "claude"
         # to_dict / from_dict round-trips the scope back to itself.
         scope_again = MaintenanceScope.from_dict(cast(dict[str, object], payload))
@@ -174,7 +173,7 @@ class TestResumeCursorRoundtrip:
     def test_cursor_survives_to_dict(self) -> None:
         op = BackfillOperation(
             operation_id="op-1",
-            kind=BackfillKind.SOURCE_REPLAY,
+            kind=BackfillKind.DERIVED_REBUILD,
             targets=("session_insights",),
             resume_cursor="rowid:12345",
         )
@@ -215,9 +214,6 @@ class TestInvalidationKeysOnTargets:
 
         assert "messages_fts" in by_name["dangling_fts"].invalidation_keys
         assert "session.profile" in by_name["session_insights"].invalidation_keys
-        action_events = by_name["action_event_read_model"]
-        assert "action_events" in action_events.invalidation_keys
-        assert "action_events_fts" in action_events.invalidation_keys
         embeddings = by_name["message_embeddings"]
         assert "message_embeddings" in embeddings.invalidation_keys
 
@@ -317,26 +313,28 @@ class TestEmptyTargetsFastFail:
 
 
 class TestConfigThreading:
-    """Regression: the planner must thread ``config.db_path`` through,
-    not call ``connection_context(None)`` and rely on ambient defaults
+    """Regression: the planner must resolve the archive `index.db` from the
+    caller's ``config`` (archive_root/db_path), not rely on ambient defaults
     (the original scaffold did the latter and broke multi-archive tests).
     """
 
     def test_preview_threads_config_db_path(self, tmp_path: Path) -> None:
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
         config = _make_config(tmp_path)
-        custom_db = config.db_path
+        initialize_active_archive_root(config.archive_root)
+        expected_index = config.archive_root / "index.db"
 
-        seen: list[object] = []
+        seen: list[Path] = []
 
-        @contextmanager
-        def fake_connection_context(db_path: object) -> Iterator[object]:
-            seen.append(db_path)
-            yield object()
+        def fake_open(path: object, **_: object) -> MagicMock:
+            seen.append(Path(str(path)))
+            return MagicMock()
 
         with (
             patch(
-                "polylogue.storage.sqlite.connection.open_read_connection",
-                fake_connection_context,
+                "polylogue.storage.sqlite.connection_profile.open_readonly_connection",
+                side_effect=fake_open,
             ),
             patch(
                 "polylogue.storage.repair.collect_archive_debt_statuses_sync",
@@ -349,23 +347,25 @@ class TestConfigThreading:
         ):
             preview_backfill(config, targets=("session_insights",))
 
-        assert seen == [custom_db]
+        assert seen == [expected_index]
 
     def test_execute_threads_config_db_path(self, tmp_path: Path) -> None:
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
         config = _make_config(tmp_path)
-        custom_db = config.db_path
+        initialize_active_archive_root(config.archive_root)
+        expected_index = config.archive_root / "index.db"
 
-        seen: list[object] = []
+        seen: list[Path] = []
 
-        @contextmanager
-        def fake_connection_context(db_path: object) -> Iterator[object]:
-            seen.append(db_path)
-            yield object()
+        def fake_open(path: object, **_: object) -> MagicMock:
+            seen.append(Path(str(path)))
+            return MagicMock()
 
         with (
             patch(
-                "polylogue.storage.sqlite.connection.open_read_connection",
-                fake_connection_context,
+                "polylogue.storage.sqlite.connection_profile.open_readonly_connection",
+                side_effect=fake_open,
             ),
             patch(
                 "polylogue.storage.repair.collect_archive_debt_statuses_sync",
@@ -382,7 +382,7 @@ class TestConfigThreading:
         ):
             op = execute_backfill(config, targets=("session_insights",))
 
-        assert seen == [custom_db]
+        assert seen == [expected_index]
         # An execute that succeeded with zero results is COMPLETED (all([]) is True).
         assert op.status is BackfillStatus.COMPLETED
 

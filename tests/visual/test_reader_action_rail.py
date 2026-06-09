@@ -56,7 +56,7 @@ def test_reader_action_rail_contract(reader_workspace: ReaderWorkspace, tmp_path
         "copyMessageLink",
         "openProvenanceTab",
         "jumpToAnchor",
-        "/api/conversations/' + encodeURIComponent(conversationId) + '/raw",
+        "/api/sessions/' + encodeURIComponent(sessionId) + '/raw",
     ):
         assert phrase in body, f"action rail missing {phrase!r}"
 
@@ -89,18 +89,18 @@ def test_reader_action_rail_contract(reader_workspace: ReaderWorkspace, tmp_path
         "installReaderShortcuts",
         "_polyHandleNavigateMessages",
         "_polyHandleCopyFocused",
-        "_polyHandleOpenConversation",
-        "Open focused conversation",
+        "_polyHandleOpenSession",
+        "Open focused session",
         "Copy focused message text",
         "Focus search",
-        "Next conversation",
-        "Previous conversation",
+        "Next session",
+        "Previous session",
         "Toggle this help",
     ):
         assert phrase in body, f"keyboard wiring missing {phrase!r}"
 
     # The base j/k handler now defers to the reader slice when a
-    # conversation is loaded (prevents double-navigation).
+    # session is loaded (prevents double-navigation).
     assert "if (convOpen) return;" in body
 
     write_evidence_manifest(

@@ -1,4 +1,4 @@
-"""Typed conversation-query specification shared by CLI and MCP surfaces."""
+"""Typed session-query specification shared by CLI and MCP surfaces."""
 
 from __future__ import annotations
 
@@ -11,18 +11,19 @@ from typing import TYPE_CHECKING, TypeVar
 from polylogue.archive.filter.types import SortField
 from polylogue.archive.message.types import validate_message_type_filter
 from polylogue.archive.query.fields import describe_spec_fields, query_spec_has_selection_filters
-from polylogue.archive.query.plan import ConversationQueryPlan
+from polylogue.archive.query.plan import SessionQueryPlan
 from polylogue.archive.viewport.viewports import ToolCategory
 from polylogue.core.dates import parse_date
+from polylogue.core.enums import Origin
 from polylogue.errors import PolylogueError
-from polylogue.types import Provider
 
 if TYPE_CHECKING:
-    from polylogue.archive.filter.filters import ConversationFilter
-    from polylogue.archive.models import Conversation, ConversationSummary
-    from polylogue.protocols import ConversationQueryRuntimeStore, VectorProvider
+    from polylogue.archive.filter.filters import SessionFilter
+    from polylogue.archive.models import Session, SessionSummary
+    from polylogue.config import Config
+    from polylogue.protocols import VectorProvider
 
-_SpecT = TypeVar("_SpecT", bound="ConversationQuerySpec")
+_SpecT = TypeVar("_SpecT", bound="SessionQuerySpec")
 
 
 # ---------------------------------------------------------------------------
@@ -199,8 +200,8 @@ _RECOGNIZED_PARAMS: frozenset[str] = frozenset(
         "action_text",
         "tool",
         "exclude_tool",
-        "provider",
-        "exclude_provider",
+        "origin",
+        "exclude_origin",
         "tag",
         "exclude_tag",
         "repo",
@@ -276,11 +277,11 @@ def optional_sort_field(value: object) -> SortField | None:
 # ---------------------------------------------------------------------------
 
 
-def describe_query_spec(spec: ConversationQuerySpec) -> list[str]:
+def describe_query_spec(spec: SessionQuerySpec) -> list[str]:
     return describe_spec_fields(spec)
 
 
-def query_spec_has_filters(spec: ConversationQuerySpec) -> bool:
+def query_spec_has_filters(spec: SessionQuerySpec) -> bool:
     return query_spec_has_selection_filters(spec)
 
 
@@ -314,14 +315,14 @@ def build_query_spec_from_params(
         action_text_terms=as_tuple(params.get("action_text")),
         tool_terms=normalize_tool_terms(params.get("tool")),
         excluded_tool_terms=normalize_tool_terms(params.get("exclude_tool")),
-        providers=tuple(Provider.from_string(p) for p in split_csv(params.get("provider"))),
-        excluded_providers=tuple(Provider.from_string(p) for p in split_csv(params.get("exclude_provider"))),
+        origins=tuple(Origin.from_string(p).value for p in split_csv(params.get("origin"))),
+        excluded_origins=tuple(Origin.from_string(p).value for p in split_csv(params.get("exclude_origin"))),
         tags=split_csv(params.get("tag")),
         excluded_tags=split_csv(params.get("exclude_tag")),
         repo_names=split_csv(params.get("repo")),
         has_types=as_tuple(params.get("has_type")),
         title=optional_text(params.get("title")),
-        conversation_id=optional_text(params.get("conv_id")),
+        session_id=optional_text(params.get("conv_id")),
         since=optional_text(params.get("since")),
         until=optional_text(params.get("until")),
         latest=bool(params.get("latest")),
@@ -345,11 +346,11 @@ def build_query_spec_from_params(
 
 
 def query_spec_to_plan(
-    spec: ConversationQuerySpec,
+    spec: SessionQuerySpec,
     *,
     vector_provider: VectorProvider | None = None,
-) -> ConversationQueryPlan:
-    plan = ConversationQueryPlan(
+) -> SessionQueryPlan:
+    plan = SessionQueryPlan(
         query_terms=spec.query_terms,
         contains_terms=spec.contains_terms,
         negative_terms=spec.exclude_text_terms,
@@ -362,14 +363,14 @@ def query_spec_to_plan(
         action_text_terms=spec.action_text_terms,
         tool_terms=spec.tool_terms,
         excluded_tool_terms=spec.excluded_tool_terms,
-        providers=spec.providers,
-        excluded_providers=spec.excluded_providers,
+        origins=spec.origins,
+        excluded_origins=spec.excluded_origins,
         tags=spec.tags,
         excluded_tags=spec.excluded_tags,
         repo_names=spec.repo_names,
         has_types=spec.has_types,
         title=spec.title,
-        conversation_id=spec.conversation_id,
+        session_id=spec.session_id,
         since=parse_query_date("since", spec.since),
         until=parse_query_date("until", spec.until),
         sort=spec.sort,
@@ -401,8 +402,8 @@ def query_spec_to_plan(
 
 
 @dataclass(frozen=True)
-class ConversationQuerySpec:
-    """Canonical selection intent for conversation queries."""
+class SessionQuerySpec:
+    """Canonical selection intent for session queries."""
 
     query_terms: tuple[str, ...] = ()
     contains_terms: tuple[str, ...] = ()
@@ -416,14 +417,14 @@ class ConversationQuerySpec:
     action_text_terms: tuple[str, ...] = ()
     tool_terms: tuple[str, ...] = ()
     excluded_tool_terms: tuple[str, ...] = ()
-    providers: tuple[Provider, ...] = ()
-    excluded_providers: tuple[Provider, ...] = ()
+    origins: tuple[str, ...] = ()
+    excluded_origins: tuple[str, ...] = ()
     repo_names: tuple[str, ...] = ()
     tags: tuple[str, ...] = ()
     excluded_tags: tuple[str, ...] = ()
     has_types: tuple[str, ...] = ()
     title: str | None = None
-    conversation_id: str | None = None
+    session_id: str | None = None
     since: str | None = None
     until: str | None = None
     latest: bool = False
@@ -446,7 +447,7 @@ class ConversationQuerySpec:
     cursor: str | None = None
 
     @classmethod
-    def from_params(cls, params: Mapping[str, object], *, strict: bool = False) -> ConversationQuerySpec:
+    def from_params(cls, params: Mapping[str, object], *, strict: bool = False) -> SessionQuerySpec:
         """Build a query spec from CLI-style parameter mapping.
 
         When *strict* is True, unknown parameter names and path-component
@@ -460,67 +461,73 @@ class ConversationQuerySpec:
         return describe_query_spec(self)
 
     def has_filters(self) -> bool:
-        """Whether the spec narrows conversation selection."""
+        """Whether the spec narrows session selection."""
         return query_spec_has_filters(self)
 
     def to_plan(
         self,
         *,
         vector_provider: VectorProvider | None = None,
-    ) -> ConversationQueryPlan:
+    ) -> SessionQueryPlan:
         """Compile the immutable spec to the canonical execution plan."""
         return query_spec_to_plan(self, vector_provider=vector_provider)
 
     async def list(
         self,
-        repository: ConversationQueryRuntimeStore,
+        config: Config,
         *,
         vector_provider: VectorProvider | None = None,
-    ) -> builtins.list[Conversation]:
-        return await self.build_filter(repository, vector_provider=vector_provider).list()
+    ) -> builtins.list[Session]:
+        return await self.build_filter(config, vector_provider=vector_provider).list()
 
     async def list_summaries(
         self,
-        repository: ConversationQueryRuntimeStore,
+        config: Config,
         *,
         vector_provider: VectorProvider | None = None,
-    ) -> builtins.list[ConversationSummary]:
-        return await self.build_filter(repository, vector_provider=vector_provider).list_summaries()
+    ) -> builtins.list[SessionSummary]:
+        return await self.build_filter(config, vector_provider=vector_provider).list_summaries()
 
     async def count(
         self,
-        repository: ConversationQueryRuntimeStore,
+        config: Config,
         *,
         vector_provider: VectorProvider | None = None,
     ) -> int:
-        return await self.build_filter(repository, vector_provider=vector_provider).count()
+        return await self.build_filter(config, vector_provider=vector_provider).count()
 
     async def delete(
         self,
-        repository: ConversationQueryRuntimeStore,
+        config: Config,
         *,
         vector_provider: VectorProvider | None = None,
     ) -> int:
-        return await self.build_filter(repository, vector_provider=vector_provider).delete()
+        return await self.build_filter(config, vector_provider=vector_provider).delete()
 
     def build_filter(
         self,
-        repository: ConversationQueryRuntimeStore,
+        config: Config,
         *,
         vector_provider: VectorProvider | None = None,
-    ) -> ConversationFilter:
+    ) -> SessionFilter:
         """Build a fluent filter facade over the canonical execution plan."""
-        from polylogue.archive.filter.filters import ConversationFilter
+        from polylogue.archive.filter.filters import SessionFilter
+        from polylogue.paths import archive_file_set_root_for_paths
 
-        return ConversationFilter(
-            repository,
+        archive_root = archive_file_set_root_for_paths(
+            archive_root_path=config.archive_root,
+            db_anchor=config.db_path,
+        )
+        return SessionFilter(
+            archive_root=archive_root,
+            config=config,
             vector_provider=vector_provider,
             query_plan=self.to_plan(vector_provider=vector_provider),
         )
 
 
 __all__ = [
-    "ConversationQuerySpec",
+    "SessionQuerySpec",
     "MAX_QUERY_LIMIT",
     "QUERY_ACTION_TYPES",
     "QUERY_RETRIEVAL_LANES",

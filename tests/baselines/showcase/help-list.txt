@@ -1,11 +1,12 @@
 Usage: polylogue list [OPTIONS]
 
-  List matched conversations.
+  List matched sessions.
 
 Options:
-  -f, --format [markdown|json|html|obsidian|org|yaml|plaintext|csv]
-                                  Output format
-  --fields TEXT                   Fields: id, title, provider, date, messages,
+  -f, --format [markdown|json|ndjson|html|obsidian|org|yaml|plaintext|csv]
+                                  Output format (ndjson = one JSON document
+                                  per line, streaming-friendly)
+  --fields TEXT                   Fields: id, title, origin, date, messages,
                                   words, tags, summary
-  -n, --limit INTEGER             Max results
-  -h, --help                      Show this message and exit.
+  -l, -n, --limit INTEGER         Max results
+  --help                          Show this message and exit.

@@ -1,4 +1,4 @@
-"""Typed provider/model cost estimation for archive conversations."""
+"""Typed provider/model cost estimation for archive sessions."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from polylogue.archive.viewport.viewports import TokenUsage
 from polylogue.core.json import json_document
 
 if TYPE_CHECKING:
-    from polylogue.archive.models import Conversation, Message
+    from polylogue.archive.models import Message, Session
 
 CostEstimateStatus = Literal["exact", "priced", "partial", "unavailable"]
 
@@ -138,7 +138,7 @@ class CostModelBreakdown(PricingModel):
 
 class CostEstimatePayload(PricingModel):
     source_name: str
-    conversation_id: str | None = None
+    session_id: str | None = None
     message_id: str | None = None
     model_name: str | None = None
     normalized_model: str | None = None
@@ -386,7 +386,7 @@ def _exact_estimate(
     *,
     source_name: str,
     total_usd: float,
-    conversation_id: str | None = None,
+    session_id: str | None = None,
     message_id: str | None = None,
     model_name: str | None = None,
     usage: CostUsagePayload | None = None,
@@ -407,7 +407,7 @@ def _exact_estimate(
     )
     return CostEstimatePayload(
         source_name=source_name,
-        conversation_id=conversation_id,
+        session_id=session_id,
         message_id=message_id,
         model_name=model_name,
         normalized_model=normalized_model,
@@ -426,14 +426,14 @@ def _estimate_from_usage(
     source_name: str,
     model_name: str | None,
     usage: CostUsagePayload,
-    conversation_id: str | None = None,
+    session_id: str | None = None,
     message_id: str | None = None,
     provenance: tuple[str, ...],
 ) -> CostEstimatePayload:
     if model_name is None or not model_name.strip():
         return CostEstimatePayload(
             source_name=source_name,
-            conversation_id=conversation_id,
+            session_id=session_id,
             message_id=message_id,
             status="unavailable",
             confidence=0.0,
@@ -445,7 +445,7 @@ def _estimate_from_usage(
     if usage.billable_tokens <= 0:
         return CostEstimatePayload(
             source_name=source_name,
-            conversation_id=conversation_id,
+            session_id=session_id,
             message_id=message_id,
             model_name=model_name,
             normalized_model=_normalize_model(model_name),
@@ -461,7 +461,7 @@ def _estimate_from_usage(
     if pricing is None:
         return CostEstimatePayload(
             source_name=source_name,
-            conversation_id=conversation_id,
+            session_id=session_id,
             message_id=message_id,
             model_name=model_name,
             normalized_model=normalized_model,
@@ -476,7 +476,7 @@ def _estimate_from_usage(
     total = sum(component.usd for component in components)
     return CostEstimatePayload(
         source_name=source_name,
-        conversation_id=conversation_id,
+        session_id=session_id,
         message_id=message_id,
         model_name=model_name,
         normalized_model=normalized_model,
@@ -498,16 +498,14 @@ def estimate_message_cost(
     message: Message,
     *,
     source_name: str,
-    conversation_id: str | None = None,
+    session_id: str | None = None,
     fallback_model: str | None = None,
 ) -> CostEstimatePayload:
     """Estimate one message cost with explicit uncertainty.
 
-    Hydrated ``Message`` instances no longer carry ``provider_meta`` (#1256);
-    typed cost/usage facts come from the harmonized projection and the
-    ``message_token_usage`` provenance. Conversation-level provider metadata
-    is still consulted via ``_conversation_level_estimate`` for legacy
-    blob-shaped totals.
+    Typed cost/usage facts come from message columns and the
+    ``message_token_usage`` provenance. Provider-reported session totals are
+    stored in typed archive cost rows and are not read from hydrated sessions.
     """
 
     model_name = (
@@ -526,7 +524,7 @@ def estimate_message_cost(
         )
     return _estimate_from_usage(
         source_name=source_name,
-        conversation_id=conversation_id,
+        session_id=session_id,
         message_id=str(message.id),
         model_name=model_name,
         usage=usage,
@@ -534,57 +532,8 @@ def estimate_message_cost(
     )
 
 
-def _conversation_level_estimate(conversation: Conversation) -> CostEstimatePayload | None:
-    return estimate_cost_from_provider_meta(
-        source_name=_provider_text(conversation.provider),
-        conversation_id=str(conversation.id),
-        provider_meta=conversation.provider_meta,
-    )
-
-
-def estimate_cost_from_provider_meta(
-    *,
-    source_name: str,
-    conversation_id: str,
-    provider_meta: object,
-) -> CostEstimatePayload | None:
-    """Estimate session cost from ``provider_meta`` alone — no messages required.
-
-    Returns ``None`` when ``provider_meta`` carries neither a ``total_cost_usd``
-    value nor enough usage/model evidence to estimate. Callers that have the
-    full message stream may fall through to ``estimate_conversation_cost``
-    for a per-message aggregation; bulk/aggregate callers (#1621) that want
-    bounded cost without loading messages should accept a ``None`` here as
-    "unavailable for this session" and report it as such.
-    """
-    pm = _record(provider_meta)
-    raw = _record(pm.get("raw")) or pm
-    exact = (
-        _coerce_float(raw.get("total_cost_usd"))
-        or _coerce_float(raw.get("costUSD"))
-        or _coerce_float(raw.get("cost_usd"))
-    )
-    raw_models_used = raw.get("models_used")
-    models_used = raw_models_used if isinstance(raw_models_used, list) else []
-    first_model = next((item for item in models_used if isinstance(item, str) and item.strip()), None)
-    model_name = str(raw.get("model") or raw.get("model_slug") or first_model or "").strip() or None
-    usage = _usage_payload(raw.get("usage") or raw.get("tokens") or raw)
-    if exact is not None and exact > 0.0:
-        return _exact_estimate(
-            source_name=source_name,
-            conversation_id=conversation_id,
-            model_name=model_name,
-            usage=usage,
-            total_usd=exact,
-        )
-    if usage.billable_tokens > 0 or model_name:
-        return _estimate_from_usage(
-            source_name=source_name,
-            conversation_id=conversation_id,
-            model_name=model_name,
-            usage=usage,
-            provenance=("conversation_provider_meta",),
-        )
+def _session_level_estimate(session: Session) -> CostEstimatePayload | None:
+    del session
     return None
 
 
@@ -598,39 +547,39 @@ def _dominant_model(estimates: Iterable[CostEstimatePayload]) -> tuple[str | Non
     return counts.most_common(1)[0][0]
 
 
-def estimate_conversation_cost(conversation: Conversation) -> CostEstimatePayload:
-    """Estimate cost for a conversation/session with confidence metadata."""
+def estimate_session_cost(session: Session) -> CostEstimatePayload:
+    """Estimate cost for a session/session with confidence metadata."""
 
-    source_name = _provider_text(conversation.provider)
-    conversation_estimate = _conversation_level_estimate(conversation)
-    if conversation_estimate is not None and conversation_estimate.status == "exact":
-        return conversation_estimate
+    source_name = _provider_text(session.origin)
+    session_estimate = _session_level_estimate(session)
+    if session_estimate is not None and session_estimate.status == "exact":
+        return session_estimate
 
     message_estimates = [
         estimate_message_cost(
             message,
             source_name=source_name,
-            conversation_id=str(conversation.id),
-            fallback_model=conversation_estimate.model_name if conversation_estimate else None,
+            session_id=str(session.id),
+            fallback_model=session_estimate.model_name if session_estimate else None,
         )
-        for message in conversation.messages
+        for message in session.messages
     ]
     priced = [estimate for estimate in message_estimates if estimate.priced]
-    if not message_estimates and conversation_estimate is not None:
-        return conversation_estimate
-    if not priced and conversation_estimate is not None:
-        return conversation_estimate
+    if not message_estimates and session_estimate is not None:
+        return session_estimate
+    if not priced and session_estimate is not None:
+        return session_estimate
     if not priced:
         missing = ("missing_token_usage",) if message_estimates else ("no_messages",)
         unavailable: CostUnavailableReason = "no_tokens" if message_estimates else "no_messages"
         return CostEstimatePayload(
             source_name=source_name,
-            conversation_id=str(conversation.id),
+            session_id=str(session.id),
             status="unavailable",
             confidence=0.0,
             missing_reasons=missing,
             unavailable_reason=unavailable,
-            provenance=("conversation_messages",),
+            provenance=("session_messages",),
         )
 
     usage = CostUsagePayload()
@@ -684,13 +633,13 @@ def estimate_conversation_cost(conversation: Conversation) -> CostEstimatePayloa
     else:
         status = "partial"
     confidence = 0.95 if status == "exact" else 0.85 if status == "priced" else 0.55
-    if conversation_estimate is not None and conversation_estimate.status == "priced":
-        # Prefer conversation-level usage when present; it avoids double-counting
+    if session_estimate is not None and session_estimate.status == "priced":
+        # Prefer session-level usage when present; it avoids double-counting
         # per-message fallbacks from providers that report only session totals.
-        return conversation_estimate
+        return session_estimate
     return CostEstimatePayload(
         source_name=source_name,
-        conversation_id=str(conversation.id),
+        session_id=str(session.id),
         model_name=model_name,
         normalized_model=normalized_model,
         status=status,
@@ -705,10 +654,10 @@ def estimate_conversation_cost(conversation: Conversation) -> CostEstimatePayloa
     )
 
 
-def harmonize_session_cost(conversation: Conversation) -> tuple[float, bool]:
+def harmonize_session_cost(session: Session) -> tuple[float, bool]:
     """Return the legacy ``(cost_usd, is_estimated)`` session-cost tuple."""
 
-    estimate = estimate_conversation_cost(conversation)
+    estimate = estimate_session_cost(session)
     return estimate.total_usd, estimate.status != "exact"
 
 
@@ -732,9 +681,8 @@ __all__ = [
     "ModelPricing",
     "PRICING",
     "_normalize_model",
-    "estimate_conversation_cost",
+    "estimate_session_cost",
     "estimate_cost",
-    "estimate_cost_from_provider_meta",
     "estimate_message_cost",
     "generated_at",
     "harmonize_session_cost",

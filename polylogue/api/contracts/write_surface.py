@@ -5,7 +5,7 @@ MCP mutation/maintenance tools, daemon convergence ingest, Python API
 write methods) is expected to expose canonical operations using the
 *same* request and result contracts:
 
-* Input: documented primitives (``path``, ``conversation_id``, ``tag``)
+* Input: documented primitives (``path``, ``session_id``, ``tag``)
   or typed request models (target tuples, projection specs).
 * Output: shared envelopes — ``ImportOperation`` for ingest/scheduling,
   ``BackfillOperation`` for maintenance backfills, ``TagMutationResult``
@@ -88,19 +88,18 @@ class IndexMaintenanceSurface(Protocol):
 
     ``rebuild_index`` rebuilds the full-text search index from persisted
     message rows.  ``update_index`` repairs FTS rows for a specific set
-    of conversation ids.  Both return ``True`` on success and ``False``
+    of session ids.  Both return ``True`` on success and ``False``
     on a recoverable SQLite error (the caller decides whether to retry
     or surface).
 
     Every surface routes through the shared indexing-service free
-    functions (``polylogue.pipeline.services.indexing``) via
-    :class:`ArchiveOperations` rather than instantiating
-    ``IndexService`` directly.
+    functions (``polylogue.pipeline.services.indexing``) rather than
+    instantiating ``IndexService`` directly.
     """
 
     async def rebuild_index(self) -> bool: ...
 
-    async def update_index(self, conversation_ids: list[str]) -> bool: ...
+    async def update_index(self, session_ids: list[str]) -> bool: ...
 
 
 @runtime_checkable
@@ -113,27 +112,27 @@ class TagMutationSurface(Protocol):
     role, daemon read-only role) simply do not implement this protocol.
 
     This protocol is the write-side counterpart of the read-side
-    ``ConversationTagsSurface``; it intentionally lives next to the
+    ``SessionTagsSurface``; it intentionally lives next to the
     other write-surface protocols so the static-conformance machinery
     sees it as part of the write contract family.
     """
 
-    async def add_tag(self, conversation_id: str, tag: str) -> TagMutationResult: ...
+    async def add_tag(self, session_id: str, tag: str) -> TagMutationResult: ...
 
-    async def remove_tag(self, conversation_id: str, tag: str) -> TagMutationResult: ...
+    async def remove_tag(self, session_id: str, tag: str) -> TagMutationResult: ...
 
 
 @runtime_checkable
-class ConversationDeleteSurface(Protocol):
-    """Canonical conversation-delete contract.
+class SessionDeleteSurface(Protocol):
+    """Canonical session-delete contract.
 
     Surfaces returning ``True`` on a successful delete and ``False``
-    when the conversation was not found.  Safety guards (e.g. MCP's
+    when the session was not found.  Safety guards (e.g. MCP's
     ``confirm=True`` requirement) live in the adapter layer; the
     protocol expresses only the storage-level outcome.
     """
 
-    async def delete_conversation(self, conversation_id: str) -> bool: ...
+    async def delete_session(self, session_id: str) -> bool: ...
 
 
 @runtime_checkable
@@ -142,13 +141,13 @@ class WriteSurface(
     MaintenanceSurface,
     IndexMaintenanceSurface,
     TagMutationSurface,
-    ConversationDeleteSurface,
+    SessionDeleteSurface,
     Protocol,
 ):
     """Composite write-surface contract.
 
     A full write surface implements ingest scheduling, maintenance
-    backfills, index maintenance, tag mutations, and conversation
+    backfills, index maintenance, tag mutations, and session
     delete.  Adapters that only expose a subset (e.g. read-only MCP
     role, CLI ``ingest`` command on its own) declare conformance to the
     narrower protocols above.
@@ -156,7 +155,7 @@ class WriteSurface(
 
 
 __all__ = [
-    "ConversationDeleteSurface",
+    "SessionDeleteSurface",
     "IndexMaintenanceSurface",
     "IngestSurface",
     "MaintenanceSurface",

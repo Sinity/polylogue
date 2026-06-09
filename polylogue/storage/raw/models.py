@@ -1,4 +1,4 @@
-"""Typed raw-conversation processing state and update payloads."""
+"""Typed raw-session processing state and update payloads."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pydantic import BaseModel, field_validator
 from polylogue.types import Provider, ValidationMode, ValidationStatus
 
 
-class RawConversationState(BaseModel):
+class RawSessionState(BaseModel):
     raw_id: str
     source_name: str | None = None
     source_path: str | None = None
@@ -88,7 +88,7 @@ def _coerce_update_mode(value: ValidationMode | str | None | _RawStateUnset) -> 
 
 
 @dataclass(frozen=True)
-class RawConversationStateUpdate:
+class RawSessionStateUpdate:
     """Typed raw-state mutation payload used by update_raw_state calls."""
 
     parsed_at: str | None | _RawStateUnset = UNSET
@@ -129,8 +129,8 @@ class RawConversationStateUpdate:
 
 
 __all__ = [
-    "RawConversationState",
-    "RawConversationStateUpdate",
+    "RawSessionState",
+    "RawSessionStateUpdate",
     "UNSET",
     "_RawStateUnset",
 ]

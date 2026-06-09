@@ -2,7 +2,7 @@
 
 # Provider Documentation
 
-Polylogue auto-detects provider format from file content — no configuration needed. Each provider has its own parser that converts raw exports into the unified conversation model.
+Polylogue auto-detects provider format from file content — no configuration needed. Each provider has its own parser that converts raw exports into the unified session model.
 
 Detection happens in `sources/dispatch.py:detect_provider()` via `looks_like()`
 probe functions that inspect file structure.
@@ -11,7 +11,7 @@ probe functions that inspect file structure.
 
 | Provider | Format | Detection Signal | Documentation |
 |----------|--------|-----------------|---------------|
-| **ChatGPT** | `conversations.json` | `mapping` field with UUID graph | [chatgpt.md](chatgpt.md) |
+| **ChatGPT** | `sessions.json` | `mapping` field with UUID graph | [chatgpt.md](chatgpt.md) |
 | **Claude (web)** | `.jsonl` / `.json` | `chat_messages` array | [claude-ai.md](claude-ai.md) |
 | **Claude Code** | `.jsonl` | `parentUuid`/`sessionId` markers | [claude-code.md](claude-code.md) |
 | **Codex** | `.jsonl` | Session envelope structure | [openai-codex.md](openai-codex.md) |

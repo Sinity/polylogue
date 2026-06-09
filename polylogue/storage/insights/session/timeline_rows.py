@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from polylogue.archive.conversation.extraction import WorkEvent
 from polylogue.archive.phase.extraction import SessionPhase
 from polylogue.archive.session.documents import WorkEventDocument
+from polylogue.archive.session.extraction import WorkEvent
 from polylogue.archive.session.session_profile import SessionProfile
 from polylogue.core.hashing import hash_text
 from polylogue.insights.archive_models import (
@@ -32,27 +32,25 @@ from polylogue.storage.runtime import (
     SessionPhaseRecord,
     SessionWorkEventRecord,
 )
-from polylogue.types import ConversationId
+from polylogue.types import SessionId
 
 # ---------------------------------------------------------------------------
 # Work-event row builders and hydration
 # ---------------------------------------------------------------------------
 
 
-def event_id(conversation_id: str, event_index: int, event: WorkEvent) -> str:
-    return _event_id(conversation_id, event_index, event, summary=event_summary(event))
+def event_id(session_id: str, event_index: int, event: WorkEvent) -> str:
+    return _event_id(session_id, event_index, event, summary=event_summary(event))
 
 
 def _event_id(
-    conversation_id: str,
+    session_id: str,
     event_index: int,
     event: WorkEvent,
     *,
     summary: str,
 ) -> str:
-    seed = (
-        f"{conversation_id}:{event_index}:{event.heuristic_label.value}:{event.start_index}:{event.end_index}:{summary}"
-    )
+    seed = f"{session_id}:{event_index}:{event.heuristic_label.value}:{event.start_index}:{event.end_index}:{summary}"
     return f"wev-{hash_text(seed)[:16]}"
 
 
@@ -116,7 +114,7 @@ def _event_search_text(
     summary: str,
 ) -> str:
     parts = [
-        profile.provider,
+        profile.origin,
         profile.title or "",
         event.heuristic_label.value,
         summary,
@@ -125,7 +123,7 @@ def _event_search_text(
         *event.tools_used,
     ]
     search_text = " \n".join(part.strip() for part in parts if part and str(part).strip())
-    return search_text or f"{profile.conversation_id}:{event.heuristic_label.value}"
+    return search_text or f"{profile.session_id}:{event.heuristic_label.value}"
 
 
 def build_session_work_event_records(
@@ -148,8 +146,8 @@ def build_session_work_event_records(
         canonical_session_date = event.canonical_session_date.isoformat() if event.canonical_session_date else None
         records.append(
             SessionWorkEventRecord(
-                event_id=_event_id(profile.conversation_id, index, event, summary=summary),
-                conversation_id=ConversationId(profile.conversation_id),
+                event_id=_event_id(profile.session_id, index, event, summary=summary),
+                session_id=SessionId(profile.session_id),
                 materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
                 materialized_at=built_at,
                 source_updated_at=source_updated_at,
@@ -157,7 +155,7 @@ def build_session_work_event_records(
                 input_high_water_mark=source_updated_at,
                 input_high_water_mark_source=input_hwm_source,
                 input_row_count=input_row_count,
-                source_name=profile.provider,
+                source_name=profile.origin,
                 event_index=index,
                 heuristic_label=event.heuristic_label.value,
                 confidence=event.confidence,
@@ -210,9 +208,9 @@ def hydrate_work_event(record: SessionWorkEventRecord) -> WorkEvent:
 # ---------------------------------------------------------------------------
 
 
-def phase_id(conversation_id: str, phase_index: int, phase: SessionPhase) -> str:
+def phase_id(session_id: str, phase_index: int, phase: SessionPhase) -> str:
     seed = (
-        f"{conversation_id}:{phase_index}:{phase.message_range[0]}:"
+        f"{session_id}:{phase_index}:{phase.message_range[0]}:"
         f"{phase.message_range[1]}:{phase.start_time.isoformat() if phase.start_time else ''}:"
         f"{phase.end_time.isoformat() if phase.end_time else ''}"
     )
@@ -221,14 +219,14 @@ def phase_id(conversation_id: str, phase_index: int, phase: SessionPhase) -> str
 
 def phase_search_text(profile: SessionProfile, phase: SessionPhase) -> str:
     parts = [
-        profile.provider,
+        profile.origin,
         profile.title or "",
         *profile.repo_names,
         *profile.repo_paths,
         *phase.tool_counts.keys(),
     ]
     search_text = " \n".join(part.strip() for part in parts if part and str(part).strip())
-    return search_text or profile.conversation_id
+    return search_text or profile.session_id
 
 
 def phase_evidence_payload(phase: SessionPhase) -> SessionPhaseEvidencePayload:
@@ -294,8 +292,8 @@ def build_session_phase_records(
         fallback = phase_fallback(phase)
         records.append(
             SessionPhaseRecord(
-                phase_id=phase_id(profile.conversation_id, index, phase),
-                conversation_id=ConversationId(profile.conversation_id),
+                phase_id=phase_id(profile.session_id, index, phase),
+                session_id=SessionId(profile.session_id),
                 materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
                 materialized_at=built_at,
                 source_updated_at=source_updated_at,
@@ -303,7 +301,7 @@ def build_session_phase_records(
                 input_high_water_mark=source_updated_at,
                 input_high_water_mark_source=input_hwm_source,
                 input_row_count=input_row_count,
-                source_name=profile.provider,
+                source_name=profile.origin,
                 phase_index=index,
                 kind="phase",
                 start_index=phase.message_range[0],

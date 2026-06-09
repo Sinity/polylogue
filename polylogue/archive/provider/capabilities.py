@@ -89,17 +89,17 @@ PROVIDER_CAPABILITIES: tuple[ProviderCapability, ...] = (
             "timestamp",
         ),
         canonical_identity_fields=(
-            "Conversation.provider_conversation_id",
-            "Conversation.created_at",
-            "Conversation.updated_at",
+            "Session.provider_session_id",
+            "Session.created_at",
+            "Session.updated_at",
             "Message.provider_message_id",
-            "Conversation.provider_meta.git.repository_url",
+            "Session.git_repository_url",
         ),
         identity_mappings=(
             IdentityMapping(
                 native="session_meta.id",
-                canonical="Conversation.provider_conversation_id",
-                note="Session ids remain the native provider conversation id.",
+                canonical="Session.provider_session_id",
+                note="Session ids remain the native provider session id.",
             ),
             IdentityMapping(
                 native="payload.id",
@@ -108,8 +108,8 @@ PROVIDER_CAPABILITIES: tuple[ProviderCapability, ...] = (
             ),
             IdentityMapping(
                 native="git.repository_url",
-                canonical="Conversation.provider_meta.git.repository_url",
-                note="Repository attribution is retained in provider metadata instead of folded into canonical ids.",
+                canonical="Session.git_repository_url",
+                note="Repository attribution is retained as a typed session fact instead of folded into canonical ids.",
             ),
         ),
         timestamp_semantics="Session and message timestamps are parsed with parse_timestamp() and stored as canonical created/updated timestamps.",
@@ -146,19 +146,19 @@ PROVIDER_CAPABILITIES: tuple[ProviderCapability, ...] = (
             "timestamp",
         ),
         canonical_identity_fields=(
-            "Conversation.provider_conversation_id",
+            "Session.provider_session_id",
             "Message.provider_message_id",
             "Message.parent_message_provider_id",
-            "Conversation.provider_meta.working_directories",
-            "Conversation.provider_meta.models_used",
-            "Conversation.created_at",
-            "Conversation.updated_at",
+            "Session.working_directories",
+            "session_model_usage.model_name",
+            "Session.created_at",
+            "Session.updated_at",
         ),
         identity_mappings=(
             IdentityMapping(
                 native="sessionId",
-                canonical="Conversation.provider_conversation_id",
-                note="Session ids remain the native provider conversation id.",
+                canonical="Session.provider_session_id",
+                note="Session ids remain the native provider session id.",
             ),
             IdentityMapping(
                 native="uuid",
@@ -172,11 +172,11 @@ PROVIDER_CAPABILITIES: tuple[ProviderCapability, ...] = (
             ),
             IdentityMapping(
                 native="cwd",
-                canonical="Conversation.provider_meta.working_directories",
-                note="Working directory facts are retained as provider-native metadata.",
+                canonical="Session.working_directories",
+                note="Working directory facts are retained as typed session facts.",
             ),
         ),
-        timestamp_semantics="Record timestamps are parsed per message and collapsed into conversation created/updated bounds.",
+        timestamp_semantics="Record timestamps are parsed per message and collapsed into session created/updated bounds.",
         coverage_facets={
             "reasoning": "supported",
             "streaming": "supported",
@@ -189,17 +189,17 @@ PROVIDER_CAPABILITIES: tuple[ProviderCapability, ...] = (
     ),
     ProviderCapability(
         provider=Provider.CHATGPT,
-        parser_identity="ChatGPT mapping graph export with typed conversation and node models",
+        parser_identity="ChatGPT mapping graph export with typed session and node models",
         parser_source_paths=(
             "polylogue/sources/parsers/chatgpt.py",
             "polylogue/sources/providers/chatgpt.py",
         ),
         sidecar_spec="none; attachments and tool facts are embedded in mapping-node metadata",
-        tool_use_variant="author/recipient/status metadata plus citations and code_execution provider_meta",
+        tool_use_variant="author/recipient/status metadata plus citations and code_execution blocks",
         reasoning_capability="supported when exported as thoughts or reasoning_recap content types",
         streaming_capability="snapshot mapping graph, not an append-only stream",
         native_identity_fields=(
-            "conversation.id",
+            "session.id",
             "mapping node id",
             "message.id",
             "parent",
@@ -208,12 +208,12 @@ PROVIDER_CAPABILITIES: tuple[ProviderCapability, ...] = (
             "update_time",
         ),
         canonical_identity_fields=(
-            "Conversation.provider_conversation_id",
+            "Session.provider_session_id",
             "Message.provider_message_id",
             "Message.parent_message_provider_id",
             "Message.branch_index",
-            "Conversation.created_at",
-            "Conversation.updated_at",
+            "Session.created_at",
+            "Session.updated_at",
         ),
         identity_mappings=(
             IdentityMapping(
@@ -229,10 +229,10 @@ PROVIDER_CAPABILITIES: tuple[ProviderCapability, ...] = (
             IdentityMapping(
                 native="message",
                 canonical="Message.content_blocks[].metadata",
-                note="ChatGPT message-level metadata (model, author_name, recipient, status, end_turn, citations, code_execution, user_context) is promoted into content_block metadata at parse time with chatgpt_ prefix. Raw message payload is preserved in raw_conversations.",
+                note="ChatGPT message-level metadata (model, author_name, recipient, status, end_turn, citations, code_execution, user_context) is promoted into content_block metadata at parse time with chatgpt_ prefix. Raw message payload is preserved in raw_sessions.",
             ),
         ),
-        timestamp_semantics="create_time/update_time floats are normalized into canonical conversation and message timestamps.",
+        timestamp_semantics="create_time/update_time floats are normalized into canonical session and message timestamps.",
         coverage_facets={
             "reasoning": "supported",
             "streaming": "absent",

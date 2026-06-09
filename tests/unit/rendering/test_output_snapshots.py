@@ -1,4 +1,4 @@
-"""Snapshot tests for rendered conversation output.
+"""Snapshot tests for rendered session output.
 
 These tests replace fragile string-searching assertions with syrupy snapshot
 regression detection. The first run creates .ambr baseline files; subsequent
@@ -9,7 +9,7 @@ renderer changes.
 
 Anti-pattern (rejected case): we intentionally do NOT snapshot
 non-deterministic fields like wall-clock timestamps, internal hash prefixes,
-or process timings. All conversations built here use stable IDs, fixed roles,
+or process timings. All sessions built here use stable IDs, fixed roles,
 and fixed text so that the snapshot files pin output *shape* (column order,
 heading structure, redaction markers, code-fence preservation, attachment
 shape) rather than implementation noise. If a future renderer change wants
@@ -25,10 +25,10 @@ import pytest
 syrupy = pytest.importorskip("syrupy")
 
 from polylogue.archive.attachment.models import Attachment
-from polylogue.archive.models import Conversation, Message
-from polylogue.rendering.core_markdown import format_conversation_markdown
-from polylogue.rendering.renderers.html import render_conversation_html
-from polylogue.types import ContentBlockType
+from polylogue.archive.models import Message, Session
+from polylogue.rendering.core_markdown import format_session_markdown
+from polylogue.rendering.renderers.html import render_session_html
+from polylogue.types import BlockType
 from tests.infra.builders import make_conv as build_conv
 from tests.infra.builders import make_msg as build_msg
 
@@ -49,7 +49,7 @@ def _make_msg(
     )
 
 
-def _make_conv(messages: list[Message], title: str = "Snapshot Test") -> Conversation:
+def _make_conv(messages: list[Message], title: str = "Snapshot Test") -> Session:
     return build_conv(
         id="snap-conv-01",
         provider="chatgpt",
@@ -63,41 +63,41 @@ def _make_conv(messages: list[Message], title: str = "Snapshot Test") -> Convers
 # ---------------------------------------------------------------------------
 
 
-def test_linear_conversation_html_snapshot(snapshot: object) -> None:
-    """Linear 2-message conversation renders stably."""
+def test_linear_session_html_snapshot(snapshot: object) -> None:
+    """Linear 2-message session renders stably."""
     msgs = [_make_msg("m1", "user", "Hello there"), _make_msg("m2", "assistant", "Hi!")]
-    conv = _make_conv(msgs, title="Linear Conversation")
-    html = render_conversation_html(conv)
+    conv = _make_conv(msgs, title="Linear Session")
+    html = render_session_html(conv)
     assert html == snapshot
 
 
-def test_branching_conversation_html_snapshot(snapshot: object) -> None:
-    """Branching conversation with 1 alternative renders stably."""
+def test_branching_session_html_snapshot(snapshot: object) -> None:
+    """Branching session with 1 alternative renders stably."""
     msgs = [
         _make_msg("m1", "user", "Question", parent_id=None, branch_index=0),
         _make_msg("m2", "assistant", "Answer 1", parent_id="m1", branch_index=0),
         _make_msg("m3", "assistant", "Answer 2 (edited)", parent_id="m1", branch_index=1),
     ]
-    conv = _make_conv(msgs, title="Branching Conversation")
-    html = render_conversation_html(conv)
+    conv = _make_conv(msgs, title="Branching Session")
+    html = render_session_html(conv)
     assert html == snapshot
 
 
-def test_multi_branch_conversation_html_snapshot(snapshot: object) -> None:
-    """Conversation with 2 alternatives renders stably."""
+def test_multi_branch_session_html_snapshot(snapshot: object) -> None:
+    """Session with 2 alternatives renders stably."""
     msgs = [
         _make_msg("m1", "user", "Question"),
         _make_msg("m2", "assistant", "A1", parent_id="m1", branch_index=0),
         _make_msg("m3", "assistant", "A2", parent_id="m1", branch_index=1),
         _make_msg("m4", "assistant", "A3", parent_id="m1", branch_index=2),
     ]
-    conv = _make_conv(msgs, title="Multi-Branch Conversation")
-    html = render_conversation_html(conv)
+    conv = _make_conv(msgs, title="Multi-Branch Session")
+    html = render_session_html(conv)
     assert html == snapshot
 
 
-def test_conversation_with_followup_html_snapshot(snapshot: object) -> None:
-    """Branching conversation with post-branch follow-up renders stably."""
+def test_session_with_followup_html_snapshot(snapshot: object) -> None:
+    """Branching session with post-branch follow-up renders stably."""
     msgs = [
         _make_msg("m1", "user", "Q"),
         _make_msg("m2", "assistant", "A1", parent_id="m1", branch_index=0),
@@ -105,7 +105,7 @@ def test_conversation_with_followup_html_snapshot(snapshot: object) -> None:
         _make_msg("m4", "user", "Follow-up"),
     ]
     conv = _make_conv(msgs, title="Followup After Branch")
-    html = render_conversation_html(conv)
+    html = render_session_html(conv)
     assert html == snapshot
 
 
@@ -114,20 +114,20 @@ def test_conversation_with_followup_html_snapshot(snapshot: object) -> None:
 #
 # These pin user-visible Markdown contract shape: heading levels, fenced code
 # preservation, structured-block expansion (tool_use/thinking/attachments),
-# JSON pretty-printing. Conversations are built with stable IDs and fixed
+# JSON pretty-printing. Sessions are built with stable IDs and fixed
 # content so the snapshot files are deterministic.
 # ---------------------------------------------------------------------------
 
 
-def test_empty_conversation_markdown_snapshot(snapshot: object) -> None:
-    """A conversation with no messages renders header-only Markdown."""
+def test_empty_session_markdown_snapshot(snapshot: object) -> None:
+    """A session with no messages renders header-only Markdown."""
     conv = build_conv(
         id="snap-md-empty",
         provider="chatgpt",
-        title="Empty Conversation",
+        title="Empty Session",
         messages=[],
     )
-    md = format_conversation_markdown(conv)
+    md = format_session_markdown(conv)
     assert md == snapshot
 
 
@@ -140,7 +140,7 @@ def test_single_user_turn_markdown_snapshot(snapshot: object) -> None:
         title="Single User Turn",
         messages=msgs,
     )
-    md = format_conversation_markdown(conv)
+    md = format_session_markdown(conv)
     assert md == snapshot
 
 
@@ -159,7 +159,7 @@ def test_single_assistant_turn_markdown_snapshot(snapshot: object) -> None:
         title="Single Assistant Turn",
         messages=msgs,
     )
-    md = format_conversation_markdown(conv)
+    md = format_session_markdown(conv)
     assert md == snapshot
 
 
@@ -173,7 +173,7 @@ def test_tool_use_roundtrip_markdown_snapshot(snapshot: object) -> None:
             text="",
             content_blocks=[
                 {
-                    "type": ContentBlockType.TOOL_USE.value,
+                    "type": BlockType.TOOL_USE.value,
                     "name": "bash",
                     "id": "call-1",
                     "input": {"command": "ls"},
@@ -186,7 +186,7 @@ def test_tool_use_roundtrip_markdown_snapshot(snapshot: object) -> None:
             text="",
             content_blocks=[
                 {
-                    "type": ContentBlockType.TOOL_RESULT.value,
+                    "type": BlockType.TOOL_RESULT.value,
                     "tool_use_id": "call-1",
                     "content": "README.md\npyproject.toml\n",
                 }
@@ -199,7 +199,7 @@ def test_tool_use_roundtrip_markdown_snapshot(snapshot: object) -> None:
         title="Tool Use Roundtrip",
         messages=msgs,
     )
-    md = format_conversation_markdown(conv)
+    md = format_session_markdown(conv)
     assert md == snapshot
 
 
@@ -212,11 +212,11 @@ def test_thinking_block_markdown_snapshot(snapshot: object) -> None:
             text="",
             content_blocks=[
                 {
-                    "type": ContentBlockType.THINKING.value,
+                    "type": BlockType.THINKING.value,
                     "text": "Let me think step by step about this.",
                 },
                 {
-                    "type": ContentBlockType.TEXT.value,
+                    "type": BlockType.TEXT.value,
                     "text": "Final answer.",
                 },
             ],
@@ -228,7 +228,7 @@ def test_thinking_block_markdown_snapshot(snapshot: object) -> None:
         title="Thinking Block",
         messages=msgs,
     )
-    md = format_conversation_markdown(conv)
+    md = format_session_markdown(conv)
     assert md == snapshot
 
 
@@ -255,7 +255,7 @@ def test_attachment_markdown_snapshot(snapshot: object) -> None:
         title="Attachment Message",
         messages=msgs,
     )
-    md = format_conversation_markdown(conv)
+    md = format_session_markdown(conv)
     assert md == snapshot
 
 
@@ -268,7 +268,7 @@ def test_code_fence_with_backticks_markdown_snapshot(snapshot: object) -> None:
             text="",
             content_blocks=[
                 {
-                    "type": ContentBlockType.CODE.value,
+                    "type": BlockType.CODE.value,
                     "language": "python",
                     "text": "# example\nprint('inline `backticks` survive')\n",
                 }
@@ -281,7 +281,7 @@ def test_code_fence_with_backticks_markdown_snapshot(snapshot: object) -> None:
         title="Code With Backticks",
         messages=msgs,
     )
-    md = format_conversation_markdown(conv)
+    md = format_session_markdown(conv)
     assert md == snapshot
 
 
@@ -300,7 +300,7 @@ def test_json_payload_markdown_snapshot(snapshot: object) -> None:
         title="JSON Payload",
         messages=msgs,
     )
-    md = format_conversation_markdown(conv)
+    md = format_session_markdown(conv)
     assert md == snapshot
 
 
@@ -308,22 +308,22 @@ def test_json_payload_markdown_snapshot(snapshot: object) -> None:
 # HTML renderer matrix snapshots
 #
 # Mirror the markdown matrix to pin contract-shaped HTML output: empty
-# conversation, single turns, structured blocks, attachments. Renderer-internal
+# session, single turns, structured blocks, attachments. Renderer-internal
 # noise (Pygments CSS classes) is preserved deliberately — those classes ARE
 # part of the rendered surface contract and any change to them affects shipped
 # stylesheets. See the module docstring "anti-pattern" note.
 # ---------------------------------------------------------------------------
 
 
-def test_empty_conversation_html_snapshot(snapshot: object) -> None:
-    """Empty conversation renders chrome (header/template) but no message rows."""
+def test_empty_session_html_snapshot(snapshot: object) -> None:
+    """Empty session renders chrome (header/template) but no message rows."""
     conv = build_conv(
         id="snap-html-empty",
         provider="chatgpt",
-        title="Empty Conversation",
+        title="Empty Session",
         messages=[],
     )
-    html = render_conversation_html(conv)
+    html = render_session_html(conv)
     assert html == snapshot
 
 
@@ -336,7 +336,7 @@ def test_single_user_turn_html_snapshot(snapshot: object) -> None:
         title="Single User Turn",
         messages=msgs,
     )
-    html = render_conversation_html(conv)
+    html = render_session_html(conv)
     assert html == snapshot
 
 
@@ -350,7 +350,7 @@ def test_tool_use_roundtrip_html_snapshot(snapshot: object) -> None:
             text="",
             content_blocks=[
                 {
-                    "type": ContentBlockType.TOOL_USE.value,
+                    "type": BlockType.TOOL_USE.value,
                     "name": "bash",
                     "id": "call-1",
                     "input": {"command": "ls"},
@@ -363,7 +363,7 @@ def test_tool_use_roundtrip_html_snapshot(snapshot: object) -> None:
             text="",
             content_blocks=[
                 {
-                    "type": ContentBlockType.TOOL_RESULT.value,
+                    "type": BlockType.TOOL_RESULT.value,
                     "tool_use_id": "call-1",
                     "content": "README.md\npyproject.toml\n",
                 }
@@ -376,7 +376,7 @@ def test_tool_use_roundtrip_html_snapshot(snapshot: object) -> None:
         title="Tool Use Roundtrip",
         messages=msgs,
     )
-    html = render_conversation_html(conv)
+    html = render_session_html(conv)
     assert html == snapshot
 
 
@@ -389,11 +389,11 @@ def test_thinking_block_html_snapshot(snapshot: object) -> None:
             text="",
             content_blocks=[
                 {
-                    "type": ContentBlockType.THINKING.value,
+                    "type": BlockType.THINKING.value,
                     "text": "Let me think step by step about this.",
                 },
                 {
-                    "type": ContentBlockType.TEXT.value,
+                    "type": BlockType.TEXT.value,
                     "text": "Final answer.",
                 },
             ],
@@ -405,7 +405,7 @@ def test_thinking_block_html_snapshot(snapshot: object) -> None:
         title="Thinking Block",
         messages=msgs,
     )
-    html = render_conversation_html(conv)
+    html = render_session_html(conv)
     assert html == snapshot
 
 
@@ -418,7 +418,7 @@ def test_code_fence_with_backticks_html_snapshot(snapshot: object) -> None:
             text="",
             content_blocks=[
                 {
-                    "type": ContentBlockType.CODE.value,
+                    "type": BlockType.CODE.value,
                     "language": "python",
                     "text": "# example\nprint('inline `backticks` survive')\n",
                 }
@@ -431,11 +431,11 @@ def test_code_fence_with_backticks_html_snapshot(snapshot: object) -> None:
         title="Code With Backticks",
         messages=msgs,
     )
-    html = render_conversation_html(conv)
+    html = render_session_html(conv)
     assert html == snapshot
 
 
-def test_media_blocks_render_in_conversation_html() -> None:
+def test_media_blocks_render_in_session_html() -> None:
     """Structured media blocks should survive the HTML boundary."""
     msgs = [
         build_msg(
@@ -444,7 +444,7 @@ def test_media_blocks_render_in_conversation_html() -> None:
             text="This fallback text should not be rendered",
             content_blocks=[
                 {
-                    "type": ContentBlockType.DOCUMENT.value,
+                    "type": BlockType.DOCUMENT.value,
                     "name": "Spec",
                     "url": "https://example.com/spec.pdf",
                     "mime_type": "application/pdf",
@@ -452,8 +452,8 @@ def test_media_blocks_render_in_conversation_html() -> None:
             ],
         )
     ]
-    conv = _make_conv(msgs, title="Media Conversation")
-    html = render_conversation_html(conv)
+    conv = _make_conv(msgs, title="Media Session")
+    html = render_session_html(conv)
     assert "media-block" in html
     assert 'data-type="document"' in html
     assert 'href="https://example.com/spec.pdf"' in html

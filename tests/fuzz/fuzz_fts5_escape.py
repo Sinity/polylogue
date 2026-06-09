@@ -179,7 +179,7 @@ class TestFTS5EscapeFuzz:
         # Complex injection attempts (safely quoted)
         b"'; DROP TABLE messages; --",
         b"' OR 1=1 --",
-        b"'; DELETE FROM conversations; --",
+        b"'; DELETE FROM sessions; --",
         b"' UNION SELECT * FROM sqlite_master --",
         # FTS5 attempts with mixed operators (= now caught)
         b"test OR 1=1",
@@ -206,7 +206,7 @@ class TestFTS5EscapeFuzz:
         injection_attempts = [
             "'; DROP TABLE messages; --",
             "' OR '1'='1",
-            "1; DELETE FROM conversations",
+            "1; DELETE FROM sessions",
             "UNION SELECT * FROM sqlite_master",
         ]
 

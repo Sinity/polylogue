@@ -45,13 +45,13 @@ class TestConfig:
         assert config.sources[1].name == "claude-code"
 
     def test_config_db_path_default(self, workspace_env: dict[str, Path]) -> None:
-        """db_path defaults to the resolved XDG database path."""
+        """db_path defaults to the resolved index.db database path."""
         config = Config(
             archive_root=Path(workspace_env["archive_root"]),
             render_root=Path(workspace_env["archive_root"]) / "render",
             sources=[],
         )
-        assert config.db_path.name == "polylogue.db"
+        assert config.db_path.name == "index.db"
         assert "polylogue" in str(config.db_path)
 
     def test_config_db_path_is_captured_at_construction(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -67,7 +67,61 @@ class TestConfig:
 
         monkeypatch.setenv("XDG_DATA_HOME", str(second_data))
 
-        assert config.db_path == first_data / "polylogue" / "polylogue.db"
+        assert config.db_path == first_data / "polylogue" / "index.db"
+
+    def test_active_index_resolver_uses_index_db(self, tmp_path: Path) -> None:
+        """index.db is the active query store."""
+        from polylogue.paths import resolve_active_index_db_path
+
+        db_anchor = tmp_path / "custom.sqlite"
+        index_db = tmp_path / "index.db"
+        db_anchor.write_text("unrelated")
+
+        assert resolve_active_index_db_path(db_anchor=db_anchor, index_db=index_db) == index_db
+
+    def test_active_index_resolver_ignores_sibling_index_for_overrides(self, tmp_path: Path) -> None:
+        """Configured archive_root/index.db is authoritative."""
+        from polylogue.paths import resolve_active_index_db_path
+
+        override_root = tmp_path / "override"
+        archive_root = tmp_path / "archive"
+        override_root.mkdir()
+        archive_root.mkdir()
+        db_anchor = override_root / "custom.sqlite"
+        sibling_index_db = override_root / "index.db"
+        canonical_index_db = archive_root / "index.db"
+        db_anchor.write_text("unrelated")
+        sibling_index_db.write_text("index")
+
+        assert resolve_active_index_db_path(db_anchor=db_anchor, index_db=canonical_index_db) == canonical_index_db
+
+    def test_active_index_resolver_does_not_fall_back_to_db_anchor(self, tmp_path: Path) -> None:
+        """Missing index.db remains the active target instead of a non-index anchor."""
+        from polylogue.paths import resolve_active_index_db_path
+
+        db_anchor = tmp_path / "custom.sqlite"
+
+        assert (
+            resolve_active_index_db_path(db_anchor=db_anchor, index_db=tmp_path / "index.db") == tmp_path / "index.db"
+        )
+
+    def test_archive_file_set_index_availability_is_unconditional(self, tmp_path: Path) -> None:
+        """Archive file-set availability does not depend on the DB anchor."""
+        from polylogue.paths import archive_file_set_index_available_for_paths, archive_file_set_root_for_paths
+
+        archive_root = tmp_path / "archive"
+        override_root = tmp_path / "override"
+        archive_root.mkdir()
+        override_root.mkdir()
+        db_anchor = override_root / "custom.sqlite"
+
+        assert archive_file_set_index_available_for_paths(archive_root_path=archive_root, db_anchor=db_anchor)
+        assert archive_file_set_root_for_paths(archive_root_path=archive_root, db_anchor=db_anchor) == archive_root
+
+        (override_root / "index.db").write_text("index")
+
+        assert archive_file_set_index_available_for_paths(archive_root_path=archive_root, db_anchor=db_anchor)
+        assert archive_file_set_root_for_paths(archive_root_path=archive_root, db_anchor=db_anchor) == archive_root
 
     def test_config_optional_fields_default_none(self, tmp_path: Path) -> None:
         """Optional fields default to None."""
@@ -228,7 +282,7 @@ class TestXDGPaths:
         import polylogue.paths
 
         assert "polylogue" in str(polylogue.paths.db_path())
-        assert polylogue.paths.db_path().name == "polylogue.db"
+        assert polylogue.paths.db_path().name == "index.db"
 
 
 class TestConfiguredSources:

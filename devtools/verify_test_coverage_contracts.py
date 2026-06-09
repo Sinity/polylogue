@@ -1,4 +1,4 @@
-"""Verify every production module >50 lines has a matching test or exemption.
+"""Verify every production module >150 AST statement lines has a matching test or exemption.
 
 Walks ``polylogue/*.py`` (and subdirectories), counts non-blank
 non-comment lines, and for each module with >50 substantive lines checks
@@ -94,7 +94,34 @@ def _test_for_module(module_path: Path) -> Path | None:
         parts[-1] = parts[-1].replace(".py", "")
         parts[-1] = f"test_{parts[-1]}.py"
     candidate = ROOT / "tests" / "unit" / Path(*parts)
-    return candidate if candidate.exists() else None
+    if candidate.exists():
+        return candidate
+
+    flat_archive_tiers = _flat_archive_tiers_test_for_module(rel)
+    if flat_archive_tiers is not None and flat_archive_tiers.exists():
+        return flat_archive_tiers
+    flat_parser = _flat_parser_test_for_module(rel)
+    if flat_parser is not None and flat_parser.exists():
+        return flat_parser
+    return None
+
+
+def _flat_archive_tiers_test_for_module(rel: Path) -> Path | None:
+    """Return the flat archive-tier storage test path for consolidated helper tests."""
+    parts = rel.parts
+    if len(parts) != 4 or parts[:3] != ("storage", "sqlite", "archive_tiers"):
+        return None
+    stem = parts[-1].removesuffix(".py")
+    return ROOT / "tests" / "unit" / "storage" / f"test_archive_tiers_{stem}.py"
+
+
+def _flat_parser_test_for_module(rel: Path) -> Path | None:
+    """Return the flat parser test path for parser modules with consolidated tests."""
+    parts = rel.parts
+    if len(parts) != 3 or parts[:2] != ("sources", "parsers"):
+        return None
+    stem = parts[-1].removesuffix(".py")
+    return ROOT / "tests" / "unit" / "sources" / f"test_parsers_{stem}.py"
 
 
 # ── exemptions ───────────────────────────────────────────────────────

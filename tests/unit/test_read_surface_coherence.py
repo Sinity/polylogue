@@ -8,7 +8,7 @@ accidental reversions are caught immediately. Coverage map:
   AC#3 — MCP ``latest`` typed as bool (not str), so False stays false at
           the spec-builder level (no bool("false")==True collapse).
   AC#4 — CLI query-first path uses MAX_QUERY_LIMIT as fallback; daemon
-          /api/conversations clamps to MAX_QUERY_LIMIT.
+          /api/sessions clamps to MAX_QUERY_LIMIT.
   AC#5 — Daemon vector-only (similar_text only) routes through the operations
           layer and surfaces EmbeddingRetrievalNotReadyError as HTTP 409.
   AC#6 — retrieval_lane: unknown values ("bogus", dead "semantic") are rejected.
@@ -83,37 +83,37 @@ class TestLexicalSemanticMutualExclusion:
 
 
 class TestMCPLatestTyped:
-    """``latest`` in MCPConversationQueryRequest is now a real bool, not str.
+    """``latest`` in MCPSessionQueryRequest is now a real bool, not str.
 
     Before #1749: the field was typed ``str | None`` and the spec builder did
     ``bool(params.get("latest"))``, so ``latest="false"`` was truthy and
-    silently collapsed results to one conversation. After: the field is
+    silently collapsed results to one session. After: the field is
     typed ``bool``, so FastMCP's tool-call coercion parses ``"false"`` as
     ``False`` rather than leaving it as a truthy non-empty string.
     """
 
     def test_latest_field_is_bool_typed(self) -> None:
-        """MCPConversationQueryRequest.latest annotation is ``bool``, not ``str | None``."""
+        """MCPSessionQueryRequest.latest annotation is ``bool``, not ``str | None``."""
         import typing
 
-        from polylogue.mcp.query_contracts import MCPConversationQueryRequest
+        from polylogue.mcp.query_contracts import MCPSessionQueryRequest
 
         # get_type_hints resolves forward references and PEP 563 string annotations
-        hints = typing.get_type_hints(MCPConversationQueryRequest)
+        hints = typing.get_type_hints(MCPSessionQueryRequest)
         assert hints.get("latest") is bool, f"latest must be typed as bool, got {hints.get('latest')!r}"
 
     def test_latest_false_bool_is_false(self) -> None:
         """``latest=False`` (the Python bool) stays false."""
-        from polylogue.mcp.query_contracts import MCPConversationQueryRequest
+        from polylogue.mcp.query_contracts import MCPSessionQueryRequest
 
-        req = MCPConversationQueryRequest(latest=False)
+        req = MCPSessionQueryRequest(latest=False)
         assert req.latest is False
 
     def test_latest_true_bool_is_true(self) -> None:
         """``latest=True`` is stored as true."""
-        from polylogue.mcp.query_contracts import MCPConversationQueryRequest
+        from polylogue.mcp.query_contracts import MCPSessionQueryRequest
 
-        req = MCPConversationQueryRequest(latest=True)
+        req = MCPSessionQueryRequest(latest=True)
         assert req.latest is True
 
     def test_latest_false_does_not_activate_spec_latest_filter(self) -> None:
@@ -123,23 +123,23 @@ class TestMCPLatestTyped:
         → latest filter active. Now: ``latest=False`` (bool) →
         ``bool(False) == False`` → no latest filter.
         """
-        from polylogue.archive.query.spec import ConversationQuerySpec
+        from polylogue.archive.query.spec import SessionQuerySpec
 
-        spec = ConversationQuerySpec.from_params({"latest": False})
+        spec = SessionQuerySpec.from_params({"latest": False})
         assert spec.latest is False
 
     def test_latest_true_activates_spec_latest_filter(self) -> None:
         """``latest=True`` still activates the latest filter."""
-        from polylogue.archive.query.spec import ConversationQuerySpec
+        from polylogue.archive.query.spec import SessionQuerySpec
 
-        spec = ConversationQuerySpec.from_params({"latest": True})
+        spec = SessionQuerySpec.from_params({"latest": True})
         assert spec.latest is True
 
     def test_latest_default_is_false(self) -> None:
         """Default latest is False (no latest filter)."""
-        from polylogue.mcp.query_contracts import MCPConversationQueryRequest
+        from polylogue.mcp.query_contracts import MCPSessionQueryRequest
 
-        req = MCPConversationQueryRequest()
+        req = MCPSessionQueryRequest()
         assert req.latest is False
 
 
@@ -194,13 +194,13 @@ class TestSharedLimitCeiling:
 
     def test_search_limit_fallback_is_max_query_limit_not_10000(self) -> None:
         """CLI query-first fallback is MAX_QUERY_LIMIT, not the old 10000."""
-        from polylogue.archive.query.plan import ConversationQueryPlan
+        from polylogue.archive.query.plan import SessionQueryPlan
         from polylogue.archive.query.retrieval_candidates import search_limit
         from polylogue.archive.query.spec import MAX_QUERY_LIMIT
 
         # Build a plan with no explicit limit (the query-first bare-token case).
-        # ConversationQueryPlan is a dataclass; limit defaults to None.
-        plan = ConversationQueryPlan()
+        # SessionQueryPlan is a dataclass; limit defaults to None.
+        plan = SessionQueryPlan()
         # effective_fetch_limit() returns None when no limit is set
         assert plan.effective_fetch_limit() is None
         # search_limit must fall back to MAX_QUERY_LIMIT, not 10000
@@ -247,22 +247,22 @@ class TestRetrievalLaneValidation:
         assert normalize_retrieval_lane("   ") == "auto"
 
     def test_spec_builder_rejects_unknown_lane(self) -> None:
-        from polylogue.archive.query.spec import ConversationQuerySpec, QuerySpecError
+        from polylogue.archive.query.spec import QuerySpecError, SessionQuerySpec
 
         with pytest.raises(QuerySpecError):
-            ConversationQuerySpec.from_params({"retrieval_lane": "bogus"})
+            SessionQuerySpec.from_params({"retrieval_lane": "bogus"})
 
     def test_spec_builder_rejects_dead_semantic_drift(self) -> None:
         """The old 'semantic' drift in the SearchEnvelope docstring is dead as input lane."""
-        from polylogue.archive.query.spec import ConversationQuerySpec, QuerySpecError
+        from polylogue.archive.query.spec import QuerySpecError, SessionQuerySpec
 
         with pytest.raises(QuerySpecError):
-            ConversationQuerySpec.from_params({"retrieval_lane": "semantic"})
+            SessionQuerySpec.from_params({"retrieval_lane": "semantic"})
 
     def test_spec_builder_accepts_hybrid(self) -> None:
-        from polylogue.archive.query.spec import ConversationQuerySpec
+        from polylogue.archive.query.spec import SessionQuerySpec
 
-        spec = ConversationQuerySpec.from_params({"retrieval_lane": "hybrid"})
+        spec = SessionQuerySpec.from_params({"retrieval_lane": "hybrid"})
         assert spec.retrieval_lane == "hybrid"
 
     def test_closed_vocabulary_is_the_canonical_set(self) -> None:
@@ -309,27 +309,27 @@ class TestNegativeCountBoundsRejected:
         assert optional_non_negative_int(field, None) is None
 
     def test_spec_builder_rejects_negative_min_messages(self) -> None:
-        from polylogue.archive.query.spec import ConversationQuerySpec, QuerySpecError
+        from polylogue.archive.query.spec import QuerySpecError, SessionQuerySpec
 
         with pytest.raises(QuerySpecError):
-            ConversationQuerySpec.from_params({"min_messages": -1})
+            SessionQuerySpec.from_params({"min_messages": -1})
 
     def test_spec_builder_rejects_negative_max_messages(self) -> None:
-        from polylogue.archive.query.spec import ConversationQuerySpec, QuerySpecError
+        from polylogue.archive.query.spec import QuerySpecError, SessionQuerySpec
 
         with pytest.raises(QuerySpecError):
-            ConversationQuerySpec.from_params({"max_messages": -5})
+            SessionQuerySpec.from_params({"max_messages": -5})
 
     def test_spec_builder_rejects_negative_min_words(self) -> None:
-        from polylogue.archive.query.spec import ConversationQuerySpec, QuerySpecError
+        from polylogue.archive.query.spec import QuerySpecError, SessionQuerySpec
 
         with pytest.raises(QuerySpecError):
-            ConversationQuerySpec.from_params({"min_words": -10})
+            SessionQuerySpec.from_params({"min_words": -10})
 
     def test_mcp_count_bound_type_alias_declared_with_ge_zero(self) -> None:
         """MCPCountBound TypeAlias carries Field(ge=0) for FastMCP schema generation.
 
-        MCPConversationQueryRequest is a dataclass (not Pydantic), so Python
+        MCPSessionQueryRequest is a dataclass (not Pydantic), so Python
         itself doesn't validate at construction time. The ge=0 constraint is
         expressed in the TypeAlias so FastMCP generates a JSON schema that
         rejects negatives in the tool binding layer. The actual runtime gate
@@ -346,12 +346,12 @@ class TestNegativeCountBoundsRejected:
 
     def test_mcp_negative_min_messages_rejected_via_spec_builder(self) -> None:
         """Negative min_messages from MCP flow reaches the spec builder and is rejected."""
-        from polylogue.archive.query.spec import ConversationQuerySpec, QuerySpecError
-        from polylogue.mcp.query_contracts import MCPConversationQueryRequest
+        from polylogue.archive.query.spec import QuerySpecError, SessionQuerySpec
+        from polylogue.mcp.query_contracts import MCPSessionQueryRequest
 
-        req = MCPConversationQueryRequest(min_messages=-1)
+        req = MCPSessionQueryRequest(min_messages=-1)
         with pytest.raises(QuerySpecError):
-            ConversationQuerySpec.from_params({"min_messages": req.min_messages})
+            SessionQuerySpec.from_params({"min_messages": req.min_messages})
 
 
 # ---------------------------------------------------------------------------
@@ -363,38 +363,38 @@ class TestSinceSessionCollapsed:
     """The redundant ``since_session`` alias is removed (#1749 footgun).
 
     ``since_session`` and ``since_session_id`` were two names for the same
-    field in MCPConversationQueryRequest. The former is removed; callers
+    field in MCPSessionQueryRequest. The former is removed; callers
     must use ``since_session_id``.
     """
 
     def test_since_session_field_removed_from_mcp_request(self) -> None:
-        """MCPConversationQueryRequest no longer has a since_session field."""
+        """MCPSessionQueryRequest no longer has a since_session field."""
         from dataclasses import fields
 
-        from polylogue.mcp.query_contracts import MCPConversationQueryRequest
+        from polylogue.mcp.query_contracts import MCPSessionQueryRequest
 
-        field_names = {f.name for f in fields(MCPConversationQueryRequest)}
+        field_names = {f.name for f in fields(MCPSessionQueryRequest)}
         assert "since_session" not in field_names, "since_session was removed in #1749; use since_session_id"
 
     def test_since_session_id_still_present(self) -> None:
         from dataclasses import fields
 
-        from polylogue.mcp.query_contracts import MCPConversationQueryRequest
+        from polylogue.mcp.query_contracts import MCPSessionQueryRequest
 
-        field_names = {f.name for f in fields(MCPConversationQueryRequest)}
+        field_names = {f.name for f in fields(MCPSessionQueryRequest)}
         assert "since_session_id" in field_names
 
     def test_since_session_removed_from_spec_builder_recognized_params(self) -> None:
         """since_session is no longer a recognized param in strict mode."""
-        from polylogue.archive.query.spec import ConversationQuerySpec, QuerySpecError
+        from polylogue.archive.query.spec import QuerySpecError, SessionQuerySpec
 
         with pytest.raises(QuerySpecError):
-            ConversationQuerySpec.from_params({"since_session": "conv-123"}, strict=True)
+            SessionQuerySpec.from_params({"since_session": "conv-123"}, strict=True)
 
     def test_since_session_id_still_accepted(self) -> None:
-        from polylogue.archive.query.spec import ConversationQuerySpec
+        from polylogue.archive.query.spec import SessionQuerySpec
 
-        spec = ConversationQuerySpec.from_params({"since_session_id": "conv-123"}, strict=True)
+        spec = SessionQuerySpec.from_params({"since_session_id": "conv-123"}, strict=True)
         assert spec.since_session_id == "conv-123"
 
 
@@ -407,7 +407,7 @@ class TestSinceSessionCollapsed:
 
 
 class TestDaemonVectorOnlyTypedError:
-    """Daemon /api/conversations?similar_text=... surfaces EmbeddingRetrievalNotReadyError
+    """Daemon /api/sessions?similar_text=... surfaces EmbeddingRetrievalNotReadyError
     as HTTP 409 via daemon_safe_handler, not an opaque 500 (#1749 AC#5).
 
     Tested at the unit level using the in-process handler harness.
@@ -443,9 +443,9 @@ class TestDaemonVectorOnlyTypedError:
         handler = DaemonAPIHandler.__new__(DaemonAPIHandler)
         handler.server = cast("DaemonAPIHTTPServer", _MockServer())
         handler.client_address = ("127.0.0.1", 12345)
-        handler.path = "/api/conversations?similar_text=test"
+        handler.path = "/api/sessions?similar_text=test"
         handler.command = "GET"
-        handler.requestline = "GET /api/conversations?similar_text=test HTTP/1.1"
+        handler.requestline = "GET /api/sessions?similar_text=test HTTP/1.1"
         from email.message import Message
 
         handler.headers = cast("Message[str, str]", MagicMock())

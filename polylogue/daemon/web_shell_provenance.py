@@ -1,11 +1,11 @@
-"""Per-conversation provenance JS fragment for the web reader (#1125).
+"""Per-session provenance JS fragment for the web reader (#1125).
 
 Kept as a sibling of :mod:`polylogue.daemon.web_shell` so the main
 single-page shell stays under its file-size budget. The fragment is
 interpolated into ``WEB_SHELL_HTML`` at module import time. It owns:
 
 - the inspector "Raw" tab rendering for the provenance panel,
-- the ``/api/conversations/{id}/provenance`` fetch call,
+- the ``/api/sessions/{id}/provenance`` fetch call,
 - the explicit opt-in click handler for the bounded raw payload preview.
 
 The raw payload preview is server-bounded: the JS shows the operator
@@ -16,12 +16,12 @@ from __future__ import annotations
 
 PROVENANCE_JS = r"""
 function renderInspectorRaw(el, c) {
-  // Per-conversation provenance panel (#1125). The metadata block is
+  // Per-session provenance panel (#1125). The metadata block is
   // always rendered. The raw payload preview is opt-in — the operator
   // must click "Load raw preview" before any bytes from the source
   // artifact are fetched. The preview is bounded server-side.
   var html = '<div class="inspector-section"><h4>Provenance</h4>';
-  html += '<div class="inspector-field"><span class="label">Provider</span><span class="value">' + esc(c.provider || '-') + '</span></div>';
+  html += '<div class="inspector-field"><span class="label">Origin</span><span class="value">' + esc(c.origin || '-') + '</span></div>';
   html += '<div class="inspector-field"><span class="label">Branch</span><span class="value">' + esc(c.branch_type || 'main') + '</span></div>';
   html += '<div class="inspector-field"><span class="label">Parent</span><span class="value">' + esc(c.parent_id || '-') + '</span></div>';
   html += '<div id="provenance-area"><div class="inspector-empty" style="padding-top:8px">Loading provenance...</div></div>';
@@ -36,7 +36,7 @@ async function loadProvenance(id) {
   var area = document.getElementById('provenance-area');
   if (!area) return;
   try {
-    var data = await fetchJSON('/api/conversations/' + encodeURIComponent(id) + '/provenance');
+    var data = await fetchJSON('/api/sessions/' + encodeURIComponent(id) + '/provenance');
     state.provenance = data;
     renderProvenancePanel(data);
   } catch(e) {
@@ -84,7 +84,7 @@ async function loadProvenanceRaw() {
   if (!area) return;
   area.innerHTML = '<div style="color:var(--text-dim);font-size:var(--small);padding:8px 0">Loading raw preview...</div>';
   try {
-    var data = await fetchJSON('/api/conversations/' + encodeURIComponent(id) + '/provenance?include_raw=1');
+    var data = await fetchJSON('/api/sessions/' + encodeURIComponent(id) + '/provenance?include_raw=1');
     var preview = data.raw_preview || {};
     if (!preview.available) {
       area.innerHTML = '<div class="inspector-empty" style="padding-top:8px">Raw preview unavailable: ' + esc(preview.reason || 'unknown') + '</div>';

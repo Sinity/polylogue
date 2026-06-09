@@ -19,7 +19,7 @@ from polylogue.insights.archive import (
     SessionProfileInsight,
     SessionTagRollupInsight,
     SessionWorkEventInsight,
-    WorkThreadInsight,
+    ThreadInsight,
 )
 from polylogue.insights.archive_models import ARCHIVE_INSIGHT_CONTRACT_VERSION, ArchiveInsightModel
 from polylogue.insights.readiness import InsightReadinessQuery, InsightReadinessReport
@@ -28,11 +28,16 @@ from polylogue.version import VERSION_INFO
 
 InsightExportFormat = Literal["jsonl"]
 INSIGHT_EXPORT_BUNDLE_VERSION = 1
+# Readiness verdicts that block an insight's rows from entering the bundle: the
+# materialized read model is stale against its source, built by an incompatible
+# materializer version, or its table is missing. ``degraded``/``partial`` rows are
+# still exported (the rows themselves are valid, just heuristically weak/incomplete).
+_NON_EXPORTABLE_VERDICTS: frozenset[str] = frozenset({"stale", "incompatible", "missing"})
 DEFAULT_EXPORT_INSIGHTS: tuple[str, ...] = (
     "session_profiles",
     "session_work_events",
     "session_phases",
-    "work_threads",
+    "threads",
     "session_tag_rollups",
     "archive_coverage",
 )
@@ -40,7 +45,7 @@ _INSIGHT_MODEL_BY_NAME: dict[str, type[ArchiveInsightModel]] = {
     "session_profiles": SessionProfileInsight,
     "session_work_events": SessionWorkEventInsight,
     "session_phases": SessionPhaseInsight,
-    "work_threads": WorkThreadInsight,
+    "threads": ThreadInsight,
     "session_tag_rollups": SessionTagRollupInsight,
     "archive_coverage": ArchiveCoverageInsight,
 }
@@ -250,20 +255,29 @@ async def export_insight_bundle(
             kwargs, warnings = _query_kwargs(insight_type, request)
             errors: list[str] = []
             items: list[ArchiveInsightModel] = []
-            try:
-                items = await fetch_insights_async(insight_type, operations, **kwargs)
-            except (ArchiveInsightUnavailableError, InsightQueryError) as exc:
-                errors.append(str(exc))
+            readiness_entry = readiness_by_name.get(insight_name)
+            verdict = readiness_entry.verdict if readiness_entry is not None else None
+            if verdict in _NON_EXPORTABLE_VERDICTS:
+                # The materialized read model does not reflect the current source
+                # (stale high-water mark), is built by an incompatible materializer
+                # version, or is absent. Exporting its rows would bundle untrustworthy
+                # data, so record the readiness failure and emit an empty file rather
+                # than silently shipping divergent insights.
+                errors.append(f"insight readiness verdict is '{verdict}'; rows withheld from export")
+            else:
+                try:
+                    items = await fetch_insights_async(insight_type, operations, **kwargs)
+                except (ArchiveInsightUnavailableError, InsightQueryError) as exc:
+                    errors.append(str(exc))
             _write_insight_jsonl(tmp_target / insight_file, items)
             _write_json(tmp_target / schema_file, _json_schema_document(insight_name))
-            readiness_entry = readiness_by_name.get(insight_name)
             summaries.append(
                 InsightExportFileSummary(
                     insight_name=insight_name,
                     file=insight_file,
                     schema_file=schema_file,
                     row_count=len(items),
-                    readiness_verdict=readiness_entry.verdict if readiness_entry is not None else None,
+                    readiness_verdict=verdict,
                     warnings=warnings,
                     errors=tuple(errors),
                 )

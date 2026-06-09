@@ -1,8 +1,8 @@
 """Convergence final-state contract test.
 
 Verifies that after daemon live-ingest completes on a synthetic corpus:
-  1. All files succeed — no failures, no silently dropped conversations
-  2. Conversations and messages appear in the archive database
+  1. All files succeed — no failures, no silently dropped sessions
+  2. Sessions and messages appear in the archive database
   3. Post-ingest convergence stages complete without error
   4. Convergence debt is empty (no pending retry items)
 
@@ -71,12 +71,12 @@ def test_convergence_produces_consistent_final_archive_state(
 
     Checks:
     - All files succeed (no failures)
-    - Conversations and messages are in the archive DB
+    - Sessions and messages are in the archive DB
     - Convergence stages complete without error
     - No convergence debt remains
     """
     corpus_root = tmp_path / "corpus" / "proj"
-    db_path = tmp_path / "polylogue.db"
+    db_path = tmp_path / "index.db"
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
     monkeypatch.setenv("POLYLOGUE_CONFIG", str(tmp_path / "polylogue.toml"))
     monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "off")
@@ -115,20 +115,27 @@ def test_convergence_produces_consistent_final_archive_state(
     )
 
     # ── Archive state correctness ────────────────────────────────────
-    with sqlite3.connect(db_path) as conn:
-        (conv_count,) = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()
+    # The archive writes the parsed session/message tree into ``index.db``
+    # (``sessions`` + ``messages``), not the single-file shape.
+    index_db = tmp_path / "index.db"
+    with sqlite3.connect(index_db) as conn:
+        (session_count,) = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()
         (msg_count,) = conn.execute("SELECT COUNT(*) FROM messages").fetchone()
 
-    # Each session (3) should produce at least one conversation row.
-    assert conv_count >= len(sessions), f"Expected >= {len(sessions)} conversations, got {conv_count}"
+    # Each session (3) should produce one archive session row.
+    assert session_count >= len(sessions), f"Expected >= {len(sessions)} sessions, got {session_count}"
     # Each session has 10 messages.
     assert msg_count >= len(sessions) * 10, f"Expected >= {len(sessions) * 10} messages, got {msg_count}"
 
     # ── Convergence debt ─────────────────────────────────────────────
-    with sqlite3.connect(db_path) as conn:
-        table_exists = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='live_convergence_debt'"
-        ).fetchone()
-        if table_exists:
-            (debt_count,) = conn.execute("SELECT COUNT(*) FROM live_convergence_debt").fetchone()
-            assert debt_count == 0, f"Expected no convergence debt, found {debt_count} pending items"
+    # Native daemon telemetry (convergence debt) lives in the disposable
+    # ``ops.db`` tier.
+    ops_db = tmp_path / "ops.db"
+    if ops_db.exists():
+        with sqlite3.connect(ops_db) as conn:
+            table_exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='live_convergence_debt'"
+            ).fetchone()
+            if table_exists:
+                (debt_count,) = conn.execute("SELECT COUNT(*) FROM live_convergence_debt").fetchone()
+                assert debt_count == 0, f"Expected no convergence debt, found {debt_count} pending items"

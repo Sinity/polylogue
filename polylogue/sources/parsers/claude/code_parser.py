@@ -1,4 +1,4 @@
-"""Claude Code conversation parsing helpers."""
+"""Claude Code session parsing helpers."""
 
 from __future__ import annotations
 
@@ -6,28 +6,59 @@ import re
 from collections.abc import Iterable, Sequence
 from typing import TypeAlias
 
-from polylogue.archive.conversation.branch_type import BranchType
 from polylogue.archive.message.artifacts import classify_text_message_type
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
+from polylogue.archive.session.branch_type import BranchType
+from polylogue.core.enums import PasteBoundary
 from polylogue.logging import get_logger
 from polylogue.pipeline.semantic_capture import detect_context_compaction
-from polylogue.types import ContentBlockType, Provider
+from polylogue.types import BlockType, Provider
 
 from ..base import (
     ParsedContentBlock,
-    ParsedConversation,
     ParsedMessage,
-    ParsedProviderEvent,
+    ParsedPasteEvidence,
+    ParsedSession,
+    ParsedSessionEvent,
     content_blocks_from_segments,
 )
-from .common import extract_message_text, normalize_timestamp, reclassify_tool_result_envelope
+from .common import (
+    _message_duration_ms,
+    _message_model_effort,
+    _message_model_name,
+    extract_message_text,
+    normalize_timestamp,
+    reclassify_tool_result_envelope,
+)
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _WHITESPACE_RE = re.compile(r"\s+")
+# Claude Code elides pasted content in the persisted JSONL, leaving a
+# ``[Pasted text #N]`` marker (optionally ``[Pasted text #N +M lines]``) in the
+# user prompt text. The live UserPromptSubmit hook captures the same paste with
+# a real content hash (boundary_state=hash_only); batch re-ingest can only
+# recover the marker's exact location, so it stamps the span as PROJECTED.
+_PASTE_MARKER_RE = re.compile(r"\[Pasted text #(\d+)[^\]]*\]")
+
+
+def _detect_paste_spans(text: str | None) -> list[ParsedPasteEvidence]:
+    """Detect ``[Pasted text #N]`` markers in a user prompt as paste evidence."""
+    if not text:
+        return []
+    return [
+        ParsedPasteEvidence(
+            position=int(match.group(1)),
+            start_offset=match.start(),
+            end_offset=match.end(),
+            boundary_state=PasteBoundary.PROJECTED.value,
+            source_marker=match.group(0),
+        )
+        for match in _PASTE_MARKER_RE.finditer(text)
+    ]
+
 
 ClaudeCodeContextCompaction: TypeAlias = dict[str, object]
-ClaudeCodeProviderMeta: TypeAlias = dict[str, object]
 
 
 def _clean_title_text(text: str) -> str:
@@ -70,7 +101,7 @@ def _content_blocks_from_record(message: object, text: str | None) -> list[Parse
     raw_msg_content = message.get("content") if isinstance(message, dict) else None
     content_blocks = content_blocks_from_segments(raw_msg_content) if raw_msg_content else []
     if not content_blocks and text:
-        return [ParsedContentBlock(type=ContentBlockType.TEXT, text=text)]
+        return [ParsedContentBlock(type=BlockType.TEXT, text=text)]
     return content_blocks
 
 
@@ -114,8 +145,8 @@ def _string_field(item: dict[str, object], key: str) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedConversation:
-    """Parse Claude Code JSONL payloads into a canonical conversation model."""
+def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedSession:
+    """Parse Claude Code JSONL payloads into a canonical session model."""
     messages: list[ParsedMessage] = []
     created_at: str | None = None
     updated_at: str | None = None
@@ -124,7 +155,7 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
     first_duplicate_uuid: str | None = None
     first_duplicate_index: int | None = None
     session_id: str | None = None
-    provider_events: list[ParsedProviderEvent] = []
+    session_events: list[ParsedSessionEvent] = []
     total_cost = 0.0
     total_duration = 0
     saw_cost_field = False
@@ -132,6 +163,7 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
     has_sidechain = False
     cwds: set[str] = set()
     models: set[str] = set()
+    message_position = 0
 
     for index, item in enumerate(records, start=1):
         if not isinstance(item, dict):
@@ -144,8 +176,8 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
                 raw_timestamp if isinstance(raw_timestamp, str | int | float) else None
             )
             context_compaction = dict(compaction)
-            provider_events.append(
-                ParsedProviderEvent(
+            session_events.append(
+                ParsedSessionEvent(
                     event_type="compaction",
                     timestamp=compaction_timestamp,
                     payload=context_compaction,
@@ -158,12 +190,14 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
                     role=Role.SYSTEM,
                     text=summary_text,
                     timestamp=compaction_timestamp,
-                    content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text=summary_text)]
-                    if summary_text
-                    else [],
+                    content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text=summary_text)] if summary_text else [],
                     message_type=MessageType.SUMMARY,
+                    position=message_position,
+                    variant_index=0,
+                    is_active_path=True,
                 )
             )
+            message_position += 1
             continue
 
         record_type = item.get("type")
@@ -188,7 +222,7 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
         # consumer surface and inflate every messages-table count by
         # ~23%. See #1617 for the full forensic. We drop them here at the
         # parser; the hook payload, if useful for analytics, belongs in
-        # a future ``provider_event`` capture, not in the messages table.
+        # a future ``session_event`` capture, not in the messages table.
         if record_type in {"init", "file-history-snapshot", "queue-operation", "progress"}:
             continue
 
@@ -213,23 +247,37 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
         msg_usage = message.get("usage") if isinstance(message, dict) else None
         if not isinstance(msg_usage, dict):
             msg_usage = {}
-        msg_model = message.get("model") if isinstance(message, dict) else None
+        message_payload = message if isinstance(message, dict) else {}
+        msg_model = _message_model_name(message_payload) or _message_model_name(item)
+        msg_effort = _message_model_effort(message_payload) or _message_model_effort(item)
+        msg_duration_ms = _message_duration_ms(item)
+        resolved_role = reclassify_tool_result_envelope(envelope_role, content_blocks)
+        # Paste markers only appear in user prompts; restricting detection to the
+        # user role avoids false positives from assistant text that quotes a marker.
+        paste_spans = _detect_paste_spans(text) if resolved_role == Role.USER else []
         messages.append(
             ParsedMessage(
                 provider_message_id=str(record_uuid or f"msg-{index}"),
-                role=reclassify_tool_result_envelope(envelope_role, content_blocks),
+                role=resolved_role,
                 text=text or "",
                 timestamp=timestamp,
                 content_blocks=content_blocks,
                 message_type=message_type,
                 parent_message_provider_id=_string_field(item, "parentUuid"),
+                position=message_position,
+                variant_index=0,
+                is_active_path=True,
                 input_tokens=_safe_int(msg_usage.get("input_tokens")),
                 output_tokens=_safe_int(msg_usage.get("output_tokens")),
                 cache_read_tokens=_safe_int(msg_usage.get("cache_read_input_tokens")),
                 cache_write_tokens=_safe_int(msg_usage.get("cache_creation_input_tokens")),
-                model_name=msg_model if isinstance(msg_model, str) else None,
+                model_name=msg_model,
+                model_effort=msg_effort,
+                duration_ms=msg_duration_ms,
+                paste_spans=paste_spans,
             )
         )
+        message_position += 1
 
         if "costUSD" in item:
             saw_cost_field = True
@@ -242,7 +290,6 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
         cwd = item.get("cwd")
         if isinstance(cwd, str):
             cwds.add(cwd)
-        message_payload = message if isinstance(message, dict) else {}
         model_name = message_payload.get("model")
         if isinstance(model_name, str):
             models.add(model_name)
@@ -258,20 +305,10 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
     is_subagent = fallback_id.startswith("agent-")
     parent_session_id: str | None = None
     if is_subagent and session_id:
-        conversation_id = f"{session_id}:{fallback_id}"
+        composed_session_id = f"{session_id}:{fallback_id}"
         parent_session_id = session_id
     else:
-        conversation_id = session_id or fallback_id
-
-    provider_meta: ClaudeCodeProviderMeta = {}
-    if saw_cost_field:
-        provider_meta["total_cost_usd"] = total_cost
-    if saw_duration_field:
-        provider_meta["total_duration_ms"] = total_duration
-    if cwds:
-        provider_meta["working_directories"] = sorted(cwds)
-    if models:
-        provider_meta["models_used"] = sorted(models)
+        composed_session_id = session_id or fallback_id
 
     if is_subagent:
         branch_type: BranchType | None = BranchType.SUBAGENT
@@ -280,7 +317,16 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
     else:
         branch_type = None
 
-    title = str(conversation_id)
+    active_leaf_message_provider_id = messages[-1].provider_message_id if messages else None
+    if active_leaf_message_provider_id is not None:
+        messages = [
+            message.model_copy(
+                update={"is_active_leaf": message.provider_message_id == active_leaf_message_provider_id}
+            )
+            for message in messages
+        ]
+
+    title = str(composed_session_id)
     for message in messages:
         if message.role == "user" and message.text and len(message.text.strip()) > 3:
             # Strip protocol artifacts before extracting title
@@ -291,26 +337,29 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
                     title += "..."
                 break
 
-    return ParsedConversation(
+    return ParsedSession(
         source_name=Provider.CLAUDE_CODE,
-        provider_conversation_id=str(conversation_id),
+        provider_session_id=str(composed_session_id),
         title=title,
         created_at=created_at,
         updated_at=updated_at,
         messages=messages,
-        provider_meta=provider_meta if provider_meta else None,
-        provider_events=provider_events,
-        parent_conversation_provider_id=parent_session_id,
+        active_leaf_message_provider_id=active_leaf_message_provider_id,
+        session_events=session_events,
+        parent_session_provider_id=parent_session_id,
         branch_type=branch_type,
+        reported_cost_usd=total_cost if saw_cost_field else None,
+        reported_duration_ms=total_duration if saw_duration_field else None,
+        models_used=sorted(models),
         working_directories=sorted(cwds),
     )
 
 
-def parse_code(payload: Sequence[object], fallback_id: str) -> ParsedConversation:
+def parse_code(payload: Sequence[object], fallback_id: str) -> ParsedSession:
     return _parse_code_records(payload, fallback_id)
 
 
-def parse_code_stream(records: Iterable[object], fallback_id: str) -> ParsedConversation:
+def parse_code_stream(records: Iterable[object], fallback_id: str) -> ParsedSession:
     return _parse_code_records(records, fallback_id)
 
 

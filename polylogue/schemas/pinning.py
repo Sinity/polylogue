@@ -34,7 +34,7 @@ PinnableRole: TypeAlias = Literal[
     "message_body",
     "message_timestamp",
     "message_container",
-    "conversation_title",
+    "session_title",
 ]
 
 # Semantic roles that can be pinned
@@ -44,7 +44,7 @@ PINNABLE_ROLES: frozenset[PinnableRole] = frozenset(
         "message_body",
         "message_timestamp",
         "message_container",
-        "conversation_title",
+        "session_title",
     }
 )
 
@@ -78,8 +78,8 @@ def _pin_role(value: object) -> PinnableRole:
         return "message_timestamp"
     if value == "message_container":
         return "message_container"
-    if value == "conversation_title":
-        return "conversation_title"
+    if value == "session_title":
+        return "session_title"
     raise ValueError(f"Role {value!r} is not pinnable. Valid: {sorted(PINNABLE_ROLES)}")
 
 

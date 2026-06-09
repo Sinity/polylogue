@@ -9,15 +9,15 @@ from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from polylogue.archive.semantic.facts import (
-    ConversationSemanticFacts,
     MessageSemanticFacts,
-    build_conversation_semantic_facts,
+    SessionSemanticFacts,
+    build_session_semantic_facts,
 )
 
 if TYPE_CHECKING:
     from datetime import datetime
 
-    from polylogue.archive.models import Conversation
+    from polylogue.archive.models import Session
 
 
 _PHASE_GAP = timedelta(minutes=5)
@@ -26,7 +26,7 @@ PHASE_IDLE_THRESHOLD_MS = int(_PHASE_GAP.total_seconds() * 1000)
 
 @dataclass(frozen=True)
 class SessionPhase:
-    """A temporal phase within a conversation session.
+    """A temporal phase within a session session.
 
     Phases are time-gap-segmented intervals, not intent-classified.
     The `kind` field was removed — phases represent when activity
@@ -77,11 +77,11 @@ def _build_phase(
 
 
 def extract_phases(
-    conversation: Conversation,
+    session: Session,
     *,
-    facts: ConversationSemanticFacts | None = None,
+    facts: SessionSemanticFacts | None = None,
 ) -> list[SessionPhase]:
-    semantic_facts = facts or build_conversation_semantic_facts(conversation)
+    semantic_facts = facts or build_session_semantic_facts(session)
     messages = semantic_facts.message_facts
     if not messages:
         return []
@@ -108,18 +108,18 @@ def extract_phases(
         return phases
 
     # Fallback for sources where messages carry no timestamps but
-    # provider_events do (codex pre-Dec-2025, hermes per-request dumps).
+    # session_events do (codex pre-Dec-2025, hermes per-request dumps).
     # See #1624 — without this, session_phases is empty for 30% of the
     # archive, blinding `find_resume_candidates`, the phases lens, and
     # workflow_shape_distribution to anything codex/hermes.
-    return _phases_from_provider_events(conversation, messages)
+    return _phases_from_session_events(session, messages)
 
 
-def _phases_from_provider_events(
-    conversation: Conversation,
+def _phases_from_session_events(
+    session: Session,
     messages: Sequence[MessageSemanticFacts],
 ) -> list[SessionPhase]:
-    event_timestamps = sorted(event.timestamp for event in conversation.provider_events if event.timestamp is not None)
+    event_timestamps = sorted(event.timestamp for event in session.session_events if event.timestamp is not None)
     if not event_timestamps:
         return []
 

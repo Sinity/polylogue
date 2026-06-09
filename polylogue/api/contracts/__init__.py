@@ -4,9 +4,9 @@ This package defines the typed Protocols every read surface implements so
 parity between adapters (CLI, MCP, daemon HTTP, Python API) is enforced
 statically by mypy rather than only by ad-hoc parity tests.
 
-Background — issue #859: ``ConversationQuerySpec`` already unifies the
+Background — issue #859: ``SessionQuerySpec`` already unifies the
 input contract for query/search, and ``polylogue.surfaces.payloads``
-already defines the shared response payloads (``ConversationListResponse``,
+already defines the shared response payloads (``SessionListResponse``,
 ``FacetsResponse``, ``TagMutationResult``, etc.).  What was missing was a
 single ``Protocol`` family declaring *which* read methods every surface is
 expected to expose, and a static-assertion mechanism that fails compilation
@@ -23,28 +23,28 @@ from __future__ import annotations
 
 from polylogue.api.contracts.assertions import assert_implements
 from polylogue.api.contracts.read_surface import (
-    ConversationListSurface,
-    ConversationSearchSurface,
-    ConversationStatsSurface,
-    ConversationTagsSurface,
     DaemonStatusSurface,
     ReadSurface,
+    SessionListSurface,
+    SessionSearchSurface,
+    SessionStatsSurface,
+    SessionTagsSurface,
 )
 from polylogue.api.contracts.write_surface import (
-    ConversationDeleteSurface,
     IndexMaintenanceSurface,
     IngestSurface,
     MaintenanceSurface,
+    SessionDeleteSurface,
     TagMutationSurface,
     WriteSurface,
 )
 
 __all__ = [
-    "ConversationDeleteSurface",
-    "ConversationListSurface",
-    "ConversationSearchSurface",
-    "ConversationStatsSurface",
-    "ConversationTagsSurface",
+    "SessionDeleteSurface",
+    "SessionListSurface",
+    "SessionSearchSurface",
+    "SessionStatsSurface",
+    "SessionTagsSurface",
     "DaemonStatusSurface",
     "IndexMaintenanceSurface",
     "IngestSurface",

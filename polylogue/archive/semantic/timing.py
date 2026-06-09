@@ -18,7 +18,7 @@ from polylogue.core.json import JSONDocument, json_document
 
 if TYPE_CHECKING:
     from polylogue.archive.message.models import Message
-    from polylogue.archive.provider.events import ProviderEvent
+    from polylogue.archive.session.events import SessionEvent
 
 
 TOOL_ACTIVE_START_EVENT_TYPES = frozenset({"function_call", "custom_tool_call", "web_search_call", "tool_search_call"})
@@ -157,7 +157,7 @@ def compute_session_timing(
 
 @dataclass(frozen=True, slots=True)
 class SessionLatencyProfileFacts:
-    """Per-session latency aggregate derived from messages and provider events."""
+    """Per-session latency aggregate derived from messages and session events."""
 
     median_tool_call_ms: int = 0
     p90_tool_call_ms: int = 0
@@ -199,10 +199,10 @@ def _median_ms(values: list[int]) -> int:
     return (sorted_values[midpoint - 1] + sorted_values[midpoint]) // 2
 
 
-def compute_tool_active_duration_ms(provider_events: Sequence[ProviderEvent]) -> int:
+def compute_tool_active_duration_ms(session_events: Sequence[SessionEvent]) -> int:
     """Sum paired provider tool-call windows with explicit event timestamps.
 
-    This is a provider-event measurement, not an inter-message estimate: a
+    This is a session-event measurement, not an inter-message estimate: a
     start event opens a tool window and the matching output event closes it.
     Unpaired or untimestamped events are ignored because they cannot establish
     a bounded active interval.
@@ -211,7 +211,7 @@ def compute_tool_active_duration_ms(provider_events: Sequence[ProviderEvent]) ->
     pending_by_call_id: dict[str, datetime] = {}
     pending_without_call_id: list[datetime] = []
     total_ms = 0
-    for event in sorted(provider_events, key=lambda item: item.event_index):
+    for event in sorted(session_events, key=lambda item: item.event_index):
         if event.timestamp is None:
             continue
         event_type = str(event.event_type).strip().lower()
@@ -236,7 +236,7 @@ def compute_tool_active_duration_ms(provider_events: Sequence[ProviderEvent]) ->
 
 
 def _provider_tool_latencies(
-    provider_events: Sequence[ProviderEvent],
+    session_events: Sequence[SessionEvent],
     *,
     session_end: datetime | None,
     stuck_threshold_ms: int,
@@ -244,7 +244,7 @@ def _provider_tool_latencies(
     pending_by_call_id: dict[str, datetime] = {}
     pending_without_call_id: list[datetime] = []
     durations: list[int] = []
-    for event in sorted(provider_events, key=lambda item: item.event_index):
+    for event in sorted(session_events, key=lambda item: item.event_index):
         if event.timestamp is None:
             continue
         event_type = str(event.event_type).strip().lower()
@@ -294,7 +294,7 @@ def _message_response_latencies(messages: Sequence[Message]) -> tuple[list[int],
 
 def compute_session_latency_profile(
     messages: Sequence[Message],
-    provider_events: Sequence[ProviderEvent],
+    session_events: Sequence[SessionEvent],
     *,
     session_end: datetime | None = None,
     tool_call_count_by_category: dict[str, int] | None = None,
@@ -303,7 +303,7 @@ def compute_session_latency_profile(
     """Compute per-session latency facts without causal interpretation."""
 
     tool_durations, stuck_tool_count = _provider_tool_latencies(
-        provider_events,
+        session_events,
         session_end=session_end,
         stuck_threshold_ms=stuck_threshold_ms,
     )

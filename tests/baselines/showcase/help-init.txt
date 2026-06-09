@@ -1,0 +1,15 @@
+Usage: polylogue init [OPTIONS]
+
+  Detect chat sources and write a starter polylogue.toml.
+
+  Run once on a fresh install. Looks for Claude Code, Codex, Gemini CLI,
+  Hermes, Antigravity, and the agent hook spool under your home directory and
+  records the present ones in ``$XDG_CONFIG_HOME/polylogue/polylogue.toml``.
+  The daemon and the CLI both pick the file up automatically.
+
+Options:
+  --force                   Overwrite an existing polylogue.toml.
+  --dry-run                 Print what would be written without touching the
+                            filesystem.
+  -f, --format [text|json]  Output format.
+  -h, --help                Show this message and exit.

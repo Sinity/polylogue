@@ -6,8 +6,8 @@ from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
-from polylogue.pipeline.services.ingest_worker import ConversationData
-from polylogue.storage.raw.models import RawConversationStateUpdate
+from polylogue.pipeline.services.ingest_worker import SessionWritePayload
+from polylogue.storage.raw.models import RawSessionStateUpdate
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -19,7 +19,7 @@ _INGEST_EXTREME_BLOB_LIMIT_BYTES = 2048 * 1024 * 1024
 
 
 class _RawStateRepositoryLike(Protocol):
-    async def update_raw_state(self, raw_id: str, *, state: RawConversationStateUpdate) -> object: ...
+    async def update_raw_state(self, raw_id: str, *, state: RawSessionStateUpdate) -> object: ...
 
 
 class _ParsingServiceRawStateLike(Protocol):
@@ -43,7 +43,7 @@ class _RawIngestOutcome:
     validation_error: str | None
     parse_error: str | None
     error: str | None
-    had_conversations: bool
+    had_sessions: bool
 
 
 @dataclass(slots=True)
@@ -52,26 +52,26 @@ class _IngestBatchSummary:
     failed_raw_ids: dict[str, str] = field(default_factory=dict)
     skipped_raw_ids: set[str] = field(default_factory=set)
     processed_ids: set[str] = field(default_factory=set)
-    changed_conversation_ids: list[str] = field(default_factory=list)
-    fts_repair_conversation_ids: list[str] = field(default_factory=list)
+    changed_session_ids: list[str] = field(default_factory=list)
+    fts_repair_session_ids: list[str] = field(default_factory=list)
     counts: dict[str, int] = field(
         default_factory=lambda: {
-            "conversations": 0,
+            "sessions": 0,
             "messages": 0,
             "attachments": 0,
-            "provider_events": 0,
-            "skipped_conversations": 0,
+            "session_events": 0,
+            "skipped_sessions": 0,
             "skipped_messages": 0,
             "skipped_attachments": 0,
-            "skipped_provider_events": 0,
+            "skipped_session_events": 0,
         }
     )
     changed_counts: dict[str, int] = field(
         default_factory=lambda: {
-            "conversations": 0,
+            "sessions": 0,
             "messages": 0,
             "attachments": 0,
-            "provider_events": 0,
+            "session_events": 0,
         }
     )
     parse_failures: int = 0
@@ -113,6 +113,6 @@ class _IngestWorkerRequest:
     measure_ingest_result_size: bool
 
 
-_ConversationEntry = tuple[str, ConversationData]
+_SessionEntry = tuple[str, SessionWritePayload]
 
 # Re-exported from canonical source polylogue/core/common.py

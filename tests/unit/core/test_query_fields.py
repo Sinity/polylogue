@@ -15,10 +15,10 @@ from polylogue.archive.query.fields import (
     query_completion_sources,
     storage_filters_require_stats_join,
 )
-from polylogue.archive.query.plan import ConversationQueryPlan
+from polylogue.archive.query.plan import SessionQueryPlan
 from polylogue.archive.query.spec import (
-    ConversationQuerySpec,
     QuerySpecError,
+    SessionQuerySpec,
     as_tuple,
     normalize_action_sequence,
     normalize_action_terms,
@@ -28,14 +28,13 @@ from polylogue.archive.query.spec import (
     split_csv,
 )
 from polylogue.storage.sqlite.queries.filter_builder import _needs_stats_join
-from polylogue.types import Provider
 
 
 def test_query_field_catalog_drives_spec_presence_and_descriptions() -> None:
-    spec = ConversationQuerySpec(
+    spec = SessionQuerySpec(
         query_terms=("sqlite", "locks"),
         referenced_path=("polylogue/storage",),
-        providers=(Provider.CODEX,),
+        origins=("codex-session",),
         repo_names=("thoughtspace",),
         filter_has_tool_use=True,
         min_messages=3,
@@ -48,7 +47,7 @@ def test_query_field_catalog_drives_spec_presence_and_descriptions() -> None:
     assert spec.describe() == [
         "search: sqlite locks",
         "referenced-path: polylogue/storage",
-        "provider: codex",
+        "origin: codex-session",
         "repo: thoughtspace",
         "has: tool_use (sql)",
         "min_messages: 3",
@@ -59,7 +58,7 @@ def test_query_field_catalog_drives_spec_presence_and_descriptions() -> None:
     assert describe_spec_selection_fields(spec) == [
         "search: sqlite locks",
         "referenced-path: polylogue/storage",
-        "provider: codex",
+        "origin: codex-session",
         "repo: thoughtspace",
         "has: tool_use (sql)",
         "min_messages: 3",
@@ -70,11 +69,11 @@ def test_query_field_catalog_drives_spec_presence_and_descriptions() -> None:
 
 def test_query_field_catalog_drives_plan_presence_descriptions_and_pushdown() -> None:
     since = datetime(2024, 1, 1, tzinfo=timezone.utc)
-    plan = ConversationQueryPlan(
+    plan = SessionQueryPlan(
         query_terms=("sqlite",),
         referenced_path=("polylogue/storage",),
         tool_terms=("bash",),
-        providers=(Provider.CODEX,),
+        origins=("codex-session",),
         repo_names=("thoughtspace",),
         title="locks",
         since=since,
@@ -88,7 +87,7 @@ def test_query_field_catalog_drives_plan_presence_descriptions_and_pushdown() ->
         "query_terms",
         "referenced_path",
         "tool_terms",
-        "providers",
+        "origins",
         "repo_names",
         "title",
         "filter_has_tool_use",
@@ -102,7 +101,7 @@ def test_query_field_catalog_drives_plan_presence_descriptions_and_pushdown() ->
         "contains: sqlite",
         "referenced-path: polylogue/storage",
         "tool: bash",
-        "provider: codex",
+        "origin: codex-session",
         "repo: thoughtspace",
         "title: locks",
         "has_tool_use",
@@ -142,16 +141,16 @@ def test_query_field_catalog_drives_plan_presence_descriptions_and_pushdown() ->
 
 def test_query_field_catalog_covers_public_spec_fields() -> None:
     descriptor_spec_attrs = {descriptor.spec_attr for descriptor in QUERY_FIELD_DESCRIPTORS if descriptor.spec_attr}
-    spec_fields = {field.name for field in fields(ConversationQuerySpec)}
+    spec_fields = {field.name for field in fields(SessionQuerySpec)}
 
     # All spec fields have descriptors (cursor was promoted from internal-only to exposed).
     assert spec_fields - descriptor_spec_attrs == set()
 
 
 def test_query_field_catalog_covers_mcp_query_request_fields() -> None:
-    from polylogue.mcp.query_contracts import MCPConversationQueryRequest
+    from polylogue.mcp.query_contracts import MCPSessionQueryRequest
 
-    mcp_fields = {field.name for field in fields(MCPConversationQueryRequest)}
+    mcp_fields = {field.name for field in fields(MCPSessionQueryRequest)}
 
     assert mcp_fields - mcp_query_field_names() == set()
 
@@ -178,15 +177,15 @@ def test_query_field_catalog_marks_storage_stats_join_fields() -> None:
 def test_query_field_catalog_marks_completion_sources() -> None:
     descriptors = {descriptor.name: descriptor for descriptor in QUERY_FIELD_DESCRIPTORS}
 
-    assert descriptors["conversation_id"].completion_source == "conversation_id"
-    assert descriptors["since_session_id"].completion_source == "conversation_id"
+    assert descriptors["session_id"].completion_source == "session_id"
+    assert descriptors["since_session_id"].completion_source == "session_id"
     assert descriptors["retrieval_lane"].completion_source == "retrieval_lane"
     assert descriptors["referenced_path"].completion_source is None
     assert descriptors["action_terms"].completion_source == "action"
     assert descriptors["excluded_action_terms"].completion_source == "action"
     assert descriptors["action_sequence"].completion_source == "action_sequence"
-    assert descriptors["providers"].completion_source == "provider"
-    assert descriptors["excluded_providers"].completion_source == "provider"
+    assert descriptors["origins"].completion_source == "origin"
+    assert descriptors["excluded_origins"].completion_source == "origin"
     assert descriptors["repo_names"].completion_source == "repo"
     assert descriptors["cwd_prefix"].completion_source == "cwd_prefix"
     assert descriptors["tags"].completion_source == "tag"
@@ -197,12 +196,12 @@ def test_query_field_catalog_marks_completion_sources() -> None:
     assert query_completion_sources() == (
         "action",
         "action_sequence",
-        "conversation_id",
         "cwd_prefix",
         "message_type",
-        "provider",
+        "origin",
         "repo",
         "retrieval_lane",
+        "session_id",
         "tag",
         "tool",
     )
@@ -231,7 +230,7 @@ def test_query_spec_normalizers_cover_scalar_iterable_and_error_paths() -> None:
     for call in (
         lambda: optional_sort_field("bogus"),
         lambda: optional_message_type("summmary"),
-        lambda: ConversationQuerySpec.from_params({"message_type": "summmary"}),
+        lambda: SessionQuerySpec.from_params({"message_type": "summmary"}),
         lambda: normalize_action_terms("action", "bogus"),
         lambda: normalize_action_sequence("action_sequence", "bogus"),
     ):

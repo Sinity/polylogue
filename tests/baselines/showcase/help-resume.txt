@@ -4,5 +4,5 @@ Usage: polylogue resume [OPTIONS] SESSION_ID
 
 Options:
   --related-limit INTEGER  Maximum related sessions to include.  [default: 6]
-  --format [json]          Output format.
+  -f, --format [json]      Output format.
   -h, --help               Show this message and exit.

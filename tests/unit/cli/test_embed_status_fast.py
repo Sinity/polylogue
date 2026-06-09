@@ -21,7 +21,12 @@ from polylogue.storage.insights.session.runtime import SessionInsightStatusSnaps
 
 
 class _Cfg:
-    def __init__(self, *, embedding_enabled: bool, voyage_api_key: str | None) -> None:
+    def __init__(
+        self,
+        *,
+        embedding_enabled: bool,
+        voyage_api_key: str | None,
+    ) -> None:
         self.embedding_enabled = embedding_enabled
         self.voyage_api_key = voyage_api_key
         self.embedding_model = "voyage-4"
@@ -37,18 +42,71 @@ def _env(db_path: Path) -> Any:
 
 def _seed_archive_without_embedding_ledgers(db_path: Path, *, vec_table: bool = False) -> None:
     with sqlite3.connect(db_path) as conn:
-        conn.execute("CREATE TABLE conversations (conversation_id TEXT PRIMARY KEY)")
-        conn.execute("CREATE TABLE messages (message_id TEXT PRIMARY KEY, conversation_id TEXT, content_hash TEXT)")
+        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
+        conn.execute("CREATE TABLE messages (message_id TEXT PRIMARY KEY, session_id TEXT, content_hash TEXT)")
         conn.executemany(
-            "INSERT INTO conversations (conversation_id) VALUES (?)",
+            "INSERT INTO sessions (session_id) VALUES (?)",
             [("conv-1",), ("conv-2",)],
         )
         conn.executemany(
-            "INSERT INTO messages (message_id, conversation_id, content_hash) VALUES (?, ?, ?)",
+            "INSERT INTO messages (message_id, session_id, content_hash) VALUES (?, ?, ?)",
             [("msg-1", "conv-1", "h1"), ("msg-2", "conv-2", "h2")],
         )
         if vec_table:
             conn.execute("CREATE TABLE message_embeddings (message_id TEXT PRIMARY KEY)")
+        conn.commit()
+
+
+def _seed_archive_file_set_from_archive_tiers(index_db: Path) -> None:
+    embeddings_db = index_db.with_name("embeddings.db")
+    with sqlite3.connect(index_db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE sessions (
+                session_id TEXT PRIMARY KEY,
+                message_count INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE messages (
+                message_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                content_hash BLOB NOT NULL
+            );
+            INSERT INTO sessions VALUES ('codex-session:complete', 1);
+            INSERT INTO sessions VALUES ('codex-session:pending', 2);
+            INSERT INTO messages VALUES ('codex-session:complete:m1', 'codex-session:complete', x'01');
+            INSERT INTO messages VALUES ('codex-session:pending:m1', 'codex-session:pending', x'02');
+            INSERT INTO messages VALUES ('codex-session:pending:m2', 'codex-session:pending', x'03');
+            """
+        )
+        conn.commit()
+    with sqlite3.connect(embeddings_db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE message_embeddings (
+                message_id TEXT PRIMARY KEY
+            );
+            CREATE TABLE embeddings_meta (
+                target_id TEXT PRIMARY KEY,
+                target_type TEXT NOT NULL,
+                model TEXT NOT NULL,
+                dimension INTEGER NOT NULL,
+                embedded_at_ms INTEGER NOT NULL,
+                content_hash BLOB
+            );
+            CREATE TABLE embedding_status (
+                session_id TEXT PRIMARY KEY,
+                origin TEXT NOT NULL,
+                message_count_embedded INTEGER NOT NULL DEFAULT 0,
+                needs_reindex INTEGER NOT NULL DEFAULT 0,
+                error_message TEXT
+            );
+            INSERT INTO message_embeddings VALUES ('codex-session:complete:m1');
+            INSERT INTO embeddings_meta VALUES (
+                'codex-session:complete:m1', 'message', 'voyage-4', 1024, 1767225700000, x'01'
+            );
+            INSERT INTO embedding_status VALUES ('codex-session:complete', 'codex-session', 1, 0, NULL);
+            """
+        )
         conn.commit()
 
 
@@ -90,12 +148,78 @@ def test_status_json_fast_path_handles_absent_embedding_tables(tmp_path: Path) -
     payload = _run_status(db_path)
 
     assert payload["status"] == "none"
-    assert payload["total_conversations"] == 2
-    assert payload["embedded_conversations"] == 0
-    assert payload["pending_conversations"] == 2
+    assert payload["total_sessions"] == 2
+    assert payload["embedded_sessions"] == 0
+    assert payload["pending_sessions"] == 2
     assert payload["pending_messages"] is None
     assert payload["pending_messages_exact"] is False
     assert payload["retrieval_bands"] == {}
+
+
+def test_status_json_reads_archive_file_set_from_archive_index(tmp_path: Path) -> None:
+    db_anchor = tmp_path / "custom.sqlite"
+    _seed_archive_file_set_from_archive_tiers(tmp_path / "index.db")
+
+    payload = _run_status(db_anchor, "--detail", cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+
+    assert payload["status"] == "partial"
+    assert payload["total_sessions"] == 2
+    assert payload["embedded_sessions"] == 1
+    assert payload["pending_sessions"] == 1
+    assert payload["embedded_messages"] == 1
+    assert payload["pending_messages"] == 2
+    assert payload["pending_messages_exact"] is True
+    assert payload["embedding_coverage_percent"] == 50.0
+    assert payload["embedding_models"] == {"voyage-4": 1}
+    assert payload["embedding_dimensions"] == {"1024": 1} or payload["embedding_dimensions"] == {1024: 1}
+
+
+def test_status_json_reads_latest_catchup_from_ops_db(tmp_path: Path) -> None:
+    db_anchor = tmp_path / "index.db"
+    archive_db = tmp_path / "index.db"
+    ops_db = tmp_path / "ops.db"
+    _seed_archive_file_set_from_archive_tiers(archive_db)
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.ops_write import upsert_embedding_catchup_run
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
+    with sqlite3.connect(ops_db) as conn:
+        upsert_embedding_catchup_run(
+            conn,
+            run_id="v1-run",
+            status="completed",
+            started_at_ms=1_767_225_700_000,
+            finished_at_ms=1_767_225_705_000,
+            scanned_sessions=2,
+            embedded_messages=4,
+            estimated_cost_usd=0.001,
+        )
+
+    payload = _run_status(db_anchor, cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+
+    latest = payload["latest_catchup_run"]
+    assert latest["run_id"] == "v1-run"
+    assert latest["status"] == "completed"
+    assert latest["processed_sessions"] == 2
+    assert latest["embedded_messages"] == 4
+    assert latest["estimated_cost_usd"] == 0.001
+
+
+def test_status_json_reads_index_when_db_anchor_exists(tmp_path: Path) -> None:
+    db_anchor = tmp_path / "custom.sqlite"
+    _seed_archive_without_embedding_ledgers(db_anchor)
+    _seed_archive_file_set_from_archive_tiers(tmp_path / "index.db")
+
+    payload = _run_status(
+        db_anchor,
+        cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"),
+    )
+
+    assert payload["status"] == "partial"
+    assert payload["total_sessions"] == 2
+    assert payload["embedded_sessions"] == 1
+    assert payload["pending_sessions"] == 1
 
 
 def test_status_json_bypasses_schema_version_gate_for_operator_readiness(tmp_path: Path) -> None:
@@ -112,7 +236,7 @@ def test_status_json_bypasses_schema_version_gate_for_operator_readiness(tmp_pat
     assert payload["configured_model"] == "voyage-4"
     assert payload["configured_dimension"] == 1024
     assert payload["monthly_cost_cap_usd"] == 5.0
-    assert payload["pending_conversations"] == 2
+    assert payload["pending_sessions"] == 2
     assert payload["next_action"] == {
         "code": "enable_embeddings",
         "command": "polylogue embed enable --yes",
@@ -164,22 +288,13 @@ def test_status_json_detail_mode_runs_exact_retrieval_accounting(
     _seed_archive_without_embedding_ledgers(db_path)
 
     monkeypatch.setattr(
-        "polylogue.storage.embeddings.embedding_stats.action_event_read_model_status_sync",
-        lambda _conn: {
-            "count": 0,
-            "action_fts_count": 0,
-            "action_fts_ready": True,
-            "stale_count": 0,
-        },
-    )
-    monkeypatch.setattr(
         "polylogue.storage.embeddings.embedding_stats.session_insight_status_sync",
         lambda _conn: SessionInsightStatusSnapshot(),
     )
 
     payload = _run_status(db_path, "--detail")
 
-    assert payload["pending_conversations"] == 2
+    assert payload["pending_sessions"] == 2
     assert payload["pending_messages"] == 2
     assert payload["pending_messages_exact"] is True
     assert set(payload["retrieval_bands"]) == {
@@ -198,11 +313,11 @@ def test_status_json_includes_latest_catchup_run(tmp_path: Path) -> None:
         db_path,
         CatchupRunStart(
             rebuild=True,
-            max_conversations=2,
+            max_sessions=2,
             max_messages=10,
             stop_after_seconds=None,
             max_errors=None,
-            planned_conversations=2,
+            planned_sessions=2,
             planned_messages=2,
         ),
     )
@@ -215,7 +330,7 @@ def test_status_json_includes_latest_catchup_run(tmp_path: Path) -> None:
     assert latest["status"] == "interrupted"
     assert latest["stop_reason"] == "keyboard interrupt"
     assert latest["rebuild"] is True
-    assert latest["planned_conversations"] == 2
+    assert latest["planned_sessions"] == 2
 
 
 def test_status_text_prints_machine_readable_next_action(tmp_path: Path) -> None:
@@ -237,7 +352,7 @@ def test_status_text_prints_daemon_catchup_when_enabled(tmp_path: Path) -> None:
     output = _run_status_text(db_path, cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
 
     assert "Next action:           drain_backlog" in output
-    assert "Command:               polylogue embed backfill --max-conversations 10" in output
+    assert "Command:               polylogue embed backfill --max-sessions 10" in output
 
 
 def test_status_json_reports_ready_next_action(tmp_path: Path) -> None:
@@ -247,7 +362,7 @@ def test_status_json_reports_ready_next_action(tmp_path: Path) -> None:
         conn.execute(
             """
             CREATE TABLE embedding_status (
-                conversation_id TEXT PRIMARY KEY,
+                session_id TEXT PRIMARY KEY,
                 embedded_message_count INTEGER,
                 needs_reindex INTEGER DEFAULT 0,
                 error_message TEXT
@@ -256,7 +371,7 @@ def test_status_json_reports_ready_next_action(tmp_path: Path) -> None:
         )
         conn.execute("CREATE TABLE message_embeddings (message_id TEXT PRIMARY KEY)")
         conn.executemany(
-            "INSERT INTO embedding_status (conversation_id, embedded_message_count, needs_reindex) VALUES (?, ?, 0)",
+            "INSERT INTO embedding_status (session_id, embedded_message_count, needs_reindex) VALUES (?, ?, 0)",
             [("conv-1", 1), ("conv-2", 1)],
         )
         conn.executemany("INSERT INTO message_embeddings (message_id) VALUES (?)", [("msg-1",), ("msg-2",)])

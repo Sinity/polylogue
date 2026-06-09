@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 import sqlite3
 from collections.abc import Mapping
 from pathlib import Path
@@ -54,8 +53,6 @@ def test_health_check_dataclass_contract(name: str, status_name: str, detail: st
                 "database",
                 "index",
                 "orphaned_messages",
-                "action_event_read_model",
-                "action_event_fts",
                 "fts_sync",
                 "transcript_embeddings",
                 "transcript_embedding_freshness",
@@ -76,9 +73,6 @@ def test_health_check_dataclass_contract(name: str, status_name: str, detail: st
                 "sqlite_integrity",
                 "index",
                 "orphaned_messages",
-                "orphaned_content_blocks",
-                "action_event_read_model",
-                "action_event_fts",
                 "fts_sync",
                 "transcript_embeddings",
                 "transcript_embedding_freshness",
@@ -107,7 +101,7 @@ def test_run_health_core_contract(
 
 
 @pytest.mark.parametrize(
-    ("embedded_conversations", "embedded_messages", "pending_conversations", "expected_status", "expected_text"),
+    ("embedded_sessions", "embedded_messages", "pending_sessions", "expected_status", "expected_text"),
     [
         (0, 0, 0, "warning", "Transcript embeddings pending"),
         (2, 50, 1, "warning", "Transcript embeddings pending"),
@@ -116,28 +110,28 @@ def test_run_health_core_contract(
 )
 def test_run_health_embedding_status_contract(
     cli_workspace: Mapping[str, Path],
-    embedded_conversations: int,
+    embedded_sessions: int,
     embedded_messages: int,
-    pending_conversations: int,
+    pending_sessions: int,
     expected_status: str,
     expected_text: str,
 ) -> None:
     from polylogue.config import get_config
     from polylogue.maintenance.models import DerivedModelStatus
     from polylogue.readiness import run_archive_readiness
-    from tests.infra.storage_records import ConversationBuilder
+    from tests.infra.storage_records import SessionBuilder
 
-    ConversationBuilder(cli_workspace["db_path"], "health-embed-1").add_message(text="hello").save()
-    ConversationBuilder(cli_workspace["db_path"], "health-embed-2").add_message(text="hello").save()
-    ConversationBuilder(cli_workspace["db_path"], "health-embed-3").add_message(text="hello").save()
+    SessionBuilder(cli_workspace["db_path"], "health-embed-1").add_message(text="hello").save()
+    SessionBuilder(cli_workspace["db_path"], "health-embed-2").add_message(text="hello").save()
+    SessionBuilder(cli_workspace["db_path"], "health-embed-3").add_message(text="hello").save()
 
-    embeddings_ready = embedded_conversations == 3 and pending_conversations == 0
+    embeddings_ready = embedded_sessions == 3 and pending_sessions == 0
     expected_detail = (
-        f"Transcript embeddings ready ({embedded_conversations:,}/3 conversations, {embedded_messages:,} messages)"
+        f"Transcript embeddings ready ({embedded_sessions:,}/3 sessions, {embedded_messages:,} messages)"
         if embeddings_ready
         else (
-            f"Transcript embeddings pending ({embedded_conversations:,}/3 conversations, "
-            f"pending {pending_conversations:,}, stale 0, missing provenance 0)"
+            f"Transcript embeddings pending ({embedded_sessions:,}/3 sessions, "
+            f"pending {pending_sessions:,}, stale 0, missing provenance 0)"
         )
     )
     with patch(
@@ -150,29 +144,14 @@ def test_run_health_embedding_status_contract(
                 source_rows=3,
                 materialized_rows=3,
             ),
-            "action_events": DerivedModelStatus(
-                name="action_events",
-                ready=True,
-                detail="Action events ready",
-                source_documents=3,
-                materialized_documents=3,
-                materialized_rows=0,
-            ),
-            "action_events_fts": DerivedModelStatus(
-                name="action_events_fts",
-                ready=True,
-                detail="Action-event FTS ready",
-                source_rows=0,
-                materialized_rows=0,
-            ),
             "transcript_embeddings": DerivedModelStatus(
                 name="transcript_embeddings",
                 ready=embeddings_ready,
                 detail=expected_detail,
                 source_documents=3,
-                materialized_documents=embedded_conversations,
+                materialized_documents=embedded_sessions,
                 materialized_rows=embedded_messages,
-                pending_documents=pending_conversations,
+                pending_documents=pending_sessions,
             ),
             "retrieval_evidence": DerivedModelStatus(
                 name="retrieval_evidence",
@@ -255,7 +234,7 @@ def test_run_archive_readiness_reports_busy_archive_with_operator_message(tmp_pa
     config = Config(archive_root=archive_root, render_root=render_root, sources=[Source(name="test", path=tmp_path)])
 
     with patch(
-        "polylogue.storage.sqlite.connection.open_connection",
+        "polylogue.readiness._open_readiness_probe_connection",
         side_effect=sqlite3.OperationalError("database is locked"),
     ):
         report = run_archive_readiness(config)
@@ -273,52 +252,6 @@ def test_run_archive_readiness_reports_busy_archive_with_operator_message(tmp_pa
     )
 
 
-def test_run_archive_readiness_reports_legacy_schema_version(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Legacy archives (any non-canonical user_version) surface as a readiness error.
-
-    Polylogue collapsed the migration chain to canonical SCHEMA_VERSION in
-    #1212. The operator handles legacy databases by re-ingesting from source,
-    not by patching them in place — readiness must report the mismatch so the
-    surface refuses to operate against a foreign-version archive.
-    """
-    import polylogue.paths
-    from polylogue.config import get_config
-    from polylogue.readiness import VerifyStatus, run_archive_readiness
-
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    importlib.reload(polylogue.paths)
-
-    db_path = polylogue.paths.db_path()
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
-    conn.executescript(
-        """
-        CREATE TABLE raw_conversations (
-            raw_id TEXT PRIMARY KEY,
-            source_name TEXT NOT NULL,
-            source_path TEXT NOT NULL,
-            blob_size INTEGER NOT NULL,
-            acquired_at TEXT NOT NULL
-        );
-        PRAGMA user_version = 17;
-        """
-    )
-    conn.commit()
-    conn.close()
-
-    report = run_archive_readiness(get_config())
-
-    database_check = next(check for check in report.checks if check.name == "database")
-    index_check = next(check for check in report.checks if check.name == "index")
-    assert database_check.status == VerifyStatus.ERROR
-    assert "schema version 17" in database_check.summary
-    assert index_check.status == VerifyStatus.WARNING
-
-
 @pytest.mark.parametrize("deep", [False, True])
 def test_get_readiness_contract(cli_workspace: Mapping[str, Path], deep: bool) -> None:
     from polylogue.config import get_config
@@ -333,7 +266,7 @@ def test_quick_readiness_summary_returns_live_status(tmp_path: Path) -> None:
     from polylogue.readiness import quick_readiness_summary
 
     result = quick_readiness_summary(tmp_path)
-    # With a valid DB, returns "OK (N conversations)"; without, returns "unavailable (...)"
+    # With a valid DB, returns "OK (N sessions)"; without, returns "unavailable (...)"
     assert isinstance(result, str)
     assert "OK" in result or "unavailable" in result or "schema" in result
 

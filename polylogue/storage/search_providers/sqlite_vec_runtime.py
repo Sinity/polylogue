@@ -72,14 +72,14 @@ class SqliteVecRuntimeMixin:
                     message_id TEXT PRIMARY KEY,
                     embedding float[{self.dimension}],
                     +source_name TEXT,
-                    +conversation_id TEXT
+                    +session_id TEXT
                 )
                 """
             )
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS embeddings_meta (
                     target_id TEXT PRIMARY KEY,
-                    target_type TEXT NOT NULL CHECK (target_type IN ('message', 'conversation')),
+                    target_type TEXT NOT NULL CHECK (target_type IN ('message', 'session')),
                     model TEXT NOT NULL,
                     dimension INTEGER NOT NULL,
                     embedded_at TEXT NOT NULL,
@@ -92,7 +92,7 @@ class SqliteVecRuntimeMixin:
             """)
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS embedding_status (
-                    conversation_id TEXT PRIMARY KEY,
+                    session_id TEXT PRIMARY KEY,
                     message_count_embedded INTEGER DEFAULT 0,
                     last_embedded_at TEXT,
                     needs_reindex INTEGER DEFAULT 0,

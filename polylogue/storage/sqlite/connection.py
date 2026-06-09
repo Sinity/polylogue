@@ -59,10 +59,48 @@ def _load_sqlite_vec(conn: sqlite3.Connection) -> bool:
     return False
 
 
+_SIBLING_TIER_ATTACHMENTS: tuple[tuple[str, str], ...] = (
+    ("source_tier", "source.db"),
+    ("user_tier", "user.db"),
+    ("embeddings", "embeddings.db"),
+    ("ops_tier", "ops.db"),
+)
+
+
+def _attach_sibling_tiers(conn: sqlite3.Connection) -> None:
+    """Attach sibling archive tiers to an ``index.db`` connection (idempotent).
+
+    Mirrors the async backend so cross-tier reads (e.g. ``raw_sessions`` in
+    ``source.db``) resolve with unqualified table names. SQLite resolves
+    unqualified names to ``main`` first, so index-tier tables are unaffected.
+    """
+    main_path: str | None = None
+    attached: set[str] = set()
+    for row in conn.execute("PRAGMA database_list").fetchall():
+        schema_name = str(row[1])
+        if schema_name == "main":
+            main_path = str(row[2]) if row[2] else None
+        else:
+            attached.add(schema_name)
+    if not main_path:
+        return
+    main = Path(main_path)
+    if main.name != "index.db":
+        return
+    root = main.parent
+    for schema_name, filename in _SIBLING_TIER_ATTACHMENTS:
+        if schema_name in attached:
+            continue
+        sibling = root / filename
+        if sibling.exists():
+            conn.execute(f"ATTACH DATABASE ? AS {schema_name}", (str(sibling),))
+
+
 def _configure_read_connection(conn: sqlite3.Connection) -> None:
     """Apply read-safe settings without taking write-oriented locks."""
     conn.row_factory = sqlite3.Row
     _apply_pragma_statements(conn, READ_CONNECTION_PRAGMA_STATEMENTS)
+    _attach_sibling_tiers(conn)
 
 
 # ---------------------------------------------------------------------------
@@ -84,12 +122,19 @@ def _schema_lock_for_path(path: Path) -> threading.Lock:
         return lock
 
 
+def _is_initialized_archive_index(path: Path) -> bool:
+    if path.name != "index.db":
+        return False
+    root = path.parent
+    return all((root / filename).exists() for filename in ("source.db", "index.db", "user.db", "ops.db"))
+
+
 def _get_cached_connection(path: Path) -> sqlite3.Connection:
     """Return a thread-local cached connection for the given path.
 
     Creates a new connection on first access per (thread, path) pair.
     Connections are configured with WAL, foreign keys, busy_timeout,
-    sqlite-vec, and schema migrations — all exactly once per connection.
+    sqlite-vec, and connection-local runtime setup — all exactly once per connection.
     """
     cache: dict[str, sqlite3.Connection] = getattr(_connection_cache, "conns", {})
     if not hasattr(_connection_cache, "conns"):
@@ -99,6 +144,11 @@ def _get_cached_connection(path: Path) -> sqlite3.Connection:
     if key in cache:
         return cache[key]
 
+    if path.name == "index.db" and not _is_initialized_archive_index(path):
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+        initialize_active_archive_root(path.parent)
+
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=DB_TIMEOUT)
     try:
@@ -106,12 +156,12 @@ def _get_cached_connection(path: Path) -> sqlite3.Connection:
         conn.row_factory = sqlite3.Row
         _apply_pragma_statements(conn, WRITE_CONNECTION_PRAGMA_STATEMENTS)
         _load_sqlite_vec(conn)
+        _attach_sibling_tiers(conn)
         with _schema_lock_for_path(path):
-            _ensure_schema(conn)
-
-        from polylogue.paths.archive_db_stub import ensure_canonical_archive_db_name
-
-        ensure_canonical_archive_db_name(path)
+            if path.name == "index.db" and not _is_initialized_archive_index(path):
+                raise RuntimeError(f"Archive root was not initialized for {path}")
+            if path.name != "index.db":
+                _ensure_schema(conn)
     except BaseException:
         # Pragma/schema setup can fail (e.g. locked database). Close the
         # just-opened connection before propagating so it is neither cached
@@ -189,7 +239,8 @@ def open_read_connection(db_path: Path | str | None = None) -> Iterator[sqlite3.
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=READ_DB_TIMEOUT)
     _configure_read_connection(conn)
     try:
-        assert_readable_archive_layout(conn)
+        if not _is_initialized_archive_index(path):
+            assert_readable_archive_layout(conn)
         yield conn
     finally:
         conn.close()
@@ -234,6 +285,31 @@ def _build_source_scope_filter(
     return _build_scope_filter(names, column=source_column)
 
 
+def _build_source_path_scope_filter(
+    source_paths: Sequence[str] | None,
+) -> tuple[str, list[str]]:
+    """Build a path-prefix predicate scoping raw rows to configured source roots.
+
+    Configured inbox/source roots are filesystem paths, not origins, so raw
+    selection must scope on the ``source_path`` column rather than ``origin``.
+    Each root matches an exact ``source_path`` or any descendant beneath it,
+    mirroring the component-bounded LIKE-escape pattern used for path filters
+    in ``queries/filter_builder.py``.
+    """
+    if source_paths is None:
+        return "", []
+    if not source_paths:
+        return "0", []
+
+    predicates: list[str] = []
+    params: list[str] = []
+    for path in source_paths:
+        escaped = path.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        predicates.append("(source_path = ? OR source_path LIKE ? ESCAPE '\\')")
+        params.extend([path, f"{escaped}/%"])
+    return "(" + " OR ".join(predicates) + ")", params
+
+
 def _build_provider_scope_filter(
     names: Sequence[str] | None,
     *,
@@ -255,6 +331,7 @@ __all__ = [
     "WRITE_MMAP_SIZE_BYTES",
     "_build_provider_scope_filter",
     "_build_scope_filter",
+    "_build_source_path_scope_filter",
     "_build_source_scope_filter",
     "connection_context",
     "create_default_backend",

@@ -1,10 +1,10 @@
-"""Per-conversation embedding similarity endpoint contracts (#1123).
+"""Per-session embedding similarity endpoint contracts (#1123).
 
-The similarity read surface returns ranked similar conversations
+The similarity read surface returns ranked similar sessions
 through the embedding pipeline established by #828. The pipeline is
 dormant by default, so the endpoint's primary job is to render that
 state explicitly — "embeddings disabled", "embedding runtime
-unavailable", "this conversation not yet embedded" — rather than
+unavailable", "this session not yet embedded" — rather than
 collapsing all of those into an empty success.
 
 Tests use the in-process handler pattern from
@@ -38,16 +38,7 @@ from polylogue.daemon.similarity import (
     _l2_to_cosine_similarity,
     build_similar_payload,
 )
-from polylogue.paths import db_path
-from polylogue.storage.sqlite.schema_ddl_archive import (
-    ARCHIVE_STORAGE_DDL,
-    MESSAGE_FTS_DDL,
-    RAW_ARCHIVE_DDL,
-    RECALL_PACKS_DDL,
-    SAVED_VIEWS_DDL,
-    USER_ANNOTATIONS_DDL,
-    USER_MARKS_DDL,
-)
+from polylogue.paths import active_index_db_path
 
 if TYPE_CHECKING:
     from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
@@ -90,51 +81,64 @@ def _capture_responses(handler: DaemonAPIHandler) -> tuple[MagicMock, MagicMock]
     return send_error, send_json
 
 
-def _bootstrap_schema(dbp: Path) -> None:
-    dbp.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(dbp))
-    try:
-        conn.executescript(RAW_ARCHIVE_DDL)
-        conn.executescript(ARCHIVE_STORAGE_DDL)
-        conn.executescript(MESSAGE_FTS_DDL)
-        conn.executescript(USER_MARKS_DDL)
-        conn.executescript(USER_ANNOTATIONS_DDL)
-        conn.executescript(SAVED_VIEWS_DDL)
-        conn.executescript(RECALL_PACKS_DDL)
-        conn.commit()
-    finally:
-        conn.close()
+def _index_db() -> Path:
+    return active_index_db_path()
 
 
-def _seed_conversation(
-    dbp: Path,
+def _session_parts(session_id: str, origin: str) -> tuple[str, str]:
+    prefix = f"{origin}:"
+    native_id = session_id[len(prefix) :] if session_id.startswith(prefix) else session_id
+    return native_id, f"{origin}:{native_id}"
+
+
+def _seed_archive_session(
+    session_id: str,
     *,
-    conversation_id: str,
-    source_name: str = "claude-code",
+    origin: str = "claude-code-session",
     title: str = "stub",
-) -> None:
-    conn = sqlite3.connect(str(dbp))
-    try:
+) -> str:
+    """Seed an archive `sessions` row in index.db.
+
+    The similarity reader (``polylogue/daemon/similarity.py``) routes to
+    the archive path whenever ``index.db`` exists; it only needs the
+    ``sessions`` row to confirm the session exists before rendering
+    the disabled/unavailable envelope.
+    """
+    archive_db = _index_db()
+    archive_db.parent.mkdir(parents=True, exist_ok=True)
+    native_id, archive_session_id = _session_parts(session_id, origin)
+    with sqlite3.connect(archive_db) as conn:
         conn.execute(
             """
-            INSERT INTO conversations(
-                conversation_id, source_name, provider_conversation_id,
-                title, content_hash, version, raw_id
-            ) VALUES (?,?,?,?,?,?,?)
+            INSERT OR IGNORE INTO sessions (
+                native_id, origin, title, content_hash
+            ) VALUES (?, ?, ?, ?)
             """,
-            (
-                conversation_id,
-                source_name,
-                f"p-{conversation_id}",
-                title,
-                "h" * 40,
-                1,
-                None,
-            ),
+            (native_id, origin, title, b"x" * 32),
         )
         conn.commit()
-    finally:
-        conn.close()
+    return archive_session_id
+
+
+def _init_archive() -> None:
+    """Create an empty index.db with the ``sessions`` table only.
+
+    Used by the missing-session cases so the reader routes to the
+    archive path and returns ``None`` (404) for an unknown id.
+    """
+    archive_db = _index_db()
+    archive_db.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(archive_db) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sessions (
+                session_id TEXT PRIMARY KEY,
+                title TEXT,
+                origin TEXT NOT NULL
+            );
+            """
+        )
+        conn.commit()
 
 
 def _disable_embeddings(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -209,7 +213,7 @@ def test_aggregate_hits_skips_self_and_takes_best_distance() -> None:
         [("m1", "self", 0.0), ("m2", "other-a", 0.5), ("m3", "other-b", 1.2)],
         [("m4", "self", 0.1), ("m5", "other-a", 0.3), ("m6", "other-b", 1.0)],
     ]
-    agg = _aggregate_hits(per_message, self_conversation_id="self")
+    agg = _aggregate_hits(per_message, self_session_id="self")
     assert set(agg.keys()) == {"other-a", "other-b"}
     # other-a was matched by two source messages, best distance 0.3.
     assert agg["other-a"]["best_distance"] == pytest.approx(0.3)
@@ -220,8 +224,8 @@ def test_aggregate_hits_skips_self_and_takes_best_distance() -> None:
 
 
 def test_aggregate_hits_handles_empty_input() -> None:
-    assert _aggregate_hits([], self_conversation_id="self") == {}
-    assert _aggregate_hits([[]], self_conversation_id="self") == {}
+    assert _aggregate_hits([], self_session_id="self") == {}
+    assert _aggregate_hits([[]], self_session_id="self") == {}
 
 
 # ---------------------------------------------------------------------------
@@ -233,26 +237,24 @@ def test_aggregate_hits_handles_empty_input() -> None:
 class TestSimilarPayloadStates:
     """``build_similar_payload`` surfaces every absent state explicitly."""
 
-    def test_returns_none_for_missing_conversation(
+    def test_returns_none_for_missing_session(
         self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _enable_embeddings(monkeypatch)
-        _bootstrap_schema(db_path())
+        _init_archive()
         assert build_similar_payload("ghost") is None
 
     def test_disabled_envelope_when_embeddings_off(
         self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _disable_embeddings(monkeypatch)
-        dbp = db_path()
-        _bootstrap_schema(dbp)
-        _seed_conversation(dbp, conversation_id="c1")
-        result = build_similar_payload("c1")
+        session_id = _seed_archive_session("c1")
+        result = build_similar_payload(session_id)
         assert result is not None
         assert result["status"] == "disabled"
         assert result["reason"] == "embeddings_not_enabled"
         assert result["results"] == []
-        assert result["conversation_id"] == "c1"
+        assert result["session_id"] == session_id
 
     def test_disabled_envelope_distinguishes_missing_api_key(
         self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
@@ -264,37 +266,61 @@ class TestSimilarPayloadStates:
             voyage_api_key = None
 
         monkeypatch.setattr(similarity_mod, "load_polylogue_config", lambda: _Cfg())
-        dbp = db_path()
-        _bootstrap_schema(dbp)
-        _seed_conversation(dbp, conversation_id="c1")
-        result = build_similar_payload("c1")
+        session_id = _seed_archive_session("c1")
+        result = build_similar_payload(session_id)
         assert result is not None
         assert result["status"] == "disabled"
         assert result["reason"] == "no_voyage_api_key"
 
-    def test_unavailable_envelope_when_vec_table_missing(
+    def test_not_embedded_envelope_when_session_has_no_vectors(
         self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _enable_embeddings(monkeypatch)
-        dbp = db_path()
-        _bootstrap_schema(dbp)
-        _seed_conversation(dbp, conversation_id="c1")
-        # No ``message_embeddings`` table has been created — the
-        # embedding stage has never run on this archive.
-        result = build_similar_payload("c1")
+        session_id = _seed_archive_session("c1")
+        result = build_similar_payload(session_id)
         assert result is not None
-        assert result["status"] == "unavailable"
-        assert result["reason"] == "vec0_table_missing"
+        assert result["status"] == "not_embedded"
+        assert result["reason"] is None
         assert result["results"] == []
 
     def test_clamps_limit_in_envelope(self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> None:
         _disable_embeddings(monkeypatch)
-        dbp = db_path()
-        _bootstrap_schema(dbp)
-        _seed_conversation(dbp, conversation_id="c1")
-        result = build_similar_payload("c1", limit=10**6)
+        session_id = _seed_archive_session("c1")
+        result = build_similar_payload(session_id, limit=10**6)
         assert result is not None
         assert result["limit"] == SIMILAR_RESULTS_MAX
+
+    def test_archive_file_set_disabled_envelope_from_archive_tiers(
+        self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _disable_embeddings(monkeypatch)
+        session_id = _seed_archive_session("codex-session:v1", origin="codex-session", title="Archive")
+
+        result = build_similar_payload(session_id)
+
+        assert result is not None
+        assert result["status"] == "disabled"
+        assert result["reason"] == "embeddings_not_enabled"
+        assert result["session_id"] == session_id
+
+    def test_archive_tiers_not_embedded_when_session_has_no_vectors(
+        self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import polylogue.daemon.similarity as similarity_mod
+
+        class _Cfg:
+            embedding_enabled = True
+            voyage_api_key = "test-key"
+
+        monkeypatch.setattr(similarity_mod, "load_polylogue_config", lambda: _Cfg())
+        session_id = _seed_archive_session("codex-session:v1", origin="codex-session", title="Archive")
+
+        result = build_similar_payload(session_id)
+
+        assert result is not None
+        assert result["status"] == "not_embedded"
+        assert result["reason"] is None
+        assert result["session_id"] == session_id
 
 
 # ---------------------------------------------------------------------------
@@ -304,14 +330,12 @@ class TestSimilarPayloadStates:
 
 @pytest.mark.contract
 class TestSimilarEndpoint:
-    """``GET /api/conversations/{id}/similar`` HTTP route contract."""
+    """``GET /api/sessions/{id}/similar`` HTTP route contract."""
 
-    def test_missing_conversation_returns_404(
-        self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_missing_session_returns_404(self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> None:
         _enable_embeddings(monkeypatch)
-        _bootstrap_schema(db_path())
-        handler = _make_handler("GET", "/api/conversations/ghost/similar")
+        _init_archive()
+        handler = _make_handler("GET", "/api/sessions/ghost/similar")
         send_error, send_json = _capture_responses(handler)
         handler.do_GET()
 
@@ -332,11 +356,9 @@ class TestSimilarEndpoint:
         message and hide the actionable disabled state.
         """
         _disable_embeddings(monkeypatch)
-        dbp = db_path()
-        _bootstrap_schema(dbp)
-        _seed_conversation(dbp, conversation_id="c1")
+        session_id = _seed_archive_session("c1")
 
-        handler = _make_handler("GET", "/api/conversations/c1/similar")
+        handler = _make_handler("GET", f"/api/sessions/{session_id}/similar")
         send_error, send_json = _capture_responses(handler)
         handler.do_GET()
 
@@ -353,11 +375,9 @@ class TestSimilarEndpoint:
         self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _disable_embeddings(monkeypatch)
-        dbp = db_path()
-        _bootstrap_schema(dbp)
-        _seed_conversation(dbp, conversation_id="c1")
+        session_id = _seed_archive_session("c1")
 
-        handler = _make_handler("GET", "/api/conversations/c1/similar?limit=3")
+        handler = _make_handler("GET", f"/api/sessions/{session_id}/similar?limit=3")
         _, send_json = _capture_responses(handler)
         handler.do_GET()
 
@@ -368,29 +388,25 @@ class TestSimilarEndpoint:
         self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _disable_embeddings(monkeypatch)
-        dbp = db_path()
-        _bootstrap_schema(dbp)
-        _seed_conversation(dbp, conversation_id="c1")
+        session_id = _seed_archive_session("c1")
 
-        handler = _make_handler("GET", "/api/conversations/c1/similar?limit=banana")
+        handler = _make_handler("GET", f"/api/sessions/{session_id}/similar?limit=banana")
         _, send_json = _capture_responses(handler)
         handler.do_GET()
 
         _, payload = send_json.call_args.args
         assert payload["limit"] == SIMILAR_RESULTS_DEFAULT
 
-    def test_unavailable_envelope_when_pipeline_dormant(
+    def test_not_embedded_envelope_when_pipeline_dormant(
         self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _enable_embeddings(monkeypatch)
-        dbp = db_path()
-        _bootstrap_schema(dbp)
-        _seed_conversation(dbp, conversation_id="c1")
+        session_id = _seed_archive_session("c1")
 
-        handler = _make_handler("GET", "/api/conversations/c1/similar")
+        handler = _make_handler("GET", f"/api/sessions/{session_id}/similar")
         _, send_json = _capture_responses(handler)
         handler.do_GET()
 
         _, payload = send_json.call_args.args
-        assert payload["status"] == "unavailable"
-        assert payload["reason"] == "vec0_table_missing"
+        assert payload["status"] == "not_embedded"
+        assert payload["reason"] is None

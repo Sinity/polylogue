@@ -5,11 +5,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from polylogue.storage.repository import ConversationRepository
+    from polylogue.storage.repository import SessionRepository
     from polylogue.storage.runtime import (
         AttachmentRecord,
-        ConversationRecord,
         MessageRecord,
+        SessionRecord,
     )
     from polylogue.storage.search import SearchResult
     from polylogue.storage.sqlite import SQLiteBackend
@@ -18,10 +18,10 @@ if TYPE_CHECKING:
 def __getattr__(name: str) -> object:
     lazy_exports = {
         "SQLiteBackend": ("polylogue.storage.sqlite", "SQLiteBackend"),
-        "ConversationRepository": ("polylogue.storage.repository", "ConversationRepository"),
+        "SessionRepository": ("polylogue.storage.repository", "SessionRepository"),
         "SearchResult": ("polylogue.storage.search", "SearchResult"),
         "AttachmentRecord": ("polylogue.storage.runtime", "AttachmentRecord"),
-        "ConversationRecord": ("polylogue.storage.runtime", "ConversationRecord"),
+        "SessionRecord": ("polylogue.storage.runtime", "SessionRecord"),
         "MessageRecord": ("polylogue.storage.runtime", "MessageRecord"),
     }
     module_spec = lazy_exports.get(name)
@@ -34,8 +34,8 @@ def __getattr__(name: str) -> object:
 
 __all__ = [
     "AttachmentRecord",
-    "ConversationRecord",
-    "ConversationRepository",
+    "SessionRecord",
+    "SessionRepository",
     "MessageRecord",
     "SQLiteBackend",
     "SearchResult",

@@ -1,4 +1,4 @@
-"""Heuristic raw-artifact taxonomy for conversation-bearing payloads.
+"""Heuristic raw-artifact taxonomy for session-bearing payloads.
 
 The taxonomy intentionally favors payload shape over path names. Path hints are
 used only as strong evidence for well-known sidecars and weak evidence for

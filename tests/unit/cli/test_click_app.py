@@ -22,8 +22,8 @@ class TestHandleQueryMode:
             "contains": (),
             "exclude_text": (),
             "retrieval_lane": None,
-            "provider": None,
-            "exclude_provider": None,
+            "origin": None,
+            "exclude_origin": None,
             "tag": None,
             "exclude_tag": None,
             "has_type": (),
@@ -77,15 +77,17 @@ class TestHandleQueryMode:
             _handle_query_mode(mock_ctx)
             return mock_execute, mock_stats
 
-    def test_no_args_shows_stats(self) -> None:
+    def test_no_args_routes_to_archive_executor(self) -> None:
+        # Bare root invocation shows fast status / archive summary instead of
+        # constructing a query request.
         mock_execute, mock_stats = self._call(self._make_params())
-        mock_stats.assert_called_once()
         mock_execute.assert_not_called()
+        mock_stats.assert_called_once()
 
-    def test_verbose_stats(self) -> None:
+    def test_verbose_no_args_routes_to_archive_executor(self) -> None:
         mock_execute, mock_stats = self._call(self._make_params(verbose=True))
-        mock_stats.assert_called_once()
         mock_execute.assert_not_called()
+        mock_stats.assert_called_once()
 
     def test_query_terms_trigger_query(self) -> None:
         mock_ctx = MagicMock()
@@ -107,7 +109,7 @@ class TestHandleQueryMode:
     def test_filter_flags_trigger_query(self) -> None:
         for params in (
             self._make_params(conv_id="abc123"),
-            self._make_params(provider="claude-ai"),
+            self._make_params(origin="claude-ai-export"),
             self._make_params(tag="important"),
             self._make_params(contains=("error",)),
             self._make_params(has_type=("thinking",)),
@@ -125,7 +127,7 @@ class TestHandleQueryMode:
             self._make_params(exclude_tool=("bash",)),
             self._make_params(similar_text="sqlite locking bug"),
             self._make_params(exclude_text=("noise",)),
-            self._make_params(exclude_provider="chatgpt"),
+            self._make_params(exclude_origin="chatgpt-export"),
             self._make_params(exclude_tag="deprecated"),
             self._make_params(filter_has_tool_use=True),
             self._make_params(min_messages=10),
@@ -200,7 +202,7 @@ def test_messages_verb_forwards_parent_request_and_projection_options(cli_runner
 
     assert result.exit_code == 0
     assert mock_run_messages.call_args.kwargs == {
-        "conversation_id": "conv-1",
+        "session_id": "conv-1",
         "message_role": ("user",),
         "message_type": "summary",
         "limit": 2,
@@ -218,7 +220,7 @@ def test_messages_verb_requires_id(cli_runner: CliRunner) -> None:
     result = cli_runner.invoke(click_cli, ["--plain", "messages"])
 
     assert result.exit_code != 0
-    assert "messages requires a conversation ID" in result.output
+    assert "messages requires a session ID" in result.output
 
 
 def test_raw_verb_forwards_pagination_and_format(cli_runner: CliRunner) -> None:
@@ -231,7 +233,7 @@ def test_raw_verb_forwards_pagination_and_format(cli_runner: CliRunner) -> None:
 
     assert result.exit_code == 0
     assert mock_run_raw.call_args.kwargs == {
-        "conversation_id": "conv-1",
+        "session_id": "conv-1",
         "limit": 3,
         "offset": 2,
         "output_format": "yaml",
@@ -242,7 +244,7 @@ def test_raw_verb_requires_id(cli_runner: CliRunner) -> None:
     result = cli_runner.invoke(click_cli, ["--plain", "raw"])
 
     assert result.exit_code != 0
-    assert "raw requires a conversation ID" in result.output
+    assert "raw requires a session ID" in result.output
 
 
 class TestQueryFirstGroupParseArgs:
@@ -266,16 +268,18 @@ class TestQueryFirstGroupParseArgs:
         from polylogue.cli.click_app import cli
 
         with patch("polylogue.cli.query.execute_query_request") as mock_execute:
-            cli_runner.invoke(cli, ["-p", "claude-ai", "my_search", "--plain"], catch_exceptions=False)
+            cli_runner.invoke(cli, ["--origin", "claude-ai-export", "my_search", "--plain"], catch_exceptions=False)
         params = mock_execute.call_args[0][1].query_params()
-        assert params.get("provider") == "claude-ai"
+        assert params.get("origin") == "claude-ai-export"
         assert params.get("query") == ("my_search",)
 
     def test_filter_option_before_subcommand_routes_to_subcommand(self, cli_runner: CliRunner) -> None:
         """Filter options followed by a known subcommand route to that subcommand."""
         from polylogue.cli.click_app import cli
 
-        result = cli_runner.invoke(cli, ["--plain", "-p", "claude-ai", "insights", "--help"], catch_exceptions=False)
+        result = cli_runner.invoke(
+            cli, ["--plain", "--origin", "claude-ai-export", "insights", "--help"], catch_exceptions=False
+        )
         assert result.exit_code == 0
         assert "insights" in result.output.lower()
 
@@ -283,9 +287,9 @@ class TestQueryFirstGroupParseArgs:
         from polylogue.cli.click_app import cli
 
         with patch("polylogue.cli.query.execute_query_request") as mock_execute:
-            cli_runner.invoke(cli, ["-p", "claude-ai", "search_term", "--plain"], catch_exceptions=False)
+            cli_runner.invoke(cli, ["--origin", "claude-ai-export", "search_term", "--plain"], catch_exceptions=False)
         params = mock_execute.call_args[0][1].query_params()
-        assert params.get("provider") == "claude-ai"
+        assert params.get("origin") == "claude-ai-export"
         assert "search_term" in params.get("query", ())
 
     def test_mixed_options_and_positionals(self, cli_runner: CliRunner) -> None:
@@ -294,19 +298,23 @@ class TestQueryFirstGroupParseArgs:
         with patch("polylogue.cli.query.execute_query_request") as mock_execute:
             cli_runner.invoke(
                 cli,
-                ["error", "-p", "claude-ai", "handling", "--latest", "--plain"],
+                ["error", "--origin", "claude-ai-export", "handling", "--latest", "--plain"],
                 catch_exceptions=False,
             )
         params = mock_execute.call_args[0][1].query_params()
-        assert params.get("provider") == "claude-ai"
+        assert params.get("origin") == "claude-ai-export"
         assert params.get("latest") is True
         assert set(params.get("query", ())) == {"error", "handling"}
 
-    def test_no_args_shows_stats(self, cli_runner: CliRunner) -> None:
+    def test_no_args_routes_to_archive_executor(self, cli_runner: CliRunner) -> None:
         from polylogue.cli.click_app import cli
 
-        with patch("polylogue.cli.click_app._show_stats") as mock_stats:
+        with (
+            patch("polylogue.cli.query.execute_query_request") as mock_execute,
+            patch("polylogue.cli.click_app._show_stats") as mock_stats,
+        ):
             cli_runner.invoke(cli, ["--plain"], catch_exceptions=False)
+        mock_execute.assert_not_called()
         mock_stats.assert_called_once()
 
     def test_help_flag(self, cli_runner: CliRunner) -> None:
@@ -316,23 +324,28 @@ class TestQueryFirstGroupParseArgs:
         assert result.exit_code == 0
         assert "polylogue" in result.output.lower()
         assert "insights" in result.output
-        assert "--provider" in result.output
+        assert "--origin" in result.output
         assert "--latest" in result.output
         assert "Subcommands:" not in result.output
-        assert "polylogue --provider claude-code --since 2026-01-01 stats --by repo --format json" in result.output
-        assert "polylogue stats --by repo --provider claude-code --since 2026-01-01 --format json" not in result.output
+        assert (
+            "polylogue --origin claude-code-session --since 2026-01-01 stats --by repo --format json" in result.output
+        )
+        assert (
+            "polylogue stats --by repo --origin claude-code-session --since 2026-01-01 --format json"
+            not in result.output
+        )
 
     def test_query_verb_help_renders_with_root_options(self, cli_runner: CliRunner) -> None:
         from polylogue.cli.click_app import cli
 
         result = cli_runner.invoke(cli, ["--plain", "list", "--help"], catch_exceptions=False)
         assert result.exit_code == 0
-        assert "List matched conversations." in result.output
+        assert "List matched sessions." in result.output
 
     def test_root_query_option_after_verb_gets_specific_usage_error(self, cli_runner: CliRunner) -> None:
         from polylogue.cli.click_app import cli
 
-        result = cli_runner.invoke(cli, ["stats", "--by", "provider", "--since", "2026-01-01"], catch_exceptions=False)
+        result = cli_runner.invoke(cli, ["stats", "--by", "origin", "--since", "2026-01-01"], catch_exceptions=False)
         assert result.exit_code == 2
         assert "Query filters and root output flags must appear before the verb." in result.output
         assert "Move --since before `stats`." in result.output
@@ -341,11 +354,11 @@ class TestQueryFirstGroupParseArgs:
         from polylogue.cli.click_app import cli
 
         result = cli_runner.invoke(
-            cli, ["stats", "--by", "provider", "--provider", "claude-ai"], catch_exceptions=False
+            cli, ["stats", "--by", "origin", "--origin", "claude-ai-export"], catch_exceptions=False
         )
         assert result.exit_code == 2
         assert "Query filters and root output flags must appear before the verb." in result.output
-        assert "Move --provider before `stats`." in result.output
+        assert "Move --origin before `stats`." in result.output
 
 
 class TestQueryFirstGroupInvoke:
@@ -355,22 +368,26 @@ class TestQueryFirstGroupInvoke:
         result = cli_runner.invoke(cli, ["doctor", "--help"])
         assert result.exit_code == 0
 
-    def test_no_subcommand_calls_stats_path(self, cli_runner: CliRunner) -> None:
+    def test_no_subcommand_routes_to_archive_executor(self, cli_runner: CliRunner) -> None:
         from polylogue.cli.click_app import cli
 
-        with patch("polylogue.cli.click_app._show_stats") as mock_stats:
+        with (
+            patch("polylogue.cli.query.execute_query_request") as mock_execute,
+            patch("polylogue.cli.click_app._show_stats") as mock_stats,
+        ):
             cli_runner.invoke(cli, ["--plain"], catch_exceptions=False)
+        mock_execute.assert_not_called()
         mock_stats.assert_called_once()
 
     def test_stats_by_subcommand_preserves_grouped_stats_mode(self, cli_runner: CliRunner) -> None:
         from polylogue.cli.click_app import cli
 
         with patch("polylogue.cli.query.execute_query_request") as mock_execute:
-            result = cli_runner.invoke(cli, ["--plain", "stats", "--by", "provider"], catch_exceptions=False)
+            result = cli_runner.invoke(cli, ["--plain", "stats", "--by", "origin"], catch_exceptions=False)
 
         assert result.exit_code == 0
         params = mock_execute.call_args[0][1].query_params()
-        assert params["stats_by"] == "provider"
+        assert params["stats_by"] == "origin"
         assert params["stats_only"] is False
 
     def test_query_mode_with_positional_args(self, cli_runner: CliRunner) -> None:
@@ -472,10 +489,10 @@ class TestCliSetup:
 
         captured_env: dict[str, object] = {}
 
-        def capture_stats(env: object, *, verbose: bool = False) -> None:
+        def capture_env(env: object, **_: object) -> None:
             captured_env["env"] = env
 
-        with patch("polylogue.cli.click_app._show_stats", side_effect=capture_stats):
+        with patch("polylogue.cli.click_app._show_stats", side_effect=capture_env):
             cli_runner.invoke(cli, ["--plain"], catch_exceptions=False)
         assert isinstance(captured_env.get("env"), AppEnv)
 
@@ -639,7 +656,7 @@ class TestDashboardCommand:
         assert result.exit_code == 0
         mock_app.run.assert_called_once()
 
-    def test_dashboard_creates_app_with_repository(
+    def test_dashboard_creates_app_with_facade(
         self,
         cli_runner: CliRunner,
         cli_workspace: CliWorkspace,
@@ -650,7 +667,7 @@ class TestDashboardCommand:
             result = cli_runner.invoke(click_cli, ["--plain", "dashboard"])
         assert result.exit_code == 0
         kwargs = mock_app_cls.call_args.kwargs
-        assert kwargs["operations"] is not None
+        assert kwargs["polylogue"] is not None
 
 
 class TestCompletionsCommand:

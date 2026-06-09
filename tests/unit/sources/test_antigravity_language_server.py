@@ -18,9 +18,9 @@ import pytest
 
 from polylogue.sources.parsers import antigravity
 from polylogue.sources.parsers.antigravity import (
-    AntigravityConversationSummary,
     AntigravityExportError,
     AntigravityLanguageServerClient,
+    AntigravitySessionSummary,
     discover_language_server,
     iter_language_server_exports,
 )
@@ -60,9 +60,9 @@ def fake_client(tmp_path: Path) -> AntigravityLanguageServerClient:
 
 
 def test_summary_from_payload_requires_cascade_id() -> None:
-    assert AntigravityConversationSummary.from_payload({}) is None
-    assert AntigravityConversationSummary.from_payload({"cascadeId": ""}) is None
-    summary = AntigravityConversationSummary.from_payload(
+    assert AntigravitySessionSummary.from_payload({}) is None
+    assert AntigravitySessionSummary.from_payload({"cascadeId": ""}) is None
+    summary = AntigravitySessionSummary.from_payload(
         {
             "cascadeId": "cascade-1",
             "title": "Title",
@@ -77,7 +77,7 @@ def test_summary_from_payload_requires_cascade_id() -> None:
 
 
 def test_markdown_export_payload_round_trips() -> None:
-    summary = AntigravityConversationSummary(
+    summary = AntigravitySessionSummary(
         cascade_id="c1",
         title="t",
         workspace_name="w",
@@ -99,7 +99,7 @@ def test_looks_like_markdown_export_rejects_foreign_payloads() -> None:
     assert antigravity.looks_like_markdown_export({"source": "antigravity_language_server", "cascadeId": "x"}) is False
 
 
-def test_search_conversations_returns_summaries(
+def test_search_sessions_returns_summaries(
     fake_client: AntigravityLanguageServerClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -125,7 +125,7 @@ def test_search_conversations_returns_summaries(
 
     monkeypatch.setattr(fake_client, "_post", fake_post)
 
-    summaries = fake_client.search_conversations(limit=5, query="anything")
+    summaries = fake_client.search_sessions(limit=5, query="anything")
 
     assert captured["endpoint"].endswith("/SearchConversations")
     assert captured["payload"] == {"query": "anything", "limit": 5}
@@ -133,12 +133,12 @@ def test_search_conversations_returns_summaries(
     assert summaries[0].workspace_name == "ws"
 
 
-def test_search_conversations_handles_non_list_results(
+def test_search_sessions_handles_non_list_results(
     fake_client: AntigravityLanguageServerClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(fake_client, "_post", lambda *_a, **_k: {"results": "boom"})
-    assert fake_client.search_conversations() == []
+    assert fake_client.search_sessions() == []
 
 
 def test_export_markdown_returns_string(
@@ -269,7 +269,7 @@ class _FakeClientForExports:
 
     def __init__(
         self,
-        summaries: list[AntigravityConversationSummary],
+        summaries: list[AntigravitySessionSummary],
         markdown: dict[str, str],
     ) -> None:
         self._summaries = summaries
@@ -283,19 +283,19 @@ class _FakeClientForExports:
     def close(self) -> None:
         self.closed = True
 
-    def search_conversations(self, *, limit: int = 10000, query: str = "") -> list[AntigravityConversationSummary]:
+    def search_sessions(self, *, limit: int = 10000, query: str = "") -> list[AntigravitySessionSummary]:
         return list(self._summaries)
 
     def export_markdown(self, cascade_id: str) -> str:
         return self._markdown[cascade_id]
 
 
-def test_iter_language_server_exports_yields_parsed_conversations(
+def test_iter_language_server_exports_yields_parsed_sessions(
     tmp_path: Path,
 ) -> None:
     summaries = [
-        AntigravityConversationSummary(cascade_id="cascade-1", title="One", workspace_name="ws"),
-        AntigravityConversationSummary(cascade_id="cascade-2", title="Two"),
+        AntigravitySessionSummary(cascade_id="cascade-1", title="One", workspace_name="ws"),
+        AntigravitySessionSummary(cascade_id="cascade-2", title="Two"),
     ]
     markdown = {
         "cascade-1": "### User Input\n\nhello\n\n### Planner Response\n\nhi\n",
@@ -303,15 +303,15 @@ def test_iter_language_server_exports_yields_parsed_conversations(
     }
     fake = _FakeClientForExports(summaries, markdown)
 
-    conversations = list(iter_language_server_exports(tmp_path, client=fake))  # type: ignore[arg-type]
+    sessions = list(iter_language_server_exports(tmp_path, client=fake))  # type: ignore[arg-type]
 
-    assert [c.provider_conversation_id for c in conversations] == [
+    assert [c.provider_session_id for c in sessions] == [
         "cascade-1",
         "cascade-2",
     ]
-    assert all(c.source_name is Provider.ANTIGRAVITY for c in conversations)
-    assert conversations[0].messages[0].text == "hello"
-    assert conversations[0].messages[1].text == "hi"
+    assert all(c.source_name is Provider.ANTIGRAVITY for c in sessions)
+    assert sessions[0].messages[0].text == "hello"
+    assert sessions[0].messages[1].text == "hi"
     # Externally supplied client must not be started or closed by the driver.
     assert fake.started is False
     assert fake.closed is False
@@ -319,7 +319,7 @@ def test_iter_language_server_exports_yields_parsed_conversations(
 
 def test_iter_language_server_exports_manages_owned_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     summaries = [
-        AntigravityConversationSummary(cascade_id="cascade-1", title="One"),
+        AntigravitySessionSummary(cascade_id="cascade-1", title="One"),
     ]
     markdown = {"cascade-1": "### User Input\n\nhello\n\n### Planner Response\n\nhi\n"}
     fake = _FakeClientForExports(summaries, markdown)
@@ -329,9 +329,9 @@ def test_iter_language_server_exports_manages_owned_client(tmp_path: Path, monke
         lambda root: fake,
     )
 
-    conversations = list(iter_language_server_exports(tmp_path))
+    sessions = list(iter_language_server_exports(tmp_path))
 
-    assert [c.provider_conversation_id for c in conversations] == ["cascade-1"]
+    assert [c.provider_session_id for c in sessions] == ["cascade-1"]
     assert fake.started is True
     assert fake.closed is True
 
@@ -342,7 +342,7 @@ def test_iter_language_server_exports_closes_client_on_error(tmp_path: Path, mon
             raise AntigravityExportError("boom")
 
     fake = _ExplodingClient(
-        [AntigravityConversationSummary(cascade_id="cascade-1", title="One")],
+        [AntigravitySessionSummary(cascade_id="cascade-1", title="One")],
         {},
     )
     monkeypatch.setattr(

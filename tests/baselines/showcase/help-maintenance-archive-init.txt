@@ -1,0 +1,14 @@
+Usage: polylogue maintenance archive-init [OPTIONS]
+
+  Initialize the archive file set after explicit confirmation.
+
+  This command backs up any durable archive targets it is allowed to replace,
+  then creates fresh source, index, embeddings, user, and ops databases.
+  Ingest and read surfaces populate and consume the archive.
+
+Options:
+  --replace-existing            Back up and replace existing durable archive
+                                tier files; recreate disposable ops state.
+  -y, --yes                     Actually create the archive tier files.
+  --output-format [plain|json]  Output format.  [default: plain]
+  -h, --help                    Show this message and exit.

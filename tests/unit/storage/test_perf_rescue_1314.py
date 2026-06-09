@@ -6,13 +6,12 @@ hosts and CI shapes.
 
 1. ``_SESSION_INSIGHT_REBUILD_PAGE_SIZE`` must be at least 50; the
    page-size-1 regression produced ~17K SQL round-trips for ~4K
-   conversations.
-2. ``search_conversation_hits`` must skip archive-scale FTS COUNT(*) probes
+   sessions.
+2. ``search_session_hits`` must skip archive-scale FTS COUNT(*) probes
    when the daemon-maintained freshness ledger says the message FTS surface is
    ready, and must fall back to exact verification when that row is absent.
-3. ``get_provider_metrics_rows`` must read ``conversation_stats`` for
-   the per-conversation pre-aggregates instead of scanning ``messages``
-   for them.
+3. ``get_provider_metrics_rows`` must read the per-session aggregates on
+   ``sessions`` instead of scanning ``messages``.
 4. The hydration path (``get_messages*``) must not call pydantic
    ``model_copy`` per message — in-place attachment of content blocks
    is the load-bearing invariant.
@@ -29,7 +28,7 @@ import aiosqlite
 import pytest
 
 from polylogue.storage.insights.session.rebuild import _SESSION_INSIGHT_REBUILD_PAGE_SIZE
-from polylogue.storage.sqlite.queries.conversations_search import search_conversation_hits
+from polylogue.storage.sqlite.queries.sessions_search import search_session_hits
 from polylogue.storage.sqlite.queries.stats import get_provider_metrics_rows
 from tests.benchmarks.helpers import open_bench_store
 
@@ -60,12 +59,12 @@ def test_session_insight_rebuild_page_size_is_at_least_50() -> None:
     """The page-size-1 regression caused ~17K SQL round-trips for ~4K convs.
 
     The message-budget chunker (#1314) is the actual safety net for large
-    conversations; the page size only controls per-conversation SQL
+    sessions; the page size only controls per-session SQL
     round-trips. Anything below 50 reintroduces the round-trip storm.
     """
     assert _SESSION_INSIGHT_REBUILD_PAGE_SIZE >= 50, (
         "Page size dropped back below the #1314 floor — full rebuilds will "
-        "spend most of their wall-clock in per-conversation round-trips."
+        "spend most of their wall-clock in per-session round-trips."
     )
 
 
@@ -75,7 +74,7 @@ def test_session_insight_rebuild_page_size_is_at_least_50() -> None:
 
 
 @pytest.mark.scale_small
-def test_search_conversation_hits_uses_freshness_ledger_before_match(tier_small_db: Path) -> None:
+def test_search_session_hits_uses_freshness_ledger_before_match(tier_small_db: Path) -> None:
     """Search should not pay archive-scale COUNT(*) probes after daemon readiness."""
     from polylogue.storage.fts.freshness import READY, record_fts_surface_state_async
 
@@ -92,19 +91,19 @@ def test_search_conversation_hits_uses_freshness_ledger_before_match(tier_small_
                     indexed_rows=1,
                 )
                 await conn.commit()
-                await search_conversation_hits(conn, "analysis", limit=5)
+                await search_session_hits(conn, "analysis", limit=5)
 
         with _capture_aiosqlite_sql() as statements:
             store.run(_run(statements))
 
-        lowered = [sql.lower() for sql in statements]
+        lowered = [" ".join(sql.lower().split()) for sql in statements]
         match_index = next(i for i, sql in enumerate(lowered) if "messages_fts match" in sql)
         assert all("count(*) from messages_fts_docsize" not in sql for sql in lowered[:match_index])
         assert all("count(*) from messages where text is not null" not in sql for sql in lowered[:match_index])
 
 
 @pytest.mark.scale_small
-def test_search_conversation_hits_falls_back_to_exact_freshness(tier_small_db: Path) -> None:
+def test_search_session_hits_falls_back_to_exact_freshness(tier_small_db: Path) -> None:
     """Absent ledger rows fall back to exact FTS verification before MATCH."""
     with open_bench_store(tier_small_db) as store:
         backend = store.backend
@@ -113,32 +112,30 @@ def test_search_conversation_hits_falls_back_to_exact_freshness(tier_small_db: P
             async with backend.connection() as conn:
                 await conn.execute("DELETE FROM fts_freshness_state WHERE surface = 'messages_fts'")
                 await conn.commit()
-                await search_conversation_hits(conn, "analysis", limit=5)
+                await search_session_hits(conn, "analysis", limit=5)
 
         with _capture_aiosqlite_sql() as statements:
             store.run(_run(statements))
 
         lowered = [sql.lower() for sql in statements]
         docsize_count_index = next(i for i, sql in enumerate(lowered) if "count(*) from messages_fts_docsize" in sql)
-        message_count_index = next(i for i, sql in enumerate(lowered) if "from messages as m" in sql)
+        block_probe_index = next(
+            i for i, sql in enumerate(lowered) if "from blocks" in sql and ("count(*)" in sql or "limit 1" in sql)
+        )
         match_index = next(i for i, sql in enumerate(lowered) if "messages_fts match" in sql)
         assert docsize_count_index < match_index
-        assert message_count_index < match_index
+        assert block_probe_index < match_index
 
 
 # ---------------------------------------------------------------------------
-# Item 3: provider metrics reads conversation_stats.
+# Item 3: provider metrics reads sessions aggregates.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.scale_small
-def test_provider_metrics_reads_conversation_stats(tier_small_db: Path) -> None:
-    """Provider metrics must source the per-conversation pre-aggregates from
-    ``conversation_stats`` rather than scanning ``messages``.
-
-    The aggregates were already precomputed (#1314); the only column types
-    that still warrant scanning ``messages`` are the role-keyed splits
-    (user/assistant counts and word sums).
+def test_provider_metrics_reads_sessions_aggregates(tier_small_db: Path) -> None:
+    """Provider metrics must source the per-session pre-aggregates from
+    ``sessions`` rather than scanning ``messages``.
     """
     with open_bench_store(tier_small_db) as store:
         backend = store.backend
@@ -153,16 +150,15 @@ def test_provider_metrics_reads_conversation_stats(tier_small_db: Path) -> None:
 
         assert rows, "scale_small fixture should produce at least one provider row"
         joined = "\n".join(statements).lower()
-        assert "conversation_stats" in joined, (
-            "get_provider_metrics_rows no longer reads conversation_stats — "
-            "the per-conversation pre-aggregates fell back to scanning messages."
-        )
+        assert "from sessions" in joined
+        assert "session_stats" not in joined
+        assert "from messages" not in joined
 
         # Result envelope must keep the contract intact.
         first = rows[0]
         for key in (
             "source_name",
-            "conversation_count",
+            "session_count",
             "message_count",
             "user_message_count",
             "assistant_message_count",
@@ -170,8 +166,8 @@ def test_provider_metrics_reads_conversation_stats(tier_small_db: Path) -> None:
             "assistant_word_sum",
             "tool_use_count",
             "thinking_count",
-            "conversations_with_tools",
-            "conversations_with_thinking",
+            "sessions_with_tools",
+            "sessions_with_thinking",
         ):
             assert key in first, f"ProviderMetricsRow contract dropped {key!r}"
 

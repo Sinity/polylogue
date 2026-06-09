@@ -31,7 +31,7 @@ class ValidationCase:
 class ParseMergeEvent:
     """One ParseResult.merge_result event."""
 
-    conversation_id: str
+    session_id: str
     result_counts: dict[str, int]
     content_changed: bool
 
@@ -103,7 +103,7 @@ def parse_merge_events_strategy(
     min_events: int = 1,
     max_events: int = 8,
 ) -> list[ParseMergeEvent]:
-    """Generate merge-result event sequences with repeated conversation IDs."""
+    """Generate merge-result event sequences with repeated session IDs."""
     count = draw(st.integers(min_value=min_events, max_value=max_events))
     ids = draw(
         st.lists(
@@ -113,15 +113,15 @@ def parse_merge_events_strategy(
         )
     )
     events: list[ParseMergeEvent] = []
-    for conversation_id in ids:
+    for session_id in ids:
         events.append(
             ParseMergeEvent(
-                conversation_id=conversation_id,
+                session_id=session_id,
                 result_counts={
-                    "conversations": draw(st.integers(min_value=0, max_value=1)),
+                    "sessions": draw(st.integers(min_value=0, max_value=1)),
                     "messages": draw(st.integers(min_value=0, max_value=5)),
                     "attachments": draw(st.integers(min_value=0, max_value=2)),
-                    "skipped_conversations": draw(st.integers(min_value=0, max_value=2)),
+                    "skipped_sessions": draw(st.integers(min_value=0, max_value=2)),
                     "skipped_messages": draw(st.integers(min_value=0, max_value=5)),
                     "skipped_attachments": draw(st.integers(min_value=0, max_value=2)),
                 },
@@ -142,7 +142,7 @@ def build_validation_payload(case: ValidationCase) -> tuple[bytes, str, str]:
         lines: list[bytes] = [b'{"type":"session_meta"}', b'{"type":"response_item"}']
         lines.extend(b"not json" for _ in range(case.malformed_jsonl_lines))
         return b"\n".join(lines), "codex", "/tmp/session.jsonl"
-    return b'{"id":"doc-1","mapping":{}}', "chatgpt", "/tmp/conversations.json"
+    return b'{"id":"doc-1","mapping":{}}', "chatgpt", "/tmp/sessions.json"
 
 
 def expected_validation_contract(case: ValidationCase) -> ValidationContract:
@@ -165,15 +165,15 @@ def expected_validation_contract(case: ValidationCase) -> ValidationContract:
 def expected_parse_merge_totals(events: list[ParseMergeEvent]) -> ParseMergeTotals:
     """Compute the aggregate ParseResult contract for a generated event list."""
     counts = {
-        "conversations": 0,
+        "sessions": 0,
         "messages": 0,
         "attachments": 0,
-        "skipped_conversations": 0,
+        "skipped_sessions": 0,
         "skipped_messages": 0,
         "skipped_attachments": 0,
     }
     changed_counts = {
-        "conversations": 0,
+        "sessions": 0,
         "messages": 0,
         "attachments": 0,
     }
@@ -181,12 +181,12 @@ def expected_parse_merge_totals(events: list[ParseMergeEvent]) -> ParseMergeTota
 
     for event in events:
         ingest_changed = (
-            event.result_counts["conversations"] + event.result_counts["messages"] + event.result_counts["attachments"]
+            event.result_counts["sessions"] + event.result_counts["messages"] + event.result_counts["attachments"]
         ) > 0
         if ingest_changed or event.content_changed:
-            processed_ids.add(event.conversation_id)
+            processed_ids.add(event.session_id)
         if event.content_changed:
-            changed_counts["conversations"] += 1
+            changed_counts["sessions"] += 1
         changed_counts["messages"] += event.result_counts["messages"]
         changed_counts["attachments"] += event.result_counts["attachments"]
         for key, value in event.result_counts.items():

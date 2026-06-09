@@ -9,7 +9,7 @@
 # itself (timing benchmarks, fuzz harnesses asserting on real wall progress,
 # fixture self-tests, etc.) — NOT just because migrating it would be tedious.
 # The default for a new timestamp-sensitive test is the `frozen_clock`
-# fixture; see TESTING.md "Time and clock" for the migration recipe.
+# fixture; see TESTING.md "Time and clock" for the adoption recipe.
 #
 # Schema: ``files`` is a list of {path, reason} entries.
 
@@ -48,7 +48,7 @@ files:
 
   # --- Pipeline / storage acquired_at timestamps (no production now() comparison) ---
   - path: tests/unit/pipeline/test_async_index.py
-    reason: "RawConversationRecord.acquired_at uses now() as an opaque ISO field; storage does not compare it to production now()."
+    reason: "RawSessionRecord.acquired_at uses now() as an opaque ISO field; storage does not compare it to production now()."
   - path: tests/unit/pipeline/test_ingestion_chaos.py
     reason: "Same as test_async_index: acquired_at is opaque metadata."
   - path: tests/unit/pipeline/test_parsing_service.py
@@ -57,7 +57,7 @@ files:
     reason: "Quarantine-fixture acquired_at is opaque metadata for the test corpus."
   - path: tests/unit/pipeline/test_resilience.py
     reason: "Resilience harness sets acquired_at to now() as opaque metadata; no production timing comparison."
-  - path: tests/unit/storage/test_backend.py
+  - path: tests/unit/storage/test_store_ops.py
     reason: "Backend round-trip tests use now() to label a row; storage echoes it back without comparison."
   - path: tests/unit/storage/test_blob_gc_concurrency.py
     reason: "Blob aging uses time.time() to backdate file mtime; production GC reads file mtime, not datetime.now."

@@ -2,33 +2,35 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock
 
 import pytest
 
-from polylogue.archive.conversation.models import ConversationSummary
-from polylogue.archive.models import Conversation
-from polylogue.archive.query.plan import ConversationQueryPlan
+from polylogue.archive.models import Session
+from polylogue.archive.query.plan import SessionQueryPlan
 from polylogue.archive.query.plan_execution import list_for_plan
 from polylogue.archive.query.retrieval_search import (
-    conversation_action_search_score,
-    fetch_batched_filtered_conversations,
+    fetch_batched_filtered_sessions,
     score_action_search_text,
     search_action_results,
     search_hybrid_results,
     search_query_terms,
     search_query_text,
+    session_action_search_score,
 )
 from polylogue.archive.query.search_hits import (
-    ConversationSearchHit,
     plan_has_search_hit_evidence,
     search_hits_for_plan,
 )
+from polylogue.config import Config, Source
 from polylogue.protocols import VectorProvider
-from polylogue.types import ConversationId, Provider
+from polylogue.types import Provider
+from tests.infra.archive_scenarios import native_session_id_for
 from tests.infra.builders import make_conv, make_msg
+from tests.infra.storage_records import SessionBuilder
 
 
 @dataclass(frozen=True)
@@ -43,17 +45,17 @@ class _Request:
         return replace(self, offset=offset)
 
 
-def _conversation(conversation_id: str, *, text: str = "needle here", updated_hour: int = 0) -> Conversation:
+def _session(session_id: str, *, text: str = "needle here", updated_hour: int = 0) -> Session:
     return make_conv(
-        id=conversation_id,
+        id=session_id,
         provider=Provider.CLAUDE_CODE,
         updated_at=datetime(2026, 4, 23, updated_hour, tzinfo=timezone.utc),
-        messages=[make_msg(id=f"{conversation_id}-m1", role="assistant", text=text)],
+        messages=[make_msg(id=f"{session_id}-m1", role="assistant", text=text)],
     )
 
 
 def test_search_query_text_terms_and_scoring_are_normalized() -> None:
-    plan = ConversationQueryPlan(query_terms=("Alpha",), contains_terms=("Beta", ""))
+    plan = SessionQueryPlan(query_terms=("Alpha",), contains_terms=("Beta", ""))
 
     assert search_query_text(plan) == "Alpha Beta"
     assert search_query_terms(plan) == ("alpha", "beta")
@@ -61,11 +63,11 @@ def test_search_query_text_terms_and_scoring_are_normalized() -> None:
     assert score_action_search_text("no match", query_text="alpha", terms=("beta",)) == 0.0
 
 
-def test_conversation_action_search_score_uses_best_match_and_bonus(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_session_action_search_score_uses_best_match_and_bonus(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "polylogue.archive.semantic.facts.build_conversation_semantic_facts",
-        lambda _conversation: SimpleNamespace(
-            action_events=[
+        "polylogue.archive.semantic.facts.build_session_semantic_facts",
+        lambda _session: SimpleNamespace(
+            actions=[
                 SimpleNamespace(search_text="alpha beta"),
                 SimpleNamespace(search_text="beta only"),
                 SimpleNamespace(search_text=None),
@@ -73,8 +75,8 @@ def test_conversation_action_search_score_uses_best_match_and_bonus(monkeypatch:
         ),
     )
 
-    score = conversation_action_search_score(
-        _conversation("conv-score"),
+    score = session_action_search_score(
+        _session("conv-score"),
         query_text="alpha beta",
         terms=("alpha", "beta"),
     )
@@ -84,9 +86,9 @@ def test_conversation_action_search_score_uses_best_match_and_bonus(monkeypatch:
 
 @pytest.mark.asyncio
 async def test_search_action_results_fallback_batches_scores_and_keeps_best(monkeypatch: pytest.MonkeyPatch) -> None:
-    conv_a = _conversation("conv-a", updated_hour=9)
-    conv_b = _conversation("conv-b", updated_hour=11)
-    conv_c = _conversation("conv-c", updated_hour=10)
+    conv_a = _session("conv-a", updated_hour=9)
+    conv_b = _session("conv-b", updated_hour=11)
+    conv_c = _session("conv-c", updated_hour=10)
     repository = SimpleNamespace()
     repository.list_by_query = AsyncMock(
         side_effect=lambda request: {
@@ -95,7 +97,7 @@ async def test_search_action_results_fallback_batches_scores_and_keeps_best(monk
         }.get(request.offset, [])
     )
 
-    async def _candidate_record_query_for(_plan: ConversationQueryPlan, _repository: object) -> tuple[_Request, bool]:
+    async def _candidate_record_query_for(_plan: SessionQueryPlan, _repository: object) -> tuple[_Request, bool]:
         return (_Request(), False)
 
     monkeypatch.setattr(
@@ -106,23 +108,23 @@ async def test_search_action_results_fallback_batches_scores_and_keeps_best(monk
         "polylogue.archive.query.runtime.apply_common_filters", lambda _plan, batch, *, sql_pushed: batch
     )
     monkeypatch.setattr(
-        "polylogue.archive.query.retrieval_search.conversation_action_search_score",
-        lambda conversation, *, query_text, terms: {
+        "polylogue.archive.query.retrieval_search.session_action_search_score",
+        lambda session, *, query_text, terms: {
             "conv-a": 1.0,
             "conv-b": 6.0,
             "conv-c": 4.0,
-        }[str(conversation.id)],
+        }[str(session.id)],
     )
 
     from polylogue.archive.query.retrieval_search import search_action_results_fallback
 
     results = await search_action_results_fallback(
-        ConversationQueryPlan(query_terms=("needle",)),
+        SessionQueryPlan(query_terms=("needle",)),
         repository,
         limit=2,
     )
 
-    assert [str(conversation.id) for conversation in results] == ["conv-b", "conv-c"]
+    assert [str(session.id) for session in results] == ["conv-b", "conv-c"]
 
 
 @pytest.mark.asyncio
@@ -130,7 +132,7 @@ async def test_search_action_results_uses_ready_path_and_raises_on_error(monkeyp
     from polylogue.errors import DatabaseError
 
     repository = SimpleNamespace(search_actions=AsyncMock())
-    direct = [_conversation("conv-direct")]
+    direct = [_session("conv-direct")]
 
     monkeypatch.setattr(
         "polylogue.archive.query.retrieval_candidates.action_search_ready", AsyncMock(return_value=True)
@@ -138,31 +140,31 @@ async def test_search_action_results_uses_ready_path_and_raises_on_error(monkeyp
 
     repository.search_actions.return_value = direct
     ready_results = await search_action_results(
-        ConversationQueryPlan(query_terms=("needle",), providers=(Provider.CHATGPT,)),
+        SessionQueryPlan(query_terms=("needle",), origins=("chatgpt-export",)),
         repository,
         limit=3,
     )
 
-    assert [str(conversation.id) for conversation in ready_results] == ["conv-direct"]
+    assert [str(session.id) for session in ready_results] == ["conv-direct"]
     repository.search_actions.assert_awaited_once_with("needle", limit=3, providers=["chatgpt"])
 
     repository.search_actions.reset_mock(side_effect=True, return_value=True)
     repository.search_actions.side_effect = RuntimeError("boom")
     with pytest.raises(RuntimeError, match="boom"):
-        await search_action_results(ConversationQueryPlan(query_terms=("needle",)), repository, limit=2)
+        await search_action_results(SessionQueryPlan(query_terms=("needle",)), repository, limit=2)
 
     monkeypatch.setattr(
         "polylogue.archive.query.retrieval_candidates.action_search_ready", AsyncMock(return_value=False)
     )
     with pytest.raises(DatabaseError, match="Action search index is not fresh"):
-        await search_action_results(ConversationQueryPlan(query_terms=("needle",)), repository, limit=2)
+        await search_action_results(SessionQueryPlan(query_terms=("needle",)), repository, limit=2)
 
 
 @pytest.mark.asyncio
 async def test_search_hybrid_results_orders_fused_ids_and_skips_missing(monkeypatch: pytest.MonkeyPatch) -> None:
-    conv_text = _conversation("conv-text")
-    conv_action = _conversation("conv-action")
-    conv_vector = _conversation("conv-vector")
+    conv_text = _session("conv-text")
+    conv_action = _session("conv-action")
+    conv_vector = _session("conv-vector")
     repository = SimpleNamespace(
         search=AsyncMock(return_value=[conv_text]),
         search_similar=AsyncMock(return_value=[conv_vector]),
@@ -183,13 +185,13 @@ async def test_search_hybrid_results_orders_fused_ids_and_skips_missing(monkeypa
     )
 
     results, lane_ranks = await search_hybrid_results(
-        ConversationQueryPlan(
+        SessionQueryPlan(
             query_terms=("needle",),
             vector_provider=cast(
                 VectorProvider,
                 SimpleNamespace(
                     model="stub",
-                    upsert=lambda conversation_id, messages: None,
+                    upsert=lambda session_id, messages: None,
                     query=lambda text, limit=10: [],
                 ),
             ),
@@ -198,7 +200,7 @@ async def test_search_hybrid_results_orders_fused_ids_and_skips_missing(monkeypa
         limit=4,
     )
 
-    assert [str(conversation.id) for conversation in results] == [
+    assert [str(session.id) for session in results] == [
         "conv-action",
         "conv-text",
         "conv-vector",
@@ -210,12 +212,12 @@ async def test_search_hybrid_results_orders_fused_ids_and_skips_missing(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_fetch_batched_filtered_conversations_deduplicates_and_respects_limit(
+async def test_fetch_batched_filtered_sessions_deduplicates_and_respects_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    conv_a = _conversation("conv-a")
-    conv_b = _conversation("conv-b")
-    conv_c = _conversation("conv-c")
+    conv_a = _session("conv-a")
+    conv_b = _session("conv-b")
+    conv_c = _session("conv-c")
     repository = SimpleNamespace()
     repository.list_by_query = AsyncMock(
         side_effect=lambda request: {
@@ -224,7 +226,7 @@ async def test_fetch_batched_filtered_conversations_deduplicates_and_respects_li
         }.get(request.offset, [])
     )
 
-    async def _candidate_record_query_for(_plan: ConversationQueryPlan, _repository: object) -> tuple[_Request, bool]:
+    async def _candidate_record_query_for(_plan: SessionQueryPlan, _repository: object) -> tuple[_Request, bool]:
         return (_Request(), False)
 
     monkeypatch.setattr(
@@ -233,110 +235,168 @@ async def test_fetch_batched_filtered_conversations_deduplicates_and_respects_li
     monkeypatch.setattr("polylogue.archive.query.retrieval_candidates.candidate_batch_limit", lambda _plan: 2)
     monkeypatch.setattr("polylogue.archive.query.runtime.apply_full_filters", lambda _plan, batch, *, sql_pushed: batch)
 
-    results = await fetch_batched_filtered_conversations(
-        ConversationQueryPlan(limit=3),
+    results = await fetch_batched_filtered_sessions(
+        SessionQueryPlan(limit=3),
         repository,
     )
 
-    assert [str(conversation.id) for conversation in results] == ["conv-a", "conv-b", "conv-c"]
+    assert [str(session.id) for session in results] == ["conv-a", "conv-b", "conv-c"]
 
 
 @pytest.mark.asyncio
 async def test_list_for_plan_preserves_rank_order_for_search_without_explicit_sort(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    older_but_better_ranked = _conversation("conv-rank-1", updated_hour=9)
-    newer_but_worse_ranked = _conversation("conv-rank-2", updated_hour=12)
+    older_but_better_ranked = _session("conv-rank-1", updated_hour=9)
+    newer_but_worse_ranked = _session("conv-rank-2", updated_hour=12)
 
     async def _fetch_candidates(
-        _plan: ConversationQueryPlan,
+        _plan: SessionQueryPlan,
         _repository: object,
         *,
         summaries: bool,
-    ) -> tuple[list[Conversation], bool]:
+    ) -> tuple[list[Session], bool]:
         assert summaries is False
         return [older_but_better_ranked, newer_but_worse_ranked], True
 
     monkeypatch.setattr("polylogue.archive.query.plan_execution.fetch_candidates", _fetch_candidates)
 
     results = await list_for_plan(
-        ConversationQueryPlan(query_terms=("needle",), sort=None),
+        SessionQueryPlan(query_terms=("needle",), sort=None),
         SimpleNamespace(),
     )
 
-    assert [str(conversation.id) for conversation in results] == ["conv-rank-1", "conv-rank-2"]
+    assert [str(session.id) for session in results] == ["conv-rank-1", "conv-rank-2"]
 
 
 @pytest.mark.asyncio
 async def test_list_for_plan_explicit_date_sort_overrides_rank_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    older_but_better_ranked = _conversation("conv-rank-1", updated_hour=9)
-    newer_but_worse_ranked = _conversation("conv-rank-2", updated_hour=12)
+    older_but_better_ranked = _session("conv-rank-1", updated_hour=9)
+    newer_but_worse_ranked = _session("conv-rank-2", updated_hour=12)
 
     async def _fetch_candidates(
-        _plan: ConversationQueryPlan,
+        _plan: SessionQueryPlan,
         _repository: object,
         *,
         summaries: bool,
-    ) -> tuple[list[Conversation], bool]:
+    ) -> tuple[list[Session], bool]:
         assert summaries is False
         return [older_but_better_ranked, newer_but_worse_ranked], True
 
     monkeypatch.setattr("polylogue.archive.query.plan_execution.fetch_candidates", _fetch_candidates)
 
     results = await list_for_plan(
-        ConversationQueryPlan(query_terms=("needle",), sort="date"),
+        SessionQueryPlan(query_terms=("needle",), sort="date"),
         SimpleNamespace(),
     )
 
-    assert [str(conversation.id) for conversation in results] == ["conv-rank-2", "conv-rank-1"]
+    assert [str(session.id) for session in results] == ["conv-rank-2", "conv-rank-1"]
 
 
 @pytest.mark.asyncio
-async def test_search_hits_for_plan_handles_empty_simple_and_fallback_paths(monkeypatch: pytest.MonkeyPatch) -> None:
-    repository = SimpleNamespace(search_summary_hits=AsyncMock())
-    repository.search_summary_hits.return_value = [
-        ConversationSearchHit(
-            summary=ConversationSummary(id=ConversationId("conv-summary"), provider=Provider.CHATGPT),
-            message_id=None,
-            rank=1,
-            retrieval_lane="dialogue",
-            match_surface="message",
-            snippet="needle",
-        )
-    ]
+async def test_search_hits_for_plan_handles_empty_and_lexical_paths(tmp_path: Path) -> None:
+    """``search_hits_for_plan`` executes over the archive.
 
-    assert plan_has_search_hit_evidence(ConversationQueryPlan()) is False
-    assert await search_hits_for_plan(ConversationQueryPlan(query_terms=("   ",)), repository) == []
+    The function now takes ``(plan, config)`` (no repository) and resolves
+    hits through ``archive_search_hits``. This pins the empty-evidence,
+    whitespace-only, and lexical (``dialogue``) contracts against a real
+    seeded ``index.db``.
+    """
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir(parents=True, exist_ok=True)
+    render_root = tmp_path / "render"
+    render_root.mkdir(parents=True, exist_ok=True)
+    db_path = archive_root / "index.db"
 
-    monkeypatch.setattr("polylogue.archive.query.search_hits.plan_has_fields_matching", lambda _plan, _predicate: False)
-    simple_hits = await search_hits_for_plan(
-        ConversationQueryPlan(
+    (
+        SessionBuilder(db_path, "conv-summary")
+        .provider(Provider.CHATGPT.value)
+        .title("Needle Doc")
+        .updated_at("2026-04-22T12:00:00+00:00")
+        .add_message("m1", role="user", text="needle in the haystack here")
+        .save()
+    )
+
+    config = Config(
+        archive_root=archive_root,
+        render_root=render_root,
+        sources=[Source(name="test", path=tmp_path / "inbox")],
+        db_path=db_path,
+    )
+
+    # A plan with no search-bearing fields carries no evidence.
+    assert plan_has_search_hit_evidence(SessionQueryPlan()) is False
+
+    # Whitespace-only query terms degrade to no hits.
+    assert await search_hits_for_plan(SessionQueryPlan(query_terms=("   ",)), config) == []
+
+    # Lexical (dialogue) lane returns evidence-bearing hits with the native
+    # session id, the dialogue lane label, and an FTS snippet.
+    lexical_hits = await search_hits_for_plan(
+        SessionQueryPlan(
             query_terms=("needle",),
-            providers=(Provider.CHATGPT,),
+            origins=("chatgpt-export",),
             limit=5,
             since=datetime(2026, 4, 20, tzinfo=timezone.utc),
         ),
-        repository,
+        config,
     )
 
-    assert [hit.conversation_id for hit in simple_hits] == ["conv-summary"]
-    repository.search_summary_hits.assert_awaited_once_with(
-        "needle",
-        limit=5,
-        providers=["chatgpt"],
-        since="2026-04-20T00:00:00+00:00",
+    native_id = native_session_id_for("chatgpt", "conv-summary")
+    assert [hit.session_id for hit in lexical_hits] == [native_id]
+    assert lexical_hits[0].retrieval_lane == "dialogue"
+    assert "needle" in (lexical_hits[0].snippet or "")
+
+
+@pytest.mark.asyncio
+async def test_search_hits_for_plan_degrades_semantic_and_hybrid_without_embeddings(tmp_path: Path) -> None:
+    """Graceful-degradation contract (#1743).
+
+    A semantic or hybrid request against an archive that has no usable vector
+    backend (no ``embeddings.db``, sqlite-vec/Voyage unconfigured) yields an
+    empty result set rather than raising. This pins ``archive_search_hits`` /
+    ``_semantic_hits`` returning ``[]`` for both lanes over a seeded but
+    embeddings-less ``index.db``.
+    """
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir(parents=True, exist_ok=True)
+    render_root = tmp_path / "render"
+    render_root.mkdir(parents=True, exist_ok=True)
+    db_path = archive_root / "index.db"
+
+    (
+        SessionBuilder(db_path, "conv-semantic")
+        .provider(Provider.CHATGPT.value)
+        .title("Needle Doc")
+        .updated_at("2026-04-22T12:00:00+00:00")
+        .add_message("m1", role="user", text="needle in the haystack here")
+        .save()
     )
 
-    async def _list(_self: ConversationQueryPlan, _repository: object) -> list[object]:
-        return [_conversation("conv-message", text="needle in message")]
-
-    monkeypatch.setattr(ConversationQueryPlan, "list", _list)
-    fallback_hits = await search_hits_for_plan(
-        ConversationQueryPlan(similar_text="semantic needle", retrieval_lane="actions"),
-        repository,
+    # No vector provider is configured (no Voyage key / sqlite-vec backend), so
+    # create_vector_provider returns None for this archive regardless of whether
+    # an empty embeddings.db was bootstrapped alongside the index.
+    config = Config(
+        archive_root=archive_root,
+        render_root=render_root,
+        sources=[Source(name="test", path=tmp_path / "inbox")],
+        db_path=db_path,
     )
 
-    assert [hit.conversation_id for hit in fallback_hits] == ["conv-message"]
-    assert fallback_hits[0].retrieval_lane == "semantic"
+    # Pure-semantic request: no vector backend -> empty, never raises.
+    semantic_hits = await search_hits_for_plan(
+        SessionQueryPlan(similar_text="needle", retrieval_lane="semantic"),
+        config,
+    )
+    assert semantic_hits == []
+
+    # Hybrid request: the semantic leg degrades to empty, so no fused rows are
+    # produced; the call returns empty without raising rather than erroring on
+    # the missing vector backend.
+    hybrid_hits = await search_hits_for_plan(
+        SessionQueryPlan(query_terms=("needle",), retrieval_lane="hybrid"),
+        config,
+    )
+    assert hybrid_hits == []

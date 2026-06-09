@@ -5,14 +5,14 @@ AI chat archives during sessions.
 
 ## Tools
 
-- `list_conversations` — List recent conversations, filterable by path and sort order.
-- `get_conversation` — Retrieve a full conversation by ID with optional prose-only projection.
-- `search` — Full-text search across conversations with filter chains.
+- `list_sessions` — List recent sessions, filterable by path and sort order.
+- `get_session` — Retrieve a full session by ID with optional prose-only projection.
+- `search` — Full-text search across sessions with filter chains.
 
 ## Resources
 
-- `polylogue://conversations/recent` — URI-addressable recent conversation list.
-- `polylogue://conversations/{id}` — URI-addressable individual conversation.
+- `polylogue://sessions/recent` — URI-addressable recent session list.
+- `polylogue://sessions/{id}` — URI-addressable individual session.
 
 ## Configuration
 

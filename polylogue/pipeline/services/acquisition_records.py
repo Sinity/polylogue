@@ -7,9 +7,9 @@ from datetime import datetime, timezone
 from typing_extensions import TypedDict
 
 from polylogue.core.provider_identity import canonical_acquisition_provider
-from polylogue.sources.parsers.base import RawConversationData
+from polylogue.sources.parsers.base import RawSessionData
 from polylogue.storage.cursor_state import CursorStatePayload
-from polylogue.storage.runtime import RawConversationRecord
+from polylogue.storage.runtime import RawSessionRecord
 
 
 class ScanCounts(TypedDict):
@@ -29,10 +29,10 @@ class ScanResult:
 
 
 def make_raw_record(
-    raw_data: RawConversationData,
+    raw_data: RawSessionData,
     source_name: str,
-) -> RawConversationRecord:
-    """Prepare a raw conversation record from acquisition data.
+) -> RawSessionRecord:
+    """Prepare a raw session record from acquisition data.
 
     When ``blob_hash`` is set on the data (content already in blob store),
     uses it as raw_id directly. Otherwise falls back to hashing raw_bytes.
@@ -47,7 +47,7 @@ def make_raw_record(
 
         raw_id, blob_size = get_blob_store().write_from_bytes(raw_data.raw_bytes)
     else:
-        raise ValueError("RawConversationData has neither blob_hash nor raw_bytes")
+        raise ValueError("RawSessionData has neither blob_hash nor raw_bytes")
 
     acquired_at = datetime.now(timezone.utc).isoformat()
     source_name = canonical_acquisition_provider(
@@ -55,7 +55,7 @@ def make_raw_record(
         source_name=source_name,
     )
 
-    return RawConversationRecord(
+    return RawSessionRecord(
         raw_id=raw_id,
         source_name=source_name,
         source_path=raw_data.source_path,

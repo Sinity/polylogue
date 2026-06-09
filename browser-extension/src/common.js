@@ -11,11 +11,11 @@
     return (hash >>> 0).toString(16).padStart(8, "0");
   }
 
-  function conversationIdFromUrl(provider, url) {
+  function sessionIdFromUrl(provider, url) {
     const parsed = new URL(url);
     const parts = parsed.pathname.split("/").filter(Boolean);
-    const conversationToken = parts.at(-1) || parsed.pathname || parsed.hostname;
-    return `${provider}:${conversationToken}:${fnv1a(parsed.origin + parsed.pathname)}`;
+    const sessionToken = parts.at(-1) || parsed.pathname || parsed.hostname;
+    return `${provider}:${sessionToken}:${fnv1a(parsed.origin + parsed.pathname)}`;
   }
 
   function visibleText(node) {
@@ -24,7 +24,7 @@
 
   function buildEnvelope({ provider, adapterName, turns, model = null }) {
     const sourceUrl = window.location.href;
-    const providerSessionId = conversationIdFromUrl(provider, sourceUrl);
+    const providerSessionId = sessionIdFromUrl(provider, sourceUrl);
     const now = new Date().toISOString();
     return {
       polylogue_capture_kind: CAPTURE_KIND,
@@ -72,7 +72,7 @@
 
   window.polylogueCapture = {
     buildEnvelope,
-    conversationIdFromUrl,
+    sessionIdFromUrl,
     capturePage: null,
     fnv1a,
     refreshArchiveState,

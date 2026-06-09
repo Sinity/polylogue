@@ -19,12 +19,9 @@ from polylogue.maintenance.targets import (
     build_maintenance_target_catalog,
 )
 from polylogue.protocols import ProgressCallback
-from polylogue.storage.action_events.artifacts import ActionEventArtifactState
 from polylogue.storage.blob_repair import count_orphaned_blobs_sync, repair_orphaned_blobs_data
 from polylogue.storage.insights.session.repair_assessment import (
     assess_session_insight_repairs,
-    session_insight_fts_ready,
-    session_insight_status_ready,
 )
 from polylogue.storage.message_type_backfill import (
     BackfillResult,
@@ -35,6 +32,27 @@ from polylogue.storage.message_type_backfill import (
 logger = get_logger(__name__)
 _MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
 _PROBE_ONLY_EXACT_MESSAGE_ROW_LIMIT = 100_000
+
+
+def _open_archive_index_connection() -> sqlite3.Connection:
+    from polylogue.paths import active_index_db_path
+
+    conn = sqlite3.connect(active_index_db_path())
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+
+def _archive_index_present(config: Config) -> bool:
+    index_db = config.archive_root / "index.db"
+    if not index_db.exists():
+        return False
+    try:
+        with sqlite3.connect(f"file:{index_db}?mode=ro", uri=True) as conn:
+            version = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
+    except sqlite3.Error:
+        return False
+    return version > 0
 
 
 def offline_maintenance_blockers(
@@ -84,13 +102,25 @@ class RepairResult:
 
 
 def count_orphaned_messages_sync(conn: sqlite3.Connection) -> int:
+    """Count messages whose parent session row is missing.
+
+    keys each message to ``sessions`` via
+    ``messages.session_id REFERENCES sessions(session_id) ON DELETE
+    CASCADE``. The cascade makes a message without its session
+    structurally impossible — deleting a session deletes its messages in
+    the same statement. This query therefore reports the honest native
+    invariant: it joins ``messages`` to ``sessions`` and counts the rows
+    with no matching session, which is always 0 on a consistent archive
+    archive. It is retained as an integrity probe so a corrupted file
+    (FK disabled during a hand edit) is still observable.
+    """
     return int(
         conn.execute(
             """
             SELECT COUNT(*)
             FROM messages m
-            LEFT JOIN conversations c ON c.conversation_id = m.conversation_id
-            WHERE c.conversation_id IS NULL
+            LEFT JOIN sessions s ON s.session_id = m.session_id
+            WHERE s.session_id IS NULL
             """
         ).fetchone()[0]
     )
@@ -102,47 +132,47 @@ def has_orphaned_messages_sync(conn: sqlite3.Connection) -> bool:
             """
             SELECT 1
             FROM messages m
-            LEFT JOIN conversations c ON c.conversation_id = m.conversation_id
-            WHERE c.conversation_id IS NULL
+            LEFT JOIN sessions s ON s.session_id = m.session_id
+            WHERE s.session_id IS NULL
             LIMIT 1
             """
         ).fetchone()
     )
 
 
-def count_orphaned_content_blocks_sync(conn: sqlite3.Connection) -> int:
+def count_empty_sessions_sync(conn: sqlite3.Connection) -> int:
+    """Count sessions that carry no messages.
+
+    The native session/message tree replaces the legacy
+    session/message tables: an "empty session" is a ``sessions``
+    row with no ``messages`` row referencing it.
+    """
     return int(
         conn.execute(
             """
             SELECT COUNT(*)
-            FROM content_blocks cb
-            WHERE NOT EXISTS (SELECT 1 FROM conversations c WHERE c.conversation_id = cb.conversation_id)
-               OR NOT EXISTS (SELECT 1 FROM messages m WHERE m.message_id = cb.message_id)
-            """
-        ).fetchone()[0]
-    )
-
-
-def count_empty_conversations_sync(conn: sqlite3.Connection) -> int:
-    return int(
-        conn.execute(
-            """
-            SELECT COUNT(*)
-            FROM conversations c
-            LEFT JOIN messages m ON m.conversation_id = c.conversation_id
-            WHERE m.conversation_id IS NULL
+            FROM sessions s
+            LEFT JOIN messages m ON m.session_id = s.session_id
+            WHERE m.session_id IS NULL
             """
         ).fetchone()[0]
     )
 
 
 def count_orphaned_attachments_sync(conn: sqlite3.Connection) -> int:
+    """Count attachment refs without a parent and attachments without refs.
+
+    Native ``attachment_refs`` keys to ``sessions``/``messages`` with
+    ``ON DELETE CASCADE`` / ``SET NULL``; ``attachments`` carry a
+    materialized ``ref_count``. A ref without a live parent or an
+    attachment with no surviving ref is the archive orphan signature.
+    """
     orphaned_refs = int(
         conn.execute(
             """
             SELECT COUNT(*) FROM attachment_refs ar
             WHERE (ar.message_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.message_id = ar.message_id))
-               OR NOT EXISTS (SELECT 1 FROM conversations c WHERE c.conversation_id = ar.conversation_id)
+               OR NOT EXISTS (SELECT 1 FROM sessions s WHERE s.session_id = ar.session_id)
             """
         ).fetchone()[0]
     )
@@ -173,8 +203,8 @@ def session_insight_repair_count(derived_statuses: dict[str, DerivedModelStatus]
         "session_work_event_inference",
         "session_work_event_inference_fts",
         "session_phase_inference",
-        "work_threads",
-        "work_threads_fts",
+        "threads",
+        "threads_fts",
         "session_tag_rollups",
     ]
     maybe_statuses = [derived_statuses.get(k) for k in keys]
@@ -188,49 +218,6 @@ def session_insight_repair_count(derived_statuses: dict[str, DerivedModelStatus]
         total += max(0, int(s.stale_rows or 0))
         total += max(0, int(s.orphan_rows or 0))
     return total
-
-
-def action_event_repair_count(derived_statuses: dict[str, DerivedModelStatus]) -> int:
-    return _action_event_state_from_statuses(derived_statuses).repair_item_count
-
-
-def _action_event_repair_components(
-    derived_statuses: dict[str, DerivedModelStatus],
-) -> tuple[int, int, int, int]:
-    state = _action_event_state_from_statuses(derived_statuses)
-    return (
-        state.missing_conversations,
-        state.stale_rows,
-        state.pending_fts_rows,
-        state.excess_fts_rows,
-    )
-
-
-def _action_event_state_from_statuses(
-    derived_statuses: dict[str, DerivedModelStatus],
-) -> ActionEventArtifactState:
-    action_events = derived_statuses.get("action_events")
-    action_events_fts = derived_statuses.get("action_events_fts")
-    if action_events is None or action_events_fts is None:
-        return ActionEventArtifactState(
-            source_conversations=0,
-            materialized_conversations=0,
-            materialized_rows=0,
-            fts_rows=0,
-        )
-    return ActionEventArtifactState(
-        source_conversations=int(action_events.source_documents or 0),
-        materialized_conversations=int(action_events.materialized_documents or 0),
-        materialized_rows=int(action_events.materialized_rows or 0),
-        fts_rows=int(action_events_fts.materialized_rows or 0),
-        stale_rows=int(action_events.stale_rows or 0),
-        orphan_rows=int(action_events.orphan_rows or 0),
-        matches_version=bool(action_events.matches_version if action_events.matches_version is not None else True),
-    )
-
-
-def _action_event_repair_detail(derived_statuses: dict[str, DerivedModelStatus]) -> str:
-    return _action_event_state_from_statuses(derived_statuses).repair_detail()
 
 
 def dangling_fts_repair_count(derived_statuses: dict[str, DerivedModelStatus]) -> int:
@@ -321,6 +308,7 @@ def _archive_debt_status(
 def collect_archive_debt_statuses_sync(
     conn: sqlite3.Connection,
     *,
+    db_path: Path | str | None = None,
     derived_statuses: dict[str, DerivedModelStatus] | None = None,
     include_expensive: bool = True,
     probe_only: bool = False,
@@ -335,10 +323,9 @@ def collect_archive_debt_statuses_sync(
         and _table_has_more_than(conn, "messages", _PROBE_ONLY_EXACT_MESSAGE_ROW_LIMIT)
     )
     orphaned_messages = 0 if skip_large_message_scans else count_orphaned_messages_sync(conn)
-    empty_conversations = 0 if skip_large_message_scans else count_empty_conversations_sync(conn)
+    empty_sessions = 0 if skip_large_message_scans else count_empty_sessions_sync(conn)
     orphaned_attachments = count_orphaned_attachments_sync(conn)
     session_insights = session_insight_repair_count(statuses)
-    action_events = action_event_repair_count(statuses)
     dangling_fts = dangling_fts_repair_count(statuses)
     _unclassified = 0 if skip_large_message_scans else count_unclassified_message_type_sync(conn)
 
@@ -359,15 +346,15 @@ def collect_archive_debt_statuses_sync(
             ),
             skipped=skip_large_message_scans,
         ),
-        "empty_conversations": _archive_debt_status(
-            "empty_conversations",
-            issue_count=empty_conversations,
+        "empty_sessions": _archive_debt_status(
+            "empty_sessions",
+            issue_count=empty_sessions,
             detail=(
-                "Skipped exact empty-conversation scan in probe mode; use --deep for exact count"
+                "Skipped exact empty-session scan in probe mode; use --deep for exact count"
                 if skip_large_message_scans
-                else "No empty conversations"
-                if empty_conversations == 0
-                else f"{empty_conversations:,} empty conversations"
+                else "No empty sessions"
+                if empty_sessions == 0
+                else f"{empty_sessions:,} empty sessions"
             ),
             skipped=skip_large_message_scans,
         ),
@@ -384,11 +371,6 @@ def collect_archive_debt_statuses_sync(
             detail="Session insight read models ready"
             if session_insights == 0
             else f"{session_insights:,} pending/stale/orphaned session-insight rows",
-        ),
-        "action_event_read_model": _archive_debt_status(
-            "action_event_read_model",
-            issue_count=action_events,
-            detail=_action_event_repair_detail(statuses),
         ),
         "dangling_fts": _archive_debt_status(
             "dangling_fts",
@@ -409,15 +391,7 @@ def collect_archive_debt_statuses_sync(
         ),
     }
     if include_expensive:
-        orphaned_content_blocks = count_orphaned_content_blocks_sync(conn)
-        debt_statuses["orphaned_content_blocks"] = _archive_debt_status(
-            "orphaned_content_blocks",
-            issue_count=orphaned_content_blocks,
-            detail="No orphaned content blocks"
-            if orphaned_content_blocks == 0
-            else f"{orphaned_content_blocks:,} orphaned content blocks",
-        )
-        orphaned_blobs = count_orphaned_blobs_sync(conn)
+        orphaned_blobs = count_orphaned_blobs_sync(conn, db_path=db_path)
         debt_statuses["orphaned_blobs"] = _archive_debt_status(
             "orphaned_blobs",
             issue_count=orphaned_blobs,
@@ -494,14 +468,22 @@ def _run_sql_repair(
 
 
 # ---------------------------------------------------------------------------
-# Cleanup repairs (orphans, empty conversations, attachments)
+# Cleanup repairs (orphans, empty sessions, attachments)
 # ---------------------------------------------------------------------------
 
 
 def repair_orphaned_messages(config: Config, dry_run: bool = False) -> RepairResult:
-    from polylogue.storage.sqlite.connection import connection_context
+    """Delete messages whose parent session row is missing.
 
-    with connection_context(None) as conn:
+    On the archive ``messages.session_id`` cascades from
+    ``sessions``, so a session-less message can only exist after a
+    file-level corruption (FK disabled during a hand edit). The repair
+    counts such rows via :func:`count_orphaned_messages_sync` and, when
+    any are found, deletes the orphan ``messages`` rows directly; the
+    ``blocks`` rows beneath them cascade away through
+    ``blocks.message_id REFERENCES messages ON DELETE CASCADE``.
+    """
+    with _open_archive_index_connection() as conn:
         count = count_orphaned_messages_sync(conn)
         if count == 0:
             return _repair_result(
@@ -518,12 +500,13 @@ def repair_orphaned_messages(config: Config, dry_run: bool = False) -> RepairRes
                     success=True,
                     detail=f"Would: Delete {count} orphaned messages",
                 )
-            orphan_cids = conn.execute(
-                "SELECT DISTINCT conversation_id FROM messages WHERE NOT EXISTS (SELECT 1 FROM conversations c WHERE c.conversation_id = messages.conversation_id)"
-            ).fetchall()
-            placeholders = ",".join("?" for _ in orphan_cids)
             result = conn.execute(
-                f"DELETE FROM messages WHERE conversation_id IN ({placeholders})", [row[0] for row in orphan_cids]
+                """
+                DELETE FROM messages
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM sessions s WHERE s.session_id = messages.session_id
+                )
+                """
             )
             conn.commit()
             return _repair_result(
@@ -550,55 +533,20 @@ def preview_orphaned_messages(*, count: int) -> RepairResult:
     )
 
 
-def repair_empty_conversations(config: Config, dry_run: bool = False) -> RepairResult:
-    from polylogue.storage.sqlite.connection import connection_context
-
-    with connection_context(None) as conn:
+def repair_empty_sessions(config: Config, dry_run: bool = False) -> RepairResult:
+    with _open_archive_index_connection() as conn:
         return _run_sql_repair(
-            "empty_conversations",
-            count_sql="SELECT COUNT(*) FROM conversations c WHERE NOT EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.conversation_id)",
-            action_sql="DELETE FROM conversations WHERE NOT EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = conversations.conversation_id)",
+            "empty_sessions",
+            count_sql="SELECT COUNT(*) FROM sessions c WHERE NOT EXISTS (SELECT 1 FROM messages m WHERE m.session_id = c.session_id)",
+            action_sql="DELETE FROM sessions WHERE NOT EXISTS (SELECT 1 FROM messages m WHERE m.session_id = sessions.session_id)",
             dry_run=dry_run,
             conn=conn,
         )
 
 
-def preview_empty_conversations(*, count: int) -> RepairResult:
+def preview_empty_sessions(*, count: int) -> RepairResult:
     return _repair_result(
-        "empty_conversations",
-        repaired_count=count,
-        success=True,
-        detail=f"Would: {count} rows affected" if count else "Would: No issues found",
-    )
-
-
-def repair_orphaned_content_blocks(config: Config, dry_run: bool = False) -> RepairResult:
-    from polylogue.storage.sqlite.connection import connection_context
-
-    with connection_context(None) as conn:
-        if dry_run:
-            count = count_orphaned_content_blocks_sync(conn)
-            return preview_orphaned_content_blocks(count=count)
-        return _run_sql_repair(
-            "orphaned_content_blocks",
-            count_sql="""
-                SELECT COUNT(*) FROM content_blocks cb
-                WHERE NOT EXISTS (SELECT 1 FROM conversations c WHERE c.conversation_id = cb.conversation_id)
-                   OR NOT EXISTS (SELECT 1 FROM messages m WHERE m.message_id = cb.message_id)
-            """,
-            action_sql="""
-                DELETE FROM content_blocks
-                WHERE NOT EXISTS (SELECT 1 FROM conversations c WHERE c.conversation_id = content_blocks.conversation_id)
-                   OR NOT EXISTS (SELECT 1 FROM messages m WHERE m.message_id = content_blocks.message_id)
-            """,
-            dry_run=dry_run,
-            conn=conn,
-        )
-
-
-def preview_orphaned_content_blocks(*, count: int) -> RepairResult:
-    return _repair_result(
-        "orphaned_content_blocks",
+        "empty_sessions",
         repaired_count=count,
         success=True,
         detail=f"Would: {count} rows affected" if count else "Would: No issues found",
@@ -627,11 +575,19 @@ def count_superseded_raw_snapshots_sync(conn: sqlite3.Connection) -> int:
 
 
 def repair_superseded_raw_snapshots(config: Config, dry_run: bool = False) -> RepairResult:
+    import sqlite3
+
     from polylogue.storage.raw_retention import cleanup_superseded_raw_snapshots
     from polylogue.storage.sqlite.connection import open_connection
 
-    with open_connection(config.db_path) as conn:
-        result = cleanup_superseded_raw_snapshots(conn, dry_run=dry_run, limit=10_000)
+    repair_db_path = config.db_path.with_name("source.db")
+    if repair_db_path.exists():
+        with sqlite3.connect(repair_db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            result = cleanup_superseded_raw_snapshots(conn, dry_run=dry_run, limit=10_000)
+    else:
+        with open_connection(config.db_path) as conn:
+            result = cleanup_superseded_raw_snapshots(conn, dry_run=dry_run, limit=10_000)
     if dry_run:
         return _repair_result(
             "superseded_raw_snapshots",
@@ -648,8 +604,7 @@ def repair_superseded_raw_snapshots(config: Config, dry_run: bool = False) -> Re
         success=not result.errors,
         detail=(
             f"Deleted {result.deleted_raw_count:,} raw rows and {result.deleted_blob_count:,} blob files "
-            f"({result.deleted_blob_bytes:,} bytes); cleared "
-            f"{result.provider_event_links_cleared:,} provider-event raw links"
+            f"({result.deleted_blob_bytes:,} bytes)"
             + (f"; errors: {'; '.join(result.errors[:3])}" if result.errors else "")
         ),
     )
@@ -678,10 +633,8 @@ def preview_superseded_raw_snapshots(*, count: int) -> RepairResult:
 
 
 def repair_orphaned_attachments(config: Config, dry_run: bool = False) -> RepairResult:
-    from polylogue.storage.sqlite.connection import connection_context
-
     try:
-        with connection_context(None) as conn:
+        with _open_archive_index_connection() as conn:
             if dry_run:
                 return preview_orphaned_attachments(count=count_orphaned_attachments_sync(conn))
 
@@ -691,7 +644,7 @@ def repair_orphaned_attachments(config: Config, dry_run: bool = False) -> Repair
             refs_deleted = ref_result.rowcount
 
             conv_ref_result = conn.execute(
-                "DELETE FROM attachment_refs WHERE NOT EXISTS (SELECT 1 FROM conversations c WHERE c.conversation_id = attachment_refs.conversation_id)"
+                "DELETE FROM attachment_refs WHERE NOT EXISTS (SELECT 1 FROM sessions c WHERE c.session_id = attachment_refs.session_id)"
             )
             conv_refs_deleted = conv_ref_result.rowcount
 
@@ -727,7 +680,7 @@ def preview_orphaned_attachments(*, count: int) -> RepairResult:
 
 
 # ---------------------------------------------------------------------------
-# Derived repairs (session insights, action events, FTS, WAL)
+# Derived repairs (session insights, actions, FTS, WAL)
 # ---------------------------------------------------------------------------
 
 
@@ -737,33 +690,26 @@ def repair_session_insights(
     *,
     progress_callback: ProgressCallback | None = None,
     progress_total: int | None = None,
-    conversation_ids: tuple[str, ...] | None = None,
+    session_ids: tuple[str, ...] | None = None,
 ) -> RepairResult:
     """Repair / rebuild session insights.
 
-    When ``conversation_ids`` is given, the rebuild is narrowed to that
+    When ``session_ids`` is given, the rebuild is narrowed to that
     set instead of touching the full archive — used by the maintenance
-    planner to honor :class:`MaintenanceScopeFilter.conversation_ids`.
+    planner to honor :class:`MaintenanceScopeFilter.session_ids`.
     """
-    from polylogue.storage.fts.fts_lifecycle import rebuild_session_insight_fts_sync
-    from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
-    from polylogue.storage.insights.session.status import (
-        session_insight_status_sync,
-        session_profile_repair_candidate_ids_sync,
-    )
-    from polylogue.storage.sqlite.connection import connection_context
+    from polylogue.api.archive import _rebuild_archive_session_insights
+    from polylogue.paths import active_index_db_path
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     try:
-        with connection_context(None) as conn:
-            status = session_insight_status_sync(conn)
+        archive_root = active_index_db_path().parent
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            status = archive.session_insight_status()
             assessment = assess_session_insight_repairs(status)
 
             if dry_run:
-                pending = (
-                    min(assessment.pending, len(conversation_ids))
-                    if conversation_ids is not None
-                    else assessment.pending
-                )
+                pending = min(assessment.row_debt, len(session_ids)) if session_ids is not None else assessment.row_debt
                 return _repair_result(
                     "session_insights",
                     repaired_count=pending,
@@ -773,7 +719,7 @@ def repair_session_insights(
                     else f"Would: rebuild session insights ({pending:,} pending items)",
                 )
 
-            if conversation_ids is None and assessment.pending == 0 and session_insight_status_ready(status):
+            if session_ids is None and assessment.row_debt == 0:
                 return _repair_result(
                     "session_insights",
                     repaired_count=0,
@@ -781,44 +727,24 @@ def repair_session_insights(
                     detail="Session insights already ready",
                 )
 
-            if conversation_ids is None and assessment.row_debt == 0 and assessment.fts_debt > 0:
-                rebuild_session_insight_fts_sync(conn)
-                conn.commit()
-                rebuilt_count = assessment.fts_debt
-            else:
-                rebuild_conversation_ids = conversation_ids
-                if conversation_ids is None and assessment.row_debt > 0:
-                    candidates = tuple(session_profile_repair_candidate_ids_sync(conn))
-                    if candidates:
-                        rebuild_conversation_ids = candidates
-                rebuilt = rebuild_session_insights_sync(
-                    conn,
-                    conversation_ids=rebuild_conversation_ids,
+            rebuilt = _rebuild_archive_session_insights(
+                archive,
+                session_ids=session_ids,
+                progress_callback=progress_callback,
+            )
+            rebuilt_count = rebuilt.total()
+            refreshed = archive.session_insight_status()
+            if session_ids is None and assess_session_insight_repairs(refreshed).row_debt > 0:
+                rebuilt = _rebuild_archive_session_insights(
+                    archive,
+                    session_ids=None,
                     progress_callback=progress_callback,
-                    progress_total=progress_total,
                 )
-                conn.commit()
-                rebuilt_count = rebuilt.total()
-            refreshed = session_insight_status_sync(conn)
-            if conversation_ids is None and not session_insight_status_ready(refreshed):
-                rebuilt = rebuild_session_insights_sync(
-                    conn,
-                    conversation_ids=None,
-                    progress_callback=progress_callback,
-                    progress_total=progress_total,
-                )
-                conn.commit()
                 rebuilt_count += rebuilt.total()
-                refreshed = session_insight_status_sync(conn)
-            if conversation_ids is None and not session_insight_fts_ready(refreshed):
-                fts_debt = assess_session_insight_repairs(refreshed).fts_debt
-                rebuild_session_insight_fts_sync(conn)
-                conn.commit()
-                rebuilt_count += fts_debt
-                refreshed = session_insight_status_sync(conn)
+                refreshed = archive.session_insight_status()
             # A narrowed rebuild only attests its own slice; do not
             # demand global readiness for a scope-filtered call.
-            success = True if conversation_ids is not None else session_insight_status_ready(refreshed)
+            success = True if session_ids is not None else assess_session_insight_repairs(refreshed).row_debt == 0
             return _repair_result(
                 "session_insights",
                 repaired_count=rebuilt_count,
@@ -845,83 +771,15 @@ def preview_session_insights(*, count: int) -> RepairResult:
     )
 
 
-def repair_action_event_read_model(config: Config, dry_run: bool = False) -> RepairResult:
-    from polylogue.storage.action_events.rebuild_runtime import (
-        action_event_repair_candidates_sync,
-        rebuild_action_event_read_model_sync,
-        valid_action_event_source_ids_sync,
-    )
-    from polylogue.storage.action_events.status import action_event_read_model_status_sync
-    from polylogue.storage.fts.fts_lifecycle import rebuild_fts_index_sync, repair_fts_index_sync
-    from polylogue.storage.sqlite.connection import connection_context
-
-    try:
-        with connection_context(None) as conn:
-            status = action_event_read_model_status_sync(conn)
-            state = ActionEventArtifactState.from_status_snapshot(status)
-            candidate_ids = action_event_repair_candidates_sync(conn)
-            pending = state.repair_item_count
-
-            if dry_run:
-                return _repair_result(
-                    "action_event_read_model",
-                    repaired_count=pending,
-                    success=True,
-                    detail="Would: action-event read model already ready"
-                    if pending == 0
-                    else f"Would: {state.repair_detail()[0].lower() + state.repair_detail()[1:]}",
-                )
-
-            repaired = 0
-            if candidate_ids:
-                repaired = rebuild_action_event_read_model_sync(conn, conversation_ids=candidate_ids)
-            if not state.fts_ready:
-                if state.excess_fts_rows:
-                    rebuild_fts_index_sync(conn)
-                else:
-                    repair_targets = candidate_ids or valid_action_event_source_ids_sync(conn)
-                    if repair_targets:
-                        repair_fts_index_sync(conn, repair_targets)
-            conn.commit()
-            refreshed = action_event_read_model_status_sync(conn)
-            return _repair_result(
-                "action_event_read_model",
-                repaired_count=repaired + state.pending_fts_rows + state.excess_fts_rows,
-                success=bool(refreshed["ready"]),
-                detail="Action-event read model ready"
-                if refreshed["ready"]
-                else "Action-event read model still incomplete",
-            )
-    except Exception as exc:
-        return _repair_result(
-            "action_event_read_model",
-            repaired_count=0,
-            success=False,
-            detail=f"Failed to repair action-event read model: {exc}",
-        )
-
-
-def preview_action_event_read_model(*, count: int) -> RepairResult:
-    return _repair_result(
-        "action_event_read_model",
-        repaired_count=count,
-        success=True,
-        detail="Would: action-event read model already ready"
-        if count == 0
-        else f"Would: repair action-event rows/fts for {count:,} pending items",
-    )
-
-
 def repair_dangling_fts(config: Config, dry_run: bool = False) -> RepairResult:
     from polylogue.storage.fts.dangling_repair import (
         configure_bounded_repair_connection,
         dry_run_dangling_fts_repair,
         repair_missing_fts_rows,
     )
-    from polylogue.storage.sqlite.connection import connection_context
 
     try:
-        with connection_context(None) as conn:
+        with _open_archive_index_connection() as conn:
             configure_bounded_repair_connection(conn)
             fts_exists = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
@@ -933,6 +791,36 @@ def repair_dangling_fts(config: Config, dry_run: bool = False) -> RepairResult:
                     success=True,
                     detail="FTS table does not exist, skipping",
                 )
+            source_count = int(conn.execute("SELECT COUNT(*) FROM blocks WHERE text IS NOT NULL").fetchone()[0] or 0)
+            indexed_count = int(conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] or 0)
+            diff = abs(source_count - indexed_count)
+            if dry_run:
+                return _repair_result(
+                    "dangling_fts",
+                    repaired_count=diff,
+                    success=True,
+                    detail="FTS index in sync"
+                    if diff == 0
+                    else f"Would: FTS sync: {source_count:,} blocks vs {indexed_count:,} indexed ({diff:,} difference)",
+                )
+            if diff == 0:
+                return _repair_result(
+                    "dangling_fts",
+                    repaired_count=0,
+                    success=True,
+                    detail="FTS index in sync",
+                )
+            from polylogue.storage.fts.fts_lifecycle import rebuild_fts_index_sync
+
+            rebuild_fts_index_sync(conn)
+            conn.commit()
+            repaired_count = diff
+            return _repair_result(
+                "dangling_fts",
+                repaired_count=repaired_count,
+                success=True,
+                detail=f"Rebuilt FTS index ({repaired_count:,} row difference)",
+            )
 
             if dry_run:
                 outcome = dry_run_dangling_fts_repair(conn)
@@ -969,12 +857,11 @@ def preview_dangling_fts(*, count: int) -> RepairResult:
 
 
 def repair_wal_checkpoint(config: Config, dry_run: bool = False) -> RepairResult:
-    from polylogue.paths import db_path
-    from polylogue.storage.sqlite.connection import connection_context
+    from polylogue.paths import active_index_db_path
 
     try:
         if dry_run:
-            wal_path = Path(str(db_path()) + "-wal")
+            wal_path = Path(str(active_index_db_path()) + "-wal")
             if wal_path.exists():
                 wal_size = wal_path.stat().st_size
                 pages_estimate = wal_size // 4096
@@ -991,7 +878,7 @@ def repair_wal_checkpoint(config: Config, dry_run: bool = False) -> RepairResult
                 detail="Would: No WAL file present, nothing to checkpoint",
             )
 
-        with connection_context(None) as conn:
+        with _open_archive_index_connection() as conn:
             row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
             busy, log, checkpointed = row[0], row[1], row[2]
             if busy:
@@ -1071,46 +958,24 @@ def repair_message_embeddings(config: Config, dry_run: bool = False) -> RepairRe
 
 _PREVIEW_HANDLERS: dict[str, Callable[..., RepairResult]] = {
     "session_insights": preview_session_insights,
-    "action_event_read_model": preview_action_event_read_model,
     "dangling_fts": preview_dangling_fts,
     "message_type_backfill": preview_message_type_backfill,
     "orphaned_messages": preview_orphaned_messages,
-    "orphaned_content_blocks": preview_orphaned_content_blocks,
-    "empty_conversations": preview_empty_conversations,
+    "empty_sessions": preview_empty_sessions,
     "orphaned_attachments": preview_orphaned_attachments,
     "orphaned_blobs": preview_orphaned_blobs,
     "superseded_raw_snapshots": preview_superseded_raw_snapshots,
 }
 
 
-def _repair_source_replay_shim(config: Config, dry_run: bool = False) -> RepairResult:
-    """Adapter so ``source_replay`` participates in :data:`_REPAIR_HANDLERS`.
-
-    The orchestrated ``check --repair`` path expects a uniform
-    ``(config, dry_run) -> RepairResult`` signature. SOURCE_REPLAY's
-    native implementation lives in :mod:`polylogue.maintenance.source_replay`
-    and additionally accepts a scope filter and a per-artifact resume
-    cursor; this shim hides those parameters for the unscoped check
-    path. Callers that want scope narrowing (CLI ``maintenance run``)
-    invoke ``execute_replay`` instead.
-    """
-    from polylogue.maintenance.source_replay import repair_source_replay
-
-    outcome = repair_source_replay(config, dry_run=dry_run)
-    return outcome.result
-
-
 _REPAIR_HANDLERS: dict[str, Callable[..., RepairResult]] = {
     "session_insights": repair_session_insights,
-    "action_event_read_model": repair_action_event_read_model,
     "dangling_fts": repair_dangling_fts,
     "message_type_backfill": repair_message_type_backfill,
     "message_embeddings": repair_message_embeddings,
     "wal_checkpoint": repair_wal_checkpoint,
-    "source_replay": _repair_source_replay_shim,
     "orphaned_messages": repair_orphaned_messages,
-    "orphaned_content_blocks": repair_orphaned_content_blocks,
-    "empty_conversations": repair_empty_conversations,
+    "empty_sessions": repair_empty_sessions,
     "orphaned_attachments": repair_orphaned_attachments,
     "orphaned_blobs": repair_orphaned_blobs,
     "superseded_raw_snapshots": repair_superseded_raw_snapshots,
@@ -1221,36 +1086,30 @@ def run_selected_maintenance(
 __all__ = [
     "ArchiveDebtStatus",
     "RepairResult",
-    "action_event_repair_count",
     "collect_archive_debt_statuses_sync",
-    "count_empty_conversations_sync",
+    "count_empty_sessions_sync",
     "count_orphaned_attachments_sync",
     "count_orphaned_blobs_sync",
     "count_superseded_raw_snapshots_sync",
-    "count_orphaned_content_blocks_sync",
     "count_orphaned_messages_sync",
     "count_messages_by_type_sync",
     "count_unclassified_message_type_sync",
     "dangling_fts_repair_count",
-    "preview_action_event_read_model",
     "preview_counts_from_archive_debt",
     "preview_dangling_fts",
-    "preview_empty_conversations",
+    "preview_empty_sessions",
     "preview_orphaned_attachments",
     "preview_orphaned_blobs",
     "preview_superseded_raw_snapshots",
-    "preview_orphaned_content_blocks",
     "preview_orphaned_messages",
     "preview_message_type_backfill",
     "preview_session_insights",
-    "repair_action_event_read_model",
     "repair_dangling_fts",
-    "repair_empty_conversations",
+    "repair_empty_sessions",
     "repair_message_type_backfill",
     "repair_orphaned_attachments",
     "repair_orphaned_blobs",
     "repair_superseded_raw_snapshots",
-    "repair_orphaned_content_blocks",
     "repair_orphaned_messages",
     "repair_session_insights",
     "repair_wal_checkpoint",

@@ -149,7 +149,7 @@ async function loadWorkspaceRoute(route, updateURL) {
   }
   renderMain();
   renderInspector();
-  renderConversations();
+  renderSessions();
 }
 
 function renderWorkspaceToolbar() {
@@ -192,34 +192,34 @@ function renderWorkspaceToolbar() {
   }
   // Disabled-action tooltips per MK3 "disabled actions are part of the design"
   // (docs/design/mk3/docs/11-little-details.md). Stack/Compare need 2+
-  // selectable conversations; recall pack and save need at least one target.
+  // selectable sessions; recall pack and save need at least one target.
   var stackBtn = document.querySelector('#workspace-mode-switcher .mode-btn[data-mode="stack"]');
   var compareBtn = document.querySelector('#workspace-mode-switcher .mode-btn[data-mode="compare"]');
   var saveBtn = document.getElementById('workspace-save-btn');
   var recallBtn = document.getElementById('workspace-create-recall-pack-btn');
-  var available = selectedConversationIds();
+  var available = selectedSessionIds();
   if (stackBtn) {
-    if (available.length < 1) { stackBtn.setAttribute('disabled', 'true'); stackBtn.title = 'Stack needs a selected conversation or a non-empty list'; }
-    else { stackBtn.removeAttribute('disabled'); stackBtn.title = 'Open selected conversations as a stack workspace'; }
+    if (available.length < 1) { stackBtn.setAttribute('disabled', 'true'); stackBtn.title = 'Stack needs a selected session or a non-empty list'; }
+    else { stackBtn.removeAttribute('disabled'); stackBtn.title = 'Open selected sessions as a stack workspace'; }
   }
   if (compareBtn) {
-    if (available.length < 2) { compareBtn.setAttribute('disabled', 'true'); compareBtn.title = 'Compare needs two conversations to align'; }
-    else { compareBtn.removeAttribute('disabled'); compareBtn.title = 'Open the first two selected conversations side-by-side'; }
+    if (available.length < 2) { compareBtn.setAttribute('disabled', 'true'); compareBtn.title = 'Compare needs two sessions to align'; }
+    else { compareBtn.removeAttribute('disabled'); compareBtn.title = 'Open the first two selected sessions side-by-side'; }
   }
   if (saveBtn) {
-    if (available.length < 1) { saveBtn.setAttribute('disabled', 'true'); saveBtn.title = 'Save workspace needs at least one open conversation'; }
+    if (available.length < 1) { saveBtn.setAttribute('disabled', 'true'); saveBtn.title = 'Save workspace needs at least one open session'; }
     else { saveBtn.removeAttribute('disabled'); saveBtn.title = 'Persist current workspace layout'; }
   }
   if (recallBtn) {
-    if (available.length < 1) { recallBtn.setAttribute('disabled', 'true'); recallBtn.title = 'Recall pack needs at least one open conversation'; }
-    else { recallBtn.removeAttribute('disabled'); recallBtn.title = 'Bundle current conversations as a recall pack'; }
+    if (available.length < 1) { recallBtn.setAttribute('disabled', 'true'); recallBtn.title = 'Recall pack needs at least one open session'; }
+    else { recallBtn.removeAttribute('disabled'); recallBtn.title = 'Bundle current sessions as a recall pack'; }
   }
 }
 
-function conversationHeaderHtml(c) {
+function sessionHeaderHtml(c) {
   var title = esc(c.display_title || c.title || c.id || 'Untitled');
   var html = '<div class="stack-lane-header"><div class="stack-lane-title">' + title + '</div><div class="stack-lane-meta">';
-  if (c.provider) html += '<span>' + esc(c.provider) + '</span>';
+  if (c.origin) html += '<span>' + esc(c.origin) + '</span>';
   if (c.message_count !== undefined) html += '<span>' + c.message_count + ' messages</span>';
   if (c.repo) html += '<span class="chip">' + esc(c.repo.split('/').pop() || c.repo) + '</span>';
   html += '</div></div>';
@@ -237,12 +237,12 @@ function renderStackWorkspace() {
   }
   msgEl.innerHTML = '<div id="stack-view"><div id="stack-items" style="display:contents">'
     + (payload.items || []).map(function(item) {
-      if (item.status !== 'resolved' || !item.conversation) {
-        return '<div class="stack-lane missing"><div><div>Missing conversation</div><div class="workspace-stat warn">' + esc(item.conversation_id || item.target_id || '') + '</div></div></div>';
+      if (item.status !== 'resolved' || !item.session) {
+        return '<div class="stack-lane missing"><div><div>Missing session</div><div class="workspace-stat warn">' + esc(item.session_id || item.target_id || '') + '</div></div></div>';
       }
-      var c = item.conversation;
-      return '<section class="stack-lane" data-conversation-id="' + escAttr(c.id) + '">'
-        + conversationHeaderHtml(c)
+      var c = item.session;
+      return '<section class="stack-lane" data-session-id="' + escAttr(c.id) + '">'
+        + sessionHeaderHtml(c)
         + messageBlocksHtml(c.messages || [])
         + '</section>';
     }).join('')
@@ -295,8 +295,8 @@ function renderCompareWorkspace() {
     msgEl.innerHTML = '<div class="main-empty"><h3>Compare unavailable</h3></div>';
     return;
   }
-  var leftTitle = payload.left && payload.left.title ? payload.left.title : (payload.left && payload.left.conversation_id || 'left');
-  var rightTitle = payload.right && payload.right.title ? payload.right.title : (payload.right && payload.right.conversation_id || 'right');
+  var leftTitle = payload.left && payload.left.title ? payload.left.title : (payload.left && payload.left.session_id || 'left');
+  var rightTitle = payload.right && payload.right.title ? payload.right.title : (payload.right && payload.right.session_id || 'right');
   var degradedSides = payload.degraded_sides || [];
   var banner = '<div id="compare-degraded-banner" style="display:none"></div>';
   if (payload.degraded_count) {
@@ -331,63 +331,63 @@ function setSingleMode() {
   pushSingleURL(state.selected ? state.selected.id : null);
   renderMain();
   renderInspector();
-  renderConversations();
+  renderSessions();
 }
 
-function selectedConversationIds() {
+function selectedSessionIds() {
   if (state.mode === 'stack' && state.stackPayload) return (state.stackPayload.ids || []).slice();
   if (state.mode === 'compare' && state.comparePayload) {
-    return [state.comparePayload.left && (state.comparePayload.left.id || state.comparePayload.left.conversation_id),
-      state.comparePayload.right && (state.comparePayload.right.id || state.comparePayload.right.conversation_id)].filter(Boolean);
+    return [state.comparePayload.left && (state.comparePayload.left.id || state.comparePayload.left.session_id),
+      state.comparePayload.right && (state.comparePayload.right.id || state.comparePayload.right.session_id)].filter(Boolean);
   }
   if (state.selected) return [state.selected.id];
-  return state.conversations.slice(0, 2).map(function(c) { return c.id; });
+  return state.sessions.slice(0, 2).map(function(c) { return c.id; });
 }
 
 function targetItemsForCurrentContext() {
-  return selectedConversationIds().map(function(id) {
-    return {target_type: 'conversation', conversation_id: id};
+  return selectedSessionIds().map(function(id) {
+    return {target_type: 'session', session_id: id};
   });
 }
 
 async function openStackFromSelection() {
-  var ids = selectedConversationIds();
-  if (!ids.length && state.conversations.length) ids = state.conversations.slice(0, 3).map(function(c) { return c.id; });
+  var ids = selectedSessionIds();
+  if (!ids.length && state.sessions.length) ids = state.sessions.slice(0, 3).map(function(c) { return c.id; });
   if (!ids.length) return;
   await loadWorkspaceRoute({mode: 'stack', ids: ids, focus: ids[0]}, true);
 }
 
-async function openParentChainAsStack(conversationId) {
+async function openParentChainAsStack(sessionId) {
   // #1203: turn topology shape into a stack workspace. Fetches the
   // parent-chain envelope (root -> target -> descendants) and routes
   // to the stack workspace with the chain pre-populated and ``focus``
-  // set to the conversation the operator invoked the action from.
-  if (!conversationId) return;
+  // set to the session the operator invoked the action from.
+  if (!sessionId) return;
   try {
-    var data = await fetchJSON('/api/conversations/' + encodeURIComponent(conversationId) + '/topology/parent-chain');
+    var data = await fetchJSON('/api/sessions/' + encodeURIComponent(sessionId) + '/topology/parent-chain');
     var chain = (data && data.chain_ids) || [];
     if (!chain.length) return;
-    var focus = (data && data.focus_id) || conversationId;
+    var focus = (data && data.focus_id) || sessionId;
     await loadWorkspaceRoute({mode: 'stack', ids: chain, focus: focus}, true);
   } catch(e) {
-    // Fallback: open the focused conversation as a single-element stack
+    // Fallback: open the focused session as a single-element stack
     // so the user sees explicit feedback that the chain action fired
     // but the lineage walk failed.
-    await loadWorkspaceRoute({mode: 'stack', ids: [conversationId], focus: conversationId}, true);
+    await loadWorkspaceRoute({mode: 'stack', ids: [sessionId], focus: sessionId}, true);
   }
 }
 
 async function openCompareFromSelection() {
-  var ids = selectedConversationIds();
-  if (ids.length < 2) ids = state.conversations.slice(0, 2).map(function(c) { return c.id; });
+  var ids = selectedSessionIds();
+  if (ids.length < 2) ids = state.sessions.slice(0, 2).map(function(c) { return c.id; });
   if (ids.length < 2) return;
   await loadWorkspaceRoute({mode: 'compare', left: ids[0], right: ids[1], align: 'prompt'}, true);
 }
 
 async function changeCompareAlign(align) {
   if (!state.comparePayload) return;
-  var left = state.comparePayload.left && (state.comparePayload.left.id || state.comparePayload.left.conversation_id);
-  var right = state.comparePayload.right && (state.comparePayload.right.id || state.comparePayload.right.conversation_id);
+  var left = state.comparePayload.left && (state.comparePayload.left.id || state.comparePayload.left.session_id);
+  var right = state.comparePayload.right && (state.comparePayload.right.id || state.comparePayload.right.session_id);
   if (!left || !right) return;
   await loadWorkspaceRoute({mode: 'compare', left: left, right: right, align: align || 'prompt'}, true);
 }
@@ -399,7 +399,7 @@ async function saveWorkspace() {
   if (!name) return;
   var id = 'workspace-' + Date.now().toString(36);
   var active = items[0];
-  if (state.selected) active = {target_type: 'conversation', conversation_id: state.selected.id};
+  if (state.selected) active = {target_type: 'session', session_id: state.selected.id};
   try {
     await sendJSON('/api/user/workspaces', 'POST', {
       workspace_id: id,
@@ -419,8 +419,8 @@ async function saveWorkspace() {
 async function saveCurrentView() {
   var query = {limit: state.limit, offset: 0};
   if (state.query) query.query = state.query;
-  if (state.provider) query.provider = state.provider;
-  var defaultName = state.query || state.provider || 'All conversations';
+  if (state.origin) query.origin = state.origin;
+  var defaultName = state.query || state.origin || 'All sessions';
   var name = window.prompt('Saved view name', defaultName);
   if (!name) return;
   name = name.trim();
@@ -472,7 +472,7 @@ async function deleteSavedView(viewId) {
 function restoreSavedView(viewId) {
   if (!viewId) return;
   // Recall the saved query into the active filter chain. applySavedView lives
-  // in the main shell script and reloads conversations + facets, then resets
+  // in the main shell script and reloads sessions + facets, then resets
   // the select so reselecting the same view re-applies it.
   applySavedView(viewId);
   var select = document.getElementById('workspace-saved-view-select');
@@ -484,8 +484,8 @@ async function restoreWorkspace(workspaceId) {
   try {
     var workspace = await fetchJSON('/api/user/workspaces/' + encodeURIComponent(workspaceId));
     var ids = (workspace.open_targets || []).filter(function(t) {
-      return t.target_type === 'conversation' && (t.conversation_id || t.target_id);
-    }).map(function(t) { return t.conversation_id || t.target_id; });
+      return t.target_type === 'session' && (t.session_id || t.target_id);
+    }).map(function(t) { return t.session_id || t.target_id; });
     if (workspace.mode === 'compare' && ids.length >= 2) {
       await loadWorkspaceRoute({mode: 'compare', left: ids[0], right: ids[1], align: 'prompt'}, true);
     } else if (ids.length) {

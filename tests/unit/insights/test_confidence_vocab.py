@@ -115,7 +115,7 @@ def test_from_legacy_unknown_spellings_collapse_to_weak(value: str | None) -> No
 
 
 # ---------------------------------------------------------------------------
-# Integration: the migrated payload helpers emit typed bands
+# Integration: the converted payload helpers emit typed bands
 # ---------------------------------------------------------------------------
 
 

@@ -1,6 +1,6 @@
 """Archive coverage diagnostics.
 
-Analyzes the completeness and consistency of the conversation archive,
+Analyzes the completeness and consistency of the session archive,
 identifying provider date ranges, gaps, and truncated sessions.
 """
 
@@ -12,8 +12,10 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import TYPE_CHECKING
 
+from polylogue.core.sources import provider_from_origin
+
 if TYPE_CHECKING:
-    from polylogue.archive.conversation.models import ConversationSummary
+    from polylogue.archive.session.domain_models import SessionSummary
 
 
 @dataclass(frozen=True)
@@ -28,7 +30,7 @@ class ProviderRange:
 
 @dataclass(frozen=True)
 class CoverageGap:
-    """A gap of >1 day with no conversations from any provider."""
+    """A gap of >1 day with no sessions from any provider."""
 
     start_date: date
     end_date: date
@@ -37,26 +39,26 @@ class CoverageGap:
 
 @dataclass(frozen=True)
 class ArchiveCoverage:
-    """Completeness diagnostics for the conversation archive."""
+    """Completeness diagnostics for the session archive."""
 
     provider_ranges: tuple[ProviderRange, ...]
     provider_counts: dict[str, int]
     gaps: tuple[CoverageGap, ...]
     truncated_sessions: int
-    total_conversations: int
+    total_sessions: int
     total_messages: int
     date_range: tuple[date | None, date | None]
 
 
-def analyze_coverage(summaries: Sequence[ConversationSummary]) -> ArchiveCoverage:
-    """Analyze archive coverage from conversation summaries."""
+def analyze_coverage(summaries: Sequence[SessionSummary]) -> ArchiveCoverage:
+    """Analyze archive coverage from session summaries."""
     if not summaries:
         return ArchiveCoverage(
             provider_ranges=(),
             provider_counts={},
             gaps=(),
             truncated_sessions=0,
-            total_conversations=0,
+            total_sessions=0,
             total_messages=0,
             date_range=(None, None),
         )
@@ -68,7 +70,7 @@ def analyze_coverage(summaries: Sequence[ConversationSummary]) -> ArchiveCoverag
     truncated = 0
 
     for summary in summaries:
-        provider = str(summary.provider)
+        provider = provider_from_origin(summary.origin).value
         provider_counts[provider] += 1
         total_messages += summary.message_count or 0
 
@@ -95,7 +97,7 @@ def analyze_coverage(summaries: Sequence[ConversationSummary]) -> ArchiveCoverag
                 )
             )
 
-    # Find gaps (>1 day without any conversation)
+    # Find gaps (>1 day without any session)
     gaps: list[CoverageGap] = []
     if all_dates:
         sorted_dates = sorted(all_dates)
@@ -119,7 +121,7 @@ def analyze_coverage(summaries: Sequence[ConversationSummary]) -> ArchiveCoverag
         provider_counts=dict(provider_counts),
         gaps=tuple(gaps),
         truncated_sessions=truncated,
-        total_conversations=len(summaries),
+        total_sessions=len(summaries),
         total_messages=total_messages,
         date_range=date_range,
     )

@@ -2,7 +2,7 @@
 
 Verifies the two fatal GC bugs fixed in 1bd2f156 stay fixed:
 
-1. ``_still_referenced`` must check ``raw_conversations.raw_id``
+1. ``_still_referenced`` must check ``raw_sessions.raw_id``
 2. ``_candidate_blobs`` must walk all 256 prefix subdirectories
 """
 
@@ -13,9 +13,10 @@ from pathlib import Path
 
 from polylogue.storage.blob_gc import (
     _candidate_blobs,
-    _current_generation,
     _has_active_lease,
+    _reference_surfaces,
     _still_referenced,
+    read_gc_history,
     run_blob_gc,
 )
 from polylogue.storage.blob_store import BlobStore
@@ -31,43 +32,84 @@ def _make_db(path: str | Path | None = None) -> sqlite3.Connection:
     conn = sqlite3.connect(target)
     conn.row_factory = sqlite3.Row
     conn.execute(
-        """CREATE TABLE raw_conversations (
+        """CREATE TABLE raw_sessions (
             raw_id TEXT PRIMARY KEY,
             source_name TEXT NOT NULL DEFAULT '',
             source_path TEXT NOT NULL DEFAULT '',
+            blob_hash BLOB,
             blob_size INTEGER NOT NULL DEFAULT 0,
             acquired_at TEXT NOT NULL DEFAULT ''
         )"""
     )
     conn.execute(
-        """CREATE TABLE pending_blob_refs (
-            blob_hash TEXT NOT NULL,
-            operation_id TEXT NOT NULL,
-            acquired_at INTEGER NOT NULL,
-            PRIMARY KEY (blob_hash, operation_id)
+        """CREATE TABLE blob_refs (
+            blob_hash BLOB NOT NULL CHECK(length(blob_hash) = 32),
+            ref_id TEXT NOT NULL,
+            ref_type TEXT NOT NULL CHECK(ref_type IN ('raw_payload', 'attachment', 'sidecar')),
+            source_path TEXT,
+            size_bytes INTEGER NOT NULL DEFAULT 0 CHECK(size_bytes >= 0),
+            acquired_at_ms INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (blob_hash, ref_type, ref_id)
         )"""
     )
     conn.execute(
+        """CREATE TABLE pending_blob_refs (
+            blob_hash BLOB NOT NULL CHECK(length(blob_hash) = 32),
+            operation_id TEXT NOT NULL,
+            ref_type TEXT NOT NULL,
+            ref_id TEXT NOT NULL,
+            acquired_at_ms INTEGER NOT NULL,
+            PRIMARY KEY (blob_hash, operation_id, ref_type, ref_id)
+        )"""
+    )
+    # gc_generations carries the typed reclaim counters that production
+    # ``run_blob_gc`` writes and ``read_gc_history`` reads — matching the
+    # split-file source.db DDL (#1743).
+    conn.execute(
         """CREATE TABLE gc_generations (
-            generation INTEGER PRIMARY KEY,
-            completed_at INTEGER NOT NULL,
-            evidence TEXT
+            generation_id   TEXT PRIMARY KEY,
+            started_at_ms   INTEGER NOT NULL,
+            completed_at_ms INTEGER,
+            reclaimed_count INTEGER NOT NULL DEFAULT 0,
+            reclaimed_bytes INTEGER NOT NULL DEFAULT 0
         )"""
     )
     conn.commit()
     return conn
 
 
+def _make_source_db(path: str | Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(str(path))
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        """CREATE TABLE raw_sessions (
+            raw_id TEXT PRIMARY KEY,
+            blob_hash BLOB NOT NULL,
+            blob_size INTEGER NOT NULL DEFAULT 0
+        ) STRICT"""
+    )
+    conn.execute(
+        """CREATE TABLE blob_refs (
+            ref_id TEXT PRIMARY KEY,
+            owner_kind TEXT NOT NULL,
+            owner_id TEXT NOT NULL,
+            blob_hash BLOB NOT NULL
+        ) STRICT"""
+    )
+    conn.commit()
+    return conn
+
+
 # ---------------------------------------------------------------------------
-# _still_referenced — regression: must check raw_conversations.raw_id
+# _still_referenced — regression: must check raw_sessions.raw_id
 # ---------------------------------------------------------------------------
 
 
 def test_still_referenced_recognizes_raw_id() -> None:
-    """A blob whose hash matches a raw_conversations.raw_id is still referenced."""
+    """A blob whose hash matches a raw_sessions.raw_id is still referenced."""
     conn = _make_db()
     conn.execute(
-        "INSERT INTO raw_conversations (raw_id, source_name, source_path, blob_size, acquired_at) "
+        "INSERT INTO raw_sessions (raw_id, source_name, source_path, blob_size, acquired_at) "
         "VALUES ('abc123def456', 'claude', 'test.json', 42, '2024-01-01')"
     )
     conn.commit()
@@ -76,10 +118,10 @@ def test_still_referenced_recognizes_raw_id() -> None:
 
 
 def test_still_referenced_rejects_unknown_hash() -> None:
-    """A blob not in raw_conversations is not referenced."""
+    """A blob not in raw_sessions is not referenced."""
     conn = _make_db()
     conn.execute(
-        "INSERT INTO raw_conversations (raw_id, source_name, source_path, blob_size, acquired_at) "
+        "INSERT INTO raw_sessions (raw_id, source_name, source_path, blob_size, acquired_at) "
         "VALUES ('known-hash-1', 'chatgpt', 'test.json', 10, '2024-01-01')"
     )
     conn.commit()
@@ -88,10 +130,25 @@ def test_still_referenced_rejects_unknown_hash() -> None:
 
 
 def test_still_referenced_empty_table() -> None:
-    """With no raw_conversations rows, nothing is referenced."""
+    """With no raw_sessions rows, nothing is referenced."""
     conn = _make_db()
     assert _still_referenced(conn, "any-hash") is False
     conn.close()
+
+
+def test_still_referenced_recognizes_archive_source_hash(tmp_path: Path) -> None:
+    """source references are BLOB hashes, not legacy raw_id text."""
+    blob_hash = "a" * 64
+    source_conn = _make_source_db(tmp_path / "source.db")
+    source_conn.execute(
+        "INSERT INTO raw_sessions (raw_id, blob_hash, blob_size) VALUES (?, ?, ?)",
+        ("raw-1", bytes.fromhex(blob_hash), 42),
+    )
+    source_conn.commit()
+
+    assert _still_referenced(source_conn, blob_hash) is True
+    assert _reference_surfaces(source_conn, blob_hash) == ["current.raw_sessions"]
+    source_conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -179,39 +236,21 @@ def test_candidate_blobs_skips_non_two_char_prefix_dirs(tmp_path: Path) -> None:
 
 def test_has_active_lease() -> None:
     conn = _make_db()
+    leased = "a" * 64
     conn.execute(
-        "INSERT INTO pending_blob_refs (blob_hash, operation_id, acquired_at) "
-        "VALUES ('hash-under-lease', 'op-001', 1000)"
+        "INSERT INTO pending_blob_refs (blob_hash, operation_id, ref_type, ref_id, acquired_at_ms) "
+        "VALUES (?, 'op-001', 'raw_payload', 'op-001', 1000)",
+        (bytes.fromhex(leased),),
     )
     conn.commit()
-    assert _has_active_lease(conn, "hash-under-lease") is True
-    assert _has_active_lease(conn, "hash-not-leased") is False
+    assert _has_active_lease(conn, leased) is True
+    assert _has_active_lease(conn, "b" * 64) is False
     conn.close()
 
 
 def test_has_active_lease_empty_table() -> None:
     conn = _make_db()
     assert _has_active_lease(conn, "any-hash") is False
-    conn.close()
-
-
-# ---------------------------------------------------------------------------
-# _current_generation
-# ---------------------------------------------------------------------------
-
-
-def test_current_generation_empty() -> None:
-    conn = _make_db()
-    assert _current_generation(conn) == 0
-    conn.close()
-
-
-def test_current_generation_returns_max() -> None:
-    conn = _make_db()
-    conn.execute("INSERT INTO gc_generations (generation, completed_at) VALUES (1, 100)")
-    conn.execute("INSERT INTO gc_generations (generation, completed_at) VALUES (5, 500)")
-    conn.commit()
-    assert _current_generation(conn) == 5
     conn.close()
 
 
@@ -234,17 +273,17 @@ def test_run_blob_gc_empty_store(tmp_path: Path) -> None:
 
 
 def test_run_blob_gc_preserves_referenced_blobs(tmp_path: Path) -> None:
-    """GC must not delete blobs that are still referenced in raw_conversations."""
+    """GC must not delete blobs that are still referenced in raw_sessions."""
     db_path = tmp_path / "archive.db"
     blob_root = tmp_path / "blobs"
     blob_store = BlobStore(blob_root)
 
-    # Create a blob and a matching raw_conversations row
+    # Create a blob and a matching raw_sessions row
     h, _ = blob_store.write_from_bytes(b"referenced content")
 
     conn = _make_db(db_path)
     conn.execute(
-        "INSERT INTO raw_conversations (raw_id, source_name, source_path, blob_size, acquired_at) "
+        "INSERT INTO raw_sessions (raw_id, source_name, source_path, blob_size, acquired_at) "
         "VALUES (?, 'claude', 'test.json', ?, '2024-01-01')",
         (h, len(b"referenced content")),
     )
@@ -255,6 +294,38 @@ def test_run_blob_gc_preserves_referenced_blobs(tmp_path: Path) -> None:
     assert deleted == 0
     # Blob still on disk
     assert blob_store.exists(h)
+
+
+def test_run_blob_gc_preserves_archive_source_referenced_blobs(tmp_path: Path) -> None:
+    """GC run from ``index.db`` must preserve blobs referenced by sibling ``source.db``."""
+    index_db_path = tmp_path / "index.db"
+    source_db_path = tmp_path / "source.db"
+    blob_root = tmp_path / "blobs"
+    blob_store = BlobStore(blob_root)
+
+    blob_hash, _ = blob_store.write_from_bytes(b"archive referenced content")
+    _backdate(blob_store, blob_hash)
+
+    index_conn = _make_db(index_db_path)
+    index_conn.close()
+
+    source_conn = _make_source_db(source_db_path)
+    source_conn.execute(
+        "INSERT INTO raw_sessions (raw_id, blob_hash, blob_size) VALUES (?, ?, ?)",
+        ("raw-v1", bytes.fromhex(blob_hash), len(b"archive referenced content")),
+    )
+    source_conn.commit()
+    source_conn.close()
+
+    deleted = run_blob_gc(str(index_db_path), str(blob_root), max_batch=10)
+
+    assert deleted == 0
+    assert blob_store.exists(blob_hash)
+    # A pass ran but reclaimed nothing because sibling source.db references it.
+    history = read_gc_history(str(index_db_path), limit=1)
+    assert len(history) == 1
+    assert history[0].reclaimed_count == 0
+    assert history[0].reclaimed_bytes == 0
 
 
 def test_run_blob_gc_max_batch_bound(tmp_path: Path) -> None:
@@ -287,11 +358,6 @@ def test_run_blob_gc_nonexistent_blob_dir(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # #1190 — sharded unlink path + accurate deleted counter
 # ---------------------------------------------------------------------------
-
-
-import json
-
-from polylogue.storage.blob_gc import GCRunEvidence, read_gc_history
 
 
 def _backdate(blob_store: BlobStore, blob_hash: str, *, seconds: float = 3600) -> None:
@@ -336,8 +402,8 @@ def test_run_blob_gc_unlinks_sharded_path_and_increments_counter(tmp_path: Path)
 def test_run_blob_gc_does_not_increment_when_file_already_missing(tmp_path: Path) -> None:
     """#1190 regression: when the candidate file has vanished between
     discovery and unlink (concurrent reclaimer, stale candidate, manual
-    cleanup), the ``deleted`` counter must NOT increment. The structured
-    evidence row should record this as ``skipped_missing``.
+    cleanup), the ``deleted`` counter must NOT increment and the recorded
+    generation row reclaims nothing.
     """
     db_path = tmp_path / "archive.db"
     blob_root = tmp_path / "blobs"
@@ -379,13 +445,11 @@ def test_run_blob_gc_does_not_increment_when_file_already_missing(tmp_path: Path
 
     assert deleted == 0, "counter must not bump when no file was actually unlinked"
 
-    # Evidence row attributes the skip correctly.
+    # The pass still recorded a generation row that reclaimed nothing.
     history = read_gc_history(str(db_path), limit=1)
     assert len(history) == 1
-    ev = history[0].evidence
-    assert ev is not None
-    assert ev.deleted == 0
-    assert ev.skipped_missing >= 1
+    assert history[0].reclaimed_count == 0
+    assert history[0].reclaimed_bytes == 0
 
 
 def test_run_blob_gc_dry_run_does_not_delete_or_record_generation(tmp_path: Path) -> None:
@@ -417,23 +481,24 @@ def test_run_blob_gc_dry_run_does_not_delete_or_record_generation(tmp_path: Path
     assert row[0] == 0, "dry-run must not consume a generation slot"
 
 
-def test_run_blob_gc_records_structured_evidence(tmp_path: Path) -> None:
-    """#1190 ambitious-expansion: each committed pass writes a JSON
-    evidence row capturing inspected/skipped/deleted counts plus the
-    list of deleted hashes — a self-describing audit trail.
+def test_run_blob_gc_records_reclaim_counters(tmp_path: Path) -> None:
+    """#1743: each committed pass writes a typed ``gc_generations`` row
+    capturing the reclaimed blob count and freed bytes — the durable
+    audit trail that replaced the JSON evidence column.
     """
     db_path = tmp_path / "archive.db"
     blob_root = tmp_path / "blobs"
     blob_store = BlobStore(blob_root)
 
     referenced_hash, _ = blob_store.write_from_bytes(b"keep me")
-    orphan_hash, _ = blob_store.write_from_bytes(b"delete me")
+    orphan_payload = b"delete me"
+    orphan_hash, _ = blob_store.write_from_bytes(orphan_payload)
     _backdate(blob_store, referenced_hash)
     _backdate(blob_store, orphan_hash)
 
     conn = _make_db(db_path)
     conn.execute(
-        "INSERT INTO raw_conversations (raw_id, source_name, source_path, blob_size, acquired_at) "
+        "INSERT INTO raw_sessions (raw_id, source_name, source_path, blob_size, acquired_at) "
         "VALUES (?, 'claude', 'x.json', 1, '2025-01-01')",
         (referenced_hash,),
     )
@@ -443,25 +508,20 @@ def test_run_blob_gc_records_structured_evidence(tmp_path: Path) -> None:
     deleted = run_blob_gc(str(db_path), str(blob_root), max_batch=10)
     assert deleted == 1
 
-    conn = sqlite3.connect(str(db_path))
-    try:
-        row = conn.execute("SELECT generation, evidence FROM gc_generations").fetchone()
-    finally:
-        conn.close()
-    assert row is not None
-    payload = json.loads(row["evidence"]) if isinstance(row, sqlite3.Row) else json.loads(row[1])
-    ev = GCRunEvidence(**payload)
-    assert ev.inspected == 2
-    assert ev.deleted == 1
-    assert ev.skipped_referenced == 1
-    assert ev.dry_run is False
-    assert orphan_hash in ev.deleted_hashes
+    history = read_gc_history(str(db_path), limit=1)
+    assert len(history) == 1
+    row = history[0]
+    assert row.reclaimed_count == 1
+    assert row.reclaimed_bytes == len(orphan_payload)
+    assert row.generation_id.startswith("gc-")
+    assert row.completed_at_ms is not None
+    assert row.started_at_ms <= row.completed_at_ms
 
 
-def test_read_gc_history_returns_recent_passes_newest_first(tmp_path: Path) -> None:
-    """#1190 ambitious-expansion: ``read_gc_history`` surfaces evidence
-    rows in newest-first order, so a ``gc-history`` operator surface can
-    show recent GC behaviour without bespoke SQLite tooling.
+def test_read_gc_history_returns_recent_passes(tmp_path: Path) -> None:
+    """#1743: ``read_gc_history`` surfaces one typed row per committed pass,
+    so a ``gc-history`` operator surface can show recent reclamation without
+    bespoke SQLite tooling.
     """
     db_path = tmp_path / "archive.db"
     blob_root = tmp_path / "blobs"
@@ -474,7 +534,6 @@ def test_read_gc_history_returns_recent_passes_newest_first(tmp_path: Path) -> N
         run_blob_gc(str(db_path), str(blob_root), max_batch=10)
 
     history = read_gc_history(str(db_path), limit=10)
-    assert [row.generation for row in history] == [3, 2, 1]
-    for row in history:
-        assert row.evidence is not None
-        assert row.evidence.deleted >= 1
+    assert len(history) == 3
+    assert all(row.reclaimed_count == 1 for row in history)
+    assert all(row.generation_id.startswith("gc-") for row in history)

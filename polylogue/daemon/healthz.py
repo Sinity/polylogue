@@ -81,7 +81,7 @@ def handle_healthz_ready(responder: ProbeResponder) -> None:
 
     Closed reason taxonomy:
 
-    - ``schema_incompatible`` — schema_version check is CRITICAL
+    - ``schema_version_mismatch`` — schema_version check is CRITICAL
     - ``critical_check_failed`` — some other FAST check is CRITICAL
     - ``fts_not_fresh`` — archive FTS invariant is not ready
     - ``probe_error`` — internal failure executing the probe itself
@@ -121,9 +121,9 @@ def handle_healthz_ready(responder: ProbeResponder) -> None:
         schema_ok = schema_alert is None or schema_alert.severity == HealthSeverity.OK
         critical = [a for a in health.alerts if a.severity == HealthSeverity.CRITICAL]
         from polylogue.daemon.fts_status import fts_readiness_info
-        from polylogue.paths import db_path
+        from polylogue.paths import active_index_db_path
 
-        dbf = db_path()
+        dbf = active_index_db_path()
         fts_ready = True
         fts_payload: dict[str, object] | None = None
         if dbf.exists():
@@ -143,7 +143,7 @@ def handle_healthz_ready(responder: ProbeResponder) -> None:
             return
 
         if not schema_ok:
-            reason_code = "schema_incompatible"
+            reason_code = "schema_version_mismatch"
         elif critical:
             reason_code = "critical_check_failed"
         else:

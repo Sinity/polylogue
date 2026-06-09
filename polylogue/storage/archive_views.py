@@ -6,21 +6,21 @@ from dataclasses import dataclass
 
 from pydantic import BaseModel
 
-from polylogue.storage.runtime import AttachmentRecord, ConversationRecord, MessageRecord
+from polylogue.storage.runtime import AttachmentRecord, MessageRecord, SessionRecord
 
 
-class ExistingConversation(BaseModel):
-    conversation_id: str
+class ExistingSession(BaseModel):
+    session_id: str
     content_hash: str
 
 
 @dataclass(frozen=True)
-class ConversationRenderProjection:
+class SessionRenderProjection:
     """Repository-owned render projection preserving raw attachment layout."""
 
-    conversation: ConversationRecord
+    session: SessionRecord
     messages: list[MessageRecord]
     attachments: list[AttachmentRecord]
 
 
-__all__ = ["ConversationRenderProjection", "ExistingConversation"]
+__all__ = ["SessionRenderProjection", "ExistingSession"]

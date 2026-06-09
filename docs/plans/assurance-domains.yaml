@@ -127,12 +127,12 @@ domains:
       operational, and corpus surfaces. #997/#1063 own executable
       pytest/scenario checks for spec-to-behavior correspondence.
 
-  migration_safety:
+  schema_rebuild_safety:
     description: Schema rebuild and transition safety
     notes: >
-      Schema is fresh-first rather than migration-chain driven. Version
-      mismatch blocks with a reset/re-import diagnostic unless an explicit,
-      reviewed in-place upgrade exists for that exact transition.
+      Schema is fresh-first rather than in-place-upgrade driven. Version
+      mismatch blocks with a reset/re-import diagnostic; the operator rebuilds
+      the affected tier from source/user evidence.
 
   provider_coverage:
     description: Known provider support breadth and depth
@@ -145,7 +145,7 @@ domains:
     description: Archive consistency, repair, idempotency
     notes: >
       Content-hash idempotency (SHA-256 over NFC payload). Repair
-      module (storage/repair.py, 1080 LOC). conversation_stats
+      module (storage/repair.py, 1080 LOC). session_stats
       table tracks aggregates. check command surfaces archive
       health.
 

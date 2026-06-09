@@ -69,8 +69,8 @@ def diagnose_first_run(daemon_alive: bool) -> StatusDiagnostic:
     from polylogue.cli.commands.init import starter_config_path
     from polylogue.paths import archive_root, db_path
 
-    db = db_path()
-    if not db.exists():
+    db = _active_archive_db(db_path(), archive_root())
+    if db is None:
         config_path = starter_config_path()
         if not config_path.exists():
             return StatusDiagnostic(
@@ -120,6 +120,14 @@ def diagnose_first_run(daemon_alive: bool) -> StatusDiagnostic:
     )
 
 
+def _active_archive_db(_db_anchor: Path, root: Path) -> Path | None:
+    """Return the archive DB file that should drive first-run diagnostics."""
+    archive_db = root / "index.db"
+    if archive_db.exists():
+        return archive_db
+    return None
+
+
 def _probe_schema(db: Path) -> StatusDiagnostic | None:
     """Open the database and classify schema/locking state.
 
@@ -127,8 +135,8 @@ def _probe_schema(db: Path) -> StatusDiagnostic | None:
     version. Returns an appropriate diagnostic otherwise. Never raises.
     """
     try:
+        from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
         from polylogue.storage.sqlite.schema_bootstrap import schema_version_mismatch_message
-        from polylogue.storage.sqlite.schema_ddl import SCHEMA_VERSION
     except Exception as exc:  # pragma: no cover - import-time misconfiguration
         return StatusDiagnostic(
             kind="unknown_db_error",
@@ -173,11 +181,18 @@ def _probe_schema(db: Path) -> StatusDiagnostic | None:
             with contextlib.suppress(Exception):
                 conn.close()
 
-    if current_version != 0 and current_version != SCHEMA_VERSION:
+    expected_version = INDEX_SCHEMA_VERSION
+    if current_version != 0 and current_version != expected_version:
+        detail = (
+            f"Archive index database version {current_version} is not the expected "
+            f"version {INDEX_SCHEMA_VERSION}. Recreate index.db from source.db."
+            if db.name == "index.db"
+            else schema_version_mismatch_message(current_version)
+        )
         return StatusDiagnostic(
             kind="schema_mismatch",
-            headline=f"Schema version {current_version} incompatible with runtime ({SCHEMA_VERSION}).",
-            detail=schema_version_mismatch_message(current_version),
+            headline=f"Schema version {current_version} is not runtime {expected_version}.",
+            detail=detail,
             next_action="polylogue reset --database && polylogued run",
         )
     return None

@@ -188,10 +188,15 @@ def setup_isolated_workspace(tmp_path: Path) -> IsolatedWorkspace:
     # Create inbox (this is where test data goes)
     inbox = polylogue_data / "inbox"
     render_root = polylogue_data / "render"
-    db_path = polylogue_data / "polylogue.db"
+    db_path = polylogue_data / "index.db"
 
     for path in [polylogue_data, polylogue_config, polylogue_state, inbox, render_root]:
         path.mkdir(parents=True, exist_ok=True)
+
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    with ArchiveStore(polylogue_data):
+        pass
 
     # Environment variables - HOME is the key to isolation
     env = {

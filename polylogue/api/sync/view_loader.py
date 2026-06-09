@@ -9,7 +9,7 @@ from polylogue.api.sync.bridge import run_coroutine_sync
 
 
 def load_view_params_sync(view_name: str) -> dict[str, object]:
-    """Load a saved view's query_json into a params dict for ConversationQuerySpec.from_params()."""
+    """Load a saved view's query_json into a params dict for SessionQuerySpec.from_params()."""
 
     async def _load() -> dict[str, object]:
         from polylogue.api import Polylogue

@@ -21,19 +21,19 @@ class EmbeddingCatchupRunPayload(TypedDict):
     status: str
     stop_reason: str | None
     rebuild: bool
-    max_conversations: int | None
+    max_sessions: int | None
     max_messages: int | None
     stop_after_seconds: int | None
     max_errors: int | None
-    planned_conversations: int
+    planned_sessions: int
     planned_messages: int
-    processed_conversations: int
-    embedded_conversations: int
-    skipped_conversations: int
+    processed_sessions: int
+    embedded_sessions: int
+    skipped_sessions: int
     error_count: int
     embedded_messages: int
     estimated_cost_usd: float
-    last_conversation_id: str | None
+    last_session_id: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,19 +41,19 @@ class CatchupRunStart:
     """Inputs persisted when a bounded embedding catch-up pass starts."""
 
     rebuild: bool
-    max_conversations: int | None
+    max_sessions: int | None
     max_messages: int | None
     stop_after_seconds: int | None
     max_errors: int | None
-    planned_conversations: int
+    planned_sessions: int
     planned_messages: int
 
 
 @dataclass(frozen=True, slots=True)
 class CatchupRunDelta:
-    """Progress increment for one attempted conversation."""
+    """Progress increment for one attempted session."""
 
-    conversation_id: str
+    session_id: str
     embedded: bool = False
     skipped: bool = False
     errored: bool = False
@@ -73,19 +73,19 @@ def ensure_embedding_catchup_runs_table(conn: sqlite3.Connection) -> None:
             status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'stopped', 'failed', 'interrupted')),
             stop_reason TEXT,
             rebuild INTEGER NOT NULL DEFAULT 0,
-            max_conversations INTEGER,
+            max_sessions INTEGER,
             max_messages INTEGER,
             stop_after_seconds INTEGER,
             max_errors INTEGER,
-            planned_conversations INTEGER NOT NULL DEFAULT 0,
+            planned_sessions INTEGER NOT NULL DEFAULT 0,
             planned_messages INTEGER NOT NULL DEFAULT 0,
-            processed_conversations INTEGER NOT NULL DEFAULT 0,
-            embedded_conversations INTEGER NOT NULL DEFAULT 0,
-            skipped_conversations INTEGER NOT NULL DEFAULT 0,
+            processed_sessions INTEGER NOT NULL DEFAULT 0,
+            embedded_sessions INTEGER NOT NULL DEFAULT 0,
+            skipped_sessions INTEGER NOT NULL DEFAULT 0,
             error_count INTEGER NOT NULL DEFAULT 0,
             embedded_messages INTEGER NOT NULL DEFAULT 0,
             estimated_cost_usd REAL NOT NULL DEFAULT 0.0,
-            last_conversation_id TEXT
+            last_session_id TEXT
         )
     """)
     conn.execute("""
@@ -117,18 +117,18 @@ def start_embedding_catchup_run(db_path: Path, start: CatchupRunStart) -> str:
             """
             INSERT INTO embedding_catchup_runs (
                 run_id, started_at, updated_at, status, rebuild,
-                max_conversations, max_messages, stop_after_seconds, max_errors,
-                planned_conversations, planned_messages
+                max_sessions, max_messages, stop_after_seconds, max_errors,
+                planned_sessions, planned_messages
             ) VALUES (?, datetime('now'), datetime('now'), 'running', ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,
                 int(start.rebuild),
-                start.max_conversations,
+                start.max_sessions,
                 start.max_messages,
                 start.stop_after_seconds,
                 start.max_errors,
-                start.planned_conversations,
+                start.planned_sessions,
                 start.planned_messages,
             ),
         )
@@ -137,7 +137,7 @@ def start_embedding_catchup_run(db_path: Path, start: CatchupRunStart) -> str:
 
 
 def record_embedding_catchup_progress(db_path: Path, run_id: str, delta: CatchupRunDelta) -> None:
-    """Add one attempted conversation to a persisted catch-up run."""
+    """Add one attempted session to a persisted catch-up run."""
 
     with _connect(db_path) as conn:
         ensure_embedding_catchup_runs_table(conn)
@@ -145,13 +145,13 @@ def record_embedding_catchup_progress(db_path: Path, run_id: str, delta: Catchup
             """
             UPDATE embedding_catchup_runs
             SET updated_at = datetime('now'),
-                processed_conversations = processed_conversations + 1,
-                embedded_conversations = embedded_conversations + ?,
-                skipped_conversations = skipped_conversations + ?,
+                processed_sessions = processed_sessions + 1,
+                embedded_sessions = embedded_sessions + ?,
+                skipped_sessions = skipped_sessions + ?,
                 error_count = error_count + ?,
                 embedded_messages = embedded_messages + ?,
                 estimated_cost_usd = estimated_cost_usd + ?,
-                last_conversation_id = ?
+                last_session_id = ?
             WHERE run_id = ?
             """,
             (
@@ -160,7 +160,7 @@ def record_embedding_catchup_progress(db_path: Path, run_id: str, delta: Catchup
                 int(delta.errored),
                 delta.embedded_messages,
                 delta.estimated_cost_usd,
-                delta.conversation_id,
+                delta.session_id,
                 run_id,
             ),
         )
@@ -202,10 +202,10 @@ def latest_embedding_catchup_run(conn: sqlite3.Connection) -> EmbeddingCatchupRu
     row = conn.execute(
         """
         SELECT run_id, started_at, updated_at, completed_at, status, stop_reason,
-               rebuild, max_conversations, max_messages, stop_after_seconds, max_errors,
-               planned_conversations, planned_messages, processed_conversations,
-               embedded_conversations, skipped_conversations, error_count,
-               embedded_messages, estimated_cost_usd, last_conversation_id
+               rebuild, max_sessions, max_messages, stop_after_seconds, max_errors,
+               planned_sessions, planned_messages, processed_sessions,
+               embedded_sessions, skipped_sessions, error_count,
+               embedded_messages, estimated_cost_usd, last_session_id
         FROM embedding_catchup_runs
         ORDER BY started_at DESC, rowid DESC
         LIMIT 1
@@ -221,19 +221,19 @@ def latest_embedding_catchup_run(conn: sqlite3.Connection) -> EmbeddingCatchupRu
         "status": str(row[4]),
         "stop_reason": None if row[5] is None else str(row[5]),
         "rebuild": bool(row[6]),
-        "max_conversations": row[7],
+        "max_sessions": row[7],
         "max_messages": row[8],
         "stop_after_seconds": row[9],
         "max_errors": row[10],
-        "planned_conversations": int(row[11] or 0),
+        "planned_sessions": int(row[11] or 0),
         "planned_messages": int(row[12] or 0),
-        "processed_conversations": int(row[13] or 0),
-        "embedded_conversations": int(row[14] or 0),
-        "skipped_conversations": int(row[15] or 0),
+        "processed_sessions": int(row[13] or 0),
+        "embedded_sessions": int(row[14] or 0),
+        "skipped_sessions": int(row[15] or 0),
         "error_count": int(row[16] or 0),
         "embedded_messages": int(row[17] or 0),
         "estimated_cost_usd": float(row[18] or 0.0),
-        "last_conversation_id": None if row[19] is None else str(row[19]),
+        "last_session_id": None if row[19] is None else str(row[19]),
     }
 
 

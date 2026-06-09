@@ -3,38 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
-from enum import Enum
 from typing import TypeAlias
 
-
-class Role(str, Enum):
-    """Canonical conversation roles."""
-
-    USER = "user"
-    ASSISTANT = "assistant"
-    SYSTEM = "system"
-    TOOL = "tool"
-    UNKNOWN = "unknown"
-
-    def __str__(self) -> str:
-        return self.value
-
-    @classmethod
-    def normalize(cls, raw: str) -> Role:
-        """Normalize a provider role string to a canonical role."""
-        lowered = raw.strip().lower()
-        if not lowered:
-            raise ValueError("Role cannot be empty. Handle missing roles at parse time.")
-
-        if lowered in {"user", "human"}:
-            return cls.USER
-        if lowered in {"assistant", "model", "ai"}:
-            return cls.ASSISTANT
-        if lowered in {"system", "developer"}:
-            return cls.SYSTEM
-        if lowered in {"tool", "function", "tool_use", "tool_result", "progress", "result"}:
-            return cls.TOOL
-        return cls.UNKNOWN
+from polylogue.core.enums import Role
 
 
 def normalize_role(raw: str) -> str:

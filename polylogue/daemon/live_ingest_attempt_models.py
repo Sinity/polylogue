@@ -31,6 +31,12 @@ class LiveIngestAttemptState(BaseModel):
     stage_timings_s: dict[str, float] = Field(default_factory=dict)
     current_source: str | None = None
     current_path: str | None = None
+    storage_route: str | None = None
+    storage_tiers: str | None = None
+    payload_available_file_count: int | None = None
+    payload_unavailable_file_count: int | None = None
+    payload_replayed_from_blob_file_count: int | None = None
+    written_raw_count: int | None = None
     error: str | None = None
     rss_current_mb: float | None = None
     rss_peak_self_mb: float | None = None

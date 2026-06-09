@@ -3,18 +3,18 @@
 The planner's contract with the typed
 :class:`MaintenanceScopeFilter` is that a narrower filter must
 produce a narrower preview — the operator must never see a single-
-conversation plan advertise the full archive's debt as its work.
+session plan advertise the full archive's debt as its work.
 
 Pins:
 
-* a ``conversation_ids`` filter clamps ``affected_rows`` to the size
+* a ``session_ids`` filter clamps ``affected_rows`` to the size
   of the filter set;
 * the filter is threaded onto the returned :class:`MaintenanceScope`
   so the envelope echoes it back unchanged;
 * an empty filter does not narrow the preview;
-* a filter with zero conversation ids cannot mask a broader debt by
+* a filter with zero session ids cannot mask a broader debt by
   accident (the underlying debt count is preserved when there is no
-  conversation-id narrowing).
+  session-id narrowing).
 """
 
 from __future__ import annotations
@@ -66,10 +66,10 @@ def _patched_debt(pending: int) -> tuple[Any, Any]:
     return _fake_collect, _fake_counts
 
 
-class TestPlannerNarrowsByConversationIds:
-    """A ``conversation_ids`` filter clamps preview rows to the filter size."""
+class TestPlannerNarrowsBySessionIds:
+    """A ``session_ids`` filter clamps preview rows to the filter size."""
 
-    def test_single_conversation_filter_clamps_to_one(self, tmp_path: Path) -> None:
+    def test_single_session_filter_clamps_to_one(self, tmp_path: Path) -> None:
         config = _make_config(tmp_path)
         collect, counts = _patched_debt(1000)
         with (
@@ -79,15 +79,15 @@ class TestPlannerNarrowsByConversationIds:
             narrow = preview_backfill(
                 config,
                 targets=("session_insights",),
-                scope_filter=MaintenanceScopeFilter(conversation_ids=("only-one",)),
+                scope_filter=MaintenanceScopeFilter(session_ids=("only-one",)),
             )
         assert narrow.affected_rows == 1
         # And the filter is echoed back on the returned scope so the
         # envelope can serialize it.
         assert narrow.scope is not None
-        assert narrow.scope.filter.conversation_ids == ("only-one",)
+        assert narrow.scope.filter.session_ids == ("only-one",)
 
-    def test_multi_conversation_filter_clamps_to_filter_size(self, tmp_path: Path) -> None:
+    def test_multi_session_filter_clamps_to_filter_size(self, tmp_path: Path) -> None:
         config = _make_config(tmp_path)
         collect, counts = _patched_debt(1000)
         with (
@@ -97,13 +97,13 @@ class TestPlannerNarrowsByConversationIds:
             narrow = preview_backfill(
                 config,
                 targets=("session_insights",),
-                scope_filter=MaintenanceScopeFilter(conversation_ids=("c1", "c2", "c3")),
+                scope_filter=MaintenanceScopeFilter(session_ids=("c1", "c2", "c3")),
             )
         assert narrow.affected_rows == 3
         assert narrow.scope is not None
-        assert narrow.scope.filter.conversation_ids == ("c1", "c2", "c3")
+        assert narrow.scope.filter.session_ids == ("c1", "c2", "c3")
 
-    def test_conversation_filter_does_not_inflate_when_debt_is_smaller(self, tmp_path: Path) -> None:
+    def test_session_filter_does_not_inflate_when_debt_is_smaller(self, tmp_path: Path) -> None:
         """A filter naming 100 ids cannot inflate a 2-row debt to 100."""
         config = _make_config(tmp_path)
         collect, counts = _patched_debt(2)
@@ -114,7 +114,7 @@ class TestPlannerNarrowsByConversationIds:
             narrow = preview_backfill(
                 config,
                 targets=("session_insights",),
-                scope_filter=MaintenanceScopeFilter(conversation_ids=tuple(f"c{i}" for i in range(100))),
+                scope_filter=MaintenanceScopeFilter(session_ids=tuple(f"c{i}" for i in range(100))),
             )
         assert narrow.affected_rows == 2
 
@@ -132,13 +132,13 @@ class TestPlannerLeavesFilterPassthroughDimensionsIntact:
             MaintenanceScopeFilter(parser_version="v3"),
         ],
     )
-    def test_non_conversation_filters_do_not_change_affected_rows(
+    def test_non_session_filters_do_not_change_affected_rows(
         self, tmp_path: Path, scope_filter: MaintenanceScopeFilter
     ) -> None:
         """Filter dimensions the planner doesn't yet honor pass through unchanged.
 
         The repair-fn boundary is advisory (see ``scope.py`` module
-        docstring): non-conversation_ids filters reach the planner and
+        docstring): non-session_ids filters reach the planner and
         are surfaced on the returned scope, but the preview row count
         comes from the full debt status until a repair fn learns to
         narrow on that dimension.

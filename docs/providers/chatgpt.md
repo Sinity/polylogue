@@ -4,7 +4,7 @@ Polylogue ingests ChatGPT exports via the generic parser.
 
 ## Supported Inputs
 
-- `conversations.json` containing a `mapping` graph.
+- `sessions.json` containing a `mapping` graph.
 - JSON lists with `messages` arrays.
 - JSONL streams containing per-message entries.
 
@@ -12,7 +12,7 @@ Polylogue ingests ChatGPT exports via the generic parser.
 
 - Extracts message text from `message.content.parts` and preserves roles.
 - Orders mapping nodes by timestamp when available.
-- Stores conversation/message metadata in the SQLite store for daemon-owned
+- Stores session/message metadata in the SQLite store for daemon-owned
   ingestion and downstream render/read surfaces.
 
 ## Attachment Handling

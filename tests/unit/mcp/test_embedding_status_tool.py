@@ -64,8 +64,8 @@ def test_embedding_status_detail_requests_exact_readiness_bands(mcp_server: MCPS
 def test_embedding_preflight_returns_canonical_payload(mcp_server: MCPServerUnderTest) -> None:
     report = MagicMock(name="report")
     payload = {
-        "total_conversations": 10,
-        "pending_conversations": 3,
+        "total_sessions": 10,
+        "pending_sessions": 3,
         "pending_messages": 120,
         "estimated_tokens": 60_000,
         "estimated_cost_usd": 0.006,
@@ -74,7 +74,7 @@ def test_embedding_preflight_returns_canonical_payload(mcp_server: MCPServerUnde
         "monthly_cost_cap_usd": 5.0,
         "effective_cost_cap_usd": 0.1,
         "windowed": True,
-        "max_conversations": 3,
+        "max_sessions": 3,
         "max_messages": 2000,
         "max_cost_usd": 0.1,
         "pricing": {
@@ -82,8 +82,8 @@ def test_embedding_preflight_returns_canonical_payload(mcp_server: MCPServerUnde
             "cost_usd_per_1m_tokens": 0.10,
             "approximate": True,
         },
-        "backfill_args": ["embed", "backfill", "--yes", "--max-conversations", "3"],
-        "backfill_command": "polylogue embed backfill --yes --max-conversations 3",
+        "backfill_args": ["embed", "backfill", "--yes", "--max-sessions", "3"],
+        "backfill_command": "polylogue embed backfill --yes --max-sessions 3",
     }
     with (
         patch("polylogue.mcp.server._get_config", return_value=MagicMock(db_path="/tmp/archive.db")),
@@ -92,7 +92,7 @@ def test_embedding_preflight_returns_canonical_payload(mcp_server: MCPServerUnde
     ):
         raw = invoke_surface(
             mcp_server._tool_manager._tools["embedding_preflight"].fn,
-            max_conversations=3,
+            max_sessions=3,
             max_messages=2000,
             max_cost_usd=0.1,
         )
@@ -102,7 +102,7 @@ def test_embedding_preflight_returns_canonical_payload(mcp_server: MCPServerUnde
     mock_build.assert_called_once_with(
         "/tmp/archive.db",
         rebuild=False,
-        max_conversations=3,
+        max_sessions=3,
         max_messages=2000,
         max_cost_usd=0.1,
     )
@@ -115,7 +115,7 @@ def test_embedding_preflight_forwards_rebuild_flag(mcp_server: MCPServerUnderTes
         patch("polylogue.storage.embeddings.preflight.build_preflight_report", return_value=MagicMock()) as mock_build,
         patch(
             "polylogue.storage.embeddings.preflight.preflight_payload",
-            return_value={"pending_conversations": 0, "backfill_command": None},
+            return_value={"pending_sessions": 0, "backfill_command": None},
         ),
     ):
         invoke_surface(mcp_server._tool_manager._tools["embedding_preflight"].fn, rebuild=True)

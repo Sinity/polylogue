@@ -9,8 +9,8 @@
     {
       "provider": "gemini",
       "version": "v1",
-      "anchor_kind": "conversation_document",
-      "default_element_kind": "conversation_document",
+      "anchor_kind": "session_document",
+      "default_element_kind": "session_document",
       "first_seen": "2026-03-16T12:26:09.197335+00:00",
       "last_seen": "2026-03-16T12:26:09.197335+00:00",
       "bundle_scope_count": 0,
@@ -21,8 +21,8 @@
       "representative_paths": [],
       "elements": [
         {
-          "element_kind": "conversation_document",
-          "schema_file": "conversation_document.schema.json.gz",
+          "element_kind": "session_document",
+          "schema_file": "session_document.schema.json.gz",
           "sample_count": 226,
           "artifact_count": 226,
           "supported": true,

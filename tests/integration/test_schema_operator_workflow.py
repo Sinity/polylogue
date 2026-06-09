@@ -100,7 +100,7 @@ def seeded_registry(schema_storage: Path) -> SchemaRegistry:
     """Registry pre-seeded with two versions of a test provider schema."""
     registry = SchemaRegistry(storage_root=schema_storage)
 
-    schema_v1 = {
+    archive = {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "title": "test-provider export format",
@@ -128,7 +128,7 @@ def seeded_registry(schema_storage: Path) -> SchemaRegistry:
         "required": ["id"],  # title no longer required
     }
 
-    registry.register_schema("test-provider", schema_v1)
+    registry.register_schema("test-provider", archive)
     registry.register_schema("test-provider", schema_v2)
 
     return registry
@@ -416,7 +416,7 @@ class TestSchemaExplainCommand:
             )
 
         assert result.exit_code == 0, f"CLI failed: {result.output}"
-        # v1 has properties but NOT "status"/"tags"
+        # archive has properties but NOT "status"/"tags"
         assert "id" in result.output
         assert "title" in result.output
 
@@ -582,7 +582,7 @@ class TestFullOperatorWorkflow:
         registry = SchemaRegistry(storage_root=schema_storage)
 
         # Step 1: Register initial schema (simulating infer output)
-        schema_v1 = {
+        archive = {
             "type": "object",
             "properties": {
                 "id": {"type": "string"},
@@ -591,9 +591,9 @@ class TestFullOperatorWorkflow:
             },
             "required": ["id"],
         }
-        registry.register_schema("workflow-prov", schema_v1)
+        registry.register_schema("workflow-prov", archive)
 
-        # Step 2: List — verify v1 is visible
+        # Step 2: List — verify archive is visible
         with _patch_registry(registry):
             result = runner.invoke(
                 cli,
@@ -619,7 +619,7 @@ class TestFullOperatorWorkflow:
         }
         registry.register_schema("workflow-prov", schema_v2)
 
-        # Step 4: Compare v1 vs v2 — verify additive + requiredness changes
+        # Step 4: Compare archive vs v2 — verify additive + requiredness changes
         with _patch_registry(registry):
             result = runner.invoke(
                 cli,

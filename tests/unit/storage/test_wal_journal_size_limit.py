@@ -64,7 +64,7 @@ def test_read_profile_includes_query_only_pragma() -> None:
 
 def test_open_connection_applies_journal_size_limit_on_disk(tmp_path: Path) -> None:
     """The factory ``open_connection`` propagates the cap to SQLite."""
-    db_path = tmp_path / "polylogue.db"
+    db_path = tmp_path / "index.db"
     conn = open_connection(db_path)
     try:
         limit = _pragma_int(conn, "journal_size_limit")
@@ -77,7 +77,7 @@ def test_open_connection_applies_journal_size_limit_on_disk(tmp_path: Path) -> N
 
 def test_open_readonly_connection_applies_query_only(tmp_path: Path) -> None:
     """The read factory turns on query_only at the SQL parser level."""
-    db_path = tmp_path / "polylogue.db"
+    db_path = tmp_path / "index.db"
     # Bootstrap a tiny schema so the read connection has something to attach to.
     seed = sqlite3.connect(str(db_path))
     try:
@@ -109,7 +109,7 @@ def test_wal_file_truncates_back_to_size_limit_after_checkpoint(tmp_path: Path) 
     TRUNCATE checkpoint at the end is the only mechanism that can
     shrink the WAL, and that's exactly what the limit enforces.
     """
-    db_path = tmp_path / "polylogue.db"
+    db_path = tmp_path / "index.db"
     writer = open_connection(db_path)
     try:
         writer.execute("CREATE TABLE blob (id INTEGER PRIMARY KEY, payload BLOB)")
@@ -167,7 +167,7 @@ def test_wal_stays_bounded_under_concurrent_reader_and_writer(tmp_path: Path) ->
     """
     import threading
 
-    db_path = tmp_path / "polylogue.db"
+    db_path = tmp_path / "index.db"
 
     # Seed the schema on a separate connection so the worker threads
     # don't race the table creation.

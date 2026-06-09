@@ -16,10 +16,44 @@ import sqlite3
 from pathlib import Path
 
 
+def _seed_session(conn: sqlite3.Connection, native_id: str = "c1") -> str:
+    conn.execute(
+        "INSERT INTO sessions(native_id, origin, content_hash) VALUES (?, ?, ?)",
+        (native_id, "codex-session", bytes(32)),
+    )
+    return f"codex-session:{native_id}"
+
+
+def _seed_message(
+    conn: sqlite3.Connection,
+    *,
+    session_id: str,
+    native_id: str,
+    position: int,
+    text: str,
+) -> str:
+    conn.execute(
+        """
+        INSERT INTO messages(session_id, native_id, position, role, message_type, content_hash)
+        VALUES (?, ?, ?, 'user', 'message', ?)
+        """,
+        (session_id, native_id, position, bytes(32)),
+    )
+    message_id = f"{session_id}:{native_id}"
+    conn.execute(
+        """
+        INSERT INTO blocks(message_id, session_id, position, block_type, text)
+        VALUES (?, ?, 0, 'text', ?)
+        """,
+        (message_id, session_id, text),
+    )
+    return message_id
+
+
 def test_messages_fts_is_contentless_delete(tmp_path: Path) -> None:
     """``messages_fts`` must not store raw message bodies (#817/#1486)."""
     from polylogue.storage.fts.fts_lifecycle import ensure_fts_index_sync
-    from polylogue.storage.sqlite.schema_ddl import SCHEMA_DDL
+    from polylogue.storage.sqlite.schema import SCHEMA_DDL
 
     conn = sqlite3.connect(str(tmp_path / "fts_contentless.db"))
     try:
@@ -44,23 +78,16 @@ def test_messages_fts_storage_does_not_duplicate_message_bodies(tmp_path: Path) 
     regression to standalone FTS5 would push the ratio above 1.0 (full
     duplicate copy) and the assertion would fail.
     """
-    from polylogue.storage.sqlite.schema_ddl import SCHEMA_DDL
+    from polylogue.storage.sqlite.schema import SCHEMA_DDL
 
     db = tmp_path / "fts_bloat.db"
     conn = sqlite3.connect(str(db))
     try:
         conn.executescript(SCHEMA_DDL)
-        conn.execute(
-            "INSERT INTO conversations(conversation_id, source_name, provider_conversation_id, version) "
-            "VALUES('c1','test','pc1',1)"
-        )
+        session_id = _seed_session(conn)
         body = "lorem ipsum dolor sit amet consectetur adipiscing elit " * 100
         for i in range(2000):
-            conn.execute(
-                "INSERT INTO messages(message_id, conversation_id, role, text, source_name, version) "
-                "VALUES(?,?,?,?,?,1)",
-                (f"m{i}", "c1", "user", body, "test"),
-            )
+            _seed_message(conn, session_id=session_id, native_id=f"m{i}", position=i, text=body)
         conn.commit()
         conn.execute("VACUUM")
 
@@ -72,18 +99,17 @@ def test_messages_fts_storage_does_not_duplicate_message_bodies(tmp_path: Path) 
             row = cursor.fetchone()
             return int(row[0]) if row and row[0] is not None else 0
 
-        messages_bytes = _table_bytes("messages")
-        # Subtract messages_fts* contribution captured by the prefix wildcard.
+        blocks_bytes = _table_bytes("blocks")
         fts_bytes = _table_bytes("messages_fts")
-        source_bytes = messages_bytes - fts_bytes
-        assert source_bytes > 0, "messages table should have measurable storage"
+        source_bytes = blocks_bytes
+        assert source_bytes > 0, "blocks table should have measurable storage"
         ratio = fts_bytes / source_bytes
         # External-content FTS keeps tokens + docsize, not full text. The
         # observed ratio on this fixture is ~0.2; we allow generous headroom
         # so unrelated SQLite version changes don't false-trip, while
         # catching any regression to a full standalone FTS5 (ratio >= 1).
         assert ratio < 0.5, (
-            f"messages_fts pages ({fts_bytes}) should be well under messages pages "
+            f"messages_fts pages ({fts_bytes}) should be well under blocks pages "
             f"({source_bytes}); ratio={ratio:.2f} suggests FTS bloat regression"
         )
     finally:
@@ -99,22 +125,25 @@ def test_messages_fts_deletion_consistency_with_external_content(tmp_path: Path)
     command with the original ``text`` payload. This test guards against
     regressing that trigger (or losing the rowid-aligned source-table linkage).
     """
-    from polylogue.storage.sqlite.schema_ddl import SCHEMA_DDL
+    from polylogue.storage.sqlite.schema import SCHEMA_DDL
 
     conn = sqlite3.connect(str(tmp_path / "fts_delete.db"))
     try:
         conn.executescript(SCHEMA_DDL)
-        conn.execute(
-            "INSERT INTO conversations(conversation_id, source_name, provider_conversation_id, version) "
-            "VALUES('c1','test','pc1',1)"
+        session_id = _seed_session(conn)
+        m1 = _seed_message(
+            conn,
+            session_id=session_id,
+            native_id="m1",
+            position=0,
+            text="unique_token_alpha here",
         )
-        conn.execute(
-            "INSERT INTO messages(message_id, conversation_id, role, text, source_name, version) "
-            "VALUES('m1','c1','user','unique_token_alpha here','test',1)"
-        )
-        conn.execute(
-            "INSERT INTO messages(message_id, conversation_id, role, text, source_name, version) "
-            "VALUES('m2','c1','user','unique_token_beta here','test',1)"
+        _seed_message(
+            conn,
+            session_id=session_id,
+            native_id="m2",
+            position=1,
+            text="unique_token_beta here",
         )
         conn.commit()
         assert (
@@ -124,7 +153,7 @@ def test_messages_fts_deletion_consistency_with_external_content(tmp_path: Path)
             == 1
         )
 
-        conn.execute("DELETE FROM messages WHERE message_id='m1'")
+        conn.execute("DELETE FROM blocks WHERE message_id = ?", (m1,))
         conn.commit()
 
         # m1 must no longer be findable.
@@ -141,56 +170,31 @@ def test_messages_fts_deletion_consistency_with_external_content(tmp_path: Path)
         conn.close()
 
 
-def test_conversation_replacement_purges_fts_when_delete_triggers_missing(tmp_path: Path) -> None:
+def test_session_replacement_purges_fts_when_delete_triggers_missing(tmp_path: Path) -> None:
     """Replacement must not orphan FTS rows if bulk ingest has suspended triggers."""
-    from polylogue.storage.conversation_replacement import replace_conversation_runtime_state_sync
-    from polylogue.storage.sqlite.schema_ddl import SCHEMA_DDL
+    from polylogue.storage.session_replacement import replace_session_runtime_state_sync
+    from polylogue.storage.sqlite.schema import SCHEMA_DDL
 
     conn = sqlite3.connect(str(tmp_path / "fts_replace_missing_triggers.db"))
     try:
         conn.executescript(SCHEMA_DDL)
-        conn.execute(
-            "INSERT INTO conversations(conversation_id, source_name, provider_conversation_id, version) "
-            "VALUES('c1','test','pc1',1)"
-        )
-        conn.execute(
-            "INSERT INTO messages(message_id, conversation_id, role, text, source_name, version) "
-            "VALUES('m1','c1','user','replace orphan needle','test',1)"
-        )
-        conn.execute(
-            """
-            INSERT INTO action_events (
-                event_id, conversation_id, message_id, sequence_index,
-                action_kind, normalized_tool_name, search_text
-            ) VALUES ('a1', 'c1', 'm1', 0, 'shell', 'bash', 'action orphan needle')
-            """
-        )
+        session_id = _seed_session(conn)
+        _seed_message(conn, session_id=session_id, native_id="m1", position=0, text="replace orphan needle")
         conn.commit()
         assert conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 1
-        assert conn.execute("SELECT COUNT(*) FROM action_events_fts_docsize").fetchone()[0] == 1
 
         conn.execute("DROP TRIGGER messages_fts_ad")
-        conn.execute("DROP TRIGGER action_events_fts_ad")
-        replace_conversation_runtime_state_sync(conn, "c1")
+        replace_session_runtime_state_sync(conn, session_id)
         conn.commit()
 
         message_orphans = conn.execute(
             """
             SELECT COUNT(*)
             FROM messages_fts_docsize AS d
-            LEFT JOIN messages AS m ON m.rowid = d.id
-            WHERE m.rowid IS NULL
-            """
-        ).fetchone()[0]
-        action_orphans = conn.execute(
-            """
-            SELECT COUNT(*)
-            FROM action_events_fts_docsize AS d
-            LEFT JOIN action_events AS ae ON ae.rowid = d.id
-            WHERE ae.rowid IS NULL
+            LEFT JOIN blocks AS b ON b.rowid = d.id
+            WHERE b.rowid IS NULL
             """
         ).fetchone()[0]
         assert message_orphans == 0
-        assert action_orphans == 0
     finally:
         conn.close()

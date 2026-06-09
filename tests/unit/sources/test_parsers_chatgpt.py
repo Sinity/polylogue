@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Mapping, Sequence
-from pathlib import Path
 from typing import Any, TypeAlias
 
 import pytest
 
 from polylogue.scenarios import CorpusSpec
-from polylogue.sources.parsers.base import ParsedConversation
+from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.parsers.chatgpt import _coerce_float, extract_messages_from_mapping
 from polylogue.sources.parsers.chatgpt import looks_like as chatgpt_looks_like
 from polylogue.sources.parsers.chatgpt import parse as chatgpt_parse
@@ -24,8 +23,8 @@ ChatGPTMapping: TypeAlias = dict[str, object]
 ExtractMessagesCase: TypeAlias = tuple[ChatGPTMapping, int, str]
 ParentBranchCase: TypeAlias = tuple[ChatGPTMapping, list[str | None], list[int], str]
 MetadataCase: TypeAlias = tuple[object, str | None, str]
-ParseFn: TypeAlias = Callable[[Mapping[str, object], str], ParsedConversation]
-ParseConversationCase: TypeAlias = tuple[ParseFn, ChatGPTMapping, str, str]
+ParseFn: TypeAlias = Callable[[Mapping[str, object], str], ParsedSession]
+ParseSessionCase: TypeAlias = tuple[ParseFn, ChatGPTMapping, str, str]
 
 
 def _looks_like_code_payload(data: object) -> bool:
@@ -315,8 +314,10 @@ def test_chatgpt_metadata_extraction(metadata: object, expected_type: str | None
         # Should have attachment records
         assert len(attachments) > 0
     elif expected_type == "cost":
-        # Should preserve cost in provider_meta
-        assert messages[0].provider_meta is not None
+        # Cost metadata is not retained per-message (cost lives in
+        # session_model_usage / reported_cost_usd); the parser must still
+        # extract the message rather than drop or crash on the metadata.
+        assert len(messages) == 1
     elif expected_type == "thinking":
         # Should mark as thinking
         # (depends on content_blocks implementation)
@@ -330,7 +331,7 @@ def test_chatgpt_metadata_extraction(metadata: object, expected_type: str | None
 # -----------------------------------------------------------------------------
 
 
-PARSE_CONVERSATION_CASES: list[ParseConversationCase] = [
+PARSE_SESSION_CASES: list[ParseSessionCase] = [
     # ChatGPT title extraction
     (chatgpt_parse, {"title": "My Conv", "mapping": {}}, "title", "ChatGPT: title field"),
     (chatgpt_parse, {"name": "Conv Name", "mapping": {}}, "name", "ChatGPT: name field"),
@@ -339,17 +340,17 @@ PARSE_CONVERSATION_CASES: list[ParseConversationCase] = [
 ]
 
 
-@pytest.mark.parametrize("parse_fn,conv_data,check_type,desc", PARSE_CONVERSATION_CASES)
-def test_parse_conversation(parse_fn: ParseFn, conv_data: ChatGPTMapping, check_type: str, desc: str) -> None:
-    """Unified conversation parsing across providers."""
+@pytest.mark.parametrize("parse_fn,conv_data,check_type,desc", PARSE_SESSION_CASES)
+def test_parse_session(parse_fn: ParseFn, conv_data: ChatGPTMapping, check_type: str, desc: str) -> None:
+    """Unified session parsing across providers."""
     result = parse_fn(conv_data, "fallback-id")
 
     if check_type == "title":
         assert result.title in conv_data.values(), f"Failed {desc}"
     elif check_type == "id":
-        assert result.provider_conversation_id == conv_data["id"], f"Failed {desc}"
+        assert result.provider_session_id == conv_data["id"], f"Failed {desc}"
     elif check_type == "fallback":
-        assert result.provider_conversation_id == "fallback-id", f"Failed {desc}"
+        assert result.provider_session_id == "fallback-id", f"Failed {desc}"
     elif check_type == "provider":
         assert result.source_name in ["claude-ai", "claude-code"], f"Failed {desc}"
 
@@ -384,7 +385,7 @@ def test_chatgpt_parse_synthetic_simple() -> None:
 
 
 def test_chatgpt_parse_synthetic_branching() -> None:
-    """Parse synthetic ChatGPT conversation with many messages (branching structure)."""
+    """Parse synthetic ChatGPT session with many messages (branching structure)."""
     from polylogue.schemas.synthetic import SyntheticCorpus
 
     raw = SyntheticCorpus.generate_for_spec(
@@ -403,7 +404,7 @@ def test_chatgpt_parse_synthetic_branching() -> None:
     result = chatgpt_parse(data, "branching-test")
 
     assert result.source_name == "chatgpt"
-    assert len(result.messages) > 10  # Multiple messages like branching conversations
+    assert len(result.messages) > 10  # Multiple messages like branching sessions
 
 
 # -----------------------------------------------------------------------------
@@ -411,18 +412,13 @@ def test_chatgpt_parse_synthetic_branching() -> None:
 # -----------------------------------------------------------------------------
 
 
-def test_chatgpt_metadata_roundtrip_parser_to_hydration(tmp_path: Path) -> None:
-    """ChatGPT message metadata survives parser → materialization → hydration.
+def test_chatgpt_metadata_extracted_into_content_blocks() -> None:
+    """ChatGPT message-level metadata is extracted into content-block metadata.
 
-    Proves that ChatGPT message-level metadata (model, author_name, recipient,
-    status, end_turn, citations, code_execution, user_context) reaches hydrated
-    Message.content_blocks[].metadata without depending on
-    Message.provider_meta.raw.
+    Proves the parser lifts ChatGPT message metadata (model, author_name,
+    recipient, status, end_turn, citations, code_execution, user_context) onto
+    ``ParsedContentBlock.metadata`` rather than an opaque provider_meta blob.
     """
-    from polylogue.pipeline.materialization_runtime import materialize_conversation
-    from polylogue.storage.hydrators import message_from_record
-    from polylogue.storage.runtime import ContentBlockRecord, MessageRecord
-
     # Build a ChatGPT mapping payload with rich message-level metadata.
     payload: dict[str, object] = {
         "title": "Metadata Roundtrip Test",
@@ -489,87 +485,6 @@ def test_chatgpt_metadata_roundtrip_parser_to_hydration(tmp_path: Path) -> None:
     # User message should NOT have tool-specific metadata.
     assert "chatgpt_author_name" not in user_block_meta
     assert "chatgpt_recipient" not in user_block_meta
-
-    # --- Stage 2: Materialize ---
-    materialized = materialize_conversation(
-        parsed,
-        source_name="test",
-        archive_root=tmp_path,
-    )
-    assert len(materialized.messages) >= 2
-
-    # Find the materialized assistant message and verify metadata_json.
-    mat_assistant = next(m for m in materialized.messages if m.role == "assistant")
-    assert len(mat_assistant.blocks) >= 1
-    import json as _json
-
-    assistant_meta_json = mat_assistant.blocks[0].metadata_json
-    assert assistant_meta_json is not None, "metadata_json should survive materialization"
-    assistant_meta = _json.loads(assistant_meta_json)
-    assert assistant_meta.get("chatgpt_model") == "gpt-4"
-    assert assistant_meta.get("chatgpt_author_name") == "dalle"
-    assert assistant_meta.get("chatgpt_recipient") == "dalle.text2im"
-    assert assistant_meta.get("chatgpt_status") == "finished_successfully"
-    assert assistant_meta.get("chatgpt_end_turn") is True
-    assert isinstance(assistant_meta.get("chatgpt_citations"), list)
-    assert isinstance(assistant_meta.get("chatgpt_code_execution"), dict)
-    assert isinstance(assistant_meta.get("chatgpt_user_context"), dict)
-
-    # --- Stage 3: Hydrate ---
-    # Simulate the storage→hydration path by constructing records from
-    # materialized output.
-    content_block_records = [
-        ContentBlockRecord(
-            block_id=b.block_id,
-            message_id=mat_assistant.message_id,
-            conversation_id=materialized.conversation_id,
-            block_index=b.block_index,
-            type=b.type,
-            text=b.text,
-            tool_name=b.tool_name,
-            tool_id=b.tool_id,
-            tool_input=b.tool_input_json,
-            metadata=b.metadata_json,
-            semantic_type=b.semantic_type,
-        )
-        for b in mat_assistant.blocks
-    ]
-    record = MessageRecord(
-        message_id=mat_assistant.message_id,
-        conversation_id=materialized.conversation_id,
-        provider_message_id=mat_assistant.provider_message_id,
-        role=mat_assistant.role,
-        text=mat_assistant.text,
-        sort_key=mat_assistant.sort_key,
-        content_hash=mat_assistant.content_hash,
-        parent_message_id=mat_assistant.parent_message_id,
-        branch_index=mat_assistant.branch_index,
-        content_blocks=content_block_records,
-        source_name="chatgpt",
-        word_count=mat_assistant.word_count,
-        has_tool_use=mat_assistant.has_tool_use,
-        has_thinking=mat_assistant.has_thinking,
-        has_paste=mat_assistant.has_paste,
-        message_type=mat_assistant.message_type,
-    )
-    hydrated = message_from_record(record, attachments=[], provider="chatgpt")
-
-    # Hydrated Message no longer carries provider_meta as a field (#1256);
-    # canonical metadata lives in content_blocks.
-    assert not hasattr(hydrated, "provider_meta")
-
-    # Metadata should be accessible via content_blocks.
-    assert len(hydrated.content_blocks) >= 1
-    hydrated_meta = hydrated.content_blocks[0].get("metadata")
-    assert isinstance(hydrated_meta, dict), f"Expected dict, got {type(hydrated_meta)}"
-    assert hydrated_meta.get("chatgpt_model") == "gpt-4"
-    assert hydrated_meta.get("chatgpt_author_name") == "dalle"
-    assert hydrated_meta.get("chatgpt_recipient") == "dalle.text2im"
-    assert hydrated_meta.get("chatgpt_status") == "finished_successfully"
-    assert hydrated_meta.get("chatgpt_end_turn") is True
-    assert isinstance(hydrated_meta.get("chatgpt_citations"), list)
-    assert isinstance(hydrated_meta.get("chatgpt_code_execution"), dict)
-    assert isinstance(hydrated_meta.get("chatgpt_user_context"), dict)
 
 
 # =============================================================================
@@ -730,78 +645,26 @@ def _build_chatgpt_message_metadata_payload(
 
 
 @pytest.mark.parametrize("meta_spec,desc,expected_fields", _METADATA_PERMUTATION_CASES)
-def test_chatgpt_metadata_permutation_roundtrip(
+def test_chatgpt_metadata_permutation_extracted_by_parser(
     meta_spec: dict[str, object],
     desc: str,
     expected_fields: dict[str, object],
-    tmp_path: Path,
 ) -> None:
-    """Catalog-driven: each metadata field permutation survives parser→materialize→hydrate."""
-    from polylogue.pipeline.materialization_runtime import materialize_conversation
-    from polylogue.storage.hydrators import message_from_record
-    from polylogue.storage.runtime import ContentBlockRecord, MessageRecord
-
+    """Catalog-driven: each metadata field permutation is extracted by the parser
+    onto the first content block's metadata."""
     payload = _build_chatgpt_message_metadata_payload(meta_spec)
 
-    # Stage 1: Parse
     parsed = chatgpt_parse(payload, "permutation-test")
     assert parsed.source_name == "chatgpt"
+    assert len(parsed.messages) >= 1
 
-    # Stage 2: Materialize
-    materialized = materialize_conversation(parsed, source_name="test", archive_root=tmp_path)
-    assert len(materialized.messages) >= 1
+    blocks = parsed.messages[0].content_blocks
+    assert len(blocks) >= 1
+    meta = blocks[0].metadata
+    assert isinstance(meta, dict), f"Expected dict metadata, got {type(meta)}: {desc}"
 
-    msg = materialized.messages[0]
-    assert len(msg.blocks) >= 1
-    meta_json = msg.blocks[0].metadata_json
-    assert meta_json is not None, f"metadata_json should survive materialization: {desc}"
-
-    # Stage 3: Hydrate
-    content_block_records = [
-        ContentBlockRecord(
-            block_id=b.block_id,
-            message_id=msg.message_id,
-            conversation_id=materialized.conversation_id,
-            block_index=b.block_index,
-            type=b.type,
-            text=b.text,
-            tool_name=b.tool_name,
-            tool_id=b.tool_id,
-            tool_input=b.tool_input_json,
-            metadata=b.metadata_json,
-            semantic_type=b.semantic_type,
-        )
-        for b in msg.blocks
-    ]
-    record = MessageRecord(
-        message_id=msg.message_id,
-        conversation_id=materialized.conversation_id,
-        provider_message_id=msg.provider_message_id,
-        role=msg.role,
-        text=msg.text,
-        sort_key=msg.sort_key,
-        content_hash=msg.content_hash,
-        parent_message_id=msg.parent_message_id,
-        branch_index=msg.branch_index,
-        content_blocks=content_block_records,
-        source_name="chatgpt",
-        word_count=msg.word_count,
-        has_tool_use=msg.has_tool_use,
-        has_thinking=msg.has_thinking,
-        has_paste=msg.has_paste,
-        message_type=msg.message_type,
-    )
-    hydrated = message_from_record(record, attachments=[], provider="chatgpt")
-
-    # Hydrated Message no longer has provider_meta (#1256).
-    assert not hasattr(hydrated, "provider_meta")
-    assert len(hydrated.content_blocks) >= 1
-    hydrated_meta = hydrated.content_blocks[0].get("metadata")
-    assert isinstance(hydrated_meta, dict), f"Expected dict, got {type(hydrated_meta)}: {desc}"
-
-    # Assert each expected field
     for field_name, expected_value in expected_fields.items():
-        actual = hydrated_meta.get(field_name)
+        actual = meta.get(field_name)
         if isinstance(expected_value, dict):
             assert isinstance(actual, dict), f"[{desc}] Expected dict for {field_name}, got {type(actual)}"
             for k, v in expected_value.items():
@@ -814,7 +677,7 @@ def test_chatgpt_metadata_permutation_roundtrip(
 
 
 # ---------------------------------------------------------------------------
-# #1744 — active-leaf graph traversal (abandoned branches not emitted)
+# #1743 — branch graph preservation with active-path metadata
 # ---------------------------------------------------------------------------
 
 
@@ -841,13 +704,8 @@ def _branch_node(
     }
 
 
-def test_regeneration_emits_only_active_branch_via_current_node() -> None:
-    """A regenerated assistant turn must yield the active branch only (#1744).
-
-    ``u1`` has two assistant children: ``a_old`` (abandoned) and ``a_new``
-    (active, pointed at by current_node). Before the fix both were flattened
-    into sibling messages, duplicating the assistant turn.
-    """
+def test_regeneration_preserves_all_branches_and_marks_active_leaf() -> None:
+    """A regenerated assistant turn keeps every branch and marks the active leaf."""
     nodes = [
         _branch_node("root", "system", "", parent=None, children=["u1"]),
         _branch_node("u1", "user", "question", parent="root", children=["a_old", "a_new"]),
@@ -862,8 +720,14 @@ def test_regeneration_emits_only_active_branch_via_current_node() -> None:
     }
     conv = chatgpt_parse(payload, "fallback-id")
     texts = [m.text for m in conv.messages]
-    assert texts == ["question", "NEW correct answer"]
-    assert "OLD wrong answer" not in texts
+    assert texts == ["question", "OLD wrong answer", "NEW correct answer"]
+    by_id = {m.provider_message_id: m for m in conv.messages}
+    assert by_id["u1"].is_active_path is True
+    assert by_id["a_old"].is_active_path is False
+    assert by_id["a_new"].is_active_path is True
+    assert by_id["a_old"].is_active_leaf is False
+    assert by_id["a_new"].is_active_leaf is True
+    assert conv.active_leaf_message_provider_id == "a_new"
 
 
 def test_no_current_node_preserves_all_nodes_losslessly() -> None:
@@ -886,10 +750,13 @@ def test_no_current_node_preserves_all_nodes_losslessly() -> None:
     conv = chatgpt_parse(payload, "fallback-id")
     texts = [m.text for m in conv.messages]
     assert texts == ["question", "OLD answer", "NEW answer"]
+    assert [m.is_active_path for m in conv.messages] == [None, None, None]
+    assert [m.is_active_leaf for m in conv.messages] == [None, None, None]
+    assert conv.active_leaf_message_provider_id is None
 
 
-def test_current_node_pointing_at_old_branch_selects_that_branch() -> None:
-    """current_node is authoritative: if it points at the older branch, emit it."""
+def test_current_node_pointing_at_old_branch_marks_that_leaf() -> None:
+    """current_node is authoritative active-path metadata, not an emission filter."""
     nodes = [
         _branch_node("u1", "user", "question", parent=None, children=["a_old", "a_new"]),
         _branch_node("a_old", "assistant", "kept answer", parent="u1", children=[]),
@@ -903,8 +770,36 @@ def test_current_node_pointing_at_old_branch_selects_that_branch() -> None:
     }
     conv = chatgpt_parse(payload, "fallback-id")
     texts = [m.text for m in conv.messages]
-    assert texts == ["question", "kept answer"]
-    assert "discarded answer" not in texts
+    assert texts == ["question", "kept answer", "discarded answer"]
+    by_id = {m.provider_message_id: m for m in conv.messages}
+    assert by_id["a_old"].is_active_path is True
+    assert by_id["a_old"].is_active_leaf is True
+    assert by_id["a_new"].is_active_path is False
+    assert by_id["a_new"].is_active_leaf is False
+    assert conv.active_leaf_message_provider_id == "a_old"
+
+
+def test_chatgpt_archive_contract_fields() -> None:
+    nodes = [
+        _branch_node("u1", "user", "question", parent=None, children=["a_old", "a_new"]),
+        _branch_node("a_old", "assistant", "OLD answer", parent="u1", children=[]),
+        _branch_node("a_new", "assistant", "NEW answer", parent="u1", children=[]),
+    ]
+    nodes[2]["message"]["metadata"] = {"model_slug": "gpt-4o", "durationMs": 2500}
+    payload = {
+        "title": "Regenerated archive contract",
+        "mapping": {n["id"]: n for n in nodes},
+        "current_node": "a_new",
+        "create_time": 1700000000.0,
+    }
+
+    conv = chatgpt_parse(payload, "fallback-id")
+
+    assert [m.position for m in conv.messages] == [0, 1, 2]
+    assert [m.variant_index for m in conv.messages] == [0, 0, 1]
+    active = next(m for m in conv.messages if m.provider_message_id == "a_new")
+    assert active.model_name == "gpt-4o"
+    assert active.duration_ms == 2500
 
 
 # ---------------------------------------------------------------------------
@@ -950,9 +845,9 @@ def test_code_interpreter_content_is_preserved() -> None:
     assert "print(1)" in texts
     assert "1\n" in texts
     # Content-block types reflect the code-interpreter semantics.
-    from polylogue.types import ContentBlockType
+    from polylogue.types import BlockType
 
     code_msg = next(m for m in conv.messages if m.text == "print(1)")
-    assert any(b.type == ContentBlockType.CODE for b in code_msg.content_blocks)
+    assert any(b.type == BlockType.CODE for b in code_msg.content_blocks)
     out_msg = next(m for m in conv.messages if m.text == "1\n")
-    assert any(b.type == ContentBlockType.TOOL_RESULT for b in out_msg.content_blocks)
+    assert any(b.type == BlockType.TOOL_RESULT for b in out_msg.content_blocks)

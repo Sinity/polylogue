@@ -11,12 +11,12 @@ from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from polylogue.storage.search.models import ConversationSearchResult
-from polylogue.storage.search_providers.hybrid_conversations import (
-    _resolve_ranked_conversation_hits,
-    _resolve_ranked_conversation_ids,
-)
+from polylogue.storage.search.models import SessionSearchResult
 from polylogue.storage.search_providers.hybrid_factory import create_hybrid_provider
+from polylogue.storage.search_providers.hybrid_sessions import (
+    _resolve_ranked_session_hits,
+    _resolve_ranked_session_ids,
+)
 from polylogue.storage.sqlite.connection import (
     open_connection as _open_connection,
 )
@@ -167,39 +167,39 @@ class HybridSearchProvider:
 
         return fused[:limit]
 
-    def search_conversations(self, query: str, limit: int = 20, providers: list[str] | None = None) -> list[str]:
-        """Search and return unique conversation IDs.
+    def search_sessions(self, query: str, limit: int = 20, providers: list[str] | None = None) -> list[str]:
+        """Search and return unique session IDs.
 
-        Executes hybrid search, then deduplicates by conversation.
-        Returns conversation IDs that had matching messages.
+        Executes hybrid search, then deduplicates by session.
+        Returns session IDs that had matching messages.
 
         Args:
             query: Search query string
-            limit: Maximum number of conversations to return
+            limit: Maximum number of sessions to return
 
         Returns:
-            List of conversation IDs, ordered by best-matching message score.
+            List of session IDs, ordered by best-matching message score.
         """
-        return self.search_conversation_hits(query, limit=limit, providers=providers).conversation_ids()
+        return self.search_session_hits(query, limit=limit, providers=providers).session_ids()
 
-    def search_conversation_hits(
+    def search_session_hits(
         self,
         query: str,
         limit: int = 20,
         providers: list[str] | None = None,
-    ) -> ConversationSearchResult:
-        """Search and return ordered conversation hits."""
+    ) -> SessionSearchResult:
+        """Search and return ordered session hits."""
         if limit <= 0:
-            return ConversationSearchResult(hits=[])
+            return SessionSearchResult(hits=[])
 
         # Get message-level results (scored for ranking)
         message_results = self.search_scored(query, limit=limit * 3)
 
         if not message_results:
-            return ConversationSearchResult(hits=[])
+            return SessionSearchResult(hits=[])
 
         with open_connection(self.fts_provider.db_path) as conn:
-            return _resolve_ranked_conversation_hits(
+            return _resolve_ranked_session_hits(
                 conn,
                 message_results=message_results,
                 limit=limit,
@@ -209,8 +209,8 @@ class HybridSearchProvider:
 
 __all__ = [
     "HybridSearchProvider",
-    "_resolve_ranked_conversation_hits",
-    "_resolve_ranked_conversation_ids",
+    "_resolve_ranked_session_hits",
+    "_resolve_ranked_session_ids",
     "create_hybrid_provider",
     "reciprocal_rank_fusion",
 ]

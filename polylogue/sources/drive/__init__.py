@@ -12,7 +12,7 @@ from ...assets import asset_path
 from ...config import Source
 from ...paths.sanitize import safe_path_component
 from ..dispatch import parse_drive_payload
-from ..parsers.base import ParsedConversation, RawConversationData
+from ..parsers.base import ParsedSession, RawSessionData
 from ..source_acquisition_components import (
     ObservationCallback,
     StatusCallback,
@@ -132,7 +132,7 @@ def download_drive_files(
 
 def _apply_drive_attachments(
     *,
-    convo: ParsedConversation,
+    convo: ParsedSession,
     client: DriveSourceAPI,
     archive_root: Path,
     download_assets: bool,
@@ -142,11 +142,7 @@ def _apply_drive_attachments(
     for attachment in convo.attachments:
         if not attachment.provider_attachment_id:
             continue
-        attachment_kind = None
-        if isinstance(attachment.provider_meta, dict):
-            raw_kind = attachment.provider_meta.get("attachment_kind")
-            attachment_kind = raw_kind if isinstance(raw_kind, str) else None
-        if attachment_kind in {"inline_file", "youtube_video"}:
+        if attachment.attachment_kind in {"inline_file", "youtube_video"}:
             continue
         dest = asset_path(archive_root, attachment.provider_attachment_id)
         meta = client.download_to_path(attachment.provider_attachment_id, dest)
@@ -154,18 +150,9 @@ def _apply_drive_attachments(
         attachment.name = attachment.name or meta.name
         attachment.mime_type = attachment.mime_type or meta.mime_type
         attachment.size_bytes = attachment.size_bytes or meta.size_bytes
-        meta_payload = dict(attachment.provider_meta or {})
-        meta_payload.update(
-            {
-                "drive_id": attachment.provider_attachment_id,
-                "name": attachment.name,
-                "mime_type": attachment.mime_type,
-            }
-        )
-        attachment.provider_meta = meta_payload
 
 
-def iter_drive_conversations(
+def iter_drive_sessions(
     *,
     source: Source,
     archive_root: Path,
@@ -174,7 +161,7 @@ def iter_drive_conversations(
     download_assets: bool = True,
     cursor_state: CursorStatePayload | None = None,
     drive_config: DriveConfigLike | None = None,
-) -> Iterable[ParsedConversation]:
+) -> Iterable[ParsedSession]:
     if not source.folder:
         return
     drive_client = _resolved_drive_client(ui=ui, client=client, drive_config=drive_config)
@@ -194,8 +181,8 @@ def iter_drive_conversations(
             )
             continue
         fallback_id = drive_cache_file_path(source.path or Path(source.name), file_meta.name).stem
-        conversations = parse_drive_payload(source.name, payload, fallback_id)
-        for convo in conversations:
+        sessions = parse_drive_payload(source.name, payload, fallback_id)
+        for convo in sessions:
             _apply_drive_attachments(
                 convo=convo,
                 client=drive_client,
@@ -215,7 +202,7 @@ def iter_drive_raw_data(
     known_mtimes: dict[str, str] | None = None,
     observation_callback: ObservationCallback | None = None,
     status_callback: StatusCallback | None = None,
-) -> Iterable[RawConversationData]:
+) -> Iterable[RawSessionData]:
     """Iterate Drive payloads as raw bytes without writing a local cache.
 
     Note: googleapiclient / httplib2 are not thread-safe — a single service
@@ -290,7 +277,7 @@ def iter_drive_raw_data(
             drive_modified_time=file_meta.modified_time,
             drive_size_bytes=file_meta.size_bytes,
         )
-        yield RawConversationData(
+        yield RawSessionData(
             raw_bytes=b"",
             source_path=source_path,
             source_index=None,
@@ -305,6 +292,6 @@ __all__ = [
     "DriveDownloadResult",
     "download_drive_files",
     "drive_cache_file_path",
-    "iter_drive_conversations",
+    "iter_drive_sessions",
     "iter_drive_raw_data",
 ]

@@ -27,7 +27,7 @@ Three sections, each with a token budget:
 ### 1. Recent Activity (150 tokens)
 The last 3 sessions touching the current project, with:
 - What was accomplished (from session profiles)
-- Key files modified (from action_events.affected_paths)
+- Key files modified (from actions.affected_paths)
 - Outcome: completed / blocked / abandoned
 - Session date and duration
 
@@ -61,9 +61,9 @@ All data comes from existing tables, zero new collection:
 | Information | Source |
 |---|---|
 | Session summary | `session_profiles` (repo_paths, tool_categories, duration, work_events) |
-| Files modified | `action_events.affected_paths` |
+| Files modified | `actions.affected_paths` |
 | Session outcome | `session_profiles.outcome` or inferred from last message |
-| Error patterns | `action_events` filtered by tool failures + compaction_count |
+| Error patterns | `actions` filtered by tool failures + compaction_count |
 | Project memory entries | `project_memory` table (see project-memory.md) |
 
 ## Context Brief Format
@@ -93,7 +93,7 @@ What's needed:
 1. A `SessionStart` hook handler that calls `build_resume_brief()` with the
    current project path
 2. Integration with the project memory table for Decisions section
-3. Error pattern detection from `action_events` across recent sessions
+3. Error pattern detection from `actions` across recent sessions
 4. The brief rendered as `additionalContext` text
 
 The hook runs in-process during daemon operation. Since it's read-only (no
@@ -101,7 +101,7 @@ ingestion), it completes in <100ms.
 
 ## Non-Goals
 
-- Not a full conversational search. The agent can use MCP search tools for
+- Not a full sessional search. The agent can use MCP search tools for
   deeper queries — this is just the "while you were away" summary.
 - Not a replacement for CLAUDE.md. Static conventions belong in CLAUDE.md;
   dynamic context belongs here.

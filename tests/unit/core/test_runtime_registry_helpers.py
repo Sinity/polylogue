@@ -21,11 +21,11 @@ from polylogue.types import Provider
 def _package(
     version: str,
     *,
-    default_element_kind: str = "conversation_document",
+    default_element_kind: str = "session_document",
     exact_structure_ids: list[str] | None = None,
     bundle_scopes: list[str] | None = None,
     profile_tokens: list[str] | None = None,
-    schema_file: str | None = "conversation_document.schema.json.gz",
+    schema_file: str | None = "session_document.schema.json.gz",
 ) -> SchemaVersionPackage:
     return SchemaVersionPackage(
         provider="chatgpt",
@@ -114,7 +114,7 @@ def test_write_and_replace_provider_packages_remove_stale_versions(tmp_path: Pat
     registry.replace_provider_packages(
         "chatgpt",
         old_catalog,
-        {"v1": {"conversation_document": {"type": "object"}}},
+        {"v1": {"session_document": {"type": "object"}}},
     )
     old_manifest = registry._package_manifest_path("chatgpt", "v1")
     assert old_manifest.exists()
@@ -122,7 +122,7 @@ def test_write_and_replace_provider_packages_remove_stale_versions(tmp_path: Pat
     registry.replace_provider_packages(
         "chatgpt",
         new_catalog,
-        {"v2": {"conversation_document": {"type": "object"}}},
+        {"v2": {"session_document": {"type": "object"}}},
     )
 
     assert not old_manifest.exists()
@@ -132,16 +132,16 @@ def test_write_and_replace_provider_packages_remove_stale_versions(tmp_path: Pat
 
 def test_get_element_schema_handles_missing_elements_and_files(tmp_path: Path) -> None:
     registry = SchemaRegistry(storage_root=tmp_path / "schemas")
-    catalog = _catalog(_package("v1", schema_file="conversation_document.schema.json.gz"))
+    catalog = _catalog(_package("v1", schema_file="session_document.schema.json.gz"))
     registry.replace_provider_packages(
         "chatgpt",
         catalog,
-        {"v1": {"conversation_document": {"type": "object"}}},
+        {"v1": {"session_document": {"type": "object"}}},
     )
 
     assert registry.get_element_schema("chatgpt", version="v1", element_kind="adjunct") is None
 
-    schema_path = registry._package_dir("chatgpt", "v1") / "elements" / "conversation_document.schema.json.gz"
+    schema_path = registry._package_dir("chatgpt", "v1") / "elements" / "session_document.schema.json.gz"
     schema_path.unlink()
     registry.clear_cache()
 
@@ -158,13 +158,13 @@ def test_resolve_payload_prefers_exact_structure_then_profile_then_default(monke
 
     exact_then_profile = (
         _ObservedPayload(
-            artifact_kind="conversation_document",
+            artifact_kind="session_document",
             bundle_scope="session",
             exact_structure_id=None,
             profile_tokens=("field:messages",),
         ),
         _ObservedPayload(
-            artifact_kind="conversation_document",
+            artifact_kind="session_document",
             bundle_scope="document",
             exact_structure_id="exact-1",
             profile_tokens=("field:mapping",),
@@ -183,7 +183,7 @@ def test_resolve_payload_prefers_exact_structure_then_profile_then_default(monke
 
     profile_only = (
         _ObservedPayload(
-            artifact_kind="conversation_document",
+            artifact_kind="session_document",
             bundle_scope=None,
             exact_structure_id=None,
             profile_tokens=("field:messages",),
@@ -203,7 +203,7 @@ def test_resolve_payload_prefers_exact_structure_then_profile_then_default(monke
 
     default_only = (
         _ObservedPayload(
-            artifact_kind="conversation_document",
+            artifact_kind="session_document",
             bundle_scope="unmatched",
             exact_structure_id=None,
             profile_tokens=(),

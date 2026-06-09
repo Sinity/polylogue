@@ -2,7 +2,7 @@
 
 Wraps the async ``Polylogue`` facade so that synchronous callers
 (like Lynchpin's trajectory pipeline) can consume session profiles,
-summaries, and conversations without managing an event loop.
+summaries, and sessions without managing an event loop.
 
 Example::
 
@@ -10,7 +10,7 @@ Example::
 
     poly = SyncPolylogue()
     summaries = poly.list_summaries(since="2026-01-01")
-    conv = poly.get_conversation("abc12345")
+    conv = poly.get_session("abc12345")
     poly.close()
 """
 
@@ -22,12 +22,12 @@ from types import TracebackType
 from typing import TYPE_CHECKING, TypeVar
 
 from polylogue.api.sync.bridge import run_coroutine_sync
-from polylogue.api.sync.conversations import SyncConversationQueriesMixin
 from polylogue.api.sync.insights import SyncInsightQueriesMixin
+from polylogue.api.sync.sessions import SyncSessionQueriesMixin
 
 if TYPE_CHECKING:
     from polylogue.api import Polylogue
-    from polylogue.archive.filter.filters import ConversationFilter
+    from polylogue.archive.filter.filters import SessionFilter
 
 T = TypeVar("T")
 
@@ -37,7 +37,7 @@ def _run(coro: Awaitable[T]) -> T:
     return run_coroutine_sync(coro)
 
 
-class SyncPolylogue(SyncConversationQueriesMixin, SyncInsightQueriesMixin):
+class SyncPolylogue(SyncSessionQueriesMixin, SyncInsightQueriesMixin):
     """Synchronous wrapper around the async ``Polylogue`` facade."""
 
     _facade: Polylogue
@@ -66,7 +66,7 @@ class SyncPolylogue(SyncConversationQueriesMixin, SyncInsightQueriesMixin):
     ) -> None:
         self.close()
 
-    def filter(self) -> ConversationFilter:
+    def filter(self) -> SessionFilter:
         """Create a fluent filter builder (terminal methods are still async)."""
         return self._facade.filter()
 

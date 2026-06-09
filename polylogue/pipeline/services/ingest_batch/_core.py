@@ -23,30 +23,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from polylogue.archive.write_gateway import ArchiveWriteGateway, WriteOperation
-from polylogue.core.common import (
-    SQL_ACTION_EVENT_INSERT as _ACTION_EVENT_INSERT_SQL,
-)
-from polylogue.core.common import (
-    SQL_ATTACHMENT_REF_INSERT as _ATTACHMENT_REF_INSERT_SQL,
-)
-from polylogue.core.common import (
-    SQL_ATTACHMENT_UPSERT as _ATTACHMENT_UPSERT_SQL,
-)
-from polylogue.core.common import (
-    SQL_CONTENT_BLOCK_UPSERT as _CONTENT_BLOCK_UPSERT_SQL,
-)
-from polylogue.core.common import (
-    SQL_CONVERSATION_UPSERT as _CONVERSATION_UPSERT_SQL,
-)
-from polylogue.core.common import (
-    SQL_IDENTITY_LEDGER_UPSERT as _IDENTITY_LEDGER_UPSERT_SQL,
-)
-from polylogue.core.common import (
-    SQL_MESSAGE_UPSERT as _MESSAGE_UPSERT_SQL,
-)
-from polylogue.core.common import (
-    SQL_STATS_UPSERT as _STATS_UPSERT_SQL,
-)
 from polylogue.core.memory import release_process_memory
 from polylogue.core.metrics import (
     read_current_rss_mb,
@@ -55,35 +31,23 @@ from polylogue.core.metrics import (
 )
 from polylogue.logging import get_logger
 from polylogue.paths import blob_store_root
+from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.pipeline.payload_types import MaterializeStageObservation, ParseBatchObservation
-from polylogue.pipeline.services.ingest_batch._append_helpers import (
-    append_content_hash,
-    conversation_tuple_without_raw_id,
-    provider_event_tuple_without_raw_id,
-    tail_content_hash,
-)
-from polylogue.pipeline.services.ingest_batch._append_stats import existing_message_signatures, upsert_stats_for_append
 from polylogue.pipeline.services.ingest_worker import (
-    ConversationData,
-    ConversationTuple,
     IngestRecordResult,
-    MessageTuple,
+    SessionWritePayload,
     ingest_record,
 )
 from polylogue.pipeline.services.process_pool import process_pool_executor
-from polylogue.storage.conversation_replacement import (
-    recount_and_prune_attachments_sync,
-    replace_conversation_runtime_state_sync,
-)
-from polylogue.storage.raw.models import RawConversationStateUpdate
-from polylogue.storage.runtime import RawConversationRecord
+from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+from polylogue.storage.raw.models import RawSessionStateUpdate
+from polylogue.storage.runtime import RawSessionRecord
+from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.connection import _load_sqlite_vec
 from polylogue.storage.sqlite.connection_profile import (
     DB_TIMEOUT,
     WRITE_CONNECTION_PRAGMA_STATEMENTS,
 )
-from polylogue.storage.sqlite.provider_event_writes import insert_provider_events_sync
-from polylogue.types import ContentHash
 
 if TYPE_CHECKING:
     from polylogue.pipeline.services.parsing import ParsingService
@@ -94,19 +58,19 @@ if TYPE_CHECKING:
 from polylogue.pipeline.services.ingest_batch._memory import (
     INGEST_RELEASE_BLOB_MB_THRESHOLD,
     INGEST_RELEASE_MESSAGE_THRESHOLD,
-    discard_conversation_data_payload,
     discard_ingest_result_payload,
+    discard_session_data_payload,
     ingest_result_needs_memory_release,
 )
 from polylogue.pipeline.services.ingest_batch._models import (
     _DEFAULT_INGEST_WORKER_LIMIT,
     _BulkConnectionBackendLike,
     _ConnectionBackendLike,
-    _ConversationEntry,
     _IngestBatchSummary,
     _IngestWorkerRequest,
     _ParsingServiceRawStateLike,
     _RawIngestOutcome,
+    _SessionEntry,
 )
 from polylogue.pipeline.services.ingest_batch._observations import _build_parse_batch_observation
 from polylogue.pipeline.services.ingest_batch._summary import (
@@ -140,6 +104,10 @@ _INGEST_RESULT_CHUNK_SIZE = 100
 
 def _open_sync_connection(db_path: Path) -> sqlite3.Connection:
     """Open a sync sqlite3 connection with the same pragmas as the async backend."""
+    if db_path.name == "index.db":
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+        initialize_active_archive_root(db_path.parent)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path), timeout=DB_TIMEOUT)
     conn.row_factory = sqlite3.Row
@@ -149,74 +117,32 @@ def _open_sync_connection(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
-def _check_content_unchanged(conn: sqlite3.Connection, cid: str, content_hash: str) -> bool:
-    """Check if conversation content is unchanged (skip message writes)."""
+def _stored_message_count(conn: sqlite3.Connection, session_id: str) -> int:
     row = conn.execute(
-        "SELECT content_hash FROM conversations WHERE conversation_id = ?",
-        (cid,),
-    ).fetchone()
-    return row is not None and row[0] == content_hash
-
-
-def _stored_message_count(conn: sqlite3.Connection, conversation_id: str) -> int:
-    row = conn.execute(
-        "SELECT COUNT(*) FROM messages WHERE conversation_id = ?",
-        (conversation_id,),
+        "SELECT COUNT(*) FROM messages WHERE session_id = ?",
+        (session_id,),
     ).fetchone()
     return int(row[0] or 0) if row is not None else 0
 
 
-def _topo_sort_message_tuples(tuples: list[MessageTuple]) -> list[MessageTuple]:
-    """Sort message tuples so parents come before children (FK constraint).
-
-    message_id is at index 0, parent_message_id is at index 8.
-    """
-    if not any(t[8] for t in tuples):
-        return tuples
-    ids_in_batch = {t[0] for t in tuples}
-    no_parent: list[MessageTuple] = []
-    has_parent: list[MessageTuple] = []
-    for t in tuples:
-        if t[8] and t[8] in ids_in_batch:
-            has_parent.append(t)
-        else:
-            no_parent.append(t)
-    if not has_parent:
-        return tuples
-    ordered = list(no_parent)
-    inserted_ids = {t[0] for t in ordered}
-    remaining = list(has_parent)
-    for _ in range(len(remaining) + 1):
-        if not remaining:
-            break
-        next_remaining: list[MessageTuple] = []
-        for t in remaining:
-            if t[8] in inserted_ids:
-                ordered.append(t)
-                inserted_ids.add(t[0])
-            else:
-                next_remaining.append(t)
-        remaining = next_remaining
-    ordered.extend(remaining)
-    return ordered
+def _session_parent_id(payload: SessionWritePayload) -> str | None:
+    parent_native_id = payload.parsed_session.parent_session_provider_id
+    if not parent_native_id:
+        return None
+    return str(make_session_id(payload.parsed_session.source_name, parent_native_id))
 
 
-def _conversation_parent_id(cdata: ConversationData) -> str | None:
-    parent_id = cdata.conversation_tuple[11]
-    return parent_id if isinstance(parent_id, str) else None
-
-
-def _topo_sort_conversation_entries(
-    entries: list[_ConversationEntry],
-) -> list[_ConversationEntry]:
-    """Sort conversation entries so parents in the same batch precede children."""
-    ids_in_batch = {entry[1].conversation_id for entry in entries}
-    no_parent: list[_ConversationEntry] = []
-    has_parent: list[_ConversationEntry] = []
+def _topo_sort_session_entries(
+    entries: list[_SessionEntry],
+) -> list[_SessionEntry]:
+    """Sort session entries so parents in the same batch precede children."""
+    ids_in_batch = {entry[1].session_id for entry in entries}
+    no_parent: list[_SessionEntry] = []
+    has_parent: list[_SessionEntry] = []
 
     for entry in entries:
-        parent_id = _conversation_parent_id(entry[1])
-        if parent_id and parent_id in ids_in_batch and parent_id != entry[1].conversation_id:
+        parent_id = _session_parent_id(entry[1])
+        if parent_id and parent_id in ids_in_batch and parent_id != entry[1].session_id:
             has_parent.append(entry)
         else:
             no_parent.append(entry)
@@ -225,17 +151,17 @@ def _topo_sort_conversation_entries(
         return entries
 
     ordered = list(no_parent)
-    inserted_ids = {entry[1].conversation_id for entry in ordered}
+    inserted_ids = {entry[1].session_id for entry in ordered}
     remaining = list(has_parent)
     for _ in range(len(remaining) + 1):
         if not remaining:
             break
-        next_remaining: list[_ConversationEntry] = []
+        next_remaining: list[_SessionEntry] = []
         for entry in remaining:
-            parent_id = _conversation_parent_id(entry[1])
+            parent_id = _session_parent_id(entry[1])
             if parent_id in inserted_ids:
                 ordered.append(entry)
-                inserted_ids.add(entry[1].conversation_id)
+                inserted_ids.add(entry[1].session_id)
             else:
                 next_remaining.append(entry)
         remaining = next_remaining
@@ -243,294 +169,89 @@ def _topo_sort_conversation_entries(
     return ordered
 
 
-def _conversation_exists(conn: sqlite3.Connection, conversation_id: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM conversations WHERE conversation_id = ?",
-        (conversation_id,),
-    ).fetchone()
-    return row is not None
-
-
-def _resolved_conversation_tuple(
-    conn: sqlite3.Connection,
-    cdata: ConversationData,
-) -> ConversationTuple:
-    """Resolve parent conversation links against the currently materialized archive.
-
-    Parent conversation links are only durable when the parent already exists.
-    This mirrors the prepare/enrichment path and avoids rejecting the whole
-    conversation when a child arrives before its parent.
-    """
-    parent_id = _conversation_parent_id(cdata)
-    if parent_id is None or parent_id == cdata.conversation_id:
-        return cdata.conversation_tuple
-    if _conversation_exists(conn, parent_id):
-        return cdata.conversation_tuple
-    return (
-        cdata.conversation_tuple[0],
-        cdata.conversation_tuple[1],
-        cdata.conversation_tuple[2],
-        cdata.conversation_tuple[3],
-        cdata.conversation_tuple[4],
-        cdata.conversation_tuple[5],
-        cdata.conversation_tuple[6],
-        cdata.conversation_tuple[7],
-        cdata.conversation_tuple[8],
-        cdata.conversation_tuple[9],
-        cdata.conversation_tuple[10],
-        None,
-        cdata.conversation_tuple[12],
-        cdata.conversation_tuple[13],
-        cdata.conversation_tuple[14] if len(cdata.conversation_tuple) > 14 else "",
-        cdata.conversation_tuple[15] if len(cdata.conversation_tuple) > 15 else None,
-        cdata.conversation_tuple[16] if len(cdata.conversation_tuple) > 16 else None,
-        cdata.conversation_tuple[17] if len(cdata.conversation_tuple) > 17 else None,
-    )
-
-
-def _conversation_tuple_with_hash(conversation: ConversationTuple, content_hash: str) -> ConversationTuple:
-    return (
-        conversation[0],
-        conversation[1],
-        conversation[2],
-        conversation[3],
-        conversation[4],
-        conversation[5],
-        conversation[6],
-        ContentHash(content_hash),
-        conversation[8],
-        conversation[9],
-        conversation[10],
-        conversation[11],
-        conversation[12],
-        conversation[13],
-        conversation[14] if len(conversation) > 14 else "",
-        conversation[15] if len(conversation) > 15 else None,
-        conversation[16] if len(conversation) > 16 else None,
-        conversation[17] if len(conversation) > 17 else None,
-    )
-
-
-def _existing_provider_event_ids(conn: sqlite3.Connection, event_ids: Sequence[str]) -> set[str]:
-    if not event_ids:
-        return set()
-    existing: set[str] = set()
-    for offset in range(0, len(event_ids), _WRITE_SELECT_CHUNK_SIZE):
-        chunk = event_ids[offset : offset + _WRITE_SELECT_CHUNK_SIZE]
-        placeholders = ", ".join("?" for _ in chunk)
-        rows = conn.execute(
-            f"SELECT event_id FROM provider_events WHERE event_id IN ({placeholders})",
-            tuple(chunk),
-        ).fetchall()
-        existing.update(str(row["event_id"]) for row in rows)
-    return existing
-
-
-def _upsert_stats_from_messages(conn: sqlite3.Connection, conversation_id: str, source_name: str) -> None:
-    row = conn.execute(
-        """
-        SELECT
-            COUNT(*) AS message_count,
-            COALESCE(SUM(word_count), 0) AS word_count,
-            COALESCE(SUM(has_tool_use), 0) AS tool_use_count,
-            COALESCE(SUM(has_thinking), 0) AS thinking_count,
-            COALESCE(SUM(has_paste), 0) AS paste_count,
-            COALESCE(SUM(CASE WHEN role = 'user'      THEN 1 ELSE 0 END), 0) AS user_msg_count,
-            COALESCE(SUM(CASE WHEN role = 'assistant' THEN 1 ELSE 0 END), 0) AS assistant_msg_count,
-            COALESCE(SUM(CASE WHEN role = 'system'    THEN 1 ELSE 0 END), 0) AS system_msg_count,
-            COALESCE(SUM(CASE WHEN role = 'tool'      THEN 1 ELSE 0 END), 0) AS tool_msg_count,
-            COALESCE(SUM(CASE WHEN role = 'user'      THEN word_count ELSE 0 END), 0) AS user_word_count,
-            COALESCE(SUM(CASE WHEN role = 'assistant' THEN word_count ELSE 0 END), 0) AS assistant_word_count
-        FROM messages
-        WHERE conversation_id = ?
-        """,
-        (conversation_id,),
-    ).fetchone()
-    conn.execute(
-        _STATS_UPSERT_SQL,
-        (
-            conversation_id,
-            source_name,
-            int(row["message_count"] or 0),
-            int(row["word_count"] or 0),
-            int(row["tool_use_count"] or 0),
-            int(row["thinking_count"] or 0),
-            int(row["paste_count"] or 0),
-            int(row["user_msg_count"] or 0),
-            int(row["assistant_msg_count"] or 0),
-            int(row["system_msg_count"] or 0),
-            int(row["tool_msg_count"] or 0),
-            int(row["user_word_count"] or 0),
-            int(row["assistant_word_count"] or 0),
-        ),
-    )
-
-
-_ACTION_EVENT_INSERT_OR_IGNORE_SQL = _ACTION_EVENT_INSERT_SQL.replace("INSERT INTO", "INSERT OR IGNORE INTO", 1)
 _WRITE_SELECT_CHUNK_SIZE = 900
-_WRITE_EXECUTEMANY_CHUNK_SIZE = 1_000
 _FTS_REPAIR_COUNT_KEY = "_fts_repair"
 
 
-def _needs_conversation_fts_repair(conn: sqlite3.Connection, conversation_id: str) -> bool:
-    from polylogue.storage.fts.conversation_repair import conversation_fts_needs_repair_sync
+def _needs_session_fts_repair(conn: sqlite3.Connection, session_id: str) -> bool:
+    from polylogue.storage.fts.session_repair import session_fts_needs_repair_sync
 
-    return conversation_fts_needs_repair_sync(conn, conversation_id)
-
-
-def _executemany_chunked(conn: sqlite3.Connection, sql: str, rows: Sequence[Sequence[object]]) -> None:
-    """Run executemany in bounded chunks while preserving caller transaction scope."""
-    if not rows:
-        return
-    for offset in range(0, len(rows), _WRITE_EXECUTEMANY_CHUNK_SIZE):
-        conn.executemany(sql, rows[offset : offset + _WRITE_EXECUTEMANY_CHUNK_SIZE])
+    return session_fts_needs_repair_sync(conn, session_id)
 
 
-def _append_conversation(
-    conn: sqlite3.Connection,
-    cdata: ConversationData,
-    *,
-    existing_hash: str | None,
-) -> tuple[bool, dict[str, int]]:
-    counts: dict[str, int] = {
-        "conversations": 0,
-        "messages": 0,
-        "attachments": 0,
-        "provider_events": 0,
-        "skipped_conversations": 0,
-        "skipped_messages": 0,
-        "skipped_attachments": 0,
-        "skipped_provider_events": 0,
+def _existing_native_message_ids(conn: sqlite3.Connection, session_id: str) -> set[str]:
+    return {
+        str(row[0])
+        for row in conn.execute(
+            "SELECT native_id FROM messages WHERE session_id = ? AND native_id IS NOT NULL",
+            (session_id,),
+        ).fetchall()
     }
-    message_ids = [str(message[0]) for message in cdata.message_tuples]
-    existing_messages = existing_message_signatures(conn, message_ids)
-    changed_messages = [
-        message
-        for message in cdata.message_tuples
-        if existing_messages.get(str(message[0]), ("", 0, 0, 0, 0))[0] != str(message[6])
-    ]
-    changed_message_ids = {str(message[0]) for message in changed_messages}
-    event_ids = [str(event[0]) for event in cdata.provider_event_tuples]
-    existing_provider_events = _existing_provider_event_ids(conn, event_ids)
-    changed_provider_events = [
-        event for event in cdata.provider_event_tuples if str(event[0]) not in existing_provider_events
-    ]
-    if not changed_messages and not cdata.attachment_tuples and not changed_provider_events:
-        upsert_stats_for_append(
-            conn,
-            cdata.conversation_id,
-            cdata.source_name,
-            changed_messages,
-            existing_messages,
-            full_recount=_upsert_stats_from_messages,
-        )
-        counts["skipped_conversations"] = 1
-        counts["skipped_messages"] = len(cdata.message_tuples)
-        counts["skipped_attachments"] = len(cdata.attachment_tuples)
-        counts["skipped_provider_events"] = len(cdata.provider_event_tuples)
-        if _needs_conversation_fts_repair(conn, cdata.conversation_id):
-            counts[_FTS_REPAIR_COUNT_KEY] = 1
-        return False, counts
-
-    counts["skipped_messages"] = len(cdata.message_tuples) - len(changed_messages)
-    counts["skipped_provider_events"] = len(cdata.provider_event_tuples) - len(changed_provider_events)
-
-    merged_hash = append_content_hash(existing_hash, tail_content_hash(changed_messages, cdata.content_hash))
-    resolved_tuple = conversation_tuple_without_raw_id(_resolved_conversation_tuple(conn, cdata))
-    conn.execute(_CONVERSATION_UPSERT_SQL, _conversation_tuple_with_hash(resolved_tuple, merged_hash))
-    # Record the identity mapping so re-ingest after reset preserves conversation_id.
-    # Tuple indices: 1=source_name, 2=provider_conversation_id, 13=raw_id, 14=source_name
-    conn.execute(
-        _IDENTITY_LEDGER_UPSERT_SQL,
-        (
-            resolved_tuple[1],  # provider
-            resolved_tuple[14],  # source (from provider_meta)
-            "",  # source_path (not available at this level)
-            resolved_tuple[2],  # provider_conversation_id
-            resolved_tuple[13] or "",  # raw_hash (raw_id)
-            resolved_tuple[0],  # current_conversation_id
-        ),
-    )
-
-    if changed_messages:
-        sorted_msgs = _topo_sort_message_tuples(changed_messages)
-        _executemany_chunked(conn, _MESSAGE_UPSERT_SQL, sorted_msgs)
-        counts["messages"] = len(changed_messages)
-
-    changed_blocks = [block for block in cdata.block_tuples if str(block[1]) in changed_message_ids]
-    if changed_blocks:
-        changed_block_message_ids = sorted({str(block[1]) for block in changed_blocks})
-        placeholders = ", ".join("?" for _ in changed_block_message_ids)
-        conn.execute(
-            f"DELETE FROM content_blocks WHERE message_id IN ({placeholders})", tuple(changed_block_message_ids)
-        )
-        _executemany_chunked(conn, _CONTENT_BLOCK_UPSERT_SQL, changed_blocks)
-
-    changed_action_events = [event for event in cdata.action_event_tuples if str(event[2]) in changed_message_ids]
-    if changed_action_events:
-        changed_action_message_ids = sorted({str(event[2]) for event in changed_action_events})
-        placeholders = ", ".join("?" for _ in changed_action_message_ids)
-        conn.execute(
-            f"DELETE FROM action_events WHERE message_id IN ({placeholders})", tuple(changed_action_message_ids)
-        )
-        _executemany_chunked(conn, _ACTION_EVENT_INSERT_OR_IGNORE_SQL, changed_action_events)
-
-    if changed_provider_events:
-        rawless_provider_events = [provider_event_tuple_without_raw_id(event) for event in changed_provider_events]
-        insert_provider_events_sync(conn, rawless_provider_events, ignore_existing=True)
-        counts["provider_events"] = len(changed_provider_events)
-
-    affected_attachment_ids = {str(attachment_id) for attachment_id, *_rest in cdata.attachment_tuples}
-    if cdata.attachment_tuples:
-        _executemany_chunked(conn, _ATTACHMENT_UPSERT_SQL, cdata.attachment_tuples)
-        _executemany_chunked(conn, _ATTACHMENT_REF_INSERT_SQL, cdata.attachment_ref_tuples)
-        counts["attachments"] = len(cdata.attachment_tuples)
-        recount_and_prune_attachments_sync(conn, affected_attachment_ids)
-
-    upsert_stats_for_append(
-        conn,
-        cdata.conversation_id,
-        cdata.source_name,
-        changed_messages,
-        existing_messages,
-        full_recount=_upsert_stats_from_messages,
-    )
-    counts["conversations"] = 1
-    return True, counts
 
 
-def _write_conversation(
-    conn: sqlite3.Connection, cdata: ConversationData, *, force_write: bool = False
+def _append_delta_payload(
+    conn: sqlite3.Connection,
+    payload: SessionWritePayload,
+) -> tuple[ParsedSession | None, int]:
+    existing_native_ids = _existing_native_message_ids(conn, payload.session_id)
+    delta_messages: list[ParsedMessage] = []
+    for message in payload.parsed_session.messages:
+        if message.provider_message_id in existing_native_ids:
+            continue
+        delta_messages.append(message.model_copy(update={"position": None}))
+    if not delta_messages and not payload.attachment_count:
+        return None, len(payload.parsed_session.messages)
+    return payload.parsed_session.model_copy(update={"messages": delta_messages}), len(
+        payload.parsed_session.messages
+    ) - len(delta_messages)
+
+
+def _write_session(
+    conn: sqlite3.Connection, payload: SessionWritePayload, *, force_write: bool = False
 ) -> tuple[bool, dict[str, int]]:
-    """Write one conversation's data to DB via sync sqlite3.
+    """Write one parsed session payload into the current archive index.
 
     Returns (content_changed, counts).
     """
     counts: dict[str, int] = {
-        "conversations": 0,
+        "sessions": 0,
         "messages": 0,
         "attachments": 0,
-        "provider_events": 0,
-        "skipped_conversations": 0,
+        "session_events": 0,
+        "skipped_sessions": 0,
         "skipped_messages": 0,
         "skipped_attachments": 0,
-        "skipped_provider_events": 0,
+        "skipped_session_events": 0,
     }
 
     existing_row = conn.execute(
-        "SELECT content_hash, raw_id FROM conversations WHERE conversation_id = ?",
-        (cdata.conversation_id,),
+        "SELECT content_hash, raw_id FROM sessions WHERE session_id = ?",
+        (payload.session_id,),
     ).fetchone()
-    content_unchanged = existing_row is not None and str(existing_row["content_hash"]) == cdata.content_hash
-    if cdata.append_only and existing_row is not None:
-        return _append_conversation(conn, cdata, existing_hash=str(existing_row["content_hash"]))
+    existing_hash = existing_row["content_hash"] if existing_row is not None else None
+    existing_hash_hex = existing_hash.hex() if isinstance(existing_hash, bytes) else str(existing_hash or "")
+    content_unchanged = existing_row is not None and existing_hash_hex == payload.content_hash
+    session_to_write = payload.parsed_session
+    merge_append = False
+    if payload.append_only and existing_row is not None:
+        delta, skipped_messages = _append_delta_payload(conn, payload)
+        counts["skipped_messages"] = skipped_messages
+        if delta is None:
+            counts["skipped_sessions"] = 1
+            counts["skipped_attachments"] = payload.attachment_count
+            counts["skipped_session_events"] = len(payload.parsed_session.session_events)
+            if _needs_session_fts_repair(conn, payload.session_id):
+                counts[_FTS_REPAIR_COUNT_KEY] = 1
+            return False, counts
+        session_to_write = delta
+        merge_append = True
 
     if not force_write and content_unchanged:
-        counts["skipped_conversations"] = 1
-        counts["skipped_messages"] = len(cdata.message_tuples)
-        counts["skipped_attachments"] = len(cdata.attachment_tuples)
-        counts["skipped_provider_events"] = len(cdata.provider_event_tuples)
-        if _needs_conversation_fts_repair(conn, cdata.conversation_id):
+        counts["skipped_sessions"] = 1
+        counts["skipped_messages"] = payload.message_count
+        counts["skipped_attachments"] = payload.attachment_count
+        counts["skipped_session_events"] = len(payload.parsed_session.session_events)
+        if _needs_session_fts_repair(conn, payload.session_id):
             counts[_FTS_REPAIR_COUNT_KEY] = 1
         return False, counts
 
@@ -538,70 +259,31 @@ def _write_conversation(
     if (
         not force_write
         and existing_raw_id
-        and cdata.raw_id
-        and existing_raw_id != cdata.raw_id
-        and len(cdata.message_tuples) < _stored_message_count(conn, cdata.conversation_id)
+        and payload.raw_id
+        and existing_raw_id != payload.raw_id
+        and payload.message_count < _stored_message_count(conn, payload.session_id)
     ):
-        counts["skipped_conversations"] = 1
-        counts["skipped_messages"] = len(cdata.message_tuples)
-        counts["skipped_attachments"] = len(cdata.attachment_tuples)
-        counts["skipped_provider_events"] = len(cdata.provider_event_tuples)
+        counts["skipped_sessions"] = 1
+        counts["skipped_messages"] = payload.message_count
+        counts["skipped_attachments"] = payload.attachment_count
+        counts["skipped_session_events"] = len(payload.parsed_session.session_events)
         return False, counts
 
-    # Guard against manifest-only conversation rows: a new conversation with
-    # zero messages likely came from an interrupted bulk import that registered
-    # the ID before message ingestion completed. Skip it rather than leaving a
-    # row that has message_count=0, work_event_count=0, substantive_count=0.
-    if existing_row is None and not cdata.message_tuples and not force_write:
-        counts["skipped_conversations"] = 1
+    if existing_row is None and not payload.parsed_session.messages and not force_write:
+        counts["skipped_sessions"] = 1
         return False, counts
 
-    conn.execute(_CONVERSATION_UPSERT_SQL, _resolved_conversation_tuple(conn, cdata))
-
-    affected_attachment_ids: set[str] = set()
-    if not content_unchanged:
-        counts["conversations"] = 1
-        if existing_row is not None:
-            affected_attachment_ids = replace_conversation_runtime_state_sync(conn, cdata.conversation_id)
-    else:
-        counts["conversations"] = 0
-
-    if cdata.message_tuples:
-        sorted_msgs = _topo_sort_message_tuples(cdata.message_tuples)
-        _executemany_chunked(conn, _MESSAGE_UPSERT_SQL, sorted_msgs)
-        counts["messages"] = len(sorted_msgs)
-
-    # Conversation stats
-    if cdata.stats_tuple and not content_unchanged:
-        conn.execute(_STATS_UPSERT_SQL, cdata.stats_tuple)
-
-    if not content_unchanged:
-        conn.execute("DELETE FROM content_blocks WHERE conversation_id = ?", (cdata.conversation_id,))
-        if cdata.block_tuples:
-            _executemany_chunked(conn, _CONTENT_BLOCK_UPSERT_SQL, cdata.block_tuples)
-
-    if not content_unchanged:
-        conn.execute("DELETE FROM action_events WHERE conversation_id = ?", (cdata.conversation_id,))
-        if cdata.action_event_tuples:
-            _executemany_chunked(conn, _ACTION_EVENT_INSERT_SQL, cdata.action_event_tuples)
-
-    if not content_unchanged:
-        conn.execute("DELETE FROM provider_events WHERE conversation_id = ?", (cdata.conversation_id,))
-        if cdata.provider_event_tuples:
-            insert_provider_events_sync(conn, cdata.provider_event_tuples)
-            counts["provider_events"] = len(cdata.provider_event_tuples)
-
-    # Attachments
-    if not content_unchanged:
-        new_attachment_ids = {attachment_id for attachment_id, *_rest in cdata.attachment_tuples}
-        affected_attachment_ids |= new_attachment_ids
-        if cdata.attachment_tuples:
-            _executemany_chunked(conn, _ATTACHMENT_UPSERT_SQL, cdata.attachment_tuples)
-            _executemany_chunked(conn, _ATTACHMENT_REF_INSERT_SQL, cdata.attachment_ref_tuples)
-            counts["attachments"] = len(cdata.attachment_tuples)
-        recount_and_prune_attachments_sync(conn, affected_attachment_ids)
-    else:
-        counts["attachments"] = 0
+    write_parsed_session_to_archive(
+        conn,
+        session_to_write,
+        content_hash=payload.content_hash,
+        raw_id=payload.raw_id,
+        merge_append=merge_append,
+    )
+    counts["sessions"] = 1
+    counts["messages"] = len(session_to_write.messages)
+    counts["attachments"] = len(session_to_write.attachments)
+    counts["session_events"] = len(session_to_write.session_events)
 
     return True, counts
 
@@ -614,7 +296,7 @@ def _record_outcome(summary: _IngestBatchSummary, ir: IngestRecordResult) -> Non
         validation_error=ir.validation_error,
         parse_error=ir.parse_error,
         error=ir.error,
-        had_conversations=bool(ir.conversations),
+        had_sessions=bool(ir.sessions),
     )
     if ir.serialized_size_bytes is not None:
         summary.total_result_bytes += ir.serialized_size_bytes
@@ -633,48 +315,46 @@ def _observe_current_rss(summary: _IngestBatchSummary) -> None:
 
 def _record_write_result(
     summary: _IngestBatchSummary,
-    cdata: ConversationData,
+    cdata: SessionWritePayload,
     *,
     content_changed: bool,
     counts: dict[str, int],
 ) -> None:
     summary.total_convos += 1
-    summary.total_msgs += len(cdata.message_tuples)
+    summary.total_msgs += cdata.message_count
 
-    ingest_changed = (
-        counts["conversations"] + counts["messages"] + counts["attachments"] + counts["provider_events"]
-    ) > 0
+    ingest_changed = (counts["sessions"] + counts["messages"] + counts["attachments"] + counts["session_events"]) > 0
 
     if ingest_changed or content_changed:
-        summary.processed_ids.add(cdata.conversation_id)
+        summary.processed_ids.add(cdata.session_id)
     if content_changed:
-        summary.changed_counts["conversations"] += 1
-        summary.changed_conversation_ids.append(cdata.conversation_id)
-        summary.fts_repair_conversation_ids.append(cdata.conversation_id)
+        summary.changed_counts["sessions"] += 1
+        summary.changed_session_ids.append(cdata.session_id)
+        summary.fts_repair_session_ids.append(cdata.session_id)
     elif counts.get(_FTS_REPAIR_COUNT_KEY, 0):
-        summary.fts_repair_conversation_ids.append(cdata.conversation_id)
+        summary.fts_repair_session_ids.append(cdata.session_id)
     if counts["messages"]:
         summary.changed_counts["messages"] += counts["messages"]
     if counts["attachments"]:
         summary.changed_counts["attachments"] += counts["attachments"]
-    if counts["provider_events"]:
-        summary.changed_counts["provider_events"] += counts["provider_events"]
+    if counts["session_events"]:
+        summary.changed_counts["session_events"] += counts["session_events"]
     for key, value in counts.items():
         if key in summary.counts:
             summary.counts[key] += value
 
 
-def _write_conversation_entry(
+def _write_session_entry(
     conn: sqlite3.Connection,
     raw_id: str,
-    cdata: ConversationData,
+    cdata: SessionWritePayload,
     *,
     summary: _IngestBatchSummary,
     force_write: bool = False,
 ) -> bool:
     try:
         t_write = time.perf_counter()
-        content_changed, counts = _write_conversation(conn, cdata, force_write=force_write)
+        content_changed, counts = _write_session(conn, cdata, force_write=force_write)
         write_elapsed = time.perf_counter() - t_write
         summary.write_elapsed_s += write_elapsed
         if write_elapsed > summary.max_write_elapsed_s:
@@ -688,43 +368,40 @@ def _write_conversation_entry(
         if write_elapsed >= 1.0:
             logger.info(
                 "slow_write",
-                cid=cdata.conversation_id[:20],
+                cid=cdata.session_id[:20],
                 elapsed_s=round(write_elapsed, 2),
-                msgs=len(cdata.message_tuples),
+                msgs=cdata.message_count,
                 changed_messages=counts["messages"],
                 skipped_messages=counts["skipped_messages"],
-                blocks=len(cdata.block_tuples),
-                actions=len(cdata.action_event_tuples),
-                provider_events=len(cdata.provider_event_tuples),
-                changed_provider_events=counts["provider_events"],
-                attachments=len(cdata.attachment_tuples),
+                changed_session_events=counts["session_events"],
+                attachments=cdata.attachment_count,
             )
         return True
     except Exception as exc:
-        logger.error("Error writing conversation: %s", exc)
+        logger.error("Error writing session: %s", exc)
         summary.parse_failures += 1
         summary.failed_raw_ids[raw_id] = str(exc)[:500]
         return False
 
 
-def _drain_ready_conversation_entries(
+def _drain_ready_session_entries(
     conn: sqlite3.Connection,
-    ready_entries: list[_ConversationEntry],
+    ready_entries: list[_SessionEntry],
     *,
     summary: _IngestBatchSummary,
     materialized_ids: set[str],
     force_write: bool = False,
 ) -> None:
-    for raw_id, cdata in _topo_sort_conversation_entries(ready_entries):
-        wrote = _write_conversation_entry(conn, raw_id, cdata, summary=summary, force_write=force_write)
-        discard_conversation_data_payload(cdata)
+    for raw_id, cdata in _topo_sort_session_entries(ready_entries):
+        wrote = _write_session_entry(conn, raw_id, cdata, summary=summary, force_write=force_write)
+        discard_session_data_payload(cdata)
         if not wrote:
             continue
-        materialized_ids.add(cdata.conversation_id)
+        materialized_ids.add(cdata.session_id)
 
 
 def _run_ingest_record(
-    raw_record: RawConversationRecord,
+    raw_record: RawSessionRecord,
     request: _IngestWorkerRequest,
 ) -> IngestRecordResult:
     return ingest_record(
@@ -737,7 +414,7 @@ def _run_ingest_record(
 
 
 def _iter_ingest_results_sync(
-    raw_artifacts: list[RawConversationRecord],
+    raw_artifacts: list[RawSessionRecord],
     *,
     request: _IngestWorkerRequest,
     worker_count: int,
@@ -777,7 +454,7 @@ def _iter_ingest_results_sync(
 
 
 def _iter_ingest_results_chunk(
-    raw_artifacts: list[RawConversationRecord],
+    raw_artifacts: list[RawSessionRecord],
     *,
     request: _IngestWorkerRequest,
     worker_count: int,
@@ -875,7 +552,7 @@ def _select_ingest_worker_count(raw_artifacts: Sequence[_BlobSized], ingest_work
 
 
 def _new_ingest_batch_summary(
-    raw_artifacts: list[RawConversationRecord],
+    raw_artifacts: list[RawSessionRecord],
     *,
     ingest_workers: int | None,
 ) -> _IngestBatchSummary:
@@ -922,14 +599,14 @@ def _drain_ingest_result(
         _record_failed_ingest_result(summary, ir)
         return
 
-    if not ir.conversations:
+    if not ir.sessions:
         summary.skipped_raw_ids.add(ir.raw_id)
         return
 
     drain_started = time.perf_counter()
-    _drain_ready_conversation_entries(
+    _drain_ready_session_entries(
         conn,
-        [(ir.raw_id, cdata) for cdata in ir.conversations],
+        [(ir.raw_id, cdata) for cdata in ir.sessions],
         summary=summary,
         materialized_ids=materialized_ids,
         force_write=force_write,
@@ -940,7 +617,7 @@ def _drain_ingest_result(
 
 def _consume_ingest_results(
     conn: sqlite3.Connection,
-    raw_artifacts: list[RawConversationRecord],
+    raw_artifacts: list[RawSessionRecord],
     *,
     worker_request: _IngestWorkerRequest,
     summary: _IngestBatchSummary,
@@ -1019,24 +696,22 @@ def _commit_sync_ingest_side_effects(
     conn: sqlite3.Connection,
     *,
     db_path: Path,
-    changed_conversation_ids: Sequence[str],
+    changed_session_ids: Sequence[str],
     repair_message_fts: bool = True,
-    repair_action_fts: bool = True,
 ) -> None:
     """Run post-ingest side effects through the canonical write-effects path."""
     ArchiveWriteGateway(db_path).commit_write_sync(
         WriteOperation.INGEST,
         {
             "_connection": conn,
-            "changed_conversation_ids": tuple(changed_conversation_ids),
+            "changed_session_ids": tuple(changed_session_ids),
             "repair_message_fts": repair_message_fts,
-            "repair_action_fts": repair_action_fts,
         },
     )
 
 
 def _process_ingest_batch_sync(
-    raw_artifacts: list[RawConversationRecord],
+    raw_artifacts: list[RawSessionRecord],
     *,
     db_path: Path,
     archive_root_str: str,
@@ -1046,7 +721,6 @@ def _process_ingest_batch_sync(
     measure_ingest_result_size: bool,
     force_write: bool = False,
     repair_message_fts: bool = True,
-    repair_action_fts: bool = True,
     heartbeat: IngestHeartbeat | None = None,
     progress: _WorkerProgress | None = None,
     ingest_result_chunk_size: int = 0,
@@ -1089,7 +763,7 @@ def _process_ingest_batch_sync(
             summary=summary,
         )
         if transaction_started:
-            fts_repair_ids = set(summary.fts_repair_conversation_ids)
+            fts_repair_ids = set(summary.fts_repair_session_ids)
             # Side effects run before releasing the connection so data and post-
             # write effects share one transaction. The previous arrangement
             # ran side effects in a `finally` block — they fired even after
@@ -1100,9 +774,8 @@ def _process_ingest_batch_sync(
             _commit_sync_ingest_side_effects(
                 conn,
                 db_path=db_path,
-                changed_conversation_ids=tuple(fts_repair_ids),
+                changed_session_ids=tuple(fts_repair_ids),
                 repair_message_fts=repair_message_fts or suspend_fts_triggers,
-                repair_action_fts=repair_action_fts or suspend_fts_triggers,
             )
             summary.commit_elapsed_s = time.perf_counter() - commit_started
             from polylogue.storage.sqlite.wal_checkpoint import maybe_checkpoint_wal
@@ -1179,7 +852,7 @@ async def process_ingest_batch(
     """
     import asyncio
 
-    raw_artifacts = await service.repository.get_raw_conversations_batch(batch_ids)
+    raw_artifacts = await service.repository.get_raw_sessions_batch(batch_ids)
     if not raw_artifacts:
         return None
 
@@ -1221,10 +894,10 @@ async def process_ingest_batch(
             elapsed_s=round(batch_summary.elapsed_s, 2),
             records=batch_summary.raw_record_count,
             blob_mb=round(batch_summary.total_blob_mb, 1),
-            conversations=batch_summary.total_convos,
+            sessions=batch_summary.total_convos,
             messages=batch_summary.total_msgs,
             workers=batch_summary.worker_count,
-            changed=len(batch_summary.changed_conversation_ids),
+            changed=len(batch_summary.changed_session_ids),
             result_mb=round(batch_summary.total_result_bytes / (1024 * 1024), 1),
             max_result_mb=round(batch_summary.max_result_bytes / (1024 * 1024), 1),
             max_result_raw_id=batch_summary.max_result_raw_id,
@@ -1243,11 +916,12 @@ async def process_ingest_batch(
             tear_s=round(batch_summary.teardown_elapsed_s, 2),
         )
 
+    succeeded_raw_ids = successful_raw_ids(batch_summary)
     raw_state_update_elapsed_s = await _persist_batch_raw_state_updates(
         service,
         backend,
         outcomes=batch_summary.outcomes,
-        succeeded_raw_ids=successful_raw_ids(batch_summary),
+        succeeded_raw_ids=succeeded_raw_ids,
         skipped_raw_ids=batch_summary.skipped_raw_ids,
         failed_raw_ids=batch_summary.failed_raw_ids,
         validation_mode=validation_mode,
@@ -1278,13 +952,13 @@ def _successful_raw_state_update(
     outcome: _RawIngestOutcome | None,
     parsed_at: str,
     validation_mode: str,
-) -> RawConversationStateUpdate:
+) -> RawSessionStateUpdate:
     if outcome is None:
-        return RawConversationStateUpdate(
+        return RawSessionStateUpdate(
             parsed_at=parsed_at,
             parse_error=None,
         )
-    return RawConversationStateUpdate(
+    return RawSessionStateUpdate(
         parsed_at=parsed_at,
         parse_error=None,
         payload_provider=outcome.payload_provider,
@@ -1299,13 +973,13 @@ def _failed_raw_state_update(
     outcome: _RawIngestOutcome | None,
     error: str,
     validation_mode: str,
-) -> RawConversationStateUpdate:
+) -> RawSessionStateUpdate:
     if outcome is None:
-        return RawConversationStateUpdate(
+        return RawSessionStateUpdate(
             parse_error=error,
             detection_warnings=error[:500] if error else None,
         )
-    return RawConversationStateUpdate(
+    return RawSessionStateUpdate(
         parse_error=outcome.parse_error,
         detection_warnings=outcome.parse_error[:500] if outcome.parse_error else None,
         payload_provider=outcome.payload_provider,
@@ -1362,10 +1036,10 @@ async def _persist_batch_raw_state_updates(
 
 async def refresh_session_insights_bulk(
     backend: _ConnectionBackendLike,
-    changed_conversation_ids: list[str],
+    changed_session_ids: list[str],
 ) -> MaterializeStageObservation | None:
     """Bulk session insight refresh — once after all batches, not per-batch."""
-    if not changed_conversation_ids:
+    if not changed_session_ids:
         return None
 
     t_start = time.perf_counter()
@@ -1374,16 +1048,16 @@ async def refresh_session_insights_bulk(
     aggregate_elapsed = 0.0
     try:
         from polylogue.storage.insights.session.refresh import (
-            _apply_session_insight_conversation_updates_async,
+            _apply_session_insight_session_updates_async,
             _refresh_thread_roots_async,
             refresh_async_provider_day_aggregates,
         )
 
         async with backend.connection() as conn:
             t_updates = time.perf_counter()
-            update = await _apply_session_insight_conversation_updates_async(
+            update = await _apply_session_insight_session_updates_async(
                 conn,
-                changed_conversation_ids,
+                changed_session_ids,
                 transaction_depth=1,
             )
             update_elapsed = time.perf_counter() - t_updates
@@ -1409,7 +1083,7 @@ async def refresh_session_insights_bulk(
         elapsed = time.perf_counter() - t_start
         chunk_observations = update.chunk_observations
         observation: MaterializeStageObservation = {
-            "conversations": len(changed_conversation_ids),
+            "sessions": len(changed_session_ids),
             "unique_thread_roots": len(thread_root_ids),
             "unique_provider_days": len(affected_groups),
             "elapsed_ms": round(elapsed * 1000.0, 1),
@@ -1433,20 +1107,20 @@ async def refresh_session_insights_bulk(
         if elapsed > 2.0:
             logger.info(
                 "session_insight_refresh",
-                conversations=len(changed_conversation_ids),
+                sessions=len(changed_session_ids),
                 unique_thread_roots=len(thread_root_ids),
                 unique_provider_days=len(affected_groups),
                 elapsed_s=round(elapsed, 2),
                 update_s=round(update_elapsed, 2),
                 thread_refresh_s=round(thread_elapsed, 2),
                 aggregate_refresh_s=round(aggregate_elapsed, 2),
-                rate=round(len(changed_conversation_ids) / elapsed, 1) if elapsed > 0 else 0,
+                rate=round(len(changed_session_ids) / elapsed, 1) if elapsed > 0 else 0,
             )
         return observation
     except Exception as exc:
         logger.warning("Session insight refresh failed (non-fatal): %s", exc, exc_info=True)
         return {
-            "conversations": len(changed_conversation_ids),
+            "sessions": len(changed_session_ids),
             "failed": True,
             "error": str(exc),
         }

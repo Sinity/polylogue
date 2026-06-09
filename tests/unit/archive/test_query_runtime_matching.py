@@ -4,10 +4,9 @@ from datetime import datetime, timezone
 
 import pytest
 
-from polylogue.archive.action_event.action_events import ActionEvent
-from polylogue.archive.conversation.models import Conversation
+from polylogue.archive.actions.actions import Action
 from polylogue.archive.message.messages import MessageCollection
-from polylogue.archive.query.plan import ConversationQueryPlan
+from polylogue.archive.query.plan import SessionQueryPlan
 from polylogue.archive.query.runtime_matching import (
     matches_action_sequence,
     matches_action_terms,
@@ -15,14 +14,16 @@ from polylogue.archive.query.runtime_matching import (
     matches_referenced_path,
     matches_tool_terms,
 )
+from polylogue.archive.session.domain_models import Session
 from polylogue.archive.viewport.enums import ToolCategory
-from polylogue.types import ConversationId, Provider
+from polylogue.core.enums import Origin
+from polylogue.types import Provider, SessionId
 
 
-def _conversation() -> Conversation:
-    return Conversation(
-        id=ConversationId("conv"),
-        provider=Provider.CLAUDE_CODE,
+def _session() -> Session:
+    return Session(
+        id=SessionId("conv"),
+        origin=Origin.CLAUDE_CODE_SESSION,
         messages=MessageCollection.empty(),
     )
 
@@ -34,9 +35,9 @@ def _event(
     affected_paths: tuple[str, ...] = (),
     search_text: str = "",
     index: int = 0,
-) -> ActionEvent:
-    return ActionEvent(
-        event_id=f"event-{index}",
+) -> Action:
+    return Action(
+        action_id=f"action-{index}",
         message_id="message-1",
         timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
         sequence_index=index,
@@ -58,9 +59,9 @@ def _event(
 
 def _patch_events(
     monkeypatch: pytest.MonkeyPatch,
-    events: tuple[ActionEvent, ...],
+    events: tuple[Action, ...],
 ) -> None:
-    monkeypatch.setattr("polylogue.archive.query.runtime_matching._action_events_for", lambda _conversation: events)
+    monkeypatch.setattr("polylogue.archive.query.runtime_matching._actions_for", lambda _session: events)
 
 
 def test_matches_referenced_path_requires_each_term_across_affected_paths(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -74,14 +75,12 @@ def test_matches_referenced_path_requires_each_term_across_affected_paths(monkey
         ),
     )
 
-    assert (
-        matches_referenced_path(ConversationQueryPlan(referenced_path=("SRC\\APP", "tests")), _conversation()) is True
-    )
-    assert matches_referenced_path(ConversationQueryPlan(referenced_path=("missing",)), _conversation()) is False
+    assert matches_referenced_path(SessionQueryPlan(referenced_path=("SRC\\APP", "tests")), _session()) is True
+    assert matches_referenced_path(SessionQueryPlan(referenced_path=("missing",)), _session()) is False
 
 
 def test_matches_action_and_tool_terms_handle_none_and_exclusions(monkeypatch: pytest.MonkeyPatch) -> None:
-    conversation = _conversation()
+    session = _session()
     _patch_events(
         monkeypatch,
         (
@@ -90,22 +89,22 @@ def test_matches_action_and_tool_terms_handle_none_and_exclusions(monkeypatch: p
         ),
     )
 
-    assert matches_action_terms(ConversationQueryPlan(action_terms=("shell",)), conversation) is True
-    assert matches_action_terms(ConversationQueryPlan(action_terms=("none",)), conversation) is False
-    assert matches_action_terms(ConversationQueryPlan(excluded_action_terms=("web",)), conversation) is True
-    assert matches_action_terms(ConversationQueryPlan(excluded_action_terms=("shell",)), conversation) is False
+    assert matches_action_terms(SessionQueryPlan(action_terms=("shell",)), session) is True
+    assert matches_action_terms(SessionQueryPlan(action_terms=("none",)), session) is False
+    assert matches_action_terms(SessionQueryPlan(excluded_action_terms=("web",)), session) is True
+    assert matches_action_terms(SessionQueryPlan(excluded_action_terms=("shell",)), session) is False
 
-    assert matches_tool_terms(ConversationQueryPlan(tool_terms=("bash",)), conversation) is True
-    assert matches_tool_terms(ConversationQueryPlan(excluded_tool_terms=("edit",)), conversation) is False
+    assert matches_tool_terms(SessionQueryPlan(tool_terms=("bash",)), session) is True
+    assert matches_tool_terms(SessionQueryPlan(excluded_tool_terms=("edit",)), session) is False
 
     _patch_events(monkeypatch, ())
-    assert matches_action_terms(ConversationQueryPlan(action_terms=("none",)), conversation) is True
-    assert matches_tool_terms(ConversationQueryPlan(tool_terms=("none",)), conversation) is True
-    assert matches_tool_terms(ConversationQueryPlan(excluded_tool_terms=("none",)), conversation) is False
+    assert matches_action_terms(SessionQueryPlan(action_terms=("none",)), session) is True
+    assert matches_tool_terms(SessionQueryPlan(tool_terms=("none",)), session) is True
+    assert matches_tool_terms(SessionQueryPlan(excluded_tool_terms=("none",)), session) is False
 
 
 def test_matches_action_sequence_and_search_text(monkeypatch: pytest.MonkeyPatch) -> None:
-    conversation = _conversation()
+    session = _session()
     _patch_events(
         monkeypatch,
         (
@@ -115,9 +114,7 @@ def test_matches_action_sequence_and_search_text(monkeypatch: pytest.MonkeyPatch
         ),
     )
 
-    assert matches_action_sequence(ConversationQueryPlan(action_sequence=("search", "shell")), conversation) is True
-    assert matches_action_sequence(ConversationQueryPlan(action_sequence=("shell", "search")), conversation) is False
-    assert (
-        matches_action_text_terms(ConversationQueryPlan(action_text_terms=("schema", "pytest")), conversation) is True
-    )
-    assert matches_action_text_terms(ConversationQueryPlan(action_text_terms=("deployment",)), conversation) is False
+    assert matches_action_sequence(SessionQueryPlan(action_sequence=("search", "shell")), session) is True
+    assert matches_action_sequence(SessionQueryPlan(action_sequence=("shell", "search")), session) is False
+    assert matches_action_text_terms(SessionQueryPlan(action_text_terms=("schema", "pytest")), session) is True
+    assert matches_action_text_terms(SessionQueryPlan(action_text_terms=("deployment",)), session) is False

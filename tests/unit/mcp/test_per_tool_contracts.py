@@ -33,7 +33,7 @@ import pytest
 
 from polylogue.surfaces.payloads import (
     BulkTagMutationResult,
-    DeleteConversationResult,
+    DeleteSessionResult,
     MetadataMutationResult,
     TagMutationResult,
 )
@@ -41,7 +41,6 @@ from tests.infra.mcp import (
     MCPServerUnderTest,
     invoke_surface,
     make_polylogue_mock,
-    make_query_store_mock,
 )
 
 # ---------------------------------------------------------------------------
@@ -97,16 +96,16 @@ _LONG_STRING = "x" * 10_000
 
 TOOL_MATRIX: dict[str, dict[str, Any]] = {
     "add_tag": {
-        "required": {"conversation_id", "tag"},
-        "happy": {"conversation_id": _CONV_ID, "tag": "review"},
+        "required": {"session_id", "tag"},
+        "happy": {"session_id": _CONV_ID, "tag": "review"},
     },
     "remove_tag": {
-        "required": {"conversation_id", "tag"},
-        "happy": {"conversation_id": _CONV_ID, "tag": "review"},
+        "required": {"session_id", "tag"},
+        "happy": {"session_id": _CONV_ID, "tag": "review"},
     },
-    "bulk_tag_conversations": {
-        "required": {"conversation_ids", "tags"},
-        "happy": {"conversation_ids": [_CONV_ID], "tags": ["review"]},
+    "bulk_tag_sessions": {
+        "required": {"session_ids", "tags"},
+        "happy": {"session_ids": [_CONV_ID], "tags": ["review"]},
     },
     "list_tags": {
         "required": set(),
@@ -117,23 +116,23 @@ TOOL_MATRIX: dict[str, dict[str, Any]] = {
         "happy": {},
     },
     "add_mark": {
-        "required": {"conversation_id", "mark_type"},
-        "happy": {"conversation_id": _CONV_ID, "mark_type": "star"},
-        "invalid_value": {"conversation_id": _CONV_ID, "mark_type": "bogus"},
+        "required": {"session_id", "mark_type"},
+        "happy": {"session_id": _CONV_ID, "mark_type": "star"},
+        "invalid_value": {"session_id": _CONV_ID, "mark_type": "bogus"},
     },
     "remove_mark": {
-        "required": {"conversation_id", "mark_type"},
-        "happy": {"conversation_id": _CONV_ID, "mark_type": "star"},
-        "invalid_value": {"conversation_id": _CONV_ID, "mark_type": "bogus"},
+        "required": {"session_id", "mark_type"},
+        "happy": {"session_id": _CONV_ID, "mark_type": "star"},
+        "invalid_value": {"session_id": _CONV_ID, "mark_type": "bogus"},
     },
     "list_annotations": {
         "required": set(),
         "happy": {},
     },
     "save_annotation": {
-        "required": {"annotation_id", "conversation_id", "note_text"},
-        "happy": {"annotation_id": "ann-1", "conversation_id": _CONV_ID, "note_text": "hello"},
-        "empty_string": {"annotation_id": "", "conversation_id": _CONV_ID, "note_text": "hello"},
+        "required": {"annotation_id", "session_id", "note_text"},
+        "happy": {"annotation_id": "ann-1", "session_id": _CONV_ID, "note_text": "hello"},
+        "empty_string": {"annotation_id": "", "session_id": _CONV_ID, "note_text": "hello"},
     },
     "delete_annotation": {
         "required": {"annotation_id"},
@@ -179,33 +178,33 @@ TOOL_MATRIX: dict[str, dict[str, Any]] = {
         "happy": {"workspace_id": "ws-1"},
     },
     "get_metadata": {
-        "required": {"conversation_id"},
-        "happy": {"conversation_id": _CONV_ID},
+        "required": {"session_id"},
+        "happy": {"session_id": _CONV_ID},
     },
     "set_metadata": {
-        "required": {"conversation_id", "key", "value"},
-        "happy": {"conversation_id": _CONV_ID, "key": "note", "value": "v"},
-        "invalid_value": {"conversation_id": _CONV_ID, "key": "", "value": "v"},
+        "required": {"session_id", "key", "value"},
+        "happy": {"session_id": _CONV_ID, "key": "note", "value": "v"},
+        "invalid_value": {"session_id": _CONV_ID, "key": "", "value": "v"},
     },
     "delete_metadata": {
-        "required": {"conversation_id", "key"},
-        "happy": {"conversation_id": _CONV_ID, "key": "note"},
-        "invalid_value": {"conversation_id": _CONV_ID, "key": ""},
+        "required": {"session_id", "key"},
+        "happy": {"session_id": _CONV_ID, "key": "note"},
+        "invalid_value": {"session_id": _CONV_ID, "key": ""},
     },
-    "delete_conversation": {
-        "required": {"conversation_id"},
-        "happy": {"conversation_id": _CONV_ID, "confirm": True},
-        "missing_confirm": {"conversation_id": _CONV_ID},
+    "delete_session": {
+        "required": {"session_id"},
+        "happy": {"session_id": _CONV_ID, "confirm": True},
+        "missing_confirm": {"session_id": _CONV_ID},
     },
     "record_correction": {
-        "required": {"conversation_id", "kind", "payload"},
+        "required": {"session_id", "kind", "payload"},
         "happy": {
-            "conversation_id": _CONV_ID,
+            "session_id": _CONV_ID,
             "kind": "summary_override",
             "payload": {"summary": "Operator-authored summary."},
         },
         "invalid_value": {
-            "conversation_id": _CONV_ID,
+            "session_id": _CONV_ID,
             "kind": "bogus_kind",
             "payload": {},
         },
@@ -215,8 +214,8 @@ TOOL_MATRIX: dict[str, dict[str, Any]] = {
         "happy": {},
     },
     "clear_corrections": {
-        "required": {"conversation_id"},
-        "happy": {"conversation_id": _CONV_ID},
+        "required": {"session_id"},
+        "happy": {"session_id": _CONV_ID},
     },
 }
 
@@ -248,13 +247,9 @@ def patched_mutation_seam() -> Iterator[Any]:
     mutation tool. Yields the mock polylogue facade so individual tests
     can override per-method return values.
     """
-    with (
-        patch("polylogue.mcp.server._get_polylogue") as mock_get_poly,
-        patch("polylogue.mcp.server._get_query_store") as mock_get_query,
-    ):
-        poly = make_polylogue_mock()
+    with patch("polylogue.mcp.server._get_polylogue") as mock_get_poly:
+        poly = make_polylogue_mock(resolved_id=_CONV_ID)
         mock_get_poly.return_value = poly
-        mock_get_query.return_value = make_query_store_mock(resolved_id=_CONV_ID)
         yield poly
 
 
@@ -288,7 +283,7 @@ class TestMutationToolDiscovery:
     def test_mutation_tool_count_nonzero(self) -> None:
         # Sanity floor — there are at least 20 mutation tools today
         # (marks, annotations, saved views, recall packs, workspaces,
-        # tags, metadata, delete_conversation, learning corrections).
+        # tags, metadata, delete_session, learning corrections).
         assert len(MUTATION_TOOL_NAMES) >= 20, sorted(MUTATION_TOOL_NAMES)
 
 
@@ -430,7 +425,7 @@ _IDEMPOTENT_CASES = [
     #  first_expected_outcome, second_expected_outcome)
     pytest.param(
         "add_tag",
-        {"conversation_id": _CONV_ID, "tag": "review"},
+        {"session_id": _CONV_ID, "tag": "review"},
         "add_tag",
         TagMutationResult(outcome="added", detail=None),
         TagMutationResult(outcome="no_op", detail="already_present"),
@@ -440,7 +435,7 @@ _IDEMPOTENT_CASES = [
     ),
     pytest.param(
         "remove_tag",
-        {"conversation_id": _CONV_ID, "tag": "missing"},
+        {"session_id": _CONV_ID, "tag": "missing"},
         "remove_tag",
         TagMutationResult(outcome="not_present", detail="tag_absent"),
         TagMutationResult(outcome="not_present", detail="tag_absent"),
@@ -450,7 +445,7 @@ _IDEMPOTENT_CASES = [
     ),
     pytest.param(
         "add_mark",
-        {"conversation_id": _CONV_ID, "mark_type": "star"},
+        {"session_id": _CONV_ID, "mark_type": "star"},
         "add_mark",
         True,
         False,
@@ -460,7 +455,7 @@ _IDEMPOTENT_CASES = [
     ),
     pytest.param(
         "remove_mark",
-        {"conversation_id": _CONV_ID, "mark_type": "star"},
+        {"session_id": _CONV_ID, "mark_type": "star"},
         "remove_mark",
         False,
         False,
@@ -472,7 +467,7 @@ _IDEMPOTENT_CASES = [
         "save_annotation",
         {
             "annotation_id": "ann-1",
-            "conversation_id": _CONV_ID,
+            "session_id": _CONV_ID,
             "note_text": "n",
         },
         "save_annotation",
@@ -574,28 +569,26 @@ class TestMutationToolIdempotency:
         assert "status" in first_result
         assert "status" in second_result
 
-    def test_delete_conversation_requires_confirm(
+    def test_delete_session_requires_confirm(
         self,
         admin_server: MCPServerUnderTest,
         patched_mutation_seam: Any,
     ) -> None:
-        """``delete_conversation`` without ``confirm=true`` must return a
+        """``delete_session`` without ``confirm=true`` must return a
         structured error envelope (safety guard). Confirmed delete must
         succeed and surface the documented outcome.
         """
         poly = patched_mutation_seam
-        poly.delete_conversation_safe = AsyncMock(
-            return_value=DeleteConversationResult(outcome="deleted", conversation_id=_CONV_ID)
-        )
-        fn = admin_server._tool_manager._tools["delete_conversation"].fn
+        poly.delete_session_safe = AsyncMock(return_value=DeleteSessionResult(outcome="deleted", session_id=_CONV_ID))
+        fn = admin_server._tool_manager._tools["delete_session"].fn
 
         # Without confirm.
-        unconfirmed = json.loads(invoke_surface(fn, conversation_id=_CONV_ID))
+        unconfirmed = json.loads(invoke_surface(fn, session_id=_CONV_ID))
         assert unconfirmed.get("is_error") is True
         assert "error" in unconfirmed
 
         # With confirm.
-        confirmed = json.loads(invoke_surface(fn, conversation_id=_CONV_ID, confirm=True))
+        confirmed = json.loads(invoke_surface(fn, session_id=_CONV_ID, confirm=True))
         assert "is_error" not in confirmed
         assert confirmed.get("status") == "deleted"
 
@@ -611,14 +604,14 @@ class TestMutationToolIdempotency:
         poly = patched_mutation_seam
         poly.set_metadata = AsyncMock(
             side_effect=[
-                MetadataMutationResult(outcome="set", conversation_id=_CONV_ID, key="k"),
-                MetadataMutationResult(outcome="unchanged", conversation_id=_CONV_ID, key="k", detail="no_change"),
+                MetadataMutationResult(outcome="set", session_id=_CONV_ID, key="k"),
+                MetadataMutationResult(outcome="unchanged", session_id=_CONV_ID, key="k", detail="no_change"),
             ]
         )
         fn = admin_server._tool_manager._tools["set_metadata"].fn
 
-        first = json.loads(invoke_surface(fn, conversation_id=_CONV_ID, key="k", value="v"))
-        second = json.loads(invoke_surface(fn, conversation_id=_CONV_ID, key="k", value="v"))
+        first = json.loads(invoke_surface(fn, session_id=_CONV_ID, key="k", value="v"))
+        second = json.loads(invoke_surface(fn, session_id=_CONV_ID, key="k", value="v"))
 
         assert first.get("status") == "ok"
         assert second.get("status") == "unchanged"
@@ -650,29 +643,27 @@ def _arrange_poly_for(poly: Any, tool_name: str) -> None:
         poly.add_tag = AsyncMock(return_value=TagMutationResult(outcome="added"))
     elif tool_name == "remove_tag":
         poly.remove_tag = AsyncMock(return_value=TagMutationResult(outcome="removed"))
-    elif tool_name == "bulk_tag_conversations":
-        poly.bulk_tag_conversations = AsyncMock(
-            return_value=BulkTagMutationResult(conversation_count=1, tag_count=1, affected_count=1, skipped_count=0)
+    elif tool_name == "bulk_tag_sessions":
+        poly.bulk_tag_sessions = AsyncMock(
+            return_value=BulkTagMutationResult(session_count=1, tag_count=1, affected_count=1, skipped_count=0)
         )
     elif tool_name == "set_metadata":
         poly.set_metadata = AsyncMock(
-            return_value=MetadataMutationResult(outcome="set", conversation_id=_CONV_ID, key="note")
+            return_value=MetadataMutationResult(outcome="set", session_id=_CONV_ID, key="note")
         )
     elif tool_name == "delete_metadata":
         poly.delete_metadata = AsyncMock(
-            return_value=MetadataMutationResult(outcome="deleted", conversation_id=_CONV_ID, key="note")
+            return_value=MetadataMutationResult(outcome="deleted", session_id=_CONV_ID, key="note")
         )
-    elif tool_name == "delete_conversation":
-        poly.delete_conversation_safe = AsyncMock(
-            return_value=DeleteConversationResult(outcome="deleted", conversation_id=_CONV_ID)
-        )
+    elif tool_name == "delete_session":
+        poly.delete_session_safe = AsyncMock(return_value=DeleteSessionResult(outcome="deleted", session_id=_CONV_ID))
     elif tool_name == "record_correction":
         from polylogue.insights.feedback import CorrectionKind, LearningCorrection
         from tests.infra.frozen_clock import fixed_now
 
         poly.record_correction = AsyncMock(
             return_value=LearningCorrection(
-                conversation_id=_CONV_ID,
+                session_id=_CONV_ID,
                 kind=CorrectionKind.SUMMARY_OVERRIDE,
                 payload={"summary": "Operator-authored summary."},
                 note=None,

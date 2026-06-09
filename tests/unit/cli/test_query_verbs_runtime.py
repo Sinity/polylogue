@@ -25,13 +25,13 @@ def _context_pair(
 
 def test_parent_helpers_require_parent_context_and_build_request() -> None:
     _, child = _context_pair(
-        params={"provider": "chatgpt", "limit": 5},
+        params={"origin": "chatgpt-export", "limit": 5},
         query_terms=("alpha", "beta"),
     )
 
     assert query_verbs._parent_query_terms(child) == ("alpha", "beta")
     request = query_verbs._parent_request(child)
-    assert request.query_params()["provider"] == "chatgpt"
+    assert request.query_params()["origin"] == "chatgpt-export"
     assert request.query_params()["query"] == ("alpha", "beta")
 
     with pytest.raises(click.UsageError, match="Query verbs must be invoked"):
@@ -49,7 +49,7 @@ def test_execute_query_verb_dispatches_typed_request() -> None:
 
 
 def test_list_and_count_verbs_update_parent_request() -> None:
-    _, child = _context_pair(params={"provider": "chatgpt"}, query_terms=("alpha",))
+    _, child = _context_pair(params={"origin": "chatgpt-export"}, query_terms=("alpha",))
 
     wrapped_list = getattr(query_verbs.list_verb.callback, "__wrapped__", None)
     assert callable(wrapped_list)
@@ -58,7 +58,7 @@ def test_list_and_count_verbs_update_parent_request() -> None:
 
     request = execute.call_args.args[1]
     assert isinstance(request, RootModeRequest)
-    assert request.query_params()["provider"] == "chatgpt"
+    assert request.query_params()["origin"] == "chatgpt-export"
     assert request.query_params()["output_format"] == "json"
     assert request.query_params()["fields"] == "id,title"
     assert request.query_params()["limit"] == 7
@@ -88,12 +88,12 @@ def test_stats_verb_toggles_stats_only_and_updates_grouping() -> None:
     assert request.query_params()["query"] == ("alpha",)
 
     with patch("polylogue.cli.query_verbs._execute_query_verb") as execute:
-        wrapped(child, "provider", "markdown", 3)
+        wrapped(child, "origin", "markdown", 3)
 
     grouped_request = execute.call_args.args[1]
     assert isinstance(grouped_request, RootModeRequest)
     assert grouped_request.query_params()["stats_only"] is False
-    assert grouped_request.query_params()["stats_by"] == "provider"
+    assert grouped_request.query_params()["stats_by"] == "origin"
     assert grouped_request.query_params()["output_format"] == "markdown"
     assert grouped_request.query_params()["limit"] == 3
 
@@ -170,7 +170,7 @@ def test_show_verb_falls_back_to_search_for_non_id_terms() -> None:
 
 def test_bulk_export_verb_invokes_run_bulk_export_with_parent_request() -> None:
     _, child = _context_pair(
-        params={"provider": "claude-code", "limit": 5},
+        params={"origin": "claude-code-session", "limit": 5},
         query_terms=("alpha",),
     )
     wrapped = getattr(query_verbs.bulk_export_verb.callback, "__wrapped__", None)
@@ -184,22 +184,22 @@ def test_bulk_export_verb_invokes_run_bulk_export_with_parent_request() -> None:
     env_arg, request_arg = args
     assert env_arg is child.obj
     assert isinstance(request_arg, RootModeRequest)
-    assert request_arg.query_params()["provider"] == "claude-code"
+    assert request_arg.query_params()["origin"] == "claude-code-session"
     assert request_arg.query_params()["query"] == ("alpha",)
     assert kwargs == {"output_format": "jsonl", "fields": None}
 
 
-def test_resolve_target_conversation_id_uses_explicit_conv_id() -> None:
+def test_resolve_target_session_id_uses_explicit_conv_id() -> None:
     request = RootModeRequest.from_params({"conv_id": "claude-code:abc123"})
-    assert query_verbs._resolve_target_conversation_id(request) == "claude-code:abc123"
+    assert query_verbs._resolve_target_session_id(request) == "claude-code:abc123"
 
 
-def test_resolve_target_conversation_id_returns_none_without_filters_or_latest() -> None:
+def test_resolve_target_session_id_returns_none_without_filters_or_latest() -> None:
     request = RootModeRequest.from_params({})
-    assert query_verbs._resolve_target_conversation_id(request) is None
+    assert query_verbs._resolve_target_session_id(request) is None
 
 
-def test_resolve_target_conversation_id_resolves_latest(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_resolve_target_session_id_resolves_latest(monkeypatch: pytest.MonkeyPatch) -> None:
     """#1626: ``--latest`` must resolve to the most recent conv without an explicit id."""
     request = RootModeRequest.from_params({"latest": True})
 
@@ -210,12 +210,12 @@ def test_resolve_target_conversation_id_resolves_latest(monkeypatch: pytest.Monk
         return [SimpleNamespace(id="claude-code:latest-conv-id")]
 
     monkeypatch.setattr(
-        "polylogue.archive.query.spec.ConversationQuerySpec.list_summaries",
+        "polylogue.archive.query.spec.SessionQuerySpec.list_summaries",
         fake_list_summaries,
     )
 
     class _API:
-        repository = SimpleNamespace()
+        config = SimpleNamespace()
 
         async def __aenter__(self) -> _API:
             return self
@@ -224,7 +224,7 @@ def test_resolve_target_conversation_id_resolves_latest(monkeypatch: pytest.Monk
 
     monkeypatch.setattr("polylogue.api.Polylogue.open", lambda **_: _API())
 
-    result = query_verbs._resolve_target_conversation_id(request)
+    result = query_verbs._resolve_target_session_id(request)
 
     assert result == "claude-code:latest-conv-id"
     assert captured_limits == [1]

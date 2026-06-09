@@ -1,7 +1,7 @@
 """End-to-end integration tests for the cursor-lag stack (#1232 + #1349).
 
-These tests drive ``_check_cursor_lag_medium`` against a real SQLite
-``live_cursor`` table plus a synthetic sample history so the static
+These tests drive ``_check_cursor_lag_medium`` against real SQLite cursor
+state plus a synthetic archive ops sample history so the static
 ladder, the sample writer, the GC, and the anomaly band can be
 verified together rather than in isolation. The hardcoded ACs from
 issue #1349 are pinned here.
@@ -10,6 +10,7 @@ issue #1349 are pinned here.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -42,8 +43,22 @@ pytestmark = pytest.mark.frozen_clock_modules(
 
 
 @pytest.fixture(autouse=True)
-def _reset_dedup_state() -> None:
-    """Independence: every test starts with empty dedup state."""
+def _reset_dedup_state() -> Iterator[None]:
+    """Independence: every test starts AND ends with empty dedup state.
+
+    These tests drive ``_check_cursor_lag_medium`` / the anomaly layer
+    against the process-wide ``_DEDUP_STATE`` singletons in
+    ``cursor_lag_alert`` and ``cursor_lag_anomaly``. Resetting only on
+    setup leaks the last test's stuck-family entries into whatever test
+    runs next in the randomized session order: a later ``_run_medium_checks``
+    then emits spurious ``cursor_lag[...]`` / ``cursor_lag_anomaly[...]``
+    resolution alerts for the leaked family, breaking the daemon
+    health-inventory and HTTP-contract pins. Reset on teardown too so the
+    singletons never escape this module.
+    """
+    reset_static_dedup()
+    reset_anomaly_dedup()
+    yield
     reset_static_dedup()
     reset_anomaly_dedup()
 
@@ -52,44 +67,51 @@ def _seed_live_cursor(
     db: Path,
     rows: list[tuple[str, int, int, int, int, str]],
 ) -> None:
-    """Create + populate ``live_cursor`` with the minimal column set the
-    projection reads. ``rows`` = ``(source_path, byte_size, byte_offset,
-    failure_count, excluded, updated_at_iso)``.
+    """Create + populate the native ``ingest_cursor`` table in the sibling
+    ``ops.db`` with the minimal column set the projection reads.
+
+    ``rows`` = ``(source_path, byte_size, byte_offset, failure_count,
+    excluded, updated_at_iso)``. The archive cursor-lag projection
+    (``polylogue/daemon/cursor_lag_status.py``) reads ``ingest_cursor``
+    columns ``source_path, stat_size, byte_offset, failure_count,
+    excluded, updated_at_ms`` from ops.db.
     """
-    db.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db))
+    from datetime import datetime as _dt
+
+    ops_db = db.with_name("ops.db")
+    ops_db.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(ops_db))
     try:
         conn.execute(
             """
-            CREATE TABLE live_cursor (
+            CREATE TABLE IF NOT EXISTS ingest_cursor (
                 source_path TEXT PRIMARY KEY,
-                byte_size INTEGER NOT NULL,
+                stat_size INTEGER,
                 byte_offset INTEGER NOT NULL DEFAULT 0,
-                last_complete_newline INTEGER NOT NULL DEFAULT 0,
-                record_count INTEGER NOT NULL DEFAULT 0,
-                last_record_ts TEXT,
-                parser_fingerprint TEXT,
-                content_fingerprint TEXT,
-                tail_hash TEXT,
-                source_name TEXT,
-                st_dev INTEGER,
-                st_ino INTEGER,
-                mtime_ns INTEGER,
-                source_generation INTEGER NOT NULL DEFAULT 0,
                 failure_count INTEGER NOT NULL DEFAULT 0,
-                next_retry_at TEXT,
                 excluded INTEGER NOT NULL DEFAULT 0,
-                updated_at TEXT NOT NULL
+                updated_at_ms INTEGER NOT NULL
             )
             """
         )
+        native_rows = [
+            (
+                source_path,
+                byte_size,
+                byte_offset,
+                failure_count,
+                excluded,
+                int(_dt.fromisoformat(updated_at_iso).timestamp() * 1000),
+            )
+            for (source_path, byte_size, byte_offset, failure_count, excluded, updated_at_iso) in rows
+        ]
         conn.executemany(
             """
-            INSERT INTO live_cursor (source_path, byte_size, byte_offset,
-                                     failure_count, excluded, updated_at)
+            INSERT INTO ingest_cursor (source_path, stat_size, byte_offset,
+                                       failure_count, excluded, updated_at_ms)
             VALUES (?, ?, ?, ?, ?, ?)
             """,
-            rows,
+            native_rows,
         )
         conn.commit()
     finally:
@@ -114,7 +136,10 @@ def _isolated_archive(
     monkeypatch.setenv("POLYLOGUE_SITE_CONFIG", "")
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
     monkeypatch.setenv("XDG_DATA_HOME", str(data_home))
-    return data_home / "polylogue" / "polylogue.db"
+    # The periodic health check resolves the active index db to
+    # ``archive_root/index.db`` and reads cursor state from the sibling
+    # ``ops.db``; return that base path so seeding and reads agree.
+    return archive_root / "index.db"
 
 
 def _sample_history(
@@ -126,7 +151,7 @@ def _sample_history(
     now: datetime,
     spacing: timedelta = timedelta(minutes=5),
 ) -> None:
-    """Backfill N rows of ``live_cursor_lag_sample`` for one family."""
+    """Backfill N archive ops sample rows for one family."""
     summary = CursorLagSummary(
         tracked_file_count=1,
         stuck_file_count=1,
@@ -143,6 +168,7 @@ def test_lag_sample_writes_do_not_block_health_loop_on_database_lock(
     frozen_clock: FrozenClock,
 ) -> None:
     db = tmp_path / "locked.db"
+    ops_db = db.with_name("ops.db")
     summary = CursorLagSummary(
         tracked_file_count=1,
         stuck_file_count=1,
@@ -150,7 +176,7 @@ def test_lag_sample_writes_do_not_block_health_loop_on_database_lock(
         max_lag_s=120,
         family_summaries=[CursorLagFamilySummary(family="codex-session", stuck_file_count=1, max_lag_s=120)],
     )
-    blocker = sqlite3.connect(str(db))
+    blocker = sqlite3.connect(str(ops_db))
     try:
         blocker.execute("CREATE TABLE lock_holder (id INTEGER PRIMARY KEY)")
         blocker.execute("BEGIN EXCLUSIVE")
@@ -222,8 +248,8 @@ anomaly_enabled = true
 
     _check_cursor_lag_medium()
 
-    with sqlite3.connect(str(db)) as conn:
-        row = conn.execute("SELECT family, COUNT(*) FROM live_cursor_lag_sample GROUP BY family").fetchall()
+    with sqlite3.connect(str(db.with_name("ops.db"))) as conn:
+        row = conn.execute("SELECT family, COUNT(*) FROM cursor_lag_samples GROUP BY family").fetchall()
     # Both files bucket to the same family ("unknown") so one row per
     # family per tick.
     assert len(row) == 1

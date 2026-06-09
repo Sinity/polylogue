@@ -100,7 +100,7 @@ API list endpoint must call the same query spec/plan path as CLI list. It must n
 
 API messages endpoint must call the same message-page path as CLI/MCP.
 
-API raw endpoint must call the same raw artifact/read surface as CLI/MCP. Help text should be truthful: raw archive artifact payloads, not provider-event pagination unless that actually exists.
+API raw endpoint must call the same raw artifact/read surface as CLI/MCP. Help text should be truthful: raw archive artifact payloads, not session-event pagination unless that actually exists.
 
 ### Step 4: web reader v1
 
@@ -170,7 +170,7 @@ Do not implement in slice 1 unless trivial after core work:
 
 - annotations/stars/pins/saved views;
 - recall pack builder;
-- browser receiver migration into daemon;
+- browser receiver move into daemon;
 - removing `polylogue watch`;
 - removing `polylogue browser-capture serve`;
 - splitting `polylogue-mcp`;

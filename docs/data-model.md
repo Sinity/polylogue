@@ -2,7 +2,7 @@
 
 # Data Model
 
-## Conversation
+## Session
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -58,7 +58,7 @@ evidence.
 
 ## Branching
 
-Conversations may have branching structure (e.g., ChatGPT "edit and regenerate"). The `parent_id` field links messages to their parent, forming a tree.
+Sessions may have branching structure (e.g., ChatGPT "edit and regenerate"). The `parent_id` field links messages to their parent, forming a tree.
 
 **Current behavior**: Messages are flattened to a list in creation order. Branch structure is preserved in `provider_meta` for future use.
 

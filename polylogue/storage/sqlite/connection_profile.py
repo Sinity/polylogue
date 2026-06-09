@@ -121,12 +121,51 @@ READ_CONNECTION_PRAGMA_STATEMENTS = READ_CONNECTION_PROFILE.pragma_statements
 # ---------------------------------------------------------------------------
 
 
+_SIBLING_TIER_ATTACHMENTS: tuple[tuple[str, str], ...] = (
+    ("source_tier", "source.db"),
+    ("user_tier", "user.db"),
+    ("embeddings", "embeddings.db"),
+    ("ops_tier", "ops.db"),
+)
+
+
+def _attach_sibling_tiers(conn: sqlite3.Connection) -> None:
+    """Attach sibling archive tiers to an ``index.db`` connection (idempotent).
+
+    Lets one-shot sync connections resolve cross-tier tables (e.g. source.db's
+    ``raw_sessions``/``blob_refs``/``pending_blob_refs``) by unqualified name.
+    SQLite resolves unqualified names to ``main`` first, so index-tier tables
+    are unaffected; only sibling-only tables resolve to their attached tier.
+    """
+    main_path: str | None = None
+    attached: set[str] = set()
+    for row in conn.execute("PRAGMA database_list").fetchall():
+        schema_name = str(row[1])
+        if schema_name == "main":
+            main_path = str(row[2]) if row[2] else None
+        else:
+            attached.add(schema_name)
+    if not main_path:
+        return
+    main = Path(main_path)
+    if main.name != "index.db":
+        return
+    root = main.parent
+    for schema_name, filename in _SIBLING_TIER_ATTACHMENTS:
+        if schema_name in attached:
+            continue
+        sibling = root / filename
+        if sibling.exists():
+            conn.execute(f"ATTACH DATABASE ? AS {schema_name}", (str(sibling),))
+
+
 def open_connection(path: str | Path, *, timeout: float = DB_TIMEOUT) -> sqlite3.Connection:
     """Open a read-write SQLite connection with canonical write pragmas applied.
 
     This is a lightweight one-shot factory: it opens the file, applies the
-    write-time PRAGMA profile, and returns the connection.  The caller owns
-    the connection lifecycle (must close it).
+    write-time PRAGMA profile, attaches sibling archive tiers (so cross-tier
+    reads resolve), and returns the connection.  The caller owns the connection
+    lifecycle (must close it).
 
     For the thread-local cached archive connection used by the async runtime,
     use ``connection_context`` from ``connection.py`` instead.
@@ -135,6 +174,7 @@ def open_connection(path: str | Path, *, timeout: float = DB_TIMEOUT) -> sqlite3
     try:
         for stmt in WRITE_CONNECTION_PRAGMA_STATEMENTS:
             conn.execute(stmt)
+        _attach_sibling_tiers(conn)
     except BaseException:
         # A pragma can fail (e.g. a WAL-mode write pragma against a
         # lock-held database). Close the just-opened connection before

@@ -3,22 +3,22 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timezone
 
-from polylogue.archive.conversation.branch_type import BranchType
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
+from polylogue.archive.session.branch_type import BranchType
+from polylogue.core.enums import Origin
+from polylogue.core.sources import provider_from_origin
 from polylogue.storage.runtime import (
-    ActionEventRecord,
     ArtifactObservationRecord,
     ContentBlockRecord,
-    ConversationRecord,
     MessageRecord,
-    ProviderEventRecord,
-    RawConversationRecord,
+    RawSessionRecord,
+    SessionRecord,
 )
 from polylogue.storage.sqlite.queries.mappers_support import (
     _json_object,
-    _json_text_tuple,
     _parse_json,
     _row_float,
     _row_get,
@@ -27,37 +27,32 @@ from polylogue.storage.sqlite.queries.mappers_support import (
 )
 from polylogue.types import (
     ArtifactSupportStatus,
-    ContentBlockType,
-    ConversationId,
+    BlockType,
     MessageId,
-    Provider,
-    ProviderEventId,
     SemanticBlockType,
+    SessionId,
     ValidationMode,
     ValidationStatus,
 )
 
 
-def _row_to_conversation(row: sqlite3.Row) -> ConversationRecord:
-    parent_conversation_id = _row_text(row, "parent_conversation_id")
+def _row_to_session(row: sqlite3.Row) -> SessionRecord:
+    parent_session_id = _row_text(row, "parent_session_id")
     branch_type = _row_text(row, "branch_type")
-    return ConversationRecord(
-        conversation_id=row["conversation_id"],
-        provider_conversation_id=row["provider_conversation_id"],
+    return SessionRecord(
+        session_id=row["session_id"],
+        native_id=row["native_id"],
+        origin=row["origin"],
         title=row["title"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         sort_key=_row_float(row, "sort_key"),
         content_hash=row["content_hash"],
-        provider_meta=_json_object(
-            _parse_json(row["provider_meta"], field="provider_meta", record_id=row["conversation_id"])
-        ),
-        metadata=_json_object(_parse_json(row["metadata"], field="metadata", record_id=row["conversation_id"])),
+        metadata=_json_object(_parse_json(row["metadata"], field="metadata", record_id=row["session_id"])),
         version=row["version"],
-        parent_conversation_id=ConversationId(parent_conversation_id) if parent_conversation_id is not None else None,
+        parent_session_id=SessionId(parent_session_id) if parent_session_id is not None else None,
         branch_type=BranchType(branch_type) if branch_type is not None else None,
         raw_id=_row_text(row, "raw_id"),
-        source_name=_row_text(row, "source_name") or "",
         working_directories_json=_row_text(row, "working_directories_json"),
         git_branch=_row_text(row, "git_branch"),
         git_repository_url=_row_text(row, "git_repository_url"),
@@ -70,7 +65,7 @@ def _row_to_message(row: sqlite3.Row) -> MessageRecord:
     parent_message_id = _row_text(row, "parent_message_id")
     return MessageRecord(
         message_id=row["message_id"],
-        conversation_id=row["conversation_id"],
+        session_id=row["session_id"],
         provider_message_id=_row_text(row, "provider_message_id"),
         role=normalized_role,
         text=_row_text(row, "text"),
@@ -99,9 +94,9 @@ def _row_to_content_block(row: sqlite3.Row) -> ContentBlockRecord:
     return ContentBlockRecord(
         block_id=row["block_id"],
         message_id=MessageId(row["message_id"]),
-        conversation_id=ConversationId(row["conversation_id"]),
+        session_id=SessionId(row["session_id"]),
         block_index=row["block_index"],
-        type=ContentBlockType.from_string(row["type"]),
+        type=BlockType.from_string(row["type"]),
         text=_row_text(row, "text"),
         tool_name=_row_text(row, "tool_name"),
         tool_id=_row_text(row, "tool_id"),
@@ -111,175 +106,79 @@ def _row_to_content_block(row: sqlite3.Row) -> ContentBlockRecord:
     )
 
 
-def _row_to_raw_conversation(row: sqlite3.Row) -> RawConversationRecord:
+def _ms_to_iso(value: object) -> str | None:
+    """Convert an INTEGER epoch-ms column value back to a canonical ISO-8601 string."""
+    if not isinstance(value, (int, float)):
+        return None
+    return datetime.fromtimestamp(value / 1000, tz=timezone.utc).isoformat()
+
+
+def _row_to_raw_session(row: sqlite3.Row) -> RawSessionRecord:
     validation_status = _row_text(row, "validation_status")
-    validation_provider = _row_text(row, "validation_provider")
     validation_mode = _row_text(row, "validation_mode")
-    return RawConversationRecord(
+    # raw_sessions carries a single ``origin`` column (#1743). The in-memory
+    # record still exposes provider-wire ``source_name``/``payload_provider``;
+    # both project from the stored origin.
+    provider = provider_from_origin(Origin.from_string(row["origin"]))
+    return RawSessionRecord(
         raw_id=row["raw_id"],
-        payload_provider=(
-            Provider.from_string(_row_text(row, "payload_provider"))
-            if _row_text(row, "payload_provider") is not None
-            else None
-        ),
-        source_name=row["source_name"],
+        payload_provider=provider,
+        source_name=provider.value,
         source_path=row["source_path"],
         source_index=row["source_index"],
         blob_size=row["blob_size"],
-        acquired_at=row["acquired_at"],
-        file_mtime=row["file_mtime"],
-        parsed_at=_row_text(row, "parsed_at"),
+        acquired_at=_ms_to_iso(row["acquired_at_ms"]) or "",
+        file_mtime=_ms_to_iso(row["file_mtime_ms"]),
+        parsed_at=_ms_to_iso(row["parsed_at_ms"]),
         parse_error=_row_text(row, "parse_error"),
-        validated_at=_row_text(row, "validated_at"),
+        validated_at=_ms_to_iso(row["validated_at_ms"]),
         validation_status=(ValidationStatus.from_string(validation_status) if validation_status is not None else None),
         validation_error=_row_text(row, "validation_error"),
         validation_drift_count=_row_int(row, "validation_drift_count"),
-        validation_provider=(Provider.from_string(validation_provider) if validation_provider is not None else None),
+        validation_provider=provider,
         validation_mode=(ValidationMode.from_string(validation_mode) if validation_mode is not None else None),
     )
 
 
 def _row_to_artifact_observation(row: sqlite3.Row) -> ArtifactObservationRecord:
+    # ``raw_artifacts`` carries a single ``origin`` column (#1743) and drops the
+    # wire-format/bundle-scope/resolved-schema/file-mtime fields the record can
+    # still hold; those project as ``None`` on read and are recomputed by the
+    # inspection read model where fidelity is required.
+    provider = provider_from_origin(Origin.from_string(row["origin"]))
     return ArtifactObservationRecord(
-        observation_id=row["observation_id"],
+        observation_id=row["artifact_id"],
         raw_id=row["raw_id"],
-        payload_provider=(
-            Provider.from_string(_row_text(row, "payload_provider"))
-            if _row_text(row, "payload_provider") is not None
-            else None
-        ),
-        source_name=_row_text(row, "source_name"),
+        payload_provider=provider,
+        source_name=provider.value,
         source_path=row["source_path"],
         source_index=_row_int(row, "source_index"),
-        file_mtime=_row_text(row, "file_mtime"),
-        wire_format=_row_text(row, "wire_format"),
+        file_mtime=None,
+        wire_format=None,
         artifact_kind=row["artifact_kind"],
         classification_reason=row["classification_reason"],
-        parse_as_conversation=bool(_row_get(row, "parse_as_conversation", 0)),
+        parse_as_session=bool(_row_get(row, "parse_as_session", 0)),
         schema_eligible=bool(_row_get(row, "schema_eligible", 0)),
         support_status=ArtifactSupportStatus.from_string(row["support_status"]),
         malformed_jsonl_lines=int(_row_get(row, "malformed_jsonl_lines", 0) or 0),
         decode_error=_row_text(row, "decode_error"),
-        bundle_scope=_row_text(row, "bundle_scope"),
+        bundle_scope=None,
         cohort_id=_row_text(row, "cohort_id"),
-        resolved_package_version=_row_text(row, "resolved_package_version"),
-        resolved_element_kind=_row_text(row, "resolved_element_kind"),
-        resolution_reason=_row_text(row, "resolution_reason"),
+        resolved_package_version=None,
+        resolved_element_kind=None,
+        resolution_reason=None,
         link_group_key=_row_text(row, "link_group_key"),
         sidecar_agent_type=_row_text(row, "sidecar_agent_type"),
-        first_observed_at=row["first_observed_at"],
-        last_observed_at=row["last_observed_at"],
-    )
-
-
-def _row_to_action_event(row: sqlite3.Row) -> ActionEventRecord:
-    return ActionEventRecord(
-        event_id=row["event_id"],
-        conversation_id=ConversationId(row["conversation_id"]),
-        message_id=MessageId(row["message_id"]),
-        materializer_version=int(_row_int(row, "materializer_version", 1) or 1),
-        source_block_id=_row_text(row, "source_block_id"),
-        timestamp=_row_text(row, "timestamp"),
-        sort_key=_row_float(row, "sort_key"),
-        sequence_index=row["sequence_index"],
-        source_name=_row_text(row, "source_name"),
-        action_kind=row["action_kind"],
-        tool_name=_row_text(row, "tool_name"),
-        normalized_tool_name=row["normalized_tool_name"],
-        tool_id=_row_text(row, "tool_id"),
-        affected_paths=_json_text_tuple(_parse_json(_row_get(row, "affected_paths_json"))),
-        cwd_path=_row_text(row, "cwd_path"),
-        branch_names=_json_text_tuple(_parse_json(_row_get(row, "branch_names_json"))),
-        command=_row_text(row, "command"),
-        query_text=_row_text(row, "query_text"),
-        url=_row_text(row, "url"),
-        output_text=_row_text(row, "output_text"),
-        search_text=row["search_text"],
-    )
-
-
-def _row_to_provider_event(row: sqlite3.Row) -> ProviderEventRecord:
-    source_message_id = _row_text(row, "source_message_id")
-    event_type = _row_text(row, "event_type") or ""
-    stored_kind = _row_text(row, "normalized_kind")
-    normalized_kind = event_type if stored_kind in {None, "", "provider_native"} else stored_kind
-    payload: dict[str, object] = {}
-    if normalized_kind == "compaction":
-        payload["summary"] = _row_text(row, "compaction_summary") or ""
-        replacement_history_count = _row_int(row, "compaction_replacement_history_count", 0) or 0
-        if replacement_history_count:
-            payload["replacement_history_count"] = replacement_history_count
-        for source_key, payload_key in (
-            ("compaction_trigger", "trigger"),
-            ("compaction_pre_tokens", "pre_tokens"),
-            ("compaction_preserved_segment_id", "preserved_segment_id"),
-        ):
-            value = _row_get(row, source_key)
-            if value is not None:
-                payload[payload_key] = value
-        if _row_int(row, "compaction_is_modern", 0):
-            payload["is_modern"] = True
-    elif normalized_kind == "turn_context":
-        for source_key, payload_key in (
-            ("turn_context_cwd", "cwd"),
-            ("turn_context_model", "model"),
-            ("turn_context_effort", "effort"),
-            ("turn_context_approval_policy", "approval_policy"),
-            ("turn_context_sandbox_policy", "sandbox_policy"),
-            ("turn_context_summary", "summary"),
-        ):
-            value = _row_text(row, source_key)
-            if value is not None:
-                payload[payload_key] = value
-    elif normalized_kind in {"function_call", "custom_tool_call", "function_call_output", "custom_tool_call_output"}:
-        for source_key, payload_key in (
-            ("tool_call_id", "call_id"),
-            ("tool_call_tool_name", "name"),
-            ("tool_call_status", "status"),
-            ("tool_call_output_chars", "output_chars"),
-        ):
-            value = _row_get(row, source_key)
-            if value is not None:
-                payload[payload_key] = value
-        input_chars = _row_int(row, "tool_call_input_chars", 0) or 0
-        if input_chars:
-            payload["input_chars"] = input_chars
-        payload["has_input_body"] = bool(_row_int(row, "tool_call_has_input_body", 0))
-        payload["has_output_body"] = bool(_row_int(row, "tool_call_has_output_body", 0))
-    elif normalized_kind == "reasoning":
-        for source_key, payload_key in (
-            ("reasoning_summary", "summary"),
-            ("reasoning_encrypted_content_hash", "encrypted_content_hash"),
-            ("reasoning_encrypted_content_bytes", "encrypted_content_bytes"),
-        ):
-            value = _row_get(row, source_key)
-            if value is not None:
-                payload[payload_key] = value
-    elif normalized_kind == "ghost_snapshot":
-        value = _row_text(row, "ghost_snapshot_ghost_commit")
-        if value is not None:
-            payload["ghost_commit"] = value
-    return ProviderEventRecord(
-        event_id=ProviderEventId(row["event_id"]),
-        conversation_id=ConversationId(row["conversation_id"]),
-        source_name=_row_text(row, "source_name") or "unknown",
-        event_index=_row_int(row, "event_index", 0) or 0,
-        event_type=event_type,
-        timestamp=_row_text(row, "timestamp"),
-        sort_key=_row_float(row, "sort_key"),
-        payload=payload,
-        source_message_id=MessageId(source_message_id) if source_message_id is not None else None,
-        raw_id=_row_text(row, "raw_id"),
-        materializer_version=_row_int(row, "materializer_version", 1) or 1,
+        first_observed_at=_ms_to_iso(row["first_observed_at_ms"]) or "",
+        last_observed_at=_ms_to_iso(row["last_observed_at_ms"]) or "",
     )
 
 
 __all__ = [
-    "_row_to_action_event",
+    "_ms_to_iso",
     "_row_to_artifact_observation",
     "_row_to_content_block",
-    "_row_to_conversation",
+    "_row_to_session",
     "_row_to_message",
-    "_row_to_provider_event",
-    "_row_to_raw_conversation",
+    "_row_to_raw_session",
 ]

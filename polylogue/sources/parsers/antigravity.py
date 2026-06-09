@@ -1,4 +1,4 @@
-"""Parser and local export client for Antigravity conversation state."""
+"""Parser and local export client for Antigravity session state."""
 
 from __future__ import annotations
 
@@ -18,9 +18,9 @@ from urllib.request import Request, urlopen
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.json import JSONDocument, dumps_bytes, loads
-from polylogue.types import ContentBlockType, Provider
+from polylogue.types import BlockType, Provider
 
-from .base import ParsedContentBlock, ParsedConversation, ParsedMessage
+from .base import ParsedContentBlock, ParsedMessage, ParsedSession
 
 _METADATA_SUFFIX = ".metadata.json"
 _SEARCH_ENDPOINT = "/exa.language_server_pb.LanguageServerService/SearchConversations"
@@ -44,7 +44,7 @@ class AntigravityBinaryUnavailableError(AntigravityExportError):
 class AntigravityPartialExportError(AntigravityExportError):
     """Raised when the language-server export aborts mid-iteration.
 
-    Distinct from a binary-absent condition: some conversations were already
+    Distinct from a binary-absent condition: some sessions were already
     obtained before the failure, so the remainder is genuinely at risk of being
     dropped. Carries obtained-vs-expected counts so callers can surface the loss
     instead of silently truncating.
@@ -53,11 +53,11 @@ class AntigravityPartialExportError(AntigravityExportError):
     def __init__(self, message: str, *, obtained: int, expected: int) -> None:
         self.obtained = obtained
         self.expected = expected
-        super().__init__(f"{message} (obtained {obtained} of {expected} conversations)")
+        super().__init__(f"{message} (obtained {obtained} of {expected} sessions)")
 
 
 @dataclass(frozen=True, slots=True)
-class AntigravityConversationSummary:
+class AntigravitySessionSummary:
     cascade_id: str
     title: str | None = None
     workspace_name: str | None = None
@@ -65,7 +65,7 @@ class AntigravityConversationSummary:
     last_modified_time: str | None = None
 
     @classmethod
-    def from_payload(cls, payload: JSONDocument) -> AntigravityConversationSummary | None:
+    def from_payload(cls, payload: JSONDocument) -> AntigravitySessionSummary | None:
         cascade_id = _string(payload.get("cascadeId"))
         if cascade_id is None:
             return None
@@ -143,16 +143,16 @@ class AntigravityLanguageServerClient:
                 process.kill()
                 process.wait(timeout=1.0)
 
-    def search_conversations(self, *, limit: int = 10000, query: str = "") -> list[AntigravityConversationSummary]:
+    def search_sessions(self, *, limit: int = 10000, query: str = "") -> list[AntigravitySessionSummary]:
         payload = self._post(_SEARCH_ENDPOINT, {"query": query, "limit": limit})
         results = payload.get("results")
         if not isinstance(results, list):
             return []
-        summaries: list[AntigravityConversationSummary] = []
+        summaries: list[AntigravitySessionSummary] = []
         for item in results:
             if isinstance(item, dict):
                 normalized = {str(key): value for key, value in item.items()}
-                if summary := AntigravityConversationSummary.from_payload(normalized):
+                if summary := AntigravitySessionSummary.from_payload(normalized):
                     summaries.append(summary)
         return summaries
 
@@ -212,7 +212,7 @@ def looks_like_markdown_export(payload: JSONDocument) -> bool:
     )
 
 
-def markdown_export_payload(summary: AntigravityConversationSummary, markdown: str) -> JSONDocument:
+def markdown_export_payload(summary: AntigravitySessionSummary, markdown: str) -> JSONDocument:
     payload: JSONDocument = {
         "source": "antigravity_language_server",
         "cascadeId": summary.cascade_id,
@@ -229,8 +229,8 @@ def markdown_export_payload(summary: AntigravityConversationSummary, markdown: s
     return payload
 
 
-def parse_markdown_export_payload(payload: JSONDocument, fallback_id: str) -> ParsedConversation:
-    summary = AntigravityConversationSummary(
+def parse_markdown_export_payload(payload: JSONDocument, fallback_id: str) -> ParsedSession:
+    summary = AntigravitySessionSummary(
         cascade_id=_string(payload.get("cascadeId")) or fallback_id,
         title=_string(payload.get("title")),
         workspace_name=_string(payload.get("workspaceName")),
@@ -240,69 +240,52 @@ def parse_markdown_export_payload(payload: JSONDocument, fallback_id: str) -> Pa
     return parse_markdown_export(_string(payload.get("markdown")) or "", summary)
 
 
-def parse_brain_metadata(payload: JSONDocument, source_path: Path, fallback_id: str) -> ParsedConversation:
+def parse_brain_metadata(payload: JSONDocument, source_path: Path, fallback_id: str) -> ParsedSession:
     artifact_path = _artifact_path_for_metadata(source_path)
     session_id = artifact_path.parent.name if artifact_path.parent.name else fallback_id
     artifact_name = artifact_path.name if artifact_path.name else fallback_id
-    conversation_id = f"{session_id}:{artifact_name}"
+    composed_session_id = f"{session_id}:{artifact_name}"
     body = _read_text(artifact_path) or _string(payload.get("summary")) or ""
     title = _title_for_artifact(artifact_path, payload, fallback_id)
     updated_at = _string(payload.get("updatedAt"))
-    provider_meta: dict[str, object] = {
-        "source_family": "antigravity",
-        "artifact_path": str(artifact_path),
-        "session_id": session_id,
-    }
-    if artifact_type := _string(payload.get("artifactType")):
-        provider_meta["artifact_type"] = artifact_type
-    if summary := _string(payload.get("summary")):
-        provider_meta["summary"] = summary
-    if not artifact_path.exists():
-        provider_meta["missing_markdown_body"] = True
 
-    return ParsedConversation(
+    return ParsedSession(
         source_name=Provider.ANTIGRAVITY,
-        provider_conversation_id=conversation_id,
+        provider_session_id=composed_session_id,
         title=title,
         created_at=None,
         updated_at=updated_at,
         messages=[
             ParsedMessage(
-                provider_message_id=f"{conversation_id}:artifact",
+                provider_message_id=f"{composed_session_id}:artifact",
                 role=Role.ASSISTANT,
                 text=body,
                 timestamp=updated_at,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text=body)] if body else [],
-                provider_meta={"artifact_name": artifact_name},
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text=body)] if body else [],
+                position=0,
+                variant_index=0,
+                is_active_path=True,
+                is_active_leaf=True,
             )
         ],
-        provider_meta=provider_meta,
+        active_leaf_message_provider_id=f"{composed_session_id}:artifact",
     )
 
 
 def parse_markdown_export(
     markdown: str,
-    summary: AntigravityConversationSummary,
-) -> ParsedConversation:
-    messages = _messages_from_markdown(markdown, summary.cascade_id)
-    provider_meta: dict[str, object] = {
-        "source_family": "antigravity",
-        "source_format": "language_server_markdown_export",
-        "cascade_id": summary.cascade_id,
-    }
-    if summary.workspace_name:
-        provider_meta["workspace_name"] = summary.workspace_name
-    if summary.snippet:
-        provider_meta["snippet"] = summary.snippet
+    summary: AntigravitySessionSummary,
+) -> ParsedSession:
+    messages = _mark_active_leaf(_messages_from_markdown(markdown, summary.cascade_id))
 
-    return ParsedConversation(
+    return ParsedSession(
         source_name=Provider.ANTIGRAVITY,
-        provider_conversation_id=summary.cascade_id,
+        provider_session_id=summary.cascade_id,
         title=summary.title,
         created_at=None,
         updated_at=summary.last_modified_time,
         messages=messages,
-        provider_meta=provider_meta,
+        active_leaf_message_provider_id=messages[-1].provider_message_id if messages else None,
     )
 
 
@@ -310,20 +293,20 @@ def iter_language_server_exports(
     root: Path,
     *,
     client: AntigravityLanguageServerClient | None = None,
-) -> Iterable[ParsedConversation]:
+) -> Iterable[ParsedSession]:
     owned_client = client is None
     runtime_client = client or AntigravityLanguageServerClient(root)
     if owned_client:
         runtime_client.start()
     try:
-        summaries = runtime_client.search_conversations()
+        summaries = runtime_client.search_sessions()
         expected = len(summaries)
         for obtained, summary in enumerate(summaries):
             try:
                 markdown = runtime_client.export_markdown(summary.cascade_id)
             except AntigravityExportError as exc:
                 # A mid-iteration export failure would otherwise abort the
-                # generator after yielding only the conversations seen so far,
+                # generator after yielding only the sessions seen so far,
                 # silently dropping the remainder. Surface obtained-vs-expected
                 # so the caller can distinguish partial loss from a benign
                 # binary-absent fallback. ``obtained`` is the number already
@@ -376,8 +359,10 @@ def _messages_from_markdown(markdown: str, cascade_id: str) -> list[ParsedMessag
                 provider_message_id=provider_message_id,
                 role=role,
                 text=text,
-                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text=text)],
-                provider_meta={"antigravity_section": heading},
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
+                position=len(messages),
+                variant_index=0,
+                is_active_path=True,
             )
         )
 
@@ -392,9 +377,21 @@ def _messages_from_markdown(markdown: str, cascade_id: str) -> list[ParsedMessag
             provider_message_id=f"{cascade_id}:0:export",
             role=Role.ASSISTANT,
             text=text,
-            content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text=text)],
-            provider_meta={"antigravity_section": "Markdown Export"},
+            content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
+            position=0,
+            variant_index=0,
+            is_active_path=True,
         )
+    ]
+
+
+def _mark_active_leaf(messages: list[ParsedMessage]) -> list[ParsedMessage]:
+    if not messages:
+        return messages
+    active_leaf_message_provider_id = messages[-1].provider_message_id
+    return [
+        message.model_copy(update={"is_active_leaf": message.provider_message_id == active_leaf_message_provider_id})
+        for message in messages
     ]
 
 
@@ -442,7 +439,7 @@ def _string(value: object) -> str | None:
 
 __all__ = [
     "AntigravityBinaryUnavailableError",
-    "AntigravityConversationSummary",
+    "AntigravitySessionSummary",
     "AntigravityExportError",
     "AntigravityLanguageServerClient",
     "AntigravityPartialExportError",

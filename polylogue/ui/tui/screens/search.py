@@ -6,23 +6,23 @@ from textual.widgets import DataTable, Input
 from textual.widgets import Markdown as MarkdownWidget
 
 from polylogue.api.contracts.tui_surface import TUIReadSurface
-from polylogue.archive.query.spec import ConversationQuerySpec
+from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.ui.tui.screens.base import RepositoryBoundContainer
 
 
 class Search(RepositoryBoundContainer):
-    """Search widget for finding conversations.
+    """Search widget for finding sessions.
 
-    Routes through :class:`TUIReadSurface.search_conversations` so the
-    TUI consumes the same :class:`ConversationListResponse` envelope as
+    Routes through :class:`TUIReadSurface.search_sessions` so the
+    TUI consumes the same :class:`SessionListResponse` envelope as
     the web reader, CLI JSON, MCP, and Python API surfaces.  Result
-    rows are rendered from the typed :class:`ConversationListRowPayload`
-    fields (``id``, ``provider``, ``title``, ``date``).
+    rows are rendered from the typed :class:`SessionListRowPayload`
+    fields (``id``, ``origin``, ``title``, ``date``).
     """
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Input(placeholder="Search conversations...", id="search-input")
+            yield Input(placeholder="Search sessions...", id="search-input")
             with Horizontal(id="search-split"):
                 yield DataTable(id="search-results")
                 with Container(id="search-preview"):
@@ -31,7 +31,7 @@ class Search(RepositoryBoundContainer):
     def on_mount(self) -> None:
         table = self.query_one("#search-results", DataTable)
         table.cursor_type = "row"
-        table.add_columns("ID", "Provider", "Title", "Date")
+        table.add_columns("ID", "Origin", "Title", "Date")
 
     async def on_input_submitted(self, message: Input.Submitted) -> None:
         """Handle search submission."""
@@ -39,15 +39,15 @@ class Search(RepositoryBoundContainer):
         if not query:
             return
 
-        ops = self._get_ops("Search")
-        surface = TUIReadSurface(ops)
+        facade = self._get_facade("Search")
+        surface = TUIReadSurface(facade)
 
         table = self.query_one("#search-results", DataTable)
         table.clear()
 
-        spec = ConversationQuerySpec(query_terms=(query,), limit=50)
+        spec = SessionQuerySpec(query_terms=(query,), limit=50)
         try:
-            envelope = await surface.search_conversations(spec)
+            envelope = await surface.search_sessions(spec)
         except Exception:
             table.add_row(
                 "—",
@@ -60,7 +60,7 @@ class Search(RepositoryBoundContainer):
         for row in envelope.items:
             table.add_row(
                 row.id,
-                row.provider,
+                row.origin,
                 row.title or "Untitled",
                 row.date or "",
                 key=row.id,
@@ -72,8 +72,8 @@ class Search(RepositoryBoundContainer):
             return
 
         conv_id = str(message.row_key.value)
-        await self.load_conversation(conv_id)
+        await self.load_session(conv_id)
 
-    async def load_conversation(self, conversation_id: str) -> None:
-        """Load and display conversation content."""
-        await self._load_conversation_markdown(conversation_id, viewer_selector="#search-viewer")
+    async def load_session(self, session_id: str) -> None:
+        """Load and display session content."""
+        await self._load_session_markdown(session_id, viewer_selector="#search-viewer")

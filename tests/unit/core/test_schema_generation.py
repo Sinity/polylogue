@@ -119,7 +119,7 @@ class TestLoadSamplesFromSessions:
 
 
 class TestGetSampleCountFromDb:
-    """Sample-count queries against persisted conversations."""
+    """Sample-count queries against persisted sessions."""
 
     def test_nonexistent_db_returns_zero(self, tmp_path: Path) -> None:
         assert get_sample_count_from_db("chatgpt", db_path=tmp_path / "missing.db") == 0
@@ -137,36 +137,18 @@ class TestGetSampleCountFromDb:
 
         db_path = tmp_path / "test.db"
         with open_connection(db_path) as conn:
+            # session_id and message_id are generated columns (origin:native_id);
+            # insert origin + native_id and let the schema compute the ids (#1743).
             conn.execute(
-                """INSERT INTO conversations
-                   (conversation_id, source_name, provider_conversation_id,
-                    title, created_at, updated_at, content_hash,
-                    provider_meta, metadata, version,
-                    parent_conversation_id, branch_type, raw_id)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (
-                    "c1",
-                    "chatgpt",
-                    "p1",
-                    "Test",
-                    None,
-                    None,
-                    "hash1",
-                    '{"source":"test"}',
-                    "{}",
-                    1,
-                    None,
-                    None,
-                    None,
-                ),
+                """INSERT INTO sessions (native_id, origin, title, content_hash)
+                   VALUES (?, ?, ?, ?)""",
+                ("c1", "chatgpt-export", "Test", bytes(32)),
             )
             conn.execute(
                 """INSERT INTO messages
-                   (message_id, conversation_id, provider_message_id,
-                    role, text, sort_key, content_hash,
-                    version, parent_message_id, branch_index)
-                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                ("m1", "c1", "pm1", "user", "hello", None, "hash2", 1, None, 0),
+                   (session_id, native_id, position, role, content_hash)
+                   VALUES (?, ?, ?, ?, ?)""",
+                ("chatgpt-export:c1", "pm1", 0, "user", bytes(32)),
             )
             conn.commit()
 
@@ -178,21 +160,15 @@ class TestGetSampleCountFromDb:
         db_path = tmp_path / "test.db"
         with open_connection(db_path) as conn:
             conn.execute(
-                """INSERT INTO conversations
-                   (conversation_id, source_name, provider_conversation_id,
-                    title, created_at, updated_at, content_hash,
-                    provider_meta, metadata, version,
-                    parent_conversation_id, branch_type, raw_id)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                ("c1", "chatgpt", "p1", "Test", None, None, "hash1", None, "{}", 1, None, None, None),
+                """INSERT INTO sessions (native_id, origin, title, content_hash)
+                   VALUES (?, ?, ?, ?)""",
+                ("c1", "chatgpt-export", "Test", bytes(32)),
             )
             conn.execute(
                 """INSERT INTO messages
-                   (message_id, conversation_id, provider_message_id,
-                    role, text, sort_key, content_hash,
-                    version, parent_message_id, branch_index)
-                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                ("m1", "c1", "pm1", "user", "hello", None, "hash2", 1, None, 0),
+                   (session_id, native_id, position, role, content_hash)
+                   VALUES (?, ?, ?, ?, ?)""",
+                ("chatgpt-export:c1", "pm1", 0, "user", bytes(32)),
             )
             conn.commit()
 
@@ -258,16 +234,16 @@ class TestGenerateAllSchemas:
         package = SchemaVersionPackage(
             provider="chatgpt",
             version="v1",
-            anchor_kind="conversation_document",
-            default_element_kind="conversation_document",
+            anchor_kind="session_document",
+            default_element_kind="session_document",
             first_seen="2026-01-01T00:00:00+00:00",
             last_seen="2026-01-01T00:00:00+00:00",
             bundle_scope_count=1,
             sample_count=1,
             elements=[
                 SchemaElementManifest(
-                    element_kind="conversation_document",
-                    schema_file="conversation_document.schema.json.gz",
+                    element_kind="session_document",
+                    schema_file="session_document.schema.json.gz",
                     sample_count=1,
                     artifact_count=1,
                 )
@@ -292,9 +268,7 @@ class TestGenerateAllSchemas:
                 default_version="v1",
                 recommended_version="v1",
             ),
-            package_schemas={
-                "v1": {"conversation_document": {"type": "object", "properties": {"id": {"type": "string"}}}}
-            },
+            package_schemas={"v1": {"session_document": {"type": "object", "properties": {"id": {"type": "string"}}}}},
             manifest=SimpleNamespace(to_dict=lambda: {"provider": "chatgpt", "clusters": []}),
         )
 
@@ -310,9 +284,7 @@ class TestGenerateAllSchemas:
         assert output_dir.exists()
         assert len(results) == 1
         assert (output_dir / "chatgpt" / "catalog.json").exists()
-        assert (
-            output_dir / "chatgpt" / "versions" / "v1" / "elements" / "conversation_document.schema.json.gz"
-        ).exists()
+        assert (output_dir / "chatgpt" / "versions" / "v1" / "elements" / "session_document.schema.json.gz").exists()
 
     def test_skips_failed_schemas(self, tmp_path: Path) -> None:
         failed_result = GenerationResult(provider="broken", sample_count=0, schema=None, error="No samples")
@@ -334,16 +306,16 @@ class TestProfileClustering:
             SchemaUnit(
                 cluster_payload={"id": "1", "mapping": {"node-1": {"message": {"id": "m1"}}}},
                 schema_samples=[{"id": "1", "mapping": {"node-1": {"message": {"id": "m1"}}}}],
-                artifact_kind="conversation_document",
-                conversation_id="conv-1",
+                artifact_kind="session_document",
+                session_id="conv-1",
                 source_path="/tmp/one.json",
                 profile_tokens=("field:id", "field:mapping", "shape:mapping:object", "anchor:mapping"),
             ),
             SchemaUnit(
                 cluster_payload={"id": "2", "mapping": {"node-9": {"message": {"author": {"role": "user"}}}}},
                 schema_samples=[{"id": "2", "mapping": {"node-9": {"message": {"author": {"role": "user"}}}}}],
-                artifact_kind="conversation_document",
-                conversation_id="conv-2",
+                artifact_kind="session_document",
+                session_id="conv-2",
                 source_path="/tmp/two.json",
                 profile_tokens=("field:id", "field:mapping", "shape:mapping:object", "anchor:mapping"),
             ),
@@ -363,7 +335,7 @@ class TestProfileClustering:
 
         assert len(memberships) == 2
         assert sample_count == 2
-        assert artifact_counts == {"conversation_document": 2}
+        assert artifact_counts == {"session_document": 2}
         assert len(clusters) == 1
         acc = next(iter(clusters.values()))
         assert acc.sample_count == 2
@@ -377,8 +349,8 @@ class TestProfileClustering:
             SchemaUnit(
                 cluster_payload={"id": "1", "mapping": {"node-1": {"message": {"id": "m1"}}}},
                 schema_samples=[{"id": "1", "mapping": {"node-1": {"message": {"id": "m1"}}}}],
-                artifact_kind="conversation_document",
-                conversation_id="conv-1",
+                artifact_kind="session_document",
+                session_id="conv-1",
                 raw_id="raw-1",
                 source_path="/tmp/one.json",
                 bundle_scope="scope-a",
@@ -389,8 +361,8 @@ class TestProfileClustering:
             SchemaUnit(
                 cluster_payload={"id": "2", "mapping": {"node-2": {"message": {"id": "m2"}}}},
                 schema_samples=[{"id": "2", "mapping": {"node-2": {"message": {"id": "m2"}}}}],
-                artifact_kind="conversation_document",
-                conversation_id="conv-2",
+                artifact_kind="session_document",
+                session_id="conv-2",
                 raw_id="raw-2",
                 source_path="/tmp/two.json",
                 bundle_scope="scope-b",

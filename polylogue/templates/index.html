@@ -12,16 +12,16 @@
     <div class="container">
         <header>
             <h1>Polylogue</h1>
-            <p class="subtitle">Your conversational memory, organized.</p>
+            <p class="subtitle">Your sessional memory, organized.</p>
         </header>
 
         {% if convs %}
-        <div class="conversation-list">
+        <div class="session-list">
             {% for conv in convs %}
             <div class="card">
-                <a href="/view/{{ conv.id }}" class="conversation-link">
-                    <div class="conversation-title">{{ conv.title or "Untitled Conversation" }}</div>
-                    <div class="conversation-meta">
+                <a href="/view/{{ conv.id }}" class="session-link">
+                    <div class="session-title">{{ conv.title or "Untitled Session" }}</div>
+                    <div class="session-meta">
                         <span class="badge">{{ conv.provider }}</span>
                         <span class="count">{{ conv.messages|length }} messages</span>
                         <span class="id">{{ conv.id[:12] }}...</span>
@@ -32,7 +32,7 @@
         </div>
         {% else %}
         <div class="card" style="text-align: center;">
-            <p>No conversations found.</p>
+            <p>No sessions found.</p>
             <p style="margin-top: 1rem; font-size: 0.9rem; color: var(--text-secondary);">
                 Start <code>polylogued run</code> to ingest your chat histories.
             </p>

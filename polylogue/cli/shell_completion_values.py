@@ -1,17 +1,16 @@
 """Shell-completion helpers for archive-backed CLI values.
 
-All archive-backed completions route through ``ArchiveOperations`` —
-conversation ID, tag, repo-name, cwd-prefix, and tool-name aggregates
-are exposed as typed methods on the operation layer, so this surface
-no longer reaches into ``session_profiles`` / ``action_events`` via
-raw SQL (closes #860 inventory item).
+All archive-backed completions read the ``index.db``
+through :class:`~polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore`.
+Session-id, tag, repo-name, and tool-name values come from native
+session/tag/repo/action read models; cwd-prefix has no archive source
+yet and degrades to an empty completion list.
 """
 
 from __future__ import annotations
 
-import asyncio
-from collections.abc import Awaitable, Callable, Mapping
-from typing import Final
+from collections.abc import Callable, Mapping
+from typing import TYPE_CHECKING, Final
 
 import click
 from click.shell_completion import CompletionItem
@@ -19,21 +18,22 @@ from click.shell_completion import CompletionItem
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.query.fields import CompletionSource
 from polylogue.archive.query.spec import QUERY_ACTION_TYPES, QUERY_RETRIEVAL_LANES, QUERY_SEQUENCE_ACTION_TYPES
-from polylogue.operations.archive import ArchiveOperations as _ArchiveOperations
-from polylogue.operations.archive import CompletionAggregate
-from polylogue.paths import db_path
+from polylogue.paths import active_index_db_path
 
-Callback = Callable[[_ArchiveOperations], Awaitable[list[CompletionItem]]]
+if TYPE_CHECKING:
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-_PROVIDER_DESCRIPTIONS: Final[dict[str, str]] = {
-    "chatgpt": "ChatGPT web exports (lab: OpenAI)",
-    "claude-ai": "Claude web exports (lab: Anthropic)",
-    "claude-code": "Claude Code local sessions (source: claude-code)",
-    "codex": "Codex CLI local sessions (source: codex)",
-    "gemini": "Google AI Studio exports (source: aistudio, lab: Google)",
-    "gemini-cli": "Gemini CLI local sessions (source: gemini-cli, lab: Google)",
-    "hermes": "Hermes agent sessions (source: hermes)",
-    "antigravity": "Antigravity brain artifacts (source: antigravity)",
+ArchiveCompletionAction = Callable[["ArchiveStore"], list[CompletionItem]]
+
+_ORIGIN_DESCRIPTIONS: Final[dict[str, str]] = {
+    "chatgpt-export": "ChatGPT web exports (lab: OpenAI)",
+    "claude-ai-export": "Claude web exports (lab: Anthropic)",
+    "claude-code-session": "Claude Code local sessions (lab: Anthropic)",
+    "codex-session": "Codex CLI local sessions (lab: OpenAI)",
+    "aistudio-drive": "Google AI Studio / Drive exports (lab: Google)",
+    "gemini-cli-session": "Gemini CLI local sessions (lab: Google)",
+    "hermes-session": "Hermes agent sessions",
+    "antigravity-session": "Antigravity brain artifacts",
 }
 
 _MAX_ID_COMPLETIONS = 24
@@ -59,38 +59,45 @@ def _with_csv_prefix(items: list[CompletionItem], prefix: str) -> list[Completio
 
 
 def _db_exists() -> bool:
-    return db_path().exists()
+    return active_index_db_path().exists()
 
 
-async def _with_operations(
-    action: Callback,
-) -> list[CompletionItem]:
-    """Create ArchiveOperations, run *action*, and close services."""
-    from polylogue.operations.archive import ArchiveOperations
-    from polylogue.services import build_runtime_services
+def _run_completion(action: ArchiveCompletionAction) -> list[CompletionItem]:
+    """Open the archive, run *action*, and return its items.
 
-    services = build_runtime_services()
+    Any failure (missing/locked database, unexpected schema) degrades to an
+    empty list so completion never raises into the shell.
+    """
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    index_db = active_index_db_path()
+    if not index_db.exists():
+        return []
     try:
-        operations = ArchiveOperations.from_services(services)
-        return await action(operations)
-    finally:
-        await services.close()
-
-
-def _run_completion(action: Callback) -> list[CompletionItem]:
-    """Bridge an async completion action into the synchronous Click callback world."""
-    try:
-        return list(asyncio.run(_with_operations(action)))
+        with ArchiveStore.open_existing(index_db.parent, read_only=True) as archive:
+            return list(action(archive))
     except Exception:
         return []
 
 
-def _aggregates_to_items(
-    aggregates: list[CompletionAggregate],
-    *,
-    unit: str,
-) -> list[CompletionItem]:
-    return [CompletionItem(agg.value, help=f"{agg.count} {unit}") for agg in aggregates]
+def _stats_by_items(group_by: str, prefix: str, *, unit: str) -> ArchiveCompletionAction:
+    """Archive completion action over ``ArchiveStore.stats_by`` group counts."""
+
+    prefix_lower = prefix.lower()
+
+    def action(archive: ArchiveStore) -> list[CompletionItem]:
+        grouped = archive.stats_by(group_by)
+        ordered = sorted(grouped.items(), key=lambda pair: (-pair[1], pair[0]))
+        items: list[CompletionItem] = []
+        for value, count in ordered:
+            if prefix_lower and not value.lower().startswith(prefix_lower):
+                continue
+            items.append(CompletionItem(value, help=f"{count} {unit}"))
+            if len(items) >= _MAX_VALUE_COMPLETIONS:
+                break
+        return items
+
+    return action
 
 
 def _trim_help(value: str, *, limit: int = 72) -> str:
@@ -112,7 +119,7 @@ def _static_completion_items(
     return _with_csv_prefix(items, prefix) if csv else items
 
 
-def complete_provider_values(
+def complete_origin_values(
     ctx: click.Context,
     param: click.Parameter,
     incomplete: str,
@@ -121,8 +128,8 @@ def complete_provider_values(
     prefix, current = _split_csv_incomplete(incomplete)
     current_lower = current.lower()
     items = [
-        CompletionItem(name, help=_PROVIDER_DESCRIPTIONS.get(name))
-        for name in _PROVIDER_DESCRIPTIONS
+        CompletionItem(name, help=_ORIGIN_DESCRIPTIONS.get(name))
+        for name in _ORIGIN_DESCRIPTIONS
         if not current_lower or name.startswith(current_lower)
     ]
     return _with_csv_prefix(items, prefix)
@@ -164,7 +171,7 @@ def complete_retrieval_lane_values(
     return _static_completion_items(QUERY_RETRIEVAL_LANES, incomplete)
 
 
-def complete_conversation_ids(
+def complete_session_ids(
     ctx: click.Context,
     param: click.Parameter,
     incomplete: str,
@@ -176,13 +183,13 @@ def complete_conversation_ids(
     if not _db_exists():
         return []
 
-    async def _query(ops: _ArchiveOperations) -> list[CompletionItem]:
-        conversations = await ops.list_conversations(limit=100)
+    def _query(archive: ArchiveStore) -> list[CompletionItem]:
+        summaries = archive.list_summaries(limit=100)
         items: list[CompletionItem] = []
-        for conv in conversations:
-            cid = str(conv.id)
-            title = conv.title or ""
-            source_name = str(conv.provider)
+        for summary in summaries:
+            cid = str(summary.session_id)
+            title = summary.title or ""
+            source_name = summary.provider.value
             display = title or cid
             if current and not (
                 cid.startswith(current) or (":" in cid and current in cid) or (title and current_lower in title.lower())
@@ -205,7 +212,7 @@ def complete_open_targets(
     param: click.Parameter,
     incomplete: str,
 ) -> list[CompletionItem]:
-    return complete_conversation_ids(ctx, param, incomplete)
+    return complete_session_ids(ctx, param, incomplete)
 
 
 def complete_tag_values(
@@ -220,14 +227,14 @@ def complete_tag_values(
     if not _db_exists():
         return []
 
-    async def _query(ops: _ArchiveOperations) -> list[CompletionItem]:
-        tags = await ops.list_tags()
+    def _query(archive: ArchiveStore) -> list[CompletionItem]:
+        tags = archive.list_user_tags()
         sorted_tags = sorted(tags.items(), key=lambda x: (-x[1], x[0]))
         items: list[CompletionItem] = []
         for name, cnt in sorted_tags:
             if current_lower and not name.lower().startswith(current_lower):
                 continue
-            items.append(CompletionItem(name, help=f"{cnt} conversations"))
+            items.append(CompletionItem(name, help=f"{cnt} sessions"))
             if len(items) >= _MAX_VALUE_COMPLETIONS:
                 break
         return items
@@ -246,11 +253,7 @@ def complete_repo_values(
     if not _db_exists():
         return []
 
-    async def _query(ops: _ArchiveOperations) -> list[CompletionItem]:
-        aggregates = await ops.list_session_repo_names(prefix=current, limit=_MAX_VALUE_COMPLETIONS)
-        return _aggregates_to_items(aggregates, unit="sessions")
-
-    items = _run_completion(_query)
+    items = _run_completion(_stats_by_items("repo", current, unit="sessions"))
     return _with_csv_prefix(items, prefix)
 
 
@@ -259,16 +262,12 @@ def complete_cwd_prefix_values(
     param: click.Parameter,
     incomplete: str,
 ) -> list[CompletionItem]:
-    del ctx, param
-    current = incomplete.strip()
-    if not _db_exists():
-        return []
-
-    async def _query(ops: _ArchiveOperations) -> list[CompletionItem]:
-        aggregates = await ops.list_session_cwd_prefixes(prefix=current, limit=_MAX_VALUE_COMPLETIONS)
-        return _aggregates_to_items(aggregates, unit="sessions")
-
-    return _run_completion(_query)
+    del ctx, param, incomplete
+    # The read models do not expose a session-cwd aggregate
+    # yet, so cwd-prefix completion has no source to draw from. Returning an
+    # empty list keeps the completer well-behaved (no traceback) until a
+    # cwd projection lands.
+    return []
 
 
 def complete_tool_values(
@@ -281,22 +280,20 @@ def complete_tool_values(
     if not _db_exists():
         return []
 
-    async def _query(ops: _ArchiveOperations) -> list[CompletionItem]:
-        aggregates = await ops.list_action_tool_names(prefix=current, limit=_MAX_VALUE_COMPLETIONS)
-        return _aggregates_to_items(aggregates, unit="actions")
-
-    return _run_completion(_query)
+    return _run_completion(_stats_by_items("tool", current, unit="actions"))
 
 
 COMPLETION_SOURCE_HANDLERS: Final[Mapping[CompletionSource, CompletionCallback]] = {
+    # Ordered to match the deterministic (sorted) order produced by
+    # ``query_completion_sources()`` so the registry-coverage contract holds.
     "action": complete_action_values,
     "action_sequence": complete_action_sequence_values,
-    "conversation_id": complete_conversation_ids,
     "cwd_prefix": complete_cwd_prefix_values,
     "message_type": complete_message_type_values,
-    "provider": complete_provider_values,
+    "origin": complete_origin_values,
     "repo": complete_repo_values,
     "retrieval_lane": complete_retrieval_lane_values,
+    "session_id": complete_session_ids,
     "tag": complete_tag_values,
     "tool": complete_tool_values,
 }
@@ -310,11 +307,11 @@ __all__ = [
     "COMPLETION_SOURCE_HANDLERS",
     "complete_action_sequence_values",
     "complete_action_values",
-    "complete_conversation_ids",
+    "complete_session_ids",
     "complete_cwd_prefix_values",
     "complete_message_type_values",
     "complete_open_targets",
-    "complete_provider_values",
+    "complete_origin_values",
     "complete_query_source",
     "complete_repo_values",
     "complete_retrieval_lane_values",

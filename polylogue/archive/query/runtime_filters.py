@@ -1,4 +1,4 @@
-"""Conversation filtering helpers for immutable conversation query plans."""
+"""Session filtering helpers for immutable session query plans."""
 
 from __future__ import annotations
 
@@ -15,16 +15,16 @@ from polylogue.archive.query.runtime_matching import (
     matches_referenced_path,
     matches_tool_terms,
 )
-from polylogue.archive.query.support import conversation_has_branches, provider_values
+from polylogue.archive.query.support import session_has_branches
 
 if TYPE_CHECKING:
-    from polylogue.archive.models import Conversation
-    from polylogue.archive.query.plan import ConversationQueryPlan
+    from polylogue.archive.models import Session
+    from polylogue.archive.query.plan import SessionQueryPlan
 
 
-class FilterableConversationLike(Protocol):
+class FilterableSessionLike(Protocol):
     @property
-    def provider(self) -> object: ...
+    def origin(self) -> object: ...
 
     @property
     def updated_at(self) -> datetime | None: ...
@@ -54,11 +54,11 @@ class FilterableConversationLike(Protocol):
     def is_root(self) -> bool: ...
 
 
-_T = TypeVar("_T", bound=FilterableConversationLike)
+_T = TypeVar("_T", bound=FilterableSessionLike)
 
 
 def apply_common_filters(
-    plan: ConversationQueryPlan,
+    plan: SessionQueryPlan,
     items: list[_T],
     *,
     sql_pushed: bool,
@@ -66,9 +66,9 @@ def apply_common_filters(
     results = list(items)
 
     if not sql_pushed:
-        provider_set = set(provider_values(plan.providers))
-        if provider_set:
-            results = [item for item in results if str(item.provider) in provider_set]
+        origin_set = set(plan.origins)
+        if origin_set:
+            results = [item for item in results if str(item.origin) in origin_set]
         if plan.since:
             results = [item for item in results if item.updated_at and item.updated_at >= plan.since]
         if plan.until:
@@ -79,17 +79,17 @@ def apply_common_filters(
         if plan.parent_id:
             results = [item for item in results if str(item.parent_id or "") == plan.parent_id]
 
-    if plan.excluded_providers:
-        excluded = set(provider_values(plan.excluded_providers))
-        results = [item for item in results if str(item.provider) not in excluded]
+    if plan.excluded_origins:
+        excluded = set(plan.excluded_origins)
+        results = [item for item in results if str(item.origin) not in excluded]
     if plan.tags:
         tag_set = set(plan.tags)
         results = [item for item in results if tag_set.intersection(item.tags)]
     if plan.excluded_tags:
         excluded_tags = set(plan.excluded_tags)
         results = [item for item in results if not excluded_tags.intersection(item.tags)]
-    if plan.conversation_id:
-        results = [item for item in results if str(item.id).startswith(plan.conversation_id)]
+    if plan.session_id:
+        results = [item for item in results if str(item.id).startswith(plan.session_id)]
     if "summary" in plan.has_types:
         results = [item for item in results if item.summary]
     if plan.continuation is True:
@@ -108,8 +108,8 @@ def apply_common_filters(
     return results
 
 
-def _has_negative_term(conversation: Conversation, negative_terms: list[str]) -> bool:
-    for message in conversation.messages:
+def _has_negative_term(session: Session, negative_terms: list[str]) -> bool:
+    for message in session.messages:
         if not message.text:
             continue
         lowered = message.text.lower()
@@ -120,12 +120,12 @@ def _has_negative_term(conversation: Conversation, negative_terms: list[str]) ->
 
 
 def apply_full_filters(
-    plan: ConversationQueryPlan,
-    conversations: list[Conversation],
+    plan: SessionQueryPlan,
+    sessions: list[Session],
     *,
     sql_pushed: bool,
-) -> list[Conversation]:
-    results = apply_common_filters(plan, conversations, sql_pushed=sql_pushed)
+) -> list[Session]:
+    results = apply_common_filters(plan, sessions, sql_pushed=sql_pushed)
 
     if plan.has_types:
         for content_type in plan.has_types:
@@ -147,10 +147,8 @@ def apply_full_filters(
     if plan.min_words is not None:
         results = [c for c in results if sum(len((m.text or "").split()) for m in c.messages) >= plan.min_words]
     if plan.since_session_id:
-        scoped_ids = {
-            str(conversation.id) for conversation in _apply_since_session(conversations, plan.since_session_id)
-        }
-        results = [conversation for conversation in results if str(conversation.id) in scoped_ids]
+        scoped_ids = {str(session.id) for session in _apply_since_session(sessions, plan.since_session_id)}
+        results = [session for session in results if str(session.id) in scoped_ids]
 
     if plan.message_type is not None:
         wanted_type = validate_message_type_filter(plan.message_type)
@@ -164,43 +162,41 @@ def apply_full_filters(
         ]
 
     if plan.cwd_prefix:
-        results = [
-            conversation for conversation in results if _conversation_matches_cwd_prefix(conversation, plan.cwd_prefix)
-        ]
+        results = [session for session in results if _session_matches_cwd_prefix(session, plan.cwd_prefix)]
 
     if plan.negative_terms:
         negative_terms = [term.lower() for term in plan.negative_terms]
-        results = [conversation for conversation in results if not _has_negative_term(conversation, negative_terms)]
+        results = [session for session in results if not _has_negative_term(session, negative_terms)]
 
     if plan.has_branches is True:
-        results = [item for item in results if conversation_has_branches(item)]
+        results = [item for item in results if session_has_branches(item)]
     if plan.has_branches is False:
-        results = [item for item in results if not conversation_has_branches(item)]
+        results = [item for item in results if not session_has_branches(item)]
 
     for predicate in plan.predicates:
-        results = [conversation for conversation in results if predicate(conversation)]
+        results = [session for session in results if predicate(session)]
 
     if plan.referenced_path:
-        results = [conversation for conversation in results if matches_referenced_path(plan, conversation)]
+        results = [session for session in results if matches_referenced_path(plan, session)]
     if plan.action_terms or plan.excluded_action_terms:
-        results = [conversation for conversation in results if matches_action_terms(plan, conversation)]
+        results = [session for session in results if matches_action_terms(plan, session)]
     if plan.action_sequence:
-        results = [conversation for conversation in results if matches_action_sequence(plan, conversation)]
+        results = [session for session in results if matches_action_sequence(plan, session)]
     if plan.action_text_terms:
-        results = [conversation for conversation in results if matches_action_text_terms(plan, conversation)]
+        results = [session for session in results if matches_action_text_terms(plan, session)]
     if plan.tool_terms or plan.excluded_tool_terms:
-        results = [conversation for conversation in results if matches_tool_terms(plan, conversation)]
+        results = [session for session in results if matches_tool_terms(plan, session)]
 
     return results
 
 
 def _apply_since_session(
-    conversations: list[Conversation],
+    sessions: list[Session],
     reference_id: str,
-) -> list[Conversation]:
-    """Filter to conversations in same cwd after the reference session's last message."""
+) -> list[Session]:
+    """Filter to sessions in same cwd after the reference session's last message."""
     reference_conv = None
-    for c in conversations:
+    for c in sessions:
         if str(c.id) == reference_id or str(c.id).startswith(reference_id):
             reference_conv = c
             break
@@ -208,11 +204,7 @@ def _apply_since_session(
     if reference_conv is None:
         return []
 
-    ref_cwds: list[str] = []
-    ref_meta = getattr(reference_conv, "provider_meta", None) or {}
-    if isinstance(ref_meta, dict):
-        wds = ref_meta.get("working_directories") or []
-        ref_cwds = [str(wd) for wd in wds if isinstance(wd, str) and wd]
+    ref_cwds = [str(wd) for wd in getattr(reference_conv, "working_directories", ()) or () if str(wd)]
 
     last_ts = reference_conv.updated_at
     if reference_conv.messages:
@@ -223,32 +215,26 @@ def _apply_since_session(
         if last_msg_ts:
             last_ts = last_msg_ts
 
-    results: list[Conversation] = []
-    for c in conversations:
+    results: list[Session] = []
+    for c in sessions:
         if str(c.id) == str(reference_conv.id):
             continue
         if last_ts and c.updated_at and c.updated_at <= last_ts:
             continue
         if ref_cwds:
-            c_meta = getattr(c, "provider_meta", None) or {}
-            if isinstance(c_meta, dict):
-                c_wds = c_meta.get("working_directories") or []
-                c_wd_strs = [str(wd) for wd in c_wds if isinstance(wd, str) and wd]
-                if not c_wd_strs:
-                    continue
-                if not any(path_matches_prefix(cwd, ref_cwd) for cwd in c_wd_strs for ref_cwd in ref_cwds):
-                    continue
+            c_wd_strs = [str(wd) for wd in getattr(c, "working_directories", ()) or () if str(wd)]
+            if not c_wd_strs:
+                continue
+            if not any(path_matches_prefix(cwd, ref_cwd) for cwd in c_wd_strs for ref_cwd in ref_cwds):
+                continue
         results.append(c)
 
     return results
 
 
-def _conversation_matches_cwd_prefix(conversation: Conversation, cwd_prefix: str) -> bool:
-    meta = getattr(conversation, "provider_meta", None) or {}
-    if not isinstance(meta, dict):
-        return False
-    cwd_values = meta.get("working_directories") or []
-    return any(path_matches_prefix(cwd, cwd_prefix) for cwd in cwd_values if isinstance(cwd, str) and cwd)
+def _session_matches_cwd_prefix(session: Session, cwd_prefix: str) -> bool:
+    cwd_values = getattr(session, "working_directories", ()) or ()
+    return any(path_matches_prefix(str(cwd), cwd_prefix) for cwd in cwd_values if str(cwd))
 
 
-__all__ = ["FilterableConversationLike", "apply_common_filters", "apply_full_filters"]
+__all__ = ["FilterableSessionLike", "apply_common_filters", "apply_full_filters"]

@@ -7,8 +7,8 @@ from dataclasses import dataclass
 from hypothesis import strategies as st
 
 from tests.infra.strategies.summaries import (
-    ConversationSummarySpec,
-    conversation_summary_batch_strategy,
+    SessionSummarySpec,
+    session_summary_batch_strategy,
 )
 
 _META_KEY_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789-_"
@@ -20,7 +20,7 @@ _FIELD_NAMES = ("id", "provider", "title", "date", "tags", "summary", "messages"
 class QueryMutationCase:
     """Generated input for _apply_modifiers contracts."""
 
-    summaries: tuple[ConversationSummarySpec, ...]
+    summaries: tuple[SessionSummarySpec, ...]
     set_meta: tuple[tuple[str, str], ...]
     add_tags: tuple[str, ...]
     dry_run: bool
@@ -30,9 +30,9 @@ class QueryMutationCase:
 
 @dataclass(frozen=True)
 class QueryDeleteCase:
-    """Generated input for _delete_conversations contracts."""
+    """Generated input for _delete_sessions contracts."""
 
-    summaries: tuple[ConversationSummarySpec, ...]
+    summaries: tuple[SessionSummarySpec, ...]
     dry_run: bool
     force: bool
     confirm: bool
@@ -43,7 +43,7 @@ class QueryDeleteCase:
 class SummaryOutputCase:
     """Generated summary output request for JSON/YAML field selection."""
 
-    summaries: tuple[ConversationSummarySpec, ...]
+    summaries: tuple[SessionSummarySpec, ...]
     output_format: str
     selected_fields: tuple[str, ...] | None
 
@@ -52,7 +52,7 @@ class SummaryOutputCase:
 class SummaryStatsCase:
     """Generated summary-grouping input for _output_stats_by_summaries."""
 
-    summaries: tuple[ConversationSummarySpec, ...]
+    summaries: tuple[SessionSummarySpec, ...]
     dimension: str
 
 
@@ -70,7 +70,7 @@ class SendOutputCase:
 @st.composite
 def query_mutation_case_strategy(draw: st.DrawFn) -> QueryMutationCase:
     """Generate a modifier case with explicit dry-run/confirm branches."""
-    summaries = draw(conversation_summary_batch_strategy(min_size=1, max_size=12))
+    summaries = draw(session_summary_batch_strategy(min_size=1, max_size=12))
     set_meta = tuple(
         draw(
             st.lists(
@@ -109,7 +109,7 @@ def query_mutation_case_strategy(draw: st.DrawFn) -> QueryMutationCase:
 @st.composite
 def query_delete_case_strategy(draw: st.DrawFn) -> QueryDeleteCase:
     """Generate a delete case covering dry-run, confirm, and partial success."""
-    summaries = draw(conversation_summary_batch_strategy(min_size=1, max_size=12))
+    summaries = draw(session_summary_batch_strategy(min_size=1, max_size=12))
     return QueryDeleteCase(
         summaries=summaries,
         dry_run=draw(st.booleans()),
@@ -137,7 +137,7 @@ def summary_output_case_strategy(draw: st.DrawFn) -> SummaryOutputCase:
         )
     )
     return SummaryOutputCase(
-        summaries=draw(conversation_summary_batch_strategy(min_size=1, max_size=5)),
+        summaries=draw(session_summary_batch_strategy(min_size=1, max_size=5)),
         output_format=draw(st.sampled_from(("json", "yaml"))),
         selected_fields=selected,
     )
@@ -147,7 +147,7 @@ def summary_output_case_strategy(draw: st.DrawFn) -> SummaryOutputCase:
 def summary_stats_case_strategy(draw: st.DrawFn) -> SummaryStatsCase:
     """Generate a grouped-summary stats request."""
     return SummaryStatsCase(
-        summaries=draw(conversation_summary_batch_strategy(min_size=1, max_size=8)),
+        summaries=draw(session_summary_batch_strategy(min_size=1, max_size=8)),
         dimension=draw(st.sampled_from(("provider", "month", "year", "day", "all"))),
     )
 

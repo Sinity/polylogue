@@ -4,8 +4,8 @@ Pins the post-#1611/#1621 contract for the shared
 ``_safe_call``/``_async_safe_call`` helpers that wrap every registered MCP
 tool body:
 
-* A ``SchemaIncompatibleError`` raised inside a tool body produces a typed
-  error payload with ``code="schema_incompatible"`` and the on-disk and
+* A ``SchemaVersionMismatchError`` raised inside a tool body produces a typed
+  error payload with ``code="schema_version_mismatch"`` and the on-disk and
   expected schema versions, so every tool surfaces the same diagnostic
   ``readiness_check`` does instead of "internal error (OperationalError)"
   (#1611).
@@ -23,7 +23,7 @@ from typing import cast
 
 import pytest
 
-from polylogue.errors import SchemaIncompatibleError
+from polylogue.errors import SchemaVersionMismatchError
 from polylogue.mcp.server import build_server
 from polylogue.mcp.server_support import _async_safe_call, _safe_call
 from tests.infra.mcp import MCPServerUnderTest
@@ -36,36 +36,36 @@ def _structured_error(payload: str) -> dict[str, object]:
     return cast(dict[str, object], body)
 
 
-class TestSchemaIncompatibleSurface:
+class TestSchemaVersionMismatchSurface:
     """A schema mismatch raised inside any tool body becomes a typed payload."""
 
-    def test_safe_call_returns_schema_incompatible_payload(self) -> None:
+    def test_safe_call_returns_schema_version_mismatch_payload(self) -> None:
         def boom() -> str:
-            raise SchemaIncompatibleError(
+            raise SchemaVersionMismatchError(
                 "Database schema version 16 is newer than this Polylogue runtime expects (9).",
                 current_version=16,
                 expected_version=9,
             )
 
         body = _structured_error(_safe_call("stats", boom))
-        assert body["code"] == "schema_incompatible"
+        assert body["code"] == "schema_version_mismatch"
         assert body["tool"] == "stats"
         assert body["current_version"] == 16
         assert body["expected_version"] == 9
-        assert body["detail"] == "SchemaIncompatibleError"
+        assert body["detail"] == "SchemaVersionMismatchError"
         assert "schema version 16" in cast(str, body["error"])
 
     @pytest.mark.asyncio
-    async def test_async_safe_call_returns_schema_incompatible_payload(self) -> None:
+    async def test_async_safe_call_returns_schema_version_mismatch_payload(self) -> None:
         async def boom() -> str:
-            raise SchemaIncompatibleError(
+            raise SchemaVersionMismatchError(
                 "Database schema version 99 is newer than this Polylogue runtime expects (16).",
                 current_version=99,
                 expected_version=16,
             )
 
         body = _structured_error(await _async_safe_call("search", boom))
-        assert body["code"] == "schema_incompatible"
+        assert body["code"] == "schema_version_mismatch"
         assert body["tool"] == "search"
         assert body["current_version"] == 99
         assert body["expected_version"] == 16
@@ -92,9 +92,9 @@ class TestTopLevelIsolation:
         async def boom() -> str:
             raise ValueError("inner failure")
 
-        body = _structured_error(await _async_safe_call("list_conversations", boom))
+        body = _structured_error(await _async_safe_call("list_sessions", boom))
         assert body["code"] == "internal_error"
-        assert body["tool"] == "list_conversations"
+        assert body["tool"] == "list_sessions"
         assert body["detail"] == "ValueError"
         assert "inner failure" not in cast(str, body["error"])
 
@@ -133,7 +133,7 @@ class TestRegistrySurfaceContract:
         for name in [
             "stats",
             "search",
-            "list_conversations",
+            "list_sessions",
             "readiness_check",
             "cost_rollups",
             "facets",

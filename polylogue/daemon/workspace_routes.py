@@ -11,7 +11,7 @@ from polylogue.surfaces.payloads import TargetRefPayload
 if TYPE_CHECKING:
     from polylogue.api import Polylogue
 
-ConversationPayloadLoader = Callable[["Polylogue", str], Awaitable[object]]
+SessionPayloadLoader = Callable[["Polylogue", str], Awaitable[object]]
 
 
 WORKSPACE_SHELL_MODES = {"tabs", "stack", "compare", "timeline"}
@@ -25,21 +25,21 @@ def parse_id_list(params: dict[str, list[str]]) -> list[str]:
     return ids
 
 
-def target_ref_from_conversation_payload(payload: Mapping[str, object]) -> dict[str, object]:
+def target_ref_from_session_payload(payload: Mapping[str, object]) -> dict[str, object]:
     target_ref = payload.get("target_ref")
     if isinstance(target_ref, dict):
         return dict(target_ref)
     conv_id = str(payload.get("id") or "")
-    return TargetRefPayload.conversation(conv_id).model_dump(mode="json", exclude_none=True)
+    return TargetRefPayload.session(conv_id).model_dump(mode="json", exclude_none=True)
 
 
-def missing_conversation_target(conv_id: str) -> dict[str, object]:
+def missing_session_target(conv_id: str) -> dict[str, object]:
     return {
-        "target_type": "conversation",
+        "target_type": "session",
         "target_id": conv_id,
-        "conversation_id": conv_id,
+        "session_id": conv_id,
         "status": "missing",
-        "disabled_reason": "conversation_not_found",
+        "disabled_reason": "session_not_found",
     }
 
 
@@ -47,23 +47,23 @@ async def build_stack_payload(
     poly: Polylogue,
     ids: list[str],
     focus: str | None,
-    load_conversation: ConversationPayloadLoader,
+    load_session: SessionPayloadLoader,
 ) -> dict[str, object]:
     items: list[dict[str, object]] = []
     for conv_id in ids:
-        payload = await load_conversation(poly, conv_id)
+        payload = await load_session(poly, conv_id)
         if not isinstance(payload, dict):
-            items.append(missing_conversation_target(conv_id))
+            items.append(missing_session_target(conv_id))
             continue
         items.append(
             {
-                "target_type": "conversation",
+                "target_type": "session",
                 "target_id": str(payload["id"]),
-                "conversation_id": str(payload["id"]),
+                "session_id": str(payload["id"]),
                 "status": "resolved",
-                "identity_key": f"conversation:{payload['id']}",
-                "target_ref": target_ref_from_conversation_payload(payload),
-                "conversation": payload,
+                "identity_key": f"session:{payload['id']}",
+                "target_ref": target_ref_from_session_payload(payload),
+                "session": payload,
             }
         )
     return {
@@ -82,15 +82,15 @@ async def build_compare_payload(
     left: str,
     right: str,
     align: str,
-    load_conversation: ConversationPayloadLoader,
+    load_session: SessionPayloadLoader,
 ) -> dict[str, object]:
     # Imported lazily to avoid a circular import: ``compare`` re-uses
-    # ``missing_conversation_target`` and ``COMPARE_ALIGN_MODES`` from this
+    # ``missing_session_target`` and ``COMPARE_ALIGN_MODES`` from this
     # module, so importing it at module scope would trip the initial import.
     from polylogue.daemon.compare import build_compare_envelope
 
-    left_payload = await load_conversation(poly, left)
-    right_payload = await load_conversation(poly, right)
+    left_payload = await load_session(poly, left)
+    right_payload = await load_session(poly, right)
     envelope = build_compare_envelope(left_payload, right_payload, left, right, align)
     return cast("dict[str, object]", envelope)
 
@@ -113,7 +113,7 @@ def handle_stack(handler: object, params: dict[str, list[str]]) -> None:
         return
 
     async def _get(poly: Polylogue) -> object:
-        return await build_stack_payload(poly, ids, focus, handler._do_get_conversation)  # type: ignore[attr-defined]
+        return await build_stack_payload(poly, ids, focus, handler._do_get_session)  # type: ignore[attr-defined]
 
     handler._send_json(HTTPStatus.OK, handler._sync_run(_get))  # type: ignore[attr-defined]
 
@@ -127,7 +127,7 @@ def handle_compare(handler: object, params: dict[str, list[str]]) -> None:
         return
 
     async def _get(poly: Polylogue) -> object:
-        return await build_compare_payload(poly, left, right, align or "prompt", handler._do_get_conversation)  # type: ignore[attr-defined]
+        return await build_compare_payload(poly, left, right, align or "prompt", handler._do_get_session)  # type: ignore[attr-defined]
 
     handler._send_json(HTTPStatus.OK, handler._sync_run(_get))  # type: ignore[attr-defined]
 

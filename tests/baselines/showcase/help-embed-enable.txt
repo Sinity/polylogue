@@ -1,0 +1,17 @@
+Usage: polylogue embed enable [OPTIONS]
+
+  Turn on the embedding pipeline.
+
+  Verifies sqlite-vec is importable, captures the Voyage API key, prints a
+  cost preflight, and on confirmation writes ``[embedding]`` into the user
+  ``polylogue.toml``. The daemon picks the change up on its next config
+  reload.
+
+Options:
+  --voyage-api-key TEXT  Voyage AI API key. Falls back to VOYAGE_API_KEY env
+                         var.
+  -y, --yes              Skip the interactive confirmation prompt.
+  --no-store-key         Flip embedding_enabled on but do not record the API
+                         key in polylogue.toml; the daemon will continue to
+                         read VOYAGE_API_KEY from the environment instead.
+  -h, --help             Show this message and exit.

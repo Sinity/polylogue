@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from ..base import ParsedConversation
+from ..base import ParsedSession
 from .ai_parser import looks_like_ai as _looks_like_ai
 from .ai_parser import parse_ai as _parse_ai
 from .code_detection import looks_like_code
@@ -20,7 +20,7 @@ from .common import (
 )
 from .index import (
     SessionIndexEntry,
-    enrich_conversation_from_index,
+    enrich_session_from_index,
     find_sessions_index,
     parse_sessions_index,
 )
@@ -30,7 +30,7 @@ def looks_like_ai(payload: object) -> bool:
     return _looks_like_ai(payload)
 
 
-def parse_ai(payload: Mapping[str, object], fallback_id: str) -> ParsedConversation:
+def parse_ai(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
     return _parse_ai(payload, fallback_id)
 
 
@@ -43,7 +43,7 @@ looks_like = looks_like_code
 
 __all__ = [
     "SessionIndexEntry",
-    "enrich_conversation_from_index",
+    "enrich_session_from_index",
     "extract_messages_from_chat_messages",
     "extract_text_from_segments",
     "find_sessions_index",

@@ -95,12 +95,12 @@ def test_corpus_spec_payload_round_trip_preserves_inference_fields() -> None:
     spec = CorpusSpec(
         provider="chatgpt",
         package_version="v3",
-        element_kind="conversation_document",
+        element_kind="session_document",
         profile=CorpusProfile(
             family_ids=("cluster-a",),
-            profile_tokens=("conversation", "tool-use"),
-            artifact_kind="conversation_document",
-            anchor_kind="conversation_document",
+            profile_tokens=("session", "tool-use"),
+            artifact_kind="session_document",
+            anchor_kind="session_document",
             observed_sample_count=23,
             observed_artifact_count=21,
             observed_confidence=0.75,
@@ -122,9 +122,9 @@ def test_corpus_spec_payload_round_trip_preserves_inference_fields() -> None:
 
     assert payload["profile"] == {
         "family_ids": ["cluster-a"],
-        "profile_tokens": ["conversation", "tool-use"],
-        "artifact_kind": "conversation_document",
-        "anchor_kind": "conversation_document",
+        "profile_tokens": ["session", "tool-use"],
+        "artifact_kind": "session_document",
+        "anchor_kind": "session_document",
         "observed_sample_count": 23,
         "observed_artifact_count": 21,
         "observed_confidence": 0.75,
@@ -134,7 +134,7 @@ def test_corpus_spec_payload_round_trip_preserves_inference_fields() -> None:
         "last_seen": "2026-04-02T00:00:00Z",
     }
     assert CorpusSpec.from_payload(payload) == spec
-    assert spec.messages_per_conversation == range(5, 10)
+    assert spec.messages_per_session == range(5, 10)
 
 
 def test_corpus_spec_rejects_invalid_message_bounds() -> None:
@@ -185,7 +185,7 @@ def test_build_inferred_corpus_specs_uses_cluster_families_when_present() -> Non
                 representative_paths=["/tmp/one.json"],
                 dominant_keys=["id"],
                 confidence=0.8,
-                artifact_kind="conversation_document",
+                artifact_kind="session_document",
             )
         ],
     )
@@ -199,7 +199,7 @@ def test_build_inferred_corpus_specs_uses_cluster_families_when_present() -> Non
 
     assert len(specs) == 1
     assert specs[0].package_version == "v5"
-    assert specs[0].element_kind == "conversation_document"
+    assert specs[0].element_kind == "session_document"
     assert specs[0].profile.family_ids == ("cluster-a",)
     assert specs[0].profile.profile_tokens == ()
     assert specs[0].profile.observed_sample_count == 12
@@ -230,8 +230,8 @@ def test_build_inferred_corpus_specs_merges_package_profile_metadata() -> None:
                 representative_paths=["/tmp/one.json"],
                 dominant_keys=["id"],
                 confidence=0.8,
-                artifact_kind="conversation_document",
-                profile_tokens=["conversation", "tool-use"],
+                artifact_kind="session_document",
+                profile_tokens=["session", "tool-use"],
                 bundle_scope_count=3,
                 promoted_package_version="v5",
             )
@@ -245,8 +245,8 @@ def test_build_inferred_corpus_specs_merges_package_profile_metadata() -> None:
             SchemaVersionPackage(
                 provider="chatgpt",
                 version="v5",
-                anchor_kind="conversation_document",
-                default_element_kind="conversation_document",
+                anchor_kind="session_document",
+                default_element_kind="session_document",
                 first_seen="2026-03-01T00:00:00Z",
                 last_seen="2026-04-03T00:00:00Z",
                 bundle_scope_count=7,
@@ -255,13 +255,13 @@ def test_build_inferred_corpus_specs_merges_package_profile_metadata() -> None:
                 representative_paths=["/tmp/package.json"],
                 elements=[
                     SchemaElementManifest(
-                        element_kind="conversation_document",
+                        element_kind="session_document",
                         schema_file=None,
                         sample_count=18,
                         artifact_count=16,
                         bundle_scope_count=7,
                         profile_family_ids=["pkg-family"],
-                        profile_tokens=["conversation", "tool-use"],
+                        profile_tokens=["session", "tool-use"],
                         representative_paths=["/tmp/package.json"],
                         observed_artifact_count=16,
                         first_seen="2026-03-01T00:00:00Z",
@@ -283,8 +283,8 @@ def test_build_inferred_corpus_specs_merges_package_profile_metadata() -> None:
     assert len(specs) == 1
     assert specs[0].package_version == "v5"
     assert specs[0].profile.family_ids == ("pkg-family", "cluster-a")
-    assert specs[0].profile.profile_tokens == ("conversation", "tool-use")
-    assert specs[0].profile.anchor_kind == "conversation_document"
+    assert specs[0].profile.profile_tokens == ("session", "tool-use")
+    assert specs[0].profile.anchor_kind == "session_document"
     assert specs[0].profile.observed_artifact_count == 16
     assert specs[0].profile.bundle_scope_count == 7
     assert specs[0].profile.first_seen == "2026-03-01T00:00:00Z"
@@ -545,7 +545,7 @@ def test_corpus_scenario_compiles_its_own_projection_entry() -> None:
             CorpusSpec(
                 provider="chatgpt",
                 package_version="v7",
-                element_kind="conversation_document",
+                element_kind="session_document",
                 profile=CorpusProfile(
                     family_ids=("cluster/a",),
                     observed_sample_count=12,
@@ -574,7 +574,7 @@ def test_inferred_corpus_spec_compiles_its_own_projection_entry() -> None:
     spec = CorpusSpec(
         provider="chatgpt",
         package_version="v7",
-        element_kind="conversation_document",
+        element_kind="session_document",
         profile=CorpusProfile(
             family_ids=("cluster/a",),
             observed_sample_count=12,
@@ -589,7 +589,7 @@ def test_inferred_corpus_spec_compiles_its_own_projection_entry() -> None:
     assert projection.name == "chatgpt:v7:cluster/a"
     assert (
         projection.description
-        == "Inferred synthetic corpus spec for chatgpt conversation_document from 12 observed sample(s)."
+        == "Inferred synthetic corpus spec for chatgpt session_document from 12 observed sample(s)."
     )
     assert projection.origin == "inferred.schema"
     assert projection.tags == ("inferred", "schema", "synthetic")

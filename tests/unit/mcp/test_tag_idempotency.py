@@ -13,8 +13,6 @@ from tests.infra.mcp import (
     MCPServerUnderTest,
     invoke_surface,
     make_polylogue_mock,
-    make_query_store_mock,
-    make_tag_store_mock,
 )
 
 _ADD_TAG_TOOL = "add_tag"
@@ -34,18 +32,14 @@ class TestTagIdempotencyOutcomes:
     # ── add_tag ──────────────────────────────────────────────────────
 
     def test_add_tag_absent_yields_added(self, mcp_server: MCPServerUnderTest) -> None:
-        with (
-            patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
-            patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
-        ):
-            mock_poly = make_polylogue_mock()
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock(resolved_id=_CONV_ID)
             mock_poly.add_tag = AsyncMock(return_value=_tag_result("added"))
             mock_get_polylogue.return_value = mock_poly
-            mock_get_query_store.return_value = make_query_store_mock(resolved_id=_CONV_ID)
 
             result = invoke_surface(
                 mcp_server._tool_manager._tools[_ADD_TAG_TOOL].fn,
-                conversation_id=_CONV_ID,
+                session_id=_CONV_ID,
                 tag=_TAG,
             )
 
@@ -56,18 +50,14 @@ class TestTagIdempotencyOutcomes:
         assert "detail" not in parsed
 
     def test_add_tag_already_present_yields_no_op(self, mcp_server: MCPServerUnderTest) -> None:
-        with (
-            patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
-            patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
-        ):
-            mock_poly = make_polylogue_mock()
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock(resolved_id=_CONV_ID)
             mock_poly.add_tag = AsyncMock(return_value=_tag_result("no_op", "already_present"))
             mock_get_polylogue.return_value = mock_poly
-            mock_get_query_store.return_value = make_query_store_mock(resolved_id=_CONV_ID)
 
             result = invoke_surface(
                 mcp_server._tool_manager._tools[_ADD_TAG_TOOL].fn,
-                conversation_id=_CONV_ID,
+                session_id=_CONV_ID,
                 tag=_TAG,
             )
 
@@ -77,13 +67,14 @@ class TestTagIdempotencyOutcomes:
         assert parsed["detail"] == "already_present"
         assert parsed["tag"] == _TAG
 
-    def test_add_tag_conversation_not_found(self, mcp_server: MCPServerUnderTest) -> None:
-        with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
-            mock_get_query_store.return_value = make_query_store_mock(resolved_id=None)
+    def test_add_tag_session_not_found(self, mcp_server: MCPServerUnderTest) -> None:
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock(resolved_id=None)
+            mock_get_polylogue.return_value = mock_poly
 
             result = invoke_surface(
                 mcp_server._tool_manager._tools[_ADD_TAG_TOOL].fn,
-                conversation_id="nonexistent:id",
+                session_id="nonexistent:id",
                 tag=_TAG,
             )
 
@@ -94,18 +85,14 @@ class TestTagIdempotencyOutcomes:
     # ── remove_tag ───────────────────────────────────────────────────
 
     def test_remove_tag_present_yields_removed(self, mcp_server: MCPServerUnderTest) -> None:
-        with (
-            patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
-            patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
-        ):
-            mock_poly = make_polylogue_mock()
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock(resolved_id=_CONV_ID)
             mock_poly.remove_tag = AsyncMock(return_value=_tag_result("removed"))
             mock_get_polylogue.return_value = mock_poly
-            mock_get_query_store.return_value = make_query_store_mock(resolved_id=_CONV_ID)
 
             result = invoke_surface(
                 mcp_server._tool_manager._tools[_REMOVE_TAG_TOOL].fn,
-                conversation_id=_CONV_ID,
+                session_id=_CONV_ID,
                 tag=_TAG,
             )
 
@@ -116,18 +103,14 @@ class TestTagIdempotencyOutcomes:
         assert "detail" not in parsed
 
     def test_remove_tag_absent_yields_not_present(self, mcp_server: MCPServerUnderTest) -> None:
-        with (
-            patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
-            patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
-        ):
-            mock_poly = make_polylogue_mock()
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock(resolved_id=_CONV_ID)
             mock_poly.remove_tag = AsyncMock(return_value=_tag_result("not_present", "tag_not_present"))
             mock_get_polylogue.return_value = mock_poly
-            mock_get_query_store.return_value = make_query_store_mock(resolved_id=_CONV_ID)
 
             result = invoke_surface(
                 mcp_server._tool_manager._tools[_REMOVE_TAG_TOOL].fn,
-                conversation_id=_CONV_ID,
+                session_id=_CONV_ID,
                 tag=_TAG,
             )
 
@@ -137,13 +120,14 @@ class TestTagIdempotencyOutcomes:
         assert parsed["detail"] == "tag_not_present"
         assert parsed["tag"] == _TAG
 
-    def test_remove_tag_conversation_not_found(self, mcp_server: MCPServerUnderTest) -> None:
-        with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
-            mock_get_query_store.return_value = make_query_store_mock(resolved_id=None)
+    def test_remove_tag_session_not_found(self, mcp_server: MCPServerUnderTest) -> None:
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock(resolved_id=None)
+            mock_get_polylogue.return_value = mock_poly
 
             result = invoke_surface(
                 mcp_server._tool_manager._tools[_REMOVE_TAG_TOOL].fn,
-                conversation_id="nonexistent:id",
+                session_id="nonexistent:id",
                 tag=_TAG,
             )
 
@@ -153,17 +137,21 @@ class TestTagIdempotencyOutcomes:
 
 
 class TestBulkTagExcludesOutcome:
-    """bulk_tag_conversations does not carry a per-tag outcome — it uses counts."""
+    """bulk_tag_sessions does not carry a per-tag outcome — it uses counts."""
 
     def test_bulk_tag_has_no_outcome_field(self, mcp_server: MCPServerUnderTest) -> None:
-        with patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store:
-            mock_tag_store = make_tag_store_mock()
-            mock_tag_store.bulk_add_tags = AsyncMock(return_value=3)
-            mock_get_tag_store.return_value = mock_tag_store
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            from polylogue.surfaces.payloads import BulkTagMutationResult
+
+            mock_poly = make_polylogue_mock()
+            mock_poly.bulk_tag_sessions = AsyncMock(
+                return_value=BulkTagMutationResult(session_count=3, tag_count=1, affected_count=3, skipped_count=0)
+            )
+            mock_get_polylogue.return_value = mock_poly
 
             result = invoke_surface(
-                mcp_server._tool_manager._tools["bulk_tag_conversations"].fn,
-                conversation_ids=["conv-1", "conv-2", "conv-3"],
+                mcp_server._tool_manager._tools["bulk_tag_sessions"].fn,
+                session_ids=["conv-1", "conv-2", "conv-3"],
                 tags=["important"],
             )
 
@@ -180,7 +168,7 @@ class TestMutationResultPayloadRoundtrip:
 
         payload = MutationResultPayload(
             status="ok",
-            conversation_id=_CONV_ID,
+            session_id=_CONV_ID,
             tag=_TAG,
             outcome="added",
         )
@@ -193,7 +181,7 @@ class TestMutationResultPayloadRoundtrip:
 
         payload = MutationResultPayload(
             status="ok",
-            conversation_id=_CONV_ID,
+            session_id=_CONV_ID,
             tag=_TAG,
         )
         serialized = payload.model_dump_json(exclude_none=True)

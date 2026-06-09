@@ -11,7 +11,7 @@ and `session_profiles`:
 
 | Column | Origin | Purpose |
 |--------|--------|---------|
-| `provider_name` | Legacy (schema v1) | Storage-layer provider token |
+| `provider_name` | Legacy (archive) | Storage-layer provider token |
 | `source_name` | Added in #864 + follow-ups | Source-family identity token |
 
 This is a column-doubling, not a rename. The `Source` dataclass
@@ -34,7 +34,7 @@ Rationale:
    source-family identity into one token. `source_name` carries the
    disambiguated source family.
 3. **Storage compatibility is not a concern.** Per the
-   `polylogue-write-passive-read-pull` crystal, Polylogue has no migration
+   `polylogue-write-passive-read-pull` crystal, Polylogue has no in-place schema upgrade
    chain. Schema bumps are deletes-then-defines. There are no external
    consumers of the SQLite schema beyond lynchpin.
 4. **Lynchpin is the only cross-repo consumer** and reads both columns. It
@@ -93,6 +93,6 @@ is mechanical: replace column name, no logic changes.
 - [#1022](https://github.com/Sinity/polylogue/issues/1022) — umbrella issue
 - [#1219](https://github.com/Sinity/polylogue/issues/1219) — column policy decision (consolidated into #1022)
 - [#1511](https://github.com/Sinity/polylogue/issues/1511) — write-passive cleanup (adjacent, broader scope)
-- `docs/architecture.md` § "Dual Vocabulary Period: Provider and Source"
+- `docs/architecture.md` § "Dual Vocabulary Period: Provider and Origin"
 - `polylogue/core/provider_identity.py` — vocabulary boundary table
 - `polylogue/core/sources.py` — `Source` dataclass and Provider↔Source mapping

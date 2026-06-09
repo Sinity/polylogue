@@ -4,7 +4,7 @@ For the target shape, guardrails, and architectural decision log, see
 [Architecture Spine](architecture-spine.md). For current sequencing and active
 workstreams, see [Execution Plan](execution-plan.md).
 
-Polylogue is a local archive for AI conversations. The system has four rings:
+Polylogue is a local archive for AI sessions. The system has four rings:
 
 1. archive substrate
 2. derived read models
@@ -106,56 +106,52 @@ convergence stages.
 
 `detect_provider()` calls each parser's `looks_like()` in order.
 
-## Dual Vocabulary Period: Provider and Source
+## Provider and Origin Vocabulary
 
-The codebase is in a transition between two overlapping vocabularies
-for conversation origins:
+The codebase has two origin-related vocabularies with different scopes:
 
-- **`Provider`** (`polylogue/types.py`): the legacy enum carried by
-  every public surface — `provider_name` storage column, CLI
-  `--provider` filter, MCP `provider` parameter, daemon facet labels.
+- **`Provider`** (`polylogue/types.py`): the provider-wire enum used by
+  provider-wire parsing, provider schema packages, and some internal storage
+  adapters. It previously leaked into public surfaces such as the CLI
+  `--provider` filter, MCP `provider` parameter, and daemon facet labels.
   Mixes lab identity (OpenAI, Anthropic, Google), product/runtime
   identity (Claude Code, Codex), and source-family identity
   (claude-code-session vs claude-ai-export) into one token. See the
   vocabulary table in `polylogue/core/provider_identity.py` for the
   detailed conflation surface.
-- **`Source`** (`polylogue/core/sources.py`): the source-centered
-  replacement. A `Source` is an immutable dataclass with three fields
-  — `family` (e.g. `claude-code-session`), `runtime_root` (e.g.
-  `~/.claude/projects`), and `originating_lab` (e.g. `anthropic`).
-  Every `Provider` has a canonical `Source` via
-  `provider_to_source(Provider) -> Source`; `source_to_provider`
-  performs the reverse lookup.
+- **`Origin`** (`polylogue/core/enums.py`): the public source-origin token
+  carried by query surfaces and archive read payloads, such as
+  `claude-code-session`, `claude-ai-export`, and `chatgpt-export`.
+  Public filters use `origin`; internal bridges still map origins to
+  canonical provider tokens where older storage/insight contracts have not
+  been renamed yet.
+- **`Source`** (`polylogue/core/sources.py`): the richer source-centered
+  identity used for runtime roots and lab attribution. A `Source` is an
+  immutable dataclass with `family`, `runtime_root`, and `originating_lab`.
 
-This PR introduces only the typed `Source` surface alongside the
-existing `Provider` enum. **It does not rename any storage column,
-CLI flag, MCP parameter, or public field**: those renames are
-deliberately staged into later PRs so each one can land with a
-focused review and migration plan. The two vocabularies coexist for
-the duration of the transition.
+The primary CLI/MCP/API/daemon read surfaces use origin vocabulary. `Provider`
+remains only for raw export, schema-package, and provider-metadata boundaries.
+The remaining internal provider-token adapters are cleanup targets, not an
+alternate archive mode.
 
-Planned migration sequencing (each is a separate later PR under
-#1022):
+Cleanup sequencing:
 
-1. CLI/MCP/API surfaces gain `source` parameter aliases that accept
-   source-family tokens; the existing `provider` parameter stays as a
-   compatibility alias.
-2. Internal callers switch from `Provider` to `Source` at boundaries
-   where lab identity and runtime identity need to be distinguished
+1. Internal callers switch from provider-token filters to origin filters at
+   boundaries where lab identity and runtime identity need to be distinguished
    (e.g. analytics, cost rollups, source-discovery).
-3. Storage column `provider_name` either stays as a physical-schema
-   compatibility artifact (documented as legacy) or is renamed via an
-   explicit schema-version transition.
-4. Provider-wire schemas under `schemas/providers/` are retained as
+2. Storage columns that still carry provider-token names are either renamed in
+   the canonical DDL or kept only where their contract is provider-wire.
+3. Provider-wire schemas under `schemas/providers/` are retained as
    lab/provider-scope artifacts — they describe raw export shapes and
    stay keyed by lab/product, not by source family.
 
-Anti-goal: a half-renamed surface where some flags say `provider` and
-others say `source`. Each surface flips wholesale or not at all.
+Anti-goal: provider wording on source-origin public filters or payloads.
+Provider remains valid only where the contract is truly provider-wire,
+schema-package, provider metadata, or embedding-provider terminology.
 
 ## Antigravity Language-Server Export Path
 
-Antigravity persists its conversation transcripts as opaque non-protobuf
+Antigravity persists its session transcripts as opaque non-protobuf
 `conversations/*.pb` and `implicit/*.pb` blobs that cannot be statically
 decoded. The installed Antigravity language server binary
 (`language_server_linux_x64`) exposes two endpoints over a local HTTP loopback
@@ -163,7 +159,7 @@ port that together form the supported export surface:
 
 | Endpoint | Purpose |
 |----------|---------|
-| `/exa.language_server_pb.LanguageServerService/SearchConversations` | Returns cascade IDs, titles, workspace names, snippets, and `lastModifiedTime` for stored conversations. |
+| `/exa.language_server_pb.LanguageServerService/SearchConversations` | Returns cascade IDs, titles, workspace names, snippets, and `lastModifiedTime` for stored sessions. |
 | `/exa.language_server_pb.LanguageServerService/ConvertTrajectoryToMarkdown` | Returns a complete Markdown export for a given cascade ID — user inputs, planner responses, tool/command events. |
 
 The adapter lives in `polylogue/sources/parsers/antigravity.py`:
@@ -176,7 +172,7 @@ The adapter lives in `polylogue/sources/parsers/antigravity.py`:
   `POLYLOGUE_ANTIGRAVITY_LANGUAGE_SERVER` env var, `$PATH`, then the highest
   matching `/nix/store/*-antigravity-*` extension bundle.
 - `iter_language_server_exports(root)` drives `SearchConversations` and
-  `ConvertTrajectoryToMarkdown` and yields `ParsedConversation` objects through
+  `ConvertTrajectoryToMarkdown` and yields `ParsedSession` objects through
   `parse_markdown_export()`.
 
 The ingest path is layered in `polylogue/sources/source_parsing.py`: when the
@@ -184,22 +180,23 @@ source is `antigravity` and a `conversations/` subdirectory exists, the
 language-server export runs first; any `AntigravityExportError` (binary not
 found, connection failure, malformed response) is logged and the source falls
 back to the existing brain-artifact metadata walk. Both paths emit normalized
-`Provider.ANTIGRAVITY` conversations.
+`Provider.ANTIGRAVITY` sessions.
 
 ## Key Abstractions
 
 | Abstraction | Location | Role |
 |-------------|----------|------|
 | `Polylogue` | `facade.py` | Async entry point. Wraps storage + search + pipeline. |
-| `ConversationRepository` | `storage/repository/__init__.py` | Mixin-composed async repository (9 mixins: archive reads/writes, action reads, insight readers for profile/timeline/thread/summary, raw, vectors). |
+| `SessionRepository` | `storage/repository/__init__.py` | Mixin-composed async repository (9 mixins: archive reads/writes, action reads, insight readers for profile/timeline/thread/summary, raw, vectors). |
 | `SearchProvider` protocol | `protocols.py` | FTS5 and Hybrid (RRF fusion) implementations. |
-| `ConversationFilter` | `archive/filter/filters.py` | Fluent filter chain used by CLI, MCP, and facade. |
+| `SessionFilter` | `archive/filter/filters.py` | Fluent filter chain used by CLI, MCP, and facade. |
 | `Session Insights` | `storage/insights/session/` | Materialized read models: profiles, work events, phases, threads, aggregates. |
-| `ContentHash` | `pipeline/ids.py` | SHA-256 over NFC-normalized conversation payload. Title, timestamps, messages, attachments are hashed. User metadata (tags, summaries) is excluded — editable metadata doesn't trigger re-import. |
-| `Provider` enum | `types.py` | Legacy source identifier — 9 known providers + UNKNOWN. Public surfaces still flow through this enum during the dual-vocabulary period. |
-| `Source` dataclass | `core/sources.py` | Source-centered identity (`family`, `runtime_root`, `originating_lab`). Parallel to `Provider`; see "Dual Vocabulary Period" above. |
-| `TopologyEdgeRecord` | `archive/topology/edge.py` | Typed cross-conversation parent reference. Persisted in `topology_edges` even when the parent has not yet been ingested (#1258) so out-of-order ingest and sidechain/subagent edges are durable. Closed `TopologyEdgeType` / `TopologyEdgeStatus` enums centralize the vocabulary. |
-| Logical Session ID | `session_profiles.logical_conversation_id` | Materialized root conversation for continuation/fork/subagent lineages. Rollups expose `logical_session_count` alongside physical `conversation_count`, and `get_logical_session()` returns the compact read-pull lineage envelope. |
+| `ContentHash` | `pipeline/ids.py` | SHA-256 over NFC-normalized session payload. Title, timestamps, messages, attachments are hashed. User metadata (tags, summaries) is excluded — editable metadata doesn't trigger re-import. |
+| `Provider` enum | `types.py` | Legacy/provider-wire identifier used by parsers, schemas, provider metadata, and compatibility bridges. |
+| `Origin` enum | `core/enums.py` | Public source-origin identity used by query/read surfaces and archive payloads. |
+| `Source` dataclass | `core/sources.py` | Source-centered identity (`family`, `runtime_root`, `originating_lab`) used for runtime roots and lab attribution. |
+| `TopologyEdgeRecord` | `archive/topology/edge.py` | Typed cross-session parent reference. Persisted in `topology_edges` even when the parent has not yet been ingested (#1258) so out-of-order ingest and sidechain/subagent edges are durable. Closed `TopologyEdgeType` / `TopologyEdgeStatus` enums centralize the vocabulary. |
+| Logical Session ID | `session_profiles.logical_session_id` | Materialized root session for continuation/fork/subagent lineages. Rollups expose `logical_session_count` alongside physical `session_count`, and `get_logical_session()` returns the compact read-pull lineage envelope. |
 
 ## Artifact Taxonomy
 
@@ -207,9 +204,9 @@ Acquired files are classified by `ArtifactKind` before ingestion:
 
 | Kind | Description |
 |------|-------------|
-| `conversation_document` | A single conversation (Claude Code JSONL, ChatGPT JSON) |
-| `conversation_record_stream` | Stream of conversation events |
-| `subagent_conversation_stream` | Sidechain sub-agent conversation |
+| `session_document` | A single session (Claude Code JSONL, ChatGPT JSON) |
+| `session_record_stream` | Stream of session events |
+| `subagent_session_stream` | Sidechain sub-agent session |
 | `agent_sidecar_meta` | Session metadata (history.jsonl, sessions-index.json) |
 | `session_index` | Provider-level session index |
 | `bridge_pointer` | Pointer from a parent session to a sub-agent session |
@@ -253,7 +250,7 @@ Vector embeddings for semantic search, powered by Voyage AI (`voyage-4`,
   FTS5 + vector via Reciprocal Rank Fusion
 - **Integration**: Daemon-side post-ingest and ambient catch-up embedding is
   opt-in via `embedding_enabled = true` in `polylogue.toml` with a valid
-  `voyage_api_key`. When enabled, the daemon drains pending conversations in
+  `voyage_api_key`. When enabled, the daemon drains pending sessions in
   bounded windows and records catch-up progress; when disabled, no embedding
   provider calls are made ([#1503](https://github.com/Sinity/polylogue/issues/1503)).
 
@@ -265,13 +262,13 @@ The `polylogue embed` group is the operator-facing onboarding surface:
 |---------|---------|
 | `polylogue embed preflight` | Count pending messages + Voyage cost estimate without contacting the provider. |
 | `polylogue embed enable` (alias `activate`) | Verify `sqlite-vec`, capture the Voyage key, print the cost preflight, and on confirmation persist `[embedding] enabled = true` (and the API key unless `--no-store-key`) into the user `polylogue.toml`. |
-| `polylogue embed backfill` | Run a bounded, resumable embedding batch with per-conversation cost feedback; honours `embedding_max_cost_usd` as a soft cap and persists run progress. |
+| `polylogue embed backfill` | Run a bounded, resumable embedding batch with per-session cost feedback; honours `embedding_max_cost_usd` as a soft cap and persists run progress. |
 | `polylogue embed disable` | Flip `embedding.enabled = false` without dropping existing embeddings — previously-embedded messages remain queryable via `--similar`. |
 | `polylogue embed status` | Coverage / freshness / configured model+cap / latest catch-up / next-action snapshot via `embedding_status_payload`. Use `--detail` for exact pending-message and retrieval-band accounting. |
 
 The CLI orchestrates substrate primitives under
-`polylogue.storage.embeddings` (`iter_pending_conversations`,
-`embed_conversation_sync`, `embedding_catchup_runs`) and the cost constants
+`polylogue.storage.embeddings` (`iter_pending_sessions`,
+`embed_session_sync`, `embedding_catchup_runs`) and the cost constants
 `ESTIMATED_TOKENS_PER_MESSAGE` / `VOYAGE_4_COST_PER_1M_TOKENS` from
 `polylogue.storage.search_providers.sqlite_vec_support`.
 
@@ -312,10 +309,10 @@ attachments, exports):
 
 ## Database
 
-- Single SQLite file, WAL mode.
-- Schema is fresh-first: version mismatches are rejected unless an explicit,
-  reviewed in-place upgrade exists for that exact transition. `SCHEMA_VERSION`
-  lives in `storage/sqlite/schema_ddl.py`.
+- Archive SQLite file set, WAL mode.
+- Schema is fresh-first: version mismatches are rejected and the affected tier
+  is rebuilt from source/user evidence. Tier DDL and versions live under
+  `storage/sqlite/archive_tiers/`.
 - FTS5 with `unicode61` tokenizer (no porter stemmer in this SQLite build).
 
 ## Placement Rules

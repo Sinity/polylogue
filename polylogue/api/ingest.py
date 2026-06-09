@@ -10,7 +10,7 @@ from polylogue.config import Source
 if TYPE_CHECKING:
     from polylogue.config import Config
     from polylogue.pipeline.services.parsing_models import ParseResult
-    from polylogue.storage.repository import ConversationRepository
+    from polylogue.storage.repository import SessionRepository
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 
@@ -24,7 +24,7 @@ class PolylogueIngestMixin:
         def backend(self) -> SQLiteBackend: ...
 
         @property
-        def repository(self) -> ConversationRepository: ...
+        def repository(self) -> SessionRepository: ...
 
     async def parse_file(
         self,
@@ -32,24 +32,15 @@ class PolylogueIngestMixin:
         *,
         source_name: str | None = None,
     ) -> ParseResult:
-        from polylogue.pipeline.services.parsing import ParsingService
-
-        parsing_service = ParsingService(
-            repository=self.repository,
-            archive_root=self.config.archive_root,
-            config=self.config,
-        )
-
         file_path = Path(path).expanduser().resolve()
         if source_name is None:
             source_name = file_path.stem
 
         source = Source(name=source_name, path=file_path)
-        return await parsing_service.parse_sources(
-            sources=[source],
-            ui=None,
-            download_assets=False,
-        )
+        from polylogue.api.archive import _active_archive_root
+        from polylogue.pipeline.services.archive_ingest import parse_sources_archive
+
+        return await parse_sources_archive(_active_archive_root(self.config), [source])
 
     async def parse_sources(
         self,
@@ -57,25 +48,19 @@ class PolylogueIngestMixin:
         *,
         download_assets: bool = True,
     ) -> ParseResult:
-        from polylogue.pipeline.services.parsing import ParsingService
-
-        parsing_service = ParsingService(
-            repository=self.repository,
-            archive_root=self.config.archive_root,
-            config=self.config,
-        )
-
         if sources is None:
             sources = self.config.sources
 
-        return await parsing_service.parse_sources(
-            sources=sources,
-            ui=None,
-            download_assets=download_assets,
-        )
+        del download_assets
+        from polylogue.api.archive import _active_archive_root
+        from polylogue.pipeline.services.archive_ingest import parse_sources_archive
+
+        return await parse_sources_archive(_active_archive_root(self.config), sources)
 
     async def rebuild_index(self) -> bool:
-        from polylogue.pipeline.services.indexing import IndexService
+        from polylogue.api.archive import _active_archive_root
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-        index_service = IndexService(config=self.config, backend=self.backend)
-        return await index_service.rebuild_index()
+        with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
+            archive.rebuild_index()
+        return True

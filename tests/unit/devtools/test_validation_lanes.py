@@ -74,9 +74,9 @@ class TestLaneParsing:
     def test_retrieval_checks_lane_carries_runtime_query_and_health_metadata(self) -> None:
         lane = LANES["retrieval-checks"]
 
-        assert lane.path_targets == ("conversation-query-loop", "message-fts-readiness-loop")
-        assert lane.artifact_targets == ("message_fts", "conversation_query_results", "archive_readiness")
-        assert lane.operation_targets == ("query-conversations", "project-archive-readiness")
+        assert lane.path_targets == ("session-query-loop", "message-fts-readiness-loop")
+        assert lane.artifact_targets == ("message_fts", "session_query_results", "archive_readiness")
+        assert lane.operation_targets == ("query-sessions", "project-archive-readiness")
         assert lane.tags == ("contract", "retrieval", "readiness")
 
     def test_composite_lane_inherits_metadata_through_catalog_entries(self) -> None:
@@ -92,7 +92,7 @@ class TestLaneParsing:
 
         assert "cli.json-contract" in frontier_local.operation_targets
         assert "cli.help" in frontier_local.operation_targets
-        assert "query-conversations" in archive_intelligence.operation_targets
+        assert "query-sessions" in archive_intelligence.operation_targets
         assert "project-archive-readiness" in archive_intelligence.operation_targets
         assert runtime_substrate.family == "runtime-substrate"
 
@@ -115,7 +115,6 @@ class TestLaneParsing:
 
         assert lane.path_targets == ("archive-debt-query-loop",)
         assert lane.artifact_targets == (
-            "action_event_readiness",
             "session_insight_readiness",
             "archive_readiness",
             "archive_debt_results",
@@ -130,7 +129,6 @@ class TestLaneParsing:
             "embedding_metadata_rows",
             "embedding_status_rows",
             "message_embedding_vectors",
-            "action_event_readiness",
             "session_insight_readiness",
             "retrieval_band_readiness",
             "embedding_status_results",
@@ -159,10 +157,10 @@ class TestLaneParsing:
             "validation_backlog",
             "parse_backlog",
             "parse_quarantine",
-            "archive_conversation_rows",
+            "archive_session_rows",
         )
         assert lane.operation_targets == (
-            "acquire-raw-conversations",
+            "acquire-raw-sessions",
             "plan-validation-backlog",
             "plan-parse-backlog",
             "ingest-archive-runtime",
@@ -171,9 +169,9 @@ class TestLaneParsing:
     def test_memory_budget_lane_preserves_wrapped_runtime_metadata(self) -> None:
         lane = LANES["memory-budget"]
 
-        assert lane.path_targets == ("conversation-query-loop",)
-        assert lane.artifact_targets == ("message_fts", "conversation_query_results")
-        assert lane.operation_targets == ("query-conversations",)
+        assert lane.path_targets == ("session-query-loop",)
+        assert lane.artifact_targets == ("message_fts", "session_query_results")
+        assert lane.operation_targets == ("query-sessions",)
 
 
 class TestCommandConstruction:
@@ -223,7 +221,7 @@ class TestCommandConstruction:
         cmd = build_lane_command(LANES["semantic-stack"])
         assert cmd[0] == "pytest"
         assert "tests/unit/core/test_semantic_facts.py" in cmd
-        assert "tests/unit/sources/test_unified_semantic_laws.py" in cmd
+        assert "tests/unit/core/test_schema_semantic_inference.py" in cmd
 
     def test_source_provider_fidelity_lane_uses_source_governance_suite(self) -> None:
         cmd = build_lane_command(LANES["source-provider-fidelity"])
@@ -242,7 +240,7 @@ class TestCommandConstruction:
             "raw_validation_state",
             "artifact_observation_rows",
         )
-        assert lane.operation_targets == ("acquire-raw-conversations",)
+        assert lane.operation_targets == ("acquire-raw-sessions",)
         assert lane.tags == ("contract", "sources", "acquisition")
 
     def test_maintenance_workflows_lane_uses_health_and_check_suite(self) -> None:
@@ -279,7 +277,7 @@ class TestCommandConstruction:
     def test_retrieval_checks_lane_uses_retrieval_suite(self) -> None:
         cmd = build_lane_command(LANES["retrieval-checks"])
         assert cmd[0] == "pytest"
-        assert "tests/unit/cli/test_query_exec.py" in cmd
+        assert "tests/unit/cli/test_query_exec_laws.py" in cmd
         assert "tests/unit/core/test_health_core.py" in cmd
 
     def test_embeddings_coverage_lane_uses_embed_suite(self) -> None:
@@ -297,7 +295,7 @@ class TestCommandConstruction:
             "retrieval-band-readiness-loop",
         )
         assert lane.artifact_targets == (
-            "archive_conversation_rows",
+            "archive_session_rows",
             "embedding_metadata_rows",
             "embedding_status_rows",
             "message_embedding_vectors",
@@ -315,7 +313,7 @@ class TestCommandConstruction:
         cmd = build_lane_command(LANES["evidence-tier-contracts"])
         assert cmd[0] == "pytest"
         assert "tests/unit/cli/test_insights.py" in cmd
-        assert "tests/unit/storage/test_backend.py" in cmd
+        assert "tests/unit/storage/test_store_ops.py" in cmd
         assert "tests/unit/pipeline/test_prepare_semantic.py" in cmd
 
     def test_inference_tier_contracts_lane_uses_inference_suite(self) -> None:

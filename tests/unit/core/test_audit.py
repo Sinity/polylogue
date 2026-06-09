@@ -329,7 +329,7 @@ class TestCheckSemanticRoles:
             "properties": {
                 "title": {
                     "type": "string",
-                    "x-polylogue-semantic-role": "conversation_title",
+                    "x-polylogue-semantic-role": "session_title",
                 },
             },
         }
@@ -341,7 +341,7 @@ class TestCheckSemanticRoles:
             "properties": {
                 "user_id": {
                     "type": "string",
-                    "x-polylogue-semantic-role": "conversation_title",
+                    "x-polylogue-semantic-role": "session_title",
                 },
             },
         }
@@ -355,7 +355,7 @@ class TestCheckSemanticRoles:
                 "message_uuid": {
                     "type": "string",
                     "x-polylogue-format": "uuid",
-                    "x-polylogue-semantic-role": "conversation_title",
+                    "x-polylogue-semantic-role": "session_title",
                 },
             },
         }
@@ -367,7 +367,7 @@ class TestCheckSemanticRoles:
             "properties": {
                 "title": {
                     "type": "string",
-                    "x-polylogue-semantic-role": "conversation_title",
+                    "x-polylogue-semantic-role": "session_title",
                 },
                 "content": {
                     "type": "string",

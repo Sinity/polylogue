@@ -3,22 +3,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
-from polylogue.archive.query.fields import plan_has_fields_matching
 from polylogue.archive.query.retrieval import search_limit
 from polylogue.archive.query.retrieval_search import search_query_text as plan_search_query_text
-from polylogue.archive.query.support import conversation_to_summary, provider_values
+from polylogue.archive.query.support import session_to_summary
 
 if TYPE_CHECKING:
-    from polylogue.archive.conversation.models import Conversation, ConversationSummary
-    from polylogue.archive.query.plan import ConversationQueryPlan
-    from polylogue.protocols import ConversationQueryRuntimeStore
+    from polylogue.archive.query.plan import SessionQueryPlan
+    from polylogue.archive.session.domain_models import Session, SessionSummary
+    from polylogue.config import Config
 
 
 @dataclass(frozen=True, slots=True)
-class ConversationSearchHit:
-    """A conversation summary plus evidence explaining why it matched.
+class SessionSearchHit:
+    """A session summary plus evidence explaining why it matched.
 
     ``score_kind`` declares how to interpret ``score``:
 
@@ -31,7 +30,7 @@ class ConversationSearchHit:
       that surface evidence without a numeric score.
     """
 
-    summary: ConversationSummary
+    summary: SessionSummary
     rank: int
     retrieval_lane: str
     match_surface: str
@@ -46,10 +45,10 @@ class ConversationSearchHit:
     raw_score: float | None = None
 
     @property
-    def conversation_id(self) -> str:
+    def session_id(self) -> str:
         return str(self.summary.id)
 
-    def with_message_count(self, message_count: int | None) -> ConversationSearchHit:
+    def with_message_count(self, message_count: int | None) -> SessionSearchHit:
         return replace(self, summary=self.summary.model_copy(update={"message_count": message_count}))
 
 
@@ -92,8 +91,8 @@ def search_hit_surface(retrieval_lane: str) -> str:
     return "message"
 
 
-def conversation_search_hit_from_conversation(
-    conversation: Conversation,
+def session_search_hit_from_session(
+    session: Session,
     *,
     query_terms: tuple[str, ...],
     rank: int,
@@ -106,19 +105,19 @@ def conversation_search_hit_from_conversation(
     lane_rank: int | None = None,
     lane_contribution: float | None = None,
     raw_score: float | None = None,
-) -> ConversationSearchHit:
+) -> SessionSearchHit:
     terms = search_terms(query_terms)
     matching_message = next(
         (
             message
-            for message in conversation.messages
+            for message in session.messages
             if message.text and any(term in message.text.lower() for term in terms)
         ),
-        next((message for message in conversation.messages if message.text), None),
+        next((message for message in session.messages if message.text), None),
     )
     snippet = build_search_snippet(matching_message.text or "", query_terms) if matching_message else None
-    return ConversationSearchHit(
-        summary=conversation_to_summary(conversation),
+    return SessionSearchHit(
+        summary=session_to_summary(session),
         rank=rank,
         retrieval_lane=retrieval_lane,
         match_surface=match_surface or search_hit_surface(retrieval_lane),
@@ -134,8 +133,8 @@ def conversation_search_hit_from_conversation(
     )
 
 
-def conversation_search_hit_from_summary(
-    summary: ConversationSummary,
+def session_search_hit_from_summary(
+    summary: SessionSummary,
     *,
     rank: int,
     retrieval_lane: str,
@@ -149,8 +148,8 @@ def conversation_search_hit_from_summary(
     lane_rank: int | None = None,
     lane_contribution: float | None = None,
     raw_score: float | None = None,
-) -> ConversationSearchHit:
-    return ConversationSearchHit(
+) -> SessionSearchHit:
+    return SessionSearchHit(
         summary=summary,
         rank=rank,
         retrieval_lane=retrieval_lane,
@@ -230,31 +229,20 @@ def default_score_kind(retrieval_lane: str) -> str | None:
     return None
 
 
-def plan_has_search_hit_evidence(plan: ConversationQueryPlan) -> bool:
+def plan_has_search_hit_evidence(plan: SessionQueryPlan) -> bool:
     return bool(plan.fts_terms or plan.similar_text)
 
 
-def _simple_message_hit_plan(plan: ConversationQueryPlan) -> bool:
-    return bool(
-        plan.fts_terms
-        and plan.retrieval_lane in {"auto", "dialogue"}
-        and not plan_has_fields_matching(plan, lambda descriptor: descriptor.blocks_simple_message_hit)
-    )
-
-
-def _resolved_retrieval_lane(plan: ConversationQueryPlan) -> str:
-    if plan.similar_text:
-        return "semantic"
-    if plan.retrieval_lane == "auto":
-        return "dialogue"
-    return plan.retrieval_lane
-
-
 async def search_hits_for_plan(
-    plan: ConversationQueryPlan,
-    repository: ConversationQueryRuntimeStore,
-) -> list[ConversationSearchHit]:
-    """Return evidence-bearing hits for search-like query plans."""
+    plan: SessionQueryPlan,
+    config: Config,
+) -> list[SessionSearchHit]:
+    """Return evidence-bearing hits for search-like query plans.
+
+    Executes over the archive: lexical (``dialogue``)
+    hits carry FTS snippets, semantic/hybrid lanes resolve through the
+    vector provider, and hybrid preserves per-lane RRF rank contributions.
+    """
     if not plan_has_search_hit_evidence(plan):
         return []
 
@@ -262,68 +250,52 @@ async def search_hits_for_plan(
     if not query_text:
         return []
 
-    if _simple_message_hit_plan(plan):
-        source_names = list(provider_values(plan.providers)) or None
-        limit = plan.limit or search_limit(plan)
-        return await repository.search_summary_hits(
-            query_text,
-            limit=limit,
-            providers=source_names,
-            since=plan.since.isoformat() if plan.since else None,
-        )
+    from polylogue.archive.query.archive_execution import archive_search_hits
+    from polylogue.paths import archive_file_set_root_for_paths
 
-    # Hybrid lane: use direct search to preserve per-lane rank contributions
-    if plan.retrieval_lane == "hybrid":
-        from polylogue.archive.query.retrieval_search import search_hybrid_results as _search_hybrid
-
-        limit = plan.limit or search_limit(plan)
-        conversations, lane_ranks = await _search_hybrid(plan, repository, limit=limit)
-        query_terms = (query_text,)
-        terms = search_terms(query_terms)
-        hits: list[ConversationSearchHit] = []
-        for rank, conversation in enumerate(conversations, start=1):
-            conv_id = str(conversation.id)
-            lane_info = lane_ranks.get(conv_id, {})
-            score_components, fused_score = _hybrid_score_components(lane_info)
-            lane_rank, lane_contribution = primary_lane_evidence(score_components)
-            hits.append(
-                conversation_search_hit_from_conversation(
-                    conversation,
-                    query_terms=query_terms,
-                    rank=rank,
-                    retrieval_lane="hybrid",
-                    score=fused_score,
-                    score_kind="rrf" if fused_score is not None else None,
-                    score_components=score_components,
-                    matched_terms=terms,
-                    lane_rank=lane_rank,
-                    lane_contribution=lane_contribution,
-                    raw_score=fused_score,
-                )
-            )
-        return hits
-
-    conversations = await plan.list(repository)
-    retrieval_lane = _resolved_retrieval_lane(plan)
+    archive_root = archive_file_set_root_for_paths(
+        archive_root_path=config.archive_root,
+        db_anchor=config.db_path,
+    )
+    paired, resolved_lane = archive_search_hits(
+        plan,
+        archive_root=archive_root,
+        config=config,
+        default_limit=plan.limit or search_limit(plan),
+    )
     query_terms = (query_text,)
     terms = search_terms(query_terms)
-    return [
-        conversation_search_hit_from_conversation(
-            conversation,
-            query_terms=query_terms,
-            rank=rank,
-            retrieval_lane=retrieval_lane,
-            matched_terms=terms,
+    hits: list[SessionSearchHit] = []
+    for rank, (native_hit, summary) in enumerate(paired, start=1):
+        hits.append(
+            session_search_hit_from_summary(
+                _archive_summary_to_domain(summary),
+                rank=native_hit.rank or rank,
+                retrieval_lane=resolved_lane,
+                match_surface=search_hit_surface(resolved_lane),
+                message_id=native_hit.message_id,
+                snippet=native_hit.snippet,
+                matched_terms=terms,
+            )
         )
-        for rank, conversation in enumerate(conversations, start=1)
-    ]
+    return hits
+
+
+def _archive_summary_to_domain(summary: object) -> SessionSummary:
+    from polylogue.archive.query.archive_execution import _summary_to_domain
+    from polylogue.archive.session.domain_models import SessionSummary as _SessionSummary
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSummary
+
+    if isinstance(summary, _SessionSummary):
+        return summary
+    return _summary_to_domain(cast("ArchiveSessionSummary", summary))
 
 
 __all__ = [
-    "ConversationSearchHit",
+    "SessionSearchHit",
     "build_search_snippet",
-    "conversation_search_hit_from_conversation",
-    "conversation_search_hit_from_summary",
+    "session_search_hit_from_session",
+    "session_search_hit_from_summary",
     "default_score_kind",
     "plan_has_search_hit_evidence",
     "primary_lane_evidence",

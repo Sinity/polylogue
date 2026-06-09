@@ -8,7 +8,7 @@ from polylogue.insights.archive_models import (
     SessionEnrichmentPayload,
     SessionEvidencePayload,
     SessionInferencePayload,
-    WorkThreadPayload,
+    ThreadPayload,
 )
 from polylogue.storage.runtime.store_constants import (
     SESSION_ENRICHMENT_FAMILY,
@@ -17,12 +17,12 @@ from polylogue.storage.runtime.store_constants import (
     SESSION_INFERENCE_VERSION,
     SESSION_INSIGHT_MATERIALIZER_VERSION,
 )
-from polylogue.types import ConversationId
+from polylogue.types import SessionId
 
 
 class SessionProfileRecord(BaseModel):
-    conversation_id: ConversationId
-    logical_conversation_id: ConversationId
+    session_id: SessionId
+    logical_session_id: SessionId
     materializer_version: int = SESSION_INSIGHT_MATERIALIZER_VERSION
     materialized_at: str
     source_updated_at: str | None = None
@@ -86,8 +86,8 @@ class SessionProfileRecord(BaseModel):
     inference_family: str = SESSION_INFERENCE_FAMILY
 
     @field_validator(
-        "conversation_id",
-        "logical_conversation_id",
+        "session_id",
+        "logical_session_id",
         "source_name",
         "materialized_at",
         "search_text",
@@ -105,7 +105,7 @@ class SessionProfileRecord(BaseModel):
 
 
 class SessionLatencyProfileRecord(BaseModel):
-    conversation_id: ConversationId
+    session_id: SessionId
     materializer_version: int = SESSION_INSIGHT_MATERIALIZER_VERSION
     materialized_at: str
     source_updated_at: str | None = None
@@ -128,7 +128,7 @@ class SessionLatencyProfileRecord(BaseModel):
     evidence_payload_json: str = "{}"
     search_text: str = ""
 
-    @field_validator("conversation_id", "source_name", "materialized_at")
+    @field_validator("session_id", "source_name", "materialized_at")
     @classmethod
     def latency_non_empty_string(cls, value: str) -> str:
         if not value or not value.strip():
@@ -136,9 +136,9 @@ class SessionLatencyProfileRecord(BaseModel):
         return value
 
 
-class WorkThreadRecord(BaseModel):
+class ThreadRecord(BaseModel):
     thread_id: str
-    root_id: ConversationId
+    root_id: SessionId
     materializer_version: int = SESSION_INSIGHT_MATERIALIZER_VERSION
     materialized_at: str
     source_updated_at: str | None = None
@@ -156,15 +156,15 @@ class WorkThreadRecord(BaseModel):
     total_cost_usd: float = 0.0
     wall_duration_ms: int = 0
     work_event_breakdown: dict[str, int] | None = None
-    payload: WorkThreadPayload
+    payload: ThreadPayload
     search_text: str
 
     @field_validator("thread_id", "root_id", "materialized_at", "search_text")
     @classmethod
-    def work_thread_non_empty_string(cls, value: str) -> str:
+    def thread_non_empty_string(cls, value: str) -> str:
         if not value or not value.strip():
             raise ValueError("Field cannot be empty")
         return value
 
 
-__all__ = ["SessionLatencyProfileRecord", "SessionProfileRecord", "WorkThreadRecord"]
+__all__ = ["SessionLatencyProfileRecord", "SessionProfileRecord", "ThreadRecord"]

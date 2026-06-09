@@ -111,15 +111,15 @@ def _write_large_session(path: Path, session_id: str, n_messages: int) -> int:
 def _db_path() -> Path:
     """Return the resolved polylogue database path.
 
-    Uses the same resolution as ``polylogue.paths.db_path()``:
-    ``XDG_DATA_HOME / "polylogue" / "polylogue.db"``.
-    When ``XDG_DATA_HOME`` is not set in the environment, falls back
-    to ``~/.local/share`` (matching the ``_xdg_path`` default in
-    ``polylogue.paths._roots``).
+    Prefer the active archive root when the test fixture sets one; otherwise
+    fall back to the XDG data root.
     """
+    archive_root = os.environ.get("POLYLOGUE_ARCHIVE_ROOT")
+    if archive_root:
+        return Path(archive_root) / "index.db"
     xdg_data = os.environ.get("XDG_DATA_HOME")
     data_polylogue = Path(xdg_data) / "polylogue" if xdg_data else Path.home() / ".local" / "share" / "polylogue"
-    return data_polylogue / "polylogue.db"
+    return data_polylogue / "index.db"
 
 
 def _assert_daemon_alive(proc: subprocess.Popen[bytes]) -> None:
@@ -204,20 +204,35 @@ def _wait_for_messages(
     )
 
 
-def _wait_for_conversations(
+def _daemon_debug(proc: subprocess.Popen[bytes], *, db: Path, corpus_root: Path) -> str:
+    if proc.poll() is None:
+        _cleanup_process(proc)
+    try:
+        stderr_text = proc.stderr.read().decode(errors="replace")[:4000] if proc.stderr else "(no stderr)"
+    except Exception:
+        stderr_text = "(could not read stderr)"
+    files = sorted(str(path) for path in corpus_root.glob("**/*") if path.is_file())[:20]
+    return (
+        f"returncode={proc.poll()} db={db} db_exists={db.exists()} "
+        f"source_exists={db.with_name('source.db').exists()} corpus_files={files}\n"
+        f"stderr:\n{stderr_text}"
+    )
+
+
+def _wait_for_sessions(
     db: Path,
     *,
     min_count: int = 1,
     timeout_s: float = 60.0,
     poll_interval: float = 0.5,
 ) -> int:
-    """Poll the database until at least *min_count* conversations are present."""
+    """Poll the database until at least *min_count* sessions are present."""
     deadline = time.monotonic() + timeout_s
     last_count = 0
     while time.monotonic() < deadline:
         try:
             with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
-                cur = conn.execute("SELECT COUNT(*) FROM conversations")
+                cur = conn.execute("SELECT COUNT(*) FROM sessions")
                 row = cur.fetchone()
                 count = int(row[0]) if row else 0
                 last_count = count
@@ -229,7 +244,7 @@ def _wait_for_conversations(
                 raise
         time.sleep(poll_interval)
     raise TimeoutError(
-        f"Timed out waiting for {min_count} conversations after {timeout_s}s; last observed count: {last_count}"
+        f"Timed out waiting for {min_count} sessions after {timeout_s}s; last observed count: {last_count}"
     )
 
 
@@ -264,17 +279,14 @@ def _expected_fts_triggers() -> set[str]:
         "messages_fts_ai",
         "messages_fts_au",
         "messages_fts_ad",
-        "action_events_fts_ai",
-        "action_events_fts_au",
-        "action_events_fts_ad",
     }
 
 
 def _content_hashes(db: Path, limit: int = 10) -> list[tuple[str, str]]:
-    """Return (conversation_id, content_hash) for up to *limit* conversations."""
+    """Return (session_id, content_hash) for up to *limit* sessions."""
     with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
         rows = conn.execute(
-            "SELECT conversation_id, content_hash FROM conversations ORDER BY conversation_id LIMIT ?",
+            "SELECT session_id, content_hash FROM sessions ORDER BY session_id LIMIT ?",
             (limit,),
         ).fetchall()
     return [(r[0], r[1]) for r in rows]
@@ -357,14 +369,14 @@ def test_sigkill_recovery(workspace_env: dict[str, Path]) -> None:
 
     Assertions:
     - FTS triggers are present after restart.
-    - No conversations lost (count before == count after).
+    - No sessions lost (count before == count after).
     - Content hashes unchanged.
     - Pending blob refs drained (no leaked leases).
     - Daemon reaches ready state within timeout.
     """
     archive_root = workspace_env["archive_root"]
     corpus_root = archive_root / "corpus" / "projects"
-    db = _db_path()
+    db = archive_root / "index.db"
 
     # 1. Create source files.
     N_SESSIONS = 5
@@ -412,7 +424,7 @@ def test_sigkill_recovery(workspace_env: dict[str, Path]) -> None:
 
         # Record pre-recovery state.
         pre_hashes = _content_hashes(db, limit=N_SESSIONS)
-        conv_count_before = _wait_for_conversations(db, min_count=1, timeout_s=10.0)
+        conv_count_before = _wait_for_sessions(db, min_count=1, timeout_s=10.0)
 
         # 5. Restart daemon.
         restart: subprocess.Popen[bytes] = subprocess.Popen(
@@ -435,7 +447,7 @@ def test_sigkill_recovery(workspace_env: dict[str, Path]) -> None:
             assert _wait_for_daemon_ready(restart, timeout_s=30.0), "Daemon did not reach ready state after restart"
 
             # Let it catch up.
-            _wait_for_conversations(db, min_count=N_SESSIONS, timeout_s=60.0)
+            _wait_for_sessions(db, min_count=N_SESSIONS, timeout_s=60.0)
 
             # 6. Assertions.
             # FTS triggers present.
@@ -443,17 +455,13 @@ def test_sigkill_recovery(workspace_env: dict[str, Path]) -> None:
             missing = _expected_fts_triggers() - set(triggers)
             assert not missing, f"Missing FTS triggers after restart: {sorted(missing)}"
 
-            # Conversations not lost.
+            # Sessions not lost.
             conv_count_after = (
-                sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-                .execute("SELECT COUNT(*) FROM conversations")
-                .fetchone()[0]
+                sqlite3.connect(f"file:{db}?mode=ro", uri=True).execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
             )
-            assert conv_count_after >= conv_count_before, (
-                f"Conversations lost: {conv_count_before} → {conv_count_after}"
-            )
+            assert conv_count_after >= conv_count_before, f"Sessions lost: {conv_count_before} → {conv_count_after}"
             # All N sessions should be present eventually.
-            assert conv_count_after == N_SESSIONS, f"Expected {N_SESSIONS} conversations, got {conv_count_after}"
+            assert conv_count_after == N_SESSIONS, f"Expected {N_SESSIONS} sessions, got {conv_count_after}"
 
             # Content hashes unchanged (sample the first few that were ingested
             # before SIGKILL).
@@ -490,7 +498,7 @@ def test_wal_checkpoint_recovery(workspace_env: dict[str, Path]) -> None:
     """
     archive_root = workspace_env["archive_root"]
     corpus_root = archive_root / "corpus" / "projects"
-    db = _db_path()
+    db = archive_root / "index.db"
 
     # Write enough sessions to keep the daemon busy.
     N_SESSIONS = 10
@@ -611,7 +619,7 @@ def test_daemon_memory_pressure(workspace_env: dict[str, Path]) -> None:
     """
     archive_root = workspace_env["archive_root"]
     corpus_root = archive_root / "corpus" / "projects"
-    db = _db_path()
+    db = archive_root / "index.db"
 
     N_SESSIONS = 8
     MESSAGES_PER_SESSION = 100
@@ -655,9 +663,9 @@ def test_daemon_memory_pressure(workspace_env: dict[str, Path]) -> None:
         )
         _assert_daemon_alive(proc)
 
-        # Wait for all conversations to be ingested.
-        conv_count = _wait_for_conversations(db, min_count=N_SESSIONS, timeout_s=300.0)
-        assert conv_count == N_SESSIONS, f"Expected {N_SESSIONS} conversations, got {conv_count}"
+        # Wait for all sessions to be ingested.
+        conv_count = _wait_for_sessions(db, min_count=N_SESSIONS, timeout_s=300.0)
+        assert conv_count == N_SESSIONS, f"Expected {N_SESSIONS} sessions, got {conv_count}"
 
         # Assert daemon is still alive (did not OOM).
         assert proc.poll() is None, f"Daemon exited prematurely with code {proc.returncode} — likely OOM"
@@ -687,7 +695,7 @@ def test_large_session_file(workspace_env: dict[str, Path]) -> None:
     """
     archive_root = workspace_env["archive_root"]
     corpus_root = archive_root / "corpus" / "projects"
-    db = _db_path()
+    db = archive_root / "index.db"
 
     session_id = "large-session-000000000000"
     n_messages = 50_000
@@ -763,7 +771,7 @@ def test_large_session_file(workspace_env: dict[str, Path]) -> None:
         while time.monotonic() < fts_deadline:
             try:
                 with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
-                    fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
+                    fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0]
                 if fts_count >= n_messages:
                     break
             except sqlite3.OperationalError as exc:
@@ -798,7 +806,7 @@ def test_concurrent_access_safety(workspace_env: dict[str, Path]) -> None:
     """
     archive_root = workspace_env["archive_root"]
     corpus_root = archive_root / "corpus" / "projects"
-    db = _db_path()
+    db = archive_root / "index.db"
 
     # Write sessions so the daemon stays busy.
     N_SESSIONS = 5
@@ -834,7 +842,10 @@ def test_concurrent_access_safety(workspace_env: dict[str, Path]) -> None:
         _assert_daemon_alive(proc)
 
         # Wait for ingest to begin.
-        _wait_for_messages(db, min_count=1, timeout_s=60.0)
+        try:
+            _wait_for_messages(db, min_count=1, timeout_s=60.0)
+        except TimeoutError as exc:
+            raise TimeoutError(f"{exc}\n{_daemon_debug(proc, db=db, corpus_root=corpus_root)}") from exc
 
         # 1. Second daemon should fail (pidfile lock).
         result = subprocess.run(

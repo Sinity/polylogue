@@ -31,7 +31,7 @@ SCHEMAS_DIR = _get_root() / "polylogue" / "schemas" / "providers"
 
 ANNOTATION_MAP: dict[str, list[tuple[list[str], str]]] = {
     "chatgpt": [
-        (["properties.title"], "conversation_title"),
+        (["properties.title"], "session_title"),
         (["properties.create_time"], "message_timestamp"),
         (["properties.mapping"], "message_container"),
         # mapping.*.message(anyOf→props).author.role → message_role
@@ -61,7 +61,7 @@ ANNOTATION_MAP: dict[str, list[tuple[list[str], str]]] = {
         ),
     ],
     "claude-ai": [
-        (["properties.name"], "conversation_title"),
+        (["properties.name"], "session_title"),
         (["properties.created_at"], "message_timestamp"),
         (["properties.chat_messages"], "message_container"),
         (["properties.chat_messages", "items", "properties.sender"], "message_role"),
@@ -80,7 +80,7 @@ ANNOTATION_MAP: dict[str, list[tuple[list[str], str]]] = {
             "message_body",
         ),
         (["properties.timestamp"], "message_timestamp"),
-        (["properties.gitBranch"], "conversation_title"),
+        (["properties.gitBranch"], "session_title"),
     ],
     "codex": [
         (["properties.timestamp"], "message_timestamp"),
@@ -96,7 +96,7 @@ ANNOTATION_MAP: dict[str, list[tuple[list[str], str]]] = {
             ],
             "message_body",
         ),
-        (["properties.payload", "properties.name"], "conversation_title"),
+        (["properties.payload", "properties.name"], "session_title"),
     ],
     "gemini": [
         (
@@ -133,7 +133,7 @@ ANNOTATION_MAP: dict[str, list[tuple[list[str], str]]] = {
             ],
             "message_timestamp",
         ),
-        (["properties.runSettings", "properties.thinkingLevel"], "conversation_title"),
+        (["properties.runSettings", "properties.thinkingLevel"], "session_title"),
     ],
 }
 

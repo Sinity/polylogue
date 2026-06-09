@@ -29,7 +29,7 @@ mutation_campaigns:
       - polylogue/cli/query_actions.py
       - polylogue/cli/query_output.py
     tests:
-      - tests/unit/cli/test_query_exec.py
+      - tests/unit/cli/test_query_verbs_runtime.py
       - tests/unit/cli/test_query_exec_laws.py
       - tests/unit/cli/test_query_fmt.py
     status: active
@@ -51,17 +51,16 @@ mutation_campaigns:
 
   - name: filters
     description: >
-      ConversationFilter semantics and summary/picker contracts
+      SessionFilter semantics and summary/picker contracts
     paths_to_mutate:
       - polylogue/archive/filter/filters.py
     tests:
-      - tests/unit/core/test_filters_schemas.py
       - tests/unit/core/test_filters_props.py
     status: active
 
   - name: fts5
     description: >
-      FTS5 query escaping and conversation search semantics
+      FTS5 query escaping and session search semantics
     paths_to_mutate:
       - polylogue/storage/search_providers/fts5.py
     tests:
@@ -70,7 +69,7 @@ mutation_campaigns:
 
   - name: hybrid
     description: >
-      Hybrid search fusion and ranked-conversation resolution
+      Hybrid search fusion and ranked-session resolution
     paths_to_mutate:
       - polylogue/storage/search_providers/hybrid.py
     tests:
@@ -89,13 +88,13 @@ mutation_campaigns:
 
   - name: models
     description: >
-      Message/Conversation semantic helpers and pairing logic
+      Message/Session semantic helpers and pairing logic
     paths_to_mutate:
       - polylogue/archive/models.py
     tests:
       - tests/unit/core/test_models.py
       - tests/unit/core/test_message_laws.py
-      - tests/unit/core/test_conversation_semantics.py
+      - tests/unit/core/test_session_semantics.py
     status: active
 
   - name: pipeline-services
@@ -137,7 +136,6 @@ mutation_campaigns:
       - polylogue/sources/providers
       - polylogue/schemas/registry.py
     tests:
-      - tests/unit/sources/test_unified_semantic_laws.py
       - tests/unit/sources/test_null_guard_properties.py
       - tests/unit/sources/test_models.py
       - tests/unit/sources/test_parsers_props.py
@@ -221,7 +219,6 @@ mutation_campaigns:
     tests:
       - tests/unit/sources/test_parsers_props.py
       - tests/unit/sources/test_source_laws.py
-      - tests/unit/sources/test_unified_semantic_laws.py
       - tests/unit/sources/test_parsers_base.py
       - tests/unit/sources/test_parsers_chatgpt.py
       - tests/unit/sources/test_parsers_codex.py
@@ -268,14 +265,14 @@ mutation_campaigns:
 benchmark_campaigns:
   - name: pipeline
     description: >
-      Index rebuild/update, action-event repair, plus hashing/semantic helper benchmark domain
+      Index rebuild/update, action repair, plus hashing/semantic helper benchmark domain
     tests:
       - tests/benchmarks/test_pipeline.py
     status: active
 
   - name: search-filters
     description: >
-      FTS and ConversationFilter benchmark domain
+      FTS and SessionFilter benchmark domain
     tests:
       - tests/benchmarks/test_search_filters.py
     status: active

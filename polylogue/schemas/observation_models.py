@@ -34,7 +34,7 @@ class SchemaUnit:
     cluster_payload: SchemaClusterPayload
     schema_samples: JSONDocumentList
     artifact_kind: str
-    conversation_id: str | None = None
+    session_id: str | None = None
     raw_id: str | None = None
     source_path: str | None = None
     bundle_scope: str | None = None

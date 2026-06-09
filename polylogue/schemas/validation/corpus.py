@@ -10,7 +10,8 @@ from typing import TypeAlias
 
 from polylogue.archive.raw_payload import RawPayloadEnvelope, build_raw_payload_envelope
 from polylogue.core.common import format_malformed_jsonl_error as _format_malformed_jsonl_error
-from polylogue.core.provider_identity import CORE_RUNTIME_PROVIDERS
+from polylogue.core.enums import Origin, Provider
+from polylogue.core.sources import origin_from_provider
 from polylogue.schemas.validator import SchemaValidator
 from polylogue.storage.blob_store import get_blob_store
 from polylogue.storage.sqlite.connection_profile import open_connection
@@ -24,30 +25,67 @@ VerificationSqlParams: TypeAlias = tuple[VerificationSqlParam, ...]
 VerificationUpdate: TypeAlias = tuple[str, str, str, str | None]
 
 
+# Reverse of ``origin_from_provider``: map a ``origin``
+# token back to the legacy provider token the verification flow filters and
+# reports on. ``origin_from_provider`` collapses both ``gemini`` and ``drive``
+# onto ``aistudio-drive``; the canonical reverse choice is ``drive``.
+_PROVIDER_BY_ORIGIN: dict[str, str] = {
+    Origin.CHATGPT_EXPORT.value: Provider.CHATGPT.value,
+    Origin.CLAUDE_AI_EXPORT.value: Provider.CLAUDE_AI.value,
+    Origin.CLAUDE_CODE_SESSION.value: Provider.CLAUDE_CODE.value,
+    Origin.CODEX_SESSION.value: Provider.CODEX.value,
+    Origin.GEMINI_CLI_SESSION.value: Provider.GEMINI_CLI.value,
+    Origin.HERMES_SESSION.value: Provider.HERMES.value,
+    Origin.ANTIGRAVITY_SESSION.value: Provider.ANTIGRAVITY.value,
+    Origin.AISTUDIO_DRIVE.value: Provider.DRIVE.value,
+    Origin.UNKNOWN_EXPORT.value: Provider.UNKNOWN.value,
+}
+
+
+def _provider_for_origin(origin: str) -> str:
+    return _PROVIDER_BY_ORIGIN.get(origin, Provider.UNKNOWN.value)
+
+
 # ---------------------------------------------------------------------------
 # Row iteration helpers
 # ---------------------------------------------------------------------------
 
 
 def verification_provider_clause(providers: list[str]) -> tuple[str, tuple[str, ...]]:
-    provider_placeholders = ",".join("?" for _ in providers)
-    runtime_placeholders = ",".join("?" for _ in CORE_RUNTIME_PROVIDERS)
-    clause = (
-        f"payload_provider IN ({provider_placeholders}) "
-        f"OR (payload_provider IS NULL AND source_name IN ({provider_placeholders})) "
-        f"OR (payload_provider IS NULL AND source_name NOT IN ({runtime_placeholders}))"
-    )
-    params: tuple[str, ...] = (*providers, *providers, *CORE_RUNTIME_PROVIDERS)
-    return clause, params
+    """Build a `raw_sessions.origin` filter for requested providers.
+
+    raw rows carry a single ``origin`` token rather than the
+    legacy ``payload_provider`` / ``source_name`` pair. Each requested
+    provider token is mapped to its archive origin via
+    :func:`origin_from_provider`; the row matches when its ``origin`` is in
+    that set.
+    """
+    origins = [origin_from_provider(Provider.from_string(p)).value for p in providers]
+    placeholders = ",".join("?" for _ in origins)
+    clause = f"origin IN ({placeholders})"
+    return clause, tuple(origins)
 
 
 def _row_payload_data(row: sqlite3.Row) -> VerificationRow:
+    origin = str(row["origin"])
     return (
         str(row["raw_id"]),
-        str(row["source_name"]),
-        row["payload_provider"],
+        _provider_for_origin(origin),
+        _provider_for_origin(origin),
         str(row["source_path"] or ""),
     )
+
+
+def _blob_hash_hex(row: sqlite3.Row) -> str:
+    """Return the lowercase hex digest addressing the row's raw payload blob.
+
+    Native ``raw_sessions.blob_hash`` is the 32-byte SHA-256 digest stored as
+    a BLOB; the blob store addresses files by hex digest.
+    """
+    blob_hash = row["blob_hash"]
+    if isinstance(blob_hash, (bytes, bytearray)):
+        return bytes(blob_hash).hex()
+    return str(blob_hash)
 
 
 def iter_verification_rows(
@@ -68,7 +106,7 @@ def iter_verification_rows(
         last_rowid = 0
 
         if bounded_offset > 0:
-            offset_query = "SELECT rowid FROM raw_conversations "
+            offset_query = "SELECT rowid FROM raw_sessions "
             if provider_where:
                 offset_query += f"WHERE {provider_where} "
             offset_query += "ORDER BY rowid LIMIT 1 OFFSET ?"
@@ -77,7 +115,7 @@ def iter_verification_rows(
                 return
             last_rowid = row[0]
 
-        base_query = "SELECT rowid, raw_id, source_name, payload_provider, source_path FROM raw_conversations "
+        base_query = "SELECT rowid, raw_id, origin, source_path, blob_hash FROM raw_sessions "
         records_fetched = 0
         while True:
             if bounded_limit is not None:
@@ -173,27 +211,33 @@ def apply_quarantine_updates(
     *,
     updates: list[VerificationUpdate],
 ) -> None:
-    validated_at = datetime.now(tz=timezone.utc).isoformat()
-    for raw_id, reason, provider, payload_provider in updates:
+    """Mark malformed/undecodable raw rows as failed on `raw_sessions`.
+
+    The raw row carries a single ``origin`` and millisecond
+    timestamps; there is no ``payload_provider`` / ``validation_provider``
+    column to rewrite, so the legacy provider fields are dropped. The
+    ``provider`` / ``payload_provider`` elements of each update are retained
+    only for caller bookkeeping and are not persisted.
+    """
+    validated_at_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
+    for raw_id, reason, _provider, _payload_provider in updates:
         conn.execute(
             """
-            UPDATE raw_conversations
+            UPDATE raw_sessions
             SET validation_status = 'failed',
                 validation_error = ?,
                 validation_drift_count = 0,
-                validation_provider = ?,
                 validation_mode = 'strict',
-                validated_at = ?,
-                payload_provider = COALESCE(?, payload_provider)
+                validated_at_ms = ?
             WHERE raw_id = ?
             """,
-            (reason, provider, validated_at, payload_provider, raw_id),
+            (reason, validated_at_ms, raw_id),
         )
         conn.execute(
             """
-            UPDATE raw_conversations
+            UPDATE raw_sessions
             SET parse_error = COALESCE(parse_error, ?)
-            WHERE raw_id = ? AND parsed_at IS NULL
+            WHERE raw_id = ? AND parsed_at_ms IS NULL
             """,
             (reason, raw_id),
         )
@@ -205,9 +249,15 @@ def verify_raw_corpus(
     db_path: Path,
     request: SchemaVerificationRequest,
 ) -> SchemaVerificationReport:
-    """Run non-mutating schema verification over ``raw_conversations``."""
+    """Run schema verification over the ``raw_sessions`` corpus.
+
+    ``db_path`` is the active ``index.db``; the raw acquisition rows live in
+    the sibling ``source.db`` of the same archive. The corpus is read
+    (and, when ``quarantine_malformed`` is set, updated) on ``source.db``.
+    """
     bounded_limit, bounded_offset = bounded_window(request.record_limit, request.record_offset)
-    if not db_path.exists():
+    source_db_path = db_path.parent / "source.db"
+    if not source_db_path.exists():
         return SchemaVerificationReport(
             providers={},
             max_samples=request.max_samples,
@@ -220,7 +270,7 @@ def verify_raw_corpus(
     total_records = 0
     provider_filter = set(request.providers or [])
 
-    conn = open_connection(db_path)
+    conn = open_connection(source_db_path)
     conn.row_factory = sqlite3.Row
     try:
         quarantine_updates: list[VerificationUpdate] = []
@@ -235,7 +285,7 @@ def verify_raw_corpus(
             raw_id, raw_provider, stored_payload_provider, source_path = _row_payload_data(row)
             candidate_provider = str(stored_payload_provider or raw_provider)
 
-            raw_source = blob_store.blob_path(raw_id)
+            raw_source = blob_store.blob_path(_blob_hash_hex(row))
 
             envelope: RawPayloadEnvelope | None = None
             payload: object = None

@@ -220,17 +220,17 @@ class TestStatusEventEtag:
 class TestGranularEventKinds:
     """#1204 — granular SSE topics for selective subscription and live tail."""
 
-    def test_emit_conversation_appended_payload_shape(self, empty_events_db: Path) -> None:
-        from polylogue.daemon.events import emit_conversation_appended, query_daemon_events
+    def test_emit_session_appended_payload_shape(self, empty_events_db: Path) -> None:
+        from polylogue.daemon.events import emit_session_appended, query_daemon_events
 
-        emit_conversation_appended(
+        emit_session_appended(
             source_name="claude-code-session",
             succeeded_file_count=3,
             failed_file_count=1,
             source_paths=["/tmp/a.jsonl", "/tmp/b.jsonl"],
         )
         events = query_daemon_events(limit=10)
-        assert events[0]["kind"] == "conversation.appended"
+        assert events[0]["kind"] == "session.appended"
         payload = cast("dict[str, object]", events[0]["payload"])
         assert payload["source_name"] == "claude-code-session"
         assert payload["succeeded_file_count"] == 3
@@ -241,7 +241,7 @@ class TestGranularEventKinds:
         from polylogue.daemon.events import emit_message_appended, query_daemon_events
 
         emit_message_appended(
-            conversation_id="conv-abc",
+            session_id="conv-abc",
             source_name="codex",
             appended_count=4,
             source_path="/tmp/session.json",
@@ -249,7 +249,7 @@ class TestGranularEventKinds:
         events = query_daemon_events(limit=10)
         assert events[0]["kind"] == "message.appended"
         payload = cast("dict[str, object]", events[0]["payload"])
-        assert payload["conversation_id"] == "conv-abc"
+        assert payload["session_id"] == "conv-abc"
         assert payload["appended_count"] == 4
         assert payload["source_path"] == "/tmp/session.json"
 
@@ -284,13 +284,13 @@ class TestGranularEventKinds:
 
     def test_selective_subscription_via_kinds(self, empty_events_db: Path) -> None:
         from polylogue.daemon.events import (
-            emit_conversation_appended,
             emit_message_appended,
             emit_progress_update,
+            emit_session_appended,
         )
 
-        emit_conversation_appended(source_name=None, succeeded_file_count=1)
-        emit_message_appended(conversation_id="c", appended_count=1)
+        emit_session_appended(source_name=None, succeeded_file_count=1)
+        emit_message_appended(session_id="c", appended_count=1)
         emit_progress_update(operation_id="op", operation_kind="x", completed=1)
 
         handler = _make_handler(
@@ -310,7 +310,7 @@ class TestBackpressureCoalescing:
         from polylogue.daemon.events import emit_message_appended
 
         for _ in range(20):
-            emit_message_appended(conversation_id="c", appended_count=1)
+            emit_message_appended(session_id="c", appended_count=1)
 
         handler = _make_handler("GET", "/api/events?poll=1&since=0&coalesce=5")
         send_json = _capture_json(handler)
@@ -331,7 +331,7 @@ class TestBackpressureCoalescing:
         from polylogue.daemon.events import emit_message_appended
 
         for _ in range(3):
-            emit_message_appended(conversation_id="c", appended_count=1)
+            emit_message_appended(session_id="c", appended_count=1)
 
         handler = _make_handler("GET", "/api/events?poll=1&since=0&coalesce=10")
         send_json = _capture_json(handler)
@@ -345,7 +345,7 @@ class TestBackpressureCoalescing:
         from polylogue.daemon.events import emit_message_appended
 
         for _ in range(15):
-            emit_message_appended(conversation_id="c", appended_count=1)
+            emit_message_appended(session_id="c", appended_count=1)
 
         handler = _make_handler("GET", "/api/events?since=0&max_seconds=1&coalesce=5")
         handler.do_GET()

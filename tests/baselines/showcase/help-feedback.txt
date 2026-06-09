@@ -1,0 +1,11 @@
+Usage: polylogue feedback [OPTIONS] COMMAND [ARGS]...
+
+  Record and inspect learning corrections for derived insights.
+
+Options:
+  -h, --help  Show this message and exit.
+
+Commands:
+  clear   Remove one or all corrections for ``session_id``.
+  list    List stored corrections, optionally filtered by session and/or...
+  record  Record a typed correction for ``session_id`` of ``kind``.

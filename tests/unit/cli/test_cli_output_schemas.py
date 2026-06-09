@@ -6,7 +6,7 @@ These tests assert that the published schemas under
 Approach:
 1. Load each published schema as JSON.
 2. Build the corresponding Pydantic payload from a representative
-   instance (synthetic ``Conversation``/``ConversationSummary``).
+   instance (synthetic ``Session``/``SessionSummary``).
 3. Validate the model's ``model_dump(mode='json')`` against the schema
    using ``jsonschema``.
 
@@ -85,23 +85,23 @@ def test_machine_success_payload_validates_against_schema() -> None:
     jsonschema.validate(instance=instance, schema=schema)
 
 
-def test_conversation_list_row_payload_validates_against_schema() -> None:
-    """ConversationListRowPayload must validate against the published schema."""
+def test_session_list_row_payload_validates_against_schema() -> None:
+    """SessionListRowPayload must validate against the published schema."""
     import jsonschema
 
     from polylogue.surfaces.payloads import (
-        ConversationFlagsPayload,
-        ConversationListRowPayload,
+        SessionFlagsPayload,
+        SessionListRowPayload,
         TargetRefPayload,
     )
 
-    schema = _load_published_schema("conversation-list-row")
-    payload = ConversationListRowPayload(
+    schema = _load_published_schema("session-list-row")
+    payload = SessionListRowPayload(
         id="claude-ai:abc123",
-        provider="claude-ai",
-        title="Example conversation",
-        target_ref=TargetRefPayload.conversation("claude-ai:abc123"),
-        anchor="conversation-claude-ai-abc123",
+        origin="claude-ai-export",
+        title="Example session",
+        target_ref=TargetRefPayload.session("claude-ai:abc123"),
+        anchor="session-claude-ai-abc123",
         date="2026-05-18T12:00:00+00:00",
         messages=42,
         tags=("review", "lab"),
@@ -109,7 +109,7 @@ def test_conversation_list_row_payload_validates_against_schema() -> None:
         words=1234,
         repo="polylogue",
         cwd_display="/realm/project/polylogue",
-        flags=ConversationFlagsPayload(has_thinking=True, has_tool_use=True, has_paste=False),
+        flags=SessionFlagsPayload(has_thinking=True, has_tool_use=True, has_paste=False),
     )
     instance = payload.model_dump(mode="json", exclude_none=True)
     jsonschema.validate(instance=instance, schema=schema)
@@ -121,20 +121,20 @@ def test_ndjson_list_output_validates_against_schema() -> None:
 
     from polylogue.cli.query_output_contracts import StructuredRowsDocument
     from polylogue.surfaces.payloads import (
-        ConversationListRowPayload,
+        SessionListRowPayload,
         TargetRefPayload,
         model_json_document,
     )
 
-    schema = _load_published_schema("conversation-list-row")
+    schema = _load_published_schema("session-list-row")
     rows = tuple(
         model_json_document(
-            ConversationListRowPayload(
+            SessionListRowPayload(
                 id=f"claude-ai:row-{i}",
-                provider="claude-ai",
+                origin="claude-ai-export",
                 title=f"Row {i}",
-                target_ref=TargetRefPayload.conversation(f"claude-ai:row-{i}"),
-                anchor=f"conversation-claude-ai-row-{i}",
+                target_ref=TargetRefPayload.session(f"claude-ai:row-{i}"),
+                anchor=f"session-claude-ai-row-{i}",
                 date="2026-05-18T12:00:00+00:00",
                 messages=i + 1,
                 words=10 * (i + 1),

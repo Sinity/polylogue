@@ -8,9 +8,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
 
-from polylogue.archive.query.retrieval_candidates import uses_action_read_model
-from polylogue.archive.query.spec import ConversationQuerySpec
+from polylogue.archive.query.spec import SessionQuerySpec
+from polylogue.core.enums import Origin
 from polylogue.core.json import JSONDocument
+from polylogue.core.sources import provider_from_origin
 from polylogue.readiness import VerifyStatus, get_readiness
 
 logger = logging.getLogger(__name__)
@@ -23,7 +24,7 @@ Severity = Literal["info", "warning", "error"]
 
 @dataclass(frozen=True, slots=True)
 class QueryMissReason:
-    """One observed reason a query may have returned no conversations."""
+    """One observed reason a query may have returned no sessions."""
 
     code: str
     severity: Severity
@@ -51,8 +52,8 @@ class QueryMissDiagnostics:
     message: str
     filters: tuple[str, ...]
     reasons: tuple[QueryMissReason, ...]
-    archive_conversation_count: int | None = None
-    raw_conversation_count: int | None = None
+    archive_session_count: int | None = None
+    raw_session_count: int | None = None
 
     def to_dict(self) -> JSONDocument:
         payload: JSONDocument = {
@@ -60,10 +61,10 @@ class QueryMissDiagnostics:
             "filters": list(self.filters),
             "reasons": [reason.to_dict() for reason in self.reasons],
         }
-        if self.archive_conversation_count is not None:
-            payload["archive_conversation_count"] = self.archive_conversation_count
-        if self.raw_conversation_count is not None:
-            payload["raw_conversation_count"] = self.raw_conversation_count
+        if self.archive_session_count is not None:
+            payload["archive_session_count"] = self.archive_session_count
+        if self.raw_session_count is not None:
+            payload["raw_session_count"] = self.raw_session_count
         return payload
 
     def human_reason_lines(self) -> list[str]:
@@ -110,7 +111,9 @@ def _int_value(value: object) -> int | None:
 
 
 def _providers(stats: object | None) -> dict[str, int]:
-    value = getattr(stats, "providers", None)
+    value = getattr(stats, "origins", None)
+    if not isinstance(value, Mapping):
+        value = getattr(stats, "providers", None)
     if not isinstance(value, Mapping):
         return {}
     providers: dict[str, int] = {}
@@ -121,26 +124,32 @@ def _providers(stats: object | None) -> dict[str, int]:
     return providers
 
 
-def _selected_provider(selection: ConversationQuerySpec) -> str | None:
-    if len(selection.providers) != 1 or selection.excluded_providers:
+def _selected_provider(selection: SessionQuerySpec) -> str | None:
+    # These internal joins remain keyed by provider token; project the single
+    # selected origin back to its canonical provider.
+    if len(selection.origins) != 1 or selection.excluded_origins:
         return None
-    return selection.providers[0].value
+    return provider_from_origin(Origin.from_string(selection.origins[0])).value
 
 
-def _archive_count_for_selection(stats: object | None, selection: ConversationQuerySpec) -> int | None:
-    provider = _selected_provider(selection)
-    if provider is not None:
+def _archive_count_for_selection(stats: object | None, selection: SessionQuerySpec) -> int | None:
+    if len(selection.origins) == 1 and not selection.excluded_origins:
         providers = _providers(stats)
         if providers:
-            return providers.get(provider, 0)
-    return _int_value(getattr(stats, "total_conversations", None))
+            origin = selection.origins[0]
+            if origin in providers:
+                return providers.get(origin, 0)
+            provider = _selected_provider(selection)
+            if provider is not None:
+                return providers.get(provider, 0)
+    return _int_value(getattr(stats, "total_sessions", None))
 
 
 def _query_miss_message(filters: tuple[str, ...]) -> str:
-    return "No conversations matched filters." if filters else "No conversations matched."
+    return "No sessions matched filters." if filters else "No sessions matched."
 
 
-def _readiness_index_reason(config: Config | None, selection: ConversationQuerySpec) -> QueryMissReason | None:
+def _readiness_index_reason(config: Config | None, selection: SessionQuerySpec) -> QueryMissReason | None:
     if config is None:
         return None
     if not isinstance(getattr(config, "db_path", None), Path):
@@ -169,44 +178,12 @@ def _readiness_index_reason(config: Config | None, selection: ConversationQueryS
     )
 
 
-def _state_ready(state: object) -> bool:
-    ready = getattr(state, "ready", True)
-    return bool(ready)
-
-
-def _state_repair_count(state: object) -> int | None:
-    return _int_value(getattr(state, "repair_item_count", None))
-
-
-def _state_repair_detail(state: object) -> str | None:
-    repair_detail = getattr(state, "repair_detail", None)
-    if not callable(repair_detail):
-        return None
-    detail = repair_detail()
-    return str(detail) if detail else None
-
-
 async def _action_read_model_reason(
     repository: object,
-    selection: ConversationQuerySpec,
+    selection: SessionQuerySpec,
 ) -> QueryMissReason | None:
-    try:
-        plan = selection.to_plan()
-    except Exception:
-        logger.exception("_action_read_model_reason: selection.to_plan() failed")
-        return None
-    if not uses_action_read_model(plan):
-        return None
-    state = await _call_optional(repository, "get_action_event_artifact_state")
-    if state is None or _state_ready(state):
-        return None
-    return QueryMissReason(
-        code="action_read_model_degraded",
-        severity="warning",
-        summary="Action-event read model is not ready.",
-        detail=_state_repair_detail(state),
-        count=_state_repair_count(state),
-    )
+    del repository, selection
+    return None
 
 
 def _archive_empty_reason(archive_count: int | None) -> QueryMissReason | None:
@@ -215,7 +192,7 @@ def _archive_empty_reason(archive_count: int | None) -> QueryMissReason | None:
     return QueryMissReason(
         code="archive_empty",
         severity="info",
-        summary="The selected archive scope has no materialized conversations.",
+        summary="The selected archive scope has no materialized sessions.",
         count=0,
     )
 
@@ -228,7 +205,7 @@ def _raw_backlog_reason(raw_count: int | None, archive_count: int | None) -> Que
     return QueryMissReason(
         code="raw_ingest_backlog",
         severity="warning",
-        summary="Raw ingested conversations exist but are not materialized into searchable conversations.",
+        summary="Raw ingested sessions exist but are not materialized into searchable sessions.",
         count=raw_count,
     )
 
@@ -238,9 +215,9 @@ def _fallback_reason(archive_count: int | None, reasons: list[QueryMissReason]) 
         return None
     if archive_count is None or archive_count > 0:
         return QueryMissReason(
-            code="no_matching_conversation",
+            code="no_matching_session",
             severity="info",
-            summary="The archive is reachable, but no materialized conversation matched this selection.",
+            summary="The archive is reachable, but no materialized session matched this selection.",
             count=archive_count,
         )
     return None
@@ -248,7 +225,7 @@ def _fallback_reason(archive_count: int | None, reasons: list[QueryMissReason]) 
 
 async def diagnose_query_miss(
     repository: object,
-    selection: ConversationQuerySpec,
+    selection: SessionQuerySpec,
     *,
     config: Config | None = None,
 ) -> QueryMissDiagnostics:
@@ -258,7 +235,7 @@ async def diagnose_query_miss(
     archive_count = _archive_count_for_selection(stats, selection)
     raw_count_result = await _call_optional(
         repository,
-        "get_raw_conversation_count",
+        "get_raw_session_count",
         provider=_selected_provider(selection),
     )
     raw_count = _int_value(raw_count_result)
@@ -284,8 +261,8 @@ async def diagnose_query_miss(
         message=_query_miss_message(filters),
         filters=filters,
         reasons=tuple(reasons),
-        archive_conversation_count=archive_count,
-        raw_conversation_count=raw_count,
+        archive_session_count=archive_count,
+        raw_session_count=raw_count,
     )
 
 

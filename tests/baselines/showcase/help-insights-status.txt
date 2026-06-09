@@ -3,11 +3,11 @@ Usage: polylogue insights status [OPTIONS]
   Report insight materialization coverage and readiness.
 
 Options:
-  --insight TEXT   Insight readiness target. May be repeated.
-  --provider TEXT  Limit provider coverage details to one provider.
-  --since TEXT     Limit coverage details to rows at/after this timestamp or
-                   date.
-  --until TEXT     Limit coverage details to rows at/before this timestamp or
-                   date.
-  --format [json]  Output format.
-  -h, --help       Show this message and exit.
+  --insight TEXT       Insight readiness target. May be repeated.
+  -o, --origin TEXT    Limit origin coverage details to one origin.
+  --since TEXT         Limit coverage details to rows at/after this timestamp
+                       or date.
+  --until TEXT         Limit coverage details to rows at/before this timestamp
+                       or date.
+  -f, --format [json]  Output format.
+  -h, --help           Show this message and exit.

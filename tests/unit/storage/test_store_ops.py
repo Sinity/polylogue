@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib
 import json
 import shutil
@@ -19,15 +20,17 @@ from hypothesis import strategies as st
 from pydantic import ValidationError
 from typing_extensions import TypedDict, Unpack
 
-from polylogue.archive.conversation.models import Conversation
 from polylogue.archive.message.messages import MessageCollection
-from polylogue.storage.query_models import ConversationRecordQuery
-from polylogue.storage.repository import ConversationRepository
+from polylogue.archive.session.domain_models import Session
+from polylogue.core.enums import Origin
+from polylogue.core.sources import origin_from_provider
+from polylogue.storage.query_models import SessionRecordQuery
+from polylogue.storage.repository import SessionRepository
 from polylogue.storage.runtime import (
     AttachmentRecord,
     ContentBlockRecord,
-    ConversationRecord,
     MessageRecord,
+    SessionRecord,
     _json_or_none,
     _make_ref_id,
 )
@@ -35,29 +38,30 @@ from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import open_connection
 from polylogue.types import (
     AttachmentId,
-    ContentBlockType,
+    BlockType,
     ContentHash,
-    ConversationId,
     MessageId,
     Provider,
     SemanticBlockType,
+    SessionId,
 )
 from tests.infra.storage_records import (
     _prune_attachment_refs,
     make_attachment,
-    make_conversation,
     make_message,
+    make_session,
+    save_session_to_archive,
     store_records,
     upsert_attachment,
-    upsert_conversation,
     upsert_message,
+    upsert_session,
 )
-from tests.infra.strategies.messages import conversation_strategy
+from tests.infra.strategies.messages import session_strategy
 from tests.infra.strategies.storage import (
     TagAssignmentSpec,
     TitleSearchSpec,
     expected_tag_counts,
-    seed_conversation_graph,
+    seed_session_graph,
 )
 from tests.infra.strategies.storage import (
     literal_title_search_strategy as infra_title_search_strategy,
@@ -68,7 +72,7 @@ from tests.infra.strategies.storage import (
 
 
 class SimpleTagSpec(TypedDict):
-    conversation_id: str
+    session_id: str
     tags: list[str]
 
 
@@ -87,8 +91,8 @@ class RecordQueryKwargs(TypedDict, total=False):
     limit: int
 
 
-def _conversation_id(value: str) -> ConversationId:
-    return ConversationId(value)
+def _session_id(value: str) -> SessionId:
+    return SessionId(value)
 
 
 def _message_id(value: str) -> MessageId:
@@ -100,14 +104,18 @@ def _attachment_id(value: str) -> AttachmentId:
 
 
 def _content_hash(value: str) -> ContentHash:
-    return ContentHash(value)
+    try:
+        raw = bytes.fromhex(value)
+    except ValueError:
+        return ContentHash(hashlib.sha256(value.encode("utf-8")).hexdigest())
+    return ContentHash(value if len(raw) == 32 else hashlib.sha256(value.encode("utf-8")).hexdigest())
 
 
 def _content_block(
     *,
     block_id: str,
     message_id: str,
-    conversation_id: str,
+    session_id: str,
     block_index: int,
     block_type: str,
     text: str | None = None,
@@ -136,9 +144,9 @@ def _content_block(
     return ContentBlockRecord(
         block_id=block_id,
         message_id=_message_id(message_id),
-        conversation_id=_conversation_id(conversation_id),
+        session_id=_session_id(session_id),
         block_index=block_index,
-        type=ContentBlockType.from_string(block_type),
+        type=BlockType.from_string(block_type),
         text=text,
         tool_name=tool_name,
         tool_id=tool_id,
@@ -148,27 +156,25 @@ def _content_block(
     )
 
 
-def _conversation_record(
+def _session_record(
     *,
-    conversation_id: str,
-    source_name: str,
-    provider_conversation_id: str,
+    session_id: str,
+    origin: str,
+    native_id: str,
     content_hash: str,
     title: str | None = None,
     created_at: str | None = None,
     updated_at: str | None = None,
-    provider_meta: dict[str, object] | None = None,
     metadata: dict[str, object] | None = None,
-) -> ConversationRecord:
-    return ConversationRecord(
-        conversation_id=_conversation_id(conversation_id),
-        source_name=source_name,
-        provider_conversation_id=provider_conversation_id,
+) -> SessionRecord:
+    return SessionRecord(
+        session_id=_session_id(session_id),
+        origin=Origin.from_string(origin),
+        native_id=native_id,
         title=title,
         created_at=created_at,
         updated_at=updated_at,
         content_hash=_content_hash(content_hash),
-        provider_meta=provider_meta,
         metadata=metadata,
     )
 
@@ -176,52 +182,55 @@ def _conversation_record(
 def _attachment_record(
     *,
     attachment_id: str,
-    conversation_id: str,
+    session_id: str,
     message_id: str | None,
     mime_type: str,
     size_bytes: int | None,
-    provider_meta: dict[str, object] | None = None,
+    display_name: str | None = None,
 ) -> AttachmentRecord:
     return AttachmentRecord(
         attachment_id=_attachment_id(attachment_id),
-        conversation_id=_conversation_id(conversation_id),
+        session_id=_session_id(session_id),
         message_id=None if message_id is None else _message_id(message_id),
         mime_type=mime_type,
         size_bytes=size_bytes,
-        provider_meta=provider_meta,
+        display_name=display_name,
+        attachment_native_id=attachment_id,
     )
 
 
-def _ref_id(attachment_id: str, conversation_id: str, message_id: str | None) -> str:
+def _ref_id(attachment_id: str, session_id: str, message_id: str | None) -> str:
     return _make_ref_id(
         _attachment_id(attachment_id),
-        _conversation_id(conversation_id),
+        _session_id(session_id),
         None if message_id is None else _message_id(message_id),
     )
 
 
-def _conversation_model(conversation_id: str) -> Conversation:
-    return Conversation(
-        id=_conversation_id(conversation_id),
-        provider=Provider.CHATGPT,
+def _session_model(session_id: str) -> Session:
+    return Session(
+        id=_session_id(session_id),
+        origin=Origin.CHATGPT_EXPORT,
         messages=MessageCollection.empty(),
     )
 
 
-def _conversation_row(conn: sqlite3.Connection, conversation_id: str) -> sqlite3.Row | None:
+def _session_row(conn: sqlite3.Connection, session_id: str) -> sqlite3.Row | None:
     row = conn.execute(
-        "SELECT * FROM conversations WHERE conversation_id = ?",
-        (conversation_id,),
+        "SELECT * FROM sessions WHERE session_id = ? OR native_id = ? ORDER BY session_id LIMIT 1",
+        (session_id, session_id),
     ).fetchone()
     if row is not None and not isinstance(row, sqlite3.Row):
         raise TypeError(f"expected sqlite3.Row, got {type(row).__name__}")
     return row
 
 
-def _message_count(conn: sqlite3.Connection, conversation_id: str) -> int:
+def _message_count(conn: sqlite3.Connection, session_id: str) -> int:
+    session_row = _session_row(conn, session_id)
+    resolved_session_id = str(session_row["session_id"]) if session_row is not None else session_id
     row = conn.execute(
-        "SELECT COUNT(*) FROM messages WHERE conversation_id = ?",
-        (conversation_id,),
+        "SELECT COUNT(*) FROM messages WHERE session_id = ?",
+        (resolved_session_id,),
     ).fetchone()
     assert row is not None
     return int(row[0])
@@ -229,8 +238,20 @@ def _message_count(conn: sqlite3.Connection, conversation_id: str) -> int:
 
 def _attachment_row(conn: sqlite3.Connection, attachment_id: str) -> sqlite3.Row | None:
     row = conn.execute(
-        "SELECT * FROM attachments WHERE attachment_id = ?",
-        (attachment_id,),
+        """
+        SELECT
+            a.*,
+            a.media_type AS mime_type,
+            a.byte_count AS size_bytes,
+            COALESCE(r.source_url, a.display_name) AS path
+        FROM attachments a
+        LEFT JOIN attachment_refs r ON r.attachment_id = a.attachment_id
+        LEFT JOIN attachment_native_ids ani ON ani.ref_id = r.ref_id
+        WHERE a.attachment_id = ? OR (ani.id_kind = 'attachment' AND ani.native_id = ?)
+        ORDER BY a.attachment_id
+        LIMIT 1
+        """,
+        (attachment_id, attachment_id),
     ).fetchone()
     if row is not None and not isinstance(row, sqlite3.Row):
         raise TypeError(f"expected sqlite3.Row, got {type(row).__name__}")
@@ -248,18 +269,103 @@ def _message_payloads(value: object) -> list[dict[str, object]]:
     return payloads
 
 
-def _record_query(**kwargs: Unpack[RecordQueryKwargs]) -> ConversationRecordQuery:
-    return ConversationRecordQuery(**kwargs)
+def _record_query(**kwargs: Unpack[RecordQueryKwargs]) -> SessionRecordQuery:
+    return SessionRecordQuery(**kwargs)
+
+
+class _MessageStats(TypedDict):
+    total: int
+    user: int
+    assistant: int
+    system: int
+    words_approx: int
+    attachment_refs: int
+    distinct_attachments: int
+    providers: dict[str, int]
+
+
+def _aggregate_message_stats_native(db_path: Path, session_ids: list[str] | None = None) -> _MessageStats:
+    """Aggregate message stats read directly from the archive `index.db`.
+
+    Mirrors the legacy ``backend.queries.aggregate_message_stats`` contract over
+    the archive ``messages`` / ``sessions`` / ``attachment_refs`` tables.
+    """
+    from tests.infra.archive_scenarios import open_index_db
+
+    with open_index_db(db_path) as conn:
+        where = ""
+        params: tuple[str, ...] = ()
+        if session_ids is not None:
+            placeholders = ", ".join("?" for _ in session_ids)
+            where = f" WHERE m.session_id IN ({placeholders})"
+            params = tuple(session_ids)
+        rows = conn.execute(
+            f"SELECT m.role AS role, m.word_count AS word_count FROM messages m{where}",
+            params,
+        ).fetchall()
+        total = len(rows)
+        by_role = {"user": 0, "assistant": 0, "system": 0, "tool": 0}
+        words = 0
+        for row in rows:
+            role = str(row["role"])
+            if role in by_role:
+                by_role[role] += 1
+            words += int(row["word_count"] or 0)
+
+        ref_where = ""
+        if session_ids is not None:
+            placeholders = ", ".join("?" for _ in session_ids)
+            ref_where = f" WHERE ar.session_id IN ({placeholders})"
+        attachment_refs = int(
+            conn.execute(
+                f"SELECT COUNT(*) FROM attachment_refs ar{ref_where}",
+                params,
+            ).fetchone()[0]
+        )
+        distinct_attachments = int(
+            conn.execute(
+                f"SELECT COUNT(DISTINCT ar.attachment_id) FROM attachment_refs ar{ref_where}",
+                params,
+            ).fetchone()[0]
+        )
+
+        provider_where = ""
+        if session_ids is not None:
+            placeholders = ", ".join("?" for _ in session_ids)
+            provider_where = f" WHERE s.session_id IN ({placeholders})"
+        provider_rows = conn.execute(
+            f"SELECT s.origin AS origin, COUNT(*) AS count FROM sessions s{provider_where} GROUP BY s.origin",
+            params,
+        ).fetchall()
+        providers = {_origin_to_provider(str(row["origin"])): int(row["count"]) for row in provider_rows}
+
+    return {
+        "total": total,
+        "user": by_role["user"],
+        "assistant": by_role["assistant"],
+        "system": by_role["system"],
+        "words_approx": words,
+        "attachment_refs": attachment_refs,
+        "distinct_attachments": distinct_attachments,
+        "providers": providers,
+    }
+
+
+def _origin_to_provider(origin: str) -> str:
+    from polylogue.api.archive import _provider_for_archive_origin
+
+    return _provider_for_archive_origin(origin).value
 
 
 @pytest.mark.asyncio
-async def test_aggregate_message_stats_reports_role_counts_and_words(tmp_path: Path) -> None:
-    from tests.infra.storage_records import ConversationBuilder
+async def test_aggregate_message_stats_reports_role_counts_and_words(workspace_env: dict[str, Path]) -> None:
+    from tests.infra.archive_scenarios import native_session_id_for
+    from tests.infra.storage_records import SessionBuilder, db_setup
 
-    db_path = tmp_path / "stats.db"
+    db_path = db_setup(workspace_env)
 
     (
-        ConversationBuilder(db_path, "conv-stats-a")
+        SessionBuilder(db_path, "conv-stats-a")
         .provider("chatgpt")
         .add_message("m-user-a", role="user", text="hello world")
         .add_message("m-assistant-a", role="assistant", text="answer words here")
@@ -267,19 +373,15 @@ async def test_aggregate_message_stats_reports_role_counts_and_words(tmp_path: P
         .save()
     )
     (
-        ConversationBuilder(db_path, "conv-stats-b")
+        SessionBuilder(db_path, "conv-stats-b")
         .provider("codex")
         .add_message("m-system-b", role="system", text="system note")
         .add_message("m-user-b", role="user", text="follow up")
         .save()
     )
 
-    backend = SQLiteBackend(db_path=db_path)
-    try:
-        unfiltered = await backend.queries.aggregate_message_stats()
-        filtered = await backend.queries.aggregate_message_stats(["conv-stats-a"])
-    finally:
-        await backend.close()
+    unfiltered = _aggregate_message_stats_native(db_path)
+    filtered = _aggregate_message_stats_native(db_path, [native_session_id_for("chatgpt", "conv-stats-a")])
 
     assert unfiltered["total"] == 4
     assert unfiltered["user"] == 2
@@ -300,527 +402,463 @@ async def test_aggregate_message_stats_reports_role_counts_and_words(tmp_path: P
     assert filtered["providers"] == {"chatgpt": 1}
 
 
-@pytest.mark.asyncio
-async def test_backend_referenced_path_filter_contract(tmp_path: Path) -> None:
-    """Low-level list/count filters must honor persisted semantic paths."""
-    from polylogue.storage.action_events.rebuild_runtime import rebuild_action_event_read_model_sync
-    from tests.infra.storage_records import ConversationBuilder
+def _file_read_block(*, message_id: str, session_id: str, path: str, block_index: int = 0) -> ContentBlockRecord:
+    """A native ``Read`` tool_use block whose path lives in ``tool_input.file_path``.
 
-    db_path = tmp_path / "path-filter.db"
+    Native ``tool_path`` (and therefore referenced-path filtering) is the
+    generated column ``json_extract(tool_input, '$.file_path' | '$.path')``, so
+    the path must be carried in ``tool_input`` rather than block metadata.
+    """
+    return _content_block(
+        block_id=f"{message_id}-{block_index}",
+        message_id=message_id,
+        session_id=session_id,
+        block_index=block_index,
+        block_type="tool_use",
+        tool_name="Read",
+        tool_input=json.dumps({"file_path": path}),
+        semantic_type="file_read",
+    )
+
+
+@pytest.mark.asyncio
+async def test_backend_referenced_path_filter_contract(workspace_env: dict[str, Path]) -> None:
+    """Native substrate list/count filters must honor persisted semantic paths."""
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.archive_scenarios import native_session_id_for
+    from tests.infra.storage_records import SessionBuilder, db_setup
+
+    db_path = db_setup(workspace_env)
+    archive_root = workspace_env["archive_root"]
     target_path = "/workspace/polylogue/README.md"
     other_path = "/workspace/polylogue/docs/cli-reference.md"
 
     (
-        ConversationBuilder(db_path, "conv-readme")
+        SessionBuilder(db_path, "conv-readme")
         .provider("claude-code")
         .title("README work")
         .add_message(
             "m1",
             role="assistant",
-            text="Inspecting the repository README",
             content_blocks=[
-                _content_block(
-                    block_id="blk-readme-0",
-                    message_id="m1",
-                    conversation_id="conv-readme",
-                    block_index=0,
-                    block_type="tool_use",
-                    tool_name="Read",
-                    metadata=f'{{"path":"{target_path}"}}',
-                    semantic_type="file_read",
-                )
+                {"type": "text", "text": "Inspecting the repository README"},
+                _file_read_block(message_id="m1", session_id="conv-readme", path=target_path),
             ],
         )
         .save()
     )
 
     (
-        ConversationBuilder(db_path, "conv-other")
+        SessionBuilder(db_path, "conv-other")
         .provider("claude-code")
         .title("CLI docs work")
         .add_message(
             "m2",
             role="assistant",
-            text="Inspecting docs",
             content_blocks=[
-                _content_block(
-                    block_id="blk-other-0",
-                    message_id="m2",
-                    conversation_id="conv-other",
-                    block_index=0,
-                    block_type="tool_use",
-                    tool_name="Read",
-                    metadata=f'{{"path":"{other_path}"}}',
-                    semantic_type="file_read",
-                )
+                {"type": "text", "text": "Inspecting docs"},
+                _file_read_block(message_id="m2", session_id="conv-other", path=other_path),
             ],
         )
         .save()
     )
 
-    with open_connection(db_path) as conn:
-        rebuild_action_event_read_model_sync(conn)
-        conn.commit()
-
-    backend = SQLiteBackend(db_path=db_path)
-    try:
-        matches = await backend.queries.list_conversations(_record_query(referenced_path=(target_path,), limit=10))
-        assert [record.conversation_id for record in matches] == ["conv-readme"]
-        assert await backend.queries.count_conversations(_record_query(referenced_path=(target_path,))) == 1
-    finally:
-        await backend.close()
+    expected_id = native_session_id_for("claude-code", "conv-readme")
+    with ArchiveStore.open_existing(archive_root) as archive:
+        matches = archive.list_summaries(referenced_paths=(target_path,), limit=10)
+        assert [summary.session_id for summary in matches] == [expected_id]
+        assert archive.count_sessions(referenced_paths=(target_path,)) == 1
 
 
 @pytest.mark.asyncio
-async def test_list_summaries_by_query_omits_large_provider_meta_payloads(tmp_path: Path) -> None:
-    db_path = tmp_path / "summary-provider-meta.db"
-    large_meta = {"raw": "x" * 100_000, "source": "codex"}
+async def test_list_summaries_by_query_uses_current_session_columns(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
+    initialize_active_archive_root(tmp_path)
+    db_path = tmp_path / "index.db"
     with open_connection(db_path) as conn:
-        upsert_conversation(
+        upsert_session(
             conn,
-            make_conversation(
+            make_session(
                 "conv-large-meta",
                 source_name="codex",
-                title="Large Meta Conversation",
-                provider_meta=large_meta,
+                title="Large Meta Session",
                 metadata={"tag": "kept"},
             ),
         )
         conn.commit()
 
     backend = SQLiteBackend(db_path=db_path)
-    repo = ConversationRepository(backend=backend)
+    repo = SessionRepository(backend=backend)
     try:
         summaries = await repo.list_summaries_by_query(_record_query(provider="codex", limit=1))
         assert len(summaries) == 1
         summary = summaries[0]
-        assert str(summary.id) == "conv-large-meta"
-        assert summary.title == "Large Meta Conversation"
-        assert summary.metadata == {"tag": "kept"}
-        assert summary.provider_meta is None
+        assert str(summary.id) == "codex-session:conv-large-meta"
+        assert summary.origin.value == "codex-session"
+        assert summary.title == "Large Meta Session"
+        assert summary.metadata == {}
+        assert "provider_meta" not in summary.model_dump()
     finally:
         await repo.close()
 
 
-def test_action_event_rebuild_omits_large_provider_meta_payloads(tmp_path: Path) -> None:
-    from polylogue.storage.action_events.rebuild_runtime import rebuild_action_event_read_model_sync
-    from tests.infra.storage_records import ConversationBuilder
+def test_actions_view_uses_blocks_without_session_payload_bloat(workspace_env: dict[str, Path]) -> None:
+    """The archive actions surface derives from blocks and has no session payload column.
 
-    db_path = tmp_path / "action-event-provider-meta.db"
+    The archive ``actions`` view derives tool/semantic facts directly from
+    ``blocks``. Session working-directory and git facts live in typed columns
+    and child tables, so large raw payloads stay in source storage.
+    """
+    from tests.infra.archive_scenarios import native_session_id_for, open_index_db
+    from tests.infra.storage_records import SessionBuilder, db_setup
+
+    db_path = db_setup(workspace_env)
 
     (
-        ConversationBuilder(db_path, "conv-heavy-action")
+        SessionBuilder(db_path, "conv-heavy-action")
         .provider("codex")
         .title("Heavy Action Event Source")
+        .working_directories(["/realm/project/sinex"])
+        .git_branch("master")
+        .git_repository_url("git@github.com:Sinity/sinex.git")
         .add_message(
             "m-heavy-action",
             role="assistant",
-            text="Searching the repo for provider-meta handling.",
             content_blocks=[
-                _content_block(
-                    block_id="blk-heavy-action-0",
+                {"type": "text", "text": "Searching the repo for current archive handling."},
+                _tool_block(
                     message_id="m-heavy-action",
-                    conversation_id="conv-heavy-action",
-                    block_index=0,
-                    block_type="tool_use",
+                    session_id="conv-heavy-action",
                     tool_name="Grep",
                     semantic_type="search",
-                )
+                ),
             ],
         )
         .save()
     )
 
-    huge_provider_meta = {
-        "cwd": "/realm/project/sinex",
-        "raw": {"payload": "x" * 200_000},
-        "git": {"branch": "master", "repository_url": "git@github.com:Sinity/sinex.git"},
-    }
-
-    with open_connection(db_path) as conn:
-        conn.execute(
-            "UPDATE conversations SET provider_meta = ? WHERE conversation_id = ?",
-            (json.dumps(huge_provider_meta), "conv-heavy-action"),
-        )
-        replaced = rebuild_action_event_read_model_sync(conn, page_size=1)
+    session_id = native_session_id_for("codex", "conv-heavy-action")
+    with open_index_db(db_path) as conn:
+        action_columns = {row["name"] for row in conn.execute("PRAGMA table_info(actions)")}
+        assert "payload" not in action_columns
         row = conn.execute(
-            """
-            SELECT action_kind, normalized_tool_name
-            FROM action_events
-            WHERE conversation_id = ?
-            """,
-            ("conv-heavy-action",),
+            "SELECT tool_name, semantic_type FROM actions WHERE session_id = ?",
+            (session_id,),
         ).fetchone()
 
-    assert replaced == 1
     assert row is not None
-    assert row["action_kind"] == "search"
-    assert row["normalized_tool_name"] == "grep"
+    assert row["semantic_type"] == "search"
+    assert row["tool_name"] == "Grep"
 
 
 @pytest.mark.asyncio
-async def test_filter_referenced_path_apply_after_fts_search(tmp_path: Path) -> None:
+async def test_filter_referenced_path_apply_after_fts_search(workspace_env: dict[str, Path]) -> None:
     """Combined FTS + path queries must keep the path constraint after search ranking."""
-    from polylogue.archive.filter.filters import ConversationFilter
-    from tests.infra.storage_records import ConversationBuilder
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.archive_scenarios import native_session_id_for
+    from tests.infra.storage_records import SessionBuilder, db_setup
 
-    db_path = tmp_path / "path-fts.db"
+    db_path = db_setup(workspace_env)
+    archive_root = workspace_env["archive_root"]
     target_path = "/workspace/polylogue/README.md"
 
     (
-        ConversationBuilder(db_path, "conv-match")
+        SessionBuilder(db_path, "conv-match")
         .provider("claude-code")
         .title("Path match")
         .add_message(
             "m1",
             role="assistant",
-            text="Investigating the same parser regression",
             content_blocks=[
-                _content_block(
-                    block_id="blk-match-0",
-                    message_id="m1",
-                    conversation_id="conv-match",
-                    block_index=0,
-                    block_type="tool_use",
-                    tool_name="Read",
-                    metadata=f'{{"path":"{target_path}"}}',
-                    semantic_type="file_read",
-                )
+                {"type": "text", "text": "Investigating the same parser regression"},
+                _file_read_block(message_id="m1", session_id="conv-match", path=target_path),
             ],
         )
         .save()
     )
 
     (
-        ConversationBuilder(db_path, "conv-no-path")
+        SessionBuilder(db_path, "conv-no-path")
         .provider("claude-code")
         .title("No path match")
         .add_message(
             "m2",
             role="assistant",
-            text="Investigating the same parser regression",
             content_blocks=[
-                _content_block(
-                    block_id="blk-nopath-0",
+                {"type": "text", "text": "Investigating the same parser regression"},
+                _file_read_block(
                     message_id="m2",
-                    conversation_id="conv-no-path",
-                    block_index=0,
-                    block_type="tool_use",
-                    tool_name="Read",
-                    metadata='{"path":"/workspace/polylogue/docs/cli-reference.md"}',
-                    semantic_type="file_read",
-                )
+                    session_id="conv-no-path",
+                    path="/workspace/polylogue/docs/cli-reference.md",
+                ),
             ],
         )
         .save()
     )
 
-    backend = SQLiteBackend(db_path=db_path)
-    repo = ConversationRepository(backend=backend)
-    try:
-        results = await ConversationFilter(repo).contains("parser regression").referenced_path(target_path).list()
-        assert [str(conversation.id) for conversation in results] == ["conv-match"]
-    finally:
-        await backend.close()
+    with ArchiveStore.open_existing(archive_root) as archive:
+        hits = archive.search_summaries("parser regression", referenced_paths=(target_path,), limit=10)
+        assert [hit.session_id for hit in hits] == [native_session_id_for("claude-code", "conv-match")]
+
+
+def _tool_block(
+    *, message_id: str, session_id: str, tool_name: str, semantic_type: str, tool_input: str | None = None
+) -> ContentBlockRecord:
+    return _content_block(
+        block_id=f"{message_id}-0",
+        message_id=message_id,
+        session_id=session_id,
+        block_index=0,
+        block_type="tool_use",
+        tool_name=tool_name,
+        tool_input=tool_input,
+        semantic_type=semantic_type,
+    )
 
 
 @pytest.mark.asyncio
-async def test_backend_action_terms_filter_contract(tmp_path: Path) -> None:
-    """Low-level list/count filters must honor semantic action categories."""
-    from polylogue.storage.action_events.rebuild_runtime import rebuild_action_event_read_model_sync
-    from tests.infra.storage_records import ConversationBuilder
+async def test_backend_action_terms_filter_contract(workspace_env: dict[str, Path]) -> None:
+    """Native substrate list/count filters must honor semantic action categories."""
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.archive_scenarios import native_session_id_for
+    from tests.infra.storage_records import SessionBuilder, db_setup
 
-    db_path = tmp_path / "action-filter.db"
+    db_path = db_setup(workspace_env)
+    archive_root = workspace_env["archive_root"]
 
     (
-        ConversationBuilder(db_path, "conv-search")
+        SessionBuilder(db_path, "conv-search")
         .provider("claude-code")
         .title("Search work")
         .add_message(
             "m1",
             role="assistant",
-            text="Searching for parser code",
             content_blocks=[
-                _content_block(
-                    block_id="blk-search-0",
-                    message_id="m1",
-                    conversation_id="conv-search",
-                    block_index=0,
-                    block_type="tool_use",
-                    tool_name="Grep",
-                    semantic_type="search",
-                )
+                _tool_block(message_id="m1", session_id="conv-search", tool_name="Grep", semantic_type="search")
             ],
         )
         .save()
     )
-
     (
-        ConversationBuilder(db_path, "conv-git")
+        SessionBuilder(db_path, "conv-git")
         .provider("claude-code")
         .title("Git work")
         .add_message(
             "m2",
             role="assistant",
-            text="Checking git status",
             content_blocks=[
-                _content_block(
-                    block_id="blk-git-0",
+                _tool_block(
                     message_id="m2",
-                    conversation_id="conv-git",
-                    block_index=0,
-                    block_type="tool_use",
+                    session_id="conv-git",
                     tool_name="Bash",
-                    tool_input='{"command":"git status"}',
                     semantic_type="git",
+                    tool_input='{"command":"git status"}',
                 )
             ],
         )
         .save()
     )
-
+    # ``Edit`` classifies to the ``file_edit`` semantic category directly. (The
+    # archive writer derives semantic_type from tool name + input via
+    # ``classify_tool`` and stores OTHER as NULL, so there is no queryable
+    # "other" action category — it is replaced here with a real category.)
     (
-        ConversationBuilder(db_path, "conv-other")
+        SessionBuilder(db_path, "conv-edit")
         .provider("claude-code")
-        .title("Other tool work")
+        .title("Edit tool work")
         .add_message(
             "m3",
             role="assistant",
-            text="Using an unknown tool",
             content_blocks=[
-                _content_block(
-                    block_id="blk-other-0",
-                    message_id="m3",
-                    conversation_id="conv-other",
-                    block_index=0,
-                    block_type="tool_use",
-                    tool_name="Mystery",
-                    semantic_type="other",
-                )
+                _tool_block(message_id="m3", session_id="conv-edit", tool_name="Edit", semantic_type="file_edit")
             ],
         )
         .save()
     )
-
     (
-        ConversationBuilder(db_path, "conv-none")
+        SessionBuilder(db_path, "conv-none")
         .provider("claude-code")
         .title("Plain dialogue")
-        .add_message(
-            "m4",
-            role="assistant",
-            text="No tool use here",
-        )
+        .add_message("m4", role="assistant", text="No tool use here")
         .save()
     )
 
-    with open_connection(db_path) as conn:
-        rebuild_action_event_read_model_sync(conn)
-        conn.commit()
+    def nid(conv_id: str) -> str:
+        return native_session_id_for("claude-code", conv_id)
 
-    backend = SQLiteBackend(db_path=db_path)
-    try:
-        matches = await backend.queries.list_conversations(_record_query(action_terms=("search",), limit=10))
-        assert [record.conversation_id for record in matches] == ["conv-search"]
-        assert await backend.queries.count_conversations(_record_query(action_terms=("search",))) == 1
+    with ArchiveStore.open_existing(archive_root) as archive:
 
-        other_matches = await backend.queries.list_conversations(_record_query(action_terms=("other",), limit=10))
-        assert [record.conversation_id for record in other_matches] == ["conv-other"]
+        def ids(**kwargs: object) -> list[str]:
+            return [summary.session_id for summary in archive.list_summaries(limit=10, **kwargs)]  # type: ignore[arg-type]
 
-        none_matches = await backend.queries.list_conversations(_record_query(action_terms=("none",), limit=10))
-        assert [record.conversation_id for record in none_matches] == ["conv-none"]
-        assert await backend.queries.count_conversations(_record_query(action_terms=("none",))) == 1
+        assert ids(action_terms=("search",)) == [nid("conv-search")]
+        assert archive.count_sessions(action_terms=("search",)) == 1
 
-        grep_tool_matches = await backend.queries.list_conversations(_record_query(tool_terms=("grep",), limit=10))
-        assert [record.conversation_id for record in grep_tool_matches] == ["conv-search"]
+        assert ids(action_terms=("file_edit",)) == [nid("conv-edit")]
 
-        none_tool_matches = await backend.queries.list_conversations(_record_query(tool_terms=("none",), limit=10))
-        assert [record.conversation_id for record in none_tool_matches] == ["conv-none"]
+        assert ids(action_terms=("none",)) == [nid("conv-none")]
+        assert archive.count_sessions(action_terms=("none",)) == 1
 
-        filtered = await backend.queries.list_conversations(
-            _record_query(
-                action_terms=("search",),
-                excluded_action_terms=("git",),
-                limit=10,
-            )
+        assert ids(tool_terms=("grep",)) == [nid("conv-search")]
+        assert ids(tool_terms=("none",)) == [nid("conv-none")]
+
+        assert ids(action_terms=("search",), excluded_action_terms=("git",)) == [nid("conv-search")]
+
+        assert sorted(ids(excluded_tool_terms=("grep",))) == sorted(
+            [nid("conv-git"), nid("conv-none"), nid("conv-edit")]
         )
-        assert [record.conversation_id for record in filtered] == ["conv-search"]
-
-        non_grep = await backend.queries.list_conversations(
-            _record_query(
-                excluded_tool_terms=("grep",),
-                limit=10,
-            )
+        assert sorted(ids(excluded_action_terms=("none",))) == sorted(
+            [nid("conv-git"), nid("conv-edit"), nid("conv-search")]
         )
-        assert sorted(record.conversation_id for record in non_grep) == ["conv-git", "conv-none", "conv-other"]
-
-        non_none = await backend.queries.list_conversations(
-            _record_query(
-                excluded_action_terms=("none",),
-                limit=10,
-            )
-        )
-        assert sorted(record.conversation_id for record in non_none) == ["conv-git", "conv-other", "conv-search"]
-    finally:
-        await backend.close()
 
 
 @pytest.mark.asyncio
-async def test_filter_action_terms_apply_after_fts_search(tmp_path: Path) -> None:
+async def test_filter_action_terms_apply_after_fts_search(workspace_env: dict[str, Path]) -> None:
     """Combined FTS + action queries must preserve action constraints after search ranking."""
-    from polylogue.archive.filter.filters import ConversationFilter
-    from tests.infra.storage_records import ConversationBuilder
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.archive_scenarios import native_session_id_for
+    from tests.infra.storage_records import SessionBuilder, db_setup
 
-    db_path = tmp_path / "action-fts.db"
+    db_path = db_setup(workspace_env)
+    archive_root = workspace_env["archive_root"]
 
     (
-        ConversationBuilder(db_path, "conv-search")
+        SessionBuilder(db_path, "conv-search")
         .provider("claude-code")
         .title("Search match")
         .add_message(
             "m1",
             role="assistant",
-            text="Investigating the same parser regression",
             content_blocks=[
-                _content_block(
-                    block_id="blk-search-0",
-                    message_id="m1",
-                    conversation_id="conv-search",
-                    block_index=0,
-                    block_type="tool_use",
-                    tool_name="Grep",
-                    semantic_type="search",
-                )
+                {"type": "text", "text": "Investigating the same parser regression"},
+                _tool_block(message_id="m1", session_id="conv-search", tool_name="Grep", semantic_type="search"),
             ],
         )
         .save()
     )
 
     (
-        ConversationBuilder(db_path, "conv-shell")
+        SessionBuilder(db_path, "conv-shell")
         .provider("claude-code")
         .title("Shell only")
         .add_message(
             "m2",
             role="assistant",
-            text="Investigating the same parser regression",
             content_blocks=[
-                _content_block(
-                    block_id="blk-shell-0",
+                {"type": "text", "text": "Investigating the same parser regression"},
+                _tool_block(
                     message_id="m2",
-                    conversation_id="conv-shell",
-                    block_index=0,
-                    block_type="tool_use",
+                    session_id="conv-shell",
                     tool_name="Bash",
-                    tool_input='{"command":"python -m pytest"}',
                     semantic_type="shell",
-                )
+                    tool_input='{"command":"python -m pytest"}',
+                ),
             ],
         )
         .save()
     )
 
-    backend = SQLiteBackend(db_path=db_path)
-    repo = ConversationRepository(backend=backend)
-    try:
-        results = await (
-            ConversationFilter(repo).contains("parser regression").action("search").exclude_action("git").list()
+    with ArchiveStore.open_existing(archive_root) as archive:
+        hits = archive.search_summaries(
+            "parser regression",
+            action_terms=("search",),
+            excluded_action_terms=("git",),
+            limit=10,
         )
-        assert [str(conversation.id) for conversation in results] == ["conv-search"]
-    finally:
-        await backend.close()
+        assert [hit.session_id for hit in hits] == [native_session_id_for("claude-code", "conv-search")]
 
 
 @pytest.mark.asyncio
-async def test_filter_action_terms_reconcile_runtime_semantics_after_sql_candidate_fetch(tmp_path: Path) -> None:
-    """Runtime semantic facts must outrank stale persisted semantic_type labels."""
-    from polylogue.archive.filter.filters import ConversationFilter
-    from tests.infra.storage_records import ConversationBuilder
+async def test_filter_action_terms_reconcile_runtime_semantics_after_sql_candidate_fetch(
+    workspace_env: dict[str, Path],
+) -> None:
+    """Native write-time tool classification supersedes any seeded semantic_type.
 
-    db_path = tmp_path / "action-runtime-reconcile.db"
+    The archive writer derives ``semantic_type`` from the tool name + input via
+    ``classify_tool`` at ingest time, so a ``TaskCreate`` tool use is persisted
+    as the ``agent`` category regardless of any seeded label. There is no stale
+    ``other`` row to reconcile at query time.
+    """
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.archive_scenarios import native_session_id_for
+    from tests.infra.storage_records import SessionBuilder, db_setup
+
+    db_path = db_setup(workspace_env)
+    archive_root = workspace_env["archive_root"]
 
     (
-        ConversationBuilder(db_path, "conv-stale-other")
+        SessionBuilder(db_path, "conv-agent")
         .provider("claude-code")
-        .title("Stale semantic label")
+        .title("Agent tool use")
         .add_message(
             "m1",
             role="assistant",
-            text="Create a task for the next review pass",
             content_blocks=[
-                _content_block(
-                    block_id="blk-stale-0",
+                {"type": "text", "text": "Create a task for the next review pass"},
+                _tool_block(
                     message_id="m1",
-                    conversation_id="conv-stale-other",
-                    block_index=0,
-                    block_type="tool_use",
+                    session_id="conv-agent",
                     tool_name="TaskCreate",
                     semantic_type="other",
-                )
+                ),
             ],
         )
         .save()
     )
 
-    backend = SQLiteBackend(db_path=db_path)
-    repo = ConversationRepository(backend=backend)
-    try:
-        stale_other = await ConversationFilter(repo).action("other").list()
-        upgraded_agent = await ConversationFilter(repo).action("agent").list()
-
-        assert [str(conversation.id) for conversation in stale_other] == []
-        assert [str(conversation.id) for conversation in upgraded_agent] == ["conv-stale-other"]
-        assert await ConversationFilter(repo).action("agent").count() == 1
-    finally:
-        await backend.close()
+    expected_id = native_session_id_for("claude-code", "conv-agent")
+    with ArchiveStore.open_existing(archive_root) as archive:
+        assert [s.session_id for s in archive.list_summaries(action_terms=("other",), limit=10)] == []
+        assert [s.session_id for s in archive.list_summaries(action_terms=("agent",), limit=10)] == [expected_id]
+        assert archive.count_sessions(action_terms=("agent",)) == 1
 
 
 def test_store_records_roundtrip_contract(test_conn: sqlite3.Connection) -> None:
     """store_records() must insert, skip, update, and handle sparse payloads coherently."""
-    initial = make_conversation("conv-create", content_hash="hash-create")
+    initial = make_session("conv-create", content_hash="hash-create")
     created = store_records(
-        conversation=initial,
+        session=initial,
         messages=[make_message("msg-create", "conv-create", text="Hello")],
         attachments=[],
         conn=test_conn,
     )
     assert created == {
-        "conversations": 1,
+        "sessions": 1,
         "messages": 1,
         "attachments": 0,
-        "skipped_conversations": 0,
+        "skipped_sessions": 0,
         "skipped_messages": 0,
         "skipped_attachments": 0,
     }
-    created_row = _conversation_row(test_conn, "conv-create")
+    created_row = _session_row(test_conn, "conv-create")
     assert created_row is not None
-    assert created_row["title"] == "Test Conversation"
+    assert created_row["title"] == "Test Session"
     assert _message_count(test_conn, "conv-create") == 1
 
     duplicate = store_records(
-        conversation=initial,
+        session=initial,
         messages=[],
         attachments=[],
         conn=test_conn,
     )
-    assert duplicate["conversations"] == 0
-    assert duplicate["skipped_conversations"] == 1
+    assert duplicate["sessions"] == 0
+    assert duplicate["skipped_sessions"] == 1
 
     updated = store_records(
-        conversation=make_conversation("conv-create", title="Updated Title", content_hash="hash-updated"),
+        session=make_session("conv-create", title="Updated Title", content_hash="hash-updated"),
         messages=[],
         attachments=[],
         conn=test_conn,
     )
-    assert updated["conversations"] == 1
-    updated_row = _conversation_row(test_conn, "conv-create")
+    assert updated["sessions"] == 1
+    updated_row = _session_row(test_conn, "conv-create")
     assert updated_row is not None
     assert updated_row["title"] == "Updated Title"
-    assert updated_row["content_hash"] == "hash-updated"
+    assert updated_row["content_hash"].hex() == hashlib.sha256(b"hash-updated").hexdigest()
 
     multi = store_records(
-        conversation=make_conversation("conv-multi", title="Multi Message"),
+        session=make_session("conv-multi", title="Multi Message"),
         messages=[
             make_message(
                 f"msg-multi-{idx}", "conv-multi", role="user" if idx % 2 == 0 else "assistant", text=f"Message {idx}"
@@ -834,7 +872,7 @@ def test_store_records_roundtrip_contract(test_conn: sqlite3.Connection) -> None
     assert _message_count(test_conn, "conv-multi") == 5
 
     sparse = store_records(
-        conversation=make_conversation("conv-empty", title="Empty Conversation"),
+        session=make_session("conv-empty", title="Empty Session"),
         messages=[],
         attachments=[
             make_attachment(
@@ -847,39 +885,50 @@ def test_store_records_roundtrip_contract(test_conn: sqlite3.Connection) -> None
         ],
         conn=test_conn,
     )
-    assert sparse["conversations"] == 1
+    assert sparse["sessions"] == 1
     assert sparse["messages"] == 0
-    assert sparse["attachments"] == 1
+    assert sparse["attachments"] == 0
+    assert sparse["skipped_attachments"] == 1
     sparse_attachment = _attachment_row(test_conn, "att-empty")
-    assert sparse_attachment is not None
-    assert sparse_attachment["ref_count"] == 1
+    assert sparse_attachment is None
 
 
 def test_prune_attachment_refs_contract(test_conn: sqlite3.Connection) -> None:
     """Pruning refs must keep requested refs, recalculate counts, and delete zero-ref attachments."""
-    conv = make_conversation("conv-prune", title="Prune Test")
-    msg1 = make_message("msg-prune-1", "conv-prune", provider_message_id="ext-1", text="First")
-    msg2 = make_message("msg-prune-2", "conv-prune", provider_message_id="ext-2", text="Second")
+    conv = make_session("conv-prune", title="Prune Test")
+    msg1 = make_message("msg-prune-1", "conv-prune", text="First")
+    msg2 = make_message("msg-prune-2", "conv-prune", text="Second")
     att1 = make_attachment("att-prune-1", "conv-prune", "msg-prune-1", mime_type="image/png")
     att2 = make_attachment("att-prune-2", "conv-prune", "msg-prune-2", mime_type="image/jpeg", size_bytes=2048)
     shared_att_1 = make_attachment("att-shared", "conv-prune", "msg-prune-1", mime_type="image/png")
     shared_att_2 = make_attachment("att-shared", "conv-prune", "msg-prune-2", mime_type="image/png")
     store_records(
-        conversation=conv,
+        session=conv,
         messages=[msg1, msg2],
         attachments=[att1, att2, shared_att_1, shared_att_2],
         conn=test_conn,
     )
 
-    keep_ref = _ref_id("att-prune-1", "conv-prune", "msg-prune-1")
-    keep_shared = _ref_id("att-shared", "conv-prune", "msg-prune-1")
-    _prune_attachment_refs(test_conn, "conv-prune", {keep_ref, keep_shared})
+    current_session_id = "unknown-export:conv-prune"
+    keep_rows = test_conn.execute(
+        """
+        SELECT ar.ref_id, ani.native_id
+        FROM attachment_refs ar
+        JOIN attachment_native_ids ani ON ani.ref_id = ar.ref_id AND ani.id_kind = 'attachment'
+        WHERE ar.session_id = ? AND ar.message_id = ? AND ani.native_id IN ('att-prune-1', 'att-shared')
+        ORDER BY ani.native_id
+        """,
+        (current_session_id, f"{current_session_id}:msg-prune-1"),
+    ).fetchall()
+    keep_refs = {str(row["ref_id"]) for row in keep_rows}
+    assert len(keep_refs) == 2
+    _prune_attachment_refs(test_conn, current_session_id, keep_refs)
 
     remaining_refs = test_conn.execute(
-        "SELECT ref_id FROM attachment_refs WHERE conversation_id = ? ORDER BY ref_id",
-        ("conv-prune",),
+        "SELECT ref_id FROM attachment_refs WHERE session_id = ? ORDER BY ref_id",
+        (current_session_id,),
     ).fetchall()
-    assert [row["ref_id"] for row in remaining_refs] == sorted([keep_ref, keep_shared])
+    assert [row["ref_id"] for row in remaining_refs] == sorted(keep_refs)
     pruned_attachment = _attachment_row(test_conn, "att-prune-1")
     shared_attachment = _attachment_row(test_conn, "att-shared")
     assert pruned_attachment is not None
@@ -891,26 +940,25 @@ def test_prune_attachment_refs_contract(test_conn: sqlite3.Connection) -> None:
 
 def test_upsert_optional_and_attachment_contracts(test_conn: sqlite3.Connection) -> None:
     """Optional-field upserts and attachment metadata updates must round-trip cleanly."""
-    conversation = _conversation_record(
-        conversation_id="conv-optional",
-        source_name="test",
-        provider_conversation_id="ext-conv1",
+    session = _session_record(
+        session_id="conv-optional",
+        origin=origin_from_provider(Provider.from_string("test")).value,
+        native_id="conv-optional",
         title=None,
         created_at=None,
         updated_at=None,
         content_hash="hash1",
-        provider_meta=None,
     )
-    assert upsert_conversation(test_conn, conversation) is True
-    conv_row = _conversation_row(test_conn, "conv-optional")
+    assert upsert_session(test_conn, session) is True
+    conv_row = _session_row(test_conn, "conv-optional")
     assert conv_row is not None
     assert conv_row["title"] is None
-    assert conv_row["created_at"] is None
-    assert conv_row["provider_meta"] is None
+    assert conv_row["created_at_ms"] is None
+    assert "provider_meta" not in conv_row.keys()  # noqa: SIM118 — sqlite3.Row membership is over values
 
     message = MessageRecord(
         message_id=_message_id("msg-optional"),
-        conversation_id=_conversation_id("conv-optional"),
+        session_id=_session_id("conv-optional"),
         provider_message_id=None,
         role=None,
         text=None,
@@ -923,15 +971,19 @@ def test_upsert_optional_and_attachment_contracts(test_conn: sqlite3.Connection)
     )
     assert upsert_message(test_conn, message) is True
     msg_row = test_conn.execute(
-        "SELECT * FROM messages WHERE message_id = ?",
+        "SELECT * FROM messages WHERE native_id = ?",
         ("msg-optional",),
     ).fetchone()
     assert msg_row is not None
-    assert msg_row["role"] is None
-    assert msg_row["text"] is None
-    assert msg_row["provider_message_id"] is None
+    assert msg_row["message_id"] == "unknown-export:conv-optional:msg-optional"
+    assert msg_row["role"] == "unknown"
+    assert msg_row["native_id"] == "msg-optional"
+    assert (
+        test_conn.execute("SELECT COUNT(*) FROM blocks WHERE message_id = ?", (msg_row["message_id"],)).fetchone()[0]
+        == 0
+    )
 
-    msg2 = make_message("msg-attachment-2", "conv-optional", provider_message_id="ext-msg-2", text="Second")
+    msg2 = make_message("msg-attachment-2", "conv-optional", text="Second")
     assert upsert_message(test_conn, msg2) is True
     first = make_attachment("att-meta", "conv-optional", "msg-optional", mime_type="image/png")
     second = make_attachment(
@@ -949,7 +1001,20 @@ def test_upsert_optional_and_attachment_contracts(test_conn: sqlite3.Connection)
     assert att_row is not None
     assert att_row["mime_type"] == "image/jpeg"
     assert att_row["size_bytes"] == 2048
-    assert att_row["path"] == "new/path.jpg"
+    assert att_row["path"] == "path.jpg"
+    source_native = test_conn.execute(
+        """
+        SELECT ani.native_id
+        FROM attachment_refs ar
+        JOIN attachment_native_ids ani ON ani.ref_id = ar.ref_id
+        WHERE ar.attachment_id = ? AND ani.id_kind = 'source'
+        ORDER BY ani.native_id DESC
+        LIMIT 1
+        """,
+        (att_row["attachment_id"],),
+    ).fetchone()
+    assert source_native is not None
+    assert source_native["native_id"] == "new/path.jpg"
     assert att_row["ref_count"] == 2
 
 
@@ -972,17 +1037,17 @@ def test_json_or_none_contract() -> None:
 
 
 def test_make_ref_id_contract() -> None:
-    """Attachment ref IDs must be deterministic and sensitive to attachment, conversation, and message."""
+    """Attachment ref IDs must be deterministic and sensitive to attachment, session, and message."""
     same_1 = _ref_id("att1", "conv1", "msg1")
     same_2 = _ref_id("att1", "conv1", "msg1")
     different_attachment = _ref_id("att2", "conv1", "msg1")
-    different_conversation = _ref_id("att1", "conv2", "msg1")
+    different_session = _ref_id("att1", "conv2", "msg1")
     none_message_1 = _ref_id("att1", "conv1", None)
     none_message_2 = _ref_id("att1", "conv1", None)
 
     assert same_1 == same_2
     assert same_1 != different_attachment
-    assert same_1 != different_conversation
+    assert same_1 != different_session
     assert none_message_1 == none_message_2
     assert none_message_1 != same_1
     assert same_1.startswith("ref-")
@@ -991,28 +1056,28 @@ def test_make_ref_id_contract() -> None:
 
 @pytest.mark.slow
 def test_write_lock_prevents_concurrent_writes(test_db: Path) -> None:
-    """Threaded store_records() calls must complete without corrupting conversation or message counts."""
+    """Threaded store_records() calls must complete without corrupting session or message counts."""
     results = []
     errors = []
 
-    def write_conversation(conv_id: int) -> None:
+    def write_session(conv_id: int) -> None:
         try:
-            conv = make_conversation(f"conv{conv_id}", title=f"Conversation {conv_id}")
+            conv = make_session(f"conv{conv_id}", title=f"Session {conv_id}")
             messages = [make_message(f"msg{conv_id}-{i}", f"conv{conv_id}", text=f"Message {i}") for i in range(3)]
             with open_connection(test_db) as conn:
-                results.append(store_records(conversation=conv, messages=messages, attachments=[], conn=conn))
+                results.append(store_records(session=conv, messages=messages, attachments=[], conn=conn))
         except Exception as exc:  # pragma: no cover - failure path assertion target
             errors.append(exc)
 
     with ThreadPoolExecutor(max_workers=5) as executor:
-        futures = [executor.submit(write_conversation, idx) for idx in range(10)]
+        futures = [executor.submit(write_session, idx) for idx in range(10)]
         for future in as_completed(futures):
             future.result()
 
     assert errors == []
     assert len(results) == 10
     with open_connection(test_db) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0] == 10
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 10
         assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 30
 
 
@@ -1039,14 +1104,14 @@ def test_store_records_without_connection_creates_own(
     shutil.move(str(test_db), str(default_path))
 
     counts = store_records(
-        conversation=make_conversation("conv-default", title="No Conn Test"),
+        session=make_session("conv-default", title="No Conn Test"),
         messages=[],
         attachments=[],
     )
-    assert counts["conversations"] == 1
+    assert counts["sessions"] == 1
 
     with open_connection(default_path) as conn:
-        assert _conversation_row(conn, "conv-default") is not None
+        assert _session_row(conn, "conv-default") is not None
 
 
 @pytest.mark.slow
@@ -1054,8 +1119,8 @@ def test_concurrent_upsert_same_attachment_ref_count_correct(test_db: Path) -> N
     """Concurrent upserts of the same attachment must keep ref_count equal to actual refs."""
     shared_attachment_id = "shared-attachment-race-test"
 
-    def create_conversation(index: int) -> None:
-        conv = make_conversation(
+    def create_session(index: int) -> None:
+        conv = make_session(
             f"race-conv-{index}",
             title=f"Race Test {index}",
             created_at=None,
@@ -1078,19 +1143,31 @@ def test_concurrent_upsert_same_attachment_ref_count_correct(test_db: Path) -> N
             provider_meta=None,
         )
         with open_connection(test_db) as conn:
-            store_records(conversation=conv, messages=[msg], attachments=[attachment], conn=conn)
+            store_records(session=conv, messages=[msg], attachments=[attachment], conn=conn)
 
     with ThreadPoolExecutor(max_workers=10) as executor:
-        list(executor.map(create_conversation, range(10)))
+        list(executor.map(create_session, range(10)))
 
     with open_connection(test_db) as conn:
+        attachment_row = conn.execute(
+            """
+            SELECT ar.attachment_id
+            FROM attachment_refs ar
+            JOIN attachment_native_ids ani ON ani.ref_id = ar.ref_id
+            WHERE ani.id_kind = 'attachment' AND ani.native_id = ?
+            LIMIT 1
+            """,
+            (shared_attachment_id,),
+        ).fetchone()
+        assert attachment_row is not None
+        attachment_id = str(attachment_row["attachment_id"])
         stored_ref_count = conn.execute(
             "SELECT ref_count FROM attachments WHERE attachment_id = ?",
-            (shared_attachment_id,),
+            (attachment_id,),
         ).fetchone()[0]
         actual_refs = conn.execute(
             "SELECT COUNT(*) FROM attachment_refs WHERE attachment_id = ?",
-            (shared_attachment_id,),
+            (attachment_id,),
         ).fetchone()[0]
 
     assert stored_ref_count == 10
@@ -1113,36 +1190,34 @@ def test_attachment_size_bytes_contract(size_bytes: int | None, valid: bool) -> 
     if valid:
         record = _attachment_record(
             attachment_id="test",
-            conversation_id="conv1",
+            session_id="conv1",
             message_id="msg1",
             mime_type="text/plain",
             size_bytes=size_bytes,
-            provider_meta=None,
         )
         assert record.size_bytes == size_bytes
     else:
         with pytest.raises(ValidationError):
             AttachmentRecord(
                 attachment_id=_attachment_id("test"),
-                conversation_id=_conversation_id("conv1"),
+                session_id=_session_id("conv1"),
                 message_id=_message_id("msg1"),
                 mime_type="text/plain",
                 size_bytes=size_bytes,
-                provider_meta=None,
             )
 
 
 @pytest.mark.parametrize("name", ["claude-ai", "claude-code", "Provider123"])
-def test_source_name_accepts_valid(name: str) -> None:
-    """Representative provider-name formats should validate."""
-    record = _conversation_record(
-        conversation_id="test",
-        source_name=name,
-        provider_conversation_id="ext1",
+def test_origin_accepts_provider_tokens(name: str) -> None:
+    """Representative parser provider tokens should normalize to origins."""
+    record = _session_record(
+        session_id="test",
+        origin=origin_from_provider(Provider.from_string(name)).value,
+        native_id="ext1",
         title="Test",
         content_hash="hash123",
     )
-    assert record.source_name == name
+    assert record.origin == origin_from_provider(Provider.from_string(name))
 
 
 # ============================================================================
@@ -1153,10 +1228,10 @@ def test_source_name_accepts_valid(name: str) -> None:
 class TestCrudLaws:
     """Property-based CRUD round-trip laws."""
 
-    @given(conversation_strategy(min_messages=1, max_messages=5))
+    @given(session_strategy(min_messages=1, max_messages=5))
     @settings(max_examples=30, deadline=None)
     async def test_save_retrieve_roundtrip(self, conv_data: dict[str, object]) -> None:
-        """Saving a strategy-generated conversation and retrieving it preserves identity."""
+        """Saving a strategy-generated session and retrieving it preserves identity."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             db_path = Path(tmp_dir) / "roundtrip.db"
             backend = SQLiteBackend(db_path=db_path)
@@ -1172,8 +1247,8 @@ class TestCrudLaws:
             raw_created_at = conv_data.get("created_at")
             assert raw_created_at is None or isinstance(raw_created_at, str)
 
-            conv = make_conversation(
-                conversation_id=conv_id,
+            conv = make_session(
+                session_id=conv_id,
                 source_name=provider,
                 title=raw_title,
                 created_at=raw_created_at,
@@ -1188,30 +1263,28 @@ class TestCrudLaws:
                 assert isinstance(raw_text, str)
                 msg = make_message(
                     message_id=f"{conv_id}-m{i}",
-                    conversation_id=conv_id,
+                    session_id=conv_id,
                     role=raw_role,
                     text=raw_text,
                 )
                 messages.append(msg)
 
-            await backend.save_conversation_record(conv)
-            if messages:
-                await backend.save_messages(messages)
+            await save_session_to_archive(backend, session=conv, messages=messages)
 
-            retrieved = await backend.get_conversation(conv_id)
+            retrieved = await backend.get_session(conv_id)
             assert retrieved is not None
-            assert retrieved.conversation_id == conv_id
-            assert retrieved.source_name == provider
+            assert retrieved.session_id.endswith(f":{conv_id}")
+            assert retrieved.origin == origin_from_provider(Provider.from_string(provider))
 
             retrieved_msgs = await backend.get_messages(conv_id)
             assert len(retrieved_msgs) == len(messages)
 
             await backend.close()
 
-    @given(conversation_strategy(min_messages=1, max_messages=3))
+    @given(session_strategy(min_messages=1, max_messages=3))
     @settings(max_examples=20, deadline=None)
     async def test_save_is_idempotent(self, conv_data: dict[str, object]) -> None:
-        """Saving the same conversation twice yields the same stored data."""
+        """Saving the same session twice yields the same stored data."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             db_path = Path(tmp_dir) / "idempotent.db"
             backend = SQLiteBackend(db_path=db_path)
@@ -1223,19 +1296,20 @@ class TestCrudLaws:
             assert isinstance(raw_provider, str)
             raw_title = conv_data.get("title", "Idempotent")
             assert isinstance(raw_title, str)
-            conv = make_conversation(
-                conversation_id=conv_id,
+            conv = make_session(
+                session_id=conv_id,
                 source_name=raw_provider,
                 title=raw_title,
             )
 
             # Save twice
-            await backend.save_conversation_record(conv)
-            await backend.save_conversation_record(conv)
+            await save_session_to_archive(backend, session=conv)
+            await save_session_to_archive(backend, session=conv)
 
-            # Should still be exactly one conversation
-            all_convs = await backend.queries.list_conversations(_record_query(limit=100))
-            matching = [c for c in all_convs if c.conversation_id == conv_id]
+            # Should still be exactly one session
+            all_convs = await backend.queries.list_sessions(_record_query(limit=100))
+            expected_session_id = f"{origin_from_provider(Provider.from_string(raw_provider)).value}:{conv_id}"
+            matching = [c for c in all_convs if c.session_id == expected_session_id]
             assert len(matching) == 1
 
             await backend.close()
@@ -1248,7 +1322,7 @@ class TestCrudLaws:
 
 @st.composite
 def simple_tag_spec(draw: st.DrawFn) -> SimpleTagSpec:
-    """Generate a tag assignment spec: conversation ID + list of tags."""
+    """Generate a tag assignment spec: session ID + list of tags."""
     conv_suffix = draw(
         st.text(
             min_size=3,
@@ -1268,7 +1342,7 @@ def simple_tag_spec(draw: st.DrawFn) -> SimpleTagSpec:
             unique=True,
         )
     )
-    return {"conversation_id": f"tag-{conv_suffix}", "tags": tags}
+    return {"session_id": f"tag-{conv_suffix}", "tags": tags}
 
 
 @st.composite
@@ -1292,64 +1366,52 @@ class TestTagAssignmentLaws:
     @given(simple_tag_spec())
     @settings(max_examples=15, deadline=None)
     async def test_add_tag_is_retrievable(self, spec: SimpleTagSpec) -> None:
-        """Adding a tag to a conversation makes it appear in metadata."""
+        """Adding a tag to a session makes it appear in the tag read surface."""
         with tempfile.TemporaryDirectory() as tmp_dir:
-            from polylogue.storage.repository import ConversationRepository
-            from tests.infra.storage_records import ConversationBuilder
+            from tests.infra.archive_scenarios import archive_for_scenario_db, native_session_id_for
+            from tests.infra.storage_records import SessionBuilder
 
-            db_path = Path(tmp_dir) / "tags.db"
-            conv_id = spec["conversation_id"]
+            db_path = Path(tmp_dir) / "index.db"
+            conv_id = spec["session_id"]
 
-            (
-                ConversationBuilder(db_path, conv_id)
-                .provider("test")
-                .title("Tag Test")
-                .add_message("m1", text="Hello")
-                .save()
-            )
+            (SessionBuilder(db_path, conv_id).provider("test").title("Tag Test").add_message("m1", text="Hello").save())
 
-            backend = SQLiteBackend(db_path=db_path)
-            repo = ConversationRepository(backend=backend)
-
-            tag = spec["tags"][0]
-            await repo.add_tag(conv_id, tag)
-
-            conv = await repo.get(conv_id)
-            assert conv is not None
-            assert tag in conv.tags
-
-            await backend.close()
+            repo = archive_for_scenario_db(db_path)
+            try:
+                tag = spec["tags"][0]
+                await repo.add_tag(native_session_id_for("test", conv_id), tag)
+                listed = await repo.list_tags()
+                assert tag.strip().lower() in listed
+            finally:
+                await repo.close()
 
     @given(simple_tag_spec())
     @settings(max_examples=15, deadline=None)
     async def test_remove_tag_is_idempotent(self, spec: SimpleTagSpec) -> None:
         """Removing a tag that doesn't exist doesn't crash."""
         with tempfile.TemporaryDirectory() as tmp_dir:
-            from polylogue.storage.repository import ConversationRepository
-            from tests.infra.storage_records import ConversationBuilder
+            from tests.infra.archive_scenarios import archive_for_scenario_db, native_session_id_for
+            from tests.infra.storage_records import SessionBuilder
 
-            db_path = Path(tmp_dir) / "rmtags.db"
-            conv_id = spec["conversation_id"]
+            db_path = Path(tmp_dir) / "index.db"
+            conv_id = spec["session_id"]
 
             (
-                ConversationBuilder(db_path, conv_id)
+                SessionBuilder(db_path, conv_id)
                 .provider("test")
                 .title("Remove Tag Test")
                 .add_message("m1", text="Hello")
                 .save()
             )
 
-            backend = SQLiteBackend(db_path=db_path)
-            repo = ConversationRepository(backend=backend)
-
-            tag = spec["tags"][0]
-            await repo.remove_tag(conv_id, tag)
-
-            conv = await repo.get(conv_id)
-            assert conv is not None
-            assert tag not in conv.tags
-
-            await backend.close()
+            repo = archive_for_scenario_db(db_path)
+            try:
+                tag = spec["tags"][0]
+                await repo.remove_tag(native_session_id_for("test", conv_id), tag)
+                listed = await repo.list_tags()
+                assert tag.strip().lower() not in listed
+            finally:
+                await repo.close()
 
 
 class TestTitleSearchLaws:
@@ -1358,49 +1420,43 @@ class TestTitleSearchLaws:
     @given(simple_title_search_spec())
     @settings(max_examples=15, deadline=None)
     async def test_title_search_finds_matching(self, spec: SimpleTitleSearchSpec) -> None:
-        """Searching by title substring finds the matching conversation."""
+        """Searching by title substring finds the matching session."""
         with tempfile.TemporaryDirectory() as tmp_dir:
-            from polylogue.storage.index import rebuild_index
-            from polylogue.storage.repository import ConversationRepository
-            from tests.infra.storage_records import ConversationBuilder
+            from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+            from tests.infra.archive_scenarios import native_session_id_for
+            from tests.infra.storage_records import SessionBuilder
 
-            db_path = Path(tmp_dir) / "search.db"
+            db_path = Path(tmp_dir) / "index.db"
             conv_id = "search-conv-1"
 
             (
-                ConversationBuilder(db_path, conv_id)
+                SessionBuilder(db_path, conv_id)
                 .provider("test")
                 .title(spec["title"])
                 .add_message("m1", text="Search test content")
                 .save()
             )
 
-            with open_connection(db_path) as conn:
-                rebuild_index(conn)
-
-            backend = SQLiteBackend(db_path=db_path)
-            repo = ConversationRepository(backend=backend)
-
-            results = await repo.list(title_contains=spec["search_term"])
-            found_ids = [str(c.id) for c in results]
-            assert conv_id in found_ids, (
+            with ArchiveStore.open_existing(db_path.parent) as archive:
+                results = archive.list_summaries(title=spec["search_term"], limit=50)
+            found_ids = [summary.session_id for summary in results]
+            assert native_session_id_for("test", conv_id) in found_ids, (
                 f"Expected to find '{conv_id}' when searching title='{spec['title']}' for term='{spec['search_term']}'"
             )
-
-            await backend.close()
 
     @given(simple_title_search_spec())
     @settings(max_examples=15, deadline=None)
     async def test_title_search_excludes_non_matching(self, spec: SimpleTitleSearchSpec) -> None:
-        """Title search doesn't return conversations with unrelated titles."""
+        """Title search doesn't return sessions with unrelated titles."""
         with tempfile.TemporaryDirectory() as tmp_dir:
-            from polylogue.storage.repository import ConversationRepository
-            from tests.infra.storage_records import ConversationBuilder
+            from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+            from tests.infra.archive_scenarios import native_session_id_for
+            from tests.infra.storage_records import SessionBuilder
 
-            db_path = Path(tmp_dir) / "nomatch.db"
+            db_path = Path(tmp_dir) / "index.db"
 
             (
-                ConversationBuilder(db_path, "match-conv")
+                SessionBuilder(db_path, "match-conv")
                 .provider("test")
                 .title(spec["title"])
                 .add_message("m1", text="Content")
@@ -1408,21 +1464,17 @@ class TestTitleSearchLaws:
             )
 
             (
-                ConversationBuilder(db_path, "nomatch-conv")
+                SessionBuilder(db_path, "nomatch-conv")
                 .provider("test")
                 .title("Zzqxjk Wvpnrl Tmygbs")
                 .add_message("m2", text="Other content")
                 .save()
             )
 
-            backend = SQLiteBackend(db_path=db_path)
-            repo = ConversationRepository(backend=backend)
-
-            results = await repo.list(title_contains=spec["search_term"])
-            found_ids = {str(c.id) for c in results}
-            assert "match-conv" in found_ids
-
-            await backend.close()
+            with ArchiveStore.open_existing(db_path.parent) as archive:
+                results = archive.list_summaries(title=spec["search_term"], limit=50)
+            found_ids = {summary.session_id for summary in results}
+            assert native_session_id_for("test", "match-conv") in found_ids
 
 
 # ============================================================================
@@ -1526,13 +1578,13 @@ class TestInvalidateSearchCache:
         """Multiple invalidations increment version each time."""
         from polylogue.storage.search.cache import SearchCacheKey, invalidate_search_cache
 
-        v1 = SearchCacheKey.create(query="test", archive_root=tmp_path).cache_version
+        archive = SearchCacheKey.create(query="test", archive_root=tmp_path).cache_version
         invalidate_search_cache()
         v2 = SearchCacheKey.create(query="test", archive_root=tmp_path).cache_version
         invalidate_search_cache()
         v3 = SearchCacheKey.create(query="test", archive_root=tmp_path).cache_version
 
-        assert v1 < v2 < v3
+        assert archive < v2 < v3
 
 
 class TestCacheStats:
@@ -1561,37 +1613,47 @@ class TestCacheStats:
 
 
 class TestRepositoryOperations:
-    """ConversationRepository CRUD operations."""
+    """SessionRepository CRUD operations."""
 
-    async def test_repository_basic_operations(self, test_db: Path) -> None:
-        """Test ConversationRepository basic get/list operations."""
-        from tests.infra.storage_records import DbFactory
+    async def test_repository_basic_operations(self, workspace_env: dict[str, Path]) -> None:
+        """Native get/list returns the seeded session and its messages."""
+        from tests.infra.archive_scenarios import archive_for_scenario_db, native_session_id_for
+        from tests.infra.storage_records import DbFactory, db_setup
 
-        factory = DbFactory(test_db)
-        factory.create_conversation(
+        db_path = db_setup(workspace_env)
+        DbFactory(db_path).create_session(
             id="c1", provider="chatgpt", messages=[{"id": "m1", "role": "user", "text": "hello world"}]
         )
+        native_id = native_session_id_for("chatgpt", "c1")
 
-        backend = SQLiteBackend(db_path=test_db)
-        repo = ConversationRepository(backend=backend)
+        repo = archive_for_scenario_db(db_path)
+        try:
+            conv = await repo.get_session(native_id)
+            assert conv is not None
+            assert conv.id == native_id
+            messages = conv.messages.to_list()
+            assert len(messages) == 1
+            assert messages[0].text == "hello world"
 
-        conv = await repo.get("c1")
-        assert conv is not None
-        assert conv.id == "c1"
-        messages = conv.messages.to_list()
-        assert len(messages) == 1
-        assert messages[0].text == "hello world"
+            lst = await repo.list_sessions(limit=10)
+            assert len(lst) == 1
+            assert lst[0].id == native_id
+        finally:
+            await repo.close()
 
-        lst = await repo.list()
-        assert len(lst) == 1
-        assert lst[0].id == "c1"
+    async def test_get_eager_includes_attachment_session_id(self, workspace_env: dict[str, Path]) -> None:
+        """Seeded attachments persist directly keyed to their session and message.
 
-    async def test_get_eager_includes_attachment_conversation_id(self, test_db: Path) -> None:
-        """ConversationRepository.get_eager() returns attachments with conversation_id field."""
-        from tests.infra.storage_records import DbFactory
+        The archive store keeps attachments in ``attachments`` and the per-message
+        grouping in ``attachment_refs`` (carrying the original provider id and the
+        native session/message ids); there is no domain-level ``get_eager`` that
+        hydrates attachments onto messages.
+        """
+        from tests.infra.archive_scenarios import native_session_id_for, open_index_db
+        from tests.infra.storage_records import DbFactory, db_setup
 
-        factory = DbFactory(test_db)
-        factory.create_conversation(
+        db_path = db_setup(workspace_env)
+        DbFactory(db_path).create_session(
             id="c-with-att",
             provider="test",
             messages=[
@@ -1600,36 +1662,36 @@ class TestRepositoryOperations:
                     "role": "user",
                     "text": "message with attachment",
                     "attachments": [
-                        {
-                            "id": "att1",
-                            "mime_type": "image/png",
-                            "size_bytes": 2048,
-                            "path": "/path/to/image.png",
-                        }
+                        {"id": "att1", "mime_type": "image/png", "size_bytes": 2048, "path": "/path/to/image.png"}
                     ],
                 }
             ],
         )
 
-        backend = SQLiteBackend(db_path=test_db)
-        repo = ConversationRepository(backend=backend)
-        conv = await repo.get_eager("c-with-att")
+        session_id = native_session_id_for("test", "c-with-att")
+        with open_index_db(db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT ar.session_id, ani.native_id AS attachment_native_id, a.media_type
+                FROM attachment_refs ar
+                JOIN attachments a ON a.attachment_id = ar.attachment_id
+                JOIN attachment_native_ids ani ON ani.ref_id = ar.ref_id AND ani.id_kind = 'attachment'
+                WHERE ar.session_id = ?
+                """,
+                (session_id,),
+            ).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["session_id"] == session_id
+        assert rows[0]["attachment_native_id"] == "att1"
+        assert rows[0]["media_type"] == "image/png"
 
-        assert conv is not None
-        messages = conv.messages.to_list()
-        assert len(messages) == 1
-        msg = messages[0]
-        assert len(msg.attachments) == 1
-        att = msg.attachments[0]
-        assert att.id == "att1"
-        assert att.mime_type == "image/png"
+    async def test_get_eager_multiple_attachments(self, workspace_env: dict[str, Path]) -> None:
+        """Multiple attachments persist grouped by their owning message."""
+        from tests.infra.archive_scenarios import native_session_id_for, open_index_db
+        from tests.infra.storage_records import DbFactory, db_setup
 
-    async def test_get_eager_multiple_attachments(self, test_db: Path) -> None:
-        """get_eager() correctly groups multiple attachments per message."""
-        from tests.infra.storage_records import DbFactory
-
-        factory = DbFactory(test_db)
-        factory.create_conversation(
+        db_path = db_setup(workspace_env)
+        DbFactory(db_path).create_session(
             id="c-multi-att",
             provider="test",
             messages=[
@@ -1646,37 +1708,37 @@ class TestRepositoryOperations:
                     "id": "m2",
                     "role": "assistant",
                     "text": "second message",
-                    "attachments": [
-                        {"id": "att3", "mime_type": "application/pdf"},
-                    ],
+                    "attachments": [{"id": "att3", "mime_type": "application/pdf"}],
                 },
             ],
         )
 
-        backend = SQLiteBackend(db_path=test_db)
-        repo = ConversationRepository(backend=backend)
-        conv = await repo.get_eager("c-multi-att")
+        session_id = native_session_id_for("test", "c-multi-att")
+        with open_index_db(db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT ar.message_id, ani.native_id AS attachment_native_id
+                FROM attachment_refs ar
+                JOIN attachment_native_ids ani ON ani.ref_id = ar.ref_id AND ani.id_kind = 'attachment'
+                WHERE ar.session_id = ?
+                """,
+                (session_id,),
+            ).fetchall()
+        by_message: dict[str, set[str]] = {}
+        for row in rows:
+            by_message.setdefault(str(row["message_id"]), set()).add(str(row["attachment_native_id"]))
 
-        assert conv is not None
-        messages = conv.messages.to_list()
-        assert len(messages) == 2
+        assert by_message[f"{session_id}:m1"] == {"att1", "att2"}
+        assert by_message[f"{session_id}:m2"] == {"att3"}
 
-        m1 = messages[0]
-        assert len(m1.attachments) == 2
-        m1_att_ids = {a.id for a in m1.attachments}
-        assert m1_att_ids == {"att1", "att2"}
+    async def test_get_eager_attachment_metadata_not_stored_in_index(self, workspace_env: dict[str, Path]) -> None:
+        """Attachment metadata is not an index-tier escape hatch."""
+        from tests.infra.archive_scenarios import native_session_id_for, open_index_db
+        from tests.infra.storage_records import DbFactory, db_setup
 
-        m2 = messages[1]
-        assert len(m2.attachments) == 1
-        assert m2.attachments[0].id == "att3"
-
-    async def test_get_eager_attachment_metadata_decoded(self, test_db: Path) -> None:
-        """Attachment provider_meta JSON is properly decoded."""
-        from tests.infra.storage_records import DbFactory
-
-        factory = DbFactory(test_db)
+        db_path = db_setup(workspace_env)
         meta = {"original_name": "photo.png", "source": "upload"}
-        factory.create_conversation(
+        DbFactory(db_path).create_session(
             id="c-att-meta",
             provider="test",
             messages=[
@@ -1684,28 +1746,26 @@ class TestRepositoryOperations:
                     "id": "m1",
                     "role": "user",
                     "text": "with meta",
-                    "attachments": [
-                        {
-                            "id": "att-meta",
-                            "mime_type": "image/png",
-                            "meta": meta,
-                        }
-                    ],
+                    "attachments": [{"id": "att-meta", "mime_type": "image/png", "meta": meta}],
                 }
             ],
         )
 
-        backend = SQLiteBackend(db_path=test_db)
-        repo = ConversationRepository(backend=backend)
-        conv = await repo.get_eager("c-att-meta")
-
-        assert conv is not None
-        messages = conv.messages.to_list()
-        assert len(messages) == 1
-        msg = messages[0]
-        assert len(msg.attachments) == 1
-        att = msg.attachments[0]
-        assert att.provider_meta == meta or att.provider_meta is None
+        session_id = native_session_id_for("test", "c-att-meta")
+        with open_index_db(db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT a.display_name, a.media_type, ani.native_id AS attachment_native_id
+                FROM attachment_refs ar
+                JOIN attachments a ON a.attachment_id = ar.attachment_id
+                JOIN attachment_native_ids ani ON ani.ref_id = ar.ref_id AND ani.id_kind = 'attachment'
+                WHERE ar.session_id = ?
+                """,
+                (session_id,),
+            ).fetchone()
+        assert row is not None
+        assert row["attachment_native_id"] == "att-meta"
+        assert row["media_type"] == "image/png"
 
 
 class TestCacheThreadSafety:
@@ -1754,8 +1814,8 @@ class _VectorSpy:
         self.query_calls.append((text, limit))
         return [("msg-1", 0.125)]
 
-    def upsert(self, conversation_id: str, messages: list[MessageRecord]) -> None:
-        self.upsert_calls.append((conversation_id, messages))
+    def upsert(self, session_id: str, messages: list[MessageRecord]) -> None:
+        self.upsert_calls.append((session_id, messages))
 
 
 class TestRepositoryVectorAsyncBoundary:
@@ -1765,10 +1825,10 @@ class TestRepositoryVectorAsyncBoundary:
         tmp_path: Path,
     ) -> None:
         backend = SQLiteBackend(db_path=tmp_path / "vectors.db")
-        repo = ConversationRepository(backend=backend)
+        repo = SessionRepository(backend=backend)
         provider = _VectorSpy()
-        monkeypatch.setattr(repo, "_get_message_conversation_mapping", AsyncMock(return_value={"msg-1": "conv-1"}))
-        monkeypatch.setattr(repo, "get_many", AsyncMock(return_value=[_conversation_model("conv-1")]))
+        monkeypatch.setattr(repo, "_get_message_session_mapping", AsyncMock(return_value={"msg-1": "conv-1"}))
+        monkeypatch.setattr(repo, "get_many", AsyncMock(return_value=[_session_model("conv-1")]))
 
         to_thread_calls: list[tuple[Callable[..., object], tuple[object, ...], dict[str, object]]] = []
 
@@ -1780,20 +1840,20 @@ class TestRepositoryVectorAsyncBoundary:
 
         result = await repo.search_similar("semantic query", limit=4, vector_provider=provider)
 
-        assert [str(conversation.id) for conversation in result] == ["conv-1"]
+        assert [str(session.id) for session in result] == ["conv-1"]
         assert provider.query_calls == [("semantic query", 12)]
         assert len(to_thread_calls) == 1
         assert getattr(to_thread_calls[0][0], "__self__", None) is provider
         assert getattr(to_thread_calls[0][0], "__name__", "") == "query"
 
-    async def test_embed_conversation_offloads_vector_upsert(
+    async def test_embed_session_offloads_vector_upsert(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
         messages = [make_message("msg-embed", "conv-embed", text="Message long enough to embed.")]
         backend = SQLiteBackend(db_path=tmp_path / "vectors.db")
-        repo = ConversationRepository(backend=backend)
+        repo = SessionRepository(backend=backend)
         monkeypatch.setattr(repo.queries, "get_messages", AsyncMock(return_value=messages))
         provider = _VectorSpy()
 
@@ -1805,7 +1865,7 @@ class TestRepositoryVectorAsyncBoundary:
 
         monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
 
-        result = await repo.embed_conversation("conv-embed", vector_provider=provider)
+        result = await repo.embed_session("conv-embed", vector_provider=provider)
 
         assert result == 1
         assert provider.upsert_calls == [("conv-embed", messages)]
@@ -1819,9 +1879,9 @@ class TestRepositoryVectorAsyncBoundary:
         tmp_path: Path,
     ) -> None:
         backend = SQLiteBackend(db_path=tmp_path / "vectors.db")
-        repo = ConversationRepository(backend=backend)
+        repo = SessionRepository(backend=backend)
         provider = _VectorSpy()
-        monkeypatch.setattr(repo, "_get_message_conversation_mapping", AsyncMock(return_value={"msg-1": "conv-1"}))
+        monkeypatch.setattr(repo, "_get_message_session_mapping", AsyncMock(return_value={"msg-1": "conv-1"}))
 
         to_thread_calls: list[tuple[Callable[..., object], tuple[object, ...], dict[str, object]]] = []
 
@@ -1848,62 +1908,48 @@ class TestRepositoryVectorAsyncBoundary:
 class TestInfraTagAssignment:
     """Property-based tests using the full TagAssignmentSpec strategy."""
 
-    @given(infra_tag_assignment_strategy(min_conversations=2, max_conversations=4))
+    @given(infra_tag_assignment_strategy(min_sessions=2, max_sessions=4))
     @settings(max_examples=10, deadline=None)
     async def test_tag_assignment_roundtrip(self, spec: TagAssignmentSpec) -> None:
         """Tags assigned via strategy-generated specs are retrievable and consistent."""
         with tempfile.TemporaryDirectory() as tmp_dir:
-            from polylogue.storage.repository import ConversationRepository
+            from tests.infra.archive_scenarios import archive_for_scenario_db, native_session_id_for
 
-            db_path = Path(tmp_dir) / "tags-infra.db"
-            seed_conversation_graph(db_path, spec.conversations)
+            db_path = Path(tmp_dir) / "index.db"
+            seed_session_graph(db_path, spec.sessions)
 
-            backend = SQLiteBackend(db_path=db_path)
-            repo = ConversationRepository(backend=backend)
+            repo = archive_for_scenario_db(db_path)
+            try:
+                for conv, tags in zip(spec.sessions, spec.tag_sequences, strict=True):
+                    for tag in tags:
+                        await repo.add_tag(native_session_id_for(conv.provider, conv.session_id), tag)
 
-            # Assign all tags
-            for conv, tags in zip(spec.conversations, spec.tag_sequences, strict=True):
-                for tag in tags:
-                    await repo.add_tag(conv.conversation_id, tag)
+                listed = await repo.list_tags()
+                for _conv, tags in zip(spec.sessions, spec.tag_sequences, strict=True):
+                    for tag in set(tags):
+                        assert tag in listed, f"Tag '{tag}' missing from tag read surface: {listed}"
+            finally:
+                await repo.close()
 
-            # Verify each conversation has the expected tags
-            for conv, tags in zip(spec.conversations, spec.tag_sequences, strict=True):
-                stored = await repo.get(conv.conversation_id)
-                assert stored is not None
-                stored_tags = set(stored.tags)
-                for tag in set(tags):
-                    assert tag in stored_tags, f"Tag '{tag}' missing from conv '{conv.conversation_id}'"
-
-            await backend.close()
-
-    @given(infra_tag_assignment_strategy(min_conversations=2, max_conversations=4))
+    @given(infra_tag_assignment_strategy(min_sessions=2, max_sessions=4))
     @settings(max_examples=10, deadline=None)
     async def test_tag_counts_match_expected(self, spec: TagAssignmentSpec) -> None:
         """Tag counts computed from strategy match actual stored tag counts."""
         with tempfile.TemporaryDirectory() as tmp_dir:
-            from polylogue.storage.repository import ConversationRepository
+            from tests.infra.archive_scenarios import archive_for_scenario_db, native_session_id_for
 
-            db_path = Path(tmp_dir) / "tag-counts.db"
-            seed_conversation_graph(db_path, spec.conversations)
+            db_path = Path(tmp_dir) / "index.db"
+            seed_session_graph(db_path, spec.sessions)
 
-            backend = SQLiteBackend(db_path=db_path)
-            repo = ConversationRepository(backend=backend)
+            repo = archive_for_scenario_db(db_path)
+            try:
+                for conv, tags in zip(spec.sessions, spec.tag_sequences, strict=True):
+                    for tag in tags:
+                        await repo.add_tag(native_session_id_for(conv.provider, conv.session_id), tag)
 
-            for conv, tags in zip(spec.conversations, spec.tag_sequences, strict=True):
-                for tag in tags:
-                    await repo.add_tag(conv.conversation_id, tag)
-
-            expected = expected_tag_counts(spec)
-            actual: dict[str, int] = {}
-            for conv, _tags in zip(spec.conversations, spec.tag_sequences, strict=True):
-                stored = await repo.get(conv.conversation_id)
-                if stored:
-                    for tag in stored.tags:
-                        actual[tag] = actual.get(tag, 0) + 1
-
-            assert actual == expected
-
-            await backend.close()
+                assert await repo.list_tags() == expected_tag_counts(spec)
+            finally:
+                await repo.close()
 
 
 class TestInfraTitleSearch:
@@ -1914,13 +1960,14 @@ class TestInfraTitleSearch:
     async def test_literal_title_search_finds_matching_with_special_chars(self, spec: TitleSearchSpec) -> None:
         """Title search with wildcard-sensitive characters finds exact matches."""
         with tempfile.TemporaryDirectory() as tmp_dir:
-            from polylogue.storage.repository import ConversationRepository
-            from tests.infra.storage_records import ConversationBuilder
+            from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+            from tests.infra.archive_scenarios import native_session_id_for
+            from tests.infra.storage_records import SessionBuilder
 
-            db_path = Path(tmp_dir) / "title-search.db"
+            db_path = Path(tmp_dir) / "index.db"
 
             (
-                ConversationBuilder(db_path, "match-conv")
+                SessionBuilder(db_path, "match-conv")
                 .provider("test")
                 .title(spec.matching_title)
                 .add_message("m1", text="Content")
@@ -1928,45 +1975,42 @@ class TestInfraTitleSearch:
             )
 
             (
-                ConversationBuilder(db_path, "decoy-conv")
+                SessionBuilder(db_path, "decoy-conv")
                 .provider("test")
                 .title(spec.decoy_title)
                 .add_message("m2", text="Other")
                 .save()
             )
 
-            backend = SQLiteBackend(db_path=db_path)
-            repo = ConversationRepository(backend=backend)
-
-            results = await repo.list(title_contains=spec.needle)
-            found_ids = {str(c.id) for c in results}
-            assert "match-conv" in found_ids, (
+            with ArchiveStore.open_existing(db_path.parent) as archive:
+                results = archive.list_summaries(title=spec.needle, limit=50)
+            found_ids = {summary.session_id for summary in results}
+            assert native_session_id_for("test", "match-conv") in found_ids, (
                 f"Expected 'match-conv' for needle='{spec.needle}' in title='{spec.matching_title}'"
             )
-
-            await backend.close()
 
     @given(infra_title_search_strategy())
     @settings(max_examples=15, deadline=None)
     async def test_literal_title_search_excludes_decoy(self, spec: TitleSearchSpec) -> None:
         """Title search with special characters does not match the decoy title."""
         with tempfile.TemporaryDirectory() as tmp_dir:
-            from polylogue.storage.repository import ConversationRepository
-            from tests.infra.storage_records import ConversationBuilder
+            from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+            from tests.infra.archive_scenarios import native_session_id_for
+            from tests.infra.storage_records import SessionBuilder
 
-            db_path = Path(tmp_dir) / "decoy-search.db"
+            db_path = Path(tmp_dir) / "index.db"
 
             (
-                ConversationBuilder(db_path, "decoy-only")
+                SessionBuilder(db_path, "decoy-only")
                 .provider("test")
                 .title(spec.decoy_title)
                 .add_message("m1", text="Content")
                 .save()
             )
 
-            backend = SQLiteBackend(db_path=db_path)
-            repo = ConversationRepository(backend=backend)
-
-            results = await repo.list(title_contains=spec.needle)
-            found_ids = {str(c.id) for c in results}
-            assert "decoy-only" not in found_ids, f"Decoy '{spec.decoy_title}' should not match needle='{spec.needle}'"
+            with ArchiveStore.open_existing(db_path.parent) as archive:
+                results = archive.list_summaries(title=spec.needle, limit=50)
+            found_ids = {summary.session_id for summary in results}
+            assert native_session_id_for("test", "decoy-only") not in found_ids, (
+                f"Decoy '{spec.decoy_title}' should not match needle='{spec.needle}'"
+            )

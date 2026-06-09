@@ -1,4 +1,4 @@
-"""Contracts for the conversation HTML sanitizer (defense-in-depth filter)."""
+"""Contracts for the session HTML sanitizer (defense-in-depth filter)."""
 
 from __future__ import annotations
 

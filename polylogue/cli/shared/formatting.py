@@ -83,7 +83,7 @@ def format_cursors(cursors: Mapping[str, object] | dict[str, CursorStatePayload]
 
 
 def format_counts(counts: Mapping[str, object] | RunCounts) -> str:
-    from polylogue.pipeline.run_activity import conversation_activity_counts
+    from polylogue.pipeline.run_activity import session_activity_counts
 
     ordered_labels = [
         ("acquired", "acquired"),
@@ -99,7 +99,7 @@ def format_counts(counts: Mapping[str, object] | RunCounts) -> str:
         ("materialized", "materialized"),
     ]
     parts: list[str] = []
-    total_conv, new_conv, changed_conv = conversation_activity_counts(counts)
+    total_conv, new_conv, changed_conv = session_activity_counts(counts)
     if total_conv:
         detail_parts: list[str] = []
         if new_conv:
@@ -116,17 +116,17 @@ def format_counts(counts: Mapping[str, object] | RunCounts) -> str:
             parts.append(f"{value} {label}")
     if not parts:
         parts = [
-            f"{counts.get('conversations', 0)} conv",
+            f"{counts.get('sessions', 0)} conv",
             f"{counts.get('messages', 0)} msg",
         ]
     return ", ".join(parts)
 
 
 def format_run_details(counts: Mapping[str, object] | RunCounts) -> list[str]:
-    from polylogue.pipeline.run_activity import conversation_activity_counts
+    from polylogue.pipeline.run_activity import session_activity_counts
 
     lines: list[str] = []
-    total_conv, new_conv, changed_conv = conversation_activity_counts(counts)
+    total_conv, new_conv, changed_conv = session_activity_counts(counts)
 
     acquire_parts = [
         (counts.get("acquired"), "acquired"),
@@ -154,9 +154,9 @@ def format_run_details(counts: Mapping[str, object] | RunCounts) -> list[str]:
     if changed_conv:
         activity_parts.append(f"{changed_conv} changed")
     if activity_parts:
-        lines.append(f"Conversations: {', '.join(activity_parts)}")
+        lines.append(f"Sessions: {', '.join(activity_parts)}")
     elif total_conv:
-        lines.append(f"Conversations: {total_conv} touched")
+        lines.append(f"Sessions: {total_conv} touched")
 
     parse_failures = counts.get("parse_failures")
     if isinstance(parse_failures, int) and parse_failures:
@@ -164,7 +164,7 @@ def format_run_details(counts: Mapping[str, object] | RunCounts) -> list[str]:
 
     materialized = counts.get("materialized")
     if isinstance(materialized, int) and materialized:
-        lines.append(f"Materialize: {materialized} conversations")
+        lines.append(f"Materialize: {materialized} sessions")
 
     schema_parts = [
         (counts.get("schemas_generated"), "generated"),

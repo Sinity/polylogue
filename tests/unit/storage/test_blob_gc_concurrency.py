@@ -7,7 +7,7 @@ model — leases plus snapshot reference check"):
    before the main data transaction commits.
 2. ``run_blob_gc`` skips any blob with an active lease, even when the
    blob is older than ``MIN_AGE_S`` and not yet recorded in
-   ``raw_conversations``.
+   ``raw_sessions``.
 3. After the data transaction commits and the operation releases its
    leases, GC may delete an unreferenced blob.
 4. Concurrent acquire/commit/GC interleavings never delete a blob that
@@ -43,27 +43,45 @@ def _make_db(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
     conn.execute(
-        """CREATE TABLE raw_conversations (
+        """CREATE TABLE raw_sessions (
             raw_id TEXT PRIMARY KEY,
             source_name TEXT NOT NULL DEFAULT '',
             source_path TEXT NOT NULL DEFAULT '',
+            blob_hash BLOB,
             blob_size INTEGER NOT NULL DEFAULT 0,
             acquired_at TEXT NOT NULL DEFAULT ''
         )"""
     )
     conn.execute(
-        """CREATE TABLE pending_blob_refs (
-            blob_hash TEXT NOT NULL,
-            operation_id TEXT NOT NULL,
-            acquired_at INTEGER NOT NULL,
-            PRIMARY KEY (blob_hash, operation_id)
+        """CREATE TABLE blob_refs (
+            blob_hash BLOB NOT NULL CHECK(length(blob_hash) = 32),
+            ref_id TEXT NOT NULL,
+            ref_type TEXT NOT NULL CHECK(ref_type IN ('raw_payload', 'attachment', 'sidecar')),
+            source_path TEXT,
+            size_bytes INTEGER NOT NULL DEFAULT 0 CHECK(size_bytes >= 0),
+            acquired_at_ms INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (blob_hash, ref_type, ref_id)
         )"""
     )
     conn.execute(
+        """CREATE TABLE pending_blob_refs (
+            blob_hash BLOB NOT NULL CHECK(length(blob_hash) = 32),
+            operation_id TEXT NOT NULL,
+            ref_type TEXT NOT NULL,
+            ref_id TEXT NOT NULL,
+            acquired_at_ms INTEGER NOT NULL,
+            PRIMARY KEY (blob_hash, operation_id, ref_type, ref_id)
+        )"""
+    )
+    # gc_generations matches the split-file source.db DDL: typed reclaim
+    # counters keyed by a TEXT generation_id (#1743).
+    conn.execute(
         """CREATE TABLE gc_generations (
-            generation INTEGER PRIMARY KEY,
-            completed_at INTEGER NOT NULL,
-            evidence TEXT
+            generation_id   TEXT PRIMARY KEY,
+            started_at_ms   INTEGER NOT NULL,
+            completed_at_ms INTEGER,
+            reclaimed_count INTEGER NOT NULL DEFAULT 0,
+            reclaimed_bytes INTEGER NOT NULL DEFAULT 0
         )"""
     )
     conn.commit()
@@ -94,7 +112,7 @@ def test_lease_visible_to_concurrent_gc(tmp_path: Path) -> None:
     blob_hash, _ = blob_store.write_from_bytes(b"in-flight payload")
     _age_blob(blob_store, blob_hash, seconds=MIN_AGE_S + 5)
 
-    # Caller has materialized blob but not yet inserted raw_conversations.
+    # Caller has materialized blob but not yet inserted raw_sessions.
     # The lease bridges that window.
     acquire_blob_leases(db_path, [blob_hash], operation_id="op-write-1")
 
@@ -136,7 +154,7 @@ def test_release_followed_by_gc_collects_orphan(tmp_path: Path) -> None:
 
 
 def test_db_reference_alone_protects_blob(tmp_path: Path) -> None:
-    """A blob with a raw_conversations row survives GC even without a lease."""
+    """A blob with a raw_sessions row survives GC even without a lease."""
     db_path = tmp_path / "archive.db"
     blob_root = tmp_path / "blobs"
     blob_store = BlobStore(blob_root)
@@ -146,7 +164,7 @@ def test_db_reference_alone_protects_blob(tmp_path: Path) -> None:
     _age_blob(blob_store, blob_hash, seconds=MIN_AGE_S + 5)
 
     conn.execute(
-        "INSERT INTO raw_conversations (raw_id, source_name, source_path, blob_size, acquired_at) "
+        "INSERT INTO raw_sessions (raw_id, source_name, source_path, blob_size, acquired_at) "
         "VALUES (?, 'claude', 'x.json', 0, '2024-01-01')",
         (blob_hash,),
     )
@@ -167,7 +185,7 @@ def test_concurrent_acquire_and_gc_never_deletes_referenced(tmp_path: Path) -> N
     """Hundreds of acquire/commit/GC interleavings must never delete a referenced blob.
 
     Pattern: a writer thread repeatedly stages a blob, acquires a lease,
-    commits the raw_conversations row, releases the lease. A GC thread
+    commits the raw_sessions row, releases the lease. A GC thread
     runs continuously. The blob's contract is "still referenced by the
     final committed state ⇒ on disk".
     """
@@ -200,7 +218,7 @@ def test_concurrent_acquire_and_gc_never_deletes_referenced(tmp_path: Path) -> N
                 conn = sqlite3.connect(str(db_path), timeout=5.0)
                 try:
                     conn.execute(
-                        "INSERT OR REPLACE INTO raw_conversations "
+                        "INSERT OR REPLACE INTO raw_sessions "
                         "(raw_id, source_name, source_path, blob_size, acquired_at) "
                         "VALUES (?, 'claude', 'x.json', 0, '2024-01-01')",
                         (blob_hash,),
@@ -243,7 +261,7 @@ def test_concurrent_acquire_and_gc_never_deletes_referenced(tmp_path: Path) -> N
     assert not error, f"thread raised: {error}"
     # After the writer completes, the raw row references the blob — the
     # blob MUST still be on disk regardless of GC interleavings.
-    assert blob_store.exists(blob_hash), "Concurrent GC deleted a blob referenced by a committed raw_conversations row"
+    assert blob_store.exists(blob_hash), "Concurrent GC deleted a blob referenced by a committed raw_sessions row"
 
 
 # ---------------------------------------------------------------------------
@@ -301,7 +319,7 @@ def test_hypothesis_lease_invariant_under_random_interleavings(
         conn = sqlite3.connect(str(db_path), timeout=5.0)
         try:
             conn.execute(
-                "INSERT OR REPLACE INTO raw_conversations "
+                "INSERT OR REPLACE INTO raw_sessions "
                 "(raw_id, source_name, source_path, blob_size, acquired_at) "
                 "VALUES (?, 'claude', 'x.json', 0, '2024-01-01')",
                 (hashes[idx],),
@@ -325,12 +343,13 @@ def test_hypothesis_lease_invariant_under_random_interleavings(
 def test_helpers_reflect_lease_lifecycle(tmp_path: Path) -> None:
     db_path = tmp_path / "archive.db"
     conn = _make_db(db_path)
+    blob = "a" * 64
     try:
-        acquire_blob_leases(db_path, ["abc"], operation_id="op-X")
-        assert _has_active_lease(conn, "abc") is True
-        assert _still_referenced(conn, "abc") is False
+        acquire_blob_leases(db_path, [blob], operation_id="op-X")
+        assert _has_active_lease(conn, blob) is True
+        assert _still_referenced(conn, blob) is False
         release_operation_leases(conn, "op-X")
         conn.commit()
-        assert _has_active_lease(conn, "abc") is False
+        assert _has_active_lease(conn, blob) is False
     finally:
         conn.close()

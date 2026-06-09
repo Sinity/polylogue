@@ -6,7 +6,7 @@ into three sibling asset modules under ``polylogue/daemon/``:
 - :mod:`polylogue.daemon.web_shell_bulk` — bulk-operations toolbar and
   client-side composer (#1119).
 - :mod:`polylogue.daemon.web_shell_lineage` — lineage inspector tab
-  rendering and ``/api/conversations/{id}/topology`` consumer (#1121).
+  rendering and ``/api/sessions/{id}/topology`` consumer (#1121).
 - :mod:`polylogue.daemon.web_shell_workspace` — workspace mode toolbar,
   stack/compare/saved-view/recall-pack routing (#1124, #1203).
 
@@ -42,7 +42,6 @@ SQLite archive.
 from __future__ import annotations
 
 import json
-import sqlite3
 from email.message import Message
 from http import HTTPStatus
 from io import BytesIO
@@ -65,12 +64,12 @@ from polylogue.insights.topology import (
     TopologyEdgeKind,
     TopologyNode,
 )
-from polylogue.types import ConversationId
+from polylogue.types import SessionId
 
 
-def _cid(value: str) -> ConversationId:
+def _cid(value: str) -> SessionId:
     """Type-checker-friendly NewType cast used by the lineage helper."""
-    return ConversationId(value)
+    return SessionId(value)
 
 
 if TYPE_CHECKING:
@@ -119,52 +118,24 @@ def _capture(handler: DaemonAPIHandler) -> tuple[MagicMock, MagicMock]:
     return send_error, send_json
 
 
-def _seed_conversation(conversation_id: str = "c-test") -> None:
-    """Materialize the canonical schema and seed one conversation row.
+def _seed_session(session_id: str, workspace_env: dict[str, Path]) -> str:
+    """Seed a single native session so resolve_id can find a target.
 
-    Mirrors the helper used by ``test_user_state_http`` so handlers that
-    resolve a target id (marks, recall packs) find the conversation
-    without dragging the ingest pipeline into the HTTP test.
+    Mirrors the helper used by ``test_user_state_http``: handlers such as
+    ``add_mark`` call ``_resolve_user_state_target``, which requires the
+    session to exist in the archive store. Returns the native session
+    id (``origin:native_id``) to address the session in requests.
     """
+    from tests.infra.storage_records import SessionBuilder, db_setup
 
-    from polylogue.paths import db_path
-    from polylogue.storage.sqlite.schema_ddl_archive import (
-        ARCHIVE_STORAGE_DDL,
-        MESSAGE_FTS_DDL,
-        READER_WORKSPACES_DDL,
-        RECALL_PACKS_DDL,
-        SAVED_VIEWS_DDL,
-        USER_ANNOTATIONS_DDL,
-        USER_MARKS_DDL,
+    builder = (
+        SessionBuilder(db_setup(workspace_env), session_id)
+        .provider("claude-code")
+        .title("Test")
+        .add_message(message_id=f"m-{session_id}", role="user", text="hello")
     )
-
-    dbp = db_path()
-    dbp.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(dbp))
-    try:
-        conn.executescript(ARCHIVE_STORAGE_DDL)
-        conn.executescript(MESSAGE_FTS_DDL)
-        conn.executescript(USER_MARKS_DDL)
-        conn.executescript(USER_ANNOTATIONS_DDL)
-        conn.executescript(SAVED_VIEWS_DDL)
-        conn.executescript(RECALL_PACKS_DDL)
-        conn.executescript(READER_WORKSPACES_DDL)
-        conn.execute(
-            "INSERT OR IGNORE INTO conversations(conversation_id, source_name, "
-            "provider_conversation_id, title, content_hash, version) "
-            "VALUES(?,?,?,?,?,?)",
-            (
-                conversation_id,
-                "claude-code",
-                f"p-{conversation_id}",
-                "Test",
-                f"h-{conversation_id}",
-                1,
-            ),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    builder.save()
+    return builder.native_session_id()
 
 
 # ---------------------------------------------------------------------------
@@ -178,7 +149,7 @@ class TestWebShellBulkAssetContract:
     The bulk surface is intentionally a client-side composition over
     existing daemon endpoints. The asset module exposes three string
     constants — ``BULK_CSS``, ``BULK_TOOLBAR_HTML``, ``BULK_JS`` —
-    and the JS issues per-conversation POSTs to ``/api/user/marks``
+    and the JS issues per-session POSTs to ``/api/user/marks``
     (the same endpoint covered by ``test_user_state_http``).
     """
 
@@ -213,13 +184,13 @@ class TestWebShellBulkAssetContract:
         corresponding handler, this assertion forces a code review."""
         js = web_shell_bulk.BULK_JS
         assert "/api/user/marks" in js
-        assert "/api/conversations/" in js
+        assert "/api/sessions/" in js
         # Negative pins — the dry-run preview must NOT POST to a delete
         # or re-embed endpoint. The whole point of the preview gate is
         # that those endpoints do not exist yet.
-        assert "DELETE /api/conversations" not in js
+        assert "DELETE /api/sessions" not in js
         assert "/api/embed/reembed" not in js
-        assert "/api/conversations/delete" not in js
+        assert "/api/sessions/delete" not in js
 
     def test_dry_run_envelope_shape_is_pinned(self) -> None:
         """The bulk preview confirm path records ``no_endpoint`` skips.
@@ -241,10 +212,10 @@ class TestWebShellBulkAssetContract:
         """End-to-end: the JSON shape the bulk JS POSTs is the shape the
         daemon handler accepts. Without this pin a rename on either side
         breaks the toolbar without any test failing."""
-        _seed_conversation("c-bulk")
+        native_id = _seed_session("c-bulk", workspace_env)
 
         # This is exactly the payload ``bulkApplyMark`` builds.
-        body = json.dumps({"conversation_id": "c-bulk", "mark_type": "star"}).encode()
+        body = json.dumps({"session_id": native_id, "mark_type": "star"}).encode()
         handler = _make_handler("POST", "/api/user/marks", body=body)
         send_error, send_json = _capture(handler)
         handler.do_POST()
@@ -253,7 +224,7 @@ class TestWebShellBulkAssetContract:
         status, payload = send_json.call_args.args
         assert status == HTTPStatus.CREATED
         assert payload["mark_type"] == "star"
-        assert payload["conversation_id"] == "c-bulk"
+        assert payload["session_id"] == native_id
 
     @pytest.mark.parametrize("mark_type", ["star", "pin", "archive"])
     def test_every_toolbar_mark_type_round_trips(
@@ -264,9 +235,9 @@ class TestWebShellBulkAssetContract:
         """The toolbar offers three tag buttons (#1119 AC). Each must
         be acceptable to the daemon mark handler — otherwise the
         toolbar shows a click that always fails."""
-        _seed_conversation(f"c-{mark_type}")
+        native_id = _seed_session(f"c-{mark_type}", workspace_env)
 
-        body = json.dumps({"conversation_id": f"c-{mark_type}", "mark_type": mark_type}).encode()
+        body = json.dumps({"session_id": native_id, "mark_type": mark_type}).encode()
         handler = _make_handler("POST", "/api/user/marks", body=body)
         send_error, send_json = _capture(handler)
         handler.do_POST()
@@ -285,28 +256,28 @@ def _make_topology(*, with_cycle: bool = False) -> SessionTopology:
     """Build a small SessionTopology covering parent+target+sibling+child."""
     nodes = (
         TopologyNode(
-            conversation_id=_cid("root"),
+            session_id=_cid("root"),
             source_name="claude-code",
             title="Root",
             depth=0,
             is_root=True,
         ),
         TopologyNode(
-            conversation_id=_cid("target"),
+            session_id=_cid("target"),
             source_name="claude-code",
             title="Target",
             depth=1,
             is_root=False,
         ),
         TopologyNode(
-            conversation_id=_cid("sibling"),
+            session_id=_cid("sibling"),
             source_name="claude-code",
             title="Sibling",
             depth=1,
             is_root=False,
         ),
         TopologyNode(
-            conversation_id=_cid("child"),
+            session_id=_cid("child"),
             source_name="claude-code",
             title="Child",
             depth=2,
@@ -354,13 +325,13 @@ class TestWebShellLineageAssetContract:
         assert "LINEAGE_JS" in web_shell_lineage.__all__
 
     def test_lineage_js_targets_topology_endpoint(self) -> None:
-        """The lineage tab fetches ``/api/conversations/{id}/topology``.
+        """The lineage tab fetches ``/api/sessions/{id}/topology``.
 
         That URL must match the route handler registered in
-        :mod:`polylogue.daemon.http` (``_handle_get_conversation_topology``).
+        :mod:`polylogue.daemon.http` (``_handle_get_session_topology``).
         """
         js = web_shell_lineage.LINEAGE_JS
-        assert "/api/conversations/" in js
+        assert "/api/sessions/" in js
         assert "/topology" in js
 
     def test_lineage_js_consumes_only_envelope_fields(self) -> None:
@@ -394,7 +365,7 @@ class TestWebShellLineageAssetContract:
         edge_keys = set(envelope["edges"][0].keys())  # type: ignore[index]
         # Every field the lineage JS reads off a node/edge must exist.
         js = web_shell_lineage.LINEAGE_JS
-        for key in ("conversation_id", "depth", "is_root", "title"):
+        for key in ("session_id", "depth", "is_root", "title"):
             assert key in node_keys
             assert key in js
         for key in ("child_id", "parent_id", "parent_native_id", "kind", "resolved"):
@@ -427,14 +398,14 @@ class TestWebShellLineageAssetContract:
     def test_lineage_js_only_delegates_to_known_reader_actions(self) -> None:
         """The lineage tab is read-only (#1121 explicit non-goal).
 
-        It may call ``selectConversation``, ``openCompareWithParent``,
+        It may call ``selectSession``, ``openCompareWithParent``,
         ``openParentChainAsStack``, and ``loadWorkspaceRoute`` — that's
         it. Any new mutation entrypoint added here is an architectural
         regression and should fail review.
         """
         js = web_shell_lineage.LINEAGE_JS
         # Allow-list — verify the documented entrypoints exist.
-        assert "selectConversation" in js
+        assert "selectSession" in js
         assert "openCompareWithParent" in js
         assert "openParentChainAsStack" in js
         assert "loadWorkspaceRoute" in js
@@ -592,13 +563,13 @@ class TestWebShellWorkspaceAssetContract:
                 "name": "Toolbar workspace",
                 "mode": "stack",
                 "open_targets": [
-                    {"target_type": "conversation", "conversation_id": "c-1"},
-                    {"target_type": "conversation", "conversation_id": "c-2"},
+                    {"target_type": "session", "session_id": "c-1"},
+                    {"target_type": "session", "session_id": "c-2"},
                 ],
                 "layout": {"mode": "stack"},
                 "active_target": {
-                    "target_type": "conversation",
-                    "conversation_id": "c-1",
+                    "target_type": "session",
+                    "session_id": "c-1",
                 },
             }
         ).encode()
@@ -620,7 +591,7 @@ class TestWebShellWorkspaceAssetContract:
         workspace_env: dict[str, Path],
     ) -> None:
         """``createRecallPack`` posts ``{pack_id, label, payload:{items}}``."""
-        _seed_conversation("c-recall")
+        _seed_session("c-recall", workspace_env)
         body = json.dumps(
             {
                 "pack_id": "pack-toolbar",
@@ -628,7 +599,7 @@ class TestWebShellWorkspaceAssetContract:
                 "payload": {
                     "summary": "Toolbar pack",
                     "items": [
-                        {"target_type": "conversation", "conversation_id": "c-recall"},
+                        {"target_type": "session", "session_id": "c-recall"},
                     ],
                 },
             }
@@ -646,7 +617,7 @@ class TestWebShellWorkspaceAssetContract:
         workspace_env: dict[str, Path],
     ) -> None:
         """``saveCurrentView`` posts ``{name, query: {...}}``."""
-        body = json.dumps({"name": "Toolbar view", "query": {"limit": 20, "provider": "claude-code"}}).encode()
+        body = json.dumps({"name": "Toolbar view", "query": {"limit": 20, "origin": "claude-code-session"}}).encode()
         handler = _make_handler("POST", "/api/user/saved-views", body=body)
         send_error, send_json = _capture(handler)
         handler.do_POST()
@@ -654,4 +625,4 @@ class TestWebShellWorkspaceAssetContract:
         status, payload = send_json.call_args.args
         assert status == HTTPStatus.CREATED
         assert payload["name"] == "Toolbar view"
-        assert payload["query"] == {"limit": 20, "provider": "claude-code"}
+        assert payload["query"] == {"limit": 20, "origin": "claude-code-session"}

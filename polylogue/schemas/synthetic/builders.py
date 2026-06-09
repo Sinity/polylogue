@@ -1,9 +1,9 @@
-"""Conversation builders and wire-format shaping for synthetic corpora."""
+"""Session builders and wire-format shaping for synthetic corpora."""
 
 from __future__ import annotations
 
 from polylogue.schemas.synthetic.build_batch import (
-    _generate_conversation,
+    _generate_session,
     _role_cycle,
     generate_batch,
 )
@@ -28,7 +28,7 @@ __all__ = [
     "_ensure_wire_codex",
     "_ensure_wire_format",
     "_ensure_wire_gemini",
-    "_generate_conversation",
+    "_generate_session",
     "_generate_jsonl_records",
     "_generate_linear_json",
     "_generate_tree_json",

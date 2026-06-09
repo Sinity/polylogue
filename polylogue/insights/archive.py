@@ -29,10 +29,10 @@ from polylogue.insights.archive_models import (
     SessionLatencyProfilePayload,
     SessionPhaseEvidencePayload,
     SessionPhaseInferencePayload,
+    ThreadPayload,
     WeekSessionSummaryPayload,
     WorkEventEvidencePayload,
     WorkEventInferencePayload,
-    WorkThreadPayload,
 )
 from polylogue.storage.repair import ArchiveDebtStatus
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
@@ -42,7 +42,7 @@ if TYPE_CHECKING:
         SessionPhaseRecord,
         SessionProfileRecord,
         SessionWorkEventRecord,
-        WorkThreadRecord,
+        ThreadRecord,
     )
 
 
@@ -89,13 +89,13 @@ class SessionWindowInsightQuery(ProviderSearchInsightQuery):
     sort: str = "source"
 
 
-class ConversationTimelineWindowInsightQuery(ProviderTimeWindowInsightQuery):
-    conversation_id: str | None = None
+class SessionTimelineWindowInsightQuery(ProviderTimeWindowInsightQuery):
+    session_id: str | None = None
     session_date_since: str | None = None
     session_date_until: str | None = None
 
 
-class SearchableConversationTimelineInsightQuery(ConversationTimelineWindowInsightQuery):
+class SearchableSessionTimelineInsightQuery(SessionTimelineWindowInsightQuery):
     query: str | None = None
 
     @property
@@ -110,19 +110,19 @@ class SessionProfileInsightQuery(SessionWindowInsightQuery):
 
 
 class SessionLatencyProfileInsightQuery(ProviderTimeWindowInsightQuery):
-    conversation_id: str | None = None
+    session_id: str | None = None
     only_stuck: bool = False
 
 
-class SessionWorkEventInsightQuery(SearchableConversationTimelineInsightQuery):
+class SessionWorkEventInsightQuery(SearchableSessionTimelineInsightQuery):
     heuristic_label: str | None = None
 
 
-class SessionPhaseInsightQuery(ConversationTimelineWindowInsightQuery):
+class SessionPhaseInsightQuery(SessionTimelineWindowInsightQuery):
     kind: str | None = None
 
 
-class WorkThreadInsightQuery(SearchableTimeWindowInsightQuery):
+class ThreadInsightQuery(SearchableTimeWindowInsightQuery):
     pass
 
 
@@ -136,7 +136,7 @@ class ArchiveCoverageInsightQuery(ProviderTimeWindowInsightQuery):
 
 
 class SessionCostInsightQuery(ProviderTimeWindowInsightQuery):
-    conversation_id: str | None = None
+    session_id: str | None = None
     model: str | None = None
     status: str | None = None
 
@@ -204,8 +204,8 @@ class SessionProfileInsight(ArchiveInsightModel):
     contract_version: int = ARCHIVE_INSIGHT_CONTRACT_VERSION
     insight_kind: str = "session_profile"
     semantic_tier: str = "merged"
-    conversation_id: str
-    logical_conversation_id: str
+    session_id: str
+    logical_session_id: str
     source_name: str
     title: str | None = None
     provenance: ArchiveInsightProvenance
@@ -225,16 +225,31 @@ class SessionProfileInsight(ArchiveInsightModel):
         include_evidence = tier in {"merged", "evidence"}
         include_inference = tier in {"merged", "inference"}
         include_enrichment = tier == "merged"
+        inference = record.inference_payload if include_inference else None
+        if inference is not None:
+            # The denormalized native session_profiles columns are the
+            # authoritative ranking signals (terminal_state / workflow_shape);
+            # the inference payload JSON is the structured-evidence copy. The
+            # writer keeps them in sync, so reconcile the insight object onto the
+            # native columns so ranking/aggregation reads the queryable authority.
+            inference = inference.model_copy(
+                update={
+                    "terminal_state": record.terminal_state,
+                    "terminal_state_confidence": record.terminal_state_confidence,
+                    "workflow_shape": record.workflow_shape,
+                    "workflow_shape_confidence": record.workflow_shape_confidence,
+                }
+            )
         return cls(
             semantic_tier=tier,
-            conversation_id=str(record.conversation_id),
-            logical_conversation_id=str(record.logical_conversation_id),
+            session_id=str(record.session_id),
+            logical_session_id=str(record.logical_session_id),
             source_name=record.source_name,
             title=record.title,
             provenance=_record_provenance(record),
             evidence=(record.evidence_payload if include_evidence else None),
             inference_provenance=(_record_inference_provenance(record) if include_inference else None),
-            inference=(record.inference_payload if include_inference else None),
+            inference=inference,
             enrichment_provenance=(_record_enrichment_provenance(record) if include_enrichment else None),
             enrichment=(record.enrichment_payload if include_enrichment else None),
         )
@@ -243,7 +258,7 @@ class SessionProfileInsight(ArchiveInsightModel):
 class SessionLatencyProfileInsight(ArchiveInsightModel):
     contract_version: int = ARCHIVE_INSIGHT_CONTRACT_VERSION
     insight_kind: str = "session_latency_profile"
-    conversation_id: str
+    session_id: str
     source_name: str
     title: str | None = None
     provenance: ArchiveInsightProvenance
@@ -271,7 +286,7 @@ class SessionLatencyProfileInsight(ArchiveInsightModel):
             ),
         )
         return cls(
-            conversation_id=str(record.conversation_id),
+            session_id=str(record.session_id),
             source_name=record.source_name,
             title=record.title,
             provenance=_record_provenance(record),
@@ -284,7 +299,7 @@ class SessionWorkEventInsight(ArchiveInsightModel):
     insight_kind: str = "session_work_event"
     semantic_tier: str = "inference"
     event_id: str
-    conversation_id: str
+    session_id: str
     source_name: str
     event_index: int
     provenance: ArchiveInsightProvenance
@@ -296,7 +311,7 @@ class SessionWorkEventInsight(ArchiveInsightModel):
     def from_record(cls, record: SessionWorkEventRecord) -> SessionWorkEventInsight:
         return cls(
             event_id=record.event_id,
-            conversation_id=record.conversation_id,
+            session_id=record.session_id,
             source_name=record.source_name,
             event_index=record.event_index,
             provenance=_record_provenance(record),
@@ -311,7 +326,7 @@ class SessionPhaseInsight(ArchiveInsightModel):
     insight_kind: str = "session_phase"
     semantic_tier: str = "inference"
     phase_id: str
-    conversation_id: str
+    session_id: str
     source_name: str
     phase_index: int
     provenance: ArchiveInsightProvenance
@@ -323,7 +338,7 @@ class SessionPhaseInsight(ArchiveInsightModel):
     def from_record(cls, record: SessionPhaseRecord) -> SessionPhaseInsight:
         return cls(
             phase_id=record.phase_id,
-            conversation_id=record.conversation_id,
+            session_id=record.session_id,
             source_name=record.source_name,
             phase_index=record.phase_index,
             provenance=_record_provenance(record),
@@ -333,17 +348,17 @@ class SessionPhaseInsight(ArchiveInsightModel):
         )
 
 
-class WorkThreadInsight(ArchiveInsightModel):
+class ThreadInsight(ArchiveInsightModel):
     contract_version: int = ARCHIVE_INSIGHT_CONTRACT_VERSION
-    insight_kind: str = "work_thread"
+    insight_kind: str = "thread"
     thread_id: str
     root_id: str
     dominant_repo: str | None = None
     provenance: ArchiveInsightProvenance
-    thread: WorkThreadPayload
+    thread: ThreadPayload
 
     @classmethod
-    def from_record(cls, record: WorkThreadRecord) -> WorkThreadInsight:
+    def from_record(cls, record: ThreadRecord) -> ThreadInsight:
         return cls(
             thread_id=record.thread_id,
             root_id=record.root_id,
@@ -362,7 +377,7 @@ class SessionTagRollupInsight(ArchiveInsightModel):
     contract_version: int = ARCHIVE_INSIGHT_CONTRACT_VERSION
     insight_kind: str = "session_tag_rollup"
     tag: str
-    conversation_count: int
+    session_count: int
     logical_session_count: int = 0
     explicit_count: int
     auto_count: int
@@ -393,7 +408,7 @@ class ArchiveCoverageInsight(ArchiveInsightModel):
     group_by: str = "provider"
     bucket: str = ""
     source_name: str | None = None
-    conversation_count: int
+    session_count: int
     logical_session_count: int = 0
     message_count: int = 0
     user_message_count: int = 0
@@ -403,13 +418,13 @@ class ArchiveCoverageInsight(ArchiveInsightModel):
     total_tool_active_duration_ms: int = 0
     total_wall_duration_ms: int = 0
     total_words: int = 0
-    avg_messages_per_conversation: float = 0.0
+    avg_messages_per_session: float = 0.0
     avg_user_words: float = 0.0
     avg_assistant_words: float = 0.0
     tool_use_count: int = 0
     thinking_count: int = 0
-    total_conversations_with_tools: int = 0
-    total_conversations_with_thinking: int = 0
+    total_sessions_with_tools: int = 0
+    total_sessions_with_thinking: int = 0
     tool_use_percentage: float = 0.0
     thinking_percentage: float = 0.0
     work_event_breakdown: dict[str, int] = Field(default_factory=dict)
@@ -422,7 +437,7 @@ class SessionCostInsight(ArchiveInsightModel):
     contract_version: int = ARCHIVE_INSIGHT_CONTRACT_VERSION
     insight_kind: str = "session_cost"
     semantic_tier: str = "estimate"
-    conversation_id: str
+    session_id: str
     source_name: str
     title: str | None = None
     created_at: str | None = None
@@ -595,8 +610,8 @@ __all__ = [
     "WeekSessionSummaryInsight",
     "WorkEventEvidencePayload",
     "WorkEventInferencePayload",
-    "WorkThreadInsight",
-    "WorkThreadInsightQuery",
+    "ThreadInsight",
+    "ThreadInsightQuery",
     "date_from_iso",
     "day_after",
     "profile_bucket_day",

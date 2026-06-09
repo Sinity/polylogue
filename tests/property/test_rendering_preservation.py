@@ -16,11 +16,12 @@ from hypothesis import HealthCheck, given, settings
 
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.roles import Role
-from polylogue.archive.models import Conversation, Message
-from polylogue.rendering.core_markdown import format_conversation_markdown
-from polylogue.rendering.formatting import format_conversation
-from polylogue.types import ConversationId, Provider
-from tests.infra.strategies.messages import conversation_strategy
+from polylogue.archive.models import Message, Session
+from polylogue.core.sources import origin_from_provider
+from polylogue.rendering.core_markdown import format_session_markdown
+from polylogue.rendering.formatting import format_session
+from polylogue.types import Provider, SessionId
+from tests.infra.strategies.messages import session_strategy
 
 
 class RenderMessagePayload(TypedDict):
@@ -31,7 +32,7 @@ class RenderMessagePayload(TypedDict):
     content_blocks: NotRequired[list[dict[str, object]]]
 
 
-class RenderConversationPayload(TypedDict):
+class RenderSessionPayload(TypedDict):
     id: str
     provider: str
     title: str
@@ -75,8 +76,8 @@ def _json_facts(json_str: str) -> dict[str, object]:
     data = json.loads(json_str)
     if not isinstance(data, dict):
         return {
-            "conversation_id": "",
-            "provider": "",
+            "session_id": "",
+            "origin": "",
             "title": None,
             "message_count": 0,
             "role_counts": {},
@@ -91,8 +92,8 @@ def _json_facts(json_str: str) -> dict[str, object]:
             if msg.get("timestamp"):
                 timestamped += 1
     return {
-        "conversation_id": data.get("id", ""),
-        "provider": data.get("provider", ""),
+        "session_id": data.get("id", ""),
+        "origin": data.get("origin", ""),
         "title": data.get("title"),
         "message_count": len(messages) if isinstance(messages, list) else 0,
         "role_counts": dict(role_counts),
@@ -108,7 +109,7 @@ def _message_text(payload: RenderMessagePayload, *, placeholder: bool) -> str:
 
 
 def _messages(
-    payload: RenderConversationPayload,
+    payload: RenderSessionPayload,
     *,
     placeholder: bool = True,
     non_empty_only: bool = False,
@@ -132,21 +133,21 @@ def _messages(
     return messages
 
 
-def _conversation(payload: RenderConversationPayload, messages: list[Message]) -> Conversation:
-    return Conversation(
-        id=ConversationId(payload["id"]),
-        provider=Provider.from_string(payload["provider"]),
+def _session(payload: RenderSessionPayload, messages: list[Message]) -> Session:
+    return Session(
+        id=SessionId(payload["id"]),
+        origin=origin_from_provider(Provider.from_string(payload["provider"])),
         title=payload["title"],
         messages=MessageCollection(messages=messages),
     )
 
 
-def _render_json(payload: RenderConversationPayload) -> str:
-    return format_conversation(_conversation(payload, _messages(payload)), "json", None)
+def _render_json(payload: RenderSessionPayload) -> str:
+    return format_session(_session(payload, _messages(payload)), "json", None)
 
 
-def _render_yaml(payload: RenderConversationPayload) -> str:
-    return format_conversation(_conversation(payload, _messages(payload)), "yaml", None)
+def _render_yaml(payload: RenderSessionPayload) -> str:
+    return format_session(_session(payload, _messages(payload)), "yaml", None)
 
 
 # ---------------------------------------------------------------------------
@@ -154,15 +155,15 @@ def _render_yaml(payload: RenderConversationPayload) -> str:
 # ---------------------------------------------------------------------------
 
 
-@given(conv_data=conversation_strategy(min_messages=1, max_messages=10))
+@given(conv_data=session_strategy(min_messages=1, max_messages=10))
 @settings(max_examples=30, deadline=5000)
-def test_markdown_preserves_message_count(conv_data: RenderConversationPayload) -> None:
+def test_markdown_preserves_message_count(conv_data: RenderSessionPayload) -> None:
     """Every non-empty message must produce a ## section in markdown."""
     messages = _messages(conv_data, placeholder=False, non_empty_only=True)
     if not messages:
         return  # skip if all messages empty
 
-    md = format_conversation_markdown(_conversation(conv_data, messages))
+    md = format_session_markdown(_session(conv_data, messages))
     facts = _markdown_facts(md)
 
     # Core invariant: renderable messages → ## sections
@@ -171,12 +172,12 @@ def test_markdown_preserves_message_count(conv_data: RenderConversationPayload) 
     )
 
 
-@given(conv_data=conversation_strategy(min_messages=2, max_messages=8))
+@given(conv_data=session_strategy(min_messages=2, max_messages=8))
 @settings(max_examples=30, deadline=5000)
-def test_markdown_preserves_role_distribution(conv_data: RenderConversationPayload) -> None:
+def test_markdown_preserves_role_distribution(conv_data: RenderSessionPayload) -> None:
     """Markdown role sections match the input role distribution."""
     messages = _messages(conv_data)
-    md = format_conversation_markdown(_conversation(conv_data, messages))
+    md = format_session_markdown(_session(conv_data, messages))
     facts = _markdown_facts(md)
 
     # Build expected role distribution (only renderable messages — non-empty text)
@@ -193,25 +194,25 @@ def test_markdown_preserves_role_distribution(conv_data: RenderConversationPaylo
 # ---------------------------------------------------------------------------
 
 
-@given(conv_data=conversation_strategy(min_messages=1, max_messages=10))
+@given(conv_data=session_strategy(min_messages=1, max_messages=10))
 @settings(max_examples=30, deadline=5000)
-def test_json_export_preserves_conversation_identity(conv_data: RenderConversationPayload) -> None:
-    """JSON export must preserve conversation ID, provider, title."""
-    conv = _conversation(conv_data, _messages(conv_data))
-    json_str = format_conversation(conv, "json", None)
+def test_json_export_preserves_session_identity(conv_data: RenderSessionPayload) -> None:
+    """JSON export must preserve session ID, provider, title."""
+    conv = _session(conv_data, _messages(conv_data))
+    json_str = format_session(conv, "json", None)
     facts = _json_facts(json_str)
 
-    assert facts["conversation_id"] == str(conv.id)
-    assert facts["provider"] == str(conv.provider)
+    assert facts["session_id"] == str(conv.id)
+    assert facts["origin"] == conv.origin
     assert facts["title"] == conv.title
 
 
-@given(conv_data=conversation_strategy(min_messages=1, max_messages=10))
+@given(conv_data=session_strategy(min_messages=1, max_messages=10))
 @settings(max_examples=30, deadline=5000)
-def test_json_export_preserves_message_count(conv_data: RenderConversationPayload) -> None:
+def test_json_export_preserves_message_count(conv_data: RenderSessionPayload) -> None:
     """JSON export must have one message entry per input message."""
     messages = _messages(conv_data)
-    json_str = format_conversation(_conversation(conv_data, messages), "json", None)
+    json_str = format_session(_session(conv_data, messages), "json", None)
     facts = _json_facts(json_str)
 
     assert facts["message_count"] == len(messages)
@@ -222,10 +223,10 @@ def test_json_export_preserves_message_count(conv_data: RenderConversationPayloa
 # ---------------------------------------------------------------------------
 
 
-@given(conv_data=conversation_strategy(min_messages=1, max_messages=5))
+@given(conv_data=session_strategy(min_messages=1, max_messages=5))
 @settings(max_examples=20, deadline=5000)
-def test_json_yaml_agree_on_message_count(conv_data: RenderConversationPayload) -> None:
-    """JSON and YAML exports of the same conversation have the same message count."""
+def test_json_yaml_agree_on_message_count(conv_data: RenderSessionPayload) -> None:
+    """JSON and YAML exports of the same session have the same message count."""
     import yaml
 
     json_data = json.loads(_render_json(conv_data))
@@ -241,10 +242,10 @@ def test_json_yaml_agree_on_message_count(conv_data: RenderConversationPayload) 
     assert len(json_msgs) == len(yaml_msgs), f"JSON has {len(json_msgs)} messages, YAML has {len(yaml_msgs)}"
 
 
-@given(conv_data=conversation_strategy(min_messages=1, max_messages=5))
+@given(conv_data=session_strategy(min_messages=1, max_messages=5))
 @settings(max_examples=20, deadline=5000, suppress_health_check=[HealthCheck.filter_too_much])
-def test_json_yaml_agree_on_identity(conv_data: RenderConversationPayload) -> None:
-    """JSON and YAML agree on conversation_id, provider, title."""
+def test_json_yaml_agree_on_identity(conv_data: RenderSessionPayload) -> None:
+    """JSON and YAML agree on session_id, provider, title."""
     import yaml
     from hypothesis import assume
 
@@ -257,7 +258,7 @@ def test_json_yaml_agree_on_identity(conv_data: RenderConversationPayload) -> No
     assert isinstance(yaml_data, dict)
 
     assert json_data["id"] == yaml_data["id"]
-    assert json_data["provider"] == yaml_data["provider"]
+    assert json_data["origin"] == yaml_data["origin"]
     assert json_data["title"] == yaml_data["title"]
 
 
@@ -266,9 +267,9 @@ def test_json_yaml_agree_on_identity(conv_data: RenderConversationPayload) -> No
 # ---------------------------------------------------------------------------
 
 
-@given(conv_data=conversation_strategy(min_messages=2, max_messages=5))
+@given(conv_data=session_strategy(min_messages=2, max_messages=5))
 @settings(max_examples=20, deadline=5000)
-def test_content_blocks_produce_structured_markdown(conv_data: RenderConversationPayload) -> None:
+def test_content_blocks_produce_structured_markdown(conv_data: RenderSessionPayload) -> None:
     """When content blocks are present, markdown should contain structural markers."""
     # Add content blocks to the first message
     blocks: list[dict[str, object]] = [
@@ -278,7 +279,7 @@ def test_content_blocks_produce_structured_markdown(conv_data: RenderConversatio
     ]
 
     messages = _messages(conv_data, content_blocks=blocks)
-    md = format_conversation_markdown(_conversation(conv_data, messages))
+    md = format_session_markdown(_session(conv_data, messages))
 
     # If first message was assistant and had blocks, check structure
     if messages[0].role.value == "assistant":

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from polylogue.archive.viewport.viewports import ContentBlock
 from polylogue.core.json import JSONDocument, json_document, json_document_list
-from polylogue.types import ContentBlockType
+from polylogue.types import BlockType
 
 from .base import ParsedContentBlock
 
@@ -57,7 +57,7 @@ def parsed_content_blocks_from_meta(blocks: object) -> list[ParsedContentBlock]:
             metadata_out.setdefault("language", language)
         parsed.append(
             ParsedContentBlock(
-                type=ContentBlockType.from_string(block_type),
+                type=BlockType.from_string(block_type),
                 text=text,
                 media_type=media_type,
                 metadata=metadata_out or None,

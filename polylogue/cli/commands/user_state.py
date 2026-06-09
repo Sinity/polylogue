@@ -31,7 +31,7 @@ def _json_or_plain(output_format: str | None, payload: dict[str, object], plain:
 
 
 def _canonical_query_json(query_json: str) -> str:
-    from polylogue.archive.query.spec import ConversationQuerySpec
+    from polylogue.archive.query.spec import SessionQuerySpec
 
     try:
         query = json.loads(query_json)
@@ -40,11 +40,9 @@ def _canonical_query_json(query_json: str) -> str:
     if not isinstance(query, dict):
         raise click.ClickException("query-json must encode an object")
     try:
-        ConversationQuerySpec.from_params(query, strict=True)
+        SessionQuerySpec.from_params(query, strict=True)
     except Exception as exc:
-        raise click.ClickException(
-            f"query-json is not a valid ConversationQuerySpec: {type(exc).__name__}: {exc}"
-        ) from exc
+        raise click.ClickException(f"query-json is not a valid SessionQuerySpec: {type(exc).__name__}: {exc}") from exc
     return json.dumps(query, sort_keys=True, separators=(",", ":"))
 
 
@@ -80,12 +78,12 @@ def user_state_command() -> None:
 
 @user_state_command.group("marks")
 def marks_group() -> None:
-    """Manage conversation and message marks."""
+    """Manage session and message marks."""
 
 
 @marks_group.command("list")
 @click.option("--mark-type", type=click.Choice(_MARK_TYPES), default=None)
-@click.option("--conversation-id", default=None)
+@click.option("--session-id", default=None)
 @click.option("--target-type", type=click.Choice(_TARGET_TYPES), default=None)
 @click.option("--target-id", default=None)
 @click.option("--message-id", default=None)
@@ -94,7 +92,7 @@ def marks_group() -> None:
 def list_marks_command(
     env: AppEnv,
     mark_type: str | None,
-    conversation_id: str | None,
+    session_id: str | None,
     target_type: str | None,
     target_id: str | None,
     message_id: str | None,
@@ -104,7 +102,7 @@ def list_marks_command(
     rows = _run(
         env.polylogue.list_marks(
             mark_type=mark_type,
-            conversation_id=conversation_id,
+            session_id=session_id,
             target_type=target_type,
             target_id=target_id,
             message_id=message_id,
@@ -121,16 +119,16 @@ def list_marks_command(
 
 
 @marks_group.command("add")
-@click.argument("conversation_id")
+@click.argument("session_id")
 @click.argument("mark_type", type=click.Choice(_MARK_TYPES))
-@click.option("--target-type", type=click.Choice(_TARGET_TYPES), default="conversation")
+@click.option("--target-type", type=click.Choice(_TARGET_TYPES), default="session")
 @click.option("--target-id", default=None)
 @click.option("--message-id", default=None)
 @click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
 @click.pass_obj
 def add_mark_command(
     env: AppEnv,
-    conversation_id: str,
+    session_id: str,
     mark_type: str,
     target_type: str,
     target_id: str | None,
@@ -141,7 +139,7 @@ def add_mark_command(
     created = bool(
         _run(
             env.polylogue.add_mark(
-                conversation_id,
+                session_id,
                 mark_type,
                 target_type=target_type,
                 target_id=target_id,
@@ -151,22 +149,22 @@ def add_mark_command(
     )
     _json_or_plain(
         output_format,
-        {"status": "ok" if created else "unchanged", "conversation_id": conversation_id, "mark_type": mark_type},
-        f"Mark {mark_type} on {conversation_id}: {'added' if created else 'unchanged'}",
+        {"status": "ok" if created else "unchanged", "session_id": session_id, "mark_type": mark_type},
+        f"Mark {mark_type} on {session_id}: {'added' if created else 'unchanged'}",
     )
 
 
 @marks_group.command("remove")
-@click.argument("conversation_id")
+@click.argument("session_id")
 @click.argument("mark_type", type=click.Choice(_MARK_TYPES))
-@click.option("--target-type", type=click.Choice(_TARGET_TYPES), default="conversation")
+@click.option("--target-type", type=click.Choice(_TARGET_TYPES), default="session")
 @click.option("--target-id", default=None)
 @click.option("--message-id", default=None)
 @click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
 @click.pass_obj
 def remove_mark_command(
     env: AppEnv,
-    conversation_id: str,
+    session_id: str,
     mark_type: str,
     target_type: str,
     target_id: str | None,
@@ -177,7 +175,7 @@ def remove_mark_command(
     deleted = bool(
         _run(
             env.polylogue.remove_mark(
-                conversation_id,
+                session_id,
                 mark_type,
                 target_type=target_type,
                 target_id=target_id,
@@ -187,18 +185,18 @@ def remove_mark_command(
     )
     _json_or_plain(
         output_format,
-        {"status": "ok" if deleted else "not_found", "conversation_id": conversation_id, "mark_type": mark_type},
-        f"Mark {mark_type} on {conversation_id}: {'removed' if deleted else 'not found'}",
+        {"status": "ok" if deleted else "not_found", "session_id": session_id, "mark_type": mark_type},
+        f"Mark {mark_type} on {session_id}: {'removed' if deleted else 'not found'}",
     )
 
 
 @user_state_command.group("annotations")
 def annotations_group() -> None:
-    """Manage conversation and message annotations."""
+    """Manage session and message annotations."""
 
 
 @annotations_group.command("list")
-@click.option("--conversation-id", default=None)
+@click.option("--session-id", default=None)
 @click.option("--target-type", type=click.Choice(_TARGET_TYPES), default=None)
 @click.option("--target-id", default=None)
 @click.option("--message-id", default=None)
@@ -206,7 +204,7 @@ def annotations_group() -> None:
 @click.pass_obj
 def list_annotations_command(
     env: AppEnv,
-    conversation_id: str | None,
+    session_id: str | None,
     target_type: str | None,
     target_id: str | None,
     message_id: str | None,
@@ -215,7 +213,7 @@ def list_annotations_command(
     """List durable annotations."""
     rows = _run(
         env.polylogue.list_annotations(
-            conversation_id=conversation_id,
+            session_id=session_id,
             target_type=target_type,
             target_id=target_id,
             message_id=message_id,
@@ -233,9 +231,9 @@ def list_annotations_command(
 
 @annotations_group.command("save")
 @click.argument("annotation_id")
-@click.argument("conversation_id")
+@click.argument("session_id")
 @click.argument("note_text")
-@click.option("--target-type", type=click.Choice(_TARGET_TYPES), default="conversation")
+@click.option("--target-type", type=click.Choice(_TARGET_TYPES), default="session")
 @click.option("--target-id", default=None)
 @click.option("--message-id", default=None)
 @click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
@@ -243,7 +241,7 @@ def list_annotations_command(
 def save_annotation_command(
     env: AppEnv,
     annotation_id: str,
-    conversation_id: str,
+    session_id: str,
     note_text: str,
     target_type: str,
     target_id: str | None,
@@ -255,7 +253,7 @@ def save_annotation_command(
         _run(
             env.polylogue.save_annotation(
                 annotation_id,
-                conversation_id,
+                session_id,
                 note_text,
                 target_type=target_type,
                 target_id=target_id,

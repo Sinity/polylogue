@@ -53,7 +53,7 @@ three issues.
 - The 2026-05-01 NOT_PLANNED batch (#626–#633): every "Superseded by #N" target (#614/#618/#621/#623/#624) verified — all closed COMPLETED with proper close-out commentary.
 - The 2026-05-04 NOT_PLANNED batch (#808/#812/#815/#816): folds verified. #808 → #828 (vector dimension AC present, completed via PR #975). #812 was a legitimate "not needed — single-user, fresh-on-mismatch" decision. #815 → #817 covers the FTS-repair-before-commit scope. **#816** (MCP `_safe_call` overloads, dead code, missing tool-name contracts) was folded into #811 — and #811's close-out comment says "MCP resource handler gaps should be tracked separately if still relevant." Marginal: the 6 items in #816 body are low-severity by author's own classification, so I did not flag this as ABANDONED, but it is the closest borderline case. Recommend a quick triage pass.
 - The MK3 decomposition (#956 → #993 → #1199–#1205) and the session/cost decompositions (#994/#995 → #1129–#1140) all close with verified-existing children.
-- The verifiability migration (#1058) closes with an exhaustive child-PR matrix and names the remaining out-of-scope work with live issue numbers (#1019, #1022, #997, #845, #957, #999).
+- The verifiability rollout (#1058) closes with an exhaustive child-PR matrix and names the remaining out-of-scope work with live issue numbers (#1019, #1022, #997, #845, #957, #999).
 
 ## Method
 

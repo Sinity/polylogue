@@ -14,8 +14,8 @@ from polylogue.rendering.blocks import has_structured_blocks, render_blocks_mark
 from polylogue.rendering.core_messages import normalize_render_timestamp
 
 if TYPE_CHECKING:
-    from polylogue.archive.models import Conversation
-    from polylogue.storage.archive_views import ConversationRenderProjection
+    from polylogue.archive.models import Session
+    from polylogue.storage.archive_views import SessionRenderProjection
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,7 +24,7 @@ class MarkdownAttachment:
 
     attachment_id: str
     path: str | Path | None
-    provider_meta: object = None
+    display_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,15 +62,7 @@ def _escape_message_section_markers(text: str) -> str:
 
 def append_attachment_markdown(att: MarkdownAttachment, lines: list[str], archive_root: Path) -> None:
     """Append a single attachment line to a markdown output buffer."""
-    name = None
-    meta = att.provider_meta
-    if meta:
-        try:
-            meta_dict = meta if isinstance(meta, dict) else json.loads(meta) if isinstance(meta, str) else {}
-            name = meta_dict.get("name") or meta_dict.get("provider_id") or meta_dict.get("drive_id")
-        except (json.JSONDecodeError, TypeError):
-            name = None
-    label = name or att.attachment_id
+    label = att.display_name or att.attachment_id
     path_value = att.path or str(asset_path(archive_root, att.attachment_id))
     lines.append(f"- Attachment: {label} ({path_value})")
 
@@ -78,14 +70,14 @@ def append_attachment_markdown(att: MarkdownAttachment, lines: list[str], archiv
 def render_markdown_document(
     *,
     title: str,
-    provider: str,
-    conversation_id: str,
+    origin: str,
+    session_id: str,
     messages: list[MarkdownMessage],
     attachments_by_message: dict[str | None, list[MarkdownAttachment]],
     archive_root: Path,
 ) -> str:
-    """Render a conversation payload to canonical markdown."""
-    lines = [f"# {title}", "", f"Provider: {provider}", f"Conversation ID: {conversation_id}", ""]
+    """Render a session payload to canonical markdown."""
+    lines = [f"# {title}", "", f"Origin: {origin}", f"Session ID: {session_id}", ""]
     message_ids: set[str] = set()
 
     for msg in messages:
@@ -137,12 +129,12 @@ def _normalize_markdown_attachment(
     *,
     attachment_id: str,
     path: str | Path | None,
-    provider_meta: object,
+    display_name: str | None,
 ) -> MarkdownAttachment:
     return MarkdownAttachment(
         attachment_id=attachment_id,
         path=path,
-        provider_meta=provider_meta,
+        display_name=display_name,
     )
 
 
@@ -166,7 +158,7 @@ def _normalize_markdown_message(
 
 
 def _group_projection_attachments(
-    projection: ConversationRenderProjection,
+    projection: SessionRenderProjection,
 ) -> dict[str | None, list[MarkdownAttachment]]:
     attachments_by_message: dict[str | None, list[MarkdownAttachment]] = {}
     for attachment in projection.attachments:
@@ -174,14 +166,14 @@ def _group_projection_attachments(
             _normalize_markdown_attachment(
                 attachment_id=attachment.attachment_id,
                 path=attachment.path,
-                provider_meta=attachment.provider_meta,
+                display_name=attachment.display_name,
             )
         )
     return attachments_by_message
 
 
-def format_conversation_markdown(conv: Conversation) -> str:
-    """Format a loaded Conversation domain object to markdown."""
+def format_session_markdown(conv: Session) -> str:
+    """Format a loaded Session domain object to markdown."""
     attachments_by_message: dict[str | None, list[MarkdownAttachment]] = {}
     normalized_messages: list[MarkdownMessage] = []
 
@@ -202,15 +194,25 @@ def format_conversation_markdown(conv: Conversation) -> str:
                 _normalize_markdown_attachment(
                     attachment_id=str(att.id),
                     path=att.path,
-                    provider_meta=att.provider_meta,
+                    display_name=att.name,
                 )
                 for att in msg.attachments
             ]
 
+    if getattr(conv, "attachments", None):
+        attachments_by_message[None] = [
+            _normalize_markdown_attachment(
+                attachment_id=str(att.id),
+                path=att.path,
+                display_name=att.name,
+            )
+            for att in conv.attachments
+        ]
+
     return render_markdown_document(
         title=conv.title or "Untitled",
-        provider=str(conv.provider),
-        conversation_id=str(conv.id),
+        origin=conv.origin.value,
+        session_id=str(conv.id),
         messages=normalized_messages,
         attachments_by_message=attachments_by_message,
         archive_root=Path("."),
@@ -221,7 +223,7 @@ __all__ = [
     "MarkdownAttachment",
     "MarkdownMessage",
     "append_attachment_markdown",
-    "format_conversation_markdown",
+    "format_session_markdown",
     "format_message_text",
     "render_markdown_document",
 ]

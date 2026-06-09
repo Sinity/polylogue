@@ -8,7 +8,7 @@ Coverage includes:
 1. ChatGPT: text_content with various parts structures, role normalization
 2. Gemini: text_content, role_normalized, extract_reasoning_traces, extract_content_blocks
 3. Claude Code: parsed_timestamp, text_content, content_blocks_raw, to_meta, flags, conversions
-4. Claude AI: role_normalized, parsed_timestamp, to_meta, to_content_blocks, conversation properties
+4. Claude AI: role_normalized, parsed_timestamp, to_meta, to_content_blocks, session properties
 """
 
 from __future__ import annotations
@@ -23,11 +23,11 @@ from polylogue.archive.viewport.viewports import ContentType
 from polylogue.sources.providers.chatgpt import (
     ChatGPTAuthor,
     ChatGPTContent,
-    ChatGPTConversation,
     ChatGPTMessage,
     ChatGPTNode,
+    ChatGPTSession,
 )
-from polylogue.sources.providers.claude_ai import ClaudeAIChatMessage, ClaudeAIConversation
+from polylogue.sources.providers.claude_ai import ClaudeAIChatMessage, ClaudeAISession
 from polylogue.sources.providers.claude_code import (
     ClaudeCodeMessageContent,
     ClaudeCodeRecord,
@@ -68,7 +68,7 @@ GeminiPartsInput: TypeAlias = list[GeminiPart | dict[str, object]]
 GeminiThoughtSignatureInput: TypeAlias = list[GeminiThoughtSignature | dict[str, object] | str]
 ClaudeCodeMessageInput: TypeAlias = dict[str, object] | ClaudeCodeMessageContent | ClaudeCodeUserMessage | None
 RawRecordKwargs: TypeAlias = dict[str, object]
-ChatGPTConversationMessages: TypeAlias = list[tuple[str, str]]
+ChatGPTSessionMessages: TypeAlias = list[tuple[str, str]]
 ProviderViewportRecord: TypeAlias = (
     ClaudeCodeRecord | ClaudeAIChatMessage | ChatGPTMessage | GeminiMessage | CodexRecord
 )
@@ -266,8 +266,8 @@ class TestClaudeCodeRecordTextContent2:
 
     def test_top_level_content_field_for_summary_records(self) -> None:
         """Summary/system records with top-level content field return it as text."""
-        record = ClaudeCodeRecord.model_validate({"type": "summary", "content": "Compacted conversation context"})
-        assert record.text_content == "Compacted conversation context"
+        record = ClaudeCodeRecord.model_validate({"type": "summary", "content": "Compacted session context"})
+        assert record.text_content == "Compacted session context"
 
 
 class TestClaudeCodeRecordContentBlocksRaw2:
@@ -856,18 +856,18 @@ class TestClaudeAIChatMessageToContentBlocks:
         assert blocks[0].text == text
 
 
-class TestClaudeAIConversationProperties:
-    """Test ClaudeAIConversation properties (title, created_datetime, updated_datetime)."""
+class TestClaudeAISessionProperties:
+    """Test ClaudeAISession properties (title, created_datetime, updated_datetime)."""
 
     @pytest.mark.parametrize(
         "name,expected_title,test_id",
         [
-            ("My Conversation", "My Conversation", "title_from_name"),
+            ("My Session", "My Session", "title_from_name"),
             ("", "", "title_empty_name"),
         ],
     )
     def test_title(self, name: str, expected_title: str, test_id: str) -> None:
-        conv = ClaudeAIConversation(
+        conv = ClaudeAISession(
             uuid="c-1",
             name=name,
             created_at="2024-01-01T00:00:00Z",
@@ -884,7 +884,7 @@ class TestClaudeAIConversationProperties:
         ],
     )
     def test_created_datetime(self, date_str: str | None, expect_valid: bool, test_id: str) -> None:
-        conv = ClaudeAIConversation(
+        conv = ClaudeAISession(
             uuid="c-1",
             name="Test",
             created_at="2024-01-01T00:00:00Z",
@@ -905,7 +905,7 @@ class TestClaudeAIConversationProperties:
         ],
     )
     def test_updated_datetime(self, updated_date: str | None, expect_valid: bool, test_id: str) -> None:
-        conv = ClaudeAIConversation(
+        conv = ClaudeAISession(
             uuid="c-1",
             name="Test",
             created_at="2024-01-01T00:00:00Z",
@@ -919,12 +919,12 @@ class TestClaudeAIConversationProperties:
             assert dt is None
 
 
-class TestClaudeAIConversationMessages:
-    """Test ClaudeAIConversation.messages property."""
+class TestClaudeAISessionMessages:
+    """Test ClaudeAISession.messages property."""
 
     def test_messages_alias(self) -> None:
         """Coverage for line 125: messages alias returns chat_messages."""
-        conv = ClaudeAIConversation(
+        conv = ClaudeAISession(
             uuid="c-1",
             name="Test",
             created_at="2024-01-01T00:00:00Z",
@@ -940,7 +940,7 @@ class TestClaudeAIConversationMessages:
         assert messages[1].text == "hello"
 
     def test_messages_empty(self) -> None:
-        conv = ClaudeAIConversation(
+        conv = ClaudeAISession(
             uuid="c-1",
             name="Test",
             created_at="2024-01-01T00:00:00Z",
@@ -950,12 +950,12 @@ class TestClaudeAIConversationMessages:
         assert len(messages) == 0
 
 
-class TestClaudeAIConversationIntegration:
-    """Integration tests for full conversation workflow."""
+class TestClaudeAISessionIntegration:
+    """Integration tests for full session workflow."""
 
-    def test_full_conversation_workflow(self) -> None:
-        """Test a complete conversation with all features."""
-        conv = ClaudeAIConversation(
+    def test_full_session_workflow(self) -> None:
+        """Test a complete session with all features."""
+        conv = ClaudeAISession(
             uuid="conv-full",
             name="Full Test",
             created_at="2024-06-15T10:00:00Z",
@@ -987,9 +987,9 @@ class TestClaudeAIConversationIntegration:
             blocks = msg.to_content_blocks()
             assert len(blocks) > 0
 
-    def test_conversation_with_invalid_timestamps(self) -> None:
-        """Test conversation with unparseable timestamps."""
-        conv = ClaudeAIConversation(
+    def test_session_with_invalid_timestamps(self) -> None:
+        """Test session with unparseable timestamps."""
+        conv = ClaudeAISession(
             uuid="conv-bad",
             name="Bad Times",
             created_at="bad-created",
@@ -1103,10 +1103,10 @@ class TestUnifiedRoleNormalization:
 
 
 class TestChatGPTIterUserAssistantPairs:
-    """Tests for ChatGPTConversation.iter_user_assistant_pairs()."""
+    """Tests for ChatGPTSession.iter_user_assistant_pairs()."""
 
-    def _make_conv(self, messages: ChatGPTConversationMessages) -> ChatGPTConversation:
-        """Helper to build a ChatGPTConversation with given messages inline."""
+    def _make_conv(self, messages: ChatGPTSessionMessages) -> ChatGPTSession:
+        """Helper to build a ChatGPTSession with given messages inline."""
         mapping: dict[str, ChatGPTNode] = {}
         prev_id = None
         for i, (role, text) in enumerate(messages):
@@ -1127,9 +1127,9 @@ class TestChatGPTIterUserAssistantPairs:
             mapping[node_id] = node
             prev_id = node_id
 
-        return ChatGPTConversation(
+        return ChatGPTSession(
             id="conv-1",
-            conversation_id="conv-1",
+            session_id="conv-1",
             title="Test",
             create_time=1700000000.0,
             update_time=1700000100.0,
@@ -1174,7 +1174,7 @@ class TestChatGPTIterUserAssistantPairs:
     )
     def test_pair_scenarios(
         self,
-        messages: ChatGPTConversationMessages,
+        messages: ChatGPTSessionMessages,
         expected_count: int,
         expected_user_text: str | None,
         expected_assistant_text: str | None,
@@ -1188,7 +1188,7 @@ class TestChatGPTIterUserAssistantPairs:
         if expected_assistant_text is not None:
             assert pairs[0][1].text_content == expected_assistant_text
 
-    def test_empty_conversation(self) -> None:
+    def test_empty_session(self) -> None:
         """No messages yields no pairs."""
         conv = self._make_conv([])
         pairs = list(conv.iter_user_assistant_pairs())
@@ -1271,7 +1271,7 @@ class TestChatGPTTextExtractionEdge:
 
 
 class TestChatGPTTreeTraversal:
-    """Tests for ChatGPTConversation.messages tree traversal."""
+    """Tests for ChatGPTSession.messages tree traversal."""
 
     def test_branching_follows_first_child(self) -> None:
         """Branching tree follows first child path."""
@@ -1308,9 +1308,9 @@ class TestChatGPTTreeTraversal:
                 ),
             ),
         }
-        conv = ChatGPTConversation(
+        conv = ChatGPTSession(
             id="c1",
-            conversation_id="c1",
+            session_id="c1",
             title="Branch",
             create_time=1700000000.0,
             update_time=1700000100.0,
@@ -1347,9 +1347,9 @@ class TestChatGPTTreeTraversal:
                 ),
             ),
         }
-        conv = ChatGPTConversation(
+        conv = ChatGPTSession(
             id="c2",
-            conversation_id="c2",
+            session_id="c2",
             title="Cycle",
             create_time=1700000000.0,
             update_time=1700000100.0,
@@ -1365,9 +1365,9 @@ class TestChatGPTTreeTraversal:
             "a": ChatGPTNode(id="a", parent="b", children=[]),
             "b": ChatGPTNode(id="b", parent="a", children=[]),
         }
-        conv = ChatGPTConversation(
+        conv = ChatGPTSession(
             id="c3",
-            conversation_id="c3",
+            session_id="c3",
             title="No Root",
             create_time=1700000000.0,
             update_time=1700000100.0,
@@ -1381,9 +1381,9 @@ class TestChatGPTTreeTraversal:
         mapping = {
             "root": ChatGPTNode(id="root", parent=None, children=[]),
         }
-        conv = ChatGPTConversation(
+        conv = ChatGPTSession(
             id="c4",
-            conversation_id="c4",
+            session_id="c4",
             title="Root Only",
             create_time=1700000000.0,
             update_time=1700000100.0,
@@ -1406,9 +1406,9 @@ class TestChatGPTTreeTraversal:
                 ),
             ),
         }
-        conv = ChatGPTConversation(
+        conv = ChatGPTSession(
             id="c5",
-            conversation_id="c5",
+            session_id="c5",
             title="CCR",
             create_time=1700000000.0,
             update_time=1700000100.0,
@@ -1432,11 +1432,11 @@ class TestChatGPTTimestampEdgeCases:
         )
         assert msg.timestamp is None
 
-    def test_conversation_invalid_create_time(self) -> None:
-        """Conversation with invalid timestamp returns None."""
-        conv = ChatGPTConversation(
+    def test_session_invalid_create_time(self) -> None:
+        """Session with invalid timestamp returns None."""
+        conv = ChatGPTSession(
             id="c1",
-            conversation_id="c1",
+            session_id="c1",
             title="Bad TS",
             create_time=-999999999999999.0,
             update_time=-999999999999999.0,

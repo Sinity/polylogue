@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import aiosqlite
 
-from polylogue.core.common import SQL_CONTENT_BLOCK_UPSERT as _CONTENT_BLOCK_UPSERT_SQL
 from polylogue.storage.runtime import ContentBlockRecord
 from polylogue.storage.sqlite.queries.mappers import _row_to_content_block
 
@@ -18,11 +17,28 @@ async def get_content_blocks(
         return {}
     result: dict[str, list[ContentBlockRecord]] = {mid: [] for mid in message_ids}
     batch_size = 900
+    table_query = """
+        SELECT
+            block_id,
+            message_id,
+            session_id,
+            position AS block_index,
+            block_type AS type,
+            text,
+            tool_name,
+            tool_id,
+            tool_input,
+            NULL AS metadata,
+            semantic_type
+        FROM blocks
+        WHERE message_id IN ({placeholders})
+        ORDER BY message_id, position
+    """
     for index in range(0, len(message_ids), batch_size):
         batch = message_ids[index : index + batch_size]
         placeholders = ",".join("?" for _ in batch)
         cursor = await conn.execute(
-            f"SELECT * FROM content_blocks WHERE message_id IN ({placeholders}) ORDER BY message_id, block_index",
+            table_query.format(placeholders=placeholders),
             batch,
         )
         rows = await cursor.fetchall()
@@ -33,39 +49,6 @@ async def get_content_blocks(
     return result
 
 
-async def save_content_blocks(
-    conn: aiosqlite.Connection,
-    records: list[ContentBlockRecord],
-    transaction_depth: int,
-) -> None:
-    """Persist content block records using bulk insert."""
-    if not records:
-        return
-    query = _CONTENT_BLOCK_UPSERT_SQL
-    await conn.executemany(
-        query,
-        [
-            (
-                record.block_id,
-                record.message_id,
-                record.conversation_id,
-                record.block_index,
-                record.type,
-                record.text,
-                record.tool_name,
-                record.tool_id,
-                record.tool_input,
-                record.metadata,
-                record.semantic_type,
-            )
-            for record in records
-        ],
-    )
-    if transaction_depth == 0:
-        await conn.commit()
-
-
 __all__ = [
     "get_content_blocks",
-    "save_content_blocks",
 ]

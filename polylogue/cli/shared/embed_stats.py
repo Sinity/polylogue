@@ -60,7 +60,7 @@ def _render_latest_catchup_run(payload: EmbeddingStatusPayload) -> None:
         return
     click.echo("  Latest catch-up:")
     click.echo(
-        f"    {latest['status']}; processed={latest['processed_conversations']:,}/{latest['planned_conversations']:,} convs; "
+        f"    {latest['status']}; processed={latest['processed_sessions']:,}/{latest['planned_sessions']:,} convs; "
         f"embedded={latest['embedded_messages']:,} msgs; errors={latest['error_count']:,}; "
         f"est. cost ~${latest['estimated_cost_usd']:.4f}"
     )
@@ -94,8 +94,8 @@ def render_embedding_stats(payload: EmbeddingStatusPayload, *, json_output: bool
     else:
         click.echo("  Monthly cost cap:      unbounded")
     click.echo(f"  Status:                {payload['status']}")
-    click.echo(f"  Total conversations:   {payload['total_conversations']}")
-    click.echo(f"  Embedded conversations:{payload['embedded_conversations']:>4}")
+    click.echo(f"  Total sessions:   {payload['total_sessions']}")
+    click.echo(f"  Embedded sessions:{payload['embedded_sessions']:>4}")
     click.echo(f"  Embedded messages:     {payload['embedded_messages']}")
     click.echo(f"  Coverage:              {payload['embedding_coverage_percent']:.1f}%")
     pending_messages = (
@@ -103,7 +103,7 @@ def render_embedding_stats(payload: EmbeddingStatusPayload, *, json_output: bool
         if payload["pending_messages_exact"]
         else "msgs not calculated (use --detail)"
     )
-    click.echo(f"  Pending:               {payload['pending_conversations']} convs, {pending_messages}")
+    click.echo(f"  Pending:               {payload['pending_sessions']} convs, {pending_messages}")
     click.echo(f"  Retrieval ready:       {'yes' if payload['retrieval_ready'] else 'no'}")
     click.echo(f"  Freshness:             {payload['freshness_status']}")
     click.echo(f"  Stale messages:        {payload['stale_messages']}")

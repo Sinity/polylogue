@@ -12,7 +12,7 @@ from typing import Annotated, Any, TypeAlias
 from pydantic import Field
 
 from polylogue.archive.message.types import validate_message_type_filter
-from polylogue.archive.query.spec import ConversationQuerySpec
+from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 
 MCPToolLimit: TypeAlias = Annotated[int, Field(ge=1)]
@@ -38,21 +38,21 @@ def normalize_query_params(params: Mapping[str, object]) -> dict[str, object]:
     return normalized
 
 
-def build_query_spec(**params: object) -> ConversationQuerySpec:
-    """Build a ConversationQuerySpec from MCP-facing query kwargs."""
+def build_query_spec(**params: object) -> SessionQuerySpec:
+    """Build a SessionQuerySpec from MCP-facing query kwargs."""
     normalized = normalize_query_params(params)
     if normalized.get("message_type") is not None:
         normalized["message_type"] = validate_message_type_filter(normalized["message_type"]).value
-    return ConversationQuerySpec.from_params(normalized)
+    return SessionQuerySpec.from_params(normalized)
 
 
 @dataclass(frozen=True, slots=True)
-class MCPConversationQueryRequest:
+class MCPSessionQueryRequest:
     """Typed MCP query request shared across query/search tool surfaces."""
 
     query: str | None = None
     retrieval_lane: str | None = None
-    provider: str | None = None
+    origin: str | None = None
     since: str | None = None
     until: str | None = None
     tag: str | None = None
@@ -60,7 +60,7 @@ class MCPConversationQueryRequest:
     title: str | None = None
     contains: str | None = None
     exclude_text: str | None = None
-    exclude_provider: str | None = None
+    exclude_origin: str | None = None
     exclude_tag: str | None = None
     has_type: str | None = None
     conv_id: str | None = None
@@ -90,12 +90,12 @@ class MCPConversationQueryRequest:
     limit: MCPToolLimit = 10
     cursor: str | None = None
 
-    def build_spec(self, clamp_limit: Callable[[int | object], int]) -> ConversationQuerySpec:
-        """Build a ConversationQuerySpec from this request using the given clamp helper."""
+    def build_spec(self, clamp_limit: Callable[[int | object], int]) -> SessionQuerySpec:
+        """Build a SessionQuerySpec from this request using the given clamp helper."""
         return build_query_spec(
             query=self.query,
             retrieval_lane=self.retrieval_lane or "auto",
-            provider=self.provider,
+            origin=self.origin,
             since=self.since,
             until=self.until,
             tag=self.tag,
@@ -103,7 +103,7 @@ class MCPConversationQueryRequest:
             title=self.title,
             contains=self.contains,
             exclude_text=self.exclude_text,
-            exclude_provider=self.exclude_provider,
+            exclude_origin=self.exclude_origin,
             exclude_tag=self.exclude_tag,
             has_type=self.has_type,
             conv_id=self.conv_id,
@@ -157,26 +157,26 @@ class MCPContentProjectionRequest:
         )
 
 
-def conversation_query_request_signature(
+def session_query_request_signature(
     *,
     include_query: bool,
     query_required: bool = False,
 ) -> inspect.Signature:
-    """Build an ``inspect.Signature`` mirroring ``MCPConversationQueryRequest``.
+    """Build an ``inspect.Signature`` mirroring ``MCPSessionQueryRequest``.
 
     ``include_query`` controls whether the ``query`` parameter is surfaced —
     ``search`` exposes it as required, ``facets`` exposes it as optional, and
-    ``list_conversations`` omits it. The resulting signature drives MCP
+    ``list_sessions`` omits it. The resulting signature drives MCP
     ``inputSchema`` derivation so the JSON schema and the typed request model
     cannot drift.
     """
     type_hints = typing.get_type_hints(
-        MCPConversationQueryRequest,
-        globalns=vars(sys.modules[MCPConversationQueryRequest.__module__]),
+        MCPSessionQueryRequest,
+        globalns=vars(sys.modules[MCPSessionQueryRequest.__module__]),
         include_extras=True,
     )
     parameters: list[inspect.Parameter] = []
-    for field in fields(MCPConversationQueryRequest):
+    for field in fields(MCPSessionQueryRequest):
         if field.name == "query" and not include_query:
             continue
         annotation = type_hints.get(field.name, Any)
@@ -203,25 +203,25 @@ def conversation_query_request_signature(
     return inspect.Signature(parameters=parameters, return_annotation=str)
 
 
-def build_conversation_query_request(**kwargs: Any) -> MCPConversationQueryRequest:
-    """Build an ``MCPConversationQueryRequest`` from MCP tool kwargs.
+def build_session_query_request(**kwargs: Any) -> MCPSessionQueryRequest:
+    """Build an ``MCPSessionQueryRequest`` from MCP tool kwargs.
 
     Only known dataclass fields are forwarded; unexpected MCP parameters
     raise ``TypeError`` via the dataclass constructor rather than silently
     mutating filter state.
     """
-    valid = {field.name for field in fields(MCPConversationQueryRequest)}
+    valid = {field.name for field in fields(MCPSessionQueryRequest)}
     payload = {name: value for name, value in kwargs.items() if name in valid}
-    return MCPConversationQueryRequest(**payload)
+    return MCPSessionQueryRequest(**payload)
 
 
 __all__ = [
-    "build_conversation_query_request",
+    "build_session_query_request",
     "build_query_spec",
-    "conversation_query_request_signature",
+    "session_query_request_signature",
     "MCPToolLimit",
     "MCPToolOffset",
     "MCPContentProjectionRequest",
-    "MCPConversationQueryRequest",
+    "MCPSessionQueryRequest",
     "normalize_query_params",
 ]

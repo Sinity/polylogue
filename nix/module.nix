@@ -39,7 +39,7 @@ let
 in
 {
   options.services.polylogue = {
-    enable = mkEnableOption "Polylogue AI conversation archive daemon";
+    enable = mkEnableOption "Polylogue AI session archive daemon";
 
     package = mkOption {
       type = types.package;

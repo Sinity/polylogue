@@ -1,4 +1,4 @@
-"""Hypothesis strategies for message and conversation generation.
+"""Hypothesis strategies for message and session generation.
 
 These strategies generate valid message structures for testing parsers
 and the semantic models.
@@ -12,10 +12,11 @@ from typing import TYPE_CHECKING, TypeAlias
 from hypothesis import strategies as st
 
 from polylogue.archive.message.roles import Role
-from polylogue.types import ConversationId, Provider
+from polylogue.core.sources import origin_from_provider
+from polylogue.types import Provider, SessionId
 
 if TYPE_CHECKING:
-    from polylogue.archive.models import Conversation, Message
+    from polylogue.archive.models import Message, Session
 
 JSONRecord: TypeAlias = dict[str, object]
 
@@ -156,18 +157,18 @@ def message_strategy(
 
 
 # =============================================================================
-# Conversation Strategies
+# Session Strategies
 # =============================================================================
 
 
 @st.composite
-def conversation_strategy(
+def session_strategy(
     draw: st.DrawFn,
     min_messages: int = 1,
     max_messages: int = 20,
     providers: list[str] | None = None,
 ) -> JSONRecord:
-    """Generate a conversation dict.
+    """Generate a session dict.
 
     Args:
         min_messages: Minimum number of messages
@@ -205,7 +206,7 @@ def conversation_strategy(
 
 
 # =============================================================================
-# Model Instance Strategies (return actual Message/Conversation model objects)
+# Model Instance Strategies (return actual Message/Session model objects)
 # =============================================================================
 # Dict-based strategies above: raw JSON structures for parser/wire-format testing.
 # Model-based strategies below: typed domain objects for business-logic testing.
@@ -262,18 +263,16 @@ def parsed_attachment_model_strategy(draw: st.DrawFn) -> object:
 
 
 @st.composite
-def conversation_model_strategy(draw: st.DrawFn, *, min_messages: int = 0, max_messages: int = 10) -> Conversation:
-    """Generate a Conversation model instance with arbitrary messages."""
+def session_model_strategy(draw: st.DrawFn, *, min_messages: int = 0, max_messages: int = 10) -> Session:
+    """Generate a Session model instance with arbitrary messages."""
     from polylogue.archive.message.messages import MessageCollection
-    from polylogue.archive.models import Conversation as ConversationModel
+    from polylogue.archive.models import Session as SessionModel
 
     messages = draw(st.lists(message_model_strategy(), min_size=min_messages, max_size=max_messages))
-    return ConversationModel(
-        id=ConversationId(
-            draw(st.text(min_size=1, max_size=40, alphabet=st.characters(whitelist_categories=("L", "N"))))
-        ),
-        provider=Provider.from_string(
-            draw(st.sampled_from(["chatgpt", "claude-ai", "claude-code", "codex", "gemini"]))
+    return SessionModel(
+        id=SessionId(draw(st.text(min_size=1, max_size=40, alphabet=st.characters(whitelist_categories=("L", "N"))))),
+        origin=origin_from_provider(
+            Provider.from_string(draw(st.sampled_from(["chatgpt", "claude-ai", "claude-code", "codex", "gemini"])))
         ),
         messages=MessageCollection(messages=messages),
     )

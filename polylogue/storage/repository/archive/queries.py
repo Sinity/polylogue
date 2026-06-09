@@ -6,13 +6,11 @@ import builtins
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from polylogue.archive.conversation.models import Conversation, ConversationSummary
-from polylogue.protocols import ConversationQueryRuntimeStore
-from polylogue.storage.query_models import ConversationRecordQuery
+from polylogue.archive.session.domain_models import Session, SessionSummary
+from polylogue.storage.query_models import SessionRecordQuery
 from polylogue.storage.sqlite.queries.stats import AggregateMessageStats
 
 if TYPE_CHECKING:
-    from polylogue.archive.filter.filters import ConversationFilter
     from polylogue.storage.sqlite.query_store import SQLiteQueryStore
 
 
@@ -22,13 +20,13 @@ class RepositoryArchiveQueryMixin:
 
         async def list_summaries_by_query(
             self,
-            query: ConversationRecordQuery,
-        ) -> list[ConversationSummary]: ...
+            query: SessionRecordQuery,
+        ) -> list[SessionSummary]: ...
 
         async def list_by_query(
             self,
-            query: ConversationRecordQuery,
-        ) -> list[Conversation]: ...
+            query: SessionRecordQuery,
+        ) -> list[Session]: ...
 
     async def list_summaries(
         self,
@@ -52,10 +50,9 @@ class RepositoryArchiveQueryMixin:
         max_messages: int | None = None,
         min_words: int | None = None,
         message_type: str | None = None,
-        include_provider_meta: bool = False,
-    ) -> list[ConversationSummary]:
+    ) -> list[SessionSummary]:
         return await self.list_summaries_by_query(
-            ConversationRecordQuery(
+            SessionRecordQuery(
                 source=source,
                 provider=provider,
                 providers=tuple(providers or ()),
@@ -76,7 +73,6 @@ class RepositoryArchiveQueryMixin:
                 max_messages=max_messages,
                 min_words=min_words,
                 message_type=message_type,
-                include_provider_meta=include_provider_meta,
             )
         )
 
@@ -102,7 +98,7 @@ class RepositoryArchiveQueryMixin:
         max_messages: int | None = None,
         min_words: int | None = None,
         message_type: str | None = None,
-    ) -> AsyncIterator[list[ConversationSummary]]:
+    ) -> AsyncIterator[list[SessionSummary]]:
         offset = 0
         while True:
             page = await self.list_summaries(
@@ -155,9 +151,9 @@ class RepositoryArchiveQueryMixin:
         max_messages: int | None = None,
         min_words: int | None = None,
         message_type: str | None = None,
-    ) -> list[Conversation]:
+    ) -> list[Session]:
         return await self.list_by_query(
-            ConversationRecordQuery(
+            SessionRecordQuery(
                 provider=provider,
                 providers=tuple(providers or ()),
                 since=since,
@@ -180,20 +176,20 @@ class RepositoryArchiveQueryMixin:
             )
         )
 
-    async def count_by_query(self, query: ConversationRecordQuery) -> int:
-        return await self.queries.count_conversations(query)
+    async def count_by_query(self, query: SessionRecordQuery) -> int:
+        return await self.queries.count_sessions(query)
 
-    async def get_conversation_stats(self, conversation_id: str) -> dict[str, int]:
-        return await self.queries.get_conversation_stats(conversation_id)
+    async def get_session_stats(self, session_id: str) -> dict[str, int]:
+        return await self.queries.get_session_stats(session_id)
 
-    async def get_message_counts_batch(self, conversation_ids: builtins.list[str]) -> dict[str, int]:
-        return await self.queries.get_message_counts_batch(conversation_ids)
+    async def get_message_counts_batch(self, session_ids: builtins.list[str]) -> dict[str, int]:
+        return await self.queries.get_message_counts_batch(session_ids)
 
     async def aggregate_message_stats(
         self,
-        conversation_ids: builtins.list[str] | None = None,
+        session_ids: builtins.list[str] | None = None,
     ) -> AggregateMessageStats:
-        return await self.queries.aggregate_message_stats(conversation_ids)
+        return await self.queries.aggregate_message_stats(session_ids)
 
     async def get_stats_by(self, group_by: str = "provider") -> dict[str, int]:
         return await self.queries.get_stats_by(group_by)
@@ -219,7 +215,7 @@ class RepositoryArchiveQueryMixin:
         message_type: str | None = None,
     ) -> int:
         return await self.count_by_query(
-            ConversationRecordQuery(
+            SessionRecordQuery(
                 provider=provider,
                 providers=tuple(providers or ()),
                 since=since,
@@ -239,11 +235,6 @@ class RepositoryArchiveQueryMixin:
                 message_type=message_type,
             )
         )
-
-    def filter(self: ConversationQueryRuntimeStore) -> ConversationFilter:
-        from polylogue.archive.filter import filters
-
-        return filters.ConversationFilter(self)
 
 
 __all__ = ["RepositoryArchiveQueryMixin"]

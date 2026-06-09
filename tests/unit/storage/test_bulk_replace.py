@@ -10,18 +10,18 @@ from polylogue.storage.sqlite.queries._bulk_replace import replace_insight_rows
 
 _DDL = """
     CREATE TABLE insight_demo (
-        conversation_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
         slot INTEGER NOT NULL,
         payload TEXT,
-        PRIMARY KEY (conversation_id, slot)
+        PRIMARY KEY (session_id, slot)
     )
 """
 
-_COLUMNS = ("conversation_id", "slot", "payload")
+_COLUMNS = ("session_id", "slot", "payload")
 
 
-def _record(conversation_id: str, slot: int, payload: str) -> tuple[str, int, str]:
-    return (conversation_id, slot, payload)
+def _record(session_id: str, slot: int, payload: str) -> tuple[str, int, str]:
+    return (session_id, slot, payload)
 
 
 def _extract(record: tuple[str, int, str]) -> tuple[str, int, str]:
@@ -38,10 +38,10 @@ async def _open(path: Path) -> aiosqlite.Connection:
 
 async def _all_rows(conn: aiosqlite.Connection) -> list[tuple[str, int, str]]:
     cursor = await conn.execute(
-        "SELECT conversation_id, slot, payload FROM insight_demo ORDER BY conversation_id, slot",
+        "SELECT session_id, slot, payload FROM insight_demo ORDER BY session_id, slot",
     )
     rows = await cursor.fetchall()
-    return [(r["conversation_id"], r["slot"], r["payload"]) for r in rows]
+    return [(r["session_id"], r["slot"], r["payload"]) for r in rows]
 
 
 async def test_empty_input_is_noop(tmp_path: Path) -> None:
@@ -50,7 +50,7 @@ async def test_empty_input_is_noop(tmp_path: Path) -> None:
         await replace_insight_rows(
             conn,
             table="insight_demo",
-            id_column="conversation_id",
+            id_column="session_id",
             id_values=(),
             columns=_COLUMNS,
             records=(),
@@ -69,7 +69,7 @@ async def test_single_record_insert(tmp_path: Path) -> None:
         await replace_insight_rows(
             conn,
             table="insight_demo",
-            id_column="conversation_id",
+            id_column="session_id",
             id_values=("c1",),
             columns=_COLUMNS,
             records=records,
@@ -86,7 +86,7 @@ async def test_multi_record_replace_replaces_prior_rows(tmp_path: Path) -> None:
     try:
         # Seed prior rows for c1 and c2 (and a sibling c3 that must survive).
         await conn.executemany(
-            "INSERT INTO insight_demo (conversation_id, slot, payload) VALUES (?, ?, ?)",
+            "INSERT INTO insight_demo (session_id, slot, payload) VALUES (?, ?, ?)",
             [
                 ("c1", 0, "old-c1-0"),
                 ("c1", 1, "old-c1-1"),
@@ -104,7 +104,7 @@ async def test_multi_record_replace_replaces_prior_rows(tmp_path: Path) -> None:
         await replace_insight_rows(
             conn,
             table="insight_demo",
-            id_column="conversation_id",
+            id_column="session_id",
             id_values=("c1", "c2"),
             columns=_COLUMNS,
             records=new_records,
@@ -126,7 +126,7 @@ async def test_delete_only_when_no_records(tmp_path: Path) -> None:
     conn = await _open(tmp_path / "demo.sqlite")
     try:
         await conn.executemany(
-            "INSERT INTO insight_demo (conversation_id, slot, payload) VALUES (?, ?, ?)",
+            "INSERT INTO insight_demo (session_id, slot, payload) VALUES (?, ?, ?)",
             [("c1", 0, "old"), ("c2", 0, "keep")],
         )
         await conn.commit()
@@ -134,7 +134,7 @@ async def test_delete_only_when_no_records(tmp_path: Path) -> None:
         await replace_insight_rows(
             conn,
             table="insight_demo",
-            id_column="conversation_id",
+            id_column="session_id",
             id_values=("c1",),
             columns=_COLUMNS,
             records=(),
@@ -159,7 +159,7 @@ async def test_idempotent_reinsert(tmp_path: Path) -> None:
             await replace_insight_rows(
                 conn,
                 table="insight_demo",
-                id_column="conversation_id",
+                id_column="session_id",
                 id_values=("c1", "c2"),
                 columns=_COLUMNS,
                 records=records,
@@ -183,7 +183,7 @@ async def test_transaction_depth_nonzero_does_not_commit(tmp_path: Path) -> None
         await replace_insight_rows(
             conn,
             table="insight_demo",
-            id_column="conversation_id",
+            id_column="session_id",
             id_values=("c1",),
             columns=_COLUMNS,
             records=records,
@@ -205,7 +205,7 @@ async def test_batch_boundary_with_many_ids(tmp_path: Path) -> None:
     try:
         seed = [(f"c{i:03d}", 0, "old") for i in range(50)]
         await conn.executemany(
-            "INSERT INTO insight_demo (conversation_id, slot, payload) VALUES (?, ?, ?)",
+            "INSERT INTO insight_demo (session_id, slot, payload) VALUES (?, ?, ?)",
             seed,
         )
         await conn.commit()
@@ -215,7 +215,7 @@ async def test_batch_boundary_with_many_ids(tmp_path: Path) -> None:
         await replace_insight_rows(
             conn,
             table="insight_demo",
-            id_column="conversation_id",
+            id_column="session_id",
             id_values=ids,
             columns=_COLUMNS,
             records=records,

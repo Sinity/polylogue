@@ -252,7 +252,7 @@ __ATTACHMENT_CSS__
   </div>
   <div id="sidebar">
     <div id="search-box">
-      <input type="text" id="search" placeholder="Search conversations..." autofocus>
+      <input type="text" id="search" placeholder="Search sessions..." autofocus>
       <button class="help-btn" id="help-btn" title="Keyboard shortcuts (?)">?</button>
     </div>
     <div id="facet-bar"></div>
@@ -264,7 +264,7 @@ __BULK_TOOLBAR_HTML__
 __WORKSPACE_HTML__
     <div id="msg-list">
       <div class="main-empty">
-        <h3>Select a conversation</h3>
+        <h3>Select a session</h3>
         <p>Browse from the list or use <span class="kbd">/</span> to search. Press <span class="kbd">?</span> for shortcuts.</p>
       </div>
     </div>
@@ -280,7 +280,7 @@ __WORKSPACE_HTML__
       <button data-tab="attachments">Attachments</button>
       <button data-tab="notes">Notes</button>
     </div>
-    <div id="inspector-content"><div class="inspector-empty">Select a conversation to inspect</div></div>
+    <div id="inspector-content"><div class="inspector-empty">Select a session to inspect</div></div>
   </div>
   <div id="footer">
     <span class="hint"><kbd>/</kbd> search</span>
@@ -300,8 +300,8 @@ __WORKSPACE_HTML__
     <h3>Keyboard Shortcuts</h3>
     <div class="help-grid">
       <kbd>/</kbd><span>Focus search</span>
-      <kbd>j</kbd><span>Next conversation</span>
-      <kbd>k</kbd><span>Previous conversation</span>
+      <kbd>j</kbd><span>Next session</span>
+      <kbd>k</kbd><span>Previous session</span>
       <kbd>n</kbd><span>Next page</span>
       <kbd>p</kbd><span>Previous page</span>
       <kbd>Enter</kbd><span>Open selected</span>
@@ -318,38 +318,38 @@ __BULK_PREVIEW_HTML__
 <script>
 var API = '';
 var state = {
-  conversations: [], selected: null, selectedRaw: null,
-  provider: '', query: '', offset: 0, limit: 100, total: 0,
+  sessions: [], selected: null, selectedRaw: null,
+  origin: '', query: '', offset: 0, limit: 100, total: 0,
   status: {}, facets: null, inspectorTab: 'info',
   marks: {}, annotations: {}, savedViews: [], workspaces: [], userStateError: '',
   mode: 'single', stackPayload: null, comparePayload: null,
   // Bulk selection state (#1119). selection is a Set-like object keyed by
-  // conversation_id. lastBulkResult holds the per-conversation envelope from
+  // session_id. lastBulkResult holds the per-session envelope from
   // the most recent bulk operation: {succeeded:[ids], failed:[{id,reason}],
   // skipped:[{id,reason}], dryRun:bool, action:string}.
   bulkSelection: {}, lastBulkResult: null, bulkPending: null,
-  // Cost panel cache (#1122). Keyed by conversation_id; populated on demand
+  // Cost panel cache (#1122). Keyed by session_id; populated on demand
   // when the Cost inspector tab is opened. ``undefined`` means "not loaded
   // yet", null/{error} means "fetch failed".
   costPanels: {},
-  // Per-conversation provenance (#1125). Loaded lazily when the Raw
-  // inspector tab is opened for the selected conversation; raw payload
+  // Per-session provenance (#1125). Loaded lazily when the Raw
+  // inspector tab is opened for the selected session; raw payload
   // preview within is opt-in via explicit user click.
   provenance: null,
-  // Per-conversation lineage envelope (#1121). Loaded lazily when the
+  // Per-session lineage envelope (#1121). Loaded lazily when the
   // Lineage inspector tab is opened. ``undefined`` means "not loaded
   // yet"; ``{error}`` means "fetch failed".
   lineage: undefined,
-  // Insights browser cache (#1120). Keyed by conversation_id; populated
+  // Insights browser cache (#1120). Keyed by session_id; populated
   // on demand when the Insights inspector tab is opened. Holds the
   // ``GET /api/insights/sessions/{id}`` envelope: ``{kinds: {profile,
-  // timeline, phases, threads}, include, conversation_id, provider}``.
+  // timeline, phases, threads}, include, session_id, origin}``.
   insightsPanels: {},
-  // Per-conversation collapsed-section toggles for the Insights tab.
-  // Keyed as ``"<conversation_id>:<kind>"``; default = expanded.
+  // Per-session collapsed-section toggles for the Insights tab.
+  // Keyed as ``"<session_id>:<kind>"``; default = expanded.
   insightsCollapsed: {},
-  // Per-conversation similarity panel cache (#1123). Keyed by
-  // conversation_id; populated on demand when the Similar inspector
+  // Per-session similarity panel cache (#1123). Keyed by
+  // session_id; populated on demand when the Similar inspector
   // tab is opened. ``undefined`` means "not loaded yet"; the envelope
   // carries the explicit pipeline state under ``status``.
   similarPanels: {}
@@ -371,19 +371,19 @@ async function sendJSON(url, method, body) {
   return r.json();
 }
 
-function markSetFor(conversationId) {
-  return state.marks[conversationId] || {};
+function markSetFor(sessionId) {
+  return state.marks[sessionId] || {};
 }
-function hasMark(conversationId, markType) {
-  return !!markSetFor(conversationId)[markType];
+function hasMark(sessionId, markType) {
+  return !!markSetFor(sessionId)[markType];
 }
-function setMarkLocal(conversationId, markType, enabled) {
-  if (!state.marks[conversationId]) state.marks[conversationId] = {};
-  if (enabled) state.marks[conversationId][markType] = true;
-  else delete state.marks[conversationId][markType];
+function setMarkLocal(sessionId, markType, enabled) {
+  if (!state.marks[sessionId]) state.marks[sessionId] = {};
+  if (enabled) state.marks[sessionId][markType] = true;
+  else delete state.marks[sessionId][markType];
 }
-function annotationsFor(conversationId) {
-  return state.annotations[conversationId] || [];
+function annotationsFor(sessionId) {
+  return state.annotations[sessionId] || [];
 }
 
 function getConvIdFromURL() {
@@ -395,35 +395,35 @@ window.addEventListener('popstate', function() {
   var route = getWorkspaceRouteFromURL();
   if (route) { loadWorkspaceRoute(route, false); return; }
   var cid = getConvIdFromURL();
-  if (cid) selectConversation(cid, false);
-  else { state.mode = 'single'; state.selected = null; state.selectedRaw = null; renderMain(); renderInspector(); renderConversations(); }
+  if (cid) selectSession(cid, false);
+  else { state.mode = 'single'; state.selected = null; state.selectedRaw = null; renderMain(); renderInspector(); renderSessions(); }
 });
 
-async function loadConversations(opts) {
+async function loadSessions(opts) {
   var params = new URLSearchParams();
   params.set('limit', String(state.limit));
   params.set('offset', String(state.offset));
-  if (state.provider) params.set('provider', state.provider);
+  if (state.origin) params.set('origin', state.origin);
   if (state.query) params.set('query', state.query);
   // Capture pre-load id set so we can animate newly-arrived rows after render.
   var beforeIds = {};
-  (state.conversations || []).forEach(function(c) { beforeIds[c.id] = true; });
+  (state.sessions || []).forEach(function(c) { beforeIds[c.id] = true; });
   try {
-    var data = await fetchJSON('/api/conversations?' + params);
-    state.conversations = data.items || [];
+    var data = await fetchJSON('/api/sessions?' + params);
+    state.sessions = data.items || [];
     state.total = data.total || 0;
     document.getElementById('footer-result').textContent =
       (state.total > 0) ? (state.total + ' results') : '';
   } catch(e) {
-    state.conversations = [];
+    state.sessions = [];
     state.total = 0;
-    renderSidebarState('error', 'Failed to load conversations');
+    renderSidebarState('error', 'Failed to load sessions');
   }
-  renderConversations();
+  renderSessions();
   // After render, animate rows that are newly present (either flagged by
   // realtime or simply not in the previous snapshot at this offset).
   var animateIds = (opts && opts.animateNewIds) || {};
-  state.conversations.forEach(function(c) {
+  state.sessions.forEach(function(c) {
     if (animateIds[c.id] || !beforeIds[c.id]) {
       maybeAnimateExistingRow(c.id);
     }
@@ -435,13 +435,13 @@ async function loadUserState() {
     var marks = await fetchJSON('/api/user/marks');
     state.marks = {};
     (marks.items || []).forEach(function(m) {
-      setMarkLocal(m.conversation_id, m.mark_type, true);
+      setMarkLocal(m.session_id, m.mark_type, true);
     });
     var annotations = await fetchJSON('/api/user/annotations');
     state.annotations = {};
     (annotations.items || []).forEach(function(a) {
-      if (!state.annotations[a.conversation_id]) state.annotations[a.conversation_id] = [];
-      state.annotations[a.conversation_id].push(a);
+      if (!state.annotations[a.session_id]) state.annotations[a.session_id] = [];
+      state.annotations[a.session_id].push(a);
     });
     var savedViews = await fetchJSON('/api/user/saved-views');
     state.savedViews = savedViews.items || [];
@@ -451,28 +451,28 @@ async function loadUserState() {
   } catch(e) {
     state.userStateError = 'User state unavailable';
   }
-  renderConversations();
+  renderSessions();
   renderMain();
   renderInspector();
 }
 
-async function loadConversation(id, updateURL) {
+async function loadSession(id, updateURL) {
   state.mode = 'single';
   state.stackPayload = null;
   state.comparePayload = null;
   if (updateURL !== false) pushSingleURL(id);
   try {
-    var data = await fetchJSON('/api/conversations/' + id);
+    var data = await fetchJSON('/api/sessions/' + id);
     state.selected = data;
   } catch(e) { state.selected = null; }
   renderMain();
   renderInspector();
-  renderConversations();
+  renderSessions();
 }
 
-async function loadConversationRaw(id) {
+async function loadSessionRaw(id) {
   try {
-    var data = await fetchJSON('/api/conversations/' + id + '/raw');
+    var data = await fetchJSON('/api/sessions/' + id + '/raw');
     state.selectedRaw = data;
   } catch(e) { state.selectedRaw = null; }
 }
@@ -480,7 +480,7 @@ async function loadConversationRaw(id) {
 async function loadFacets() {
   var params = new URLSearchParams();
   if (state.query) params.set('query', state.query);
-  if (state.provider) params.set('provider', state.provider);
+  if (state.origin) params.set('origin', state.origin);
   var qs = params.toString();
   try { state.facets = await fetchJSON('/api/facets' + (qs ? '?' + qs : '')); renderFacets(); } catch(e) {}
 }
@@ -499,7 +499,7 @@ async function loadStatus() {
   }
   try {
     var s = await fetchJSON('/api/status');
-    document.getElementById('status-convs').textContent = (s.total_conversations || 0).toLocaleString() + ' convs';
+    document.getElementById('status-convs').textContent = (s.total_sessions || 0).toLocaleString() + ' convs';
     document.getElementById('status-msgs').textContent = (s.total_messages || 0).toLocaleString() + ' msgs';
     renderFtsChip(s.fts_readiness || {});
     renderInsightChip(s.insight_freshness || {});
@@ -523,11 +523,13 @@ function setChipQuality(el, quality) {
 function renderFtsChip(fts) {
   var el = document.getElementById('status-fts');
   var msgReady = !!fts.messages_ready;
-  var actReady = !!fts.action_events_ready;
+  var indexed = Number(fts.message_indexed_count || 0);
+  var indexable = Number(fts.message_indexable_count || 0);
+  var partial = !msgReady && (indexed > 0 || indexable > 0 || Object.keys(fts.surfaces || {}).length > 0);
   var label;
   var quality;
-  if (msgReady && actReady) { label = 'FTS: ok'; quality = 'canonical'; }
-  else if (msgReady || actReady) { label = 'FTS: partial'; quality = 'partial'; }
+  if (msgReady) { label = 'FTS: ok'; quality = 'canonical'; }
+  else if (partial) { label = 'FTS: partial'; quality = 'partial'; }
   else { label = 'FTS: unavailable'; quality = 'unavailable'; }
   el.textContent = label;
   setChipQuality(el, quality);
@@ -550,23 +552,23 @@ function renderSidebarState(kind, msg) {
     '<div class="sidebar-state"><div class="state-icon">' + (icons[kind] || '') + '</div>' + esc(msg) + '</div>';
 }
 
-function renderConversations() {
+function renderSessions() {
   var el = document.getElementById('conv-list');
-  var items = state.conversations;
+  var items = state.sessions;
   if (!items || !items.length) {
     // Distinguish empty archive from filtered-no-results so the operator
     // knows whether to ingest or to clear filters. Preserve filter context
     // in the empty-state message per MK3 state matrix.
-    if (state.query && state.provider) {
-      renderSidebarState('noresults', 'No results for query=' + state.query + ' provider=' + state.provider + '. Press Esc to clear.');
+    if (state.query && state.origin) {
+      renderSidebarState('noresults', 'No results for query=' + state.query + ' origin=' + state.origin + '. Press Esc to clear.');
     } else if (state.query) {
       renderSidebarState('noresults', 'No results for query=' + state.query + '. Press Esc to clear.');
-    } else if (state.provider) {
-      renderSidebarState('noresults', 'No conversations from provider=' + state.provider + '. Press Esc to clear.');
+    } else if (state.origin) {
+      renderSidebarState('noresults', 'No sessions from origin=' + state.origin + '. Press Esc to clear.');
     } else if (state.total === 0) {
-      renderSidebarState('empty', 'No conversations in archive. Run `polylogued run` to ingest sources.');
+      renderSidebarState('empty', 'No sessions in archive. Run `polylogued run` to ingest sources.');
     } else {
-      renderSidebarState('noresults', 'No conversations on this page');
+      renderSidebarState('noresults', 'No sessions on this page');
     }
     return;
   }
@@ -575,7 +577,7 @@ function renderConversations() {
     var bulkSel = isBulkSelected(c.id) ? ' bulk-selected' : '';
     var title = esc((c.title || 'Untitled').substring(0, 100));
     var date = c.date ? new Date(c.date).toLocaleDateString() : (c.created_at ? new Date(c.created_at).toLocaleDateString() : '');
-    var p = c.provider || 'unknown';
+    var p = c.origin || 'unknown';
     var dotColor = 'var(--provider-' + p.replace(/_/g, '-') + ', var(--text-dim))';
     var flagsHtml = '';
     if (c.flags) {
@@ -590,8 +592,8 @@ function renderConversations() {
     var checked = isBulkSelected(c.id) ? ' checked' : '';
     return '<div class="conv-item' + sel + bulkSel + '" data-id="' + escAttr(c.id) + '">'
       + '<div class="conv-row">'
-      + '<input type="checkbox" class="bulk-check" data-bulk-id="' + escAttr(c.id) + '" aria-label="Select conversation"' + checked + '>'
-      + '<div class="conv-body" onclick="selectConversation(\'' + escAttr(c.id) + '\')">'
+      + '<input type="checkbox" class="bulk-check" data-bulk-id="' + escAttr(c.id) + '" aria-label="Select session"' + checked + '>'
+      + '<div class="conv-body" onclick="selectSession(\'' + escAttr(c.id) + '\')">'
       + '<div class="conv-title">' + title + '</div>'
       + '<div class="conv-meta">'
       + '<span class="provider-dot" style="background:' + dotColor + '"></span>'
@@ -610,14 +612,14 @@ function renderFacets() {
   var f = state.facets;
   if (!f) { document.getElementById('facet-bar').innerHTML = ''; return; }
   var html = '';
-  var providers = f.providers || {};
+  var providers = f.origins || {};
   var provKeys = Object.keys(providers);
   if (provKeys.length > 0) {
-    html += '<div class="facet-group"><div class="facet-group-label">Providers</div><div class="facet-chips">';
-    html += '<span class="facet-chip' + (!state.provider ? ' active' : '') + '" data-facet="provider" data-value="">All</span>';
+    html += '<div class="facet-group"><div class="facet-group-label">Origins</div><div class="facet-chips">';
+    html += '<span class="facet-chip' + (!state.origin ? ' active' : '') + '" data-facet="origin" data-value="">All</span>';
     provKeys.sort(function(a,b) { return providers[b] - providers[a]; }).slice(0, 8).forEach(function(p) {
-      var active = state.provider === p ? ' active' : '';
-      html += '<span class="facet-chip' + active + '" data-facet="provider" data-value="' + escAttr(p) + '">'
+      var active = state.origin === p ? ' active' : '';
+      html += '<span class="facet-chip' + active + '" data-facet="origin" data-value="' + escAttr(p) + '">'
         + esc(p) + '<span class="count">' + providers[p] + '</span></span>';
     });
     html += '</div></div>';
@@ -654,7 +656,7 @@ function renderMain() {
   var msgEl = document.getElementById('msg-list');
   if (!state.selected) {
     headerEl.innerHTML = '<h2>Polylogue</h2><div class="conv-stats"></div>';
-    msgEl.innerHTML = '<div class="main-empty"><h3>Select a conversation</h3>'
+    msgEl.innerHTML = '<div class="main-empty"><h3>Select a session</h3>'
       + '<p>Browse from the list or use <span class="kbd">/</span> to search. Press <span class="kbd">?</span> for shortcuts.</p></div>';
     return;
   }
@@ -666,10 +668,10 @@ function renderMain() {
     + markButtonHtml(c.id, 'archive', 'A', 'Toggle archive')
     + '</div></div><div class="conv-stats">';
   // MK3 header chip order (docs/design/mk3/docs/11-little-details.md):
-  // 1. provider/source  2. live/stale  3. repo/cwd/branch  4. counts
+  // 1. origin/source  2. live/stale  3. repo/cwd/branch  4. counts
   // 5. cost/tokens  6. derived/insight  7. marks/tags
-  // 1. provider/source
-  if (c.provider) headerHtml += '<span class="chip q-canonical">' + esc(c.provider) + '</span>';
+  // 1. origin/source
+  if (c.origin) headerHtml += '<span class="chip q-canonical">' + esc(c.origin) + '</span>';
   if (c.model) headerHtml += '<span class="chip">' + esc(String(c.model)) + '</span>';
   // 2. live/stale (placeholder — wired from session provenance once #1019 surfaces it on detail)
   if (c.stale) headerHtml += '<span class="chip q-stale" title="Derived view is stale">stale</span>';
@@ -718,7 +720,7 @@ function renderMain() {
     return;
   }
   if (c.messages.length === 0) {
-    msgEl.innerHTML = '<div class="main-empty"><h3>No messages</h3><p>This conversation has no message content.</p></div>';
+    msgEl.innerHTML = '<div class="main-empty"><h3>No messages</h3><p>This session has no message content.</p></div>';
     return;
   }
   msgEl.innerHTML = messageBlocksHtml(c.messages);
@@ -732,7 +734,7 @@ function messageBlocksHtml(messages) {
 }
 
 // --- Topology branch chip + parent-chain stack (#1203) ----------------
-// The branch chip is rendered on the conversation header and reflects
+// The branch chip is rendered on the session header and reflects
 // the resolved incoming edge kind (continuation / sidechain / fork /
 // subagent). Clicking it opens the Lineage inspector tab as the
 // "branch popover" — siblings, parent, and descendants are already
@@ -779,7 +781,7 @@ function renderOpenParentChainButton(c) {
     return '';
   }
   // Only show when there is at least one ancestor — otherwise the stack
-  // would degenerate to the same conversation.
+  // would degenerate to the same session.
   var hasAncestor = (data.edges || []).some(function(edge) {
     return edge.resolved && edge.child_id === c.id && edge.parent_id;
   });
@@ -798,14 +800,14 @@ function openLineageInspector() {
 }
 
 
-function markButtonHtml(conversationId, markType, label, title) {
-  var active = hasMark(conversationId, markType) ? ' active' : '';
+function markButtonHtml(sessionId, markType, label, title) {
+  var active = hasMark(sessionId, markType) ? ' active' : '';
   return '<button class="mark-btn' + active + '" title="' + escAttr(title) + '" onclick="toggleMark(\'' + escAttr(markType) + '\')">' + esc(label) + '</button>';
 }
 
 function renderInspector() {
   var el = document.getElementById('inspector-content');
-  if (!state.selected) { el.innerHTML = '<div class="inspector-empty">Select a conversation to inspect</div>'; return; }
+  if (!state.selected) { el.innerHTML = '<div class="inspector-empty">Select a session to inspect</div>'; return; }
   var c = state.selected;
   var tab = state.inspectorTab || 'info';
   if (tab === 'info') renderInspectorInfo(el, c);
@@ -819,7 +821,7 @@ function renderInspector() {
 }
 
 // --- Insights browser (#1120) -------------------------------------------
-// Loads /api/insights/sessions/{id} on demand and caches per-conversation
+// Loads /api/insights/sessions/{id} on demand and caches per-session
 // in state.insightsPanels. Each kind (profile/timeline/phases/threads)
 // surfaces a readiness chip driven by the daemon-served q-* vocabulary
 // (q-ready / q-partial / q-missing). The panel never goes blank — a
@@ -942,7 +944,7 @@ function renderInsightThreads(convId, body) {
   if (state.insightsCollapsed[insightSectionKey(convId, 'threads')]) return html;
   var threads = body.threads || [];
   if (!threads.length) {
-    html += '<div class="inspector-field"><span class="value muted">No work-thread membership recorded.</span></div>';
+    html += '<div class="inspector-field"><span class="value muted">No thread membership recorded.</span></div>';
     return html;
   }
   threads.forEach(function(th) {
@@ -984,13 +986,13 @@ function renderInspectorInsights(el, c) {
 }
 
 // --- Cost panel (#1122) --------------------------------------------------
-// Loads /api/conversations/{id}/cost on demand and caches per-conversation
+// Loads /api/sessions/{id}/cost on demand and caches per-session
 // in state.costPanels. Each visible number carries a confidence chip
 // driven by the MK3 q-* vocabulary returned by the daemon (q-canonical /
 // q-estimated / q-heuristic / q-unavailable).
 async function loadCostPanel(id) {
   try {
-    var data = await fetchJSON('/api/conversations/' + encodeURIComponent(id) + '/cost');
+    var data = await fetchJSON('/api/sessions/' + encodeURIComponent(id) + '/cost');
     state.costPanels[id] = data;
   } catch(e) {
     state.costPanels[id] = {error: String(e)};
@@ -1101,7 +1103,7 @@ function renderInspectorCost(el, c) {
 
 function renderInspectorInfo(el, c) {
   var fields = [
-    ['ID', c.id], ['Provider', c.provider], ['Model', c.model],
+    ['ID', c.id], ['Origin', c.origin], ['Model', c.model],
     ['Created', c.created_at ? new Date(c.created_at).toLocaleString() : ''],
     ['Updated', c.updated_at ? new Date(c.updated_at).toLocaleString() : ''],
     ['Messages', c.message_count], ['Words', (c.word_count || 0).toLocaleString()],
@@ -1125,9 +1127,9 @@ function renderInspectorInfo(el, c) {
   if (c.flags) {
     html += '<div class="inspector-section"><h4>Flags</h4>' + JSON.stringify(c.flags) + '</div>';
   }
-  // "Compare with..." entry point (#1124). Prompts for another conversation
+  // "Compare with..." entry point (#1124). Prompts for another session
   // id and opens the side-by-side compare workspace. Kept as a thin operator
-  // shortcut here; richer pickers (recent conversations, lineage parent) can
+  // shortcut here; richer pickers (recent sessions, lineage parent) can
   // hook into the same ``openCompareWith`` helper without changing the route.
   html += '<div class="inspector-section"><h4>Compare</h4>'
     + '<button class="user-action" onclick="openCompareWith()">Compare with\u2026</button>'
@@ -1143,12 +1145,12 @@ __SIMILAR_JS__
 
 async function openCompareWith() {
   if (!state.selected) return;
-  var other = window.prompt('Other conversation id', '');
+  var other = window.prompt('Other session id', '');
   if (!other) return;
   other = other.trim();
   if (!other) return;
   if (other === state.selected.id) {
-    state.userStateError = 'Cannot compare a conversation with itself';
+    state.userStateError = 'Cannot compare a session with itself';
     renderInspector();
     return;
   }
@@ -1157,7 +1159,7 @@ async function openCompareWith() {
 
 function renderInspectorRaw(el, c) {
   var html = '<div class="inspector-section"><h4>Provenance</h4>';
-  html += '<div class="inspector-field"><span class="label">Provider</span><span class="value">' + esc(c.provider || '-') + '</span></div>';
+  html += '<div class="inspector-field"><span class="label">Origin</span><span class="value">' + esc(c.origin || '-') + '</span></div>';
   html += '<div class="inspector-field"><span class="label">Branch</span><span class="value">' + esc(c.branch_type || 'main') + '</span></div>';
   html += '<div class="inspector-field"><span class="label">Parent</span><span class="value">' + esc(c.parent_id || '-') + '</span></div>';
   html += '</div><div class="inspector-section"><h4>Raw Artifacts</h4>';
@@ -1170,12 +1172,12 @@ function renderInspectorNotes(el, c) {
   var marks = Object.keys(markSetFor(c.id));
   var querySummary = [];
   if (state.query) querySummary.push('query=' + state.query);
-  if (state.provider) querySummary.push('provider=' + state.provider);
+  if (state.origin) querySummary.push('origin=' + state.origin);
   var html = '<div class="inspector-section"><h4>Marks</h4>';
   if (marks.length) {
     html += '<div class="user-state-row"><span class="label">Active</span><span class="value">' + esc(marks.sort().join(', ')) + '</span></div>';
   } else {
-    html += '<div class="inspector-empty">No marks on this conversation</div>';
+    html += '<div class="inspector-empty">No marks on this session</div>';
   }
   html += '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:8px">'
     + '<button class="user-action" onclick="toggleMark(\'star\')">Star</button>'
@@ -1183,7 +1185,7 @@ function renderInspectorNotes(el, c) {
     + '<button class="user-action" onclick="toggleMark(\'archive\')">Archive</button>'
     + '</div></div>';
   html += '<div class="inspector-section"><h4>Saved Views</h4>'
-    + '<div class="user-state-row"><span class="label">Current</span><span class="value">' + esc(querySummary.join(' / ') || 'all conversations') + '</span></div>'
+    + '<div class="user-state-row"><span class="label">Current</span><span class="value">' + esc(querySummary.join(' / ') || 'all sessions') + '</span></div>'
     + '<button class="user-action" onclick="saveCurrentView()">Save current view</button>';
   if (state.savedViews.length) {
     html += '<div class="saved-view-list" style="margin-top:8px">';
@@ -1191,9 +1193,9 @@ function renderInspectorNotes(el, c) {
       var q = v.query || {};
       var bits = [];
       if (q.query) bits.push('query=' + q.query);
-      if (q.provider) bits.push('provider=' + q.provider);
+      if (q.origin) bits.push('origin=' + q.origin);
       html += '<div class="saved-view-item" data-view-id="' + escAttr(v.view_id) + '"><div><div>' + esc(v.name || v.view_id) + '</div>'
-        + '<div class="value">' + esc(bits.join(' / ') || 'all conversations') + '</div></div>'
+        + '<div class="value">' + esc(bits.join(' / ') || 'all sessions') + '</div></div>'
         + '<div style="display:flex;gap:4px;flex-shrink:0">'
         + '<button class="user-action" onclick="applySavedView(\'' + escAttr(v.view_id) + '\')">Open</button>'
         + '<button class="user-action" title="Delete saved view" onclick="deleteSavedView(\'' + escAttr(v.view_id) + '\')">Delete</button>'
@@ -1212,7 +1214,7 @@ function renderInspectorNotes(el, c) {
   if (annotations.length) {
     html += '<div class="annotation-list">';
     annotations.forEach(function(a) {
-      var target = a.target_type === 'message' ? ('message ' + (a.message_id || a.target_id)) : 'conversation';
+      var target = a.target_type === 'message' ? ('message ' + (a.message_id || a.target_id)) : 'session';
       html += '<div class="annotation-item">'
         + '<div class="meta">' + esc(target) + '</div>'
         + '<div class="note">' + esc(a.note_text || '') + '</div>'
@@ -1223,7 +1225,7 @@ function renderInspectorNotes(el, c) {
     });
     html += '</div>';
   } else {
-    html += '<div class="inspector-empty">No annotations on this conversation</div>';
+    html += '<div class="inspector-empty">No annotations on this session</div>';
   }
   html += '</div>';
   el.innerHTML = html;
@@ -1235,17 +1237,17 @@ async function toggleMark(markType) {
   var enabled = hasMark(id, markType);
   try {
     if (enabled) {
-      await sendJSON('/api/user/marks?conversation_id=' + encodeURIComponent(id) + '&mark_type=' + encodeURIComponent(markType), 'DELETE');
+      await sendJSON('/api/user/marks?session_id=' + encodeURIComponent(id) + '&mark_type=' + encodeURIComponent(markType), 'DELETE');
       setMarkLocal(id, markType, false);
     } else {
-      await sendJSON('/api/user/marks', 'POST', {conversation_id: id, mark_type: markType});
+      await sendJSON('/api/user/marks', 'POST', {session_id: id, mark_type: markType});
       setMarkLocal(id, markType, true);
     }
     state.userStateError = '';
   } catch(e) {
     state.userStateError = 'Failed to update mark';
   }
-  renderConversations();
+  renderSessions();
   renderMain();
   renderInspector();
 }
@@ -1255,10 +1257,10 @@ function applySavedView(viewId) {
   if (!view) return;
   var query = view.query || {};
   state.query = query.query || '';
-  state.provider = query.provider || '';
+  state.origin = query.origin || '';
   state.offset = 0;
   document.getElementById('search').value = state.query;
-  loadConversations();
+  loadSessions();
   loadFacets();
   renderInspector();
 }
@@ -1278,7 +1280,7 @@ async function saveAnnotation(annotationId) {
   try {
     await sendJSON('/api/user/annotations', 'POST', {
       annotation_id: id,
-      conversation_id: state.selected.id,
+      session_id: state.selected.id,
       note_text: note
     });
     await loadUserState();
@@ -1309,13 +1311,17 @@ async function loadRawData() {
   var area = document.getElementById('raw-data-area');
   area.innerHTML = '<div style="color:var(--text-dim);font-size:var(--small);padding:8px 0">Loading...</div>';
   try {
-    await loadConversationRaw(id);
+    await loadSessionRaw(id);
     var raw = state.selectedRaw;
     if (!raw) { area.innerHTML = '<div class="inspector-empty">No raw data available</div>'; return; }
     var html = '';
-    if (raw.provider_meta && Object.keys(raw.provider_meta).length > 0) {
-      html += '<div class="inspector-section"><h4>Provider Meta</h4>'
-        + '<div class="raw-block">' + esc(JSON.stringify(raw.provider_meta, null, 2)) + '</div></div>';
+    var sessionFacts = {};
+    if (raw.git_repository_url) sessionFacts.git_repository_url = raw.git_repository_url;
+    if (raw.git_branch) sessionFacts.git_branch = raw.git_branch;
+    if (raw.working_directories && raw.working_directories.length > 0) sessionFacts.working_directories = raw.working_directories;
+    if (Object.keys(sessionFacts).length > 0) {
+      html += '<div class="inspector-section"><h4>Session Facts</h4>'
+        + '<div class="raw-block">' + esc(JSON.stringify(sessionFacts, null, 2)) + '</div></div>';
     }
     var artifacts = raw.raw_artifacts || [];
     if (artifacts.length > 0) {
@@ -1330,9 +1336,9 @@ async function loadRawData() {
   } catch(e) { area.innerHTML = '<div class="inspector-empty">Failed to load raw data</div>'; }
 }
 
-async function selectConversation(id, updateURL, opts) {
+async function selectSession(id, updateURL, opts) {
   // ``opts.liveTail`` is set by the SSE handler when a message.appended
-  // event lands for the currently-open conversation. We skip the loading
+  // event lands for the currently-open session. We skip the loading
   // placeholder so the message list visibly stays put while the new
   // message animates in, instead of flickering through an empty state.
   var isLiveTail = !!(opts && opts.liveTail);
@@ -1343,7 +1349,7 @@ async function selectConversation(id, updateURL, opts) {
     document.getElementById('msg-list').innerHTML = '<div class="main-empty"><h3>Loading...</h3></div>';
     document.getElementById('inspector-content').innerHTML = '<div class="inspector-empty">Loading...</div>';
   }
-  await loadConversation(id, updateURL);
+  await loadSession(id, updateURL);
   if (isLiveTail) {
     // Animate any message rendered into the DOM whose id was not present
     // before the live-tail reload — the per-row data-msg-id lookup mirrors
@@ -1368,16 +1374,16 @@ document.addEventListener('keydown', function(e) {
     e.preventDefault();
     var help = document.getElementById('help-overlay');
     if (help.classList.contains('visible')) { toggleHelp(); return; }
-    if (state.query) { state.query = ''; document.getElementById('search').value = ''; state.offset = 0; loadConversations(); return; }
-    if (state.provider) { state.provider = ''; state.offset = 0; loadConversations(); renderFacets(); return; }
+    if (state.query) { state.query = ''; document.getElementById('search').value = ''; state.offset = 0; loadSessions(); return; }
+    if (state.origin) { state.origin = ''; state.offset = 0; loadSessions(); renderFacets(); return; }
     return;
   }
   if (e.key === 'j' || e.key === 'k') {
-    // When a conversation is open the MK3 reader slice owns j/k for
+    // When a session is open the MK3 reader slice owns j/k for
     // message-card navigation (installed via installReaderShortcuts in
     // web_shell_reader.py). It runs as a capture-phase handler and will
     // have already preventDefault()'d in that case. Here we only drive
-    // the sidebar list when no conversation messages are loaded.
+    // the sidebar list when no session messages are loaded.
     var convOpen = !!(state.selected && state.selected.messages && state.selected.messages.length);
     if (convOpen) return;
     e.preventDefault();
@@ -1390,11 +1396,11 @@ document.addEventListener('keydown', function(e) {
   }
   if (e.key === 'n') {
     e.preventDefault();
-    if (state.offset + state.limit < state.total) { state.offset += state.limit; loadConversations(); }
+    if (state.offset + state.limit < state.total) { state.offset += state.limit; loadSessions(); }
   }
   if (e.key === 'p') {
     e.preventDefault();
-    if (state.offset > 0) { state.offset = Math.max(0, state.offset - state.limit); loadConversations(); }
+    if (state.offset > 0) { state.offset = Math.max(0, state.offset - state.limit); loadSessions(); }
   }
 });
 
@@ -1407,7 +1413,7 @@ document.getElementById('help-btn').addEventListener('click', function(e) { e.st
 var searchTimer;
 document.getElementById('search').addEventListener('input', function(e) {
   clearTimeout(searchTimer);
-  searchTimer = setTimeout(function() { state.query = e.target.value; state.offset = 0; loadConversations(); loadFacets(); }, 280);
+  searchTimer = setTimeout(function() { state.query = e.target.value; state.offset = 0; loadSessions(); loadFacets(); }, 280);
 });
 
 document.getElementById('facet-bar').addEventListener('click', function(e) {
@@ -1415,7 +1421,7 @@ document.getElementById('facet-bar').addEventListener('click', function(e) {
   if (!chip) return;
   var facet = chip.dataset.facet;
   var value = chip.dataset.value;
-  if (facet === 'provider') { state.provider = value || ''; state.offset = 0; loadConversations(); renderFacets(); }
+  if (facet === 'origin') { state.origin = value || ''; state.offset = 0; loadSessions(); renderFacets(); }
 });
 
 attachBulkHandlers();
@@ -1428,11 +1434,11 @@ document.getElementById('inspector-tabs').addEventListener('click', function(e) 
   renderInspector();
 });
 
-loadConversations().then(function() {
+loadSessions().then(function() {
   var route = getWorkspaceRouteFromURL();
   if (route) { loadWorkspaceRoute(route, false); return; }
   var cid = getConvIdFromURL();
-  if (cid) selectConversation(cid, false);
+  if (cid) selectSession(cid, false);
 });
 loadFacets();
 loadUserState();

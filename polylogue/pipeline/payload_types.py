@@ -27,13 +27,20 @@ class AcquireDiagnostics(TypedDict, total=False):
 
 
 class ParseBatchObservation(TypedDict, total=False):
+    primary_ingest_store: str
+    archive_primary_write: bool
+    archive_write_mode: str
+    archive_root: str
+    archive_write_targets: list[str]
+    archive_source_rows: int
+    archive_index_rows: int
     records: int
     blob_mb: float
     result_mb: float
     max_result_mb: float
-    conversations: int
+    sessions: int
     messages: int
-    changed_conversations: int
+    changed_sessions: int
     workers: int
     failed_raw_count: int
     skipped_raw_count: int
@@ -93,7 +100,7 @@ class MaterializeStageObservation(TypedDict, total=False):
     phases: int
     threads: int
     tag_rollups: int
-    conversations: int
+    sessions: int
     unique_thread_roots: int
     unique_provider_days: int
     elapsed_ms: float

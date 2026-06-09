@@ -1,4 +1,4 @@
-"""Property tests for the ConversationFilter chain algebraic laws.
+"""Property tests for the SessionFilter chain algebraic laws.
 
 Four laws are verified against a real SQLite archive:
 
@@ -27,21 +27,22 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from polylogue import Polylogue
-from polylogue.types import Provider
-from tests.infra.storage_records import ConversationBuilder
+from polylogue.core.enums import Origin
+from polylogue.core.sources import provider_from_origin
+from tests.infra.storage_records import SessionBuilder
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-_PROVIDERS = ["chatgpt", "claude-ai", "claude-code", "codex"]
+_PROVIDERS = ["chatgpt-export", "claude-ai-export", "claude-code-session", "codex-session"]
 
 _SUPPRESS = [
     HealthCheck.function_scoped_fixture,
     HealthCheck.too_slow,
 ]
 
-# Conversations are created with timestamps distributed across 2024.
+# Sessions are created with timestamps distributed across 2024.
 _BASE_DT = datetime(2024, 1, 1, tzinfo=timezone.utc)
 _MID_DT = datetime(2024, 6, 1, tzinfo=timezone.utc)
 _END_DT = datetime(2024, 12, 31, tzinfo=timezone.utc)
@@ -117,7 +118,7 @@ def filter_params_strategy(draw: st.DrawFn) -> FilterParams:
 def _seed_diverse_archive(db_path: Path) -> None:
     """Seed a diverse archive covering all filter dimensions.
 
-    Creates 20 conversations spanning:
+    Creates 20 sessions spanning:
     - all four providers (5 each)
     - some with tool use, some without
     - some with thinking blocks, some without
@@ -138,9 +139,10 @@ def _seed_diverse_archive(db_path: Path) -> None:
             day_offset = slot * 60 + provider_idx * 5
             ts = (_BASE_DT + timedelta(days=day_offset)).isoformat()
 
+            seed_provider = provider_from_origin(Origin(provider)).value
             builder = (
-                ConversationBuilder(db_path, cid)
-                .provider(provider)
+                SessionBuilder(db_path, cid)
+                .provider(seed_provider)
                 .title(f"{provider} conv {slot}")
                 .created_at(ts)
                 .updated_at(ts)
@@ -156,7 +158,7 @@ def _seed_diverse_archive(db_path: Path) -> None:
                     timestamp=ts,
                 )
 
-            # Add tool_use block on every other conversation
+            # Add tool_use block on every other session
             if conv_index % 2 == 0:
                 builder.add_message(
                     role="assistant",
@@ -165,7 +167,7 @@ def _seed_diverse_archive(db_path: Path) -> None:
                     content_blocks=[{"type": "tool_use", "tool_name": "bash", "tool_id": f"tid-{cid}"}],
                 )
 
-            # Add thinking block on every third conversation
+            # Add thinking block on every third session
             if conv_index % 3 == 0:
                 builder.add_message(
                     role="assistant",
@@ -183,7 +185,7 @@ def _seed_diverse_archive(db_path: Path) -> None:
 
 
 def _apply_params(filter_obj: Any, params: FilterParams) -> Any:
-    """Apply FilterParams to a ConversationFilter instance.
+    """Apply FilterParams to a SessionFilter instance.
 
     Numeric thresholds (``min_messages``, ``max_messages``, ``min_words``) and
     temporal bounds (``since``, ``until``) on the builder replace prior values
@@ -194,24 +196,27 @@ def _apply_params(filter_obj: Any, params: FilterParams) -> Any:
     """
     plan = filter_obj._plan
     if params.provider is not None:
-        # ``ConversationFilter.provider`` accumulates names into an IN-list
+        # ``SessionFilter.provider`` accumulates names into an IN-list
         # (OR semantics across the tuple): a second call appends rather than
         # replaces. The commutativity / monotonicity laws here treat the
         # composition of two ``FilterParams`` as logical conjunction
         # (matches A AND matches B). When two provider values disagree,
         # that conjunction is the empty set. We achieve that by overwriting
         # the plan's providers tuple with ``(Provider.UNKNOWN,)`` — no
-        # seeded conversation has ``provider == UNKNOWN``, so the predicate
+        # seeded session has ``provider == UNKNOWN``, so the predicate
         # yields zero rows independent of what was there before. (Simply
         # appending an extra provider name would *grow* the IN-list and
         # leak rows from the first filter into the result.)
-        params_provider = Provider.from_string(params.provider)
-        current_providers = plan.providers
-        if current_providers and params_provider not in current_providers:
-            filter_obj._plan = replace(plan, providers=(Provider.UNKNOWN,))
+        #
+        # The plan filters on origin tokens internally (#1743); project the
+        # requested provider to its origin family token for the comparison.
+        params_origin = Origin.from_string(params.provider).value
+        current_origins = plan.origins
+        if current_origins and params_origin not in current_origins:
+            filter_obj._plan = replace(plan, origins=(Origin.UNKNOWN_EXPORT.value,))
             plan = filter_obj._plan
         else:
-            filter_obj = filter_obj.provider(params_provider)
+            filter_obj = filter_obj.origin(params.provider)
     if params.has_tool_use:
         filter_obj = filter_obj.has_tool_use()
     if params.has_thinking:
@@ -250,7 +255,7 @@ def _apply_params(filter_obj: Any, params: FilterParams) -> Any:
 async def test_filter_result_is_subset_of_unfiltered(params: FilterParams) -> None:
     """filter(X) result IDs must be a subset of the unfiltered result IDs."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = Path(tmpdir) / "archive.db"
+        db_path = Path(tmpdir) / "index.db"
         _seed_diverse_archive(db_path)
 
         async with Polylogue(archive_root=Path(tmpdir), db_path=db_path) as archive:
@@ -281,7 +286,7 @@ async def test_adding_filter_never_increases_count(params_a: FilterParams, param
     More constraints → same or fewer results.
     """
     with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = Path(tmpdir) / "archive.db"
+        db_path = Path(tmpdir) / "index.db"
         _seed_diverse_archive(db_path)
 
         async with Polylogue(archive_root=Path(tmpdir), db_path=db_path) as archive:
@@ -311,7 +316,7 @@ async def test_adding_filter_never_increases_count(params_a: FilterParams, param
 async def test_filter_application_order_is_commutative(params_a: FilterParams, params_b: FilterParams) -> None:
     """filter(A).filter(B) and filter(B).filter(A) must yield identical IDs and counts."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = Path(tmpdir) / "archive.db"
+        db_path = Path(tmpdir) / "index.db"
         _seed_diverse_archive(db_path)
 
         async with Polylogue(archive_root=Path(tmpdir), db_path=db_path) as archive:
@@ -349,7 +354,7 @@ async def test_filter_application_order_is_commutative(params_a: FilterParams, p
 async def test_filter_applied_twice_equals_once(params: FilterParams) -> None:
     """Applying the same filter params twice must yield the same result as once."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = Path(tmpdir) / "archive.db"
+        db_path = Path(tmpdir) / "index.db"
         _seed_diverse_archive(db_path)
 
         async with Polylogue(archive_root=Path(tmpdir), db_path=db_path) as archive:

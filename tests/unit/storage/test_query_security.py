@@ -8,11 +8,11 @@ from pathlib import Path
 import pytest
 from hypothesis import HealthCheck, given, settings
 
-from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.repository import SessionRepository
 from polylogue.storage.search import escape_fts5_query
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from tests.infra.adversarial_cases import FTS5_ESCAPE_SECURITY_CASES
-from tests.infra.storage_records import make_conversation, make_message
+from tests.infra.storage_records import make_message, make_session, save_session_to_archive
 from tests.infra.strategies.adversarial import (
     control_char_strategy,
     fts5_operator_strategy,
@@ -21,42 +21,42 @@ from tests.infra.strategies.adversarial import (
 
 
 @pytest.fixture
-async def temp_repo(tmp_path: Path) -> ConversationRepository:
+async def temp_repo(tmp_path: Path) -> SessionRepository:
     db_path = tmp_path / "test.db"
     backend = SQLiteBackend(db_path=db_path)
-    return ConversationRepository(backend=backend)
+    return SessionRepository(backend=backend)
 
 
-async def test_conversation_id_sql_injection_select(temp_repo: ConversationRepository) -> None:
+async def test_session_id_sql_injection_select(temp_repo: SessionRepository) -> None:
     assert await temp_repo.view("' OR '1'='1") is None
 
 
-async def test_conversation_id_sql_injection_drop_table(temp_repo: ConversationRepository) -> None:
-    assert await temp_repo.view("'; DROP TABLE conversations--") is None
+async def test_session_id_sql_injection_drop_table(temp_repo: SessionRepository) -> None:
+    assert await temp_repo.view("'; DROP TABLE sessions--") is None
     assert isinstance(await temp_repo.list(), list)
 
 
-async def test_conversation_id_sql_injection_union(temp_repo: ConversationRepository) -> None:
+async def test_session_id_sql_injection_union(temp_repo: SessionRepository) -> None:
     assert await temp_repo.view("1 UNION SELECT * FROM sqlite_master--") is None
 
 
-async def test_message_id_sql_injection(temp_repo: ConversationRepository) -> None:
+async def test_message_id_sql_injection(temp_repo: SessionRepository) -> None:
     assert isinstance(await temp_repo.list(), list)
 
 
-async def test_source_name_sql_injection(temp_repo: ConversationRepository) -> None:
+async def test_source_name_sql_injection(temp_repo: SessionRepository) -> None:
     assert await temp_repo.list(provider="doesnotexist") == []
 
 
-async def test_conversation_title_sql_injection(temp_repo: ConversationRepository) -> None:
+async def test_session_title_sql_injection(temp_repo: SessionRepository) -> None:
     assert isinstance(await temp_repo.list(), list)
     assert isinstance(await temp_repo.list(), list)
 
 
-async def test_multiple_injection_attempts_in_sequence(temp_repo: ConversationRepository) -> None:
+async def test_multiple_injection_attempts_in_sequence(temp_repo: SessionRepository) -> None:
     for malicious_id in [
         "' OR '1'='1",
-        "'; DROP TABLE conversations--",
+        "'; DROP TABLE sessions--",
         "1 UNION SELECT * FROM sqlite_master--",
         "admin'--",
     ]:
@@ -64,13 +64,12 @@ async def test_multiple_injection_attempts_in_sequence(temp_repo: ConversationRe
     assert isinstance(await temp_repo.list(), list)
 
 
-async def test_stored_xss_in_conversation_content(temp_repo: ConversationRepository) -> None:
+async def test_stored_xss_in_session_content(temp_repo: SessionRepository) -> None:
     xss_payload = "<script>alert('XSS')</script>"
     backend = temp_repo.backend
-    conv_record = make_conversation("xss-test", title="XSS Test")
+    conv_record = make_session("xss-test", title="XSS Test")
     msg_record = make_message("msg-xss", "xss-test", text=xss_payload)
-    await backend.save_conversation_record(conv_record)
-    await backend.save_messages([msg_record])
+    await save_session_to_archive(backend, session=conv_record, messages=[msg_record])
     retrieved = await temp_repo.view("xss-test")
     assert retrieved is not None
     assert xss_payload in [m.text for m in retrieved.messages]
@@ -97,12 +96,12 @@ def test_escape_fts5_security_contract(raw_query: str, expected: str, should_com
             _assert_fts5_match_executes(escaped)
 
 
-async def test_empty_string_parameters_handled(temp_repo: ConversationRepository) -> None:
+async def test_empty_string_parameters_handled(temp_repo: SessionRepository) -> None:
     assert await temp_repo.view("") is None
     assert isinstance(await temp_repo.list(provider=""), list)
 
 
-async def test_none_parameters_handled(temp_repo: ConversationRepository) -> None:
+async def test_none_parameters_handled(temp_repo: SessionRepository) -> None:
     try:
         view_method = "view"
         conv = await getattr(temp_repo, view_method)(None)
@@ -111,12 +110,12 @@ async def test_none_parameters_handled(temp_repo: ConversationRepository) -> Non
         pass
 
 
-async def test_very_long_string_parameters(temp_repo: ConversationRepository) -> None:
+async def test_very_long_string_parameters(temp_repo: SessionRepository) -> None:
     assert await temp_repo.view("a" * 10000) is None
     assert isinstance(await temp_repo.list(provider="x" * 1000), list)
 
 
-async def test_unicode_in_parameters(temp_repo: ConversationRepository) -> None:
+async def test_unicode_in_parameters(temp_repo: SessionRepository) -> None:
     for value in ["文件", "файл", "🎉🎊", "café"]:
         assert await temp_repo.view(value) is None
 
@@ -143,9 +142,7 @@ def test_control_chars_in_queries_handled(text_with_control: str) -> None:
 
 @given(sql_injection_strategy())
 @settings(max_examples=50, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
-async def test_repository_survives_injection_property(
-    temp_repo: ConversationRepository, injection_payload: str
-) -> None:
+async def test_repository_survives_injection_property(temp_repo: SessionRepository, injection_payload: str) -> None:
     assert await temp_repo.view(injection_payload) is None
     result = await temp_repo.list(provider=injection_payload[:50])
     assert isinstance(result, list)

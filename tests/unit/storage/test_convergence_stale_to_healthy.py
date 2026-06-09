@@ -1,201 +1,201 @@
-"""Convergence laws: stale → repair → healthy transitions.
+"""Native convergence laws: ingest → steady state, delete → clean, re-ingest → idempotent.
 
-Proves that archive debt detected by health/repair queries converges
-to zero after repair execution. These are temporal invariants — they
-test state transitions, not just snapshots.
+The legacy single-file store needed an explicit repair pass to reconcile orphan
+messages and empty sessions (artifacts of a schema where messages and
+sessions were independently writable). The archive makes
+those debt classes structurally impossible: messages and blocks are owned by a
+session and cascade-delete with it, and re-ingest is content-hash idempotent.
+
+These tests pin the resulting convergence invariants directly against the
+archive store and the async facade — there is no debt to repair because the
+write path never produces it.
 """
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
 
-from polylogue.config import Config, get_config
-from tests.infra.storage_records import ConversationBuilder, db_setup
+from polylogue.api import Polylogue
+from tests.infra.storage_records import SessionBuilder, db_setup
 
 
-@pytest.fixture()
-def archive_with_orphans(workspace_env: dict[str, Path]) -> Config:
-    """Create a DB with valid conversations and injected orphan debt."""
+def _archive_counts(db_path: Path) -> tuple[int, int, int]:
+    """Return (sessions, messages, blocks) row counts from the index.db."""
+    with sqlite3.connect(db_path) as conn:
+        return (
+            int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]),
+            int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]),
+            int(conn.execute("SELECT COUNT(*) FROM blocks").fetchone()[0]),
+        )
+
+
+def _orphan_message_count(db_path: Path) -> int:
+    """Messages whose owning session row is absent (must always be zero)."""
+    with sqlite3.connect(db_path) as conn:
+        return int(
+            conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM messages m
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM sessions s WHERE s.origin || ':' || s.native_id = m.session_id
+                )
+                """
+            ).fetchone()[0]
+        )
+
+
+def _empty_session_count(db_path: Path) -> int:
+    """Sessions with zero messages (the archive write path never produces these)."""
+    with sqlite3.connect(db_path) as conn:
+        return int(
+            conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM sessions s
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM messages m WHERE m.session_id = s.origin || ':' || s.native_id
+                )
+                """
+            ).fetchone()[0]
+        )
+
+
+def _seed_healthy(workspace_env: dict[str, Path]) -> Path:
     db_path = db_setup(workspace_env)
-
-    ConversationBuilder(db_path, "healthy-1").provider("chatgpt").title("Healthy").add_message(
+    SessionBuilder(db_path, "healthy-1").provider("chatgpt").title("Healthy").add_message(
         role="user", text="A valid message"
     ).add_message(role="assistant", text="A valid reply").save()
-
-    ConversationBuilder(db_path, "healthy-2").provider("claude-code").title("Also healthy").add_message(
+    SessionBuilder(db_path, "healthy-2").provider("claude-code").title("Also healthy").add_message(
         role="user", text="Another message"
     ).save()
+    return db_path
 
-    from polylogue.storage.sqlite.connection import open_connection
 
-    with open_connection(db_path) as conn:
-        conn.execute("PRAGMA foreign_keys = OFF")
-        conn.execute(
-            "INSERT INTO messages (message_id, conversation_id, role, text, content_hash, version, "
-            "source_name, word_count, has_tool_use, has_thinking) "
-            "VALUES ('orphan-m1', 'deleted-conv', 'user', 'orphan text', 'oh1', 1, 'test', 2, 0, 0)"
+class TestNativeStoreHasNoOrphanDebt:
+    """The archive store cannot hold orphaned messages or empty sessions."""
+
+    def test_freshly_ingested_archive_has_no_orphan_or_empty_debt(self, workspace_env: dict[str, Path]) -> None:
+        db_path = _seed_healthy(workspace_env)
+        sessions, messages, blocks = _archive_counts(db_path)
+        assert sessions == 2
+        assert messages == 3
+        assert blocks == 3
+        assert _orphan_message_count(db_path) == 0
+        assert _empty_session_count(db_path) == 0
+
+
+class TestDeleteCascadeConvergence:
+    """Deleting a session converges its owned rows to zero (no orphans)."""
+
+    @pytest.mark.asyncio
+    async def test_delete_cascades_messages_and_blocks(self, workspace_env: dict[str, Path]) -> None:
+        db_path = db_setup(workspace_env)
+        builder = (
+            SessionBuilder(db_path, "to-delete")
+            .provider("chatgpt")
+            .add_message(role="user", text="first")
+            .add_message(role="assistant", text="second")
         )
-        conn.execute(
-            "INSERT INTO messages (message_id, conversation_id, role, text, content_hash, version, "
-            "source_name, word_count, has_tool_use, has_thinking) "
-            "VALUES ('orphan-m2', 'deleted-conv', 'assistant', 'orphan reply', 'oh2', 1, 'test', 2, 0, 0)"
+        builder.save()
+        session_id = builder.native_session_id()
+
+        assert _archive_counts(db_path) == (1, 2, 2)
+
+        async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
+            assert await poly.delete_session(session_id) is True
+
+        # Cascade leaves no rows and, critically, no orphaned messages/blocks.
+        assert _archive_counts(db_path) == (0, 0, 0)
+        assert _orphan_message_count(db_path) == 0
+
+    @pytest.mark.asyncio
+    async def test_delete_leaves_neighbors_intact(self, workspace_env: dict[str, Path]) -> None:
+        db_path = _seed_healthy(workspace_env)
+        target = SessionBuilder(db_path, "transient").provider("codex").add_message(role="user", text="ephemeral")
+        target.save()
+        target_id = target.native_session_id()
+
+        async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
+            assert await poly.delete_session(target_id) is True
+            remaining = {str(c.id) for c in await poly.list_sessions(limit=100)}
+
+        assert target_id not in remaining
+        assert len(remaining) == 2
+        assert _orphan_message_count(db_path) == 0
+        assert _empty_session_count(db_path) == 0
+
+
+class TestReingestIdempotencyConvergence:
+    """Re-ingesting identical content converges to the same steady state."""
+
+    def test_reingest_does_not_grow_the_archive(self, workspace_env: dict[str, Path]) -> None:
+        db_path = db_setup(workspace_env)
+        builder = (
+            SessionBuilder(db_path, "stable")
+            .provider("chatgpt")
+            .add_message(role="user", text="hi")
+            .add_message(role="assistant", text="yo")
         )
-        conn.commit()
-        conn.execute("PRAGMA foreign_keys = ON")
+        builder.save()
+        before = _archive_counts(db_path)
 
-    return get_config()
+        # Re-ingest the identical session multiple times.
+        builder.save()
+        builder.save()
+        after = _archive_counts(db_path)
+
+        assert after == before == (1, 2, 2)
+        assert _orphan_message_count(db_path) == 0
+        assert _empty_session_count(db_path) == 0
+
+    @pytest.mark.asyncio
+    async def test_reingest_then_facade_sees_single_session(self, workspace_env: dict[str, Path]) -> None:
+        db_path = db_setup(workspace_env)
+        builder = SessionBuilder(db_path, "stable").provider("claude-code").add_message(role="user", text="hello")
+        builder.save()
+        builder.save()
+        session_id = builder.native_session_id()
+
+        async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
+            convos = await poly.list_sessions(limit=100)
+            assert [str(c.id) for c in convos] == [session_id]
+            session = await poly.get_session(session_id)
+            assert session is not None
+            assert len(session.messages) == 1
 
 
-@pytest.fixture()
-def archive_with_empty_conversations(workspace_env: dict[str, Path]) -> Config:
-    """Create a DB with valid conversations and injected empty conversation debt."""
-    db_path = db_setup(workspace_env)
+class TestDeleteThenReingestConvergence:
+    """delete → re-ingest reaches the same healthy state (deterministic id)."""
 
-    ConversationBuilder(db_path, "has-msgs").provider("chatgpt").title("Has messages").add_message(
-        role="user", text="Real message"
-    ).save()
-
-    from polylogue.storage.sqlite.connection import open_connection
-
-    with open_connection(db_path) as conn:
-        conn.execute(
-            "INSERT INTO conversations (conversation_id, source_name, provider_conversation_id, content_hash, version) "
-            "VALUES ('empty-1', 'test', 'empty-prov-1', 'eh1', 1)"
+    @pytest.mark.asyncio
+    async def test_delete_then_reingest_restores_single_session(self, workspace_env: dict[str, Path]) -> None:
+        db_path = db_setup(workspace_env)
+        builder = (
+            SessionBuilder(db_path, "cycle")
+            .provider("chatgpt")
+            .add_message(role="user", text="q")
+            .add_message(role="assistant", text="a")
         )
-        conn.execute(
-            "INSERT INTO conversations (conversation_id, source_name, provider_conversation_id, content_hash, version) "
-            "VALUES ('empty-2', 'test', 'empty-prov-2', 'eh2', 1)"
-        )
-        conn.commit()
+        builder.save()
+        session_id = builder.native_session_id()
 
-    return get_config()
+        async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
+            assert await poly.delete_session(session_id) is True
 
+        assert _archive_counts(db_path) == (0, 0, 0)
 
-class TestOrphanMessageConvergence:
-    """debt(orphaned messages) > 0 → repair → debt = 0 → queries exclude orphans."""
+        # Re-ingest the same logical session; the deterministic id returns.
+        SessionBuilder(db_path, "cycle").provider("chatgpt").add_message(role="user", text="q").add_message(
+            role="assistant", text="a"
+        ).save()
 
-    def test_orphan_detected_then_repaired_to_zero(self, archive_with_orphans: Config) -> None:
-        from polylogue.storage.repair import (
-            count_orphaned_messages_sync,
-            repair_orphaned_messages,
-        )
-        from polylogue.storage.sqlite.connection import open_connection
+        assert _archive_counts(db_path) == (1, 2, 2)
+        assert _orphan_message_count(db_path) == 0
 
-        with open_connection(archive_with_orphans.db_path) as conn:
-            before = count_orphaned_messages_sync(conn)
-        assert before == 2, f"Expected 2 orphans, got {before}"
-
-        result = repair_orphaned_messages(archive_with_orphans, dry_run=False)
-        assert result.repaired_count == 2
-
-        with open_connection(archive_with_orphans.db_path) as conn:
-            after = count_orphaned_messages_sync(conn)
-        assert after == 0, f"After repair, expected 0 orphans, got {after}"
-
-    def test_healthy_messages_survive_orphan_repair(self, archive_with_orphans: Config) -> None:
-        """Repair must not touch non-orphaned messages."""
-        from polylogue.storage.repair import repair_orphaned_messages
-        from polylogue.storage.sqlite.connection import open_connection
-
-        with open_connection(archive_with_orphans.db_path) as conn:
-            healthy_before = conn.execute(
-                "SELECT COUNT(*) FROM messages m "
-                "WHERE EXISTS (SELECT 1 FROM conversations c WHERE c.conversation_id = m.conversation_id)"
-            ).fetchone()[0]
-
-        repair_orphaned_messages(archive_with_orphans, dry_run=False)
-
-        with open_connection(archive_with_orphans.db_path) as conn:
-            healthy_after = conn.execute(
-                "SELECT COUNT(*) FROM messages m "
-                "WHERE EXISTS (SELECT 1 FROM conversations c WHERE c.conversation_id = m.conversation_id)"
-            ).fetchone()[0]
-
-        assert healthy_after == healthy_before, f"Repair damaged healthy messages: {healthy_before} → {healthy_after}"
-
-    def test_repair_is_idempotent(self, archive_with_orphans: Config) -> None:
-        """Second repair after convergence is a no-op."""
-        from polylogue.storage.repair import repair_orphaned_messages
-
-        repair_orphaned_messages(archive_with_orphans, dry_run=False)
-        result2 = repair_orphaned_messages(archive_with_orphans, dry_run=False)
-        assert result2.repaired_count == 0
-
-
-class TestEmptyConversationConvergence:
-    """debt(empty conversations) > 0 → repair → debt = 0."""
-
-    def test_empty_detected_then_repaired_to_zero(self, archive_with_empty_conversations: Config) -> None:
-        from polylogue.storage.repair import (
-            count_empty_conversations_sync,
-            repair_empty_conversations,
-        )
-        from polylogue.storage.sqlite.connection import open_connection
-
-        with open_connection(archive_with_empty_conversations.db_path) as conn:
-            before = count_empty_conversations_sync(conn)
-        assert before == 2, f"Expected 2 empty conversations, got {before}"
-
-        result = repair_empty_conversations(archive_with_empty_conversations, dry_run=False)
-        assert result.repaired_count == 2
-
-        with open_connection(archive_with_empty_conversations.db_path) as conn:
-            after = count_empty_conversations_sync(conn)
-        assert after == 0
-
-    def test_non_empty_conversations_survive(self, archive_with_empty_conversations: Config) -> None:
-        from polylogue.storage.repair import repair_empty_conversations
-        from polylogue.storage.sqlite.connection import open_connection
-
-        repair_empty_conversations(archive_with_empty_conversations, dry_run=False)
-
-        with open_connection(archive_with_empty_conversations.db_path) as conn:
-            remaining = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
-        assert remaining == 1, "Only the conversation with messages should survive"
-
-    def test_repair_is_idempotent(self, archive_with_empty_conversations: Config) -> None:
-        from polylogue.storage.repair import repair_empty_conversations
-
-        repair_empty_conversations(archive_with_empty_conversations, dry_run=False)
-        result2 = repair_empty_conversations(archive_with_empty_conversations, dry_run=False)
-        assert result2.repaired_count == 0
-
-
-class TestDryRunSafety:
-    """Dry-run must never mutate archive state."""
-
-    def test_dry_run_orphan_repair_preserves_state(self, archive_with_orphans: Config) -> None:
-        from polylogue.storage.repair import (
-            count_orphaned_messages_sync,
-            repair_orphaned_messages,
-        )
-        from polylogue.storage.sqlite.connection import open_connection
-
-        with open_connection(archive_with_orphans.db_path) as conn:
-            before = count_orphaned_messages_sync(conn)
-
-        repair_orphaned_messages(archive_with_orphans, dry_run=True)
-
-        with open_connection(archive_with_orphans.db_path) as conn:
-            after = count_orphaned_messages_sync(conn)
-
-        assert after == before, "Dry-run mutated state"
-
-    def test_dry_run_empty_repair_preserves_state(self, archive_with_empty_conversations: Config) -> None:
-        from polylogue.storage.repair import (
-            count_empty_conversations_sync,
-            repair_empty_conversations,
-        )
-        from polylogue.storage.sqlite.connection import open_connection
-
-        with open_connection(archive_with_empty_conversations.db_path) as conn:
-            before = count_empty_conversations_sync(conn)
-
-        repair_empty_conversations(archive_with_empty_conversations, dry_run=True)
-
-        with open_connection(archive_with_empty_conversations.db_path) as conn:
-            after = count_empty_conversations_sync(conn)
-
-        assert after == before, "Dry-run mutated state"
+        async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
+            convos = await poly.list_sessions(limit=100)
+            assert [str(c.id) for c in convos] == [session_id]

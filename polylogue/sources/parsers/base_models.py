@@ -4,13 +4,15 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from pydantic import AliasChoices, BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 
-from polylogue.archive.conversation.branch_type import BranchType
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
+from polylogue.archive.session.branch_type import BranchType
+from polylogue.core.enums import TitleSource
 from polylogue.core.security import sanitize_path as _sanitize_path_helper
-from polylogue.types import ContentBlockType, Provider
+from polylogue.core.timestamps import parse_timestamp
+from polylogue.types import BlockType, Provider
 
 
 class ParsedContentBlock(BaseModel):
@@ -26,7 +28,7 @@ class ParsedContentBlock(BaseModel):
     - document: document reference
     """
 
-    type: ContentBlockType
+    type: BlockType
     text: str | None = None
     tool_name: str | None = None
     tool_id: str | None = None
@@ -36,8 +38,19 @@ class ParsedContentBlock(BaseModel):
 
     @field_validator("type", mode="before")
     @classmethod
-    def coerce_type(cls, v: object) -> ContentBlockType:
-        return ContentBlockType.from_string(str(v))
+    def coerce_type(cls, v: object) -> BlockType:
+        return BlockType.from_string(str(v))
+
+
+class ParsedPasteEvidence(BaseModel):
+    position: int = 0
+    start_offset: int | None = None
+    end_offset: int | None = None
+    boundary_state: str = "hash_only"
+    source_event_id: str | None = None
+    source_marker: str | None = None
+    content_hash: bytes | None = None
+    observed_at_ms: int | None = None
 
 
 class ParsedMessage(BaseModel):
@@ -45,13 +58,15 @@ class ParsedMessage(BaseModel):
     role: Role
     text: str | None = None
     timestamp: str | None = None
+    occurred_at_ms: int | None = None
     content_blocks: list[ParsedContentBlock] = Field(default_factory=list)
     message_type: MessageType = MessageType.MESSAGE
-    # Optional transient parser metadata for direct parser consumers.
-    # Canonical persistence uses content_blocks for messages and provider_meta for conversations/attachments.
-    provider_meta: dict[str, object] | None = None
     parent_message_provider_id: str | None = None
+    position: int | None = None
     branch_index: int = 0
+    variant_index: int | None = None
+    is_active_path: bool | None = None
+    is_active_leaf: bool | None = None
     # Token usage flows through from provider raw records to MaterializedMessage.
     # Parsers populate when the raw record carries usage info; otherwise None.
     # Materialization writes these into the messages table, where they drive
@@ -63,6 +78,9 @@ class ParsedMessage(BaseModel):
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
     model_name: str | None = None
+    model_effort: str | None = None
+    duration_ms: int | None = None
+    paste_spans: list[ParsedPasteEvidence] = Field(default_factory=list)
 
     @field_validator("role", mode="before")
     @classmethod
@@ -76,20 +94,38 @@ class ParsedMessage(BaseModel):
     def coerce_message_type(cls, v: object) -> MessageType:
         return MessageType.normalize(v)
 
+    @field_validator("occurred_at_ms", "position", "variant_index", "duration_ms")
+    @classmethod
+    def non_negative_optional_int(cls, value: int | None) -> int | None:
+        if value is not None and value < 0:
+            raise ValueError("parser contract integer fields cannot be negative")
+        return value
+
+    @model_validator(mode="after")
+    def derive_occurred_at_ms(self) -> ParsedMessage:
+        if self.occurred_at_ms is None and self.timestamp:
+            parsed = parse_timestamp(self.timestamp)
+            if parsed is not None:
+                self.occurred_at_ms = int(parsed.timestamp() * 1000)
+        return self
+
 
 class ParsedAttachment(BaseModel):
     """Parsed attachment shape with first-class native identifiers (#1252).
 
     Native identifiers used for lookups — `provider_attachment_id`,
     `provider_file_id`, `provider_drive_id` — and the origin classification
-    `upload_origin` are typed top-level fields. They live alongside
-    `provider_meta` for narrative content; downstream storage promotes them
-    into stored columns so attachment lookups never JSON-extract on the hot
-    path. See `polylogue/storage/sqlite/schema_ddl_archive.py:attachments`.
+    `upload_origin` are typed top-level fields. Downstream storage promotes
+    them into stored columns so attachment lookups never JSON-extract on the
+    hot path. See `polylogue/storage/sqlite/archive_tiers/index.py:attachments`.
 
     `upload_origin` is a closed vocabulary ({"drive","paste","url","oauth"}
     or None); the attachment-library UI (#1199) groups by `(source_name,
     upload_origin)` without scanning JSON.
+
+    `attachment_kind` classifies non-downloadable attachment shapes
+    (`"inline_file"`, `"youtube_video"`); the Drive download path skips
+    acquisition for those kinds.
     """
 
     provider_attachment_id: str
@@ -98,10 +134,12 @@ class ParsedAttachment(BaseModel):
     mime_type: str | None = None
     size_bytes: int | None = None
     path: str | None = None
-    provider_meta: dict[str, object] | None = None
     provider_file_id: str | None = None
     provider_drive_id: str | None = None
     upload_origin: str | None = None
+    attachment_kind: str | None = None
+    source_url: str | None = None
+    caption: str | None = None
 
     @field_validator("path")
     @classmethod
@@ -125,8 +163,8 @@ class ParsedAttachment(BaseModel):
         return v if v else None
 
 
-class ParsedProviderEvent(BaseModel):
-    """Non-message semantic artifact from a provider (compaction, turn context, etc.)."""
+class ParsedSessionEvent(BaseModel):
+    """Non-message semantic artifact in the session timeline."""
 
     event_type: str  # "compaction", "turn_context", etc.
     timestamp: str | None = None
@@ -137,23 +175,24 @@ class ParsedProviderEvent(BaseModel):
     )
 
 
-class ParsedConversation(BaseModel):
+class ParsedSession(BaseModel):
     source_name: Provider
-    provider_conversation_id: str
+    provider_session_id: str
     title: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
     messages: list[ParsedMessage]
+    active_leaf_message_provider_id: str | None = None
     attachments: list[ParsedAttachment] = Field(default_factory=list)
-    provider_meta: dict[str, object] | None = None
-    provider_events: list[ParsedProviderEvent] = Field(default_factory=list)
-    parent_conversation_provider_id: str | None = None
+    session_events: list[ParsedSessionEvent] = Field(default_factory=list)
+    parent_session_provider_id: str | None = None
     branch_type: BranchType | None = None
-    # Universal session-context semantics graduated out of provider_meta.
-    # Parsers populate both these typed fields and the corresponding provider_meta
-    # keys (`working_directories`, `gitBranch`, `git.repository_url`) until all
-    # downstream readers (storage write path, attribution, insight rebuild) read
-    # from the typed surface. See #864 and docs/plans/schema-inventory.md.
+    title_source: TitleSource | None = None
+    instructions_text: str | None = None
+    reported_duration_ms: int | None = None
+    reported_cost_usd: float | None = None
+    models_used: list[str] = Field(default_factory=list)
+    # Universal session-context semantics graduated out of provider metadata.
     working_directories: list[str] = Field(default_factory=list)
     git_branch: str | None = None
     git_repository_url: str | None = None
@@ -170,9 +209,16 @@ class ParsedConversation(BaseModel):
             return v
         return Provider.from_string(str(v) if v is not None else "unknown")
 
+    @field_validator("reported_cost_usd")
+    @classmethod
+    def non_negative_optional_float(cls, value: float | None) -> float | None:
+        if value is not None and value < 0:
+            raise ValueError("reported_cost_usd cannot be negative")
+        return value
 
-class RawConversationData(BaseModel):
-    """Container for raw conversation bytes with metadata.
+
+class RawSessionData(BaseModel):
+    """Container for raw session bytes with metadata.
 
     When ``blob_hash`` is set, the content has been written to the blob
     store and ``raw_bytes`` may be empty (only a detection prefix was

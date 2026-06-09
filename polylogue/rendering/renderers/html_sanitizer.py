@@ -4,7 +4,7 @@ Provides a ``sanitize_html`` filter that strips dangerous constructs
 (``<script>``, event handler attributes, ``javascript:`` URLs, embedded
 frames, raw SVG/MathML interactivity) from pre-rendered HTML while
 preserving safe markup. Intended as a defense-in-depth replacement for
-``| safe`` in conversation templates.
+``| safe`` in session templates.
 
 Backed by ``nh3`` (Rust ``ammonia`` bindings), an HTML5 parser-based
 sanitizer that is robust against the regex bypass classes the prior

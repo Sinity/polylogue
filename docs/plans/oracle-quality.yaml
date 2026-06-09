@@ -9,7 +9,7 @@
 
 description: >
   Transitional taxonomy for old oracle classifications. Retained only
-  while #1065/#594 migrate reports to standard artifact language.
+  while #1065/#594 move reports to standard artifact language.
 
 oracles:
   proof:
@@ -31,7 +31,7 @@ oracles:
       Compares current output or behavior against a committed
       reference. Used for terminal snapshot tests (syrupy),
       benchmark regression detection, generated-surface freshness
-      (render-all --check), migration completeness verification.
+      (render-all --check), retirement completeness verification.
       Does not assert correctness, only absence of unplanned
       change.
 
@@ -43,7 +43,7 @@ oracles:
       Validates that the codebase matches declared structural
       expectations: topology projection, file-size budgets,
       test-ownership manifests, assurance-domain maturity
-      self-declarations, migration retirement completeness.
+      self-declarations, retirement completeness.
       Consumes YAML manifests under docs/plans/. Cannot detect
       semantic errors but acts as a structured-coherence gate.
 

@@ -1,8 +1,8 @@
 """Hydrators: translate storage records into domain models.
 
 This module owns the knowledge of how to map storage records (MessageRecord,
-ConversationRecord, AttachmentRecord) to domain models (Message,
-ConversationSummary, Conversation).
+SessionRecord, AttachmentRecord) to domain models (Message,
+SessionSummary, Session).
 
 Keeping this logic here preserves the dependency direction:
   storage → domain  (correct)
@@ -15,18 +15,20 @@ import json
 from datetime import datetime, timezone
 
 from polylogue.archive.attachment.models import Attachment
-from polylogue.archive.conversation.models import Conversation, ConversationSummary
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import Role
-from polylogue.archive.provider.events import ProviderEvent
+from polylogue.archive.session.domain_models import Session, SessionSummary
+from polylogue.archive.session.events import SessionEvent
+from polylogue.core.enums import Origin
 from polylogue.core.json import loads
+from polylogue.core.sources import provider_from_origin
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.storage.runtime import (
     AttachmentRecord,
-    ConversationRecord,
     MessageRecord,
-    ProviderEventRecord,
+    SessionEventRecord,
+    SessionRecord,
 )
 from polylogue.types import MessageId, Provider
 
@@ -49,16 +51,26 @@ def _parse_json_blob(raw: object) -> object | None:
         return raw
 
 
+def _working_directories_from_record(record: SessionRecord) -> tuple[str, ...]:
+    raw = record.working_directories_json
+    if not raw:
+        return ()
+    parsed = _parse_json_blob(raw)
+    if not isinstance(parsed, list):
+        return ()
+    return tuple(item for item in parsed if isinstance(item, str) and item)
+
+
 def attachment_from_record(record: AttachmentRecord) -> Attachment:
     """Hydrate an Attachment domain model from an AttachmentRecord."""
-    name = record.provider_meta.get("name") if record.provider_meta else None
     return Attachment(
         id=record.attachment_id,
-        name=name if isinstance(name, str) else record.attachment_id,
+        name=record.display_name or record.attachment_id,
         mime_type=record.mime_type,
         size_bytes=record.size_bytes,
         path=record.path,
-        provider_meta=record.provider_meta,
+        source_url=record.source_url,
+        caption=record.caption,
     )
 
 
@@ -125,11 +137,11 @@ def message_from_record(
     )
 
 
-def provider_event_from_record(record: ProviderEventRecord) -> ProviderEvent:
-    return ProviderEvent(
+def session_event_from_record(record: SessionEventRecord) -> SessionEvent:
+    return SessionEvent(
         id=record.event_id,
-        conversation_id=record.conversation_id,
-        provider=Provider.from_string(record.source_name),
+        session_id=record.session_id,
+        origin=Origin.from_string(record.origin),
         event_index=record.event_index,
         event_type=record.event_type,
         timestamp=parse_timestamp(record.timestamp),
@@ -141,55 +153,58 @@ def provider_event_from_record(record: ProviderEventRecord) -> ProviderEvent:
     )
 
 
-def conversation_summary_from_record(
-    record: ConversationRecord,
+def session_summary_from_record(
+    record: SessionRecord,
     *,
     tags: tuple[str, ...] = (),
     message_count: int | None = None,
-) -> ConversationSummary:
-    """Hydrate a ConversationSummary domain model from a ConversationRecord."""
-    return ConversationSummary(
-        id=record.conversation_id,
-        provider=Provider.from_string(record.source_name),
+) -> SessionSummary:
+    """Hydrate a SessionSummary domain model from a SessionRecord."""
+    return SessionSummary(
+        id=record.session_id,
+        origin=record.origin,
         title=record.title,
         created_at=parse_timestamp(record.created_at),
         updated_at=parse_timestamp(record.updated_at),
-        provider_meta=record.provider_meta,
         metadata=record.metadata or {},
-        parent_id=record.parent_conversation_id,
+        working_directories=_working_directories_from_record(record),
+        git_branch=record.git_branch,
+        git_repository_url=record.git_repository_url,
+        parent_id=record.parent_session_id,
         branch_type=record.branch_type,
         message_count=message_count,
         tags_m2m=tags,
     )
 
 
-def conversation_from_records(
-    conversation: ConversationRecord,
+def session_from_records(
+    session: SessionRecord,
     messages: list[MessageRecord],
     attachments: list[AttachmentRecord],
-    provider_events: list[ProviderEventRecord] | None = None,
+    session_events: list[SessionEventRecord] | None = None,
     *,
     tags: tuple[str, ...] = (),
-) -> Conversation:
-    """Hydrate a Conversation domain model from records.
+) -> Session:
+    """Hydrate a Session domain model from records.
 
     This is the canonical constructor that loads all messages into memory.
     Used for filtered views, tests, and when full message access is needed.
 
     Args:
-        conversation: Conversation metadata record
+        session: Session metadata record
         messages: List of message records
         attachments: List of attachment records
 
     Returns:
-        Conversation with messages in eager mode
+        Session with messages in eager mode
     """
     att_map: dict[MessageId, list[AttachmentRecord]] = {}
     for att in attachments:
         if att.message_id:
             att_map.setdefault(att.message_id, []).append(att)
 
-    conv_provider = Provider.from_string(conversation.source_name)
+    conv_origin = session.origin
+    conv_provider = provider_from_origin(conv_origin)
     rich_messages = [
         message_from_record(
             msg,
@@ -199,26 +214,28 @@ def conversation_from_records(
         for msg in messages
     ]
 
-    return Conversation(
-        id=conversation.conversation_id,
-        provider=conv_provider,
-        title=conversation.title,
+    return Session(
+        id=session.session_id,
+        origin=conv_origin,
+        title=session.title,
         messages=MessageCollection(messages=rich_messages),
-        created_at=parse_timestamp(conversation.created_at),
-        updated_at=parse_timestamp(conversation.updated_at),
-        provider_meta=conversation.provider_meta,
-        metadata=conversation.metadata or {},
-        provider_events=tuple(provider_event_from_record(event) for event in (provider_events or [])),
-        parent_id=conversation.parent_conversation_id,
-        branch_type=conversation.branch_type,
+        created_at=parse_timestamp(session.created_at),
+        updated_at=parse_timestamp(session.updated_at),
+        metadata=session.metadata or {},
+        working_directories=_working_directories_from_record(session),
+        git_branch=session.git_branch,
+        git_repository_url=session.git_repository_url,
+        session_events=tuple(session_event_from_record(event) for event in (session_events or [])),
+        parent_id=session.parent_session_id,
+        branch_type=session.branch_type,
         tags_m2m=tags,
     )
 
 
 __all__ = [
     "attachment_from_record",
-    "conversation_from_records",
-    "conversation_summary_from_record",
+    "session_from_records",
+    "session_summary_from_record",
     "message_from_record",
-    "provider_event_from_record",
+    "session_event_from_record",
 ]

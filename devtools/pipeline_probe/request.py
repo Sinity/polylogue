@@ -42,9 +42,10 @@ class RawFanoutEntry(TypedDict):
     payload_provider: str | None
     source_name: str | None
     blob_size_bytes: int
-    conversation_count: int
+    session_count: int
     message_count: int
     parse_error: str | None
+    storage_route: NotRequired[str]
 
 
 class PathFingerprint(TypedDict):
@@ -236,13 +237,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--messages-min",
         type=int,
         default=4,
-        help="Minimum messages per conversation (default: 4)",
+        help="Minimum messages per session (default: 4)",
     )
     parser.add_argument(
         "--messages-max",
         type=int,
         default=12,
-        help="Maximum messages per conversation (default: 12)",
+        help="Maximum messages per session (default: 12)",
     )
     parser.add_argument(
         "--seed",

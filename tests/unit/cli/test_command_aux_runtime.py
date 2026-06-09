@@ -9,12 +9,12 @@ import pytest
 from click.shell_completion import CompletionItem
 from click.testing import CliRunner
 
-from polylogue.archive.conversation.neighbor_candidates import (
-    ConversationNeighborCandidate,
+from polylogue.archive.models import SessionSummary
+from polylogue.archive.session.neighbor_candidates import (
     NeighborDiscoveryError,
     NeighborReason,
+    SessionNeighborCandidate,
 )
-from polylogue.archive.models import ConversationSummary
 from polylogue.cli import shell_completion_values
 from polylogue.cli.commands.neighbors import (
     _candidate_heading,
@@ -23,18 +23,19 @@ from polylogue.cli.commands.neighbors import (
     neighbors_command,
 )
 from polylogue.cli.commands.tags import tags_command
-from polylogue.types import ConversationId, Provider
+from polylogue.core.enums import Origin
+from polylogue.types import SessionId
 
 
 def _ctx_param() -> tuple[click.Context, click.Parameter]:
     return click.Context(click.Command("polylogue")), click.Option(["--value"])
 
 
-def _candidate(*, message_id: str | None = "message-1") -> ConversationNeighborCandidate:
-    return ConversationNeighborCandidate(
-        summary=ConversationSummary(
-            id=ConversationId("candidate"),
-            provider=Provider.CODEX,
+def _candidate(*, message_id: str | None = "message-1") -> SessionNeighborCandidate:
+    return SessionNeighborCandidate(
+        summary=SessionSummary(
+            id=SessionId("candidate"),
+            origin=Origin.CODEX_SESSION,
             title="Archive Lock Retries",
             updated_at=datetime(2026, 4, 23, 8, 30, tzinfo=timezone.utc),
             message_count=2,
@@ -49,7 +50,7 @@ def _candidate(*, message_id: str | None = "message-1") -> ConversationNeighborC
                 evidence=message_id,
             ),
         ),
-        source_conversation_id="target",
+        source_session_id="target",
     )
 
 
@@ -67,56 +68,58 @@ def test_shell_completion_helpers_cover_csv_prefix_rows_and_trimming(tmp_path: P
     assert shell_completion_values._trim_help("short help") == "short help"
 
     db = tmp_path / "archive.sqlite"
-    with patch("polylogue.cli.shell_completion_values.db_path", return_value=db):
+    with patch("polylogue.cli.shell_completion_values.active_index_db_path", return_value=db):
         assert shell_completion_values._db_exists() is False
         db.write_text("", encoding="utf-8")
         assert shell_completion_values._db_exists() is True
 
-    from polylogue.operations.archive import CompletionAggregate
-
-    aggregates = [CompletionAggregate("alpha", 7)]
-    items = shell_completion_values._aggregates_to_items(aggregates, unit="actions")
+    # Native stats-by completion action: archive.stats_by(group) -> count items.
+    action = shell_completion_values._stats_by_items("tool", "", unit="actions")
+    mock_archive = MagicMock()
+    mock_archive.stats_by.return_value = {"alpha": 7}
+    items = action(mock_archive)
     assert [(item.value, item.help) for item in items] == [("alpha", "7 actions")]
 
 
-def test_completion_functions_cover_provider_conversation_tag_tool_and_open_targets() -> None:
+def test_completion_functions_cover_origin_session_tag_tool_and_open_targets() -> None:
     ctx, param = _ctx_param()
 
-    provider_items = shell_completion_values.complete_provider_values(ctx, param, "chatgpt,cla")
-    assert [item.value for item in provider_items] == ["chatgpt,claude-ai", "chatgpt,claude-code"]
+    origin_items = shell_completion_values.complete_origin_values(ctx, param, "chatgpt,cla")
+    assert [item.value for item in origin_items] == ["chatgpt,claude-ai-export", "chatgpt,claude-code-session"]
     action_items = shell_completion_values.complete_action_values(ctx, param, "file")
     action_sequence_items = shell_completion_values.complete_action_sequence_values(ctx, param, "shell,file")
     message_type_items = shell_completion_values.complete_message_type_values(ctx, param, "m")
     retrieval_lane_items = shell_completion_values.complete_retrieval_lane_values(ctx, param, "h")
 
-    # All archive-backed completions go through ArchiveOperations now;
-    # mock the per-aggregate methods on a shared ops stub.
-    from polylogue.archive.conversation.models import Conversation
-    from polylogue.operations.archive import CompletionAggregate
+    # Archive-backed completions now run an ArchiveCompletionAction against an ArchiveStore via
+    # ``_run_completion``; drive the action against a mock archive exposing the
+    # archive read surface (list_summaries / list_user_tags / stats_by).
+    summary = MagicMock()
+    summary.session_id = "conv-1"
+    summary.title = "Test Conv"
+    summary.provider = MagicMock(value="claude-code")
 
-    mock_conv = MagicMock(spec=Conversation)
-    mock_conv.id = "conv-1"
-    mock_conv.title = "Test Conv"
-    mock_conv.provider = "claude-code"
-    mock_ops = MagicMock(
-        list_conversations=AsyncMock(return_value=[mock_conv]),
-        list_tags=AsyncMock(return_value={"review": 3}),
-        list_session_repo_names=AsyncMock(return_value=[CompletionAggregate("polylogue", 4)]),
-        list_session_cwd_prefixes=AsyncMock(return_value=[CompletionAggregate("/realm/project/polylogue", 2)]),
-        list_action_tool_names=AsyncMock(return_value=[CompletionAggregate("read_file", 7)]),
-    )
+    stats_by_groups = {
+        "repo": {"polylogue": 4},
+        "cwd": {"/realm/project/polylogue": 2},
+        "tool": {"read_file": 7},
+    }
+    mock_archive = MagicMock()
+    mock_archive.list_summaries.return_value = [summary]
+    mock_archive.list_user_tags.return_value = {"review": 3}
+    mock_archive.stats_by.side_effect = lambda group_by, **_: stats_by_groups[group_by]
 
-    async def _with_operations_stub(action):  # type: ignore[no-untyped-def]
-        return await action(mock_ops)
+    def fake_run_completion(action: object) -> list[object]:
+        return list(action(mock_archive))  # type: ignore[operator]
 
     with (
         patch(
-            "polylogue.cli.shell_completion_values._with_operations",
-            new=_with_operations_stub,
+            "polylogue.cli.shell_completion_values._run_completion",
+            side_effect=fake_run_completion,
         ),
         patch("polylogue.cli.shell_completion_values._db_exists", return_value=True),
     ):
-        conversation_items = shell_completion_values.complete_conversation_ids(ctx, param, "conv")
+        session_items = shell_completion_values.complete_session_ids(ctx, param, "conv")
         open_items = shell_completion_values.complete_open_targets(ctx, param, "conv")
         tag_items = shell_completion_values.complete_tag_values(ctx, param, "alpha,rev")
         repo_items = shell_completion_values.complete_repo_values(ctx, param, "old,poly")
@@ -127,15 +130,16 @@ def test_completion_functions_cover_provider_conversation_tag_tool_and_open_targ
     assert "shell,file_read" in [item.value for item in action_sequence_items]
     assert [item.value for item in message_type_items] == ["message"]
     assert [item.value for item in retrieval_lane_items] == ["hybrid"]
-    assert conversation_items[0].value == "conv-1"
-    assert conversation_items[0].help is not None and "claude-code" in conversation_items[0].help
+    assert session_items[0].value == "conv-1"
+    assert session_items[0].help is not None and "claude-code" in session_items[0].help
     assert open_items[0].value == "conv-1"
     assert [item.value for item in tag_items] == ["alpha,review"]
-    assert tag_items[0].help == "3 conversations"
+    assert tag_items[0].help == "3 sessions"
     assert [item.value for item in repo_items] == ["old,polylogue"]
     assert repo_items[0].help == "4 sessions"
-    assert [item.value for item in cwd_items] == ["/realm/project/polylogue"]
-    assert cwd_items[0].help == "2 sessions"
+    # Native cwd-prefix completion has no session-cwd aggregate yet, so it
+    # returns an empty list by design (well-behaved, no traceback).
+    assert cwd_items == []
     assert [item.value for item in tool_items] == ["read_file"]
     assert tool_items[0].help == "7 actions"
 
@@ -160,10 +164,11 @@ def test_tags_command_plain_paths_cover_empty_hint_and_tabular_counts(cli_runner
     env.polylogue = MagicMock()
     env.polylogue.list_tags = AsyncMock(return_value={})
 
-    empty = cli_runner.invoke(tags_command, ["--provider", "chatgpt"], obj=env, catch_exceptions=False)
+    empty = cli_runner.invoke(tags_command, ["--origin", "chatgpt-export"], obj=env, catch_exceptions=False)
     assert empty.exit_code == 0
-    assert "No tags found for provider 'chatgpt'." in empty.output
+    assert "No tags found for origin 'chatgpt-export'." in empty.output
     assert "Hint: use --add-tag" in empty.output
+    env.polylogue.list_tags.assert_awaited_with(origin="chatgpt-export")
 
     env.polylogue.list_tags = AsyncMock(return_value={"alpha": 5, "beta": 2})
     table = cli_runner.invoke(tags_command, ["--count", "1"], obj=env, catch_exceptions=False)
@@ -203,16 +208,16 @@ def test_neighbor_helpers_and_command_cover_plain_rendering_and_errors(cli_runne
     env.polylogue.neighbor_candidates = AsyncMock(return_value=[_candidate()])
     plain = cli_runner.invoke(
         neighbors_command,
-        ["--query", "lock retries", "--limit", "0", "--window-hours", "0"],
+        ["--query", "lock retries", "--origin", "codex-session", "--limit", "0", "--window-hours", "0"],
         obj=env,
         catch_exceptions=False,
     )
     assert plain.exit_code == 0
     assert "Neighbor candidates (1):" in plain.output
     env.polylogue.neighbor_candidates.assert_called_once_with(
-        conversation_id=None,
+        session_id=None,
         query="lock retries",
-        provider=None,
+        provider="codex",
         limit=1,
         window_hours=1,
     )

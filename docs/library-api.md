@@ -7,27 +7,27 @@ Polylogue is designed library-first. The CLI wraps the Python API.
 The public Python surface is split into:
 
 - `polylogue`: archive-core access (`Polylogue`, `SyncPolylogue`, `ArchiveStats`,
-  `Conversation`, `Message`, `SearchResult`)
+  `Session`, `Message`, `SearchResult`)
 - `polylogue.archive`: domain-model, query, projection, and semantic helpers
 - precise modules for higher-order semantic analysis, storage, and reporting
 
 ## Basic Usage
 
 ```python
-from polylogue.archive.filter.filters import ConversationFilter
-from polylogue.storage.repository import ConversationRepository
+from polylogue.archive.filter.filters import SessionFilter
+from polylogue.storage.repository import SessionRepository
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 backend = SQLiteBackend()
-repo = ConversationRepository(backend=backend)
+repo = SessionRepository(backend=backend)
 
 # Search
-results = await ConversationFilter(repo).contains("error").provider("claude-ai").list()
+results = await SessionFilter(repo).contains("error").provider("claude-ai").list()
 for conv in results:
     print(f"{conv.id}: {conv.display_title}")
 
-# Single conversation
-conv = await ConversationFilter(repo).id("abc123").first()
+# Single session
+conv = await SessionFilter(repo).id("abc123").first()
 ```
 
 ## Precise Module Imports
@@ -37,7 +37,7 @@ re-exported from package roots. Import them from their actual modules:
 
 ```python
 from polylogue.archive.session.session_profile import build_session_profile, infer_auto_tags
-from polylogue.archive.conversation.threads import build_session_threads
+from polylogue.archive.session.threads import build_session_threads
 ```
 
 Durable archive insights are public too:
@@ -132,14 +132,14 @@ profile evidence and probabilistic enrichment in one payload.
 
 Archive coverage and archive debt are public insights too:
 
-- `ArchiveCoverageInsight`: provider/day/week conversation, message, cost, and activity coverage rollups
+- `ArchiveCoverageInsight`: provider/day/week session, message, cost, and activity coverage rollups
 - `ArchiveDebtInsight`: governed cleanup/repair debt with maintenance targets plus preview/apply/validation lineage
 
 ## Filter Chain API
 
 ```python
 # Chainable, lazy evaluation (terminals are async)
-results = await (ConversationFilter(repo)
+results = await (SessionFilter(repo)
     .contains("error")
     .contains("python")             # AND
     .provider("claude-ai", "chatgpt")  # OR
@@ -149,7 +149,7 @@ results = await (ConversationFilter(repo)
     .list())                        # Terminal: await list(), first(), count(), delete()
 
 # Exclusion filters
-results = await (ConversationFilter(repo)
+results = await (SessionFilter(repo)
     .contains("error")
     .exclude_text("warning")
     .exclude_provider("gemini")
@@ -157,33 +157,33 @@ results = await (ConversationFilter(repo)
     .list())
 
 # Lightweight summaries (no message loading)
-summaries = await (ConversationFilter(repo)
+summaries = await (SessionFilter(repo)
     .provider("claude-ai")
     .since("2025-01-01")
-    .list_summaries())              # Returns ConversationSummary (no messages)
+    .list_summaries())              # Returns SessionSummary (no messages)
 
 # Check if summaries are sufficient
-f = ConversationFilter(repo).provider("claude-ai")
+f = SessionFilter(repo).provider("claude-ai")
 if f.can_use_summaries():
     results = f.list_summaries()    # Fast path
 else:
-    results = f.list()              # Loads full conversations
+    results = f.list()              # Loads full sessions
 
 # Custom predicates
-results = await (ConversationFilter(repo)
+results = await (SessionFilter(repo)
     .where(lambda c: len(c.messages) > 50)
     .list())
 
 # Sorting and sampling
-results = await (ConversationFilter(repo)
+results = await (SessionFilter(repo)
     .sort("tokens")
     .reverse()
     .sample(10)
     .list())
 
-# Conversation structure filters
-roots = await ConversationFilter(repo).is_root().list()
-continuations = await ConversationFilter(repo).is_continuation().list()
+# Session structure filters
+roots = await SessionFilter(repo).is_root().list()
+continuations = await SessionFilter(repo).is_continuation().list()
 ```
 
 ## Available Filter Methods
@@ -215,21 +215,21 @@ continuations = await ConversationFilter(repo).is_continuation().list()
 | `.limit(n)` | Max results |
 | `.sample(n)` | Random sample |
 | `.where(predicate)` | Custom filter predicate |
-| `.is_root()` | Root conversations only |
-| `.is_continuation()` | Continuation conversations only |
-| `.is_sidechain()` | Sidechain conversations only |
-| `.has_branches()` | Conversations with branching messages |
+| `.is_root()` | Root sessions only |
+| `.is_continuation()` | Continuation sessions only |
+| `.is_sidechain()` | Sidechain sessions only |
+| `.has_branches()` | Sessions with branching messages |
 | `.parent(id)` | Children of a given parent |
 
 ## Terminal Methods
 
 | Method | Description |
 |--------|-------------|
-| `.list()` | Execute and return `list[Conversation]` |
-| `.list_summaries()` | Execute and return `list[ConversationSummary]` (lightweight, no messages) |
+| `.list()` | Execute and return `list[Session]` |
+| `.list_summaries()` | Execute and return `list[SessionSummary]` (lightweight, no messages) |
 | `.first()` | Execute and return first match or `None` |
 | `.count()` | Execute and return count (uses SQL fast path when possible) |
-| `.delete()` | Delete matching conversations (returns count deleted) |
+| `.delete()` | Delete matching sessions (returns count deleted) |
 | `.pick()` | Interactive picker (TTY) or first match (non-TTY) |
 | `.can_use_summaries()` | Check if `list_summaries()` is valid for current filters |
 
@@ -260,15 +260,15 @@ async def main():
         # Concurrent queries
         stats, recent, claude = await asyncio.gather(
             archive.stats(),
-            archive.list_conversations(limit=10),
-            archive.list_conversations(provider="claude-ai"),
+            archive.list_sessions(limit=10),
+            archive.list_sessions(provider="claude-ai"),
         )
 
-        print(f"Total: {stats.conversation_count} conversations")
+        print(f"Total: {stats.session_count} sessions")
 
         # Parallel batch retrieval (5-10x faster than sequential)
         ids = [c.id for c in recent]
-        convs = await archive.get_conversations(ids)
+        convs = await archive.get_sessions(ids)
 
         # Search with evidence snippets
         results = await archive.search("error handling", limit=20)
@@ -291,15 +291,15 @@ asyncio.run(main())
 
 | Method | Description |
 |--------|-------------|
-| `get_conversation(id)` | Get single conversation by ID |
-| `get_conversations(ids)` | Parallel batch fetch (5-10x faster) |
-| `list_conversations(provider, limit)` | List with optional filtering |
+| `get_session(id)` | Get single session by ID |
+| `get_sessions(ids)` | Parallel batch fetch (5-10x faster) |
+| `list_sessions(provider, limit)` | List with optional filtering |
 | `search(query, limit, source, since)` | Search returning evidence snippets; text matches report message evidence and Drive/Gemini `provider_id` / `id` / `fileId` / `driveId` attachment-id matches report attachment evidence |
 | `parse_file(path, source_name)` | Parse a single export file |
 | `parse_sources(sources, download_assets)` | Parse from configured sources |
 | `rebuild_index()` | Rebuild FTS5 search index |
 | `stats()` | Archive statistics (returns `ArchiveStats`) |
-| `filter()` | Fluent filter builder (sync, reuses `ConversationFilter`) |
+| `filter()` | Fluent filter builder (sync, reuses `SessionFilter`) |
 | `get_session_insight_status()` | Durable insight readiness/freshness summary |
 | `get_session_profile_insight(id)` | Get one durable session-profile insight |
 | `list_session_profile_insights(query)` | List durable session-profile insights |

@@ -12,7 +12,7 @@ from polylogue.cli.query_contracts import QueryDeliveryTarget, QueryOutputFormat
 from polylogue.core.json import JSONDocument
 
 if TYPE_CHECKING:
-    from polylogue.archive.models import Conversation
+    from polylogue.archive.models import Session
 
 
 def _selected_field_names(fields: str | None) -> frozenset[str] | None:
@@ -49,7 +49,7 @@ class StructuredRowsDocument:
 
     def render(self, output_format: QueryOutputFormat) -> str:
         if output_format == "json":
-            # #1618: paginated envelope matches the MCP list_conversations
+            # #1618: paginated envelope matches the MCP list_sessions
             # tool. The CLI doesn't paginate today so ``limit`` mirrors
             # ``total`` and ``offset`` is 0; future CLI pagination will
             # populate the same fields MCP already does.
@@ -95,7 +95,7 @@ class QueryOutputDocument:
     content: str
     output_format: QueryOutputFormat
     destinations: tuple[QueryDeliveryTarget, ...]
-    conversation: Conversation | None = None
+    session: Session | None = None
 
 
 __all__ = [

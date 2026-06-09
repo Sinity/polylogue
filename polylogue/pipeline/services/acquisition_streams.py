@@ -12,9 +12,9 @@ from typing import TYPE_CHECKING
 from polylogue.core.json import JSONDocument
 from polylogue.logging import get_logger
 from polylogue.pipeline.services.acquisition_records import make_raw_record
-from polylogue.sources.parsers.base import RawConversationData
+from polylogue.sources.parsers.base import RawSessionData
 from polylogue.storage.cursor_state import CursorStatePayload
-from polylogue.storage.runtime import RawConversationRecord
+from polylogue.storage.runtime import RawSessionRecord
 
 if TYPE_CHECKING:
     from polylogue.config import Source
@@ -25,10 +25,10 @@ ObservationCallback = Callable[[JSONDocument], None]
 
 
 def _drain_batch(
-    iterator: Iterator[RawConversationData],
+    iterator: Iterator[RawSessionData],
     *,
     batch_size: int,
-) -> list[RawConversationData]:
+) -> list[RawSessionData]:
     """Read up to ``batch_size`` items without sentinel gymnastics."""
     return list(islice(iterator, batch_size))
 
@@ -40,7 +40,7 @@ async def iter_source_raw_stream(
     known_cursors: dict[str, dict[str, object]] | None = None,
     observation_callback: ObservationCallback | None = None,
     progress_callback: Callable[[int, str | None], None] | None = None,
-) -> AsyncIterator[RawConversationData]:
+) -> AsyncIterator[RawSessionData]:
     """Stream raw source payloads without materializing the full iterator."""
     from polylogue.pipeline.services import acquisition as acquisition_root
 
@@ -84,7 +84,7 @@ async def iter_drive_raw_stream(
     drive_config: DriveConfigLike | None = None,
     observation_callback: ObservationCallback | None = None,
     progress_callback: Callable[[int, str | None], None] | None = None,
-) -> AsyncIterator[RawConversationData]:
+) -> AsyncIterator[RawSessionData]:
     """Stream Drive payloads as raw records without touching the local cache."""
     from polylogue.sources.drive import iter_drive_raw_data
 
@@ -131,9 +131,9 @@ async def iter_raw_record_stream(
     drive_config: DriveConfigLike | None = None,
     observation_callback: ObservationCallback | None = None,
     progress_callback: Callable[[int, str | None], None] | None = None,
-) -> AsyncIterator[RawConversationRecord]:
-    """Yield prepared RawConversationRecord values for a source."""
-    raw_stream: AsyncIterator[RawConversationData]
+) -> AsyncIterator[RawSessionRecord]:
+    """Yield prepared RawSessionRecord values for a source."""
+    raw_stream: AsyncIterator[RawSessionData]
     if source.is_drive:
         raw_stream = iter_drive_raw_stream(
             source,

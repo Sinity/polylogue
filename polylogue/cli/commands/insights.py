@@ -1,7 +1,7 @@
 """Archive insight inspection commands — registry-driven.
 
-Insight commands inherit ``--provider``, ``--since``, and ``--until`` from
-the root CLI context so that ``polylogue --provider codex insights profiles``
+Insight commands inherit ``--origin``, ``--since``, and ``--until`` from
+the root CLI context so that ``polylogue --origin codex-session insights profiles``
 works without re-specifying the filter on the subcommand.
 """
 
@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 import click
 
@@ -27,6 +28,7 @@ from polylogue.insights.audit import (
     DEFAULT_AUDIT_SAMPLE_LIMIT,
     InsightRigorAuditQuery,
     InsightRigorAuditReport,
+    build_insight_rigor_audit_report,
 )
 from polylogue.insights.export_bundles import (
     InsightExportBundleError,
@@ -40,6 +42,7 @@ from polylogue.insights.registry import (
     InsightQueryError,
     InsightType,
     fetch_insights,
+    project_origin_payload,
     render_insight_items,
 )
 from polylogue.insights.timeline_renderer import (
@@ -48,7 +51,7 @@ from polylogue.insights.timeline_renderer import (
     render_plain,
 )
 
-_ROOT_FILTER_KEYS = ("provider", "since", "until")
+_ROOT_FILTER_KEYS = ("origin", "since", "until")
 
 
 def _build_click_params(pt: InsightType) -> list[click.Parameter]:
@@ -101,11 +104,14 @@ def _build_click_params(pt: InsightType) -> list[click.Parameter]:
 def _make_callback(pt: InsightType) -> Callable[..., None]:
     """Create the Click callback for an insight type command.
 
-    Inherits ``provider``, ``since``, and ``until`` from the root CLI
+    Inherits ``origin``, ``since``, and ``until`` from the root CLI
     context when the insight's query class accepts them.
     """
     # Pre-resolve accepted fields so we only inject keys the query class understands.
-    accepted_root_keys = tuple(key for key in _ROOT_FILTER_KEYS if key in query_model_field_names(pt))
+    accepted_query_fields = query_model_field_names(pt)
+    accepted_root_keys = tuple(
+        key for key in _ROOT_FILTER_KEYS if ("provider" if key == "origin" else key) in accepted_query_fields
+    )
 
     @click.pass_context
     def callback(
@@ -123,7 +129,7 @@ def _make_callback(pt: InsightType) -> Callable[..., None]:
                 kwargs=kwargs,
                 inherited_root_keys=accepted_root_keys,
             )
-            items = fetch_insights(pt, env.operations, **request.query_kwargs)
+            items = fetch_insights(pt, env.polylogue, **request.query_kwargs)
         except (ArchiveInsightUnavailableError, InsightCommandInputError, InsightQueryError) as exc:
             fail(f"insights {pt.resolved_cli_command_name}", str(exc))
         render_insight_items(items, pt, json_mode=request.wants_json)
@@ -195,28 +201,38 @@ def _status_wants_json(ctx: click.Context, *, output_format: str | None) -> bool
 
 
 def _render_status_plain(report: InsightReadinessReport) -> None:
+    def origin_label(value: str | None) -> str:
+        if not value:
+            return "-"
+        projected = project_origin_payload({"provider": value})
+        if isinstance(projected, dict):
+            return str(projected.get("origin") or "-")
+        return "-"
+
     click.echo(f"Insight Readiness: {report.aggregate_verdict}")
-    click.echo(f"Total conversations: {report.total_conversations}")
+    click.echo(f"Total sessions: {report.total_sessions}")
     if report.provider or report.since or report.until:
-        click.echo(f"Scope: provider={report.provider or '-'} since={report.since or '-'} until={report.until or '-'}")
+        click.echo(
+            f"Scope: origin={origin_label(report.provider)} since={report.since or '-'} until={report.until or '-'}"
+        )
     click.echo("")
     for insight in report.insights:
         expected = f" expected={insight.expected_row_count}" if insight.expected_row_count is not None else ""
         click.echo(f"{insight.insight_name}: {insight.verdict} rows={insight.row_count}{expected}")
-        if insight.missing_count or insight.stale_count or insight.orphan_count or insight.legacy_incompatible_count:
+        if insight.missing_count or insight.stale_count or insight.orphan_count or insight.incompatible_count:
             click.echo(
                 "  "
                 f"missing={insight.missing_count} stale={insight.stale_count} "
-                f"orphan={insight.orphan_count} legacy={insight.legacy_incompatible_count}"
+                f"orphan={insight.orphan_count} incompatible={insight.incompatible_count}"
             )
         if insight.ready_flags:
             flags = ", ".join(f"{key}={value}" for key, value in sorted(insight.ready_flags.items()))
             click.echo(f"  flags: {flags}")
         if insight.provider_coverage:
-            providers = ", ".join(
-                f"{coverage.source_name}={coverage.row_count}" for coverage in insight.provider_coverage
+            origins = ", ".join(
+                f"{origin_label(coverage.source_name)}={coverage.row_count}" for coverage in insight.provider_coverage
             )
-            click.echo(f"  providers: {providers}")
+            click.echo(f"  origins: {origins}")
         if insight.version_coverage:
             versions = ", ".join(f"{coverage.field}={dict(coverage.versions)}" for coverage in insight.version_coverage)
             click.echo(f"  versions: {versions}")
@@ -239,7 +255,7 @@ def _render_export_plain(result: InsightExportBundleResult) -> None:
 
 @insights_command.command("status")
 @click.option("--insight", "insights", multiple=True, help="Insight readiness target. May be repeated.")
-@click.option("--provider", "-p", default=None, help="Limit provider coverage details to one provider.")
+@click.option("--origin", "-o", default=None, help="Limit origin coverage details to one origin.")
 @click.option("--since", default=None, help="Limit coverage details to rows at/after this timestamp or date.")
 @click.option("--until", default=None, help="Limit coverage details to rows at/before this timestamp or date.")
 @click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None, help="Output format.")
@@ -247,7 +263,7 @@ def _render_export_plain(result: InsightExportBundleResult) -> None:
 def insights_status_command(
     ctx: click.Context,
     insights: tuple[str, ...],
-    provider: str | None,
+    origin: str | None,
     since: str | None,
     until: str | None,
     output_format: str | None,
@@ -255,13 +271,13 @@ def insights_status_command(
     """Report insight materialization coverage and readiness."""
     env: AppEnv = ctx.obj
     root_params = ctx.find_root().params
-    inherited_provider = provider if provider is not None else root_params.get("provider")
+    inherited_origin = origin if origin is not None else root_params.get("origin")
     inherited_since = since if since is not None else root_params.get("since")
     inherited_until = until if until is not None else root_params.get("until")
     try:
         filters = normalize_insight_query_kwargs(
             {
-                "provider": inherited_provider,
+                "origin": inherited_origin,
                 "since": inherited_since,
                 "until": inherited_until,
             }
@@ -272,12 +288,12 @@ def insights_status_command(
             since=filters["since"] if isinstance(filters["since"], str) else None,
             until=filters["until"] if isinstance(filters["until"], str) else None,
         )
-        report = run_coroutine_sync(env.operations.get_insight_readiness_report(query))
+        report = run_coroutine_sync(env.polylogue.insight_readiness_report(query))
     except (InsightCommandInputError, ValueError) as exc:
         valid = ", ".join(known_insight_readiness_names())
         fail("insights status", f"{exc}. Known insights: {valid}")
     if _status_wants_json(ctx, output_format=output_format):
-        emit_success(report.model_dump(mode="json"))
+        emit_success(cast(dict[str, object], project_origin_payload(report.model_dump(mode="json"))))
         return
     _render_status_plain(report)
 
@@ -285,7 +301,7 @@ def insights_status_command(
 @insights_command.command("export")
 @click.option("--out", "output_path", required=True, type=click.Path(path_type=Path), help="Output bundle directory.")
 @click.option("--insight", "insights", multiple=True, help="Insight to include. Defaults to all exportable insights.")
-@click.option("--provider", "-p", default=None, help="Limit supported insights to one provider.")
+@click.option("--origin", "-o", default=None, help="Limit supported insights to one origin.")
 @click.option("--since", default=None, help="Limit supported insights to rows at/after this timestamp or date.")
 @click.option("--until", default=None, help="Limit supported insights to rows at/before this timestamp or date.")
 @click.option("--bundle-format", type=click.Choice(["jsonl"]), default="jsonl", show_default=True)
@@ -298,7 +314,7 @@ def insights_export_command(
     ctx: click.Context,
     output_path: Path,
     insights: tuple[str, ...],
-    provider: str | None,
+    origin: str | None,
     since: str | None,
     until: str | None,
     bundle_format: str,
@@ -308,7 +324,7 @@ def insights_export_command(
     """Export versioned archive-insight bundles."""
     env: AppEnv = ctx.obj
     root_params = ctx.find_root().params
-    inherited_provider = provider if provider is not None else root_params.get("provider")
+    inherited_origin = origin if origin is not None else root_params.get("origin")
     inherited_since = since if since is not None else root_params.get("since")
     inherited_until = until if until is not None else root_params.get("until")
     try:
@@ -317,7 +333,7 @@ def insights_export_command(
             fail("insights export", f"unsupported export format: {bundle_format}")
         filters = normalize_insight_query_kwargs(
             {
-                "provider": inherited_provider,
+                "origin": inherited_origin,
                 "since": inherited_since,
                 "until": inherited_until,
             }
@@ -331,11 +347,11 @@ def insights_export_command(
             output_format=export_format,
             overwrite=overwrite,
         )
-        result = run_coroutine_sync(env.operations.export_insight_bundle(request))
+        result = run_coroutine_sync(env.polylogue.export_insight_bundle(request))
     except (InsightCommandInputError, InsightExportBundleError) as exc:
         fail("insights export", str(exc))
     if output_format == "json" or ctx.find_root().params.get("output_format") == "json":
-        emit_success(result.model_dump(mode="json"))
+        emit_success(cast(dict[str, object], project_origin_payload(result.model_dump(mode="json"))))
         return
     _render_export_plain(result)
 
@@ -416,7 +432,7 @@ def insights_audit_command(
     env: AppEnv = ctx.obj
     try:
         query = InsightRigorAuditQuery(insights=insights, sample_limit=sample_limit)
-        report = run_coroutine_sync(env.operations.audit_insight_rigor(query))
+        report = run_coroutine_sync(build_insight_rigor_audit_report(env.polylogue, query))
     except ArchiveInsightUnavailableError as exc:
         fail("insights audit", str(exc))
     wants_json = output_format == "json" or ctx.find_root().params.get("output_format") == "json"
@@ -427,7 +443,7 @@ def insights_audit_command(
 
 
 @insights_command.command("timeline")
-@click.argument("conversation_id")
+@click.argument("session_id")
 @click.option(
     "--format",
     "-f",
@@ -439,12 +455,12 @@ def insights_audit_command(
 @click.pass_context
 def insights_timeline_command(
     ctx: click.Context,
-    conversation_id: str,
+    session_id: str,
     output_format: str | None,
 ) -> None:
     """Render a per-session timeline with hook-vs-sort-key fidelity tags.
 
-    Merges materialized work events and session phases for one conversation
+    Merges materialized work events and session phases for one session
     into a chronological timeline. Each entry carries an explicit fidelity
     tag: ``hook`` for entries whose timing came from a recorded timestamped
     range, ``sort_key`` for entries reconstructed from message sort-key
@@ -453,11 +469,11 @@ def insights_timeline_command(
     env: AppEnv = ctx.obj
     resolved_format = output_format or ctx.find_root().params.get("output_format") or "plain"
     try:
-        work_events = run_coroutine_sync(env.operations.get_session_work_event_insights(conversation_id))
-        phases = run_coroutine_sync(env.operations.get_session_phase_insights(conversation_id))
+        work_events = run_coroutine_sync(env.polylogue.get_session_work_event_insights(session_id))
+        phases = run_coroutine_sync(env.polylogue.get_session_phase_insights(session_id))
     except ArchiveInsightUnavailableError as exc:
         fail("insights timeline", str(exc))
-    timeline = build_session_timeline(conversation_id, work_events, phases)
+    timeline = build_session_timeline(session_id, work_events, phases)
     if resolved_format == "json":
         emit_success(timeline.to_dict())
         return

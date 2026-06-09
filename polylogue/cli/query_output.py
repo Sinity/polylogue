@@ -16,14 +16,13 @@ from urllib.parse import quote
 import click
 
 from polylogue.archive.message.roles import MessageRoleFilter, Role, message_role_count_key, message_role_labels
-from polylogue.archive.semantic.content_projection import ContentProjectionSpec, coerce_content_projection_spec
 from polylogue.cli.query_contracts import QueryDeliveryTarget, QueryOutputSpec
 from polylogue.cli.query_feedback import emit_no_results
 from polylogue.cli.query_output_contracts import QueryOutputDocument, StructuredRowsDocument
 from polylogue.cli.query_semantic import (
     SemanticStatsSlice,
     action_matches_slice,
-    filtered_action_events,
+    filtered_actions,
     normalized_tool_name,
     output_stats_by_semantic_ids,
     output_stats_by_semantic_query,
@@ -31,20 +30,20 @@ from polylogue.cli.query_semantic import (
 )
 from polylogue.cli.query_stats import (
     emit_structured_stats,
-    output_stats_by_conversations,
     output_stats_by_profile_ids,
     output_stats_by_profile_query,
     output_stats_by_profile_summaries,
+    output_stats_by_sessions,
     output_stats_by_summaries,
     output_stats_sql,
 )
 from polylogue.core.json import JSONDocument
 from polylogue.logging import get_logger
-from polylogue.rendering.formatting import format_conversation
+from polylogue.rendering.formatting import format_session
 from polylogue.surfaces.payloads import (
-    ConversationListRowPayload,
-    ConversationSearchHitPayload,
     SearchCursor,
+    SessionListRowPayload,
+    SessionSearchHitPayload,
     build_search_envelope,
     model_json_document,
 )
@@ -52,15 +51,15 @@ from polylogue.surfaces.payloads import (
 logger = get_logger(__name__)
 
 if TYPE_CHECKING:
-    from polylogue.archive.models import Conversation, ConversationSummary, Message
+    from polylogue.archive.models import Message, Session, SessionSummary
     from polylogue.archive.query.miss_diagnostics import QueryMissDiagnostics
-    from polylogue.archive.query.search_hits import ConversationSearchHit
-    from polylogue.archive.query.spec import ConversationQuerySpec
+    from polylogue.archive.query.search_hits import SessionSearchHit
+    from polylogue.archive.query.spec import SessionQuerySpec
     from polylogue.cli.shared.types import AppEnv
-    from polylogue.protocols import ConversationOutputStore
+    from polylogue.protocols import SessionOutputStore
     from polylogue.storage.runtime import MessageRecord
 
-ConversationStats: TypeAlias = dict[str, int]
+SessionStats: TypeAlias = dict[str, int]
 MACHINE_OUTPUT_FORMATS = frozenset({"json", "ndjson", "yaml", "csv"})
 DIALOGUE_MESSAGE_ROLES: MessageRoleFilter = (Role.USER, Role.ASSISTANT)
 
@@ -100,17 +99,17 @@ def _terminal_width(env: AppEnv) -> int:
 
 
 def _summary_list_layout(width: int) -> tuple[str, ...]:
-    """Pick a column set for the conversation-list table at ``width`` columns.
+    """Pick a column set for the session-list table at ``width`` columns.
 
     ``width`` is the rendered terminal width. The selection is deterministic
     and pinned by ``test_narrow_terminal_layout``; do not reorder columns
     without updating that contract.
     """
     if width >= _LayoutBreakpoints.WIDE_MIN:
-        return ("id", "date", "provider", "title", "msgs")
+        return ("id", "date", "origin", "title", "msgs")
     if width >= _LayoutBreakpoints.MID_MIN:
         # Drop the wide ID column; titles get more room.
-        return ("date", "provider", "title", "msgs")
+        return ("date", "origin", "title", "msgs")
     if width >= _LayoutBreakpoints.NARROW_MIN:
         # Drop provider too; date + title + msgs survives at 40 cols.
         return ("date", "title", "msgs")
@@ -121,10 +120,10 @@ def _summary_list_layout(width: int) -> tuple[str, ...]:
 def _search_hit_layout(width: int) -> tuple[str, ...]:
     """Pick a column set for the search-hit table at ``width`` columns."""
     if width >= _LayoutBreakpoints.WIDE_MIN:
-        return ("id", "date", "provider", "title", "msgs", "match")
+        return ("id", "date", "origin", "title", "msgs", "match")
     if width >= _LayoutBreakpoints.MID_MIN:
         # Drop ID column; keep match snippet for context.
-        return ("date", "provider", "title", "match")
+        return ("date", "origin", "title", "match")
     if width >= _LayoutBreakpoints.NARROW_MIN:
         # Drop provider and date; keep title + match snippet.
         return ("title", "match")
@@ -142,19 +141,19 @@ def _title_budget(width: int) -> int:
     return max(12, width - 2)
 
 
-def _conversation_list_line(conv: Conversation) -> str:
+def _session_list_line(conv: Session) -> str:
     date = _display_date(conv.display_date) or "unknown"
     title = _ellipsize(conv.display_title or conv.id[:20], 50)
-    return f"{conv.id[:24]:24s}  {date:10s}  {conv.provider:12s}  {title} ({len(conv.messages)} msgs)"
+    return f"{conv.id[:24]:24s}  {date:10s}  {str(conv.origin):20s}  {title} ({len(conv.messages)} msgs)"
 
 
-def _summary_list_line(summary: ConversationSummary, message_count: int) -> str:
+def _summary_list_line(summary: SessionSummary, message_count: int) -> str:
     date = _display_date(summary.display_date)
     title = _ellipsize(summary.display_title or str(summary.id)[:20], 50)
-    return f"{str(summary.id)[:24]:24s}  {date:10s}  {summary.provider:12s}  {title} ({message_count} msgs)"
+    return f"{str(summary.id)[:24]:24s}  {date:10s}  {str(summary.origin):20s}  {title} ({message_count} msgs)"
 
 
-def _search_hit_list_line(hit: ConversationSearchHit, message_count: int) -> str:
+def _search_hit_list_line(hit: SessionSearchHit, message_count: int) -> str:
     base = _summary_list_line(hit.summary, message_count)
     evidence_parts = [hit.match_surface, hit.retrieval_lane]
     if hit.message_id:
@@ -186,7 +185,7 @@ def _role_filter_label(message_roles: MessageRoleFilter) -> str:
     return "selected-role"
 
 
-def _role_filter_count(stats: ConversationStats, message_roles: MessageRoleFilter) -> int:
+def _role_filter_count(stats: SessionStats, message_roles: MessageRoleFilter) -> int:
     if message_roles == DIALOGUE_MESSAGE_ROLES:
         return stats.get("dialogue_messages", 0)
     return sum(stats.get(message_role_count_key(role), 0) for role in message_roles)
@@ -198,16 +197,16 @@ def _role_filter_count(stats: ConversationStats, message_roles: MessageRoleFilte
 
 
 def format_list(
-    results: list[Conversation],
+    results: list[Session],
     output_format: str,
     fields: str | None,
 ) -> str:
-    """Format a list of conversations for output.
+    """Format a list of sessions for output.
 
     #1618: JSON and YAML emit a paginated envelope
     (``{"items": [...], "total": N, "limit": N, "offset": 0}``) instead
     of a bare array so the shape matches the MCP
-    ``list_conversations`` tool. ``next_offset`` is omitted because
+    ``list_sessions`` tool. ``next_offset`` is omitted because
     the CLI doesn't paginate today (it returns the full match set);
     when CLI pagination lands it will populate the same field MCP
     already does. Bare-array consumers must read ``.items``.
@@ -225,13 +224,13 @@ def format_list(
         envelope = {"items": items, "total": len(items), "limit": len(items), "offset": 0}
         return str(yaml.dump(envelope, default_flow_style=False, allow_unicode=True, sort_keys=False))
     if output_format == "csv":
-        return conversations_to_csv(results)
+        return sessions_to_csv(results)
 
-    return "\n".join(_conversation_list_line(conv) for conv in results)
+    return "\n".join(_session_list_line(conv) for conv in results)
 
 
-def render_conversation_rich(env: AppEnv, conv: Conversation) -> None:
-    """Render a conversation with Rich role colors and thinking block styling."""
+def render_session_rich(env: AppEnv, conv: Session) -> None:
+    """Render a session with Rich role colors and thinking block styling."""
     from rich import box
     from rich.markdown import Markdown
     from rich.panel import Panel
@@ -241,12 +240,12 @@ def render_conversation_rich(env: AppEnv, conv: Conversation) -> None:
 
     console = env.ui.console
     title = conv.display_title or conv.id
-    pc = provider_color(conv.provider)
+    pc = provider_color(str(conv.origin))
     header = Text()
     header.append(title, style="bold")
     if conv.display_date:
         header.append(f"  {conv.display_date.strftime('%Y-%m-%d %H:%M')}", style="dim")
-    header.append(f"  [{pc.hex}]{conv.provider}[/{pc.hex}]")
+    header.append(f"  [{pc.hex}]{str(conv.origin)}[/{pc.hex}]")
     console.print(header)
     console.print()
 
@@ -282,7 +281,7 @@ def render_conversation_rich(env: AppEnv, conv: Conversation) -> None:
             )
             console.print(panel)
         except Exception:
-            logger.exception("render_conversation_rich: Panel rendering failed for role %s", role)
+            logger.exception("render_session_rich: Panel rendering failed for role %s", role)
             console.print(f"[{rc.label}]{role.capitalize()}:[/{rc.label}] {msg.text[:200]}")
         console.print()
 
@@ -301,7 +300,7 @@ def deliver_query_output(
         if destination.kind == "stdout":
             click.echo(document.content)
         elif destination.kind == "browser":
-            _open_in_browser(env, document.content, document.output_format, document.conversation)
+            _open_in_browser(env, document.content, document.output_format, document.session)
         elif destination.kind == "clipboard":
             _copy_to_clipboard(env, document.content)
         else:
@@ -316,7 +315,7 @@ def open_in_browser(
     env: AppEnv,
     content: str,
     output_format: str,
-    conv: Conversation | None,
+    conv: Session | None,
 ) -> None:
     if output_format != "html":
         if conv:
@@ -360,10 +359,10 @@ def copy_to_clipboard(env: AppEnv, content: str) -> None:
 
 def open_result(
     env: AppEnv,
-    results: Sequence[Conversation | ConversationSummary],
+    results: Sequence[Session | SessionSummary],
     output: QueryOutputSpec,
     *,
-    selection: ConversationQuerySpec | None = None,
+    selection: SessionQuerySpec | None = None,
     diagnostics: QueryMissDiagnostics | None = None,
 ) -> None:
     if not results:
@@ -372,7 +371,7 @@ def open_result(
     conv = results[0]
 
     daemon_url = str(getattr(env, "daemon_url", None) or "http://127.0.0.1:8766").rstrip("/")
-    web_url = f"{daemon_url}/?conversation={quote(str(conv.id), safe='')}"
+    web_url = f"{daemon_url}/?session={quote(str(conv.id), safe='')}"
     if output.print_url:
         if output.output_format == "json":
             click.echo(json.dumps({"url": web_url}, indent=2))
@@ -389,15 +388,15 @@ def open_result(
 # ---------------------------------------------------------------------------
 
 
-def summary_to_dict(summary: ConversationSummary, message_count: int) -> JSONDocument:
-    return ConversationListRowPayload.from_summary(
+def summary_to_dict(summary: SessionSummary, message_count: int) -> JSONDocument:
+    return SessionListRowPayload.from_summary(
         summary,
         message_count=message_count,
     ).selected()
 
 
 def format_summary_list(
-    summaries: list[ConversationSummary],
+    summaries: list[SessionSummary],
     output_format: str,
     fields: str | None,
     *,
@@ -407,12 +406,12 @@ def format_summary_list(
     message_counts = message_counts or {}
     document = StructuredRowsDocument(
         rows=tuple(summary_to_dict(summary, message_counts.get(str(summary.id), 0)) for summary in summaries),
-        csv_headers=("id", "date", "provider", "title", "messages", "tags", "summary"),
+        csv_headers=("id", "date", "origin", "title", "messages", "tags", "summary"),
         csv_rows=tuple(
             (
                 str(summary.id),
                 _display_date(summary.display_date),
-                summary.provider,
+                str(summary.origin),
                 summary.display_title or "",
                 message_counts.get(str(summary.id), 0),
                 ",".join(summary.tags) if summary.tags else "",
@@ -426,18 +425,18 @@ def format_summary_list(
 
 
 def _search_hit_to_payload(
-    hit: ConversationSearchHit,
+    hit: SessionSearchHit,
     *,
     message_count: int,
 ) -> JSONDocument:
     return model_json_document(
-        ConversationSearchHitPayload.from_search_hit(hit, message_count=message_count),
+        SessionSearchHitPayload.from_search_hit(hit, message_count=message_count),
         exclude_none=True,
     )
 
 
 def format_search_hit_list(
-    hits: list[ConversationSearchHit],
+    hits: list[SessionSearchHit],
     output_format: str,
     fields: str | None,
     *,
@@ -448,14 +447,14 @@ def format_search_hit_list(
     document = StructuredRowsDocument(
         rows=tuple(
             _search_hit_to_payload(
-                hit, message_count=message_counts.get(hit.conversation_id, hit.summary.message_count or 0)
+                hit, message_count=message_counts.get(hit.session_id, hit.summary.message_count or 0)
             )
             for hit in hits
         ),
         csv_headers=(
             "id",
             "date",
-            "provider",
+            "origin",
             "title",
             "messages",
             "rank",
@@ -468,9 +467,9 @@ def format_search_hit_list(
             (
                 str(hit.summary.id),
                 _display_date(hit.summary.display_date),
-                hit.summary.provider,
+                str(hit.summary.origin),
                 hit.summary.display_title or "",
-                message_counts.get(hit.conversation_id, hit.summary.message_count or 0),
+                message_counts.get(hit.session_id, hit.summary.message_count or 0),
                 hit.rank,
                 hit.retrieval_lane,
                 hit.match_surface,
@@ -480,7 +479,7 @@ def format_search_hit_list(
             for hit in hits
         ),
         text_lines=tuple(
-            _search_hit_list_line(hit, message_counts.get(hit.conversation_id, hit.summary.message_count or 0))
+            _search_hit_list_line(hit, message_counts.get(hit.session_id, hit.summary.message_count or 0))
             for hit in hits
         ),
     )
@@ -488,7 +487,7 @@ def format_search_hit_list(
 
 
 def format_search_envelope(
-    hits: list[ConversationSearchHit],
+    hits: list[SessionSearchHit],
     *,
     query: str,
     retrieval_lane: str,
@@ -510,9 +509,9 @@ def format_search_envelope(
     """
     counts = message_counts or {}
     hit_payloads = [
-        ConversationSearchHitPayload.from_search_hit(
+        SessionSearchHitPayload.from_search_hit(
             hit,
-            message_count=counts.get(hit.conversation_id, hit.summary.message_count or 0),
+            message_count=counts.get(hit.session_id, hit.summary.message_count or 0),
         )
         for hit in hits
     ]
@@ -532,16 +531,16 @@ def format_search_envelope(
 
 async def output_search_hits(
     env: AppEnv,
-    hits: list[ConversationSearchHit],
+    hits: list[SessionSearchHit],
     output: QueryOutputSpec,
-    repo: ConversationOutputStore | None = None,
+    repo: SessionOutputStore | None = None,
     *,
     total: int | None = None,
     cursor: SearchCursor | None = None,
 ) -> None:
     """Output evidence-bearing search hits with optional rich table rendering.
 
-    ``total`` is the count of matching conversations (from ``spec.count()``)
+    ``total`` is the count of matching sessions (from ``spec.count()``)
     threaded by the caller so the JSON envelope reports a concrete total like
     every other read surface (#1749). ``cursor`` carries a previously-decoded
     :class:`SearchCursor` when the request is a paginated follow-up (#1268);
@@ -550,7 +549,7 @@ async def output_search_hits(
     """
     msg_counts: dict[str, int] = {}
     if repo:
-        ids = [hit.conversation_id for hit in hits]
+        ids = [hit.session_id for hit in hits]
         msg_counts = await repo.get_message_counts_batch(ids)
 
     if output.output_format == "json":
@@ -603,8 +602,8 @@ async def output_search_hits(
             table.add_column("ID", style="dim", max_width=24, no_wrap=True)
         elif column == "date":
             table.add_column("Date", style="dim")
-        elif column == "provider":
-            table.add_column("Provider")
+        elif column == "origin":
+            table.add_column("Origin")
         elif column == "title":
             table.add_column("Title", ratio=1)
         elif column == "msgs":
@@ -616,8 +615,11 @@ async def output_search_hits(
         summary = hit.summary
         date = _display_date(summary.display_date)
         title = _ellipsize(summary.display_title or str(summary.id)[:20], title_budget)
-        count = msg_counts.get(hit.conversation_id, summary.message_count or 0)
-        provider_text = Text(summary.provider, style=provider_color(summary.provider).hex)
+        count = msg_counts.get(hit.session_id, summary.message_count or 0)
+        origin_text = Text(
+            str(summary.origin),
+            style=provider_color(str(summary.origin)).hex,
+        )
         snippet = _ellipsize(hit.snippet or "", snippet_budget)
         match = f"{hit.match_surface}/{hit.retrieval_lane}"
         if hit.message_id:
@@ -630,8 +632,8 @@ async def output_search_hits(
                 row.append(str(summary.id)[:24])
             elif column == "date":
                 row.append(date)
-            elif column == "provider":
-                row.append(provider_text)
+            elif column == "origin":
+                row.append(origin_text)
             elif column == "title":
                 row.append(title)
             elif column == "msgs":
@@ -645,11 +647,11 @@ async def output_search_hits(
 
 async def output_summary_list(
     env: AppEnv,
-    summaries: list[ConversationSummary],
+    summaries: list[SessionSummary],
     output: QueryOutputSpec,
-    repo: ConversationOutputStore | None = None,
+    repo: SessionOutputStore | None = None,
 ) -> None:
-    """Output a list of conversation summaries with optional rich table rendering."""
+    """Output a list of session summaries with optional rich table rendering."""
     msg_counts: dict[str, int] = {}
     if repo:
         ids = [str(summary.id) for summary in summaries]
@@ -681,8 +683,8 @@ async def output_summary_list(
             table.add_column("ID", style="dim", max_width=24, no_wrap=True)
         elif column == "date":
             table.add_column("Date", style="dim")
-        elif column == "provider":
-            table.add_column("Provider")
+        elif column == "origin":
+            table.add_column("Origin")
         elif column == "title":
             table.add_column("Title", ratio=1)
         elif column == "msgs":
@@ -692,15 +694,18 @@ async def output_summary_list(
         date = _display_date(summary.display_date)
         title = _ellipsize(summary.display_title or str(summary.id)[:20], title_budget)
         count = msg_counts.get(str(summary.id), 0)
-        provider_text = Text(summary.provider, style=provider_color(summary.provider).hex)
+        origin_text = Text(
+            str(summary.origin),
+            style=provider_color(str(summary.origin)).hex,
+        )
         row: list[str | Text] = []
         for column in columns:
             if column == "id":
                 row.append(str(summary.id)[:24])
             elif column == "date":
                 row.append(date)
-            elif column == "provider":
-                row.append(provider_text)
+            elif column == "origin":
+                row.append(origin_text)
             elif column == "title":
                 row.append(title)
             elif column == "msgs":
@@ -710,14 +715,14 @@ async def output_summary_list(
     env.ui.console.print(table)
 
 
-def conversations_to_csv(results: list[Conversation]) -> str:
-    """Convert hydrated conversations to CSV."""
+def sessions_to_csv(results: list[Session]) -> str:
+    """Convert hydrated sessions to CSV."""
     import csv
     import io
 
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["id", "date", "provider", "title", "messages", "words", "tags", "summary"])
+    writer.writerow(["id", "date", "origin", "title", "messages", "words", "tags", "summary"])
 
     for conv in results:
         tags_str = ",".join(conv.tags) if conv.tags else ""
@@ -725,7 +730,7 @@ def conversations_to_csv(results: list[Conversation]) -> str:
             [
                 str(conv.id),
                 _display_date(conv.display_date),
-                conv.provider,
+                str(conv.origin),
                 conv.display_title or "",
                 len(conv.messages),
                 sum(message.word_count for message in conv.messages),
@@ -774,26 +779,26 @@ def render_stream_message(message: Message | MessageRecord, output_format: str) 
 
 def render_stream_header(
     *,
-    conversation_id: str,
+    session_id: str,
     title: str | None,
-    provider: str | None,
+    origin: str | None,
     display_date: object | None,
     output_format: str,
     dialogue_only: bool,
     message_roles: MessageRoleFilter,
     message_limit: int | None,
-    stats: ConversationStats | None,
+    stats: SessionStats | None,
 ) -> str:
     """Render any stream prelude/header for the selected output format."""
     display_date_text, display_date_value = _stream_date_parts(display_date)
 
     if output_format == "markdown":
-        lines = [f"# {title or conversation_id[:24]}", ""]
+        lines = [f"# {title or session_id[:24]}", ""]
         if display_date_text is not None:
             lines.append(f"**Date**: {display_date_text}")
-        if provider:
-            lines.append(f"**Provider**: {provider}")
-        if display_date_text is not None or provider:
+        if origin:
+            lines.append(f"**Origin**: {origin}")
+        if display_date_text is not None or origin:
             lines.append("")
         if message_roles and stats:
             shown = _role_filter_count(stats, message_roles)
@@ -808,9 +813,9 @@ def render_stream_header(
     if output_format == "json-lines":
         header = {
             "type": "header",
-            "conversation_id": conversation_id,
+            "session_id": session_id,
             "title": title,
-            "provider": provider,
+            "origin": origin,
             "date": display_date_value,
             "dialogue_only": dialogue_only,
             "message_roles": list(message_role_labels(message_roles)),
@@ -833,25 +838,25 @@ def render_stream_footer(*, output_format: str, emitted_messages: int) -> str:
 
 def render_stream_transcript(
     *,
-    conversation_id: str,
+    session_id: str,
     title: str | None,
-    provider: str | None,
+    origin: str | None,
     display_date: object | None,
     messages: list[Message],
     output_format: str,
     dialogue_only: bool = False,
     message_roles: MessageRoleFilter = (),
     message_limit: int | None = None,
-    stats: ConversationStats | None = None,
+    stats: SessionStats | None = None,
 ) -> tuple[str, int]:
     """Render the full stream transcript deterministically for proof/tests."""
     effective_roles = message_roles or (DIALOGUE_MESSAGE_ROLES if dialogue_only else ())
     filtered_messages = [message for message in messages if not effective_roles or message.role in effective_roles]
     parts = [
         render_stream_header(
-            conversation_id=conversation_id,
+            session_id=session_id,
             title=title,
-            provider=provider,
+            origin=origin,
             display_date=display_date,
             output_format=output_format,
             dialogue_only=dialogue_only,
@@ -870,76 +875,6 @@ def render_stream_transcript(
     return "".join(parts), emitted
 
 
-async def stream_conversation(
-    env: AppEnv,
-    repo: ConversationOutputStore,
-    conversation_id: str,
-    *,
-    output_format: str = "plaintext",
-    dialogue_only: bool = False,
-    message_roles: MessageRoleFilter = (),
-    content_projection: ContentProjectionSpec | None = None,
-    message_limit: int | None = None,
-) -> int:
-    """Stream conversation messages to stdout without buffering."""
-    projection = await repo.get_render_projection(conversation_id)
-    if projection is None:
-        click.echo(f"Conversation not found: {conversation_id}", err=True)
-        raise SystemExit(1)
-    conv_record = projection.conversation
-
-    stats = await repo.get_conversation_stats(conversation_id)
-    effective_roles = message_roles or (DIALOGUE_MESSAGE_ROLES if dialogue_only else ())
-    projection_spec = coerce_content_projection_spec(content_projection)
-    sys.stdout.write(
-        render_stream_header(
-            conversation_id=conversation_id,
-            title=conv_record.title,
-            provider=getattr(conv_record, "source_name", None),
-            display_date=(getattr(conv_record, "updated_at", None) or getattr(conv_record, "created_at", None)),
-            output_format=output_format,
-            dialogue_only=dialogue_only,
-            message_roles=effective_roles,
-            message_limit=message_limit,
-            stats=stats,
-        )
-    )
-    sys.stdout.flush()
-
-    count = 0
-    if projection_spec.filters_content():
-        conversation = await repo.get(conversation_id)
-        if conversation is None:
-            click.echo(f"Conversation not found: {conversation_id}", err=True)
-            raise SystemExit(1)
-        if effective_roles:
-            conversation = conversation.with_roles(effective_roles)
-        conversation = conversation.with_content_projection(projection_spec)
-        for message in list(conversation.messages)[: message_limit if message_limit is not None else None]:
-            chunk = render_stream_message(message, output_format)
-            if chunk:
-                sys.stdout.write(chunk)
-                count += 1
-            sys.stdout.flush()
-    else:
-        async for message in repo.iter_messages(
-            conversation_id,
-            dialogue_only=dialogue_only,
-            message_roles=effective_roles,
-            limit=message_limit,
-        ):
-            chunk = render_stream_message(message, output_format)
-            if chunk:
-                sys.stdout.write(chunk)
-                count += 1
-            sys.stdout.flush()
-
-    sys.stdout.write(render_stream_footer(output_format=output_format, emitted_messages=count))
-    sys.stdout.flush()
-
-    return count
-
-
 def write_message_streaming(message: Message | MessageRecord, output_format: str) -> None:
     """Write a single streamed message to stdout."""
     chunk = render_stream_message(message, output_format)
@@ -952,7 +887,7 @@ def no_results(
     env: AppEnv,
     output: QueryOutputSpec,
     *,
-    selection: ConversationQuerySpec | None = None,
+    selection: SessionQuerySpec | None = None,
     diagnostics: QueryMissDiagnostics | None = None,
     exit_code: int | None = 2,
 ) -> None:
@@ -973,10 +908,10 @@ def no_results(
 
 def output_results(
     env: AppEnv,
-    results: list[Conversation],
+    results: list[Session],
     output: QueryOutputSpec,
     *,
-    selection: ConversationQuerySpec | None = None,
+    selection: SessionQuerySpec | None = None,
     diagnostics: QueryMissDiagnostics | None = None,
 ) -> None:
     """Output query results."""
@@ -986,9 +921,9 @@ def output_results(
     if len(results) == 1 and not output.list_mode:
         conv = results[0]
         if output.output_format == "markdown" and output.destination_labels() == ("stdout",) and not env.ui.plain:
-            _render_conversation_rich(env, conv)
+            _render_session_rich(env, conv)
             return
-        content = format_conversation(conv, output.output_format, output.fields)
+        content = format_session(conv, output.output_format, output.fields)
         _send_output(env, content, output.destinations, output.output_format, conv)
         return
 
@@ -998,13 +933,13 @@ def output_results(
 
 # Internal aliases used by query.py and tests
 _output_summary_list = output_summary_list
-_output_stats_by = output_stats_by_conversations
+_output_stats_by = output_stats_by_sessions
 _write_message_streaming = write_message_streaming
 _copy_to_clipboard = copy_to_clipboard
 _open_in_browser = open_in_browser
 _open_result = open_result
 _format_list = format_list
-_render_conversation_rich = render_conversation_rich
+_render_session_rich = render_session_rich
 
 
 def _send_output(
@@ -1012,7 +947,7 @@ def _send_output(
     content: str,
     destinations: Sequence[QueryDeliveryTarget],
     output_format: str,
-    conv: Conversation | None,
+    conv: Session | None,
 ) -> None:
     """Send output to specified destinations."""
     deliver_query_output(
@@ -1021,7 +956,7 @@ def _send_output(
             content=content,
             output_format=output_format,
             destinations=tuple(destinations),
-            conversation=conv,
+            session=conv,
         ),
     )
 
@@ -1029,11 +964,11 @@ def _send_output(
 __all__ = [
     "SemanticStatsSlice",
     "action_matches_slice",
-    "conversations_to_csv",
+    "sessions_to_csv",
     "copy_to_clipboard",
     "deliver_query_output",
     "emit_structured_stats",
-    "filtered_action_events",
+    "filtered_actions",
     "format_list",
     "format_search_hit_list",
     "format_summary_list",
@@ -1043,7 +978,7 @@ __all__ = [
     "output_results",
     "format_search_envelope",
     "output_search_hits",
-    "output_stats_by_conversations",
+    "output_stats_by_sessions",
     "output_stats_by_profile_ids",
     "output_stats_by_profile_query",
     "output_stats_by_profile_summaries",
@@ -1053,12 +988,11 @@ __all__ = [
     "output_stats_by_summaries",
     "output_stats_sql",
     "output_summary_list",
-    "render_conversation_rich",
+    "render_session_rich",
     "render_stream_footer",
     "render_stream_header",
     "render_stream_message",
     "render_stream_transcript",
-    "stream_conversation",
     "summary_to_dict",
     "write_message_streaming",
 ]

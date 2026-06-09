@@ -5,7 +5,7 @@ const Dataflow = () => (
     <header className="flow__head">
       <Mono>DATA FLOW</Mono>
       <h2>One conversation, end to end</h2>
-      <p>From provider event to the pixel a user reads. Each box is a real module; each arrow names the wire format.</p>
+      <p>From session event to the pixel a user reads. Each box is a real module; each arrow names the wire format.</p>
     </header>
 
     <div className="flow__diagram">

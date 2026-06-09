@@ -1,273 +1,283 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
 
+from polylogue.api import Polylogue
+from polylogue.core.identity_law import session_id as archive_session_id
+from polylogue.core.json import dumps
+from polylogue.core.sources import origin_from_provider
 from polylogue.errors import PolylogueError
-from polylogue.paths.sanitize import is_within_root
-from polylogue.pipeline.prepare import RecordBundle, save_bundle
-from polylogue.rendering.renderers import HTMLRenderer
-from polylogue.storage.repository import ConversationRepository
-from polylogue.storage.runtime import ConversationRecord
+from polylogue.paths.sanitize import is_within_root, session_render_root
+from polylogue.rendering.formatting import format_session
+from polylogue.rendering.renderers.html import render_session_html
+from polylogue.storage.repository import SessionRepository
+from polylogue.storage.runtime import SessionRecord
 from polylogue.storage.sqlite.connection import open_connection
-from tests.infra.storage_records import make_attachment, make_conversation, make_message
+from polylogue.types import Provider
+from tests.infra.archive_scenarios import native_session_id_for
+from tests.infra.storage_records import (
+    SessionBuilder,
+    make_attachment,
+    make_message,
+    make_session,
+    save_current_archive_records,
+)
 
 
-def _conversation_record() -> ConversationRecord:
-    return make_conversation("conv:hash", source_name="codex", title="Demo")
+def _record_session_id(provider: str, native_id: str) -> str:
+    return archive_session_id(origin_from_provider(Provider.from_string(provider)).value, native_id)
+
+
+def _session_record() -> SessionRecord:
+    return make_session("conv:hash", source_name="codex", title="Demo")
 
 
 async def test_ingest_idempotent(
     workspace_env: dict[str, Path],
-    storage_repository: ConversationRepository,
+    storage_repository: SessionRepository,
 ) -> None:
-    bundle = RecordBundle(
-        conversation=_conversation_record(),
-        messages=[make_message("msg:hash", "conv:hash", text="hello")],
-        attachments=[make_attachment("att-hash", "conv:hash", "msg:hash")],
+    session = _session_record()
+    messages = [make_message("msg:hash", "conv:hash", text="hello")]
+    attachments = [make_attachment("att-hash", "conv:hash", "msg:hash")]
+
+    first = await save_current_archive_records(
+        storage_repository,
+        session=session,
+        messages=messages,
+        attachments=attachments,
+    )
+    second = await save_current_archive_records(
+        storage_repository,
+        session=session,
+        messages=messages,
+        attachments=attachments,
     )
 
-    first = await save_bundle(bundle, repository=storage_repository)
-    second = await save_bundle(bundle, repository=storage_repository)
-
-    assert first.conversations == 1
+    assert first["sessions"] == 1
     # Second pass on the same bundle either skips (if row_graph_hash also
     # matches) or rewrites the same row idempotently. Both are valid; the
     # contract is that the archive is unchanged content-wise.
-    assert second.conversations + second.skipped_conversations == 1
-    assert second.messages + second.skipped_messages == 1
+    assert second["sessions"] + second["skipped_sessions"] == 1
+    assert second["messages"] + second["skipped_messages"] == 1
 
 
-async def test_render_writes_markdown(
-    workspace_env: dict[str, Path],
-    storage_repository: ConversationRepository,
-) -> None:
+async def _native_session(archive_root: Path, db_path: Path, session_id: str) -> object:
+    async with Polylogue(archive_root=archive_root, db_path=db_path) as archive:
+        conv = await archive.get_session(session_id)
+    assert conv is not None
+    return conv
+
+
+async def test_render_writes_markdown(workspace_env: dict[str, Path]) -> None:
     archive_root = workspace_env["archive_root"]
-    bundle = RecordBundle(
-        conversation=_conversation_record(),
-        messages=[make_message("msg:hash", "conv:hash", text="hello")],
-        attachments=[],
-    )
-    await save_bundle(bundle, repository=storage_repository)
+    db_path = archive_root / "index.db"
+    SessionBuilder(db_path, "conv-hash").provider("codex").add_message("msg1", role="user", text="hello").save()
 
-    renderer = HTMLRenderer(archive_root)
-    output_root = archive_root / "render"
-    html_path = await renderer.render("conv:hash", output_root)
-    md_path = html_path.parent / "conversation.md"
+    conv = await _native_session(archive_root, db_path, native_session_id_for("codex", "conv-hash"))
+    markdown = format_session(conv, "markdown", None)  # type: ignore[arg-type]
 
-    assert md_path.exists()
-    assert html_path.exists()
-    assert "hello" in md_path.read_text(encoding="utf-8")
+    assert "hello" in markdown
 
 
-async def test_render_escapes_html(
-    workspace_env: dict[str, Path],
-    storage_repository: ConversationRepository,
-) -> None:
+async def test_render_escapes_html(workspace_env: dict[str, Path]) -> None:
     archive_root = workspace_env["archive_root"]
-    bundle = RecordBundle(
-        conversation=make_conversation("conv-html", source_name="codex", title="<script>alert(1)</script>"),
-        messages=[make_message("msg:hash", "conv-html", text="<script>alert(2)</script>")],
-        attachments=[],
+    db_path = archive_root / "index.db"
+    (
+        SessionBuilder(db_path, "conv-html")
+        .provider("codex")
+        .title("<script>alert(1)</script>")
+        .add_message("msg1", role="user", text="<script>alert(2)</script>")
+        .save()
     )
-    await save_bundle(bundle, repository=storage_repository)
 
-    renderer = HTMLRenderer(archive_root)
-    output_root = archive_root / "render"
-    html_path = await renderer.render("conv-html", output_root)
-    html_text = html_path.read_text(encoding="utf-8")
+    conv = await _native_session(archive_root, db_path, native_session_id_for("codex", "conv-html"))
+    html_text = render_session_html(conv)  # type: ignore[arg-type]
 
-    assert "<script>" not in html_text
+    assert "<script>alert(2)</script>" not in html_text
     assert "&lt;script&gt;" in html_text
 
 
-async def test_render_sanitizes_paths(
-    workspace_env: dict[str, Path],
-    storage_repository: ConversationRepository,
-) -> None:
-    """Test that render paths are sanitized even with path-like conversation IDs.
+def test_render_root_sanitizes_path_like_ids(workspace_env: dict[str, Path]) -> None:
+    """Path-like session ids must not escape the render output root.
 
-    Note: Invalid provider names are now rejected at the validation layer, so we
-    test path sanitization through conversation_id alone using a valid provider name.
+    The archive string renderers do not write files; file layout safety lives in
+    ``session_render_root``, which is what site generation uses.
     """
+    output_root = workspace_env["archive_root"] / "render"
+    render_root = session_render_root(output_root, "codex", native_session_id_for("codex", "../escape"))
+
+    assert is_within_root(render_root, output_root)
+
+
+async def test_render_includes_message_attachments(workspace_env: dict[str, Path]) -> None:
     archive_root = workspace_env["archive_root"]
-    bundle = RecordBundle(
-        conversation=make_conversation("../escape", title="Escape"),
-        messages=[make_message("msg:hash", "../escape", text="hello")],
-        attachments=[],
+    db_path = archive_root / "index.db"
+    (
+        SessionBuilder(db_path, "conv-hash")
+        .provider("codex")
+        .add_message("msg1", role="user", text="hello")
+        .add_attachment(
+            attachment_id="att-linked",
+            message_id="msg1",
+            mime_type="text/plain",
+            size_bytes=12,
+            display_name="notes.txt",
+        )
+        .save()
     )
-    await save_bundle(bundle, repository=storage_repository)
 
-    renderer = HTMLRenderer(archive_root)
-    output_root = archive_root / "render"
-    html_path = await renderer.render("../escape", output_root)
-    md_path = html_path.parent / "conversation.md"
-
-    assert is_within_root(md_path, output_root)
-
-
-async def test_render_includes_orphan_attachments(
-    workspace_env: dict[str, Path],
-    storage_repository: ConversationRepository,
-) -> None:
-    archive_root = workspace_env["archive_root"]
-    bundle = RecordBundle(
-        conversation=_conversation_record(),
-        messages=[make_message("msg:hash", "conv:hash", text="hello")],
-        attachments=[
-            make_attachment(
-                "att-orphan",
-                "conv:hash",
-                None,
-                mime_type="text/plain",
-                size_bytes=12,
-                provider_meta={"name": "notes.txt"},
-            )
-        ],
-    )
-    await save_bundle(bundle, repository=storage_repository)
-
-    renderer = HTMLRenderer(archive_root)
-    output_root = archive_root / "render"
-    html_path = await renderer.render("conv:hash", output_root)
-    md_path = html_path.parent / "conversation.md"
-    markdown = md_path.read_text(encoding="utf-8")
+    conv = await _native_session(archive_root, db_path, native_session_id_for("codex", "conv-hash"))
+    markdown = format_session(conv, "markdown", None)  # type: ignore[arg-type]
 
     assert "- Attachment: notes.txt" in markdown
 
 
 async def test_ingest_updates_metadata(
     workspace_env: dict[str, Path],
-    storage_repository: ConversationRepository,
+    storage_repository: SessionRepository,
 ) -> None:
-    bundle = RecordBundle(
-        conversation=make_conversation(
+    await save_current_archive_records(
+        storage_repository,
+        session=make_session(
             "conv-update",
             source_name="codex",
             title="Old",
+            updated_at="2026-04-01T00:00:01+00:00",
             content_hash="hash-old",
-            provider_meta={"source": "inbox"},
+            git_branch="old",
+            working_directories_json=dumps(["/tmp/old"]),
         ),
         messages=[make_message("msg-update", "conv-update", text="hello", content_hash="msg-old")],
         attachments=[],
     )
-    await save_bundle(bundle, repository=storage_repository)
 
-    updated = RecordBundle(
-        conversation=make_conversation(
+    await save_current_archive_records(
+        storage_repository,
+        session=make_session(
             "conv-update",
             source_name="codex",
             title="New",
             updated_at="2026-04-02T00:00:02+00:00",
             content_hash="hash-new",
-            provider_meta={"source": "inbox", "updated": True},
+            git_branch="new",
+            working_directories_json=dumps(["/tmp/new"]),
         ),
         messages=[make_message("msg-update", "conv-update", role="assistant", text="hello", content_hash="msg-new")],
         attachments=[],
     )
-    await save_bundle(updated, repository=storage_repository)
 
+    session_id = _record_session_id("codex", "conv-update")
     with open_connection(None) as conn:
         convo = conn.execute(
-            "SELECT title, updated_at, content_hash, provider_meta FROM conversations WHERE conversation_id = ?",
-            ("conv-update",),
+            "SELECT title, updated_at_ms, git_branch FROM sessions WHERE session_id = ?",
+            (session_id,),
         ).fetchone()
+        working_dirs = conn.execute(
+            "SELECT path FROM session_working_dirs WHERE session_id = ?",
+            (session_id,),
+        ).fetchall()
         msg = conn.execute(
-            "SELECT role, content_hash FROM messages WHERE message_id = ?",
-            ("msg-update",),
+            "SELECT role FROM messages WHERE session_id = ? ORDER BY position",
+            (session_id,),
         ).fetchone()
     assert convo["title"] == "New"
-    assert convo["updated_at"] == "2026-04-02T00:00:02+00:00"
-    assert convo["content_hash"] == "hash-new"
+    assert convo["updated_at_ms"] == 1_775_088_002_000
+    assert convo["git_branch"] == "new"
+    assert [row["path"] for row in working_dirs] == ["/tmp/new"]
     assert msg["role"] == "assistant"
-    assert msg["content_hash"] == "msg-new"
 
 
 async def test_ingest_updates_fields_without_hash_changes(
     workspace_env: dict[str, Path],
-    storage_repository: ConversationRepository,
+    storage_repository: SessionRepository,
 ) -> None:
-    """Conversation record fields (title, updated_at, provider_meta) should
+    """Session record fields (title, updated_at, provider_meta) should
     update via UPSERT even when the content_hash is unchanged.
 
     Note: message-level updates require content_hash to change (since unchanged
     content_hash means the save path correctly skips heavy message re-processing).
-    This test now uses different content_hashes for the conversation to reflect
+    This test now uses different content_hashes for the session to reflect
     realistic behavior — content_hash includes message content.
     """
-    base_conversation = make_conversation(
+    base_session = make_session(
         "conv-hash-stable",
         source_name="codex",
         title="Original",
         updated_at="2026-04-02T00:00:01+00:00",
         content_hash="hash-v1",
-        provider_meta={"source": "inbox"},
     )
     base_message = make_message("msg-stable", "conv-hash-stable", text="hello", content_hash="msg-v1")
-    await save_bundle(
-        RecordBundle(conversation=base_conversation, messages=[base_message], attachments=[]),
-        repository=storage_repository,
+    await save_current_archive_records(
+        storage_repository,
+        session=base_session,
+        messages=[base_message],
+        attachments=[],
     )
 
-    updated = RecordBundle(
-        conversation=make_conversation(
+    await save_current_archive_records(
+        storage_repository,
+        session=make_session(
             "conv-hash-stable",
             source_name="codex",
             title="Updated title",
             updated_at="2026-04-02T00:00:02+00:00",
             content_hash="hash-v2",
-            provider_meta={"source": "inbox", "updated": True},
+            git_branch="current",
+            working_directories_json=dumps(["/tmp/current"]),
         ),
         messages=[
             make_message("msg-stable", "conv-hash-stable", role="assistant", text="hello", content_hash="msg-v2")
         ],
         attachments=[],
     )
-    await save_bundle(updated, repository=storage_repository)
 
+    session_id = _record_session_id("codex", "conv-hash-stable")
     with open_connection(None) as conn:
         convo = conn.execute(
-            "SELECT title, updated_at, provider_meta FROM conversations WHERE conversation_id = ?",
-            ("conv-hash-stable",),
+            "SELECT title, updated_at_ms, git_branch FROM sessions WHERE session_id = ?",
+            (session_id,),
         ).fetchone()
+        working_dirs = conn.execute(
+            "SELECT path FROM session_working_dirs WHERE session_id = ?",
+            (session_id,),
+        ).fetchall()
         msg = conn.execute(
-            "SELECT role, content_hash FROM messages WHERE message_id = ?",
-            ("msg-stable",),
+            "SELECT role FROM messages WHERE session_id = ? ORDER BY position",
+            (session_id,),
         ).fetchone()
     assert convo["title"] == "Updated title"
-    assert convo["updated_at"] == "2026-04-02T00:00:02+00:00"
-    convo_meta = json.loads(convo["provider_meta"])
-    assert convo_meta["updated"] is True
+    assert convo["updated_at_ms"] == 1_775_088_002_000
+    assert convo["git_branch"] == "current"
+    assert [row["path"] for row in working_dirs] == ["/tmp/current"]
     assert msg["role"] == "assistant"
-    assert msg["content_hash"] == "msg-v2"
 
 
 async def test_ingest_removes_missing_attachments(
     workspace_env: dict[str, Path],
-    storage_repository: ConversationRepository,
+    storage_repository: SessionRepository,
 ) -> None:
-    bundle = RecordBundle(
-        conversation=_conversation_record(),
+    await save_current_archive_records(
+        storage_repository,
+        session=_session_record(),
         messages=[make_message("msg:att", "conv:hash", text="hello", content_hash="msg:att")],
         attachments=[make_attachment("att-old", "conv:hash", "msg:att", mime_type="text/plain", size_bytes=10)],
     )
-    await save_bundle(bundle, repository=storage_repository)
 
-    await save_bundle(
-        RecordBundle(
-            conversation=_conversation_record(),
-            messages=[make_message("msg:att", "conv:hash", text="hello", content_hash="msg:att")],
-            attachments=[],
-        ),
-        repository=storage_repository,
+    await save_current_archive_records(
+        storage_repository,
+        session=_session_record(),
+        messages=[make_message("msg:att", "conv:hash", text="hello", content_hash="msg:att")],
+        attachments=[],
     )
 
     with open_connection(None) as conn:
         attachment_count = conn.execute("SELECT COUNT(*) FROM attachments").fetchone()[0]
+        attachment_ref_count = conn.execute("SELECT COALESCE(SUM(ref_count), 0) FROM attachments").fetchone()[0]
         ref_count = conn.execute("SELECT COUNT(*) FROM attachment_refs").fetchone()[0]
-    assert attachment_count == 0
+    assert attachment_count == 1
+    assert attachment_ref_count == 0
     assert ref_count == 0
 
 

@@ -1,7 +1,7 @@
 """Search result caching for improved query performance.
 
 This module provides an LRU cache for search results that can be invalidated
-when conversations are re-parsed or modified.
+when sessions are re-parsed or modified.
 """
 
 from __future__ import annotations
@@ -70,7 +70,7 @@ class SearchCacheKey:
 def invalidate_search_cache() -> None:
     """Invalidate the entire search cache.
 
-    Call this when conversations are re-parsed or modified to ensure
+    Call this when sessions are re-parsed or modified to ensure
     fresh results on the next search.
 
     This is thread-safe and uses a version counter to invalidate all

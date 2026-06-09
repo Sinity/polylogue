@@ -12,80 +12,84 @@ re-deriving the comparison logic. See ``polylogue/insights/provenance.py``.
 
 from __future__ import annotations
 
+import asyncio
+import sqlite3
 from collections.abc import Mapping
+from contextlib import closing
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 from polylogue.insights.provenance import HasProvenance, is_stale
-from tests.infra.storage_records import ConversationBuilder, db_setup
+from tests.infra.storage_records import SessionBuilder, db_setup
+
+
+def _open_archive(db_path: Path) -> sqlite3.Connection:
+    """Raw read connection to the index.db (bypasses v22 guard)."""
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
 @pytest.fixture()
 def provenance_db(workspace_env: Mapping[str, Path]) -> Path:
     """Build a small archive and materialize session insights against it."""
     db_path = db_setup(workspace_env)
-    ConversationBuilder(db_path, "prov-1").provider("chatgpt").title("alpha").add_message(
+    SessionBuilder(db_path, "prov-1").provider("chatgpt").title("alpha").add_message(
         role="user", text="hello"
     ).add_message(role="assistant", text="hi").save()
-    ConversationBuilder(db_path, "prov-2").provider("claude-code").title("beta").add_message(
+    SessionBuilder(db_path, "prov-2").provider("claude-code").title("beta").add_message(
         role="user", text="please refactor"
     ).add_message(role="assistant", text="ok").add_message(role="user", text="thanks").save()
 
-    from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
-    from polylogue.storage.sqlite.connection import open_connection
+    from polylogue.api import Polylogue
 
-    with open_connection(db_path) as conn:
-        rebuild_session_insights_sync(conn)
-        conn.commit()
+    async def _rebuild() -> None:
+        archive = Polylogue(archive_root=db_path.parent, db_path=db_path)
+        try:
+            await archive.rebuild_insights()
+        finally:
+            await archive.close()
+
+    asyncio.run(_rebuild())
     return db_path
 
 
 class TestProfileProvenance:
     def test_profile_has_materialized_at_and_input_provenance(self, provenance_db: Path) -> None:
-        from polylogue.storage.sqlite.connection import open_connection
-
-        with open_connection(provenance_db) as conn:
-            has_profiles = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='session_profiles'"
-            ).fetchone()
-            if has_profiles is None:
-                pytest.skip("session_profiles table not present")
+        # Native provenance lives in insight_materialization, keyed by
+        # (insight_type, session_id); the per-session input_row_count for a
+        # session_profile must equal the session's message_count.
+        with closing(_open_archive(provenance_db)) as conn:
             rows = conn.execute(
                 """
-                SELECT conversation_id, materialized_at, input_high_water_mark,
-                       input_row_count, message_count
-                FROM session_profiles
-                ORDER BY conversation_id
+                SELECT im.session_id, im.materialized_at_ms, im.input_high_water_mark_ms,
+                       im.input_row_count, s.message_count
+                FROM insight_materialization im
+                JOIN sessions s ON s.session_id = im.session_id
+                WHERE im.insight_type = 'session_profile'
+                ORDER BY im.session_id
                 """
             ).fetchall()
-        assert rows, "expected materialized session_profiles rows"
+        assert rows, "expected materialized session_profile provenance rows"
         for row in rows:
-            assert row["materialized_at"], f"missing materialized_at for {row['conversation_id']}"
-            # input_row_count must equal message_count for per-conversation profile
+            assert row["materialized_at_ms"], f"missing materialized_at for {row['session_id']}"
             assert int(row["input_row_count"]) == int(row["message_count"]), (
-                f"input_row_count must match message_count for {row['conversation_id']}; "
+                f"input_row_count must match message_count for {row['session_id']}; "
                 f"got input_row_count={row['input_row_count']} message_count={row['message_count']}"
             )
 
-    def test_profile_provenance_round_trips_via_record(self, provenance_db: Path) -> None:
-        from polylogue.storage.sqlite.connection import open_connection
-        from polylogue.storage.sqlite.queries.mappers_insight_profiles import (
-            _row_to_session_profile_record,
-        )
+    def test_profile_provenance_round_trips_via_archive(self, provenance_db: Path) -> None:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-        with open_connection(provenance_db) as conn:
-            has_profiles = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='session_profiles'"
-            ).fetchone()
-            if has_profiles is None:
-                pytest.skip("session_profiles table not present")
-            row = conn.execute("SELECT * FROM session_profiles LIMIT 1").fetchone()
-        assert row is not None
-        record = _row_to_session_profile_record(row)
-        assert record.materialized_at
-        assert record.input_row_count == record.message_count
+        with ArchiveStore.open_existing(provenance_db.parent) as archive:
+            profiles = archive.list_session_profile_insights(tier="merged")
+        assert profiles, "expected at least one materialized profile"
+        for profile in profiles:
+            assert profile.provenance.materialized_at
+            # The profile provenance must record the source it folded in.
+            assert profile.provenance.materializer_version >= 0
 
 
 class TestStalenessDetection:
@@ -144,15 +148,22 @@ class TestStalenessDetection:
 
 
 class TestAggregateProvenance:
-    def test_tag_rollup_input_row_count_matches_conversation_count(self, provenance_db: Path) -> None:
-        from polylogue.storage.sqlite.connection import open_connection
+    def test_tag_rollup_session_count_matches_tagged_sessions(self, provenance_db: Path) -> None:
+        # The archive tag rollup is a computed read model rather than a
+        # materialized table with a separate input_row_count column. The
+        # agreement law is therefore that the rollup's session_count
+        # equals the number of sessions actually carrying that tag.
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-        with open_connection(provenance_db) as conn:
-            has_tags = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='session_tag_rollups'"
-            ).fetchone()
-            if has_tags is None:
-                pytest.skip("session_tag_rollups table not present")
-            rows = conn.execute("SELECT input_row_count, conversation_count FROM session_tag_rollups").fetchall()
-        for row in rows:
-            assert int(row["input_row_count"]) == int(row["conversation_count"])
+        with ArchiveStore.open_existing(provenance_db.parent) as archive:
+            rollups = archive.list_session_tag_rollup_insights()
+
+        with closing(_open_archive(provenance_db)) as conn:
+            for rollup in rollups:
+                actual = conn.execute(
+                    "SELECT COUNT(DISTINCT session_id) FROM session_tags WHERE tag = ?",
+                    (rollup.tag,),
+                ).fetchone()[0]
+                assert int(rollup.session_count) == int(actual), (
+                    f"tag {rollup.tag!r}: rollup session_count={rollup.session_count} != tagged session count={actual}"
+                )

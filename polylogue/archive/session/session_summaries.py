@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 
-from polylogue.archive.conversation.repo_identity import normalize_repo_names
+from polylogue.archive.session.repo_identity import normalize_repo_names
 from polylogue.archive.session.session_profile import SessionProfile
 
 
@@ -16,7 +16,7 @@ class DaySessionSummary:
     date: date
     session_count: int
     logical_session_count: int
-    logical_conversation_ids: tuple[str, ...]
+    logical_session_ids: tuple[str, ...]
     total_cost_usd: float
     total_duration_ms: int
     total_tool_active_duration_ms: int
@@ -91,9 +91,9 @@ def summarize_day(
     total_messages = 0
     total_words = 0
     logical_ids = {
-        profile.logical_conversation_id or profile.conversation_id
+        profile.logical_session_id or profile.session_id
         for profile in profiles
-        if (profile.logical_conversation_id or profile.conversation_id)
+        if (profile.logical_session_id or profile.session_id)
     }
     for profile in profiles:
         total_cost += profile.total_cost_usd
@@ -102,7 +102,7 @@ def summarize_day(
         total_wall += profile.wall_duration_ms
         total_messages += profile.message_count
         total_words += profile.word_count
-        providers[profile.provider] += 1
+        providers[profile.origin] += 1
         work_events.update(
             event.heuristic_label.value if hasattr(event.heuristic_label, "value") else str(event.heuristic_label)
             for event in profile.work_events
@@ -112,7 +112,7 @@ def summarize_day(
         date=target_date,
         session_count=len(profiles),
         logical_session_count=len(logical_ids),
-        logical_conversation_ids=tuple(sorted(logical_ids)),
+        logical_session_ids=tuple(sorted(logical_ids)),
         total_cost_usd=total_cost,
         total_duration_ms=total_duration,
         total_tool_active_duration_ms=total_tool_active,
@@ -144,7 +144,7 @@ def summarize_week(day_summaries: Sequence[DaySessionSummary]) -> WeekSessionSum
         day_summaries=tuple(day_summaries),
         session_count=sum(day.session_count for day in day_summaries),
         logical_session_count=len(
-            {logical_id for day in day_summaries for logical_id in day.logical_conversation_ids if logical_id}
+            {logical_id for day in day_summaries for logical_id in day.logical_session_ids if logical_id}
         ),
         total_cost_usd=sum(day.total_cost_usd for day in day_summaries),
         total_duration_ms=sum(day.total_duration_ms for day in day_summaries),

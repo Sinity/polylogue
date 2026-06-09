@@ -18,24 +18,24 @@ Classify every schema field, `provider_meta` key, insight projection, and storag
 
 ---
 
-## 1. Conversation Table (`conversations`)
+## 1. Session Table (`sessions`)
 
 ### A1 — Already canonical
 
 | Field | Rationale |
 |-------|-----------|
-| `conversation_id` | Primary key. |
+| `session_id` | Primary key. |
 | `provider_name` | Provider enum string. Universal. |
-| `provider_conversation_id` | Native ID within provider. |
+| `provider_session_id` | Native ID within provider. |
 | `title` | Canonical title. |
 | `created_at`, `updated_at` | Timestamps. Universal. |
 | `sort_key` | Numeric sort key for ordering. |
 | `content_hash` | SHA-256 for idempotent write. |
 | `metadata` | User-editable metadata (tags, summaries). Excluded from content hash. |
 | `version` | Schema version tag. |
-| `parent_conversation_id` | Continuation/sidechain/subagent parent ref. |
+| `parent_session_id` | Continuation/sidechain/subagent parent ref. |
 | `branch_type` | Enum: continuation, sidechain, fork, subagent. |
-| `raw_id` | FK to `raw_conversations`. |
+| `raw_id` | FK to `raw_sessions`. |
 
 ### A4 — Accidental provider leakage
 
@@ -47,13 +47,13 @@ Classify every schema field, `provider_meta` key, insight projection, and storag
 
 | Key | Source parser(s) | Consumer(s) | Rationale | Issue |
 |-----|------------------|-------------|-----------|-------|
-| `source` | Injected by `_merged_conversation_provider_meta()` in `materialization_runtime.py:150` and `prepare_enrichment.py:58` | `source_name` generated column, CLI source selection | Universal: every conversation has a source. Currently forced through provider_meta | [#864](https://github.com/Sinity/polylogue/issues/864) |
+| `source` | Injected by `_merged_session_provider_meta()` in `materialization_runtime.py:150` and `prepare_enrichment.py:58` | `source_name` generated column, CLI source selection | Universal: every session has a source. Currently forced through provider_meta | [#864](https://github.com/Sinity/polylogue/issues/864) |
 | `cwd` | Not set by current parsers directly | `rebuild.py:107` via `json_extract(provider_meta, '$.cwd')`; `attribution.py:188` | Session working directory is a universal context fact. May be present from legacy data or specific providers. Read by insight rebuild. | [#864](https://github.com/Sinity/polylogue/issues/864) |
 | `gitBranch` | Not set by current parsers | `rebuild.py:108` via `json_extract(provider_meta, '$.gitBranch')`; `attribution.py:199` | Git branch is universal session context. Same path as `cwd`. | [#864](https://github.com/Sinity/polylogue/issues/864) |
 | `git` | Codex parser (`codex.py:443`): `{"repository_url": ..., "branch": ...}` | `rebuild.py:109` via `json_extract(provider_meta, '$.git')`; `attribution.py:203` | Git context is universal session metadata. | [#864](https://github.com/Sinity/polylogue/issues/864) |
-| `working_directories` | Claude Code (`code_parser.py:251`), Codex (`codex.py:447`) | `attribution.py:192`; capability docs reference `Conversation.provider_meta.working_directories` | Working directories are universal session context. Currently a list of strings in provider_meta. | [#864](https://github.com/Sinity/polylogue/issues/864) |
-| `total_cost_usd` | Claude Code (`code_parser.py:247`) | `ConversationRuntimeMixin.total_cost_usd` (fallback); pricing code | Cost is a universal archive fact but currently parsed ad-hoc from provider_meta. | [#803](https://github.com/Sinity/polylogue/issues/803) |
-| `total_duration_ms` | Claude Code (`code_parser.py:249`) | `ConversationRuntimeMixin.total_duration_ms` (fallback) | Duration is a universal archive fact. | [#803](https://github.com/Sinity/polylogue/issues/803) |
+| `working_directories` | Claude Code (`code_parser.py:251`), Codex (`codex.py:447`) | `attribution.py:192`; capability docs reference `Session.provider_meta.working_directories` | Working directories are universal session context. Currently a list of strings in provider_meta. | [#864](https://github.com/Sinity/polylogue/issues/864) |
+| `total_cost_usd` | Claude Code (`code_parser.py:247`) | `SessionRuntimeMixin.total_cost_usd` (fallback); pricing code | Cost is a universal archive fact but currently parsed ad-hoc from provider_meta. | [#803](https://github.com/Sinity/polylogue/issues/803) |
+| `total_duration_ms` | Claude Code (`code_parser.py:249`) | `SessionRuntimeMixin.total_duration_ms` (fallback) | Duration is a universal archive fact. | [#803](https://github.com/Sinity/polylogue/issues/803) |
 | `models_used` | Claude Code (`code_parser.py:253`) | Capability docs only | Model metadata is universal but currently only captured for Claude Code. | [#803](https://github.com/Sinity/polylogue/issues/803) |
 
 ### A3 — Provider-specific (OK to stay in provider_meta)
@@ -65,7 +65,7 @@ Classify every schema field, `provider_meta` key, insight projection, and storag
 | `is_archived` | ChatGPT (`chatgpt.py:209`) | Provider UI state flag. |
 | `title_source` | Drive/Gemini (`drive.py:226`) | Hint about where title was derived from. Provider-specific. |
 | `instructions` | Codex (`codex.py:445`) | Native Codex session instructions. Provider-specific text. |
-| `display_label` | Various (read in `ConversationRuntimeMixin.display_title`) | Provider display hint, used only as fallback label. |
+| `display_label` | Various (read in `SessionRuntimeMixin.display_title`) | Provider display hint, used only as fallback label. |
 | `session` / `capture` | Browser capture (`browser_capture.py:24-27`) | Raw capture metadata. Provider-specific. |
 
 ---
@@ -77,7 +77,7 @@ Classify every schema field, `provider_meta` key, insight projection, and storag
 | Field | Rationale |
 |-------|-----------|
 | `message_id` | Primary key. |
-| `conversation_id` | FK to conversations. |
+| `session_id` | FK to sessions. |
 | `provider_message_id` | Native message ID within provider. |
 | `role` | Normalized role string. |
 | `text` | Canonical message text. FTS-indexed. |
@@ -109,7 +109,7 @@ The `messages` table intentionally does NOT have a `provider_meta` column. Messa
 
 | Content | Rationale |
 |---------|-----------|
-| `ParsedMessage.provider_meta["raw"]` (entire provider-native message dict) | Parser artifact used during materialization. Not persisted in archive messages. The complete wire payload is preserved in `raw_conversations`. |
+| `ParsedMessage.provider_meta["raw"]` (entire provider-native message dict) | Parser artifact used during materialization. Not persisted in archive messages. The complete wire payload is preserved in `raw_sessions`. |
 
 ---
 
@@ -120,7 +120,7 @@ The `messages` table intentionally does NOT have a `provider_meta` column. Messa
 | Field | Rationale |
 |-------|-----------|
 | `block_id` | Primary key. |
-| `message_id`, `conversation_id` | FKs. |
+| `message_id`, `session_id` | FKs. |
 | `block_index` | Position within message. |
 | `type` | Content block type (text, tool_use, tool_result, thinking, image, code). |
 | `text` | Block text content. |
@@ -133,21 +133,25 @@ All fields are canonical and properly modeled. No provider_meta column — this 
 
 ---
 
-## 4. Action Events (`action_events`)
+## 4. Actions (`actions`)
 
 ### A1 — Already canonical
 
-All fields are universal action semantics: `event_id`, `conversation_id`, `message_id`, `source_block_id`, `timestamp`, `sort_key`, `sequence_index`, `provider_name`, `action_kind`, `tool_name`, `normalized_tool_name`, `tool_id`, `affected_paths_json`, `cwd_path`, `branch_names_json`, `command`, `query_text`, `url`, `output_text`, `search_text`.
+`actions` is a view over `blocks`, keyed by the tool-use block and paired
+with the matching tool-result block through `tool_id`. Its fields are current
+action semantics: `session_id`, `message_id`, `tool_use_block_id`,
+`tool_name`, `semantic_type`, `tool_command`, `tool_path`, `tool_input`,
+`output_text`, and `tool_result_block_id`.
 
-The table correctly models working directory (`cwd_path`) and branch names (`branch_names_json`) as first-class columns — these are the same semantics that remain trapped in conversation `provider_meta` for non-action-event contexts.
+The table correctly models working directory (`cwd_path`) and branch names (`branch_names_json`) as first-class columns — these are the same semantics that remain trapped in session `provider_meta` for non-action contexts.
 
 ---
 
-## 5. Provider Events (`provider_events`)
+## 5. Provider Events (`session_events`)
 
 ### A1 — Already canonical
 
-`event_id`, `conversation_id`, `provider_name`, `event_index`, `event_type`, `timestamp`, `sort_key`, `payload_json`, `materializer_version`.
+`event_id`, `session_id`, `provider_name`, `event_index`, `event_type`, `timestamp`, `sort_key`, `payload_json`, `materializer_version`.
 
 ### A4 — Columns that may not be consistently populated
 
@@ -169,7 +173,7 @@ Decision: These columns are useful provenance when available but their nullable 
 | `attachment_id` | Primary key. |
 | `mime_type`, `size_bytes`, `path` | Universal attachment facts. |
 | `ref_count` | Reference counting for GC. |
-| `ref_id`, `attachment_id`, `conversation_id`, `message_id` (attachment_refs) | Relationship linking. |
+| `ref_id`, `attachment_id`, `session_id`, `message_id` (attachment_refs) | Relationship linking. |
 | `provider_attachment_id`, `provider_file_id`, `provider_drive_id` | First-class native identifier columns on both `attachments` and `attachment_refs`. Lookup queries resolve against these stored TEXT columns; no `json_extract` on the hot path. Landed by [#1252](https://github.com/Sinity/polylogue/issues/1252) (#864 slice B). |
 | `upload_origin` | Closed vocabulary classification of how the attachment entered the archive (`drive` / `paste` / `url` / `oauth`, or NULL). Indexed via `idx_attachment_refs_upload_origin` for the attachment-library UI ([#1199](https://github.com/Sinity/polylogue/issues/1199)) grouping. Landed by [#1252](https://github.com/Sinity/polylogue/issues/1252). |
 
@@ -183,11 +187,11 @@ The `provider_meta` column on attachments correctly holds provider-specific meta
 
 ---
 
-## 7. Conversation Stats (`conversation_stats`)
+## 7. Session Stats (`session_stats`)
 
 ### A1 — Already canonical
 
-`conversation_id`, `provider_name`, `message_count`, `word_count`, `tool_use_count`, `thinking_count`, `paste_count`. All are precomputed aggregate facts. Clean.
+`session_id`, `provider_name`, `message_count`, `word_count`, `tool_use_count`, `thinking_count`, `paste_count`. All are precomputed aggregate facts. Clean.
 
 ---
 
@@ -197,7 +201,7 @@ The `provider_meta` column on attachments correctly holds provider-specific meta
 
 #### A1 — Already canonical
 
-First-class columns: `conversation_id`, `provider_name`, `title`, `first_message_at`, `last_message_at`, `canonical_session_date`, `repo_paths_json`, `repo_names_json`, `tags_json`, `auto_tags_json`, `message_count`, `substantive_count`, `attachment_count`, `work_event_count`, `phase_count`, `word_count`, `tool_use_count`, `thinking_count`, `total_cost_usd`, `total_duration_ms`, `engaged_duration_ms`, `tool_active_duration_ms`, `wall_duration_ms`, `cost_is_estimated`.
+First-class columns: `session_id`, `provider_name`, `title`, `first_message_at`, `last_message_at`, `canonical_session_date`, `repo_paths_json`, `repo_names_json`, `tags_json`, `auto_tags_json`, `message_count`, `substantive_count`, `attachment_count`, `work_event_count`, `phase_count`, `word_count`, `tool_use_count`, `thinking_count`, `total_cost_usd`, `total_duration_ms`, `engaged_duration_ms`, `tool_active_duration_ms`, `wall_duration_ms`, `cost_is_estimated`.
 
 Typed payload fields: `evidence_payload_json`, `inference_payload_json`, `enrichment_payload_json` with corresponding `*_search_text` and version/family fields.
 
@@ -205,9 +209,9 @@ The table **properly** has `total_cost_usd`, `total_duration_ms`, `tool_active_d
 
 #### A2 — Trapped universal (derivation path)
 
-The insight rebuild SQL (`rebuild.py:107-109`) extracts `cwd`, `gitBranch`, `git` from `provider_meta` via `json_extract()` to pass through to `ConversationRecord.provider_meta`, which then feeds into attribution and profile building. These three keys represent the only `provider_meta` dependency in the insight rebuild path, and they are used to build: `cwd_paths`, `branch_names`, `repo_paths`, `repo_names`.
+The insight rebuild SQL (`rebuild.py:107-109`) extracts `cwd`, `gitBranch`, `git` from `provider_meta` via `json_extract()` to pass through to `SessionRecord.provider_meta`, which then feeds into attribution and profile building. These three keys represent the only `provider_meta` dependency in the insight rebuild path, and they are used to build: `cwd_paths`, `branch_names`, `repo_paths`, `repo_names`.
 
-**All four of these insight fields already have first-class columns** in `session_profiles` (`repo_paths_json`, `repo_names_json`) and `action_events` (`cwd_path`, `branch_names_json`). The `provider_meta` extraction is a **legacy bootstrapping path** for conversations that pre-date action_events. Owned by [#864](https://github.com/Sinity/polylogue/issues/864).
+**All four of these insight fields already have first-class columns** in `session_profiles` (`repo_paths_json`, `repo_names_json`) and `actions` (`cwd_path`, `branch_names_json`). The `provider_meta` extraction is a **legacy bootstrapping path** for sessions that pre-date actions. Owned by [#864](https://github.com/Sinity/polylogue/issues/864).
 
 ### 8.2 `session_work_events`, `session_phases`
 
@@ -229,7 +233,7 @@ Clean. No `provider_meta` or legacy payload issues.
 
 ## 9. Raw/Provenance Tables
 
-### 9.1 `raw_conversations`
+### 9.1 `raw_sessions`
 
 All fields are raw provenance. `provider_name`, `payload_provider`, `source_name`, `source_path` are properly first-class. No provider_meta column. Clean.
 
@@ -257,12 +261,11 @@ Adding or renaming a column requires synchronized changes across all 5.
 
 | Table | DDL | Record | Mapper | Tuple | SQL |
 |-------|-----|--------|--------|-------|-----|
-| conversations | `schema_ddl_archive.py:45` | `archive/records.py:39` | `mappers_archive.py:41` | `ingest_worker.py:783` | `common.py:22` |
-| messages | `schema_ddl_archive.py:78` | `archive/records.py:103` | `mappers_archive.py:64` | `ingest_worker.py:802` | `common.py:52` |
-| content_blocks | `schema_ddl_archive.py:117` | `archive/records.py:72` | `mappers_archive.py:88` | `ingest_worker.py:827` | `common.py:85` |
-| action_events | `schema_ddl_actions.py:5` | `action/records.py:11` | `mappers_archive.py:169` | `ingest_worker.py:1008+` | `common.py:115` |
-| provider_events | `schema_ddl_provider_events.py:5` | `archive/records.py:186` | `mappers_archive.py:195` | `ingest_worker.py:893` | `common.py:125` |
-| attachments | `schema_ddl_archive.py:181` | `archive/records.py:150` | (inline in rebuild.py) | `ingest_worker.py:916` | `common.py:133` |
+| sessions | `archive_tiers/index.py` | `sources/parsers/base.py` | `queries/mappers_archive.py` | `archive_tiers/write.py` | `archive_tiers/write.py` |
+| messages | `archive_tiers/index.py` | `sources/parsers/base.py` | `queries/mappers_archive.py` | `archive_tiers/write.py` | `archive_tiers/write.py` |
+| blocks | `archive_tiers/index.py` | `sources/parsers/base.py` | `queries/attachment_content_blocks.py` | `archive_tiers/write.py` | `archive_tiers/write.py` |
+| actions view | `archive_tiers/index.py` | derived from `blocks` | `queries/tool_usage.py` | derived from `blocks` | `archive_tiers/index.py` |
+| attachments | `archive_tiers/index.py` | `sources/parsers/base.py` | `queries/attachment_records.py` | `archive_tiers/write.py` | `archive_tiers/write.py` |
 
 ### Assessment
 
@@ -275,15 +278,15 @@ A full ORM is the wrong abstraction for this archive (SQLite/FTS/generated colum
 
 ### Recommendation
 
-Do not pursue a table descriptor layer until at least one schema column promotion/migration has been painful enough to demonstrate the concrete value. Track this as a decision, not an implementation issue. The repetition is a **smell**, not an active bug.
+Do not pursue a table descriptor layer until at least one schema column promotion has been painful enough to demonstrate the concrete value. Track this as a decision, not an implementation issue. The repetition is a **smell**, not an active bug.
 
 ---
 
 ## 11. Cross-Cutting: `provider_meta` in Domain Models
 
-### Conversation domain model
+### Session domain model
 
-`Conversation.provider_meta: dict[str, object] | None` — this is the canonical interface. Readers access it for:
+`Session.provider_meta: dict[str, object] | None` — this is the canonical interface. Readers access it for:
 - Attribution (cwd, gitBranch, git, working_directories)
 - Cost/duration fallback
 - Display label
@@ -343,23 +346,23 @@ Tracked in [#864](https://github.com/Sinity/polylogue/issues/864) (shrink after 
 | Browser capture `session`/`capture` metadata | Provider-specific | Intentional |
 | `display_label` fallback | Provider-specific | Intentional |
 | `is_archived` (ChatGPT UI state) | Provider-specific | Intentional |
-| `provider_events.source_message_id` / `raw_id` | Optional provenance | Intentional |
+| `session_events.source_message_id` / `raw_id` | Optional provenance | Intentional |
 | `work_threads.payload_json` (legacy single payload) | Legacy, intentional | None (revisit if thread search needs split) |
 | Mapper/tuple/DDL repetition (table descriptor) | Decision deferred | This issue (#840) |
 
 ## Provider-Meta Allowlist (#864)
 
-After schema v10 promotion, the following classification applies to all `provider_meta` keys:
+After archive0 promotion, the following classification applies to all `provider_meta` keys:
 
 ### Promoted to canonical columns
 | Key | Canonical column | Status |
 |-----|-----------------|--------|
-| `source` | `conversations.source_name` | ✓ Populated during materialization (#884, #909) |
-| `working_directories` | `conversations.working_directories_json` | ✓ Populated + backfill migration (#909, #925) |
-| `cwd` | `conversations.working_directories_json` | ✓ Populated (single-element array) |
-| `gitBranch` | `conversations.git_branch` | ✓ Column exists, needs backfill |
-| `git.repository_url` | `conversations.git_repository_url` | ✓ Column exists, needs backfill |
-| `git.branch` | `conversations.git_branch` | ✓ Column exists, needs backfill |
+| `source` | `sessions.source_name` | ✓ Populated during materialization (#884, #909) |
+| `working_directories` | `sessions.working_directories_json` | ✓ Populated + backfill (#909, #925) |
+| `cwd` | `sessions.working_directories_json` | ✓ Populated (single-element array) |
+| `gitBranch` | `sessions.git_branch` | ✓ Column exists, needs backfill |
+| `git.repository_url` | `sessions.git_repository_url` | ✓ Column exists, needs backfill |
+| `git.branch` | `sessions.git_branch` | ✓ Column exists, needs backfill |
 | `id` (attachments) | `attachments.provider_attachment_id` | ✓ Populated during materialization |
 | `provider_id` (attachments) | `attachments.provider_file_id` | ✓ Populated during materialization |
 | `fileId` (attachments) | `attachments.provider_file_id` | ✓ Populated during materialization |
@@ -370,23 +373,23 @@ After schema v10 promotion, the following classification applies to all `provide
 - `moderation`, `safe_urls`, `blocked_urls`, `internal_status_flags`
 - Browser capture `session`/`capture` metadata
 
-### Raw-only (exist in raw_conversations, not needed in canonical tables)
-- `raw` — full wire payload, preserved in raw_conversations + blob store
+### Raw-only (exist in raw_sessions, not needed in canonical tables)
+- `raw` — full wire payload, preserved in raw_sessions + blob store
 
 ### Parser-side typed surface (in flight, #864)
 
-`ParsedConversation` now exposes typed `working_directories`, `git_branch`,
+`ParsedSession` now exposes typed `working_directories`, `git_branch`,
 and `git_repository_url` fields populated by the Claude Code, Codex, and
 Claude session-index parsers in addition to the legacy `provider_meta`
 entries. Storage writes, attribution
-(`polylogue/archive/conversation/attribution.py`), and insight rebuild
+(`polylogue/archive/session/attribution.py`), and insight rebuild
 (`polylogue/storage/insights/session/rebuild.py`) still read from
 `provider_meta` for these fields; switching those readers to the typed
-parser surface and the matching `ConversationRecord`/canonical columns is
+parser surface and the matching `SessionRecord`/canonical columns is
 the next graduation step under #864.
 
 ### Deferred to owning issues
 - Model/token/cost/duration → #803
 - ChatGPT message-level metadata → promoted to content_block metadata (#842)
-- Action event cwd/branch/path context → #866 (lineage graph)
+- Action cwd/branch/path context → #866 (lineage graph)
 | Full ORM adoption | Rejected | This issue (#840) |

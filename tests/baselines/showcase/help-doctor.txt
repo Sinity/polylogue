@@ -3,18 +3,19 @@ Usage: polylogue doctor [OPTIONS]
   Health check with optional maintenance and cleanup previews.
 
 Options:
-  --format [json]                 Output format
+  -f, --format [json]             Output format
   -v, --verbose                   Show breakdown by provider
   --repair                        Run safe derived-data and database
                                   maintenance repairs
   --cleanup                       Run destructive archive cleanup for orphaned
                                   or empty persisted data
-  --target [session_insights|action_event_read_model|dangling_fts|wal_checkpoint|orphaned_messages|orphaned_content_blocks|empty_conversations|orphaned_attachments]
+  --target [session_insights|dangling_fts|message_type_backfill|message_embeddings|wal_checkpoint|orphaned_messages|empty_sessions|orphaned_attachments|orphaned_blobs|superseded_raw_snapshots]
                                   Limit maintenance to named targets such as
-                                  session_insights, action_event_read_model,
-                                  dangling_fts, wal_checkpoint,
-                                  orphaned_messages, orphaned_content_blocks,
-                                  empty_conversations, or orphaned_attachments
+                                  session_insights, dangling_fts,
+                                  message_type_backfill, message_embeddings,
+                                  wal_checkpoint, orphaned_messages,
+                                  empty_sessions, orphaned_attachments,
+                                  orphaned_blobs, or superseded_raw_snapshots
   --preview                       Preview maintenance without executing
                                   (requires --repair or --cleanup)
   --vacuum                        Reclaim unused space after maintenance
@@ -24,8 +25,10 @@ Options:
   --runtime                       Run environment and runtime verification
                                   checks
   --daemon                        Show daemon component status
-  --blob                          Verify blob store integrity
-                                  (missing/orphaned blobs)
+  --blob, --blob-integrity        Verify blob store integrity (missing,
+                                  orphaned, corrupt, and stale-lease blobs)
+  --full                          Run full blob-integrity scan (requires
+                                  --blob)
   --schemas                       Run raw-corpus schema verification (non-
                                   mutating)
   --proof                         Run durable artifact support proof

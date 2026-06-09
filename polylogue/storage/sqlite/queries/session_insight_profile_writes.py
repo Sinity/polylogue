@@ -40,20 +40,20 @@ __all__ = [
 
 async def replace_session_profiles_bulk(
     conn: aiosqlite.Connection,
-    conversation_ids: Sequence[str],
+    session_ids: Sequence[str],
     records: Sequence[SessionProfileRecord],
     transaction_depth: int,
 ) -> None:
-    has_legacy_payload = await _table_has_column(conn, "session_profiles", "payload_json") if records else False
-    columns = session_profile_insert_columns(has_legacy_payload=has_legacy_payload)
+    has_fallback_payload = await _table_has_column(conn, "session_profiles", "payload_json") if records else False
+    columns = session_profile_insert_columns(has_fallback_payload=has_fallback_payload)
     await replace_insight_rows(
         conn,
         table="session_profiles",
-        id_column="conversation_id",
-        id_values=conversation_ids,
+        id_column="session_id",
+        id_values=session_ids,
         columns=columns,
         records=records,
-        extractor=lambda r: session_profile_insert_values(r, has_legacy_payload=has_legacy_payload),
+        extractor=lambda r: session_profile_insert_values(r, has_fallback_payload=has_fallback_payload),
         transaction_depth=transaction_depth,
     )
 
@@ -65,7 +65,7 @@ async def replace_session_profile(
 ) -> None:
     await replace_session_profiles_bulk(
         conn,
-        [record.conversation_id],
+        [record.session_id],
         [record],
         transaction_depth,
     )
@@ -73,15 +73,15 @@ async def replace_session_profile(
 
 async def replace_session_latency_profiles_bulk(
     conn: aiosqlite.Connection,
-    conversation_ids: Sequence[str],
+    session_ids: Sequence[str],
     records: Sequence[SessionLatencyProfileRecord],
     transaction_depth: int,
 ) -> None:
     await replace_insight_rows(
         conn,
         table="session_latency_profiles",
-        id_column="conversation_id",
-        id_values=conversation_ids,
+        id_column="session_id",
+        id_values=session_ids,
         columns=_SESSION_LATENCY_PROFILE_COLUMNS,
         records=records,
         extractor=session_latency_profile_insert_values,
@@ -96,7 +96,7 @@ async def replace_session_latency_profile(
 ) -> None:
     await replace_session_latency_profiles_bulk(
         conn,
-        [record.conversation_id],
+        [record.session_id],
         [record],
         transaction_depth,
     )

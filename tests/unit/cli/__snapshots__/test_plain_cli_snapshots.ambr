@@ -9,14 +9,14 @@
   '''
   {
     "scoped_to_query": false,
-    "providers": {
-      "chatgpt": 2
+    "origins": {
+      "chatgpt-export": 2
     },
     "tags": {},
     "repos": {},
     "cwd_prefixes": {},
     "message_types": {
-      "message": 6
+      "message": 10
     },
     "action_types": {},
     "has_flags": {
@@ -25,16 +25,16 @@
       "has_paste": 0
     },
     "time_range": null,
-    "total_conversations": 2,
-    "total_messages": 6,
+    "total_sessions": 2,
+    "total_messages": 10,
     "scoped": {
-      "providers": {
-        "chatgpt": 2
+      "origins": {
+        "chatgpt-export": 2
       },
       "tags": {},
       "repos": {},
       "message_types": {
-        "message": 6
+        "message": 10
       },
       "action_types": {},
       "has_flags": {
@@ -42,17 +42,17 @@
         "has_thinking": 0,
         "has_paste": 0
       },
-      "total_conversations": 2,
-      "total_messages": 6
+      "total_sessions": 2,
+      "total_messages": 10
     },
     "global": {
-      "providers": {
-        "chatgpt": 2
+      "origins": {
+        "chatgpt-export": 2
       },
       "tags": {},
       "repos": {},
       "message_types": {
-        "message": 6
+        "message": 10
       },
       "action_types": {},
       "has_flags": {
@@ -60,12 +60,12 @@
         "has_thinking": 0,
         "has_paste": 0
       },
-      "total_conversations": 2,
-      "total_messages": 6
+      "total_sessions": 2,
+      "total_messages": 10
     },
     "idf": {
-      "providers": {
-        "chatgpt": 0.0
+      "origins": {
+        "chatgpt-export": 0.0
       },
       "message_types": {
         "message": -1.<HASH>
@@ -80,73 +80,39 @@
   {
     "items": [
       {
-        "id": "chatgpt:402913ec-9ef2-493e-b0ac-<HASH>",
-        "provider": "chatgpt",
-        "title": "corpus-01",
-        "target_ref": {
-          "target_type": "conversation",
-          "target_id": "chatgpt:402913ec-9ef2-493e-b0ac-<HASH>",
-          "conversation_id": "chatgpt:402913ec-9ef2-493e-b0ac-<HASH>",
-          "identity_key": "conversation:chatgpt:402913ec-9ef2-493e-b0ac-<HASH>"
-        },
-        "anchor": "conversation-chatgpt-402913ec-9ef2-493e-b0ac-<HASH>",
-        "actions": {
-          "open": {
-            "enabled": true,
-            "state": "enabled"
-          },
-          "copy_link": {
-            "enabled": true,
-            "state": "enabled"
-          },
-          "annotate": {
-            "enabled": true,
-            "state": "enabled"
-          }
-        },
         "created_at": "<TIMESTAMP>",
+        "id": "chatgpt-export:402913ec-9ef2-493e-b0ac-<HASH>",
+        "message_count": 5,
+        "native_id": "402913ec-9ef2-493e-b0ac-<HASH>",
+        "origin": "chatgpt-export",
+        "session_id": "chatgpt-export:402913ec-9ef2-493e-b0ac-<HASH>",
+        "source": "chatgpt-export",
+        "tags": [],
+        "title": "corpus-01",
         "updated_at": "<TIMESTAMP>",
-        "date": "<TIMESTAMP>",
-        "message_count": 3,
-        "messages": 3,
-        "tags": []
+        "word_count": 90
       },
       {
-        "id": "chatgpt:8a476a87-e49d-481d-91d8-<HASH>",
-        "provider": "chatgpt",
-        "title": "corpus-00",
-        "target_ref": {
-          "target_type": "conversation",
-          "target_id": "chatgpt:8a476a87-e49d-481d-91d8-<HASH>",
-          "conversation_id": "chatgpt:8a476a87-e49d-481d-91d8-<HASH>",
-          "identity_key": "conversation:chatgpt:8a476a87-e49d-481d-91d8-<HASH>"
-        },
-        "anchor": "conversation-chatgpt-8a476a87-e49d-481d-91d8-<HASH>",
-        "actions": {
-          "open": {
-            "enabled": true,
-            "state": "enabled"
-          },
-          "copy_link": {
-            "enabled": true,
-            "state": "enabled"
-          },
-          "annotate": {
-            "enabled": true,
-            "state": "enabled"
-          }
-        },
         "created_at": "<TIMESTAMP>",
+        "id": "chatgpt-export:8a476a87-e49d-481d-91d8-<HASH>",
+        "message_count": 5,
+        "native_id": "8a476a87-e49d-481d-91d8-<HASH>",
+        "origin": "chatgpt-export",
+        "session_id": "chatgpt-export:8a476a87-e49d-481d-91d8-<HASH>",
+        "source": "chatgpt-export",
+        "tags": [],
+        "title": "corpus-00",
         "updated_at": "<TIMESTAMP>",
-        "date": "<TIMESTAMP>",
-        "message_count": 3,
-        "messages": 3,
-        "tags": []
+        "word_count": 164
       }
     ],
-    "total": 2,
-    "limit": 2,
-    "offset": 0
+    "limit": 20,
+    "mode": "list",
+    "next_cursor": null,
+    "next_offset": null,
+    "offset": 0,
+    "origin": null,
+    "total": 2
   }
   
   '''
@@ -154,33 +120,30 @@
 # name: test_json_stats_snapshot
   '''
   {
-    "dimension": "archive",
-    "multi_membership": false,
-    "rows": [],
-    "summary": {
-      "conversations": 2,
-      "messages_total": 6,
-      "messages_user": 4,
-      "messages_assistant": 2,
-      "words_approx": 181,
-      "attachment_refs": 0,
-      "distinct_attachments": 0,
-      "providers": {
-        "chatgpt": 2
-      },
-      "date_range": "<TIMESTAMP> to <TIMESTAMP>",
-      "filtered": false,
-      "embeddings": {
-        "embedded_conversations": 0,
-        "embedded_messages": 0,
-        "pending_embedding_conversations": 2,
-        "stale_embedding_messages": 0,
-        "messages_missing_embedding_provenance": 0,
-        "embedding_coverage_percent": 0.0,
-        "embedding_readiness_status": "none",
-        "retrieval_ready": false
-      }
-    }
+    "avg_messages_per_session": 5.0,
+    "db_size_bytes": 532480,
+    "embedded_messages": 0,
+    "embedded_sessions": 0,
+    "embedding_coverage_percent": 0.0,
+    "embedding_dimensions": {},
+    "embedding_models": {},
+    "embedding_newest_at": null,
+    "embedding_oldest_at": null,
+    "embedding_readiness_status": "none",
+    "messages_missing_embedding_provenance": 0,
+    "mode": "stats",
+    "origin": null,
+    "origin_count": 1,
+    "origins": {
+      "chatgpt-export": 2
+    },
+    "pending_embedding_sessions": 0,
+    "query": null,
+    "retrieval_ready": false,
+    "stale_embedding_messages": 0,
+    "total_attachments": 0,
+    "total_messages": 10,
+    "total_sessions": 2
   }
   
   '''
@@ -190,9 +153,810 @@
   {
     "daemon_liveness": false,
     "archive_root": "<PATH>",
+    "active_archive_root": "<PATH>",
+    "active_archive_root_matches_configured": true,
     "db_exists": true,
+    "active_db_path": "<PATH>",
     "config_exists": false,
     "config_path": "<PATH>",
+    "archive_tiers": {
+      "source": {
+        "path": "<PATH>",
+        "exists": true,
+        "size_bytes": 131072,
+        "expected_user_version": 1,
+        "user_version": 1,
+        "version_status": "ok",
+        "table_counts": {
+          "raw_sessions": 2,
+          "blob_refs": 2,
+          "raw_artifacts": 0,
+          "raw_hook_events": 0,
+          "history_sidecars": 0
+        }
+      },
+      "index": {
+        "path": "<PATH>",
+        "exists": true,
+        "size_bytes": 532480,
+        "expected_user_version": 3,
+        "user_version": 3,
+        "version_status": "ok",
+        "table_counts": {
+          "sessions": 2,
+          "messages": 10,
+          "blocks": 27,
+          "session_profiles": 0,
+          "session_work_events": 0,
+          "session_phases": 0,
+          "threads": 2,
+          "thread_sessions": 2,
+          "insight_materialization": 0
+        }
+      },
+      "embeddings": {
+        "path": "<PATH>",
+        "exists": true,
+        "size_bytes": 57344,
+        "expected_user_version": 1,
+        "user_version": 1,
+        "version_status": "ok",
+        "table_counts": {
+          "embedding_status": 0
+        }
+      },
+      "user": {
+        "path": "<PATH>",
+        "exists": true,
+        "size_bytes": 114688,
+        "expected_user_version": 1,
+        "user_version": 1,
+        "version_status": "ok",
+        "table_counts": {
+          "marks": 0,
+          "annotations": 0,
+          "corrections": 0,
+          "suppressions": 0,
+          "session_tags": 0,
+          "session_metadata": 0,
+          "saved_views": 0,
+          "recall_packs": 0,
+          "workspaces": 0,
+          "blackboard_notes": 0
+        }
+      },
+      "ops": {
+        "path": "<PATH>",
+        "exists": true,
+        "size_bytes": 118784,
+        "expected_user_version": 1,
+        "user_version": 1,
+        "version_status": "ok",
+        "table_counts": {
+          "ingest_cursor": 0,
+          "ingest_attempts": 0,
+          "convergence_debt": 0,
+          "cursor_lag_samples": 0,
+          "daemon_stage_events": 0,
+          "daemon_events": 0,
+          "embedding_catchup_runs": 0,
+          "otlp_spans": 0,
+          "otlp_telemetry": 0
+        }
+      }
+    },
+    "archive_readiness": {
+      "checked": true,
+      "reason": null,
+      "source_check_available": true,
+      "ready_surface_count": 4,
+      "blocked_surface_count": 5,
+      "total_surface_count": 9,
+      "counts": {
+        "session_count": 2,
+        "raw_link_count": 2,
+        "missing_raw_session_count": 0,
+        "message_count": 10,
+        "text_block_count": 27,
+        "messages_fts_count": 27,
+        "profile_row_count": 0,
+        "missing_profile_row_count": 2,
+        "work_event_row_count": 0,
+        "phase_row_count": 0,
+        "thread_count": 2,
+        "action_count": 0,
+        "missing_session_profile_materialization": 2,
+        "missing_work_events_materialization": 2,
+        "missing_phases_materialization": 2,
+        "missing_thread_materialization": 2,
+        "missing_latency_materialization": 2
+      },
+      "surfaces": {
+        "archive_sessions": {
+          "ready": true,
+          "blockers": [],
+          "evidence": {
+            "session_count": 2,
+            "message_count": 10
+          }
+        },
+        "raw_artifacts": {
+          "ready": true,
+          "blockers": [],
+          "evidence": {
+            "source_check_available": true,
+            "raw_link_count": 2,
+            "missing_raw_session_count": 0
+          }
+        },
+        "search": {
+          "ready": true,
+          "blockers": [],
+          "evidence": {
+            "text_block_count": 27,
+            "messages_fts_count": 27
+          }
+        },
+        "session_profiles": {
+          "ready": false,
+          "blockers": [
+            "missing_profile_rows",
+            "missing_session_profile_materialization"
+          ],
+          "evidence": {
+            "profile_row_count": 0,
+            "missing_profile_row_count": 2,
+            "missing_materialization_count": 2
+          }
+        },
+        "timeline_work_events": {
+          "ready": false,
+          "blockers": [
+            "missing_work_events_materialization"
+          ],
+          "evidence": {
+            "work_event_row_count": 0,
+            "missing_materialization_count": 2
+          }
+        },
+        "timeline_phases": {
+          "ready": false,
+          "blockers": [
+            "missing_phases_materialization"
+          ],
+          "evidence": {
+            "phase_row_count": 0,
+            "missing_materialization_count": 2
+          }
+        },
+        "threads": {
+          "ready": false,
+          "blockers": [
+            "missing_thread_materialization"
+          ],
+          "evidence": {
+            "thread_count": 2,
+            "missing_materialization_count": 2
+          }
+        },
+        "tool_usage": {
+          "ready": true,
+          "blockers": [],
+          "evidence": {
+            "action_count": 0
+          }
+        },
+        "latency_profiles": {
+          "ready": false,
+          "blockers": [
+            "missing_latency_materialization"
+          ],
+          "evidence": {
+            "missing_materialization_count": 2
+          }
+        }
+      }
+    },
+    "archive_facade_routes": {
+      "checked": true,
+      "source": "static_facade_route_catalog",
+      "total_method_count": 101,
+      "archive_ready_method_count": 100,
+      "unsupported_method_count": 0,
+      "route_counts": {
+        "archive_routed": 86,
+        "archive_direct": 14,
+        "not_archive_runtime": 1
+      },
+      "tier_counts": {
+        "user": 32,
+        "index": 65,
+        "none": 1,
+        "source": 3
+      },
+      "unsupported_methods": [],
+      "routes": {
+        "add_mark": {
+          "route": "archive_routed",
+          "tier": "user",
+          "detail": "writes user marks through user.db"
+        },
+        "add_tag": {
+          "route": "archive_routed",
+          "tier": "user",
+          "detail": "writes user tags through user.db"
+        },
+        "archive_count_sessions": {
+          "route": "archive_direct",
+          "tier": "index",
+          "detail": "current archive helper"
+        },
+        "archive_get_session": {
+          "route": "archive_direct",
+          "tier": "index",
+          "detail": "current archive helper"
+        },
+        "archive_list_sessions": {
+          "route": "archive_direct",
+          "tier": "index",
+          "detail": "current archive helper"
+        },
+        "archive_search_sessions": {
+          "route": "archive_direct",
+          "tier": "index",
+          "detail": "current archive helper"
+        },
+        "bulk_get_messages": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "reads messages from index.db"
+        },
+        "bulk_tag_sessions": {
+          "route": "archive_routed",
+          "tier": "user",
+          "detail": "writes user tags through user.db"
+        },
+        "clear_corrections": {
+          "route": "archive_routed",
+          "tier": "user",
+          "detail": "clears user corrections through user.db"
+        },
+        "close": {
+          "route": "not_archive_runtime",
+          "tier": "none",
+          "detail": "resource lifecycle method"
+        },
+        "cost_outlook": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "uses archive-routed session cost insight reads"
+        },
+        "count_sessions": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "counts sessions from index.db"
+        },
+        "create_recall_pack": {
+          "route": "archive_routed",
+          "tier": "user",
+          "detail": "writes recall packs through user.db"
+        },
+        "delete_annotation": {
+          "route": "archive_routed",
+          "tier": "user",
+          "detail": "deletes annotations through user.db"
+        },
+        "delete_correction": {
+          "route": "archive_routed",
+          "tier": "user",
+          "detail": "deletes corrections through user.db"
+        },
+        "delete_metadata": {
+          "route": "archive_routed",
+          "tier": "user",
+          "detail": "deletes user metadata through user.db"
+        },
+        "delete_recall_pack": {
+          "route": "archive_routed",
+          "tier": "user",
+          "detail": "deletes recall packs through user.db"
+        },
+        "delete_session": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "delegates to archive-routed safe delete"
+        },
+        "delete_session_safe": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "deletes index rows while preserving user.db overlays"
+        },
+        "delete_view": {
+          "route": "archive_routed",
+          "tier": "user",
+          "detail": "deletes saved views through user.db"
+        },
+        "delete_workspace": {
+          "route": "archive_routed",
+          "tier": "user",
+          "detail": "deletes workspaces through user.db"
+        },
+        "diagnose_query_miss": {
+          "route": "archive_direct",
+          "tier": "index",
+          "detail": "explains an empty index query result from index.db probes"
+        },
+        "export_insight_bundle": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "exports from insight tables when active"
+        },
+        "facets": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "computes scoped/global facets from index.db"
+        },
+        "find_resume_candidates": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "uses archive-routed resume operations"
+        },
+        "find_stuck_session_latency_profile_insights": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "reads latency profiles from index.db"
+        },
+        "get_actions": {
+          "route": "archive_direct",
+          "tier": "index",
+          "detail": "derives actions from index.db content blocks"
+        },
+        "get_actions_batch": {
+          "route": "archive_direct",
+          "tier": "index",
+          "detail": "batch-derives actions from index.db content blocks"
+        },
+        "get_ancestors": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "reads session topology from index.db"
+        },
+        "get_annotation": {
+          "route": "archive_routed",
+          "tier": "user",
+          "detail": "reads annotations through user.db"
+        },
+        "get_descendants": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "reads session topology from index.db"
+        },
+        "get_index_status": {
+          "route": "archive_direct",
+          "tier": "index",
+          "detail": "reads block-FTS existence and doc count from index.db"
+        },
+        "get_logical_session": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "reads session topology from index.db"
+        },
+        "get_messages_paginated": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "reads messages from index.db session envelopes"
+        },
+        "get_metadata": {
+          "route": "archive_routed",
+          "tier": "user",
+          "detail": "reads user metadata through user.db"
+        },
+        "get_raw_artifacts_for_session": {
+          "route": "archive_routed",
+          "tier": "source",
+          "detail": "reads raw artifacts through source.db"
+        },
+        "get_recall_pack": {
+          "route": "archive_routed",
+          "tier": "user",
+          "detail": "reads recall packs through user.db"
+        },
+        "get_session": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "reads session envelopes from index.db"
+        },
+        "get_session_insight_status": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "reads insight readiness from index.db"
+        },
+        "get_session_latency_profile_insight": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "reads latency profiles from index.db"
+        },
+        "get_session_phase_insights": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "reads phases from index.db"
+        },
+        "get_session_profile_insight": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "reads profiles from index.db"
+        },
+        "get_session_profile_record": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "reads session profile record from index.db"
+        },
+        "get_session_stats": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "reads stats from index.db summaries"
+        },
+        "get_session_summary": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "reads summaries from index.db"
+        },
+        "get_session_topology": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "reads session topology from index.db"
+        },
+        "get_session_tree": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "reads session tree from index.db"
+        },
+        "get_session_work_event_insights": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "reads work events from index.db"
+        },
+        "get_sessions": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "delegates each read to the archive-routed session reader"
+        },
+        "get_siblings": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "reads session topology from index.db"
+        },
+        "get_stats_by": {
+          "route": "archive_direct",
+          "tier": "index",
+          "detail": "groups session counts from index.db"
+        },
+        "get_thread": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "reads session topology from index.db"
+        },
+        "get_thread_insight": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "reads work threads from index.db"
+        },
+        "get_view": {
+          "route": "archive_routed",
+          "tier": "user",
+          "detail": "reads saved views through user.db"
+        },
+        "get_view_by_name": {
+          "route": "archive_routed",
+          "tier": "user",
+          "detail": "reads saved views through user.db"
+        },
+        "get_workspace": {
+          "route": "archive_routed",
+          "tier": "user",
+          "detail": "reads workspaces through user.db"
+        },
+        "health_check": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "returns archive tier/index readiness"
+        },
+        "insight_readiness_report": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "reads insight readiness from index.db"
+        },
+        "insight_rigor_audit": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "reads insight rigor from index.db"
+        },
+        "list_annotations": {
+          "route": "archive_routed",
+          "tier": "user",
+          "detail": "reads annotations through user.db"
+        },
+        "list_archive_coverage_insights": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "reads coverage insights from index.db"
+        },
+        "list_archive_debt_insights": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "reads archive debt projection from index.db"
+        },
+        "list_corrections": {
+          "route": "archive_routed",
+          "tier": "user",
+          "detail": "reads corrections through user.db"
+        },
+        "list_cost_rollup_insights": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "reads cost rollups from index.db"
+        },
+        "list_marks": {
+          "route": "archive_routed",
+          "tier": "user",
+          "detail": "reads marks through user.db"
+        },
+        "list_recall_packs": {
+          "route": "archive_routed",
+          "tier": "user",
+          "detail": "reads recall packs through user.db"
+        },
+        "list_session_cost_insights": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "reads session costs from index.db"
+        },
+        "list_session_latency_profile_insights": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "reads latency profiles from index.db"
+        },
+        "list_session_phase_insights": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "reads phases from index.db"
+        },
+        "list_session_profile_insights": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "reads profiles from index.db"
+        },
+        "list_session_tag_rollup_insights": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "reads tag rollups from index.db"
+        },
+        "list_session_work_event_insights": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "reads work events from index.db"
+        },
+        "list_sessions": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "reads full sessions from index.db"
+        },
+        "list_sessions_for_spec": {
+          "route": "archive_direct",
+          "tier": "index",
+          "detail": "runs a query spec directly against index.db"
+        },
+        "list_summaries": {
+          "route": "archive_direct",
+          "tier": "index",
+          "detail": "reads session summaries from index.db without hydration"
+        },
+        "list_tags": {
+          "route": "archive_routed",
+          "tier": "user",
+          "detail": "reads user tag counts through user.db"
+        },
+        "list_thread_insights": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "reads work threads from index.db"
+        },
+        "list_tool_usage_insights": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "reads tool usage insights from index.db"
+        },
+        "list_views": {
+          "route": "archive_routed",
+          "tier": "user",
+          "detail": "reads saved views through user.db"
+        },
+        "list_workspaces": {
+          "route": "archive_routed",
+          "tier": "user",
+          "detail": "reads workspaces through user.db"
+        },
+        "neighbor_candidates": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "discovers neighbors from index.db"
+        },
+        "parse_file": {
+          "route": "archive_routed",
+          "tier": "source",
+          "detail": "writes source.db and index.db directly"
+        },
+        "parse_sources": {
+          "route": "archive_routed",
+          "tier": "source",
+          "detail": "writes source.db and index.db directly"
+        },
+        "query_sessions": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "queries summaries from index.db"
+        },
+        "rebuild_index": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "rebuilds messages_fts from index.db"
+        },
+        "rebuild_insights": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "rebuilds insight tables"
+        },
+        "record_correction": {
+          "route": "archive_routed",
+          "tier": "user",
+          "detail": "writes corrections through user.db"
+        },
+        "remove_mark": {
+          "route": "archive_routed",
+          "tier": "user",
+          "detail": "writes user marks through user.db"
+        },
+        "remove_tag": {
+          "route": "archive_routed",
+          "tier": "user",
+          "detail": "writes user tags through user.db"
+        },
+        "resume_brief": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "builds resume briefs from archive-routed reads"
+        },
+        "save_annotation": {
+          "route": "archive_routed",
+          "tier": "user",
+          "detail": "writes annotations through user.db"
+        },
+        "save_view": {
+          "route": "archive_routed",
+          "tier": "user",
+          "detail": "writes saved views through user.db"
+        },
+        "save_workspace": {
+          "route": "archive_routed",
+          "tier": "user",
+          "detail": "writes workspaces through user.db"
+        },
+        "search": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "searches index.db block FTS"
+        },
+        "search_envelope": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "builds envelopes from index.db"
+        },
+        "search_session_hits": {
+          "route": "archive_direct",
+          "tier": "index",
+          "detail": "projects FTS/hybrid search hits from index.db"
+        },
+        "set_metadata": {
+          "route": "archive_routed",
+          "tier": "user",
+          "detail": "writes user metadata through user.db"
+        },
+        "stats": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "reads archive stats from index.db"
+        },
+        "storage_stats": {
+          "route": "archive_direct",
+          "tier": "index",
+          "detail": "reads lightweight archive counts from index.db"
+        },
+        "update_index": {
+          "route": "archive_direct",
+          "tier": "index",
+          "detail": "rebuilds the block-FTS index against index.db blocks"
+        },
+        "update_metadata": {
+          "route": "archive_routed",
+          "tier": "user",
+          "detail": "delegates to archive-routed metadata writes"
+        }
+      }
+    },
+    "archive_cli_routes": {
+      "checked": true,
+      "source": "static_cli_route_catalog",
+      "total_command_count": 5,
+      "archive_ready_command_count": 5,
+      "unsupported_command_count": 0,
+      "route_counts": {
+        "archive_direct": 5
+      },
+      "tier_counts": {
+        "user": 3,
+        "source": 2
+      },
+      "unsupported_commands": [],
+      "routes": {
+        "blackboard.list": {
+          "route": "archive_direct",
+          "tier": "user",
+          "detail": "reads blackboard notes through active-root user.db"
+        },
+        "blackboard.post": {
+          "route": "archive_direct",
+          "tier": "user",
+          "detail": "writes blackboard notes through active-root user.db"
+        },
+        "reset.database": {
+          "route": "archive_direct",
+          "tier": "source",
+          "detail": "deletes active-root tier files and sidecars"
+        },
+        "reset.session": {
+          "route": "archive_direct",
+          "tier": "user",
+          "detail": "writes suppressions to active-root user.db and deletes rebuildable active-root index rows"
+        },
+        "reset.source": {
+          "route": "archive_direct",
+          "tier": "source",
+          "detail": "resolves source paths through active-root source.db/index.db and writes user-tier suppressions"
+        }
+      }
+    },
+    "archive_runtime_paths": {
+      "checked": true,
+      "source": "static_facade_route_catalog",
+      "archive_runtime_ready": true,
+      "primary_ingest_store": "archive_file_set",
+      "ingest_write_mode": "archive",
+      "archive_ingest_write_targets": [
+        "source.db",
+        "index.db"
+      ],
+      "archive_tier_targets": [
+        "source.db",
+        "index.db",
+        "embeddings.db",
+        "user.db",
+        "ops.db"
+      ],
+      "facade_tier_route_counts": {
+        "user": 32,
+        "index": 65,
+        "none": 1,
+        "source": 3
+      },
+      "cli_tier_route_counts": {
+        "user": 3,
+        "source": 2
+      },
+      "index_rebuild_store": "index_db",
+      "unsupported_primary_method_count": 0,
+      "unsupported_primary_methods": [],
+      "final_shape_blockers": []
+    },
     "next_action": "polylogue init",
     "diagnostic": {
       "kind": "no_sources",
@@ -200,8 +964,8 @@
       "detail": "No `<PATH>` found. Run `polylogue init` to detect chat sources and write a starter config.",
       "next_action": "polylogue init"
     },
-    "conversations": 2,
-    "messages": 6,
+    "sessions": 2,
+    "messages": 10,
     "raw_records": 2
   }
   
@@ -213,32 +977,27 @@
   
   '''
 # ---
-# name: test_plain_list_provider_filter_snapshot
+# name: test_plain_list_origin_filter_snapshot
   '''
-  chatgpt:402913ec-9ef2-49  <TIMESTAMP>  chatgpt       corpus-01 (3 msgs)
-  chatgpt:8a476a87-e49d-48  <TIMESTAMP>  chatgpt       corpus-00 (3 msgs)
+  chatgpt-export:402913ec-  <TIMESTAMP>  chatgpt-export            corpus-01 (5 msgs)
+  chatgpt-export:8a476a87-  <TIMESTAMP>  chatgpt-export            corpus-00 (5 msgs)
   
   '''
 # ---
 # name: test_plain_list_snapshot
   '''
-  chatgpt:402913ec-9ef2-49  <TIMESTAMP>  chatgpt       corpus-01 (3 msgs)
-  chatgpt:8a476a87-e49d-48  <TIMESTAMP>  chatgpt       corpus-00 (3 msgs)
+  chatgpt-export:402913ec-  <TIMESTAMP>  chatgpt-export            corpus-01 (5 msgs)
+  chatgpt-export:8a476a87-  <TIMESTAMP>  chatgpt-export            corpus-00 (5 msgs)
   
   '''
 # ---
 # name: test_plain_stats_snapshot
   '''
-  
-  Conversations: 2
-  
-  Messages: 6 total (4 user, 2 assistant)
-  Words: ~181
-  Providers: chatgpt (2)
-  Attachment refs: 0
-  Unique attachments: 0
-  Embeddings: 0/2 convs, 0 msgs (0.0%), pending 2
-  Date range: <TIMESTAMP> to <TIMESTAMP>
+  Sessions: 2
+  Messages: 10
+  Attachments: 0
+  Origins: 1
+  Average messages: 5.0
   
   '''
 # ---

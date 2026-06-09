@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from polylogue.schemas.field_stats.stats import FieldStats
-from polylogue.schemas.inference.semantic.conversation_scoring import score_title
 from polylogue.schemas.inference.semantic.message_scoring import (
     score_body,
     score_container,
@@ -11,16 +10,17 @@ from polylogue.schemas.inference.semantic.message_scoring import (
     score_timestamp,
 )
 from polylogue.schemas.inference.semantic.models import SEMANTIC_ROLES, SemanticCandidate
+from polylogue.schemas.inference.semantic.session_scoring import score_title
 
 RECORD_STREAM_KINDS = frozenset(
     {
-        "conversation_record_stream",
-        "subagent_conversation_stream",
+        "session_record_stream",
+        "subagent_session_stream",
     }
 )
 
 # Roles that record-stream artifacts may infer. Title is excluded because
-# individual records in a stream do not carry conversation-level metadata.
+# individual records in a stream do not carry session-level metadata.
 RECORD_STREAM_ELIGIBLE_ROLES = frozenset(
     {
         "message_container",
@@ -38,7 +38,7 @@ def infer_semantic_roles(
 ) -> list[SemanticCandidate]:
     """Score all field paths for all semantic roles.
 
-    When *artifact_kind* is a record-stream kind, ``conversation_title``
+    When *artifact_kind* is a record-stream kind, ``session_title``
     scoring is skipped because individual records do not carry titles.
     """
     is_record_stream = artifact_kind in RECORD_STREAM_KINDS
@@ -90,7 +90,7 @@ def score_candidate(
             return score_body(path, field_stats)
         case "message_timestamp":
             return score_timestamp(path, field_stats)
-        case "conversation_title":
+        case "session_title":
             return score_title(path, field_stats, all_stats)
     return None
 

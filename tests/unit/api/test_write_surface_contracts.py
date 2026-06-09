@@ -29,10 +29,10 @@ import pytest
 
 from polylogue.api import Polylogue
 from polylogue.api.contracts import (
-    ConversationDeleteSurface,
     IndexMaintenanceSurface,
     IngestSurface,
     MaintenanceSurface,
+    SessionDeleteSurface,
     TagMutationSurface,
     WriteSurface,
 )
@@ -44,7 +44,8 @@ from polylogue.operations.import_contracts import ImportOperation
 from polylogue.services import build_runtime_services
 from polylogue.surfaces.payloads import TagMutationResult
 from polylogue.types import Provider
-from tests.infra.storage_records import ConversationBuilder, db_setup
+from tests.infra.archive_scenarios import native_session_id_for
+from tests.infra.storage_records import SessionBuilder, db_setup
 
 # ---------------------------------------------------------------------------
 # Static-conformance: every adapter implements every required protocol.
@@ -56,7 +57,7 @@ _PROTOCOL_FAMILY: tuple[type, ...] = (
     MaintenanceSurface,
     IndexMaintenanceSurface,
     TagMutationSurface,
-    ConversationDeleteSurface,
+    SessionDeleteSurface,
 )
 
 _ADAPTER_CLASSES: tuple[type, ...] = (
@@ -91,16 +92,15 @@ def test_composite_write_surface_subsumes_required_protocols() -> None:
 
 
 async def _seed_archive(db_path: Path) -> str:
-    """Seed one conversation and return its id."""
-    conv_id = "conv-alpha"
+    """Seed one session and return its archive session id."""
     await (
-        ConversationBuilder(db_path, conv_id)
+        SessionBuilder(db_path, "conv-alpha")
         .provider(Provider.CLAUDE_AI.value)
         .title("Alpha")
         .add_message(text="alpha message body")
         .build()
     )
-    return conv_id
+    return native_session_id_for("claude-ai", "conv-alpha")
 
 
 async def test_tag_mutation_envelope_parity(

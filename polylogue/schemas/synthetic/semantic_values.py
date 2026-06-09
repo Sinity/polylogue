@@ -8,7 +8,7 @@ Semantic roles handled:
     - message_role: choose from observed role values
     - message_body: generate plausible content (themed in showcase mode)
     - message_timestamp: sequential timestamps from a base
-    - conversation_title: short titles aligned with theme
+    - session_title: short titles aligned with theme
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ import random
 from collections.abc import Mapping
 
 from polylogue.schemas.synthetic.models import SchemaScalar
-from polylogue.schemas.synthetic.showcase import _SHOWCASE_THEMES, ConversationTheme
+from polylogue.schemas.synthetic.showcase import _SHOWCASE_THEMES, SessionTheme
 
 # =============================================================================
 # Role-based text generation (the original _text_for_role logic)
@@ -55,7 +55,7 @@ def _text_for_role(
     role: str,
     *,
     turn_index: int | None = None,
-    theme: ConversationTheme | None = None,
+    theme: SessionTheme | None = None,
 ) -> str:
     """Generate plausible text content for a given role."""
     if theme is not None and turn_index is not None:
@@ -78,7 +78,7 @@ class SemanticValueGenerator:
 
     This replaces the generic schema-driven string/number generation for
     fields that have been identified as semantically meaningful.  The
-    generator is stateful within a single conversation to produce coherent
+    generator is stateful within a single session to produce coherent
     turn sequences.
     """
 
@@ -86,7 +86,7 @@ class SemanticValueGenerator:
         self,
         rng: random.Random,
         *,
-        theme: ConversationTheme | None = None,
+        theme: SessionTheme | None = None,
         base_ts: float = 1700000000.0,
         role_cycle: list[str] | None = None,
     ) -> None:
@@ -117,7 +117,7 @@ class SemanticValueGenerator:
                 return True, self._generate_body(schema)
             case "message_timestamp":
                 return True, self._generate_timestamp(schema)
-            case "conversation_title":
+            case "session_title":
                 return True, self._generate_title(schema)
             case "message_container":
                 # Containers are structural — let the normal generator handle them
@@ -142,12 +142,10 @@ class SemanticValueGenerator:
         """Generate a role value from observed values or cycle."""
         # Prefer observed values from the schema
         if values := _string_values(schema, "x-polylogue-values"):
-            # Filter to known conversational roles if present
-            conversational = [v for v in values if v in {"user", "assistant", "human", "model", "system", "tool"}]
-            if conversational:
-                return (
-                    self.current_role if self.current_role in conversational else str(self.rng.choice(conversational))
-                )
+            # Filter to known sessional roles if present
+            sessional = [v for v in values if v in {"user", "assistant", "human", "model", "system", "tool"}]
+            if sessional:
+                return self.current_role if self.current_role in sessional else str(self.rng.choice(sessional))
             return str(self.rng.choice(values))
         return self.current_role
 
@@ -182,7 +180,7 @@ class SemanticValueGenerator:
                 return ts
 
     def _generate_title(self, schema: Mapping[str, object]) -> str:
-        """Generate a conversation title."""
+        """Generate a session title."""
         if self.theme is not None:
             return self.theme.title
 

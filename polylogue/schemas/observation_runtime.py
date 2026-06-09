@@ -37,7 +37,7 @@ class _ObservedSchemaUnit:
     cluster_payload: SchemaClusterPayload
     schema_samples: list[SchemaSample]
     artifact_kind: str
-    conversation_id: str | None
+    session_id: str | None
     profile_tokens: tuple[str, ...]
 
 
@@ -68,7 +68,7 @@ def _to_schema_unit(observed: _ObservedSchemaUnit, context: _ObservationContext)
         cluster_payload=observed.cluster_payload,
         schema_samples=observed.schema_samples,
         artifact_kind=observed.artifact_kind,
-        conversation_id=observed.conversation_id,
+        session_id=observed.session_id,
         raw_id=context.raw_id,
         source_path=context.source_path_text,
         bundle_scope=context.bundle_scope,
@@ -116,7 +116,7 @@ def _extract_record_observation(
         cluster_payload=normalized_payload,
         schema_samples=samples,
         artifact_kind=artifact_kind,
-        conversation_id=context.raw_id,
+        session_id=context.raw_id,
         profile_tokens=_record_profile_tokens(
             samples,
             record_type_key=config.record_type_key,
@@ -146,7 +146,7 @@ def _extract_document_observations(
                 cluster_payload=sample,
                 schema_samples=[sample],
                 artifact_kind=artifact_kind,
-                conversation_id=_document_conversation_id(sample, context.raw_id),
+                session_id=_document_session_id(sample, context.raw_id),
                 profile_tokens=_document_profile_tokens(sample),
             )
         )
@@ -310,8 +310,8 @@ def _record_profile_tokens(
     return tuple(tokens[:_MAX_PROFILE_TOKENS])
 
 
-def _document_conversation_id(sample: SchemaSample, raw_id: str | None) -> str | None:
-    for key in ("conversation_id", "id", "uuid"):
+def _document_session_id(sample: SchemaSample, raw_id: str | None) -> str | None:
+    for key in ("session_id", "id", "uuid"):
         value = sample.get(key)
         if isinstance(value, str) and value.strip():
             return value

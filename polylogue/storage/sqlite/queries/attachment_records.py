@@ -6,11 +6,10 @@ from datetime import datetime
 
 import aiosqlite
 
+from polylogue.core.sources import origin_from_provider
 from polylogue.storage.runtime import AttachmentRecord
-from polylogue.storage.search.models import ConversationSearchEvidenceRow
-from polylogue.storage.sqlite.connection import _build_provider_scope_filter
-from polylogue.storage.sqlite.queries.mappers import _json_object, _parse_json
-from polylogue.types import ConversationId
+from polylogue.storage.search.models import SessionSearchEvidenceRow
+from polylogue.types import Provider, SessionId
 
 
 def _row_value(row: aiosqlite.Row, key: str) -> object | None:
@@ -22,71 +21,114 @@ def _row_value(row: aiosqlite.Row, key: str) -> object | None:
     return value
 
 
-def _build_attachment_record(row: aiosqlite.Row, *, conversation_id: str) -> AttachmentRecord:
+def _build_attachment_record(row: aiosqlite.Row, *, session_id: str) -> AttachmentRecord:
     return AttachmentRecord(
         attachment_id=row["attachment_id"],
-        conversation_id=ConversationId(conversation_id),
+        session_id=SessionId(session_id),
         message_id=row["message_id"],
         mime_type=row["mime_type"],
         size_bytes=row["size_bytes"],
         path=row["path"],
-        provider_meta=_json_object(
-            _parse_json(
-                row["provider_meta"],
-                field="provider_meta",
-                record_id=row["attachment_id"],
-            )
-        ),
-        provider_attachment_id=(
-            value if isinstance((value := _row_value(row, "provider_attachment_id")), str) else None
-        ),
-        provider_file_id=(value if isinstance((value := _row_value(row, "provider_file_id")), str) else None),
-        provider_drive_id=(value if isinstance((value := _row_value(row, "provider_drive_id")), str) else None),
+        display_name=(value if isinstance((value := _row_value(row, "display_name")), str) else None),
+        source_url=(value if isinstance((value := _row_value(row, "source_url")), str) else None),
+        caption=(value if isinstance((value := _row_value(row, "caption")), str) else None),
+        attachment_native_id=(value if isinstance((value := _row_value(row, "attachment_native_id")), str) else None),
+        file_native_id=(value if isinstance((value := _row_value(row, "file_native_id")), str) else None),
+        drive_native_id=(value if isinstance((value := _row_value(row, "drive_native_id")), str) else None),
         upload_origin=(value if isinstance((value := _row_value(row, "upload_origin")), str) else None),
     )
 
 
 async def get_attachments(
     conn: aiosqlite.Connection,
-    conversation_id: str,
+    session_id: str,
 ) -> list[AttachmentRecord]:
-    """Get all attachments for a conversation."""
+    """Get all attachments for a session."""
     cursor = await conn.execute(
         """
-        SELECT a.*, r.message_id
+        SELECT
+            a.attachment_id,
+            a.media_type AS mime_type,
+            a.byte_count AS size_bytes,
+            COALESCE(r.source_url, a.display_name) AS path,
+            a.display_name,
+            r.source_url,
+            r.caption,
+            r.message_id,
+            r.upload_origin,
+            (
+                SELECT native_id FROM attachment_native_ids ani
+                WHERE ani.ref_id = r.ref_id AND ani.id_kind = 'attachment'
+                ORDER BY native_id LIMIT 1
+            ) AS attachment_native_id,
+            (
+                SELECT native_id FROM attachment_native_ids ani
+                WHERE ani.ref_id = r.ref_id AND ani.id_kind = 'file'
+                ORDER BY native_id LIMIT 1
+            ) AS file_native_id,
+            (
+                SELECT native_id FROM attachment_native_ids ani
+                WHERE ani.ref_id = r.ref_id AND ani.id_kind = 'drive'
+                ORDER BY native_id LIMIT 1
+            ) AS drive_native_id
         FROM attachments a
         JOIN attachment_refs r ON a.attachment_id = r.attachment_id
-        WHERE r.conversation_id = ?
+        WHERE r.session_id = ?
         """,
-        (conversation_id,),
+        (session_id,),
     )
     rows = await cursor.fetchall()
-    return [_build_attachment_record(row, conversation_id=conversation_id) for row in rows]
+    return [_build_attachment_record(row, session_id=session_id) for row in rows]
 
 
 async def get_attachments_batch(
     conn: aiosqlite.Connection,
-    conversation_ids: list[str],
+    session_ids: list[str],
 ) -> dict[str, list[AttachmentRecord]]:
-    """Get attachments for multiple conversations in a single query."""
-    if not conversation_ids:
+    """Get attachments for multiple sessions in a single query."""
+    if not session_ids:
         return {}
-    result: dict[str, list[AttachmentRecord]] = {cid: [] for cid in conversation_ids}
-    placeholders = ",".join("?" for _ in conversation_ids)
+    result: dict[str, list[AttachmentRecord]] = {cid: [] for cid in session_ids}
+    placeholders = ",".join("?" for _ in session_ids)
     cursor = await conn.execute(
         f"""
-        SELECT a.*, r.message_id, r.conversation_id
+        SELECT
+            a.attachment_id,
+            a.media_type AS mime_type,
+            a.byte_count AS size_bytes,
+            COALESCE(r.source_url, a.display_name) AS path,
+            a.display_name,
+            r.source_url,
+            r.caption,
+            r.message_id,
+            r.session_id,
+            r.upload_origin,
+            (
+                SELECT native_id FROM attachment_native_ids ani
+                WHERE ani.ref_id = r.ref_id AND ani.id_kind = 'attachment'
+                ORDER BY native_id LIMIT 1
+            ) AS attachment_native_id,
+            (
+                SELECT native_id FROM attachment_native_ids ani
+                WHERE ani.ref_id = r.ref_id AND ani.id_kind = 'file'
+                ORDER BY native_id LIMIT 1
+            ) AS file_native_id,
+            (
+                SELECT native_id FROM attachment_native_ids ani
+                WHERE ani.ref_id = r.ref_id AND ani.id_kind = 'drive'
+                ORDER BY native_id LIMIT 1
+            ) AS drive_native_id
         FROM attachments a
         JOIN attachment_refs r ON a.attachment_id = r.attachment_id
-        WHERE r.conversation_id IN ({placeholders})
+        WHERE r.session_id IN ({placeholders})
         """,
-        conversation_ids,
+        session_ids,
     )
     rows = await cursor.fetchall()
     for row in rows:
-        cid = row["conversation_id"]
+        cid = row["session_id"]
         if cid in result:
-            result[cid].append(_build_attachment_record(row, conversation_id=cid))
+            result[cid].append(_build_attachment_record(row, session_id=cid))
     return result
 
 
@@ -132,58 +174,43 @@ async def search_attachment_identity_evidence_hits(
     limit: int = 100,
     providers: list[str] | None = None,
     since: str | None = None,
-) -> list[ConversationSearchEvidenceRow]:
+) -> list[SessionSearchEvidenceRow]:
     """Search selected attachment identity fields and return evidence-bearing hits."""
     identity = query.strip()
     if not identity or limit <= 0:
         return []
 
-    # #1252: attachment identity lookup resolves against typed columns
-    # (provider_attachment_id, provider_file_id, provider_drive_id) on both
-    # `attachments` and `attachment_refs`. The previous implementation read
-    # the same identifiers through json_extract on `provider_meta`; the typed
-    # surface keeps the lookup on the hot path index-backed and removes the
-    # JSON parse per probed row.
     sql = """
         WITH base_attachments AS (
             SELECT
-                r.conversation_id,
+                r.session_id,
                 r.message_id,
                 a.attachment_id,
-                a.mime_type,
-                a.path,
-                a.provider_meta AS attachment_meta,
-                r.provider_meta AS ref_meta,
-                a.provider_attachment_id AS a_provider_attachment_id,
-                a.provider_file_id AS a_provider_file_id,
-                a.provider_drive_id AS a_provider_drive_id,
-                r.provider_attachment_id AS r_provider_attachment_id,
-                r.provider_file_id AS r_provider_file_id,
-                r.provider_drive_id AS r_provider_drive_id,
-                c.source_name,
-                COALESCE(m.sort_key, c.sort_key, 0) AS sort_key,
-                COALESCE(
-                    json_extract(a.provider_meta, '$.name'),
-                    json_extract(a.provider_meta, '$.title'),
-                    json_extract(r.provider_meta, '$.name'),
-                    json_extract(r.provider_meta, '$.title')
-                ) AS attachment_name
+                a.media_type AS mime_type,
+                COALESCE(r.source_url, a.display_name) AS path,
+                ani.id_kind,
+                ani.native_id,
+                c.origin AS source_name,
+                COALESCE(m.occurred_at_ms, c.sort_key_ms, 0) / 1000.0 AS sort_key,
+                a.display_name AS attachment_name
             FROM attachments a
             JOIN attachment_refs r ON r.attachment_id = a.attachment_id
-            JOIN conversations c ON c.conversation_id = r.conversation_id
+            LEFT JOIN attachment_native_ids ani ON ani.ref_id = r.ref_id
+            JOIN sessions c ON c.session_id = r.session_id
             LEFT JOIN messages m ON m.message_id = r.message_id
             WHERE 1 = 1
     """
     params: list[str | int | float] = []
 
     if providers:
-        scope_sql, scope_params = _build_provider_scope_filter(providers, provider_column="c.source_name")
-        sql += f" AND {scope_sql}"
+        scope_params = [origin_from_provider(Provider.from_string(provider)).value for provider in providers]
+        placeholders = ",".join("?" for _ in scope_params)
+        sql += f" AND c.origin IN ({placeholders})"
         params.extend(scope_params)
 
     if since:
-        sql += " AND COALESCE(m.sort_key, c.sort_key, 0) >= ?"
-        params.append(_parse_since_timestamp(since))
+        sql += " AND COALESCE(m.occurred_at_ms, c.sort_key_ms, 0) >= ?"
+        params.append(_parse_since_timestamp(since) * 1000.0)
 
     sql += """
         ),
@@ -191,36 +218,22 @@ async def search_attachment_identity_evidence_hits(
             SELECT *, 'attachment_id' AS identity_field, attachment_id AS identity_value, 0 AS identity_rank
             FROM base_attachments
             UNION ALL
-            SELECT *, 'attachment.provider_attachment_id', a_provider_attachment_id, 1
+            SELECT *, 'native.' || id_kind, native_id, 1
             FROM base_attachments
-            UNION ALL
-            SELECT *, 'attachment.provider_file_id', a_provider_file_id, 2
-            FROM base_attachments
-            UNION ALL
-            SELECT *, 'attachment.provider_drive_id', a_provider_drive_id, 3
-            FROM base_attachments
-            UNION ALL
-            SELECT *, 'ref.provider_attachment_id', r_provider_attachment_id, 4
-            FROM base_attachments
-            UNION ALL
-            SELECT *, 'ref.provider_file_id', r_provider_file_id, 5
-            FROM base_attachments
-            UNION ALL
-            SELECT *, 'ref.provider_drive_id', r_provider_drive_id, 6
-            FROM base_attachments
+            WHERE native_id IS NOT NULL
         ),
         matched AS (
             SELECT
                 *,
                 ROW_NUMBER() OVER (
-                    PARTITION BY conversation_id
+                    PARTITION BY session_id
                     ORDER BY identity_rank ASC, sort_key DESC, attachment_id ASC, COALESCE(message_id, '') ASC
-                ) AS conversation_rank
+                ) AS session_rank
             FROM identity_candidates
             WHERE identity_value = ?
         )
         SELECT
-            conversation_id,
+            session_id,
             message_id,
             attachment_id,
             mime_type,
@@ -229,7 +242,7 @@ async def search_attachment_identity_evidence_hits(
             identity_value,
             attachment_name
         FROM matched
-        WHERE conversation_rank = 1
+        WHERE session_rank = 1
         ORDER BY identity_rank ASC, sort_key DESC, attachment_id ASC, COALESCE(message_id, '') ASC
         LIMIT ?
     """
@@ -237,8 +250,8 @@ async def search_attachment_identity_evidence_hits(
     cursor = await conn.execute(sql, params)
     rows = await cursor.fetchall()
     return [
-        ConversationSearchEvidenceRow(
-            conversation_id=str(row["conversation_id"]),
+        SessionSearchEvidenceRow(
+            session_id=str(row["session_id"]),
             rank=rank,
             score=None,
             message_id=str(row["message_id"]) if row["message_id"] is not None else None,

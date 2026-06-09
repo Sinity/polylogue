@@ -17,7 +17,7 @@ from polylogue.archive.artifact_taxonomy import classify_artifact, classify_arti
 from polylogue.core.json import JSONValue
 from polylogue.pipeline.services.ingest_batch._core import _select_ingest_worker_count
 from polylogue.sources.dispatch import _detect_provider_from_raw_bytes, detect_provider
-from polylogue.storage.runtime import RawConversationRecord
+from polylogue.storage.runtime import RawSessionRecord
 from polylogue.types import Provider
 
 _LARGE_FULL_PARSE_PROGRESS_BYTES = 64 * 1024 * 1024
@@ -37,6 +37,7 @@ class _FullIngestHeartbeat(Protocol):
         *,
         current_path: Path | None = None,
         source_payload_read_bytes: int | None = None,
+        stage_payload: dict[str, object] | None = None,
         force: bool = False,
     ) -> None: ...
 
@@ -48,6 +49,7 @@ class _AttemptProgressEmitter(Protocol):
         *,
         current_path_override: Path | None = None,
         payload_read_bytes: int | None = None,
+        stage_payload: dict[str, object] | None = None,
     ) -> None: ...
 
 
@@ -89,9 +91,9 @@ class _FullIngestResult:
     raw_fingerprints: dict[Path, str] = field(default_factory=dict)
     raw_byte_sizes: dict[Path, int] = field(default_factory=dict)
     worker_count: int = 0
-    ingested_conversation_count: int = 0
+    ingested_session_count: int = 0
     ingested_message_count: int = 0
-    changed_conversation_count: int = 0
+    changed_session_count: int = 0
     wal_bytes_before_checkpoint: int = 0
     wal_bytes_after_checkpoint: int = 0
     wal_checkpointed_pages: int = 0
@@ -118,9 +120,9 @@ def _full_ingest_result_from_summary(
         raw_fingerprints=raw_fingerprints,
         raw_byte_sizes=raw_byte_sizes,
         worker_count=int(getattr(summary, "worker_count", 0)) if summary is not None else 0,
-        ingested_conversation_count=int(getattr(summary, "total_convos", 0)) if summary is not None else 0,
+        ingested_session_count=int(getattr(summary, "total_convos", 0)) if summary is not None else 0,
         ingested_message_count=int(getattr(summary, "total_msgs", 0)) if summary is not None else 0,
-        changed_conversation_count=len(getattr(summary, "changed_conversation_ids", ())) if summary is not None else 0,
+        changed_session_count=len(getattr(summary, "changed_session_ids", ())) if summary is not None else 0,
         wal_bytes_before_checkpoint=int(getattr(summary, "wal_bytes_before_checkpoint", 0))
         if summary is not None
         else 0,
@@ -262,7 +264,7 @@ def _append_plan_group_ready(plans: list[_AppendPlan]) -> bool:
     return sum(plan.bytes_read for plan in plans) >= _MAX_APPEND_PLAN_GROUP_PAYLOAD_BYTES
 
 
-def _full_ingest_worker_count(records: list[RawConversationRecord]) -> int:
+def _full_ingest_worker_count(records: list[RawSessionRecord]) -> int:
     """Return the worker count for daemon live full-ingest batches."""
     return _select_ingest_worker_count(records, _live_full_ingest_worker_limit())
 
@@ -310,6 +312,7 @@ def _throttled_phase_heartbeat(
         *,
         current_path: Path | None = None,
         source_payload_read_bytes: int | None = None,
+        stage_payload: dict[str, object] | None = None,
         force: bool = False,
     ) -> None:
         nonlocal last_emitted
@@ -321,6 +324,7 @@ def _throttled_phase_heartbeat(
             phase,
             current_path_override=current_path,
             payload_read_bytes=source_payload_read_bytes,
+            stage_payload=stage_payload,
         )
 
     return heartbeat
@@ -369,7 +373,7 @@ def _detect_provider_from_path_sample(path: Path, fallback_provider: Provider) -
     return _detect_provider_from_raw_bytes(payload, path.name, fallback_provider)
 
 
-def _jsonl_provider_and_conversation_artifact(
+def _jsonl_provider_and_session_artifact(
     path: Path,
     fallback_provider: Provider,
 ) -> tuple[Provider, bool]:
@@ -377,28 +381,28 @@ def _jsonl_provider_and_conversation_artifact(
     provider = (detect_provider(records) if records else None) or fallback_provider
     path_classification = classify_artifact_path(path, provider=provider)
     if path_classification is not None:
-        return provider, path_classification.parse_as_conversation
+        return provider, path_classification.parse_as_session
     if not records:
         return provider, False
-    return provider, classify_artifact(records, provider=provider, source_path=path).parse_as_conversation
+    return provider, classify_artifact(records, provider=provider, source_path=path).parse_as_session
 
 
-def _parse_path_as_conversation_artifact(path: Path, *, provider: Provider) -> bool:
+def _parse_path_as_session_artifact(path: Path, *, provider: Provider) -> bool:
     path_classification = classify_artifact_path(path, provider=provider)
     if path_classification is not None:
-        return path_classification.parse_as_conversation
+        return path_classification.parse_as_session
     if path.suffix.lower() == ".jsonl":
         records = _jsonl_sample_from_path(path)
         if not records:
             return False
-        return classify_artifact(records, provider=provider, source_path=path).parse_as_conversation
+        return classify_artifact(records, provider=provider, source_path=path).parse_as_session
     if _path_size(path) > _STREAMING_FULL_INGEST_BYTES:
         return _large_non_jsonl_path_can_stream(path, provider=provider)
     try:
         document = cast(JSONValue, orjson.loads(path.read_bytes()))
     except orjson.JSONDecodeError:
         return False
-    return classify_artifact(document, provider=provider, source_path=path).parse_as_conversation
+    return classify_artifact(document, provider=provider, source_path=path).parse_as_session
 
 
 def _large_non_jsonl_path_can_stream(path: Path, *, provider: Provider) -> bool:
@@ -412,10 +416,10 @@ def _large_non_jsonl_path_can_stream(path: Path, *, provider: Provider) -> bool:
     }
 
 
-def _parse_payload_as_conversation_artifact(path: Path, *, provider: Provider, payload: bytes) -> bool:
+def _parse_payload_as_session_artifact(path: Path, *, provider: Provider, payload: bytes) -> bool:
     path_classification = classify_artifact_path(path, provider=provider)
     if path_classification is not None:
-        return path_classification.parse_as_conversation
+        return path_classification.parse_as_session
     if path.suffix.lower() == ".jsonl":
         records: list[JSONValue] = []
         for line in BytesIO(payload):
@@ -430,9 +434,9 @@ def _parse_payload_as_conversation_artifact(path: Path, *, provider: Provider, p
                 continue
         if not records:
             return False
-        return classify_artifact(records, provider=provider, source_path=path).parse_as_conversation
+        return classify_artifact(records, provider=provider, source_path=path).parse_as_session
     try:
         document = cast(JSONValue, orjson.loads(payload))
     except orjson.JSONDecodeError:
         return False
-    return classify_artifact(document, provider=provider, source_path=path).parse_as_conversation
+    return classify_artifact(document, provider=provider, source_path=path).parse_as_session

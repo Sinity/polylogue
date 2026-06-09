@@ -7,7 +7,7 @@ daemon HTTP (#1266). To make the daemon HTTP surface machine-discoverable
 private Python types — this command writes an OpenAPI 3.1 document at
 ``docs/openapi/search.yaml`` that exposes both the request shape (query
 parameters) and the response schema (the typed ``SearchEnvelope`` and
-its referenced models) for ``GET /api/conversations``.
+its referenced models) for ``GET /api/sessions``.
 
 The schema is derived from Pydantic models. Do not edit the output by
 hand; regenerate it with ``devtools render-openapi``. The ``--check``
@@ -35,9 +35,9 @@ from devtools.render_support import write_if_changed
 from polylogue.surfaces.payloads import (
     RANKING_POLICY_MIXED,
     RANKING_POLICY_VERSION,
-    ConversationListRowPayload,
-    ConversationSearchHitPayload,
     SearchEnvelope,
+    SessionListRowPayload,
+    SessionSearchHitPayload,
 )
 
 DEFAULT_OUTPUT_PATH = Path("docs/openapi/search.yaml")
@@ -47,8 +47,8 @@ POLYLOGUE_API_VERSION = "1"
 # Pydantic models whose JSON Schema is published in ``components.schemas``.
 _PUBLISHED_MODELS: tuple[type[BaseModel], ...] = (
     SearchEnvelope,
-    ConversationSearchHitPayload,
-    ConversationListRowPayload,
+    SessionSearchHitPayload,
+    SessionListRowPayload,
 )
 
 
@@ -105,19 +105,19 @@ def _build_openapi_document() -> dict[str, Any]:
             }
         ],
         "paths": {
-            "/api/conversations": {
+            "/api/sessions": {
                 "get": {
-                    "summary": "Ranked conversation search and list",
+                    "summary": "Ranked session search and list",
                     "description": (
                         "When ``query`` is supplied, returns a ranked search "
                         "envelope (``SearchEnvelope``) with per-hit match "
                         "evidence and pagination handles. When ``query`` is "
-                        "omitted, returns the conversation list envelope. "
+                        "omitted, returns the session list envelope. "
                         "Both envelopes carry ``total``, ``limit``, "
                         "``offset``, and ``next_cursor`` for cursor-based "
                         "pagination."
                     ),
-                    "operationId": "searchConversations",
+                    "operationId": "searchSessions",
                     "parameters": [
                         {
                             "name": "query",
@@ -152,7 +152,7 @@ def _build_openapi_document() -> dict[str, Any]:
                         {
                             "name": "since",
                             "in": "query",
-                            "description": "ISO 8601 lower bound on conversation date.",
+                            "description": "ISO 8601 lower bound on session date.",
                             "required": False,
                             "schema": {"type": "string", "format": "date-time"},
                         },
@@ -185,7 +185,7 @@ def _build_openapi_document() -> dict[str, Any]:
                     "responses": {
                         "200": {
                             "description": (
-                                "Ranked search envelope (when ``query`` is supplied) or conversation list envelope."
+                                "Ranked search envelope (when ``query`` is supplied) or session list envelope."
                             ),
                             "content": {
                                 "application/json": {"schema": {"$ref": "#/components/schemas/SearchEnvelope"}}

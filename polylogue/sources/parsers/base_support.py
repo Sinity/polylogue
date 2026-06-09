@@ -6,7 +6,7 @@ from collections.abc import Sequence
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.hashing import hash_text
-from polylogue.types import ContentBlockType
+from polylogue.types import BlockType
 
 from .base_models import (
     ParsedAttachment,
@@ -18,14 +18,14 @@ from .base_models import (
 def content_blocks_from_segments(content: object) -> list[ParsedContentBlock]:
     """Convert raw API content (str, list, dict) to ParsedContentBlock list."""
     if isinstance(content, str):
-        return [ParsedContentBlock(type=ContentBlockType.TEXT, text=content)] if content else []
+        return [ParsedContentBlock(type=BlockType.TEXT, text=content)] if content else []
     if not isinstance(content, list):
         return []
     blocks: list[ParsedContentBlock] = []
     for seg in content:
         if isinstance(seg, str):
             if seg:
-                blocks.append(ParsedContentBlock(type=ContentBlockType.TEXT, text=seg))
+                blocks.append(ParsedContentBlock(type=BlockType.TEXT, text=seg))
             continue
         if not isinstance(seg, dict):
             continue
@@ -33,7 +33,7 @@ def content_blocks_from_segments(content: object) -> list[ParsedContentBlock]:
         if seg_type == "thinking":
             text = seg.get("thinking") or seg.get("text") or ""
             if text:
-                blocks.append(ParsedContentBlock(type=ContentBlockType.THINKING, text=text))
+                blocks.append(ParsedContentBlock(type=BlockType.THINKING, text=text))
         elif seg_type == "tool_use":
             tool_name = seg.get("name")
             tool_id = seg.get("id")
@@ -41,7 +41,7 @@ def content_blocks_from_segments(content: object) -> list[ParsedContentBlock]:
             if tool_name or tool_id or tool_input:
                 blocks.append(
                     ParsedContentBlock(
-                        type=ContentBlockType.TOOL_USE,
+                        type=BlockType.TOOL_USE,
                         tool_name=tool_name,
                         tool_id=tool_id,
                         tool_input=tool_input,
@@ -61,13 +61,13 @@ def content_blocks_from_segments(content: object) -> list[ParsedContentBlock]:
                 result_text = "\n".join(part for part in text_parts if part) or None
             blocks.append(
                 ParsedContentBlock(
-                    type=ContentBlockType.TOOL_RESULT,
+                    type=BlockType.TOOL_RESULT,
                     tool_id=seg.get("tool_use_id"),
                     text=result_text,
                 )
             )
         elif seg_type in ("image", "document"):
-            block_type = ContentBlockType.from_string(seg_type)
+            block_type = BlockType.from_string(seg_type)
             blocks.append(
                 ParsedContentBlock(
                     type=block_type,
@@ -82,11 +82,11 @@ def content_blocks_from_segments(content: object) -> list[ParsedContentBlock]:
                 language = seg.get("language")
                 if isinstance(language, str) and language:
                     metadata = {"language": language}
-                blocks.append(ParsedContentBlock(type=ContentBlockType.CODE, text=str(text), metadata=metadata))
+                blocks.append(ParsedContentBlock(type=BlockType.CODE, text=str(text), metadata=metadata))
         else:
             text = seg.get("text") or seg.get("content") or ""
             if text:
-                blocks.append(ParsedContentBlock(type=ContentBlockType.TEXT, text=str(text)))
+                blocks.append(ParsedContentBlock(type=BlockType.TEXT, text=str(text)))
     return blocks
 
 
@@ -123,7 +123,6 @@ def attachment_from_meta(meta: object, message_id: str | None, index: int) -> Pa
         mime_type=mime_type if isinstance(mime_type, str) else None,
         size_bytes=size_bytes,
         path=None,
-        provider_meta=meta,
         provider_file_id=str(file_id_raw) if isinstance(file_id_raw, str) and file_id_raw else None,
         provider_drive_id=str(drive_id_raw) if isinstance(drive_id_raw, str) and drive_id_raw else None,
         upload_origin="oauth",
@@ -166,13 +165,13 @@ def extract_messages_from_list(items: Sequence[object]) -> list[ParsedMessage]:
         if text_val is not None and isinstance(text_val, str):
             text = text_val
             if text:
-                content_blocks = [ParsedContentBlock(type=ContentBlockType.TEXT, text=text)]
+                content_blocks = [ParsedContentBlock(type=BlockType.TEXT, text=text)]
         else:
             content = payload.get("content")
             if isinstance(content, str):
                 text = content
                 if text:
-                    content_blocks = [ParsedContentBlock(type=ContentBlockType.TEXT, text=text)]
+                    content_blocks = [ParsedContentBlock(type=BlockType.TEXT, text=text)]
             elif isinstance(content, dict):
                 parts = content.get("parts")
                 if isinstance(parts, list):
@@ -180,19 +179,19 @@ def extract_messages_from_list(items: Sequence[object]) -> list[ParsedMessage]:
                     for part in parts:
                         if isinstance(part, str) and part:
                             texts.append(part)
-                            content_blocks.append(ParsedContentBlock(type=ContentBlockType.TEXT, text=part))
+                            content_blocks.append(ParsedContentBlock(type=BlockType.TEXT, text=part))
                         elif isinstance(part, dict):
                             part_text = part.get("text")
                             if isinstance(part_text, str) and part_text:
                                 texts.append(part_text)
-                                content_blocks.append(ParsedContentBlock(type=ContentBlockType.TEXT, text=part_text))
+                                content_blocks.append(ParsedContentBlock(type=BlockType.TEXT, text=part_text))
                     text = "\n".join(texts) or None
                 else:
                     text_dict_val = content.get("text")
                     if text_dict_val is not None and isinstance(text_dict_val, str):
                         text = text_dict_val
                         if text:
-                            content_blocks = [ParsedContentBlock(type=ContentBlockType.TEXT, text=text)]
+                            content_blocks = [ParsedContentBlock(type=BlockType.TEXT, text=text)]
             elif isinstance(content, list):
                 content_blocks = content_blocks_from_segments(content)
                 text = "\n".join(block.text for block in content_blocks if block.text) or None
