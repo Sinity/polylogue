@@ -361,9 +361,9 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             
 <p><a href="README.md">← Back to Docs</a></p>
 <h1>Export</h1>
-<p>Polylogue exports conversations in multiple formats, both singly and in bulk.</p>
+<p>Polylogue exports sessions in multiple formats, both singly and in bulk.</p>
 <h2>Single Export</h2>
-<p>Export one conversation by ID:</p>
+<p>Export one session by ID:</p>
 <pre><code class="language-bash">polylogue export claude-ai:abc123
 </code></pre>
 <p>Specify format:</p>
@@ -372,13 +372,13 @@ polylogue export claude-ai:abc123 --format html
 polylogue export claude-ai:abc123 --format obsidian
 </code></pre>
 <h2>Bulk Export</h2>
-<p>Export every conversation matching a filter chain:</p>
+<p>Export every session matching a filter chain:</p>
 <pre><code class="language-bash">polylogue --provider claude-code --since 2026-01 bulk-export
 polylogue --tag important bulk-export --format markdown
 polylogue &quot;refactor&quot; --has-tool-use bulk-export --format jsonl
 </code></pre>
 <h3>Piping</h3>
-<p><code>bulk-export --format jsonl</code> emits one JSON line per conversation, suitable for
+<p><code>bulk-export --format jsonl</code> emits one JSON line per session, suitable for
 piping:</p>
 <pre><code class="language-bash">polylogue -p claude-code bulk-export --format jsonl | jq '.title'
 polylogue --since &quot;last month&quot; bulk-export --format jsonl | wc -l
@@ -398,7 +398,7 @@ polylogue --since &quot;last month&quot; bulk-export --format jsonl | wc -l
 </tr>
 <tr>
 <td><code>json</code></td>
-<td>Full conversation as structured JSON</td>
+<td>Full session as structured JSON</td>
 </tr>
 <tr>
 <td><code>jsonl</code></td>

@@ -388,7 +388,7 @@ Fields: <code>summary</code>, <code>rationale</code>, <code>alternatives_rejecte
 Fields: <code>summary</code>, <code>failure_mode</code>, <code>session_id</code>, <code>recorded_at</code>.</p>
 <h3>HotFile</h3>
 <p>A file that consistently causes issues or is central to the architecture.
-Example: &quot;schema_ddl.py — changing this requires schema version bump and
+Example: &quot;archive_tiers/index.py — changing this requires index-tier version bump and
 regenerating all test fixtures.&quot;
 Fields: <code>path</code>, <code>why_hot</code>, <code>last_modified_session_id</code>, <code>recorded_at</code>.</p>
 <h3>Pattern</h3>
@@ -449,7 +449,7 @@ surfaced, not silently resolved.</p>
 <pre><code>[Project Memory — polylogue]
 Recent decisions (2):
 - Chose WAL mode over rollback journal (2026-04-15)
-- Schema is fresh-only, no migration chain (2026-03-10)
+- Schema is fresh-only, no in-place upgrade chain (2026-03-10)
 
 Active patterns (3):
 - All SQLite writes use BEGIN IMMEDIATE
@@ -457,7 +457,7 @@ Active patterns (3):
 - ...
 
 Hot files (3):
-- polylogue/storage/sqlite/schema_ddl.py — schema version authority
+- polylogue/storage/sqlite/archive_tiers/index.py — index-tier schema authority
 - ...
 
 Stale warnings (1):
@@ -539,7 +539,7 @@ machine-observed and stored in the archive. They serve different needs:</p>
 says &quot;we tried switching to rollback journal in session X and it caused Y.&quot;</p>
 <h2>Build Order</h2>
 <ol>
-<li><code>project_memory</code> table + migration</li>
+<li><code>project_memory</code> table + backfill</li>
 <li>MCP tools (read-only first: search + get)</li>
 <li>SessionStart hook injection with ranking formula</li>
 <li>Agent-initiated recording (write tool)</li>

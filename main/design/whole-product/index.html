@@ -361,11 +361,11 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             
 <h1>Whole Product Vision</h1>
 <p>Polylogue: your AI memory.</p>
-<p>A local archive that remembers every AI conversation so you can find, trace,
+<p>A local archive that remembers every AI session so you can find, trace,
 and understand your AI-assisted work across days, months, and years.</p>
 <h2>One-Line Description</h2>
-<p>Polylogue records every AI conversation, makes it searchable, and surfaces
-patterns you didn't know were there — all from a single SQLite file on your
+<p>Polylogue records every AI session, makes it searchable, and surfaces
+patterns you didn't know were there — all from a local SQLite archive on your
 machine.</p>
 <h2>First Experience</h2>
 <h3>30 seconds: bare <code>polylogue</code></h3>
@@ -373,7 +373,7 @@ machine.</p>
 <pre><code>$ polylogue
 
 Polylogue — your AI memory
-Archive: /home/user/.local/share/polylogue/polylogue.db
+Archive: /home/user/.local/share/polylogue/
 Sources configured: 1  (1 active, 0 stale)
 Last ingestion: 2 minutes ago
 
@@ -382,7 +382,7 @@ Recent activity (7 days):
   chatgpt       2 sessions    3,200 words  $0.00
 
   Today                                    This week
-  polylogue/docs/design/time-machine.md   polylogue/storage/sqlite/schema_ddl.py
+  polylogue/docs/design/time-machine.md   polylogue/storage/sqlite/archive_tiers/index.py
   ── 2h 15min, 4 tool calls             ── 8 sessions, $1.20
 
 Quick search: polylogue &quot;error handling&quot;
@@ -394,15 +394,15 @@ glance, and gets immediate next actions.</p>
 <p>Time budget: &lt;500ms wall clock. Achievable because the status query is a
 handful of indexed <code>COUNT</code> and <code>SUM</code> queries.</p>
 <h3>5 minutes: first search</h3>
-<pre><code>$ polylogue &quot;schema migration&quot;
-  claude-code:abc123  2026-03-10  Schema is fresh-only, no migration chain
-  claude-code:def456  2026-03-15  Considered v3→v4 migration, rejected
+<pre><code>$ polylogue &quot;schema rebuild&quot;
+  claude-code:abc123  2026-03-10  Schema is fresh-only, no in-place upgrade chain
+  claude-code:def456  2026-03-15  Considered v3-&gt;v4 rebuild, accepted
   claude-code:ghi789  2026-04-02  FTS rowid repair — schema impact
   3 results (23ms)
 </code></pre>
 <p>The user searches for a concept they remember discussing. Results appear
 instantly. Clicking any result (in the web UI) or running <code>polylogue show</code>
-(in the CLI) opens the full conversation.</p>
+(in the CLI) opens the full session.</p>
 <h3>15 minutes: first insight</h3>
 <p>The user runs <code>polylogue stats</code> and sees something they didn't know:</p>
 <pre><code>$ polylogue stats
@@ -476,7 +476,7 @@ Projection (month): ~$78 based on current rate.
 their repos. The SessionStart hook now injects:</p>
 <pre><code>[Project Memory — polylogue]
 Recent decisions (3):
-- Schema is fresh-only, no migration chain (2026-03-10, 55 days ago)
+- Schema is fresh-only, no in-place upgrade chain (2026-03-10, 55 days ago)
 - Content hash excludes user metadata (2026-03-15, 50 days ago)
 - FTS5 tokenizer is unicode61, no porter stemmer (2026-03-20, 45 days ago)
 </code></pre>
@@ -561,7 +561,7 @@ network latency, no server round-trip, no cloud dependency.</p>
 &quot;where did that come from?&quot;</p>
 <ul>
 <li><strong>Content hashing</strong>: archive writes are idempotent by SHA-256. If a
-conversation was ingested, its content hasn't been silently modified.</li>
+session was ingested, its content hasn't been silently modified.</li>
 <li><strong>Verification dashboard</strong>: <code>polylogue check</code> audits the archive for
 integrity — schema consistency, foreign key violations, orphan records,
 FTS5 index health.</li>
@@ -631,16 +631,16 @@ presentation, not capability.</p>
 <td>Search bar</td>
 </tr>
 <tr>
-<td>List conversations</td>
+<td>List sessions</td>
 <td><code>polylogue list --since ...</code></td>
-<td><code>polylogue_list_conversations</code></td>
-<td>Conversation list</td>
+<td><code>polylogue_list_sessions</code></td>
+<td>Session list</td>
 </tr>
 <tr>
-<td>Show conversation</td>
+<td>Show session</td>
 <td><code>polylogue show &lt;id&gt;</code></td>
-<td><code>polylogue_get_conversation</code></td>
-<td>Conversation detail page</td>
+<td><code>polylogue_get_session</code></td>
+<td>Session detail page</td>
 </tr>
 <tr>
 <td>Stats</td>
@@ -711,7 +711,7 @@ presentation, not capability.</p>
 <tr>
 <td>Tags</td>
 <td><code>polylogue tags</code></td>
-<td><code>polylogue_tag_conversation</code></td>
+<td><code>polylogue_tag_session</code></td>
 <td>Tag editor</td>
 </tr>
 <tr>
@@ -745,10 +745,10 @@ telemetry, no sync, no accounts.</li>
 usage; <a href="http://CLAUDE.md">CLAUDE.md</a> provides instructions <em>for</em> AI usage.</li>
 <li>Not a project management tool. Polylogue surfaces work that happened; it
 does not plan work that should happen.</li>
-<li>Not a code search engine. FTS5 indexes conversation text, not code
-repositories. Cross-reference between conversations and code is via
-<code>action_events.affected_paths</code>, not via code indexing.</li>
-<li>Not a general note-taking tool. Polylogue is for AI conversations
+<li>Not a code search engine. FTS5 indexes session text, not code
+repositories. Cross-reference between sessions and code is via
+<code>actions.affected_paths</code>, not via code indexing.</li>
+<li>Not a general note-taking tool. Polylogue is for AI sessions
 specifically. General notes, todos, and documentation belong in a
 knowledgebase, not in the archive.</li>
 </ul>

@@ -363,7 +363,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <p>For the target shape, guardrails, and architectural decision log, see
 <a href="architecture-spine.md">Architecture Spine</a>. For current sequencing and active
 workstreams, see <a href="execution-plan.md">Execution Plan</a>.</p>
-<p>Polylogue is a local archive for AI conversations. The system has four rings:</p>
+<p>Polylogue is a local archive for AI sessions. The system has four rings:</p>
 <ol>
 <li>archive substrate</li>
 <li>derived read models</li>
@@ -490,52 +490,48 @@ convergence stages.</p>
 </tbody>
 </table>
 <p><code>detect_provider()</code> calls each parser's <code>looks_like()</code> in order.</p>
-<h2>Dual Vocabulary Period: Provider and Source</h2>
-<p>The codebase is in a transition between two overlapping vocabularies
-for conversation origins:</p>
+<h2>Provider and Origin Vocabulary</h2>
+<p>The codebase has two origin-related vocabularies with different scopes:</p>
 <ul>
-<li><strong><code>Provider</code></strong> (<code>polylogue/types.py</code>): the legacy enum carried by
-every public surface — <code>provider_name</code> storage column, CLI
-<code>--provider</code> filter, MCP <code>provider</code> parameter, daemon facet labels.
+<li><strong><code>Provider</code></strong> (<code>polylogue/types.py</code>): the provider-wire enum used by
+provider-wire parsing, provider schema packages, and some internal storage
+adapters. It previously leaked into public surfaces such as the CLI
+<code>--provider</code> filter, MCP <code>provider</code> parameter, and daemon facet labels.
 Mixes lab identity (OpenAI, Anthropic, Google), product/runtime
 identity (Claude Code, Codex), and source-family identity
 (claude-code-session vs claude-ai-export) into one token. See the
 vocabulary table in <code>polylogue/core/provider_identity.py</code> for the
 detailed conflation surface.</li>
-<li><strong><code>Source</code></strong> (<code>polylogue/core/sources.py</code>): the source-centered
-replacement. A <code>Source</code> is an immutable dataclass with three fields
-— <code>family</code> (e.g. <code>claude-code-session</code>), <code>runtime_root</code> (e.g.
-<code>~/.claude/projects</code>), and <code>originating_lab</code> (e.g. <code>anthropic</code>).
-Every <code>Provider</code> has a canonical <code>Source</code> via
-<code>provider_to_source(Provider) -&gt; Source</code>; <code>source_to_provider</code>
-performs the reverse lookup.</li>
+<li><strong><code>Origin</code></strong> (<code>polylogue/core/enums.py</code>): the public source-origin token
+carried by query surfaces and archive read payloads, such as
+<code>claude-code-session</code>, <code>claude-ai-export</code>, and <code>chatgpt-export</code>.
+Public filters use <code>origin</code>; internal bridges still map origins to
+canonical provider tokens where older storage/insight contracts have not
+been renamed yet.</li>
+<li><strong><code>Source</code></strong> (<code>polylogue/core/sources.py</code>): the richer source-centered
+identity used for runtime roots and lab attribution. A <code>Source</code> is an
+immutable dataclass with <code>family</code>, <code>runtime_root</code>, and <code>originating_lab</code>.</li>
 </ul>
-<p>This PR introduces only the typed <code>Source</code> surface alongside the
-existing <code>Provider</code> enum. <strong>It does not rename any storage column,
-CLI flag, MCP parameter, or public field</strong>: those renames are
-deliberately staged into later PRs so each one can land with a
-focused review and migration plan. The two vocabularies coexist for
-the duration of the transition.</p>
-<p>Planned migration sequencing (each is a separate later PR under
-#1022):</p>
+<p>The primary CLI/MCP/API/daemon read surfaces use origin vocabulary. <code>Provider</code>
+remains only for raw export, schema-package, and provider-metadata boundaries.
+The remaining internal provider-token adapters are cleanup targets, not an
+alternate archive mode.</p>
+<p>Cleanup sequencing:</p>
 <ol>
-<li>CLI/MCP/API surfaces gain <code>source</code> parameter aliases that accept
-source-family tokens; the existing <code>provider</code> parameter stays as a
-compatibility alias.</li>
-<li>Internal callers switch from <code>Provider</code> to <code>Source</code> at boundaries
-where lab identity and runtime identity need to be distinguished
+<li>Internal callers switch from provider-token filters to origin filters at
+boundaries where lab identity and runtime identity need to be distinguished
 (e.g. analytics, cost rollups, source-discovery).</li>
-<li>Storage column <code>provider_name</code> either stays as a physical-schema
-compatibility artifact (documented as legacy) or is renamed via an
-explicit schema-version transition.</li>
+<li>Storage columns that still carry provider-token names are either renamed in
+the canonical DDL or kept only where their contract is provider-wire.</li>
 <li>Provider-wire schemas under <code>schemas/providers/</code> are retained as
 lab/provider-scope artifacts — they describe raw export shapes and
 stay keyed by lab/product, not by source family.</li>
 </ol>
-<p>Anti-goal: a half-renamed surface where some flags say <code>provider</code> and
-others say <code>source</code>. Each surface flips wholesale or not at all.</p>
+<p>Anti-goal: provider wording on source-origin public filters or payloads.
+Provider remains valid only where the contract is truly provider-wire,
+schema-package, provider metadata, or embedding-provider terminology.</p>
 <h2>Antigravity Language-Server Export Path</h2>
-<p>Antigravity persists its conversation transcripts as opaque non-protobuf
+<p>Antigravity persists its session transcripts as opaque non-protobuf
 <code>conversations/*.pb</code> and <code>implicit/*.pb</code> blobs that cannot be statically
 decoded. The installed Antigravity language server binary
 (<code>language_server_linux_x64</code>) exposes two endpoints over a local HTTP loopback
@@ -550,7 +546,7 @@ port that together form the supported export surface:</p>
 <tbody>
 <tr>
 <td><code>/exa.language_server_pb.LanguageServerService/SearchConversations</code></td>
-<td>Returns cascade IDs, titles, workspace names, snippets, and <code>lastModifiedTime</code> for stored conversations.</td>
+<td>Returns cascade IDs, titles, workspace names, snippets, and <code>lastModifiedTime</code> for stored sessions.</td>
 </tr>
 <tr>
 <td><code>/exa.language_server_pb.LanguageServerService/ConvertTrajectoryToMarkdown</code></td>
@@ -568,7 +564,7 @@ process down on close.</li>
 <code>POLYLOGUE_ANTIGRAVITY_LANGUAGE_SERVER</code> env var, <code>$PATH</code>, then the highest
 matching <code>/nix/store/*-antigravity-*</code> extension bundle.</li>
 <li><code>iter_language_server_exports(root)</code> drives <code>SearchConversations</code> and
-<code>ConvertTrajectoryToMarkdown</code> and yields <code>ParsedConversation</code> objects through
+<code>ConvertTrajectoryToMarkdown</code> and yields <code>ParsedSession</code> objects through
 <code>parse_markdown_export()</code>.</li>
 </ul>
 <p>The ingest path is layered in <code>polylogue/sources/source_parsing.py</code>: when the
@@ -576,7 +572,7 @@ source is <code>antigravity</code> and a <code>conversations/</code> subdirector
 language-server export runs first; any <code>AntigravityExportError</code> (binary not
 found, connection failure, malformed response) is logged and the source falls
 back to the existing brain-artifact metadata walk. Both paths emit normalized
-<code>Provider.ANTIGRAVITY</code> conversations.</p>
+<code>Provider.ANTIGRAVITY</code> sessions.</p>
 <h2>Key Abstractions</h2>
 <table>
 <thead>
@@ -593,7 +589,7 @@ back to the existing brain-artifact metadata walk. Both paths emit normalized
 <td>Async entry point. Wraps storage + search + pipeline.</td>
 </tr>
 <tr>
-<td><code>ConversationRepository</code></td>
+<td><code>SessionRepository</code></td>
 <td><code>storage/repository/__init__.py</code></td>
 <td>Mixin-composed async repository (9 mixins: archive reads/writes, action reads, insight readers for profile/timeline/thread/summary, raw, vectors).</td>
 </tr>
@@ -603,7 +599,7 @@ back to the existing brain-artifact metadata walk. Both paths emit normalized
 <td>FTS5 and Hybrid (RRF fusion) implementations.</td>
 </tr>
 <tr>
-<td><code>ConversationFilter</code></td>
+<td><code>SessionFilter</code></td>
 <td><code>archive/filter/filters.py</code></td>
 <td>Fluent filter chain used by CLI, MCP, and facade.</td>
 </tr>
@@ -615,27 +611,32 @@ back to the existing brain-artifact metadata walk. Both paths emit normalized
 <tr>
 <td><code>ContentHash</code></td>
 <td><code>pipeline/ids.py</code></td>
-<td>SHA-256 over NFC-normalized conversation payload. Title, timestamps, messages, attachments are hashed. User metadata (tags, summaries) is excluded — editable metadata doesn't trigger re-import.</td>
+<td>SHA-256 over NFC-normalized session payload. Title, timestamps, messages, attachments are hashed. User metadata (tags, summaries) is excluded — editable metadata doesn't trigger re-import.</td>
 </tr>
 <tr>
 <td><code>Provider</code> enum</td>
 <td><code>types.py</code></td>
-<td>Legacy source identifier — 9 known providers + UNKNOWN. Public surfaces still flow through this enum during the dual-vocabulary period.</td>
+<td>Legacy/provider-wire identifier used by parsers, schemas, provider metadata, and compatibility bridges.</td>
+</tr>
+<tr>
+<td><code>Origin</code> enum</td>
+<td><code>core/enums.py</code></td>
+<td>Public source-origin identity used by query/read surfaces and archive payloads.</td>
 </tr>
 <tr>
 <td><code>Source</code> dataclass</td>
 <td><code>core/sources.py</code></td>
-<td>Source-centered identity (<code>family</code>, <code>runtime_root</code>, <code>originating_lab</code>). Parallel to <code>Provider</code>; see &quot;Dual Vocabulary Period&quot; above.</td>
+<td>Source-centered identity (<code>family</code>, <code>runtime_root</code>, <code>originating_lab</code>) used for runtime roots and lab attribution.</td>
 </tr>
 <tr>
 <td><code>TopologyEdgeRecord</code></td>
 <td><code>archive/topology/edge.py</code></td>
-<td>Typed cross-conversation parent reference. Persisted in <code>topology_edges</code> even when the parent has not yet been ingested (#1258) so out-of-order ingest and sidechain/subagent edges are durable. Closed <code>TopologyEdgeType</code> / <code>TopologyEdgeStatus</code> enums centralize the vocabulary.</td>
+<td>Typed cross-session parent reference. Persisted in <code>topology_edges</code> even when the parent has not yet been ingested (#1258) so out-of-order ingest and sidechain/subagent edges are durable. Closed <code>TopologyEdgeType</code> / <code>TopologyEdgeStatus</code> enums centralize the vocabulary.</td>
 </tr>
 <tr>
 <td>Logical Session ID</td>
-<td><code>session_profiles.logical_conversation_id</code></td>
-<td>Materialized root conversation for continuation/fork/subagent lineages. Rollups expose <code>logical_session_count</code> alongside physical <code>conversation_count</code>, and <code>get_logical_session()</code> returns the compact read-pull lineage envelope.</td>
+<td><code>session_profiles.logical_session_id</code></td>
+<td>Materialized root session for continuation/fork/subagent lineages. Rollups expose <code>logical_session_count</code> alongside physical <code>session_count</code>, and <code>get_logical_session()</code> returns the compact read-pull lineage envelope.</td>
 </tr>
 </tbody>
 </table>
@@ -650,16 +651,16 @@ back to the existing brain-artifact metadata walk. Both paths emit normalized
 </thead>
 <tbody>
 <tr>
-<td><code>conversation_document</code></td>
-<td>A single conversation (Claude Code JSONL, ChatGPT JSON)</td>
+<td><code>session_document</code></td>
+<td>A single session (Claude Code JSONL, ChatGPT JSON)</td>
 </tr>
 <tr>
-<td><code>conversation_record_stream</code></td>
-<td>Stream of conversation events</td>
+<td><code>session_record_stream</code></td>
+<td>Stream of session events</td>
 </tr>
 <tr>
-<td><code>subagent_conversation_stream</code></td>
-<td>Sidechain sub-agent conversation</td>
+<td><code>subagent_session_stream</code></td>
+<td>Sidechain sub-agent session</td>
 </tr>
 <tr>
 <td><code>agent_sidecar_meta</code></td>
@@ -716,7 +717,7 @@ full permission audit trail (PermissionRequest/PermissionDenied).</p>
 FTS5 + vector via Reciprocal Rank Fusion</li>
 <li><strong>Integration</strong>: Daemon-side post-ingest and ambient catch-up embedding is
 opt-in via <code>embedding_enabled = true</code> in <code>polylogue.toml</code> with a valid
-<code>voyage_api_key</code>. When enabled, the daemon drains pending conversations in
+<code>voyage_api_key</code>. When enabled, the daemon drains pending sessions in
 bounded windows and records catch-up progress; when disabled, no embedding
 provider calls are made (<a href="https://github.com/Sinity/polylogue/issues/1503">#1503</a>).</li>
 </ul>
@@ -740,7 +741,7 @@ provider calls are made (<a href="https://github.com/Sinity/polylogue/issues/150
 </tr>
 <tr>
 <td><code>polylogue embed backfill</code></td>
-<td>Run a bounded, resumable embedding batch with per-conversation cost feedback; honours <code>embedding_max_cost_usd</code> as a soft cap and persists run progress.</td>
+<td>Run a bounded, resumable embedding batch with per-session cost feedback; honours <code>embedding_max_cost_usd</code> as a soft cap and persists run progress.</td>
 </tr>
 <tr>
 <td><code>polylogue embed disable</code></td>
@@ -753,8 +754,8 @@ provider calls are made (<a href="https://github.com/Sinity/polylogue/issues/150
 </tbody>
 </table>
 <p>The CLI orchestrates substrate primitives under
-<code>polylogue.storage.embeddings</code> (<code>iter_pending_conversations</code>,
-<code>embed_conversation_sync</code>, <code>embedding_catchup_runs</code>) and the cost constants
+<code>polylogue.storage.embeddings</code> (<code>iter_pending_sessions</code>,
+<code>embed_session_sync</code>, <code>embedding_catchup_runs</code>) and the cost constants
 <code>ESTIMATED_TOKENS_PER_MESSAGE</code> / <code>VOYAGE_4_COST_PER_1M_TOKENS</code> from
 <code>polylogue.storage.search_providers.sqlite_vec_support</code>.</p>
 <h3>Search defaults (#1217)</h3>
@@ -790,10 +791,10 @@ is a historical alias for this row-group view of <code>artifact_observations</co
 </ul>
 <h2>Database</h2>
 <ul>
-<li>Single SQLite file, WAL mode.</li>
-<li>Schema is fresh-first: version mismatches are rejected unless an explicit,
-reviewed in-place upgrade exists for that exact transition. <code>SCHEMA_VERSION</code>
-lives in <code>storage/sqlite/schema_ddl.py</code>.</li>
+<li>Archive SQLite file set, WAL mode.</li>
+<li>Schema is fresh-first: version mismatches are rejected and the affected tier
+is rebuilt from source/user evidence. Tier DDL and versions live under
+<code>storage/sqlite/archive_tiers/</code>.</li>
 <li>FTS5 with <code>unicode61</code> tokenizer (no porter stemmer in this SQLite build).</li>
 </ul>
 <h2>Placement Rules</h2>

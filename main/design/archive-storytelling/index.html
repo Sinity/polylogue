@@ -360,7 +360,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
         <main class="content">
             
 <h1>Archive Storytelling</h1>
-<p>Narrative generation from AI conversation archives. Stories are not analytics
+<p>Narrative generation from AI session archives. Stories are not analytics
 reports — they are readable narratives that answer &quot;how did that happen&quot; by
 tracing the archive for patterns, arcs, and origins.</p>
 <h2>Design Properties</h2>
@@ -381,7 +381,7 @@ a session through its implementation arc to production.</p>
 <p>The story follows this template:</p>
 <ol>
 <li><strong>Genesis</strong>: first session where the feature is mentioned. The exact prompt
-or conversation excerpt. Date, repo context, session link.</li>
+or session excerpt. Date, repo context, session link.</li>
 <li><strong>Design sessions</strong>: sessions where the feature was discussed, planned, or
 explored but not yet implemented. Key decisions, alternatives rejected.</li>
 <li><strong>Implementation arc</strong>: sessions where files were created or modified for
@@ -392,10 +392,10 @@ done. Duration from genesis to completion.</li>
 2 weeks of completion.</li>
 </ol>
 <p>Discovery: the user provides a file path, branch name, or keyword. The story
-engine searches <code>action_events.affected_paths</code> and <code>session_profiles.repo_paths_json</code>
+engine searches <code>actions.affected_paths</code> and <code>session_profiles.repo_paths_json</code>
 for matches, traces the sessions forward in time, and assembles the narrative.</p>
 <p>CLI:</p>
-<pre><code>polylogue story feature-birth --path polylogue/storage/sqlite/schema_ddl.py
+<pre><code>polylogue story feature-birth --path polylogue/storage/sqlite/archive_tiers/index.py
 polylogue story feature-birth --branch feature/feat/time-machine
 polylogue story feature-birth --keyword &quot;content hash&quot;
 </code></pre>
@@ -423,7 +423,7 @@ ratio, providers used.</li>
 </ol>
 <p>Discovery: the user provides a date. The story engine queries <code>session_profiles</code>
 with <code>canonical_session_date = :date</code>, orders by <code>first_message_at</code>, enriches
-with <code>action_events.affected_paths</code> for each session, and renders the template.</p>
+with <code>actions.affected_paths</code> for each session, and renders the template.</p>
 <p>CLI:</p>
 <pre><code>polylogue story day-in-life --date 2026-03-17
 polylogue story day-in-life --date yesterday
@@ -451,7 +451,7 @@ in message text.</li>
 <li>Orders them by date.</li>
 <li>Detects phase boundaries (gaps &gt;2 days without a session touching the
 branch).</li>
-<li>For each phase, collects affected paths from <code>action_events</code>.</li>
+<li>For each phase, collects affected paths from <code>actions</code>.</li>
 <li>Computes cumulative word count, tool usage, and cost per phase.</li>
 <li>Renders the template.</li>
 </ol>
@@ -502,37 +502,37 @@ no external services. Total implementation estimated at ~650 LOC of Python
 <p><strong>Feature Birth</strong> (core query):</p>
 <pre><code class="language-sql">-- Find sessions touching a file, ordered by first occurrence
 SELECT
-    sp.conversation_id, sp.canonical_session_date, sp.title,
+    sp.session_id, sp.canonical_session_date, sp.title,
     ae.affected_paths
 FROM session_profiles sp
-JOIN action_events ae ON sp.conversation_id = ae.conversation_id
+JOIN actions ae ON sp.session_id = ae.session_id
 WHERE ae.affected_paths LIKE '%' || :file_path || '%'
 ORDER BY sp.canonical_session_date ASC;
 </code></pre>
 <p><strong>Day in the Life</strong>:</p>
 <pre><code class="language-sql">-- Single day's sessions with enrichment
 SELECT
-    sp.conversation_id, sp.canonical_session_date, sp.title,
+    sp.session_id, sp.canonical_session_date, sp.title,
     sp.first_message_at, sp.last_message_at,
     sp.provider_name, sp.word_count, sp.tool_use_count,
     sp.thinking_count, sp.total_cost_usd, sp.total_duration_ms,
     sp.total_cost_usd, sp.repo_names_json, sp.tags_json,
     ae.affected_paths
 FROM session_profiles sp
-LEFT JOIN action_events ae ON sp.conversation_id = ae.conversation_id
+LEFT JOIN actions ae ON sp.session_id = ae.session_id
 WHERE sp.canonical_session_date = :date
 ORDER BY sp.first_message_at ASC;
 </code></pre>
 <p><strong>The Big Refactor</strong> (phase detection):</p>
 <pre><code class="language-sql">-- Sessions spanning 3+ days on the same file set, with gap detection
 SELECT
-    sp.conversation_id, sp.canonical_session_date,
+    sp.session_id, sp.canonical_session_date,
     sp.first_message_at, sp.word_count, sp.tool_use_count,
     ae.affected_paths
 FROM session_profiles sp
-JOIN action_events ae ON sp.conversation_id = ae.conversation_id
-WHERE sp.conversation_id IN (
-    SELECT DISTINCT conversation_id
+JOIN actions ae ON sp.session_id = ae.session_id
+WHERE sp.session_id IN (
+    SELECT DISTINCT session_id
     FROM session_profiles
     WHERE auto_tags_json LIKE '%' || :branch || '%'
        OR search_text LIKE '%' || :branch || '%'
@@ -561,7 +561,7 @@ ORDER BY month ASC;
 <p>Stories are rendered as Markdown with embedded links to the web UI or
 local session files. No HTML, no JavaScript — the Markdown output is
 readable in any editor, viewable on GitHub, and shareable as-is.</p>
-<p>Each story section includes a &quot;Verify&quot; link pointing to the conversation
+<p>Each story section includes a &quot;Verify&quot; link pointing to the session
 that sourced the claim. This is the provenance guarantee in action.</p>
 <p>Example output (Feature Birth):</p>
 <pre><code class="language-markdown"># Feature Birth: Content Hash
@@ -570,15 +570,15 @@ that sourced the claim. This is the provenance guarantee in action.</p>
 First mentioned in a session with Claude Code while debugging
 duplicate ingestion. The user asked:
 
-&gt; &quot;Why does ingestion re-import the same conversation twice?&quot;
+&gt; &quot;Why does ingestion re-import the same session twice?&quot;
 
-[See full session →](polylogue://conversation/claude-code:abc123)
+[See full session →](polylogue://session/claude-code:abc123)
 
 ## Design Sessions
 ### 2025-11-03 (later same day)
 Decision: use SHA-256 over NFC-normalized payload. Rejected
 content-addressable blob store as premature.
-[See full session →](polylogue://conversation/claude-code:def456)
+[See full session →](polylogue://session/claude-code:def456)
 ...
 </code></pre>
 <h2>Verification</h2>

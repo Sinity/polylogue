@@ -383,7 +383,7 @@ local workstation layout, shell workflow, or agent-side <code>/history</code> to
 <h2>Model &amp; Token Extraction</h2>
 <ul>
 <li>Extracts model slug, token usage (input/output/cache), and stop reason from message content.</li>
-<li>Builds conversation-level cost and duration aggregates from message metadata.</li>
+<li>Builds session-level cost and duration aggregates from message metadata.</li>
 <li>Detects sidechain sessions and branch types.</li>
 </ul>
 <h2>Current Behavior</h2>
@@ -391,7 +391,7 @@ local workstation layout, shell workflow, or agent-side <code>/history</code> to
 <li>Normalizes roles via ClaudeCodeRecord.role property (user/assistant/system/unknown).</li>
 <li>Extracts text via content_blocks_raw property with fallback to structured fields.</li>
 <li>Captures working directories and models used across the session.</li>
-<li>Enriches conversation metadata from sessions-index.json when available.</li>
+<li>Enriches session metadata from sessions-index.json when available.</li>
 </ul>
 <h2>Operational Notes</h2>
 <ul>

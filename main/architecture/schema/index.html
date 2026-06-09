@@ -361,13 +361,13 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             
 <p><a href="README.md">← Back to Docs</a></p>
 <h1>Database Schema</h1>
-<p>Polylogue stores all data in a single SQLite database with WAL mode enabled. The
-schema is versioned and uses fresh-first initialization: version mismatches are
-rejected unless an explicit upgrade migration exists for that exact transition.</p>
+<p>Polylogue stores archive data in split SQLite files with WAL mode enabled. The
+schema is fresh-first: version mismatches are rejected; the operator rebuilds
+the archive from source.</p>
 <p><strong>Current schema version: 6.</strong></p>
 <h2>Core Tables</h2>
-<h3>conversations</h3>
-<p>The primary archive entity. One row per imported conversation.</p>
+<h3>sessions</h3>
+<p>The primary archive entity. One row per imported session.</p>
 <table>
 <thead>
 <tr>
@@ -378,7 +378,7 @@ rejected unless an explicit upgrade migration exists for that exact transition.<
 </thead>
 <tbody>
 <tr>
-<td><code>conversation_id</code></td>
+<td><code>session_id</code></td>
 <td>TEXT PK</td>
 <td>Composite ID (<code>provider:provider_id</code>)</td>
 </tr>
@@ -388,14 +388,14 @@ rejected unless an explicit upgrade migration exists for that exact transition.<
 <td>Provider enum value</td>
 </tr>
 <tr>
-<td><code>provider_conversation_id</code></td>
+<td><code>provider_session_id</code></td>
 <td>TEXT</td>
 <td>Provider's native ID</td>
 </tr>
 <tr>
 <td><code>title</code></td>
 <td>TEXT</td>
-<td>Conversation title</td>
+<td>Session title</td>
 </tr>
 <tr>
 <td><code>created_at</code></td>
@@ -433,9 +433,9 @@ rejected unless an explicit upgrade migration exists for that exact transition.<
 <td>Schema version at write time</td>
 </tr>
 <tr>
-<td><code>parent_conversation_id</code></td>
+<td><code>parent_session_id</code></td>
 <td>TEXT FK</td>
-<td>Parent conversation (branches/continuations)</td>
+<td>Parent session (branches/continuations)</td>
 </tr>
 <tr>
 <td><code>branch_type</code></td>
@@ -450,7 +450,7 @@ rejected unless an explicit upgrade migration exists for that exact transition.<
 </tbody>
 </table>
 <h3>messages</h3>
-<p>Individual messages within a conversation.</p>
+<p>Individual messages within a session.</p>
 <table>
 <thead>
 <tr>
@@ -466,9 +466,9 @@ rejected unless an explicit upgrade migration exists for that exact transition.<
 <td>Unique message ID</td>
 </tr>
 <tr>
-<td><code>conversation_id</code></td>
+<td><code>session_id</code></td>
 <td>TEXT FK</td>
-<td>Parent conversation</td>
+<td>Parent session</td>
 </tr>
 <tr>
 <td><code>role</code></td>
@@ -483,7 +483,7 @@ rejected unless an explicit upgrade migration exists for that exact transition.<
 <tr>
 <td><code>sort_key</code></td>
 <td>REAL</td>
-<td>Message order within conversation</td>
+<td>Message order within session</td>
 </tr>
 <tr>
 <td><code>content_hash</code></td>
@@ -556,9 +556,9 @@ queries for provider analytics.</p>
 <td>Parent message</td>
 </tr>
 <tr>
-<td><code>conversation_id</code></td>
+<td><code>session_id</code></td>
 <td>TEXT FK</td>
-<td>Denormalized parent conversation</td>
+<td>Denormalized parent session</td>
 </tr>
 <tr>
 <td><code>block_index</code></td>
@@ -602,7 +602,7 @@ queries for provider analytics.</p>
 </tr>
 </tbody>
 </table>
-<h3>action_events</h3>
+<h3>actions</h3>
 <p>Normalized action records derived from content blocks.</p>
 <table>
 <thead>
@@ -619,9 +619,9 @@ queries for provider analytics.</p>
 <td>Unique event ID</td>
 </tr>
 <tr>
-<td><code>conversation_id</code></td>
+<td><code>session_id</code></td>
 <td>TEXT FK</td>
-<td>Parent conversation</td>
+<td>Parent session</td>
 </tr>
 <tr>
 <td><code>message_id</code></td>
@@ -660,8 +660,8 @@ queries for provider analytics.</p>
 </tr>
 </tbody>
 </table>
-<h3>conversation_stats</h3>
-<p>Precomputed per-conversation aggregates, updated atomically with message writes.</p>
+<h3>session_stats</h3>
+<p>Precomputed per-session aggregates, updated atomically with message writes.</p>
 <table>
 <thead>
 <tr>
@@ -672,9 +672,9 @@ queries for provider analytics.</p>
 </thead>
 <tbody>
 <tr>
-<td><code>conversation_id</code></td>
+<td><code>session_id</code></td>
 <td>TEXT PK FK</td>
-<td>Parent conversation</td>
+<td>Parent session</td>
 </tr>
 <tr>
 <td><code>provider_name</code></td>
@@ -724,11 +724,11 @@ queries for provider analytics.</p>
 <td>File attachments with M:N message refs</td>
 </tr>
 <tr>
-<td><code>tags</code> / <code>conversation_tags</code></td>
+<td><code>tags</code> / <code>session_tags</code></td>
 <td>M:N tag assignments (replaced JSON <code>metadata.tags</code>)</td>
 </tr>
 <tr>
-<td><code>raw_conversations</code></td>
+<td><code>raw_sessions</code></td>
 <td>Raw import records before parsing</td>
 </tr>
 </tbody>
@@ -745,12 +745,7 @@ queries for provider analytics.</p>
 <tbody>
 <tr>
 <td><code>messages_fts</code></td>
-<td>Message text</td>
-<td><code>unicode61</code></td>
-</tr>
-<tr>
-<td><code>action_events_fts</code></td>
-<td>Action event text</td>
+<td>Block text, including tool-use/tool-result action evidence</td>
 <td><code>unicode61</code></td>
 </tr>
 <tr>
@@ -765,16 +760,15 @@ queries for provider analytics.</p>
 </tr>
 </tbody>
 </table>
-<p>All FTS tables use <code>unicode61</code> tokenizer (no porter stemmer). The message and
-action-event indexes are external-content FTS5 tables backed by
-<code>messages</code>/<code>action_events</code>; FTS sync triggers maintain the indexes and startup
-repair verifies the trigger set.</p>
+<p>All FTS tables use <code>unicode61</code> tokenizer (no porter stemmer). <code>messages_fts</code>
+is contentless and populated from <code>blocks</code>; action search is a filtered read
+over tool-use/tool-result blocks in that same index.</p>
 <h2>Vector Table</h2>
 <p><code>message_embeddings</code> uses the <code>vec0</code> virtual table extension:</p>
 <pre><code>message_id TEXT PRIMARY KEY
 embedding float[1024]
 +provider_name TEXT
-+conversation_id TEXT
++session_id TEXT
 </code></pre>
 <p>1024-dimensional float embeddings. Populated when <code>VOYAGE_API_KEY</code> is set and
 the embed pipeline stage runs. Used by the <code>--similar</code> filter and <code>hybrid</code>
@@ -839,7 +833,7 @@ a <code>search_text</code> column for FTS indexing.</p>
 </tr>
 <tr>
 <td><code>identity_ledger</code></td>
-<td>Conversation content-hash identity ledger</td>
+<td>Session content-hash identity ledger</td>
 </tr>
 </tbody>
 </table>
@@ -847,13 +841,12 @@ a <code>search_text</code> column for FTS indexing.</p>
 <p>Polylogue uses fresh-first schema initialization:</p>
 <ul>
 <li><strong>Version match</strong>: open database normally</li>
-<li><strong>New database</strong>: create all tables at current <code>SCHEMA_VERSION</code></li>
-<li><strong>Version mismatch</strong>: rejected with an error unless an explicit migration
-exists for that exact version transition</li>
+<li><strong>New database</strong>: create the current split archive tier files</li>
+<li><strong>Version mismatch</strong>: rejected with an error; rebuild the archive from source</li>
 </ul>
-<p>Schema version is declared in <code>polylogue/storage/sqlite/schema_ddl.py</code> as
-<code>SCHEMA_VERSION</code>. The bootstrap branching logic in <code>schema_bootstrap.py</code> handles
-both sync and async backends.</p>
+<p>Tier schema versions and DDL live under
+<code>polylogue/storage/sqlite/archive_tiers/</code>. The bootstrap branching logic in
+<code>schema_bootstrap.py</code> handles sync and async index-tier backends.</p>
 <h2>Schema Drift Detection</h2>
 <p>Run <code>polylogue check</code> to verify schema integrity:</p>
 <pre><code class="language-bash">polylogue check                     # Schema health + FK integrity

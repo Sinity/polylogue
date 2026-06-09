@@ -423,7 +423,7 @@ fallback.</p>
 <code>polylogue/types.py</code>. The enum normalizes string values via
 <code>canonical_runtime_provider()</code> and defaults to <code>UNKNOWN</code> for unrecognized
 strings.</p>
-<p>Conversation IDs use the composite format <code>provider:provider_id</code>:</p>
+<p>Session IDs use the composite format <code>provider:provider_id</code>:</p>
 <pre><code>claude-code:abc123
 chatgpt:def456
 claude-ai:ghi789
@@ -445,7 +445,7 @@ function in priority order. Detection is shape-based, not filename-based.</p>
 <tr>
 <td>Bundle record</td>
 <td>ChatGPT, <a href="http://Claude.ai">Claude.ai</a></td>
-<td>Single JSON object containing a complete conversation</td>
+<td>Single JSON object containing a complete session</td>
 </tr>
 <tr>
 <td>Grouped records</td>
@@ -462,7 +462,7 @@ function in priority order. Detection is shape-based, not filename-based.</p>
 <h2>Provider-Specific Parsing</h2>
 <h3>ChatGPT</h3>
 <p>Parses the ChatGPT export format: <code>mapping</code> dictionary with message nodes,
-parent/children graph, and author roles. Extracts conversation title from the
+parent/children graph, and author roles. Extracts session title from the
 first user message or the export metadata.</p>
 <h3><a href="http://Claude.ai">Claude.ai</a> / Claude Code</h3>
 <p><a href="http://Claude.ai">Claude.ai</a> exports use a <code>chat_messages</code> array with structured content blocks
@@ -475,7 +475,7 @@ from the envelope structure and extracts messages with their content blocks and
 tool use records.</p>
 <h3>Gemini / Drive</h3>
 <p>Gemini and Google Drive Takeout exports use a chunked prompt structure. The
-parser reconstructs conversations from <code>chunkedPrompt.chunks</code> arrays. Drive
+parser reconstructs sessions from <code>chunkedPrompt.chunks</code> arrays. Drive
 exports additionally handle Google Docs metadata.</p>
 <h2>Browser Capture</h2>
 <p>In addition to the six known providers, the daemon's browser capture receiver

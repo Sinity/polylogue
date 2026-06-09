@@ -378,7 +378,7 @@ debugging landmarks. For the conceptual system shape, see
 </tr>
 <tr>
 <td>Content hash excludes user metadata (tags, summaries)</td>
-<td><code>pipeline/ids.py:conversation_content_hash()</code></td>
+<td><code>pipeline/ids.py:session_content_hash()</code></td>
 </tr>
 <tr>
 <td>Content hash uses NFC normalization</td>
@@ -394,7 +394,7 @@ debugging landmarks. For the conceptual system shape, see
 </tr>
 <tr>
 <td>FTS tokenizer is <code>unicode61</code> (no porter stemmer)</td>
-<td><code>storage/sqlite/schema_ddl_archive.py</code></td>
+<td><code>storage/sqlite/archive_tiers/index.py</code></td>
 </tr>
 <tr>
 <td>Schema bootstrap branching is shared across sync and async backends</td>
@@ -444,8 +444,8 @@ debugging landmarks. For the conceptual system shape, see
 </thead>
 <tbody>
 <tr>
-<td><code>storage/sqlite/schema_ddl.py</code></td>
-<td>Schema definition and <code>SCHEMA_VERSION</code></td>
+<td><code>storage/sqlite/archive_tiers/</code></td>
+<td>Current split archive DDL and tier versions</td>
 </tr>
 <tr>
 <td><code>storage/sqlite/schema.py</code></td>
@@ -527,15 +527,15 @@ storage in <code>storage/insights/session/</code>. Wire rebuild logic and regist
 Run <code>devtools render-all</code> to update the generated catalog in
 <code>docs/devtools.md</code>.</p>
 <h2>Schema Versioning Model</h2>
-<p>Polylogue has no schema migration chain. The runtime knows exactly one
+<p>Polylogue has no in-place schema upgrade chain. The runtime knows exactly one
 schema shape:</p>
 <ul>
-<li><code>SCHEMA_VERSION</code> constant in <code>storage/sqlite/schema_ddl.py</code> is the
-authority. The canonical schema is described directly by <code>SCHEMA_DDL</code>;
+<li>Tier version constants under <code>storage/sqlite/archive_tiers/</code> are the
+authority. The canonical schema is described directly by each tier DDL;
 there are no upgrade plans, no <code>build_vN_to_vM_*</code> helpers, and no
 chain-dispatch logic in <code>schema_bootstrap.py</code>.</li>
 <li>On startup the on-disk <code>PRAGMA user_version</code> is compared against the
-constant:
+tier constant:
 <ul>
 <li><strong>Empty file</strong> (<code>user_version == 0</code>): bootstrap fresh.</li>
 <li><strong>Version match</strong>: open as-is.</li>
@@ -548,65 +548,88 @@ database aside and runs <code>polylogue reset --database &amp;&amp; polylogued r
 which re-acquires from the source archives and rebuilds the canonical
 archive.</li>
 <li>Schema bumps are deletes-then-defines, never deltas. A schema change
-is a single PR that edits <code>schema_ddl*.py</code>, bumps <code>SCHEMA_VERSION</code>,
-and documents the re-ingest expectation. No migration helpers are
-added for the bump.</li>
+edits the owning tier DDL/version and documents the re-ingest expectation.
+No upgrade helpers are added for the bump.</li>
 <li>Provider schemas (the parsing/validation surface, distinct from the
 storage schema) are still regenerated fresh via
 <code>devtools schema-generate</code> and promoted via <code>devtools schema-promote</code>.</li>
 </ul>
-<p>This design intentionally rejects migration-chain complexity (no
-Alembic, no forward/reverse migrations, no partially-applied migration
-states, no <code>_apply_version_upgrade_plan</code> rollback windows) at the cost
-of requiring users with out-of-band archives to re-ingest. The recent
-session-loss audit (<code>MEMORY.md</code> § Claude Session Loss Incident
-2026-03-21) confirmed that no relevant legacy DB instances exist in
-practice, so the trade is decisively in favour of the simpler runtime.</p>
+<p>This design intentionally rejects in-place upgrade-chain complexity (no
+Alembic, no forward/reverse upgrade scripts, no partially-applied upgrade
+states, no <code>_apply_version_upgrade_plan</code> rollback windows). If the configured
+archive path is not the current schema, the operator moves it aside and
+re-ingests from source. Files that are not configured archive paths are not
+classified or handled by the archive runtime.</p>
+<h2>Archive Activation</h2>
+<p>The archive file set is split by durability class:</p>
+<ul>
+<li><code>source.db</code> stores raw acquisition rows and source evidence that
+rebuildable projections depend on.</li>
+<li><code>index.db</code> stores the parsed session/message/block tree, FTS/search
+indexes, graph/topology rows, and derived insight read models.</li>
+<li><code>embeddings.db</code> stores vector rows, embedding status, and embedding
+catch-up metadata; it is rebuildable, but expensive.</li>
+<li><code>user.db</code> stores irreplaceable human input such as marks,
+annotations, corrections, user tags, session metadata, saved views,
+recall packs, workspaces, and blackboard notes.</li>
+<li><code>ops.db</code> stores disposable daemon telemetry such as ingest cursors,
+attempts, convergence debt, stage events, embedding catch-up runs,
+and OTLP spans.</li>
+</ul>
+<p>The operator flow is explicit:</p>
+<pre><code class="language-bash">polylogue maintenance archive-plan
+polylogue maintenance archive-init --yes
+polylogued run
+polylogue maintenance archive-read --limit 20
+</code></pre>
+<p><code>archive-init</code> bootstraps the archive file set. The daemon and explicit
+ingest paths populate <code>source.db</code> and <code>index.db</code> directly from source
+artifacts. Root query commands use the active <code>index.db</code>.</p>
 <h2>Topology Edges (#1258)</h2>
 <p><code>topology_edges</code> persists every parent reference asserted by a parser as a
 typed row, including references whose parent has not yet been ingested
 (out-of-order ingestion) or has been hard-deleted. The pre-existing fast
-path (<code>conversations.parent_conversation_id</code> set when the parent is in the
+path (<code>sessions.parent_session_id</code> set when the parent is in the
 prepare cache) is unchanged; the topology table is an additional durable
 record that always carries the original provider-native parent id.</p>
 <ul>
-<li><strong>Identity:</strong> <code>(src_conversation_id, dst_provider_native_id, edge_type)</code>
+<li><strong>Identity:</strong> <code>(src_session_id, dst_provider_native_id, edge_type)</code>
 with <code>UNIQUE</code>. Re-ingesting the same child is idempotent.</li>
 <li><strong>Closed enums:</strong> <code>polylogue/archive/topology/edge.py</code> defines
 <code>TopologyEdgeType</code> (continuation / sidechain / subagent / branch / fork /
 resume / repaired) and <code>TopologyEdgeStatus</code> (unresolved / resolved /
 repaired). Slice A emits <code>unresolved</code> and <code>resolved</code> only.</li>
-<li><strong>Resolve:</strong> every conversation save runs
-<code>resolve_topology_edges_for_conversation</code> so that an out-of-order child's
+<li><strong>Resolve:</strong> every session save runs
+<code>resolve_topology_edges_for_session</code> so that an out-of-order child's
 edge flips to <code>resolved</code> the moment its parent's native id appears in
-<code>conversations</code>.</li>
+<code>sessions</code>.</li>
 <li><strong>Hash boundary:</strong> topology edges are derived per ingest and are NOT part
-of <code>conversations.content_hash</code> — mirrors the same boundary as
+of <code>sessions.content_hash</code> — mirrors the same boundary as
 <code>user_corrections</code> (#1131) and the blob lease tables.</li>
 </ul>
 <h2>Logical Session Identity (#866)</h2>
-<p><code>session_profiles.logical_conversation_id</code> materializes the resolved root of a
-conversation's parent chain. For a root conversation it equals
-<code>conversation_id</code>; for continuations, forks, sidechains, and subagents it points
-at the root conversation that represents the logical work session.</p>
-<p>Day summaries and tag rollups retain <code>conversation_count</code> as the physical
-conversation count and add <code>logical_session_count</code> plus
-<code>logical_conversation_ids_json</code> so weekly and cross-provider reducers can count
+<p><code>session_profiles.logical_session_id</code> materializes the resolved root of a
+session's parent chain. For a root session it equals
+<code>session_id</code>; for continuations, forks, sidechains, and subagents it points
+at the root session that represents the logical work session.</p>
+<p>Day summaries and tag rollups retain <code>session_count</code> as the physical
+session count and add <code>logical_session_count</code> plus
+<code>logical_session_ids_json</code> so weekly and cross-provider reducers can count
 logical sessions without re-walking parent pointers. The Python API exposes
-<code>get_logical_session(conversation_id)</code> as the compact read-pull envelope for
+<code>get_logical_session(session_id)</code> as the compact read-pull envelope for
 agents and MCP callers; <code>get_session_topology</code> remains the full graph view.</p>
 <h2>Learning Corrections (Feedback Loop)</h2>
 <p>User corrections are stored in <code>user_corrections</code> and live outside the
 content-hash boundary by construction (#1131):</p>
 <ul>
-<li>Keyed by <code>(conversation_id, insight_kind)</code> — at most one correction of
+<li>Keyed by <code>(session_id, insight_kind)</code> — at most one correction of
 each kind per session, so deterministic rebuilds always produce the
 same merged insight output.</li>
 <li>Recognized kinds (closed <code>CorrectionKind</code> enum):
 <code>tag_reject</code>, <code>tag_accept</code>, <code>summary_override</code>. New kinds are an
 explicit code change.</li>
 <li>Recording or removing a correction never touches
-<code>conversations.content_hash</code>. The hash invariant is asserted by
+<code>sessions.content_hash</code>. The hash invariant is asserted by
 <code>tests/unit/insights/test_feedback.py</code>.</li>
 <li>Insight materialization paths consult corrections after computing
 heuristic suggestions. Auto-tag and summary merge helpers live in
@@ -620,9 +643,10 @@ heuristic suggestions. Auto-tag and summary merge helpers live in
 <code>Polylogue.delete_correction(...)</code>, <code>Polylogue.clear_corrections(...)</code>.</li>
 </ul>
 </li>
-<li>Storage backed by <code>polylogue/storage/insights/feedback/</code> (async SQL
-helpers) and <code>RepositoryWriteMixin.record_correction</code> /
-<code>list_corrections</code> / <code>delete_correction</code> / <code>clear_corrections</code>.</li>
+<li>Storage backed by <code>polylogue/storage/sqlite/archive_tiers/archive.py</code>
+(<code>ArchiveStore.record_correction</code> / <code>list_corrections</code> /
+<code>delete_correction</code> / <code>clear_corrections</code>) and
+<code>polylogue/storage/insights/feedback/</code> (async SQL helpers).</li>
 </ul>
 <h2>Text Handling Contracts</h2>
 <p>Polylogue exposes several text-processing boundaries. Each declares one of
@@ -650,8 +674,8 @@ record of which contract applies where.</p>
 </tr>
 <tr>
 <td>FTS5 indexing</td>
-<td><code>polylogue/storage/sqlite/schema_ddl_archive.py</code> (unicode61)</td>
-<td>Text is stored and indexed unchanged. RTL scripts (Arabic, Hebrew) and Latin-with-diacritics are word-tokenized; CJK runs index as a single token (substring queries against CJK are not supported). Zero-width and bidi characters pass through without crashing indexing.</td>
+<td><code>polylogue/storage/sqlite/archive_tiers/index.py</code> (<code>messages_fts</code>, unicode61)</td>
+<td>Block search text is stored and indexed unchanged. RTL scripts (Arabic, Hebrew) and Latin-with-diacritics are word-tokenized; CJK runs index as a single token (substring queries against CJK are not supported). Zero-width and bidi characters pass through without crashing indexing.</td>
 </tr>
 <tr>
 <td>FTS5 query escaping</td>
@@ -710,15 +734,15 @@ reader contention clears, the next periodic pass shrinks the WAL.</p>
 <h2>Content Hash Model</h2>
 <p>Archive writes are idempotent by content hash:</p>
 <ul>
-<li>SHA-256 over NFC-normalized (Unicode Normalization Form C) conversation
+<li>SHA-256 over NFC-normalized (Unicode Normalization Form C) session
 payload</li>
 <li>Hashed fields: title, timestamps, messages, attachments, content blocks</li>
 <li>Excluded from hash: user metadata (tags, summaries, notes) — editing these
 does not trigger re-import</li>
-<li>Hash is computed in <code>pipeline/ids.py:conversation_content_hash()</code> and stored
-as <code>content_hash</code> on conversations</li>
-<li>On re-ingest, if the content hash matches, the conversation is skipped
-(idempotency). If it differs, the conversation is updated and dependent
+<li>Hash is computed in <code>pipeline/ids.py:session_content_hash()</code> and stored
+as <code>content_hash</code> on sessions</li>
+<li>On re-ingest, if the content hash matches, the session is skipped
+(idempotency). If it differs, the session is updated and dependent
 insights are rebuilt.</li>
 </ul>
 <h2>FTS5 Model</h2>
@@ -758,7 +782,7 @@ each containing blobs keyed by the remaining 62 hex characters of the hash.</li>
 <li><strong>Linking</strong>: <code>artifact_observations.link_group_key</code> groups related blobs
 (e.g., all blobs belonging to one session). The blob store itself
 (<code>polylogue/storage/blob_store.py</code>) is a pure content-addressed store with
-no notion of grouping; conversation-to-blob association is recorded as
+no notion of grouping; session-to-blob association is recorded as
 rows in <code>artifact_observations</code> keyed by <code>raw_id</code> with a shared
 <code>link_group_key</code>. (There is no separate <code>blob_links</code> table; the name is a
 historical alias for this row-group view of <code>artifact_observations</code>.)</li>
@@ -770,14 +794,14 @@ GC identifies unreferenced blobs via link counting.</li>
 invariants combined:</p>
 <ol>
 <li><strong>DB reference check</strong> — <code>_still_referenced</code> queries
-<code>raw_conversations</code> for the blob's <code>raw_id</code>. If a raw record points at
+<code>raw_sessions</code> for the blob's <code>raw_id</code>. If a raw record points at
 the blob, GC skips it. This is the snapshot/mark-and-sweep view of
 &quot;this blob is in active use right now.&quot;</li>
 <li><strong>Pending lease check</strong> — <code>_has_active_lease</code> queries
 <code>pending_blob_refs</code> for an in-flight operation that has <em>announced</em>
 it intends to reference the blob but hasn't committed yet. If a write
 path acquired a lease but its transaction hasn't yet inserted the
-<code>raw_conversations</code> row, the snapshot check alone would
+<code>raw_sessions</code> row, the snapshot check alone would
 misclassify the blob as orphan and delete it.</li>
 </ol>
 <p>The lease tables (<code>pending_blob_refs</code>, <code>gc_generations</code>) are therefore
@@ -792,7 +816,7 @@ calls <code>acquire_blob_leases(db_path, blob_hashes, operation_id)</code> on a
 separate immediate-commit connection so the lease is visible to a
 concurrent GC before the main transaction commits, then calls
 <code>release_operation_leases(conn, operation_id)</code> after the commit so
-the blob is now durably referenced by <code>raw_conversations</code> and the
+the blob is now durably referenced by <code>raw_sessions</code> and the
 lease can drop.</p>
 <p>The acquire/release pair is wrapped in <code>try/finally</code> keyed by
 <code>operation_id</code> (#1746). The lease is committed on its own connection,
@@ -841,25 +865,32 @@ parse/convergence timings, and source-path bundles.</li>
 <li><code>convergence_stage_timings</code> — min/max/sum/mean parse/convergence/read-
 amplification stats over completed attempts.</li>
 <li><code>boundary_table_counts</code> — row counts for the daemon-relevant tables
-(<code>raw_conversations</code>, <code>conversations</code>, <code>messages</code>, <code>content_blocks</code>,
-<code>artifact_observations</code>, <code>messages_fts_docsize</code>, <code>action_events</code>,
-<code>action_events_fts_docsize</code>, <code>message_embeddings</code>, <code>session_profile</code>,
+(<code>raw_sessions</code>, <code>sessions</code>, <code>messages</code>, <code>blocks</code>,
+<code>artifact_observations</code>, <code>messages_fts_docsize</code>, <code>actions</code>,
+<code>message_embeddings</code>, <code>session_profile</code>,
 <code>live_ingest_attempt</code>, <code>live_convergence_debt</code>, <code>pending_blob_refs</code>).
 Missing tables surface as <code>-1</code> rather than crashing the probe.</li>
+<li><code>archive_tiers</code> — archive inventory for <code>source.db</code>,
+<code>index.db</code>, <code>embeddings.db</code>, <code>user.db</code>, and <code>ops.db</code>: file presence,
+durability/backup policy, <code>PRAGMA user_version</code>, <code>PRAGMA quick_check</code>,
+missing backup-required tiers, and cheap table counts per tier.</li>
 <li><code>blob_lease_state</code> — pending lease count, distinct lease operations,
 oldest <code>acquired_at</code>. See the lease/GC concurrency model above.</li>
 <li><code>gc_state</code> — high-water <code>gc_generations</code> row, <code>last_completed_at</code>,
 total generation count.</li>
-<li><code>fts_trigger_state</code> — the six expected FTS sync triggers
-(<code>messages_fts_a{i,d,u}</code>, <code>action_events_fts_a{i,d,u}</code>) with
+<li><code>fts_trigger_state</code> — the three expected FTS sync triggers
+(<code>messages_fts_a{i,d,u}</code>) with
 <code>present</code>, <code>missing</code>, and <code>all_present</code> fields. A missing trigger means
 FTS index drift risk (suspended during bulk operations and not
 restored, for example).</li>
 <li><code>daemon_resource_signal</code> — RSS / cgroup memory / worker-progress fields
 pulled from the most recent <code>live_ingest_attempt</code> row (these are the
 only daemon-RSS signals readable without IPC).</li>
-<li><code>source_path_churn</code>, <code>convergence_debt</code>, <code>query_plans</code> — pre-existing
-read amplification, debt-by-stage, and hot-query EXPLAIN evidence.</li>
+<li><code>source_path_churn</code>, <code>convergence_debt</code>, <code>query_plans</code> — source-path
+churn/read amplification, debt-by-stage, and hot-query EXPLAIN evidence.
+On archives, churn is read across <code>source.db.raw_sessions</code>
+and <code>index.db.sessions</code> so full-vs-append raw rows and unmaterialized raw
+payloads stay visible without requiring <code>raw_sessions</code> in <code>index.db</code>.</li>
 </ul>
 <p>The compare mode refuses incompatible <code>report_version</code> inputs loudly and
 requires both inputs to be <code>ok: True</code>.  Numeric fields produce
@@ -885,6 +916,14 @@ semantic-search catch-up is visible in normal daemon dashboards without
 running an operator CLI command. Missing tables degrade to zero samples
 rather than 5xx-ing, so a fresh archive still emits the discovery
 skeleton.</p>
+<p>Archive layout observability is emitted on the same scrape. The
+<code>polylogue_archive_storage_layout</code> gauge mirrors <code>polylogue paths</code>
+with bounded labels for <code>archive_missing</code>, <code>archive_partial</code>, and
+<code>archive_complete</code>; <code>polylogue_archive_tier_count</code> and
+<code>polylogue_archive_blocker_count</code> provide compact alerting
+totals; the per-tier, per-blocker, and <code>active_tier_role</code> gauges give
+the drilldown needed to tell whether the daemon is anchored on the
+normal <code>index.db</code> path and which split-file tier is missing or stale.</p>
 <p>Polylogue does not depend on <code>prometheus_client</code>; the exposition format
 is hand-rolled. The OTLP HTTP receiver from #1224's ambitious-move
 section is intentionally deferred and tracked under the same issue.</p>

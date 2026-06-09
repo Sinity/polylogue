@@ -360,14 +360,14 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
         <main class="content">
             
 <h1>Time Machine</h1>
-<p>Chronological browsing of AI conversation archives. &quot;What was I working on in
+<p>Chronological browsing of AI session archives. &quot;What was I working on in
 March 2025?&quot; — answered by navigating the archive as a temporal document, not
 a query language.</p>
 <h2>Problem</h2>
 <p>Answer &quot;what was I doing then&quot; without constructing a search query. The user
 knows <em>when</em> but not <em>what</em>. Existing search tools require filtering on
 content; time-based navigation should require only a date or month.</p>
-<p>The data is already there — <code>created_at</code> and <code>updated_at</code> on conversations,
+<p>The data is already there — <code>created_at</code> and <code>updated_at</code> on sessions,
 <code>canonical_session_date</code> on session profiles, timestamps on messages. The
 missing piece is temporal presentation surfaces that let the user pan and zoom
 through their own history.</p>
@@ -479,7 +479,7 @@ boundaries.</p>
 the same calendar day in previous years.</p>
 <p>The query:</p>
 <pre><code class="language-sql">SELECT
-    sp.conversation_id,
+    sp.session_id,
     sp.title,
     sp.canonical_session_date,
     sp.provider_name,
@@ -500,7 +500,7 @@ the top sessions from that week across all past years.</p>
 <h3>Session Filmstrip</h3>
 <p>A horizontal chronological view of sessions as a scrollable strip. Each session
 is a card (title, date, duration, repo, cost). The user pans left and right
-through time; clicking a card shows the full conversation.</p>
+through time; clicking a card shows the full session.</p>
 <p>The filmstrip is the &quot;zoom in&quot; companion to the heatmap's &quot;pan out.&quot; The
 heatmap shows the year at a glance; the filmstrip shows a month or week in
 detail.</p>
@@ -508,7 +508,7 @@ detail.</p>
 <code>canonical_session_date</code>. Each page returns 20 sessions. The UI renders them
 as a horizontal strip with Prev/Next pagination.</p>
 <pre><code class="language-sql">SELECT
-    conversation_id, title, canonical_session_date,
+    session_id, title, canonical_session_date,
     provider_name, word_count, tool_use_count,
     total_cost_usd, total_duration_ms,
     repo_names_json, tags_json
@@ -539,7 +539,7 @@ cut, though truecolor would be nice). JSON output for programmatic consumers.</p
 </code></pre>
 <h3><code>polylogue eras</code></h3>
 <p>Lists detected eras with date ranges, labels, and session counts. Accepts
-<code>--rename</code> to assign a custom name to an era (stored in conversation metadata
+<code>--rename</code> to assign a custom name to an era (stored in session metadata
 and honored on subsequent pipeline runs).</p>
 <h3><code>polylogue this-day</code></h3>
 <p>Shows sessions from this calendar day in previous years, ordered by recency.
@@ -563,12 +563,12 @@ for date range, <code>--page</code> / <code>--limit</code> for pagination.</p>
 <tr>
 <td>Calendar heatmap</td>
 <td><code>session_profiles</code></td>
-<td><code>conversation_stats</code> (for word counts)</td>
+<td><code>session_stats</code> (for word counts)</td>
 </tr>
 <tr>
 <td>Era detection</td>
 <td><code>session_profiles</code></td>
-<td><code>conversations</code> (for provider distribution)</td>
+<td><code>sessions</code> (for provider distribution)</td>
 </tr>
 <tr>
 <td>This day in history</td>

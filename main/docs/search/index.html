@@ -384,7 +384,7 @@ counts with both views (<a href="https://github.com/Sinity/polylogue/issues/1269
 <ul>
 <li><strong>terms</strong>: space-separated words matched by full-text search (AND when
 repeated with <code>--contains</code>)</li>
-<li><strong>filters</strong>: <code>--flag</code> filters that narrow the conversation set</li>
+<li><strong>filters</strong>: <code>--flag</code> filters that narrow the session set</li>
 <li><strong>verb</strong>: optional trailing subcommand (<code>list</code>, <code>stats</code>, <code>count</code>, etc.)</li>
 </ul>
 <h2>Filters</h2>
@@ -399,7 +399,7 @@ repeated with <code>--contains</code>)</li>
 <tbody>
 <tr>
 <td><code>--id</code>, <code>-i</code></td>
-<td>Conversation ID (exact or prefix match)</td>
+<td>Session ID (exact or prefix match)</td>
 </tr>
 <tr>
 <td><code>--contains</code>, <code>-c</code></td>
@@ -407,19 +407,19 @@ repeated with <code>--contains</code>)</li>
 </tr>
 <tr>
 <td><code>--exclude-text</code></td>
-<td>Exclude conversations matching this term</td>
+<td>Exclude sessions matching this term</td>
 </tr>
 <tr>
 <td><code>--title</code></td>
 <td>Title contains substring</td>
 </tr>
 <tr>
-<td><code>--provider</code>, <code>-p</code></td>
-<td>Include providers (comma = OR)</td>
+<td><code>--origin</code>, <code>-o</code></td>
+<td>Include origins (comma = OR)</td>
 </tr>
 <tr>
-<td><code>--exclude-provider</code></td>
-<td>Exclude providers</td>
+<td><code>--exclude-origin</code></td>
+<td>Exclude origins</td>
 </tr>
 <tr>
 <td><code>--repo</code>, <code>-r</code></td>
@@ -446,15 +446,15 @@ repeated with <code>--contains</code>)</li>
 <tbody>
 <tr>
 <td><code>--has-tool-use</code></td>
-<td>Only conversations with tool calls</td>
+<td>Only sessions with tool calls</td>
 </tr>
 <tr>
 <td><code>--has-thinking</code></td>
-<td>Only conversations with reasoning/thinking blocks</td>
+<td>Only sessions with reasoning/thinking blocks</td>
 </tr>
 <tr>
 <td><code>--has-paste</code></td>
-<td>Only conversations with pasted content</td>
+<td>Only sessions with pasted content</td>
 </tr>
 <tr>
 <td><code>--typed-only</code></td>
@@ -539,11 +539,11 @@ repeated with <code>--contains</code>)</li>
 <tbody>
 <tr>
 <td><code>--since</code></td>
-<td>Only conversations on or after this date/time</td>
+<td>Only sessions on or after this date/time</td>
 </tr>
 <tr>
 <td><code>--until</code></td>
-<td>Only conversations on or before this date/time</td>
+<td>Only sessions on or before this date/time</td>
 </tr>
 <tr>
 <td><code>--limit</code>, <code>-n</code></td>
@@ -567,7 +567,7 @@ repeated with <code>--contains</code>)</li>
 </tr>
 <tr>
 <td><code>--sample</code></td>
-<td>Random sample of N conversations</td>
+<td>Random sample of N sessions</td>
 </tr>
 </tbody>
 </table>
@@ -649,7 +649,7 @@ repeated with <code>--contains</code>)</li>
 </tbody>
 </table>
 <h2>Verbs</h2>
-<p>Verbs determine the action applied to the matched conversation set.</p>
+<p>Verbs determine the action applied to the matched session set.</p>
 <table>
 <thead>
 <tr>
@@ -660,27 +660,27 @@ repeated with <code>--contains</code>)</li>
 <tbody>
 <tr>
 <td><code>list</code></td>
-<td>List matched conversations with metadata</td>
+<td>List matched sessions with metadata</td>
 </tr>
 <tr>
 <td><code>count</code></td>
-<td>Print count of matched conversations</td>
+<td>Print count of matched sessions</td>
 </tr>
 <tr>
 <td><code>stats</code></td>
-<td>Grouped statistics (<code>--by provider</code>, <code>month</code>, <code>year</code>, <code>day</code>, <code>action</code>, <code>tool</code>, <code>repo</code>, <code>work-kind</code>)</td>
+<td>Grouped statistics (<code>--by origin</code>, <code>month</code>, <code>year</code>, <code>day</code>, <code>action</code>, <code>tool</code>, <code>repo</code>, <code>work-kind</code>)</td>
 </tr>
 <tr>
 <td><code>show</code></td>
-<td>Display full conversation content</td>
+<td>Display full session content</td>
 </tr>
 <tr>
 <td><code>open</code></td>
-<td>Open conversation in browser/editor</td>
+<td>Open session in browser/editor</td>
 </tr>
 <tr>
 <td><code>bulk-export</code></td>
-<td>Export matched conversations to file</td>
+<td>Export matched sessions to file</td>
 </tr>
 <tr>
 <td><code>messages</code></td>
@@ -688,7 +688,7 @@ repeated with <code>--contains</code>)</li>
 </tr>
 <tr>
 <td><code>raw</code></td>
-<td>Show raw (unparsed) conversation data</td>
+<td>Show raw (unparsed) session data</td>
 </tr>
 <tr>
 <td><code>select</code></td>
@@ -696,7 +696,7 @@ repeated with <code>--contains</code>)</li>
 </tr>
 <tr>
 <td><code>delete</code></td>
-<td>Delete matched conversations (requires <code>--dry-run</code> confirmation)</td>
+<td>Delete matched sessions (requires <code>--dry-run</code> confirmation)</td>
 </tr>
 </tbody>
 </table>
@@ -726,7 +726,7 @@ elevate — see below).</p>
 </tr>
 <tr>
 <td><code>actions</code></td>
-<td>FTS5 over action event text (<code>action_events_fts</code>). Targets tool/file/shell evidence rather than prose. Public ranked-hit payloads currently carry action rank/evidence without a numeric action BM25 score.</td>
+<td>FTS5 over tool-use/tool-result block text in <code>messages_fts</code>. Targets tool/file/shell evidence rather than prose. Public ranked-hit payloads currently carry action rank/evidence without a numeric action BM25 score.</td>
 <td><code>null</code></td>
 </tr>
 <tr>
@@ -757,17 +757,17 @@ typically negative, and they are <strong>not comparable across queries</strong>.
 <li>Match evidence: <code>matched_terms</code>, <code>snippet</code>, <code>match_surface=&quot;message&quot;</code>,
 <code>message_id</code>, and <code>target_ref</code> point at the hit message.</li>
 </ul>
-<h4><code>actions</code> (FTS5 over action events)</h4>
+<h4><code>actions</code> (FTS5 over action blocks)</h4>
 <ul>
-<li>Same FTS5 mechanics as <code>dialogue</code>, but the indexed surface is
-<code>action_events_fts</code> — normalized records of file reads/writes/edits,
-shell commands, web fetches, agent invocations, and other tool
-evidence (see <code>--action</code> / <code>--tool</code> filters above).</li>
+<li>Same FTS5 mechanics as <code>dialogue</code>, but the query is restricted to
+<code>tool_use</code> and <code>tool_result</code> blocks inside <code>messages_fts</code>. The normalized
+<code>actions</code> view remains the structured action surface for filters and
+analytics.</li>
 <li>Current public action-lane hits preserve rank and action match surface
 but do not expose the underlying action FTS BM25 score in the shared
 <code>SearchEnvelope</code>; consumers should treat <code>score_kind=null</code> as the
 contract for action-only hits until the action evidence path is widened.</li>
-<li>Useful when you remember an action (&quot;the conversation where I edited
+<li>Useful when you remember an action (&quot;the session where I edited
 <code>connection_profile.py</code>&quot;) rather than its prose.</li>
 </ul>
 <h4><code>hybrid</code> (RRF fusion)</h4>
@@ -776,7 +776,7 @@ contract for action-only hits until the action evidence path is widened.</li>
 with <strong>Reciprocal Rank Fusion</strong> at <code>k=60</code>:
 <code>fused_score = Σ 1 / (k + rank_in_lane)</code>.</li>
 <li>Tie-breaking is deterministic: descending fused score, then ascending
-<code>conversation_id</code>. This makes cursor and offset pagination stable
+<code>session_id</code>. This makes cursor and offset pagination stable
 across runs even when scores tie.</li>
 <li>Reported <code>score_kind</code> is <code>&quot;rrf&quot;</code>. Higher fused scores indicate stronger
 cross-lane consensus.</li>
@@ -786,7 +786,7 @@ are preserved end-to-end on each hit's <code>score_components</code>
 that contributed adds a <code>&lt;lane&gt;_rank</code> (1-based rank within that lane)
 and a matching <code>&lt;lane&gt;_rrf</code> (the <code>1 / (k + rank)</code> contribution that was
 summed into the fused score). Lane names are <code>text</code> (FTS5 dialogue),
-<code>action</code> (FTS5 action events), and <code>vector</code> (semantic). A hit that
+<code>action</code> (FTS5 action blocks), and <code>vector</code> (semantic). A hit that
 appeared only in the lexical lane carries <code>{text_rank, text_rrf}</code> and
 nothing else; a hit that survived both lanes carries the full
 <code>(text|action|vector)_(rank|rrf)</code> set, so consumers can show &quot;ranked
@@ -817,7 +817,7 @@ materialized. The activation path is deliberately bounded:</p>
 <li><code>polylogue embed status</code> shows config state, key presence, coverage,
 configured model/dimension, monthly cost cap, backlog, latest catch-up
 progress, and <code>next_action</code> (<code>code</code>, <code>reason</code>, <code>command</code>) for automation.</li>
-<li><code>polylogue embed preflight --max-conversations 10</code> estimates the next
+<li><code>polylogue embed preflight --max-sessions 10</code> estimates the next
 bounded window without contacting Voyage. Use <code>--format json</code> for the
 scriptable form: it reports the exact window, pricing assumptions,
 effective cost cap, and a ready-to-run <code>backfill_args</code> list for the same
@@ -825,13 +825,13 @@ bounded catch-up slice.</li>
 <li><code>polylogue embed enable --yes</code> enables the daemon stage when a Voyage key is
 already configured, or <code>polylogue embed enable --voyage-api-key ...</code> records
 the key and enables the stage.</li>
-<li><code>polylogue embed backfill --max-conversations 10</code> runs an explicit bounded
+<li><code>polylogue embed backfill --max-sessions 10</code> runs an explicit bounded
 catch-up batch; after enablement, <code>polylogued</code> also processes bounded daemon
-batches for new or stale conversations.</li>
+batches for new or stale sessions.</li>
 </ol>
 <p><code>--max-messages</code> is a hard message-count window and uses live message counts
-rather than potentially stale <code>conversation_stats</code>. <code>--max-conversations</code> may
-use materialized conversation stats so small first batches remain fast on large
+rather than potentially stale <code>session_stats</code>. <code>--max-sessions</code> may
+use materialized session stats so small first batches remain fast on large
 archives.</p>
 <p>MCP clients should use <code>embedding_status</code> for readiness/next-action state and
 <code>embedding_preflight</code> for the same no-provider-call cost window. Both tools are
@@ -888,11 +888,11 @@ probe; no FTS leg, no boolean operators applied.</li>
 <ul>
 <li><code>dialogue</code> orders hits by FTS5 BM25 (lower is better; raw scores are
 usually negative).</li>
-<li><code>actions</code> orders through the action-event FTS read model, but the
+<li><code>actions</code> orders through the action FTS read model, but the
 public action-lane hit payload does not currently expose a numeric
 action score.</li>
 <li><code>hybrid</code> fuses dialogue + action + semantic lanes with RRF at <code>k=60</code>
-and orders by fused score, breaking ties on <code>(−fused_score, conversation_id)</code>.</li>
+and orders by fused score, breaking ties on <code>(−fused_score, session_id)</code>.</li>
 <li><code>semantic</code> orders by ascending vector distance.</li>
 </ul>
 <p>Consumers should pin the <code>ranking_policy_version</code> they validate against
@@ -901,8 +901,8 @@ exposed so external pipelines can detect ordering shifts without diffing
 raw scores. See <code>docs/openapi/search.yaml</code> (<code>x-polylogue-ranking-policy</code>)
 for the machine-readable declaration.</p>
 <h2>SearchEnvelope Contract</h2>
-<p>All ranked surfaces (CLI <code>--format json</code>, MCP <code>search</code>/<code>list_conversations</code>,
-daemon <code>GET /api/conversations?query=…</code>, Python API) return the typed
+<p>All ranked surfaces (CLI <code>--format json</code>, MCP <code>search</code>/<code>list_sessions</code>,
+daemon <code>GET /api/sessions?query=…</code>, Python API) return the typed
 <code>SearchEnvelope</code> defined in <code>polylogue/surfaces/payloads.py</code> and emitted
 via the daemon under
 <a href="openapi/search.yaml"><code>docs/openapi/search.yaml</code></a> (<a href="https://github.com/Sinity/polylogue/issues/1266">#1266</a>).</p>
@@ -916,11 +916,11 @@ via the daemon under
 <tbody>
 <tr>
 <td><code>hits</code></td>
-<td>Ordered list of <code>ConversationSearchHitPayload</code>. Each hit carries a <code>conversation</code> summary plus a <code>match</code> evidence block.</td>
+<td>Ordered list of <code>SessionSearchHitPayload</code>. Each hit carries a <code>session</code> summary plus a <code>match</code> evidence block.</td>
 </tr>
 <tr>
 <td><code>total</code></td>
-<td>Total matching conversations, or <code>null</code> when the lane cannot compute it cheaply.</td>
+<td>Total matching sessions, or <code>null</code> when the lane cannot compute it cheaply.</td>
 </tr>
 <tr>
 <td><code>limit</code> / <code>offset</code></td>
@@ -932,7 +932,7 @@ via the daemon under
 </tr>
 <tr>
 <td><code>next_cursor</code></td>
-<td>Opaque keyset cursor encoding rank, score, conversation id, and resolved retrieval lane. <strong>Preferred</strong> for stable rank-first pagination across pages — pass it back unchanged in the next request.</td>
+<td>Opaque keyset cursor encoding rank, score, session id, and resolved retrieval lane. <strong>Preferred</strong> for stable rank-first pagination across pages — pass it back unchanged in the next request.</td>
 </tr>
 <tr>
 <td><code>query</code></td>
@@ -956,7 +956,7 @@ via the daemon under
 </tr>
 </tbody>
 </table>
-<p>Each hit's <code>match</code> (a <code>ConversationSearchMatchPayload</code>) carries:</p>
+<p>Each hit's <code>match</code> (a <code>SessionSearchMatchPayload</code>) carries:</p>
 <table>
 <thead>
 <tr>
@@ -1051,7 +1051,7 @@ the hit:</p>
 <td><code>{&quot;bm25_raw&quot;: &lt;relevance&gt;}</code></td>
 </tr>
 <tr>
-<td><code>actions</code> (FTS5 over action events)</td>
+<td><code>actions</code> (FTS5 over action blocks)</td>
 <td>tokenized query terms</td>
 <td><code>null</code> today</td>
 <td><code>{}</code> today; action rank is preserved, but action BM25 is not part of the public hit evidence contract yet</td>
@@ -1098,7 +1098,7 @@ search.</p>
 <h3>Pagination</h3>
 <p>For ranked queries, prefer <code>next_cursor</code> over <code>offset</code>. Cursor
 pagination encodes the rank tie-breaker
-(<code>(rank, score, conversation_id, retrieval_lane)</code>) and is stable under
+(<code>(rank, score, session_id, retrieval_lane)</code>) and is stable under
 archive growth between page fetches. Offset pagination is supported for
 non-ranked list paths and as a best-effort fallback for ranked paths.</p>
 <p>The cursor is an opaque URL-safe base64 token (a versioned JSON
@@ -1110,7 +1110,7 @@ polylogue &quot;sqlite&quot; list --format json --limit 25
 polylogue &quot;sqlite&quot; list --format json --limit 25 \
     --cursor &quot;$NEXT_CURSOR&quot;
 </code></pre>
-<p>MCP search and the daemon <code>/api/conversations</code> endpoint accept the same
+<p>MCP search and the daemon <code>/api/sessions</code> endpoint accept the same
 <code>cursor</code> parameter; the Python API exposes <code>Polylogue.search_envelope( query, cursor=...)</code>. The cursor carries the retrieval lane it was
 minted in, so a <code>dialogue</code> cursor passed back to a <code>hybrid</code> request is
 rejected up-front rather than silently changing ranking policy
@@ -1137,7 +1137,7 @@ tokenizer. Prefix queries use <code>*</code>:</p>
 <pre><code class="language-bash">polylogue &quot;refactor AND schema NOT test&quot;
 </code></pre>
 <p>Column filters restrict matches:</p>
-<pre><code class="language-bash">polylogue 'text:css {conversation_id claude-code}: refactor'
+<pre><code class="language-bash">polylogue 'text:css {session_id claude-code}: refactor'
 </code></pre>
 <h2>Output Formats</h2>
 <table>
@@ -1154,7 +1154,7 @@ tokenizer. Prefix queries use <code>*</code>:</p>
 </tr>
 <tr>
 <td><code>json</code></td>
-<td>Full conversation as JSON</td>
+<td>Full session as JSON</td>
 </tr>
 <tr>
 <td><code>jsonl</code></td>
@@ -1204,22 +1204,22 @@ buckets if the filter chain narrows away every value.</li>
 <li><code>scoped_to_query</code> — <code>true</code> whenever any filter narrowed the view.</li>
 <li><code>idf</code> — inverse-document-frequency per facet value, computed against
 the global universe. Higher = rarer = stronger signal; near zero =
-value appears in almost every conversation. Disable with
+value appears in almost every session. Disable with
 <code>--no-idf</code> on the CLI.</li>
 </ul>
-<p>Top-level fields (<code>providers</code>, <code>tags</code>, <code>total_conversations</code> etc.)
+<p>Top-level fields (<code>origins</code>, <code>tags</code>, <code>total_sessions</code> etc.)
 mirror the <em>active</em> view (scoped when filtered, global otherwise) for
 backward compatibility with surfaces written before #1269. Consumers
 that need both views should read <code>scoped</code> and <code>global</code> directly.</p>
 <pre><code class="language-bash">polylogue facets                     # global only (no filters)
-polylogue facets -p chatgpt          # scoped to ChatGPT + global side-by-side
+polylogue facets -o chatgpt-export   # scoped to ChatGPT exports + global side-by-side
 polylogue facets -q &quot;vector store&quot;   # scoped to FTS hits
 polylogue facets -f json --no-idf    # FacetsResponse, no IDF weighting
 </code></pre>
 <h2>Empty Result Diagnostics</h2>
 <p>When a query returns no results:</p>
 <ol>
-<li>Check provider spelling: <code>polylogue -p claude-code list</code> (not <code>claude_code</code>)</li>
+<li>Check origin spelling: <code>polylogue --origin claude-code-session list</code> (not <code>claude_code</code>)</li>
 <li>Expand the time window: <code>--since 2024-01</code> instead of <code>--since yesterday</code></li>
 <li>Verify the archive has data: <code>polylogue count</code> (no filters)</li>
 <li>Check FTS index health: <code>polylogued status</code> shows <code>fts_readiness</code></li>

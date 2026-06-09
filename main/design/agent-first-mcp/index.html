@@ -400,18 +400,18 @@ unavailable, tools return structured empty states, not errors.</li>
 </tr>
 <tr>
 <td>Pagination</td>
-<td><code>list_conversations</code> returns bare arrays</td>
+<td><code>list_sessions</code> returns bare arrays</td>
 <td>Add <code>total</code>/<code>limit</code>/<code>offset</code> to all list responses</td>
 </tr>
 <tr>
 <td>Chaining</td>
 <td>Tool outputs use different ID formats</td>
-<td>Standardize on <code>conversation_id</code> across all tools</td>
+<td>Standardize on <code>session_id</code> across all tools</td>
 </tr>
 <tr>
 <td>Count</td>
 <td>No way to count without fetching all</td>
-<td>Add <code>count_conversations</code> / <code>count_messages</code> tools</td>
+<td>Add <code>count_sessions</code> / <code>count_messages</code> tools</td>
 </tr>
 <tr>
 <td>Projection</td>
@@ -444,27 +444,27 @@ unavailable, tools return structured empty states, not errors.</li>
 <tr>
 <td><code>polylogue_search</code></td>
 <td>Full-text + filter search</td>
-<td>Returns <code>conversation_ids[]</code> → feed to <code>polylogue_get_conversation</code></td>
+<td>Returns <code>session_ids[]</code> → feed to <code>polylogue_get_session</code></td>
 </tr>
 <tr>
-<td><code>polylogue_list_conversations</code></td>
+<td><code>polylogue_list_sessions</code></td>
 <td>Paginated list with filters</td>
-<td>Returns <code>conversation_ids[]</code></td>
+<td>Returns <code>session_ids[]</code></td>
 </tr>
 <tr>
-<td><code>polylogue_get_conversation</code></td>
-<td>Single conversation with messages</td>
-<td>Accepts <code>conversation_id</code> from search/list</td>
+<td><code>polylogue_get_session</code></td>
+<td>Single session with messages</td>
+<td>Accepts <code>session_id</code> from search/list</td>
 </tr>
 <tr>
 <td><code>polylogue_get_messages</code></td>
-<td>Messages for a conversation</td>
-<td>Accepts <code>conversation_id</code>, optional <code>role</code>/<code>limit</code> filter</td>
+<td>Messages for a session</td>
+<td>Accepts <code>session_id</code>, optional <code>role</code>/<code>limit</code> filter</td>
 </tr>
 <tr>
 <td><code>polylogue_get_session_profile</code></td>
 <td>Profile for a session</td>
-<td>Accepts <code>conversation_id</code>, returns structured profile</td>
+<td>Accepts <code>session_id</code>, returns structured profile</td>
 </tr>
 <tr>
 <td><code>polylogue_get_project_memory</code></td>
@@ -484,11 +484,11 @@ unavailable, tools return structured empty states, not errors.</li>
 <tr>
 <td><code>polylogue_get_cost</code></td>
 <td>Cost breakdown</td>
-<td>Accepts <code>conversation_id</code> or <code>--since</code> filter</td>
+<td>Accepts <code>session_id</code> or <code>--since</code> filter</td>
 </tr>
 <tr>
 <td><code>polylogue_count</code></td>
-<td>Count conversations/messages matching filters</td>
+<td>Count sessions/messages matching filters</td>
 <td>Same filter params as search</td>
 </tr>
 </tbody>
@@ -503,7 +503,7 @@ unavailable, tools return structured empty states, not errors.</li>
 </thead>
 <tbody>
 <tr>
-<td><code>polylogue_tag_conversation</code></td>
+<td><code>polylogue_tag_session</code></td>
 <td>Add/remove tags</td>
 </tr>
 <tr>
@@ -512,7 +512,7 @@ unavailable, tools return structured empty states, not errors.</li>
 </tr>
 <tr>
 <td><code>polylogue_update_metadata</code></td>
-<td>Update conversation metadata</td>
+<td>Update session metadata</td>
 </tr>
 <tr>
 <td><code>polylogue_reset</code></td>
@@ -561,7 +561,7 @@ unavailable, tools return structured empty states, not errors.</li>
   &quot;ok&quot;: false,
   &quot;error&quot;: {
     &quot;code&quot;: &quot;ARCHIVE_EMPTY&quot;,
-    &quot;message&quot;: &quot;No conversations match the query.&quot;,
+    &quot;message&quot;: &quot;No sessions match the query.&quot;,
     &quot;retryable&quot;: false,
     &quot;hint&quot;: &quot;Try broadening your filters or check that ingestion is running.&quot;
   }
@@ -578,7 +578,7 @@ tool calls needed. The hook runs before the agent's first message.</p>
 patterns. 3 MCP calls, each &lt;500ms:</p>
 <ol>
 <li><code>polylogue_search(&quot;error: foreign key constraint&quot;, project_path=...)</code></li>
-<li><code>polylogue_get_conversation(top_result_id, prose_only=true)</code></li>
+<li><code>polylogue_get_session(top_result_id, prose_only=true)</code></li>
 <li><code>polylogue_get_session_profile(top_result_id)</code></li>
 </ol>
 <h3>Pattern 3: Self-audit (post-session)</h3>
@@ -591,7 +591,7 @@ patterns. 3 MCP calls, each &lt;500ms:</p>
 <h3>Pattern 4: Decision support (during implementation)</h3>
 <p>Agent checks project memory before making architectural choices:</p>
 <ol>
-<li><code>polylogue_search_project_memory(&quot;schema migration&quot;)</code></li>
+<li><code>polylogue_search_project_memory(&quot;schema rebuild&quot;)</code></li>
 <li>If results found, read the relevant Decisions</li>
 <li>Apply or consciously deviate</li>
 </ol>

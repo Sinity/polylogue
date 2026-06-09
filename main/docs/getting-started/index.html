@@ -378,7 +378,7 @@ the box.</p>
 <p>Polylogue is query-first: bare tokens are full-text search terms. Results are
 rendered in your pager.</p>
 <h2>First list</h2>
-<p>List recent conversations with natural-language time filters:</p>
+<p>List recent sessions with natural-language time filters:</p>
 <pre><code class="language-bash">polylogue --since yesterday list
 polylogue --since &quot;last week&quot; -p claude-code list
 </code></pre>
@@ -392,7 +392,7 @@ polylogue --since &quot;last week&quot; -p claude-code list
 <p>Polylogue includes a 23-model pricing catalog covering Anthropic, OpenAI, and
 Google models. Session-level and provider-wide rollups are available.</p>
 <h2>Running the daemon</h2>
-<p>The daemon watches your chat directories and ingests new conversations in real
+<p>The daemon watches your chat directories and ingests new sessions in real
 time:</p>
 <pre><code class="language-bash">polylogued run
 </code></pre>
@@ -416,11 +416,11 @@ roots. Optionally exposes a local HTTP API and a browser-capture receiver.</p>
 </tr>
 <tr>
 <td><code>polylogue --since &lt;when&gt; list</code></td>
-<td>List matched conversations</td>
+<td>List matched sessions</td>
 </tr>
 <tr>
 <td><code>polylogue -p &lt;provider&gt; count</code></td>
-<td>Count matched conversations</td>
+<td>Count matched sessions</td>
 </tr>
 <tr>
 <td><code>polylogue stats --by provider</code></td>
@@ -432,7 +432,7 @@ roots. Optionally exposes a local HTTP API and a browser-capture receiver.</p>
 </tr>
 <tr>
 <td><code>polylogue export &lt;id&gt;</code></td>
-<td>Export one conversation</td>
+<td>Export one session</td>
 </tr>
 <tr>
 <td><code>polylogue --since yesterday bulk-export</code></td>
@@ -448,7 +448,7 @@ roots. Optionally exposes a local HTTP API and a browser-capture receiver.</p>
 </tr>
 <tr>
 <td><code>polylogue &lt;id&gt; show</code></td>
-<td>Display full conversation</td>
+<td>Display full session</td>
 </tr>
 </tbody>
 </table>

@@ -431,10 +431,10 @@ messages that leave reviewers guessing.</p>
 history line you want. Branch-local commits serve review; the PR title and body
 serve history.</p>
 <h2>Schema-Touching Changes</h2>
-<p>Polylogue has no schema migration chain. A PR that bumps
+<p>Polylogue has no in-place schema upgrade chain. A PR that bumps
 <code>SCHEMA_VERSION</code> or otherwise changes the canonical SQLite shape is
-not a migration — it is a deletes-then-defines edit of <code>SCHEMA_DDL</code>.
-The PR body must replace the usual &quot;migration plan&quot; section with a
+not an in-place storage upgrade — it is a deletes-then-defines edit of <code>SCHEMA_DDL</code>.
+The PR body must replace any upgrade-path section with a
 <strong>re-ingest plan</strong>:</p>
 <ul>
 <li>which user-visible archive operation triggers re-acquisition from
