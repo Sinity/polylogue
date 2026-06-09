@@ -643,9 +643,10 @@ heuristic suggestions. Auto-tag and summary merge helpers live in
 <code>Polylogue.delete_correction(...)</code>, <code>Polylogue.clear_corrections(...)</code>.</li>
 </ul>
 </li>
-<li>Storage backed by <code>polylogue/storage/insights/feedback/</code> (async SQL
-helpers) and <code>RepositoryWriteMixin.record_correction</code> /
-<code>list_corrections</code> / <code>delete_correction</code> / <code>clear_corrections</code>.</li>
+<li>Storage backed by <code>polylogue/storage/sqlite/archive_tiers/archive.py</code>
+(<code>ArchiveStore.record_correction</code> / <code>list_corrections</code> /
+<code>delete_correction</code> / <code>clear_corrections</code>) and
+<code>polylogue/storage/insights/feedback/</code> (async SQL helpers).</li>
 </ul>
 <h2>Text Handling Contracts</h2>
 <p>Polylogue exposes several text-processing boundaries. Each declares one of
