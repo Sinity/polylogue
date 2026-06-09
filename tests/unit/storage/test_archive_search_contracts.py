@@ -373,3 +373,32 @@ async def test_repository_search_and_action_search_pass_ordered_ids_to_hydration
     action_result = await repo.search_actions("storage", limit=5)
     assert [str(session.id) for session in action_result] == ["conv-b", "conv-a"]
     assert repo.ordered_ids_seen == ["conv-b", "conv-a"]
+
+
+@pytest.mark.asyncio
+async def test_get_archive_stats_groups_origins_from_origin_column(tmp_path: Path) -> None:
+    """Regression for the #1743 stale-vocabulary bug: get_archive_stats grouped
+    providers via ``SELECT source_name FROM sessions`` — the column is ``origin``
+    post-split, so the query raises ``no such column: source_name`` whenever the
+    method is reached. The only test of the calling path mocked the method, so
+    the broken query shipped. Seed real sessions and assert the async stats path
+    runs and groups by origin without raising.
+    """
+    backend = SQLiteBackend(db_path=tmp_path / "origin-stats.db")
+    repo = SessionRepository(backend=backend)
+    try:
+        for idx in range(2):
+            payload: JSONDocument = {
+                "id": f"gemini-stats-{idx}",
+                "displayName": f"Gemini stats {idx}",
+                "chunkedPrompt": {"chunks": [{"id": "m", "role": "user", "text": "hi"}]},
+            }
+            await ingest_session(parse_chunked_prompt("gemini", payload, f"fallback-{idx}"), backend=backend)
+
+        stats = await repo.get_archive_stats()
+    finally:
+        await repo.close()
+
+    assert stats.total_sessions == 2
+    assert stats.total_messages == 2
+    assert stats.origins == {"aistudio-drive": 2}

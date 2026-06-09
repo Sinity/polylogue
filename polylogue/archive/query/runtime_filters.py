@@ -76,8 +76,13 @@ def apply_common_filters(
         if plan.title:
             lowered = plan.title.lower()
             results = [item for item in results if item.display_title and lowered in item.display_title.lower()]
-        if plan.parent_id:
-            results = [item for item in results if str(item.parent_id or "") == plan.parent_id]
+
+    # parent_id is never SQL-pushed (it is absent from _ArchiveFilterKwargs), so
+    # it must be applied as a residual filter on every path — not only when
+    # sql_pushed=False. The archive path passes sql_pushed=True, which is why
+    # the .parent() filter was previously dropped (#1743 follow-up).
+    if plan.parent_id:
+        results = [item for item in results if str(item.parent_id or "") == plan.parent_id]
 
     if plan.excluded_origins:
         excluded = set(plan.excluded_origins)

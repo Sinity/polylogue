@@ -943,17 +943,6 @@ class TestSessionFilterBranching:
         elif method == "has_branches":
             assert filter_obj._has_branches is value
 
-    @pytest.mark.xfail(
-        reason=(
-            "Archive gap (#1743): SessionQueryPlan.parent_id is neither "
-            "SQL-pushed in archive_execution._plan_filter_kwargs nor applied as a "
-            "residual filter (runtime_filters only applies parent_id when "
-            "sql_pushed=False, but the archive path passes sql_pushed=True). "
-            "Parent linkage itself resolves correctly; only the .parent() "
-            "filter is dropped. Owned by the production native-execution agent."
-        ),
-        strict=True,
-    )
     @pytest.mark.asyncio
     async def test_parent_filters_by_parent_id(self, filter_repo_branches: Path) -> None:
         root_native_id = "claude-ai-export:ext-root"

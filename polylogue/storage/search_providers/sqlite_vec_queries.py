@@ -57,7 +57,7 @@ class SqliteVecQueryMixin:
         try:
             source_name = "unknown"
             row = conn.execute(
-                "SELECT source_name FROM sessions WHERE session_id = ?",
+                "SELECT origin FROM sessions WHERE session_id = ?",
                 (session_id,),
             ).fetchone()
             if row:
