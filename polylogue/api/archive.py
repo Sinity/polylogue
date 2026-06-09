@@ -5,6 +5,7 @@ from __future__ import annotations
 import builtins
 import json
 import sqlite3
+import uuid
 from collections.abc import AsyncIterator, Sequence
 from contextlib import suppress
 from datetime import datetime
@@ -13,6 +14,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from polylogue.archive.actions.actions import Action
 from polylogue.archive.attachment.models import Attachment
+from polylogue.archive.blackboard import BlackboardNote
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import MessageRoleFilter, Role
@@ -2960,3 +2962,99 @@ class PolylogueArchiveMixin:
                 return archive.clear_corrections(session_id)
             except KeyError as exc:
                 raise SessionNotFoundError(session_id) from exc
+
+    async def post_blackboard_note(
+        self,
+        *,
+        kind: str,
+        title: str,
+        content: str,
+        scope_repo: str | None = None,
+        scope_session: str | None = None,
+        scope_issue: int | None = None,
+        scope_path: str | None = None,
+        related_sessions: tuple[str, ...] = (),
+    ) -> BlackboardNote:
+        """Post a note to the persistent agent blackboard (#1697).
+
+        ``kind`` must be one of :data:`BLACKBOARD_KINDS`; raises ``ValueError``
+        otherwise. The structured fields are encoded into the stored body and a
+        fresh note id is allocated, so each call appends a distinct note.
+        """
+        from polylogue.archive.blackboard import (
+            BLACKBOARD_KINDS,
+            build_blackboard_body,
+            decode_blackboard_note,
+        )
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+        if kind not in BLACKBOARD_KINDS:
+            raise ValueError(f"kind must be one of {list(BLACKBOARD_KINDS)}, got {kind!r}")
+        body = build_blackboard_body(
+            kind=kind,
+            title=title,
+            content=content,
+            scope_repo=scope_repo,
+            scope_issue=scope_issue,
+            scope_path=scope_path,
+            related_sessions=related_sessions,
+        )
+        note_id = str(uuid.uuid4())
+        target_type = "session" if scope_session else None
+        with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
+            envelope = archive.post_blackboard_note(
+                body,
+                target_type=target_type,
+                target_id=scope_session,
+                note_id=note_id,
+            )
+        return decode_blackboard_note(
+            note_id=envelope.note_id,
+            body=envelope.body,
+            target_type=envelope.target_type,
+            target_id=envelope.target_id,
+            created_at_ms=envelope.created_at_ms,
+            updated_at_ms=envelope.updated_at_ms,
+        )
+
+    async def list_blackboard_notes(
+        self,
+        *,
+        kind: str | None = None,
+        scope_repo: str | None = None,
+        unresolved: bool = False,
+        limit: int = 20,
+    ) -> list[BlackboardNote]:
+        """List blackboard notes, newest first, with optional filters (#1697).
+
+        ``unresolved`` narrows to open-work kinds (:data:`UNRESOLVED_KINDS`).
+        Filtering runs on decoded notes, then the result is capped at ``limit``.
+        """
+        from polylogue.archive.blackboard import (
+            UNRESOLVED_KINDS,
+            decode_blackboard_note,
+        )
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
+            envelopes = archive.list_blackboard_notes()
+        notes: list[BlackboardNote] = []
+        for envelope in envelopes:
+            note = decode_blackboard_note(
+                note_id=envelope.note_id,
+                body=envelope.body,
+                target_type=envelope.target_type,
+                target_id=envelope.target_id,
+                created_at_ms=envelope.created_at_ms,
+                updated_at_ms=envelope.updated_at_ms,
+            )
+            if kind is not None and note.kind != kind:
+                continue
+            if scope_repo is not None and note.scope_repo != scope_repo:
+                continue
+            if unresolved and note.kind not in UNRESOLVED_KINDS:
+                continue
+            notes.append(note)
+            if limit > 0 and len(notes) >= limit:
+                break
+        return notes

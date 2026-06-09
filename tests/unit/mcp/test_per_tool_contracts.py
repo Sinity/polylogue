@@ -217,6 +217,11 @@ TOOL_MATRIX: dict[str, dict[str, Any]] = {
         "required": {"session_id"},
         "happy": {"session_id": _CONV_ID},
     },
+    "blackboard_post": {
+        "required": {"kind", "title", "content"},
+        "happy": {"kind": "finding", "title": "t", "content": "c"},
+        "invalid_value": {"kind": "bogus", "title": "t", "content": "c"},
+    },
 }
 
 
@@ -395,6 +400,11 @@ class TestMutationToolArgumentContracts:
             from polylogue.insights.feedback import UnknownCorrectionKindError
 
             poly.record_correction = AsyncMock(side_effect=UnknownCorrectionKindError("bogus_kind"))
+        # blackboard_post's kind validation lives in the facade
+        # (``post_blackboard_note`` raises ``ValueError``); wire it into the
+        # mock so the MCP tool's error path is exercised.
+        if tool_name == "blackboard_post":
+            poly.post_blackboard_note = AsyncMock(side_effect=ValueError("kind must be one of [...]"))
         fn = admin_server._tool_manager._tools[tool_name].fn
         kwargs = TOOL_MATRIX[tool_name].get("invalid_value") or TOOL_MATRIX[tool_name]["empty_string"]
         # The contract is: invalid input becomes a structured error
@@ -684,3 +694,19 @@ def _arrange_poly_for(poly: Any, tool_name: str) -> None:
         poly.save_annotation = AsyncMock(return_value=True)
     elif tool_name == "add_mark":
         poly.add_mark = AsyncMock(return_value=True)
+    elif tool_name == "blackboard_post":
+        from polylogue.archive.blackboard import BlackboardNote
+
+        poly.post_blackboard_note = AsyncMock(
+            return_value=BlackboardNote(
+                note_id="note-1",
+                kind="finding",
+                title="t",
+                content="c",
+                scope_repo=None,
+                target_type=None,
+                target_id=None,
+                created_at_ms=1,
+                updated_at_ms=1,
+            )
+        )
