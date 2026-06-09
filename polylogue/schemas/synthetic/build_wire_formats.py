@@ -260,9 +260,24 @@ def _ensure_wire_gemini(
     index: int,
     theme: SessionTheme | None,
 ) -> None:
-    data.setdefault("role", role)
-    if not data.get("text"):
-        data["text"] = _text_for_role(rng, role, turn_index=index, theme=theme)
+    # A realistic AI Studio / Drive `chunkedPrompt.chunks` entry is a single
+    # coherent turn: a role plus text. `_generate_from_schema` instead fills
+    # every optional chunk field at once (`isThought`, `executableCode`,
+    # `codeExecutionResult`, `errorMessage`, and the `drive*`/`inline*`
+    # attachment fields). The drive parser then fragments one chunk into many
+    # blocks (thinking + text + code + error), so the message's joined `.text`
+    # never round-trips contiguously through the renderer. Reset the chunk to
+    # the realistic minimal shape, preserving only a schema-generated
+    # `createTime` for timestamp coverage.
+    text = data.get("text")
+    if not isinstance(text, str) or not text:
+        text = _text_for_role(rng, role, turn_index=index, theme=theme)
+    create_time = data.get("createTime")
+    data.clear()
+    data["role"] = role
+    data["text"] = text
+    if isinstance(create_time, str) and create_time:
+        data["createTime"] = create_time
 
 
 __all__ = [
