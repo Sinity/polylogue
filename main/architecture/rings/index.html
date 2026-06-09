@@ -585,7 +585,7 @@ back to the existing brain-artifact metadata walk. Both paths emit normalized
 <tbody>
 <tr>
 <td><code>Polylogue</code></td>
-<td><code>facade.py</code></td>
+<td><code>api/__init__.py</code></td>
 <td>Async entry point. Wraps storage + search + pipeline.</td>
 </tr>
 <tr>
@@ -818,7 +818,6 @@ is rebuilt from source/user evidence. Tier DDL and versions live under
 </ul>
 <h3>Verification (repo health)</h3>
 <ul>
-<li><code>proof/</code> — verification catalog internals, subject discovery, claim catalog, witnesses</li>
 <li><code>devtools/</code> — operator tooling, lints, campaigns, rendering</li>
 <li><code>showcase/</code> — QA exercises, deterministic acceptance tests</li>
 <li><code>tests/</code> — pytest suite, property tests, integration tests</li>
@@ -832,8 +831,6 @@ is rebuilt from source/user evidence. Tier DDL and versions live under
 <ul>
 <li>Surfaces may not import substrate internals directly (see layering.yaml).</li>
 <li>New semantics go into substrate or insights first, then surfaces adapt.</li>
-<li>Proof subjects and claims live in <code>proof/</code>; devtools commands that exercise
-them live in <code>devtools/</code>.</li>
 </ul>
 
 <hr style="margin: 3rem 0 1rem; border-color: var(--border);">
