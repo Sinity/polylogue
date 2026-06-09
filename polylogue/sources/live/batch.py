@@ -1146,8 +1146,21 @@ class LiveBatchProcessor:
                         result.session_ids.append(session_id)
                         result.session_count += 1
                         result.message_count += len(session.messages)
-                except Exception:
-                    logger.warning("live.watcher: archive full ingest failed for %s", record.source_path, exc_info=True)
+                except Exception as exc:
+                    if isinstance(exc, sqlite3.OperationalError) and is_transient_sqlite_lock(exc):
+                        logger.debug(
+                            "live.watcher: archive full ingest deferred for %s (retryable lock); will retry: %s",
+                            record.source_path,
+                            exc,
+                        )
+                    else:
+                        logger.warning(
+                            "live.watcher: archive full ingest failed for %s: %s: %s",
+                            record.source_path,
+                            type(exc).__name__,
+                            exc,
+                            exc_info=True,
+                        )
         return result
 
     def _extract_zip_member_records(
