@@ -2,196 +2,184 @@
 
 # Database Schema
 
-Polylogue stores archive data in split SQLite files with WAL mode enabled. The
-schema is fresh-first: version mismatches are rejected; the operator rebuilds
-the archive from source.
+Polylogue does not store the archive in one SQLite file. The archive is a **set
+of SQLite files split by durability class**, all in WAL mode. Each file (a
+"tier") owns a distinct kind of data and carries its own independent schema
+version. This page describes the conceptual shape and points at the canonical
+DDL; for the deeper invariant detail see [Internals](internals.md) and
+[Architecture](architecture.md).
 
-**Current schema version: 6.**
+## Authoritative source
 
-## Core Tables
+The DDL under
+[`polylogue/storage/sqlite/archive_tiers/`](../polylogue/storage/sqlite/archive_tiers/)
+is the **single source of truth** for tables, columns, CHECK constraints, and
+indexes. This document deliberately does not re-list every column, because an
+exhaustive column table drifts from the DDL and goes stale. When you need an
+exact column, read the tier file named below — do not trust a prose summary
+over the `CREATE TABLE` statement.
 
-### sessions
+| Tier file | Tier | Version constant |
+|-----------|------|------------------|
+| `source.py` | `source.db` | `SOURCE_SCHEMA_VERSION = 1` |
+| `index.py` | `index.db` | `INDEX_SCHEMA_VERSION = 3` |
+| `embeddings.py` | `embeddings.db` | `EMBEDDINGS_SCHEMA_VERSION = 1` |
+| `user.py` | `user.db` | `USER_SCHEMA_VERSION = 1` |
+| `ops.py` | `ops.db` | `OPS_SCHEMA_VERSION = 1` |
 
-The primary archive entity. One row per imported session.
+There is no single global "schema version" number. Each tier is versioned and
+bootstrapped independently.
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `session_id` | TEXT PK | Composite ID (`provider:provider_id`) |
-| `provider_name` | TEXT | Provider enum value |
-| `provider_session_id` | TEXT | Provider's native ID |
-| `title` | TEXT | Session title |
-| `created_at` | TEXT | Creation timestamp (ISO 8601) |
-| `updated_at` | TEXT | Last update timestamp |
-| `sort_key` | REAL | Sortable timeline key |
-| `content_hash` | TEXT | SHA-256 over normalized content (dedup key) |
-| `provider_meta` | TEXT | Provider-specific metadata (JSON) |
-| `metadata` | TEXT | User metadata: tags, summaries, titles (JSON) |
-| `version` | INTEGER | Schema version at write time |
-| `parent_session_id` | TEXT FK | Parent session (branches/continuations) |
-| `branch_type` | TEXT | `continuation`, `sidechain`, `fork`, `subagent` |
-| `raw_id` | TEXT FK | Source raw record |
+The runtime table inventory per tier is also enumerated in
+`polylogue/cli/commands/status.py` (`_ARCHIVE_TIER_TABLES`), which `polylogue
+status` uses to report row counts; that dict is a useful cross-check against
+the DDL.
 
-### messages
+## The Five Tiers
 
-Individual messages within a session.
+### `source.db` — raw acquisition (rebuild-from-source)
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `message_id` | TEXT PK | Unique message ID |
-| `session_id` | TEXT FK | Parent session |
-| `role` | TEXT | `user`, `assistant`, `system`, `tool` |
-| `text` | TEXT | Message text content |
-| `sort_key` | REAL | Message order within session |
-| `content_hash` | TEXT | SHA-256 for dedup |
-| `parent_message_id` | TEXT FK | Parent message (branching) |
-| `branch_index` | INTEGER | Branch position |
-| `provider_name` | TEXT | Denormalized for index-only queries |
-| `word_count` | INTEGER | Precomputed word count |
-| `has_tool_use` | INTEGER | Precomputed: message contains tool calls |
-| `has_thinking` | INTEGER | Precomputed: message contains thinking blocks |
-| `has_paste` | INTEGER | Precomputed: message contains pasted content |
-| `message_type` | TEXT | `message` or `action` |
+Stores acquired bytes and source evidence. Everything downstream is rebuilt
+from this tier, so it is the durable record of *what was ingested*.
 
-Covering index `idx_messages_provider_stats` enables index-only GROUP BY
-queries for provider analytics.
+Core tables: `raw_sessions` (one row per acquired payload, keyed by `raw_id`,
+carrying `origin`, `native_id`, `blob_hash`, and parse/validation state),
+`raw_artifacts` (artifact-taxonomy classification per acquired file),
+`blob_refs` / `pending_blob_refs` / `gc_generations` (content-addressed blob
+references and the lease/GC bookkeeping described in
+[Internals § Blob Store Model](internals.md#blob-store-model)),
+`raw_hook_events`, and `history_sidecars`.
 
-### content_blocks
+### `index.db` — parsed tree, search, and insights (rebuildable)
 
-First-class structured content within messages. One row per block.
+The parsed session/message/block tree, full-text search indexes, cross-session
+topology, and the materialized read models. Rebuildable from `source.db`.
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `block_id` | TEXT PK | Unique block ID |
-| `message_id` | TEXT FK | Parent message |
-| `session_id` | TEXT FK | Denormalized parent session |
-| `block_index` | INTEGER | Order within message |
-| `type` | TEXT | `text`, `thinking`, `tool_use`, `tool_result`, `image`, `code`, `document` |
-| `text` | TEXT | Block text content |
-| `tool_name` | TEXT | Tool name (for `tool_use` blocks) |
-| `tool_id` | TEXT | Tool call ID |
-| `tool_input` | TEXT | Tool input JSON |
-| `metadata` | TEXT | Block metadata JSON; carries media type for image/document blocks |
-| `semantic_type` | TEXT | Inferred semantic type: `file_read`, `file_write`, `file_edit`, `shell`, `git`, `search`, `web`, `agent`, `subagent`, `thinking`, `other` |
+Core tables: `sessions`, `messages`, `blocks`, plus the `actions` **view**
+(not a table — see below), `session_links` (typed cross-session edges),
+`threads` / `thread_sessions`, attachment tables (`attachments`,
+`attachment_refs`, `attachment_native_ids`), `paste_spans`, cost tables
+(`price_catalogs`, `model_prices`, `session_reported_costs`,
+`session_model_usage`), the auto-tag side of `session_tags`, and the insight
+read models (`session_profiles`, `session_work_events`, `session_phases`,
+`session_latency_profiles`, `session_tag_rollups`, `threads`) plus
+`insight_materialization` for cache invalidation.
 
-### actions
+### `embeddings.db` — vectors (rebuildable, expensive)
 
-Normalized action records derived from content blocks.
+`message_embeddings` (a `vec0` virtual table, 1024-dimensional float
+embeddings), `message_embeddings_meta`, and `embedding_status`. Populated only
+when embedding is enabled with a valid Voyage key (see
+[Architecture § Embedding Pipeline](architecture.md#embedding-pipeline)).
+Rebuildable, but re-embedding costs Voyage API calls.
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `event_id` | TEXT PK | Unique event ID |
-| `session_id` | TEXT FK | Parent session |
-| `message_id` | TEXT FK | Parent message |
-| `kind` | TEXT | Action kind (same vocabulary as `semantic_type`) |
-| `tool_name` | TEXT | Normalized tool name |
-| `summary` | TEXT | Action description |
-| `start_time` | TEXT | Action start timestamp |
-| `end_time` | TEXT | Action end timestamp |
-| `file_paths_json` | TEXT | Referenced file paths (JSON array) |
+### `user.db` — irreplaceable human input (back up this one)
 
-### session_stats
+The only tier that is not rebuildable from source. Stores user marks,
+annotations, corrections (the learning feedback loop, keyed
+`(target_type, target_id, correction_type)`), suppressions, the user side of
+`session_tags`, `session_metadata` (per-session user key/value overlay used for
+title overrides, summaries, and custom keys), saved views, recall packs,
+workspaces, and blackboard notes.
 
-Precomputed per-session aggregates, updated atomically with message writes.
+### `ops.db` — disposable daemon telemetry
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `session_id` | TEXT PK FK | Parent session |
-| `provider_name` | TEXT | Denormalized |
-| `message_count` | INTEGER | Total messages |
-| `word_count` | INTEGER | Total words |
-| `tool_use_count` | INTEGER | Messages with tool use |
-| `thinking_count` | INTEGER | Messages with thinking |
-| `paste_count` | INTEGER | Messages with pasted content |
+Ingest cursors (`ingest_cursor`), ingest attempts (`ingest_attempts`),
+convergence debt (`convergence_debt`), cursor-lag samples, daemon stage/event
+logs, embedding catch-up runs, and OTLP spans/telemetry. Safe to discard; the
+daemon repopulates it.
 
-Used for pushdown filters (`--min-messages`, `--min-words`, `--has-tool-use`,
-`--has-thinking`).
+## Identifiers
 
-### Other Core Tables
+Primary keys in `index.db` are **generated** from natural components rather than
+opaque UUIDs (see the `GENERATED ALWAYS AS (...) STORED` columns in `index.py`):
 
-| Table | Purpose |
-|-------|---------|
-| `attachments` / `attachment_refs` | File attachments with M:N message refs |
-| `tags` / `session_tags` | M:N tag assignments (replaced JSON `metadata.tags`) |
-| `raw_sessions` | Raw import records before parsing |
+- `sessions.session_id` = `origin || ':' || native_id`
+- `messages.message_id` = `session_id || ':' || COALESCE(native_id, position || '.' || variant_index)`
+- `blocks.block_id` = `message_id || ':' || position`
 
-## FTS5 Tables
+`origin` is a closed vocabulary (`Origin` enum in `polylogue/core/enums.py`,
+e.g. `claude-code-session`, `claude-ai-export`, `chatgpt-export`,
+`codex-session`, `aistudio-drive`) enforced by a SQL `CHECK`. It is the public
+source-origin token; the provider-wire `Provider` enum is used only at the
+parsing/schema boundary.
 
-| Virtual Table | Content | Tokenizer |
-|---------------|---------|-----------|
-| `messages_fts` | Block text, including tool-use/tool-result action evidence | `unicode61` |
-| `session_work_events_fts` | Work event search text | `unicode61` |
-| `work_threads_fts` | Thread search text | `unicode61` |
+## Timestamps, hashes, and types
 
-All FTS tables use `unicode61` tokenizer (no porter stemmer). `messages_fts`
-is contentless and populated from `blocks`; action search is a filtered read
-over tool-use/tool-result blocks in that same index.
+- **Timestamps** are stored as integer epoch milliseconds in `*_at_ms` columns
+  (e.g. `created_at_ms`, `updated_at_ms`, `occurred_at_ms`).
+- **Content hashes** are 32-byte `BLOB` columns (`CHECK(length(...) = 32)`),
+  SHA-256 over the NFC-normalized session payload — title, timestamps,
+  messages, attachments, and blocks. User metadata (tags, summaries, notes) is
+  **excluded** from the hash, so editing it does not trigger re-import. See
+  [Internals § Content Hash Model](internals.md#content-hash-model).
+- Tables use SQLite `STRICT` mode and closed-enum `CHECK` constraints generated
+  from the `StrEnum` vocabularies in `polylogue/core/enums.py`.
 
-## Vector Table
+## Content blocks are first-class rows
 
-`message_embeddings` uses the `vec0` virtual table extension:
+Structured message content lives in the `blocks` table — one row per block,
+keyed `(message_id, position)`, with a `block_type` constrained to the
+`BlockType` enum (`text`, `thinking`, `reasoning`, `tool_use`, `tool_result`,
+`image`, `code`, `document`). Tool calls carry `tool_name`, `tool_id`, and
+`tool_input`; `tool_command` and `tool_path` are virtual generated columns
+extracted from `tool_input` JSON.
 
-```
-message_id TEXT PRIMARY KEY
-embedding float[1024]
-+provider_name TEXT
-+session_id TEXT
-```
+`actions` is a **view**, not a table: it left-joins `tool_use` blocks to their
+matching `tool_result` block (by `tool_id`) so tool executions read as paired
+records without a separate materialization.
 
-1024-dimensional float embeddings. Populated when `VOYAGE_API_KEY` is set and
-the embed pipeline stage runs. Used by the `--similar` filter and `hybrid`
-retrieval lane.
+## Full-text search
 
-## Insight Tables
+`index.db` carries three FTS5 virtual tables, all using the `unicode61`
+tokenizer (no porter stemmer in this SQLite build):
 
-| Table | Description |
-|-------|-------------|
-| `session_profiles` | Per-session aggregates: repos, tools, costs, durations, message counts |
-| `session_work_events` | Message-range work events with file/tool evidence and weak event labels |
-| `session_phases` | Session segments: planning, implementation, verification, exploration |
-| `work_threads` | Multi-session work groupings |
-| `session_tag_rollups` | Pre-aggregated tag usage stats |
+| Virtual table | Indexes |
+|---------------|---------|
+| `messages_fts` | Block `search_text` (text + tool name + command/path), contentless (`content=''`, `contentless_delete=1`) |
+| `session_work_events_fts` | Work-event search text |
+| `threads_fts` | Thread search text |
 
-Each insight table includes a `materializer_version` for cache invalidation and
-a `search_text` column for FTS indexing.
+`messages_fts` is kept in sync with `blocks` by the `messages_fts_ai/ad/au`
+triggers. During bulk ingest these triggers are suspended for performance and
+restored before commit; see [Internals § FTS5 Model](internals.md#fts5-model)
+for the drift-detection and repair behavior.
 
-## Auxiliary Tables
+## Schema Versioning — fresh-only, no upgrade chain
 
-| Table | Purpose |
-|-------|---------|
-| `artifact_observations` | Schema inference pipeline: per-artifact analysis records |
-| `pending_blob_refs` | Blob store leases (prevents GC races) |
-| `gc_generations` | Garbage collection generation tracking |
-| `source_file_cursors` | Per-file ingestion progress (idempotent resume) |
-| `identity_ledger` | Session content-hash identity ledger |
+Polylogue has **no in-place schema upgrade chain**. On startup each tier's
+on-disk `PRAGMA user_version` is compared against its tier constant:
 
-## Schema Versioning
+- **Empty file** (`user_version == 0`): bootstrap fresh.
+- **Version match**: open as-is.
+- **Anything else** (older or newer): the database is **rejected**.
 
-Polylogue uses fresh-first schema initialization:
-
-- **Version match**: open database normally
-- **New database**: create the current split archive tier files
-- **Version mismatch**: rejected with an error; rebuild the archive from source
-
-Tier schema versions and DDL live under
-`polylogue/storage/sqlite/archive_tiers/`. The bootstrap branching logic in
-`schema_bootstrap.py` handles sync and async index-tier backends.
-
-## Schema Drift Detection
-
-Run `polylogue check` to verify schema integrity:
+A version mismatch is resolved by re-acquiring from source, not by patching the
+file in place. The operator moves the archive aside and re-ingests:
 
 ```bash
-polylogue check                     # Schema health + FK integrity
-polylogue check --schemas           # Schema conformance check
-polylogue check --schemas --schema-samples all   # Full schema audit
+polylogue reset --database && polylogued run
 ```
 
-The `devtools verify-schema-roundtrip` command verifies provider schema
-packages reload and roundtrip cleanly through typed models.
+Schema bumps are deletes-then-defines edits of the owning tier DDL, never
+deltas. The bootstrap branching that decides fresh-init vs. open vs. reject is
+shared across sync and async backends in
+`storage/sqlite/schema_bootstrap.py`. See
+[Internals § Schema Versioning Model](internals.md#schema-versioning-model) and
+[CONTRIBUTING § Schema-Touching Changes](../CONTRIBUTING.md#schema-touching-changes).
 
-## Blob Store
+## Inspecting an archive
 
-Content-addressed blob storage for attachment payloads. Blobs are keyed by
-SHA-256 hash and stored under `~/.local/share/polylogue/blobs/`. The
-`pending_blob_refs` table provides lease-based garbage collection that prevents
-races with concurrent ingestion.
+```bash
+polylogue status                    # daemon/archive snapshot, including per-tier row counts
+polylogue maintenance archive-plan  # planned archive file set
+polylogue check                     # schema health + referential integrity
+polylogue check --schemas           # provider-schema conformance over raw records
+```
+
+The `devtools verify-schema-roundtrip` command verifies committed provider
+schema packages reload and roundtrip cleanly through typed models.
+
+---
+
+**See also:** [Architecture](architecture.md) · [Internals](internals.md) · [Data Model](data-model.md) · [Configuration](configuration.md)
