@@ -101,8 +101,8 @@ class TestParsingServiceParseSources:
         mock_acquire.assert_awaited_once_with(
             [], ui=None, progress_callback=None, drive_config=mock_config.drive_config
         )
-        mock_collect_validate.assert_awaited_once_with(source_names=None, exclude_raw_ids=[])
-        mock_collect_parse.assert_awaited_once_with(source_names=None, exclude_raw_ids=[])
+        mock_collect_validate.assert_awaited_once_with(source_paths=None, exclude_raw_ids=[])
+        mock_collect_parse.assert_awaited_once_with(source_paths=None, exclude_raw_ids=[])
         mock_parse.assert_not_called()
         assert result.counts["sessions"] == 0
         assert result.counts["messages"] == 0
@@ -211,13 +211,13 @@ class TestParsingServiceParseSources:
         parse_backlog_calls: list[list[str]] = []
         validation_backlog_calls: list[list[str]] = []
 
-        async def _parse_backlog(*, source_names: list[str] | None, exclude_raw_ids: list[str]) -> list[str]:
-            assert source_names == ["test-source"]
+        async def _parse_backlog(*, source_paths: list[str] | None, exclude_raw_ids: list[str]) -> list[str]:
+            assert source_paths == ["/tmp/inbox"]
             parse_backlog_calls.append(list(exclude_raw_ids))
             return ["raw-2", "raw-3", "raw-3"]
 
-        async def _validation_backlog(*, source_names: list[str] | None, exclude_raw_ids: list[str]) -> list[str]:
-            assert source_names == ["test-source"]
+        async def _validation_backlog(*, source_paths: list[str] | None, exclude_raw_ids: list[str]) -> list[str]:
+            assert source_paths == ["/tmp/inbox"]
             validation_backlog_calls.append(list(exclude_raw_ids))
             return ["raw-3", "raw-4", "raw-1"]
 
@@ -274,8 +274,8 @@ class TestParsingServiceParseSources:
                         result = await service.parse_sources([source])
 
         mock_acquire.assert_awaited_once()
-        mock_collect_validate.assert_awaited_once_with(source_names=["test-source"], exclude_raw_ids=[])
-        mock_collect_parse.assert_awaited_once_with(source_names=["test-source"], exclude_raw_ids=[])
+        mock_collect_validate.assert_awaited_once_with(source_paths=["/tmp/inbox"], exclude_raw_ids=[])
+        mock_collect_parse.assert_awaited_once_with(source_paths=["/tmp/inbox"], exclude_raw_ids=[])
         mock_parse.assert_not_called()
         assert result.counts["sessions"] == 0
 
@@ -495,7 +495,6 @@ class TestParsingServiceStreaming:
 
 class TestPlanningService:
     @patch("polylogue.pipeline.services.acquisition.iter_source_raw_data")
-    @pytest.mark.xfail(reason="source-scoped planning rescope by source_path pending; see #1788", strict=False)
     async def test_parse_plan_uses_existing_raw_scope_without_scanning_sources(
         self, mock_iter: MagicMock, tmp_path: Path
     ) -> None:
@@ -509,7 +508,7 @@ class TestPlanningService:
             RawSessionRecord(
                 raw_id="raw-scoped",
                 source_name="inbox-a",
-                source_path="/tmp/a.json",
+                source_path=str(source_dir / "a.json"),
                 blob_size=len(b'{"id":"x"}'),
                 acquired_at=datetime.now(tz=timezone.utc).isoformat(),
             )
@@ -524,7 +523,6 @@ class TestPlanningService:
         assert set(plan.parse_ready_raw_ids) == {"raw-scoped"}
         mock_iter.assert_not_called()
 
-    @pytest.mark.xfail(reason="source-scoped planning rescope by source_path pending; see #1788", strict=False)
     async def test_planning_includes_scoped_validation_backlog(self, tmp_path: Path) -> None:
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
         config = Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render")
@@ -533,9 +531,9 @@ class TestPlanningService:
         source_dir.mkdir()
 
         for raw_id, source_name, source_path in (
-            ("raw-scoped", "inbox-a", "/tmp/a.json"),
-            ("raw-legacy-provider", None, "/tmp/legacy.json"),
-            ("raw-other", "inbox-b", "/tmp/b.json"),
+            ("raw-scoped", "inbox-a", str(source_dir / "a.json")),
+            ("raw-legacy-provider", None, str(tmp_path / "legacy" / "legacy.json")),
+            ("raw-other", "inbox-b", str(tmp_path / "inbox-b" / "b.json")),
         ):
             await backend.save_raw_session(
                 RawSessionRecord(
@@ -580,7 +578,6 @@ class TestPlanningService:
         assert plan.summary.details["new_raw"] == 1
         assert plan.summary.details["duplicate_raw"] == 1
 
-    @pytest.mark.xfail(reason="source-scoped planning rescope by source_path pending; see #1788", strict=False)
     async def test_build_plan_execution_does_not_load_backlog_content(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -596,7 +593,7 @@ class TestPlanningService:
                 RawSessionRecord(
                     raw_id=backlog_ids[index],
                     source_name="inbox-a",
-                    source_path=f"/tmp/backlog-{index}.json",
+                    source_path=str(source_dir / f"backlog-{index}.json"),
                     blob_size=len(b'{"id":"x"}'),
                     acquired_at=datetime.now(tz=timezone.utc).isoformat(),
                 )
@@ -622,7 +619,6 @@ class TestPlanningService:
         assert set(plan.validate_raw_ids) == set(backlog_ids)
         assert call_count[0] == 0
 
-    @pytest.mark.xfail(reason="source-scoped planning rescope by source_path pending; see #1788", strict=False)
     async def test_build_plan_preview_validates_backlog_in_batches(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -638,7 +634,7 @@ class TestPlanningService:
                 RawSessionRecord(
                     raw_id=hashlib.sha256(f"raw-preview-{index}".encode()).hexdigest(),
                     source_name="inbox-a",
-                    source_path=f"/tmp/p-{index}.json",
+                    source_path=str(source_dir / f"p-{index}.json"),
                     blob_size=len(b'{"id":"x"}'),
                     acquired_at=datetime.now(tz=timezone.utc).isoformat(),
                 )
@@ -667,7 +663,6 @@ class TestPlanningService:
         assert call_count[0] >= 2
         assert max(batch_sizes) <= ValidationService.RAW_BATCH_SIZE
 
-    @pytest.mark.xfail(reason="source-scoped planning rescope by source_path pending; see #1788", strict=False)
     async def test_planning_includes_only_parseable_backlog_statuses(self, tmp_path: Path) -> None:
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
         config = Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render")
@@ -680,7 +675,7 @@ class TestPlanningService:
                 RawSessionRecord(
                     raw_id=raw_id,
                     source_name="inbox-a",
-                    source_path=f"/tmp/{raw_id}.json",
+                    source_path=str(source_dir / f"{raw_id}.json"),
                     blob_size=len(b'{"id":"x"}'),
                     acquired_at=datetime.now(tz=timezone.utc).isoformat(),
                 )
@@ -693,7 +688,6 @@ class TestPlanningService:
         assert plan.summary.details["backlog_parse"] == 2
         assert set(plan.parse_ready_raw_ids) == {"raw-passed", "raw-skipped"}
 
-    @pytest.mark.xfail(reason="source-scoped planning rescope by source_path pending; see #1788", strict=False)
     async def test_build_plan_force_reparse_simulates_reset_for_parse_backlog(self, tmp_path: Path) -> None:
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
         config = Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render")
@@ -705,7 +699,7 @@ class TestPlanningService:
             RawSessionRecord(
                 raw_id="raw-validated",
                 source_name="inbox-a",
-                source_path="/tmp/validated.json",
+                source_path=str(source_dir / "validated.json"),
                 blob_size=len(b'{"id":"x"}'),
                 acquired_at=datetime.now(tz=timezone.utc).isoformat(),
             )
@@ -717,7 +711,7 @@ class TestPlanningService:
             RawSessionRecord(
                 raw_id="raw-unvalidated",
                 source_name="inbox-a",
-                source_path="/tmp/unvalidated.json",
+                source_path=str(source_dir / "unvalidated.json"),
                 blob_size=len(b'{"id":"x"}'),
                 acquired_at=datetime.now(tz=timezone.utc).isoformat(),
             )
@@ -728,7 +722,7 @@ class TestPlanningService:
             RawSessionRecord(
                 raw_id="raw-validation-failed",
                 source_name="inbox-a",
-                source_path="/tmp/validation-failed.json",
+                source_path=str(source_dir / "validation-failed.json"),
                 blob_size=len(b'{"id":"x"}'),
                 acquired_at=datetime.now(tz=timezone.utc).isoformat(),
             )

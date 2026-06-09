@@ -285,6 +285,31 @@ def _build_source_scope_filter(
     return _build_scope_filter(names, column=source_column)
 
 
+def _build_source_path_scope_filter(
+    source_paths: Sequence[str] | None,
+) -> tuple[str, list[str]]:
+    """Build a path-prefix predicate scoping raw rows to configured source roots.
+
+    Configured inbox/source roots are filesystem paths, not origins, so raw
+    selection must scope on the ``source_path`` column rather than ``origin``.
+    Each root matches an exact ``source_path`` or any descendant beneath it,
+    mirroring the component-bounded LIKE-escape pattern used for path filters
+    in ``queries/filter_builder.py``.
+    """
+    if source_paths is None:
+        return "", []
+    if not source_paths:
+        return "0", []
+
+    predicates: list[str] = []
+    params: list[str] = []
+    for path in source_paths:
+        escaped = path.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        predicates.append("(source_path = ? OR source_path LIKE ? ESCAPE '\\')")
+        params.extend([path, f"{escaped}/%"])
+    return "(" + " OR ".join(predicates) + ")", params
+
+
 def _build_provider_scope_filter(
     names: Sequence[str] | None,
     *,
@@ -306,6 +331,7 @@ __all__ = [
     "WRITE_MMAP_SIZE_BYTES",
     "_build_provider_scope_filter",
     "_build_scope_filter",
+    "_build_source_path_scope_filter",
     "_build_source_scope_filter",
     "connection_context",
     "create_default_backend",

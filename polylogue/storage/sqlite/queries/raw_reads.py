@@ -10,7 +10,7 @@ from polylogue.core.enums import Origin
 from polylogue.core.sources import provider_from_origin
 from polylogue.storage.raw.models import RawSessionState
 from polylogue.storage.runtime import RawSessionRecord
-from polylogue.storage.sqlite.connection import _build_source_scope_filter
+from polylogue.storage.sqlite.connection import _build_source_path_scope_filter
 from polylogue.storage.sqlite.queries.mappers import _ms_to_iso, _row_to_raw_session
 from polylogue.storage.sqlite.queries.raw_state import RAW_ORIGIN_FILTER_SQL, origin_filter_value
 
@@ -27,7 +27,7 @@ def _raw_rows(rows: Iterable[object]) -> list[aiosqlite.Row]:
 def _raw_select_query(
     select_columns: str,
     *,
-    source_names: list[str] | None = None,
+    source_paths: list[str] | None = None,
     source_name: str | None = None,
     require_unparsed: bool = False,
     require_unvalidated: bool = False,
@@ -48,10 +48,7 @@ def _raw_select_query(
         where_clauses.append(f"validation_status IN ({placeholders})")
         params.extend(validation_statuses)
 
-    predicate, scope_params = _build_source_scope_filter(
-        source_names,
-        source_column="origin",
-    )
+    predicate, scope_params = _build_source_path_scope_filter(source_paths)
     if predicate:
         where_clauses.append(predicate)
         params.extend(scope_params)
@@ -65,7 +62,7 @@ def _raw_select_query(
 
 def raw_id_query(
     *,
-    source_names: list[str] | None = None,
+    source_paths: list[str] | None = None,
     source_name: str | None = None,
     require_unparsed: bool = False,
     require_unvalidated: bool = False,
@@ -73,7 +70,7 @@ def raw_id_query(
 ) -> tuple[str, tuple[str, ...]]:
     return _raw_select_query(
         "raw_id",
-        source_names=source_names,
+        source_paths=source_paths,
         source_name=source_name,
         require_unparsed=require_unparsed,
         require_unvalidated=require_unvalidated,
@@ -83,7 +80,7 @@ def raw_id_query(
 
 def raw_header_query(
     *,
-    source_names: list[str] | None = None,
+    source_paths: list[str] | None = None,
     source_name: str | None = None,
     require_unparsed: bool = False,
     require_unvalidated: bool = False,
@@ -91,7 +88,7 @@ def raw_header_query(
 ) -> tuple[str, tuple[str, ...]]:
     return _raw_select_query(
         "raw_id, blob_size",
-        source_names=source_names,
+        source_paths=source_paths,
         source_name=source_name,
         require_unparsed=require_unparsed,
         require_unvalidated=require_unvalidated,
@@ -102,7 +99,7 @@ def raw_header_query(
 async def iter_raw_ids(
     conn: aiosqlite.Connection,
     *,
-    source_names: list[str] | None = None,
+    source_paths: list[str] | None = None,
     source_name: str | None = None,
     require_unparsed: bool = False,
     require_unvalidated: bool = False,
@@ -110,7 +107,7 @@ async def iter_raw_ids(
     page_size: int = 1000,
 ) -> AsyncIterator[str]:
     sql, params = raw_id_query(
-        source_names=source_names,
+        source_paths=source_paths,
         source_name=source_name,
         require_unparsed=require_unparsed,
         require_unvalidated=require_unvalidated,
@@ -128,7 +125,7 @@ async def iter_raw_ids(
 async def iter_raw_headers(
     conn: aiosqlite.Connection,
     *,
-    source_names: list[str] | None = None,
+    source_paths: list[str] | None = None,
     source_name: str | None = None,
     require_unparsed: bool = False,
     require_unvalidated: bool = False,
@@ -136,7 +133,7 @@ async def iter_raw_headers(
     page_size: int = 1000,
 ) -> AsyncIterator[tuple[str, int]]:
     sql, params = raw_header_query(
-        source_names=source_names,
+        source_paths=source_paths,
         source_name=source_name,
         require_unparsed=require_unparsed,
         require_unvalidated=require_unvalidated,

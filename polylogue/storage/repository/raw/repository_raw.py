@@ -207,7 +207,7 @@ class RepositoryRawMixin:
     async def iter_raw_headers(
         self,
         *,
-        source_names: list[str] | None = None,
+        source_paths: list[str] | None = None,
         source_name: str | None = None,
         require_unparsed: bool = False,
         require_unvalidated: bool = False,
@@ -217,7 +217,7 @@ class RepositoryRawMixin:
         async with self._backend.connection() as conn:
             async for header in raw_queries.iter_raw_headers(
                 conn,
-                source_names=source_names,
+                source_paths=source_paths,
                 source_name=source_name,
                 require_unparsed=require_unparsed,
                 require_unvalidated=require_unvalidated,

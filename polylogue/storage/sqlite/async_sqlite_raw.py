@@ -36,7 +36,7 @@ class SQLiteRawMixin:
     def _raw_id_query(
         self,
         *,
-        source_names: list[str] | None = None,
+        source_paths: list[str] | None = None,
         source_name: str | None = None,
         require_unparsed: bool = False,
         require_unvalidated: bool = False,
@@ -44,7 +44,7 @@ class SQLiteRawMixin:
     ) -> tuple[str, tuple[str, ...]]:
         """Build the canonical scoped raw-ID query."""
         return self.queries.raw_id_query(
-            source_names=source_names,
+            source_paths=source_paths,
             source_name=source_name,
             require_unparsed=require_unparsed,
             require_unvalidated=require_unvalidated,
@@ -54,7 +54,7 @@ class SQLiteRawMixin:
     async def iter_raw_ids(
         self,
         *,
-        source_names: list[str] | None = None,
+        source_paths: list[str] | None = None,
         source_name: str | None = None,
         require_unparsed: bool = False,
         require_unvalidated: bool = False,
@@ -63,7 +63,7 @@ class SQLiteRawMixin:
     ) -> AsyncIterator[str]:
         """Iterate raw session IDs for a pipeline state slice."""
         async for rid in self.queries.iter_raw_ids(
-            source_names=source_names,
+            source_paths=source_paths,
             source_name=source_name,
             require_unparsed=require_unparsed,
             require_unvalidated=require_unvalidated,
@@ -75,7 +75,7 @@ class SQLiteRawMixin:
     async def iter_raw_headers(
         self,
         *,
-        source_names: list[str] | None = None,
+        source_paths: list[str] | None = None,
         source_name: str | None = None,
         require_unparsed: bool = False,
         require_unvalidated: bool = False,
@@ -84,7 +84,7 @@ class SQLiteRawMixin:
     ) -> AsyncIterator[tuple[str, int]]:
         """Iterate raw session IDs with blob sizes for lightweight batching."""
         async for raw_header in self.queries.iter_raw_headers(
-            source_names=source_names,
+            source_paths=source_paths,
             source_name=source_name,
             require_unparsed=require_unparsed,
             require_unvalidated=require_unvalidated,

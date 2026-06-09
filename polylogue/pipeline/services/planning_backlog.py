@@ -20,7 +20,7 @@ def dedupe_ids(raw_ids: list[str]) -> list[str]:
 async def collect_validation_backlog(
     backend: SQLiteBackend,
     *,
-    source_names: list[str] | None,
+    source_paths: list[str] | None,
     exclude_raw_ids: list[str] | None = None,
     force_reparse: bool = False,
 ) -> list[str]:
@@ -28,7 +28,7 @@ async def collect_validation_backlog(
     backlog_validate_ids: list[str] = []
     query_spec = validation_backlog_query_spec(force_reparse=force_reparse)
     async for raw_id in backend.iter_raw_ids(
-        source_names=source_names,
+        source_paths=source_paths,
         require_unparsed=query_spec.require_unparsed,
         require_unvalidated=query_spec.require_unvalidated,
         validation_statuses=list(query_spec.validation_statuses)
@@ -43,7 +43,7 @@ async def collect_validation_backlog(
 async def collect_parse_backlog(
     backend: SQLiteBackend,
     *,
-    source_names: list[str] | None,
+    source_paths: list[str] | None,
     exclude_raw_ids: list[str] | None = None,
     force_reparse: bool = False,
 ) -> list[str]:
@@ -51,7 +51,7 @@ async def collect_parse_backlog(
     backlog_parse_ids: list[str] = []
     query_spec = parse_backlog_query_spec(force_reparse=force_reparse)
     async for raw_id in backend.iter_raw_ids(
-        source_names=source_names,
+        source_paths=source_paths,
         require_unparsed=query_spec.require_unparsed,
         validation_statuses=list(query_spec.validation_statuses)
         if query_spec.validation_statuses is not None
