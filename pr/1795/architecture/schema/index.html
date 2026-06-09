@@ -1,0 +1,890 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Schema — Polylogue</title>
+    <style>
+
+        :root {
+            --bg-primary: #0B0E14;
+            --bg-secondary: #13171F;
+            --bg-tertiary: #1A1F2A;
+            --text-primary: #E6E8EC;
+            --text-secondary: #8B919A;
+            --text-tertiary: #555B63;
+            --accent: #3B82F6;
+            --accent-hover: #2563EB;
+            --border: #1E2430;
+            --shadow: rgba(0, 0, 0, 0.4);
+            --green: #22C55E;
+            --yellow: #EAB308;
+            --red: #EF4444;
+            --provider-claude-code: #D97706;
+            --provider-codex: #3B82F6;
+            --provider-chatgpt: #10B981;
+            --provider-gemini: #8B5CF6;
+            --provider-claude-ai: #F59E0B;
+            --header-height: 56px;
+            --nav-width: 240px;
+            --content-max-width: 720px;
+            --footer-height: 40px;
+            --font-body: &#39;Inter&#39;, system-ui, -apple-system, sans-serif;
+            --font-code: &#39;JetBrains Mono&#39;, &#39;Fira Code&#39;, monospace;
+        }
+        @media (prefers-color-scheme: light) {
+            :root {
+                --bg-primary: #FAFAFA;
+                --bg-secondary: #FFFFFF;
+                --bg-tertiary: #F3F4F6;
+                --text-primary: #111827;
+                --text-secondary: #6B7280;
+                --text-tertiary: #9CA3AF;
+                --border: #E5E7EB;
+                --shadow: rgba(0, 0, 0, 0.08);
+            }
+        }
+
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        html { font-size: 15px; }
+        body {
+            font-family: var(--font-body);
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+            -webkit-font-smoothing: antialiased;
+        }
+        .site-header {
+            position: sticky; top: 0; z-index: 10;
+            height: var(--header-height);
+            background-color: var(--bg-secondary);
+            border-bottom: 1px solid var(--border);
+            display: flex; align-items: center; padding: 0 1.5rem; gap: 1rem;
+        }
+        .site-header .logo { font-weight: 700; font-size: 1.1rem; color: var(--text-primary); text-decoration: none; white-space: nowrap; }
+        .site-header .logo span { color: var(--accent); }
+        .site-header .search-bar { flex: 1; max-width: 400px; margin: 0 auto; }
+        .site-header .search-bar input {
+            width: 100%; padding: 0.4rem 0.75rem; border-radius: 6px;
+            border: 1px solid var(--border); background-color: var(--bg-tertiary);
+            color: var(--text-primary); font-family: var(--font-body); font-size: 0.9rem;
+        }
+        .site-header .theme-toggle {
+            background: none; border: 1px solid var(--border); border-radius: 6px;
+            padding: 0.3rem 0.6rem; cursor: pointer; color: var(--text-secondary); font-size: 0.9rem;
+        }
+        .page-layout { display: flex; min-height: calc(100vh - var(--header-height)); }
+        .site-nav {
+            width: var(--nav-width); flex-shrink: 0; padding: 2rem 1.5rem;
+            background-color: var(--bg-primary); border-right: 1px solid var(--border);
+            overflow-y: auto; position: sticky; top: var(--header-height);
+            height: calc(100vh - var(--header-height));
+        }
+        .site-nav .nav-section { margin-bottom: 1.5rem; }
+        .site-nav .nav-section-title { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-tertiary); margin-bottom: 0.5rem; }
+        .site-nav a { display: block; padding: 0.3rem 0; color: var(--text-secondary); text-decoration: none; font-size: 0.9rem; }
+        .site-nav a:hover { color: var(--text-primary); }
+        .site-nav a.active { color: var(--accent); font-weight: 500; }
+        .content { flex: 1; max-width: var(--content-max-width); margin: 0 auto; padding: 2rem 2rem 4rem; width: 100%; }
+        h1 { font-size: 1.87rem; font-weight: 600; line-height: 1.3; margin: 2rem 0 1rem; }
+        h1:first-child { margin-top: 0; }
+        h2 { font-size: 1.47rem; font-weight: 600; line-height: 1.3; margin: 2rem 0 0.75rem; }
+        h3 { font-size: 1.2rem; font-weight: 600; line-height: 1.4; margin: 1.5rem 0 0.5rem; }
+        p { margin-bottom: 1rem; }
+        a { color: var(--accent); text-decoration: none; }
+        a:hover { color: var(--accent-hover); }
+        code { font-family: var(--font-code); font-size: 0.87rem; background-color: var(--bg-tertiary); padding: 0.15em 0.4em; border-radius: 3px; }
+        pre { background-color: var(--bg-secondary); border: 1px solid var(--border); border-radius: 6px; padding: 1rem 1.25rem; overflow-x: auto; margin-bottom: 1.25rem; font-size: 0.87rem; line-height: 1.5; }
+        pre code { background: none; padding: 0; font-size: inherit; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 1.25rem; font-size: 0.9rem; }
+        th, td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid var(--border); }
+        th { font-weight: 600; color: var(--text-secondary); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }
+        .card { background-color: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem; margin-bottom: 1rem; }
+        .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+        .stat-card { background-color: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem; text-align: center; }
+        .stat-card .stat-value { font-size: 2rem; font-weight: 700; color: var(--accent); }
+        .stat-card .stat-label { font-size: 0.8rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 0.25rem; }
+        .badge { display: inline-block; padding: 0.15em 0.5em; border-radius: 4px; font-size: 0.8rem; font-weight: 500; }
+        .badge-green { background-color: rgba(34, 197, 94, 0.15); color: var(--green); }
+        .badge-yellow { background-color: rgba(234, 179, 8, 0.15); color: var(--yellow); }
+        .badge-red { background-color: rgba(239, 68, 68, 0.15); color: var(--red); }
+        .site-footer { height: var(--footer-height); display: flex; align-items: center; justify-content: space-between; padding: 0 1.5rem; border-top: 1px solid var(--border); font-size: 0.8rem; color: var(--text-tertiary); }
+        .site-footer a { color: var(--text-secondary); }
+        .home-hero { text-align: center; padding: 4rem 0 3rem; }
+        .home-hero h1 { font-size: 3rem; margin-bottom: 0.5rem; }
+        .home-hero .tagline { font-size: 1.2rem; color: var(--text-secondary); margin-bottom: 2rem; }
+        .home-hero .hero-search { max-width: 500px; margin: 0 auto 3rem; }
+        .home-hero .hero-search input { width: 100%; padding: 0.75rem 1rem; border-radius: 8px; border: 1px solid var(--border); background-color: var(--bg-secondary); color: var(--text-primary); font-family: var(--font-body); font-size: 1rem; }
+        .home-links { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; margin-top: 2rem; }
+        .home-links a { display: inline-block; padding: 0.6rem 1.5rem; border-radius: 6px; background-color: var(--bg-secondary); border: 1px solid var(--border); font-weight: 500; }
+        .home-links a:hover { background-color: var(--bg-tertiary); border-color: var(--accent); }
+        @media (max-width: 768px) {
+            .site-nav { display: none; }
+            .content { padding: 1.5rem 1rem; }
+            .home-hero h1 { font-size: 2rem; }
+        }
+        @media print {
+            .site-header, .site-nav, .site-footer { display: none; }
+            .content { max-width: none; padding: 0; }
+            body { background: white; color: black; }
+        }
+
+pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.highlight .hll { background-color: #49483e }
+.highlight { background: #272822; color: #F8F8F2 }
+.highlight .c { color: #959077 } /* Comment */
+.highlight .err { color: #ED007E; background-color: #1E0010 } /* Error */
+.highlight .esc { color: #F8F8F2 } /* Escape */
+.highlight .g { color: #F8F8F2 } /* Generic */
+.highlight .k { color: #66D9EF } /* Keyword */
+.highlight .l { color: #AE81FF } /* Literal */
+.highlight .n { color: #F8F8F2 } /* Name */
+.highlight .o { color: #FF4689 } /* Operator */
+.highlight .x { color: #F8F8F2 } /* Other */
+.highlight .p { color: #F8F8F2 } /* Punctuation */
+.highlight .ch { color: #959077 } /* Comment.Hashbang */
+.highlight .cm { color: #959077 } /* Comment.Multiline */
+.highlight .cp { color: #959077 } /* Comment.Preproc */
+.highlight .cpf { color: #959077 } /* Comment.PreprocFile */
+.highlight .c1 { color: #959077 } /* Comment.Single */
+.highlight .cs { color: #959077 } /* Comment.Special */
+.highlight .gd { color: #FF4689 } /* Generic.Deleted */
+.highlight .ge { color: #F8F8F2; font-style: italic } /* Generic.Emph */
+.highlight .ges { color: #F8F8F2; font-weight: bold; font-style: italic } /* Generic.EmphStrong */
+.highlight .gr { color: #F8F8F2 } /* Generic.Error */
+.highlight .gh { color: #F8F8F2 } /* Generic.Heading */
+.highlight .gi { color: #A6E22E } /* Generic.Inserted */
+.highlight .go { color: #66D9EF } /* Generic.Output */
+.highlight .gp { color: #FF4689; font-weight: bold } /* Generic.Prompt */
+.highlight .gs { color: #F8F8F2; font-weight: bold } /* Generic.Strong */
+.highlight .gu { color: #959077 } /* Generic.Subheading */
+.highlight .gt { color: #F8F8F2 } /* Generic.Traceback */
+.highlight .kc { color: #66D9EF } /* Keyword.Constant */
+.highlight .kd { color: #66D9EF } /* Keyword.Declaration */
+.highlight .kn { color: #FF4689 } /* Keyword.Namespace */
+.highlight .kp { color: #66D9EF } /* Keyword.Pseudo */
+.highlight .kr { color: #66D9EF } /* Keyword.Reserved */
+.highlight .kt { color: #66D9EF } /* Keyword.Type */
+.highlight .ld { color: #E6DB74 } /* Literal.Date */
+.highlight .m { color: #AE81FF } /* Literal.Number */
+.highlight .s { color: #E6DB74 } /* Literal.String */
+.highlight .na { color: #A6E22E } /* Name.Attribute */
+.highlight .nb { color: #F8F8F2 } /* Name.Builtin */
+.highlight .nc { color: #A6E22E } /* Name.Class */
+.highlight .no { color: #66D9EF } /* Name.Constant */
+.highlight .nd { color: #A6E22E } /* Name.Decorator */
+.highlight .ni { color: #F8F8F2 } /* Name.Entity */
+.highlight .ne { color: #A6E22E } /* Name.Exception */
+.highlight .nf { color: #A6E22E } /* Name.Function */
+.highlight .nl { color: #F8F8F2 } /* Name.Label */
+.highlight .nn { color: #F8F8F2 } /* Name.Namespace */
+.highlight .nx { color: #A6E22E } /* Name.Other */
+.highlight .py { color: #F8F8F2 } /* Name.Property */
+.highlight .nt { color: #FF4689 } /* Name.Tag */
+.highlight .nv { color: #F8F8F2 } /* Name.Variable */
+.highlight .ow { color: #FF4689 } /* Operator.Word */
+.highlight .pm { color: #F8F8F2 } /* Punctuation.Marker */
+.highlight .w { color: #F8F8F2 } /* Text.Whitespace */
+.highlight .mb { color: #AE81FF } /* Literal.Number.Bin */
+.highlight .mf { color: #AE81FF } /* Literal.Number.Float */
+.highlight .mh { color: #AE81FF } /* Literal.Number.Hex */
+.highlight .mi { color: #AE81FF } /* Literal.Number.Integer */
+.highlight .mo { color: #AE81FF } /* Literal.Number.Oct */
+.highlight .sa { color: #E6DB74 } /* Literal.String.Affix */
+.highlight .sb { color: #E6DB74 } /* Literal.String.Backtick */
+.highlight .sc { color: #E6DB74 } /* Literal.String.Char */
+.highlight .dl { color: #E6DB74 } /* Literal.String.Delimiter */
+.highlight .sd { color: #E6DB74 } /* Literal.String.Doc */
+.highlight .s2 { color: #E6DB74 } /* Literal.String.Double */
+.highlight .se { color: #AE81FF } /* Literal.String.Escape */
+.highlight .sh { color: #E6DB74 } /* Literal.String.Heredoc */
+.highlight .si { color: #E6DB74 } /* Literal.String.Interpol */
+.highlight .sx { color: #E6DB74 } /* Literal.String.Other */
+.highlight .sr { color: #E6DB74 } /* Literal.String.Regex */
+.highlight .s1 { color: #E6DB74 } /* Literal.String.Single */
+.highlight .ss { color: #E6DB74 } /* Literal.String.Symbol */
+.highlight .bp { color: #F8F8F2 } /* Name.Builtin.Pseudo */
+.highlight .fm { color: #A6E22E } /* Name.Function.Magic */
+.highlight .vc { color: #F8F8F2 } /* Name.Variable.Class */
+.highlight .vg { color: #F8F8F2 } /* Name.Variable.Global */
+.highlight .vi { color: #F8F8F2 } /* Name.Variable.Instance */
+.highlight .vm { color: #F8F8F2 } /* Name.Variable.Magic */
+.highlight .il { color: #AE81FF } /* Literal.Number.Integer.Long */
+    </style>
+    
+</head>
+<body>
+    <header class="site-header">
+        <a href="/polylogue/" class="logo">poly<span>logue</span></a>
+        <div class="search-bar">
+            <input type="search" placeholder="Search docs..." id="search-input">
+        </div>
+        <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme">
+            <span class="light-icon">☀</span>
+            <span class="dark-icon">☾</span>
+        </button>
+    </header>
+    <div class="page-layout">
+        <nav class="site-nav" id="site-nav">
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Documentation</div>
+                
+                <a href="/polylogue/docs/getting-started/" >
+                    Getting Started
+                </a>
+                
+                <a href="/polylogue/docs/search/" >
+                    Search
+                </a>
+                
+                <a href="/polylogue/docs/providers/" >
+                    Providers
+                </a>
+                
+                <a href="/polylogue/docs/insights/" >
+                    Insights
+                </a>
+                
+                <a href="/polylogue/docs/export/" >
+                    Export
+                </a>
+                
+                <a href="/polylogue/docs/daemon/" >
+                    Daemon
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Reference</div>
+                
+                <a href="/polylogue/reference/cli/" >
+                    CLI
+                </a>
+                
+                <a href="/polylogue/reference/mcp/" >
+                    MCP
+                </a>
+                
+                <a href="/polylogue/reference/api/" >
+                    API
+                </a>
+                
+                <a href="/polylogue/reference/config/" >
+                    Config
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Architecture</div>
+                
+                <a href="/polylogue/architecture/rings/" >
+                    Rings
+                </a>
+                
+                <a href="/polylogue/architecture/internals/" >
+                    Internals
+                </a>
+                
+                <a href="/polylogue/architecture/schema/" class="active">
+                    Schema
+                </a>
+                
+                <a href="/polylogue/architecture/contributing/" >
+                    Contributing
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Verifiability</div>
+                
+                <a href="/polylogue/verifiability/catalog/" >
+                    Catalog
+                </a>
+                
+                <a href="/polylogue/verifiability/coverage/" >
+                    Coverage
+                </a>
+                
+                <a href="/polylogue/verifiability/mutation/" >
+                    Mutation
+                </a>
+                
+                <a href="/polylogue/verifiability/freshness/" >
+                    Freshness
+                </a>
+                
+                <a href="/polylogue/verifiability/drift/" >
+                    Drift
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Design</div>
+                
+                <a href="/polylogue/design/second-brain/" >
+                    Second Brain
+                </a>
+                
+                <a href="/polylogue/design/time-machine/" >
+                    Time Machine
+                </a>
+                
+                <a href="/polylogue/design/project-memory/" >
+                    Project Memory
+                </a>
+                
+                <a href="/polylogue/design/agent-first-mcp/" >
+                    Agent-First MCP
+                </a>
+                
+                <a href="/polylogue/design/archive-storytelling/" >
+                    Archive Storytelling
+                </a>
+                
+                <a href="/polylogue/design/whole-product/" >
+                    Whole Product
+                </a>
+                
+            </div>
+            
+        </nav>
+        <main class="content">
+            
+<p><a href="README.md">← Back to Docs</a></p>
+<h1>Database Schema</h1>
+<p>Polylogue stores archive data in split SQLite files with WAL mode enabled. The
+schema is fresh-first: version mismatches are rejected; the operator rebuilds
+the archive from source.</p>
+<p><strong>Current schema version: 6.</strong></p>
+<h2>Core Tables</h2>
+<h3>sessions</h3>
+<p>The primary archive entity. One row per imported session.</p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>session_id</code></td>
+<td>TEXT PK</td>
+<td>Composite ID (<code>provider:provider_id</code>)</td>
+</tr>
+<tr>
+<td><code>provider_name</code></td>
+<td>TEXT</td>
+<td>Provider enum value</td>
+</tr>
+<tr>
+<td><code>provider_session_id</code></td>
+<td>TEXT</td>
+<td>Provider's native ID</td>
+</tr>
+<tr>
+<td><code>title</code></td>
+<td>TEXT</td>
+<td>Session title</td>
+</tr>
+<tr>
+<td><code>created_at</code></td>
+<td>TEXT</td>
+<td>Creation timestamp (ISO 8601)</td>
+</tr>
+<tr>
+<td><code>updated_at</code></td>
+<td>TEXT</td>
+<td>Last update timestamp</td>
+</tr>
+<tr>
+<td><code>sort_key</code></td>
+<td>REAL</td>
+<td>Sortable timeline key</td>
+</tr>
+<tr>
+<td><code>content_hash</code></td>
+<td>TEXT</td>
+<td>SHA-256 over normalized content (dedup key)</td>
+</tr>
+<tr>
+<td><code>provider_meta</code></td>
+<td>TEXT</td>
+<td>Provider-specific metadata (JSON)</td>
+</tr>
+<tr>
+<td><code>metadata</code></td>
+<td>TEXT</td>
+<td>User metadata: tags, summaries, titles (JSON)</td>
+</tr>
+<tr>
+<td><code>version</code></td>
+<td>INTEGER</td>
+<td>Schema version at write time</td>
+</tr>
+<tr>
+<td><code>parent_session_id</code></td>
+<td>TEXT FK</td>
+<td>Parent session (branches/continuations)</td>
+</tr>
+<tr>
+<td><code>branch_type</code></td>
+<td>TEXT</td>
+<td><code>continuation</code>, <code>sidechain</code>, <code>fork</code>, <code>subagent</code></td>
+</tr>
+<tr>
+<td><code>raw_id</code></td>
+<td>TEXT FK</td>
+<td>Source raw record</td>
+</tr>
+</tbody>
+</table>
+<h3>messages</h3>
+<p>Individual messages within a session.</p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>message_id</code></td>
+<td>TEXT PK</td>
+<td>Unique message ID</td>
+</tr>
+<tr>
+<td><code>session_id</code></td>
+<td>TEXT FK</td>
+<td>Parent session</td>
+</tr>
+<tr>
+<td><code>role</code></td>
+<td>TEXT</td>
+<td><code>user</code>, <code>assistant</code>, <code>system</code>, <code>tool</code></td>
+</tr>
+<tr>
+<td><code>text</code></td>
+<td>TEXT</td>
+<td>Message text content</td>
+</tr>
+<tr>
+<td><code>sort_key</code></td>
+<td>REAL</td>
+<td>Message order within session</td>
+</tr>
+<tr>
+<td><code>content_hash</code></td>
+<td>TEXT</td>
+<td>SHA-256 for dedup</td>
+</tr>
+<tr>
+<td><code>parent_message_id</code></td>
+<td>TEXT FK</td>
+<td>Parent message (branching)</td>
+</tr>
+<tr>
+<td><code>branch_index</code></td>
+<td>INTEGER</td>
+<td>Branch position</td>
+</tr>
+<tr>
+<td><code>provider_name</code></td>
+<td>TEXT</td>
+<td>Denormalized for index-only queries</td>
+</tr>
+<tr>
+<td><code>word_count</code></td>
+<td>INTEGER</td>
+<td>Precomputed word count</td>
+</tr>
+<tr>
+<td><code>has_tool_use</code></td>
+<td>INTEGER</td>
+<td>Precomputed: message contains tool calls</td>
+</tr>
+<tr>
+<td><code>has_thinking</code></td>
+<td>INTEGER</td>
+<td>Precomputed: message contains thinking blocks</td>
+</tr>
+<tr>
+<td><code>has_paste</code></td>
+<td>INTEGER</td>
+<td>Precomputed: message contains pasted content</td>
+</tr>
+<tr>
+<td><code>message_type</code></td>
+<td>TEXT</td>
+<td><code>message</code> or <code>action</code></td>
+</tr>
+</tbody>
+</table>
+<p>Covering index <code>idx_messages_provider_stats</code> enables index-only GROUP BY
+queries for provider analytics.</p>
+<h3>content_blocks</h3>
+<p>First-class structured content within messages. One row per block.</p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>block_id</code></td>
+<td>TEXT PK</td>
+<td>Unique block ID</td>
+</tr>
+<tr>
+<td><code>message_id</code></td>
+<td>TEXT FK</td>
+<td>Parent message</td>
+</tr>
+<tr>
+<td><code>session_id</code></td>
+<td>TEXT FK</td>
+<td>Denormalized parent session</td>
+</tr>
+<tr>
+<td><code>block_index</code></td>
+<td>INTEGER</td>
+<td>Order within message</td>
+</tr>
+<tr>
+<td><code>type</code></td>
+<td>TEXT</td>
+<td><code>text</code>, <code>thinking</code>, <code>tool_use</code>, <code>tool_result</code>, <code>image</code>, <code>code</code>, <code>document</code></td>
+</tr>
+<tr>
+<td><code>text</code></td>
+<td>TEXT</td>
+<td>Block text content</td>
+</tr>
+<tr>
+<td><code>tool_name</code></td>
+<td>TEXT</td>
+<td>Tool name (for <code>tool_use</code> blocks)</td>
+</tr>
+<tr>
+<td><code>tool_id</code></td>
+<td>TEXT</td>
+<td>Tool call ID</td>
+</tr>
+<tr>
+<td><code>tool_input</code></td>
+<td>TEXT</td>
+<td>Tool input JSON</td>
+</tr>
+<tr>
+<td><code>metadata</code></td>
+<td>TEXT</td>
+<td>Block metadata JSON; carries media type for image/document blocks</td>
+</tr>
+<tr>
+<td><code>semantic_type</code></td>
+<td>TEXT</td>
+<td>Inferred semantic type: <code>file_read</code>, <code>file_write</code>, <code>file_edit</code>, <code>shell</code>, <code>git</code>, <code>search</code>, <code>web</code>, <code>agent</code>, <code>subagent</code>, <code>thinking</code>, <code>other</code></td>
+</tr>
+</tbody>
+</table>
+<h3>actions</h3>
+<p>Normalized action records derived from content blocks.</p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>event_id</code></td>
+<td>TEXT PK</td>
+<td>Unique event ID</td>
+</tr>
+<tr>
+<td><code>session_id</code></td>
+<td>TEXT FK</td>
+<td>Parent session</td>
+</tr>
+<tr>
+<td><code>message_id</code></td>
+<td>TEXT FK</td>
+<td>Parent message</td>
+</tr>
+<tr>
+<td><code>kind</code></td>
+<td>TEXT</td>
+<td>Action kind (same vocabulary as <code>semantic_type</code>)</td>
+</tr>
+<tr>
+<td><code>tool_name</code></td>
+<td>TEXT</td>
+<td>Normalized tool name</td>
+</tr>
+<tr>
+<td><code>summary</code></td>
+<td>TEXT</td>
+<td>Action description</td>
+</tr>
+<tr>
+<td><code>start_time</code></td>
+<td>TEXT</td>
+<td>Action start timestamp</td>
+</tr>
+<tr>
+<td><code>end_time</code></td>
+<td>TEXT</td>
+<td>Action end timestamp</td>
+</tr>
+<tr>
+<td><code>file_paths_json</code></td>
+<td>TEXT</td>
+<td>Referenced file paths (JSON array)</td>
+</tr>
+</tbody>
+</table>
+<h3>session_stats</h3>
+<p>Precomputed per-session aggregates, updated atomically with message writes.</p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>session_id</code></td>
+<td>TEXT PK FK</td>
+<td>Parent session</td>
+</tr>
+<tr>
+<td><code>provider_name</code></td>
+<td>TEXT</td>
+<td>Denormalized</td>
+</tr>
+<tr>
+<td><code>message_count</code></td>
+<td>INTEGER</td>
+<td>Total messages</td>
+</tr>
+<tr>
+<td><code>word_count</code></td>
+<td>INTEGER</td>
+<td>Total words</td>
+</tr>
+<tr>
+<td><code>tool_use_count</code></td>
+<td>INTEGER</td>
+<td>Messages with tool use</td>
+</tr>
+<tr>
+<td><code>thinking_count</code></td>
+<td>INTEGER</td>
+<td>Messages with thinking</td>
+</tr>
+<tr>
+<td><code>paste_count</code></td>
+<td>INTEGER</td>
+<td>Messages with pasted content</td>
+</tr>
+</tbody>
+</table>
+<p>Used for pushdown filters (<code>--min-messages</code>, <code>--min-words</code>, <code>--has-tool-use</code>,
+<code>--has-thinking</code>).</p>
+<h3>Other Core Tables</h3>
+<table>
+<thead>
+<tr>
+<th>Table</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>attachments</code> / <code>attachment_refs</code></td>
+<td>File attachments with M:N message refs</td>
+</tr>
+<tr>
+<td><code>tags</code> / <code>session_tags</code></td>
+<td>M:N tag assignments (replaced JSON <code>metadata.tags</code>)</td>
+</tr>
+<tr>
+<td><code>raw_sessions</code></td>
+<td>Raw import records before parsing</td>
+</tr>
+</tbody>
+</table>
+<h2>FTS5 Tables</h2>
+<table>
+<thead>
+<tr>
+<th>Virtual Table</th>
+<th>Content</th>
+<th>Tokenizer</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>messages_fts</code></td>
+<td>Block text, including tool-use/tool-result action evidence</td>
+<td><code>unicode61</code></td>
+</tr>
+<tr>
+<td><code>session_work_events_fts</code></td>
+<td>Work event search text</td>
+<td><code>unicode61</code></td>
+</tr>
+<tr>
+<td><code>work_threads_fts</code></td>
+<td>Thread search text</td>
+<td><code>unicode61</code></td>
+</tr>
+</tbody>
+</table>
+<p>All FTS tables use <code>unicode61</code> tokenizer (no porter stemmer). <code>messages_fts</code>
+is contentless and populated from <code>blocks</code>; action search is a filtered read
+over tool-use/tool-result blocks in that same index.</p>
+<h2>Vector Table</h2>
+<p><code>message_embeddings</code> uses the <code>vec0</code> virtual table extension:</p>
+<pre><code>message_id TEXT PRIMARY KEY
+embedding float[1024]
++provider_name TEXT
++session_id TEXT
+</code></pre>
+<p>1024-dimensional float embeddings. Populated when <code>VOYAGE_API_KEY</code> is set and
+the embed pipeline stage runs. Used by the <code>--similar</code> filter and <code>hybrid</code>
+retrieval lane.</p>
+<h2>Insight Tables</h2>
+<table>
+<thead>
+<tr>
+<th>Table</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>session_profiles</code></td>
+<td>Per-session aggregates: repos, tools, costs, durations, message counts</td>
+</tr>
+<tr>
+<td><code>session_work_events</code></td>
+<td>Message-range work events with file/tool evidence and weak event labels</td>
+</tr>
+<tr>
+<td><code>session_phases</code></td>
+<td>Session segments: planning, implementation, verification, exploration</td>
+</tr>
+<tr>
+<td><code>work_threads</code></td>
+<td>Multi-session work groupings</td>
+</tr>
+<tr>
+<td><code>session_tag_rollups</code></td>
+<td>Pre-aggregated tag usage stats</td>
+</tr>
+</tbody>
+</table>
+<p>Each insight table includes a <code>materializer_version</code> for cache invalidation and
+a <code>search_text</code> column for FTS indexing.</p>
+<h2>Auxiliary Tables</h2>
+<table>
+<thead>
+<tr>
+<th>Table</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>artifact_observations</code></td>
+<td>Schema inference pipeline: per-artifact analysis records</td>
+</tr>
+<tr>
+<td><code>pending_blob_refs</code></td>
+<td>Blob store leases (prevents GC races)</td>
+</tr>
+<tr>
+<td><code>gc_generations</code></td>
+<td>Garbage collection generation tracking</td>
+</tr>
+<tr>
+<td><code>source_file_cursors</code></td>
+<td>Per-file ingestion progress (idempotent resume)</td>
+</tr>
+<tr>
+<td><code>identity_ledger</code></td>
+<td>Session content-hash identity ledger</td>
+</tr>
+</tbody>
+</table>
+<h2>Schema Versioning</h2>
+<p>Polylogue uses fresh-first schema initialization:</p>
+<ul>
+<li><strong>Version match</strong>: open database normally</li>
+<li><strong>New database</strong>: create the current split archive tier files</li>
+<li><strong>Version mismatch</strong>: rejected with an error; rebuild the archive from source</li>
+</ul>
+<p>Tier schema versions and DDL live under
+<code>polylogue/storage/sqlite/archive_tiers/</code>. The bootstrap branching logic in
+<code>schema_bootstrap.py</code> handles sync and async index-tier backends.</p>
+<h2>Schema Drift Detection</h2>
+<p>Run <code>polylogue check</code> to verify schema integrity:</p>
+<pre><code class="language-bash">polylogue check                     # Schema health + FK integrity
+polylogue check --schemas           # Schema conformance check
+polylogue check --schemas --schema-samples all   # Full schema audit
+</code></pre>
+<p>The <code>devtools verify-schema-roundtrip</code> command verifies provider schema
+packages reload and roundtrip cleanly through typed models.</p>
+<h2>Blob Store</h2>
+<p>Content-addressed blob storage for attachment payloads. Blobs are keyed by
+SHA-256 hash and stored under <code>~/.local/share/polylogue/blobs/</code>. The
+<code>pending_blob_refs</code> table provides lease-based garbage collection that prevents
+races with concurrent ingestion.</p>
+
+<hr style="margin: 3rem 0 1rem; border-color: var(--border);">
+<nav style="display: flex; justify-content: space-between; font-size: 0.9rem;">
+    <a href="/polylogue/architecture/internals/">← Internals</a>
+    <a href="/polylogue/architecture/contributing/">Contributing →</a>
+</nav>
+
+        </main>
+    </div>
+    <footer class="site-footer">
+        <span>Polylogue — your AI memory</span>
+        <a href="https://github.com/Sinity/polylogue">GitHub</a>
+    </footer>
+    <script>
+        function toggleTheme() {
+            var html = document.documentElement;
+            var current = html.getAttribute('data-theme');
+            html.setAttribute('data-theme', current === 'dark' ? 'light' : 'dark');
+            localStorage.setItem('theme', current === 'dark' ? 'light' : 'dark');
+        }
+        (function() {
+            var saved = localStorage.getItem('theme');
+            if (saved) document.documentElement.setAttribute('data-theme', saved);
+        })();
+    </script>
+    
+</body>
+</html>
