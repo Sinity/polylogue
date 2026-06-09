@@ -72,6 +72,61 @@ def test_readiness_falls_back_to_exact_when_freshness_poisoned(tmp_path: Path) -
     assert fts["coverage_exact"] is True
 
 
+def test_exact_coverage_counts_tool_blocks_as_indexable(tmp_path: Path) -> None:
+    """Exact coverage must use the FTS-population predicate (search_text != '').
+
+    A tool_use block carries a derived search_text but a NULL display text. The
+    FTS index includes it, so the exact source count must include it too —
+    otherwise indexed/source exceeds 100%.
+    """
+    db = tmp_path / "index.db"
+    initialize_archive_database(db, ArchiveTier.INDEX)
+    conn = sqlite3.connect(db)
+    try:
+        session = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="cov-tool-1",
+            title="tool coverage",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="u1",
+                    role=Role.USER,
+                    text="run the build",
+                    position=0,
+                    content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="run the build")],
+                ),
+                ParsedMessage(
+                    provider_message_id="a1",
+                    role=Role.ASSISTANT,
+                    text=None,
+                    position=1,
+                    content_blocks=[
+                        ParsedContentBlock(
+                            type=BlockType.TOOL_USE,
+                            tool_name="exec_command",
+                            tool_id="t1",
+                            tool_input={"command": "make build"},
+                        ),
+                    ],
+                ),
+            ],
+        )
+        write_parsed_session_to_archive(conn, session)
+        conn.commit()
+        text_blocks = int(conn.execute("SELECT COUNT(*) FROM blocks WHERE text IS NOT NULL").fetchone()[0])
+        search_blocks = int(conn.execute("SELECT COUNT(*) FROM blocks WHERE search_text != ''").fetchone()[0])
+    finally:
+        conn.close()
+
+    # The tool block makes the two predicates diverge; the exact coverage must
+    # use search_text (the FTS predicate), not text.
+    assert search_blocks > text_blocks
+
+    fts = fts_readiness_info(db, exact=True)
+    assert fts["coverage_pct"] == 100.0
+    assert fts["messages_ready"] is True
+
+
 def test_readiness_trusts_a_healthy_freshness_record_without_recompute(tmp_path: Path) -> None:
     """A trusted ready|N|N record is used directly (fast path), not recomputed."""
     db = tmp_path / "index.db"
