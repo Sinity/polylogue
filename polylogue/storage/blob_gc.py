@@ -38,7 +38,7 @@ class GCRunEvidence:
     Aggregates inspected/skipped/deleted counts during a ``run_blob_gc`` pass
     so the summary log line can describe what happened. The durable record is
     the typed ``gc_generations`` row (``reclaimed_count`` / ``reclaimed_bytes``);
-    this tally is not persisted (#1789 — no JSON evidence escape hatch).
+    this tally is not persisted (#1743 — no JSON evidence escape hatch).
     """
 
     inspected: int = 0
@@ -419,7 +419,7 @@ def run_blob_gc(
 
         # Record the completed generation with typed reclaim counters. The
         # per-skip tally stays an in-memory log aggregate; the durable record is
-        # reclaimed_count / reclaimed_bytes (#1789 — no JSON evidence column).
+        # reclaimed_count / reclaimed_bytes (#1743 — no JSON evidence column).
         generation_id = f"gc-{uuid4().hex}"
         conn.execute(
             "INSERT INTO gc_generations "
@@ -463,7 +463,7 @@ def read_gc_history(db_path: str | Path, *, limit: int = 20) -> list[GCHistoryRo
 
     Each row carries the typed reclaim counters (``reclaimed_count`` /
     ``reclaimed_bytes``) recorded by ``run_blob_gc``. Per-skip diagnostics are
-    in-process log detail only and are not persisted (#1789).
+    in-process log detail only and are not persisted (#1743).
     """
     conn = open_connection(db_path)
     conn.row_factory = sqlite3.Row

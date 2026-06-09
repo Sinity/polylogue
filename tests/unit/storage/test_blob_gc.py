@@ -64,7 +64,7 @@ def _make_db(path: str | Path | None = None) -> sqlite3.Connection:
     )
     # gc_generations carries the typed reclaim counters that production
     # ``run_blob_gc`` writes and ``read_gc_history`` reads — matching the
-    # split-file source.db DDL (#1789).
+    # split-file source.db DDL (#1743).
     conn.execute(
         """CREATE TABLE gc_generations (
             generation_id   TEXT PRIMARY KEY,
@@ -482,7 +482,7 @@ def test_run_blob_gc_dry_run_does_not_delete_or_record_generation(tmp_path: Path
 
 
 def test_run_blob_gc_records_reclaim_counters(tmp_path: Path) -> None:
-    """#1789: each committed pass writes a typed ``gc_generations`` row
+    """#1743: each committed pass writes a typed ``gc_generations`` row
     capturing the reclaimed blob count and freed bytes — the durable
     audit trail that replaced the JSON evidence column.
     """
@@ -519,7 +519,7 @@ def test_run_blob_gc_records_reclaim_counters(tmp_path: Path) -> None:
 
 
 def test_read_gc_history_returns_recent_passes(tmp_path: Path) -> None:
-    """#1789: ``read_gc_history`` surfaces one typed row per committed pass,
+    """#1743: ``read_gc_history`` surfaces one typed row per committed pass,
     so a ``gc-history`` operator surface can show recent reclamation without
     bespoke SQLite tooling.
     """

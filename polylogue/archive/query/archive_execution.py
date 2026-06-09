@@ -243,7 +243,7 @@ def _semantic_hits(
 ) -> list[ArchiveSessionSearchHit]:
     """Resolve the vector leg of a semantic/hybrid plan.
 
-    Graceful-degradation contract (#1784): when no vector provider can be
+    Graceful-degradation contract (#1743): when no vector provider can be
     constructed for the active archive — sqlite-vec/Voyage not configured, the
     archive holds no embeddings, or the configured embeddings are unusable — the
     semantic leg yields no hits instead of raising. The caller (``_archive_summaries``)
@@ -260,7 +260,7 @@ def _semantic_hits(
     if vector_provider is None and config is not None:
         vector_provider = create_vector_provider(config, db_path=archive_root / "embeddings.db")
     if vector_provider is None:
-        # No vector backend → empty semantic leg (graceful degradation, #1784).
+        # No vector backend → empty semantic leg (graceful degradation, #1743).
         return []
     limit = plan.limit if plan.limit is not None else 50
     scored = vector_provider.query(text, limit=max(limit + plan.offset, limit) * 3)
@@ -452,7 +452,7 @@ def archive_search_hits(
         if vector_provider is None and config is not None:
             vector_provider = create_vector_provider(config, db_path=archive_root / "embeddings.db")
         if vector_provider is None:
-            # Graceful-degradation contract (#1784): a semantic or hybrid request
+            # Graceful-degradation contract (#1743): a semantic or hybrid request
             # against an archive with no usable vector backend yields an empty
             # result set rather than raising. The resolved lane is preserved so
             # the caller still reports which lane was requested; a pure-semantic

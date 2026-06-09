@@ -74,7 +74,7 @@ def _make_db(path: Path) -> sqlite3.Connection:
         )"""
     )
     # gc_generations matches the split-file source.db DDL: typed reclaim
-    # counters keyed by a TEXT generation_id (#1789).
+    # counters keyed by a TEXT generation_id (#1743).
     conn.execute(
         """CREATE TABLE gc_generations (
             generation_id   TEXT PRIMARY KEY,

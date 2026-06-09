@@ -352,7 +352,7 @@ async def test_search_hits_for_plan_handles_empty_and_lexical_paths(tmp_path: Pa
 
 @pytest.mark.asyncio
 async def test_search_hits_for_plan_degrades_semantic_and_hybrid_without_embeddings(tmp_path: Path) -> None:
-    """Graceful-degradation contract (#1784).
+    """Graceful-degradation contract (#1743).
 
     A semantic or hybrid request against an archive that has no usable vector
     backend (no ``embeddings.db``, sqlite-vec/Voyage unconfigured) yields an

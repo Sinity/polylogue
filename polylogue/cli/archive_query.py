@@ -627,7 +627,7 @@ def _archive_embeddings_retrieval_ready(embeddings_db: Path) -> bool:
     regular table that mirrors the ``message_embeddings`` vec0 rows). The archive
     is retrieval-ready when at least one message is embedded and no embedded
     message is flagged ``needs_reindex`` — i.e. live vectors outnumber stale ones,
-    matching the legacy ``embedded_messages > stale_messages`` gate (#1217/#1780).
+    matching the legacy ``embedded_messages > stale_messages`` gate (#1217/#1743).
     A missing or unreadable ``embeddings.db`` is treated as "not ready" so ``auto``
     stays on the lexical lane.
     """
@@ -668,7 +668,7 @@ def _query_hits(
 ) -> tuple[list[ArchiveSessionSearchHit], str]:
     archive_root = archive_file_set_root_for_paths(archive_root_path=config.archive_root, db_anchor=config.db_path)
     embeddings_db = archive_root / "embeddings.db"
-    # #1780: the implicit ``auto`` lane elevates to hybrid (FTS5 + vector RRF)
+    # #1743: the implicit ``auto`` lane elevates to hybrid (FTS5 + vector RRF)
     # only when (a) a vector provider is configured, (b) the active archive holds
     # retrieval-ready (non-stale) embeddings, and (c) the query carries lexical
     # terms. Otherwise ``auto`` stays on the fast lexical (dialogue) lane.

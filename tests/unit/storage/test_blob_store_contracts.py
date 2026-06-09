@@ -80,7 +80,7 @@ def _make_gc_db(path: Path) -> sqlite3.Connection:
             PRIMARY KEY (blob_hash, operation_id, ref_type, ref_id)
         );
         -- gc_generations matches the split-file source.db DDL: typed reclaim
-        -- counters keyed by a TEXT generation_id (#1789).
+        -- counters keyed by a TEXT generation_id (#1743).
         CREATE TABLE gc_generations (
             generation_id   TEXT PRIMARY KEY,
             started_at_ms   INTEGER NOT NULL,

@@ -9,7 +9,8 @@ Covers the new ``polylogue embed`` group:
 * ``backfill`` honours the cost cap and the ``--yes`` non-interactive switch.
 * ``--lexical`` / ``--semantic`` desugar correctly at the root request layer.
 
-Native ``auto``→``hybrid`` retrieval elevation is tracked separately in #1780.
+Native ``auto``→``hybrid`` retrieval elevation is covered by
+``TestHybridAutoElevation`` below (#1743).
 """
 
 from __future__ import annotations
@@ -665,7 +666,7 @@ class TestLexicalSemanticShortcuts:
 
 
 # ---------------------------------------------------------------------------
-# Native auto -> hybrid retrieval elevation (#1780)
+# Native auto -> hybrid retrieval elevation (#1743)
 # ---------------------------------------------------------------------------
 
 
