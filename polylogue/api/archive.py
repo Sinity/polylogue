@@ -1077,6 +1077,7 @@ def _rebuild_archive_session_insights(
             source_updated_at=profile.source_updated_at,
             source_sort_key=profile.source_sort_key,
             input_high_water_mark=profile.input_high_water_mark,
+            input_high_water_mark_source=profile.input_high_water_mark_source,
             input_row_count=profile.input_row_count,
         )
         _archive_upsert_materialization(
@@ -1089,6 +1090,7 @@ def _rebuild_archive_session_insights(
             source_updated_at=profile.source_updated_at,
             source_sort_key=profile.source_sort_key,
             input_high_water_mark=profile.input_high_water_mark,
+            input_high_water_mark_source=profile.input_high_water_mark_source,
             input_row_count=bundle.latency_profile_record.input_row_count,
         )
         for event in bundle.work_event_records:
@@ -1109,6 +1111,8 @@ def _rebuild_archive_session_insights(
                 evidence=event.evidence_payload.model_dump(mode="json"),
                 inference=event.inference_payload.model_dump(mode="json"),
                 search_text=event.search_text,
+                input_high_water_mark=event.input_high_water_mark,
+                input_high_water_mark_source=event.input_high_water_mark_source,
             )
         _archive_upsert_materialization(
             conn,
@@ -1120,6 +1124,7 @@ def _rebuild_archive_session_insights(
             source_updated_at=profile.source_updated_at,
             source_sort_key=profile.source_sort_key,
             input_high_water_mark=profile.input_high_water_mark,
+            input_high_water_mark_source=profile.input_high_water_mark_source,
             input_row_count=len(bundle.work_event_records),
         )
         for phase in bundle.phase_records:
@@ -1139,6 +1144,8 @@ def _rebuild_archive_session_insights(
                 evidence=phase.evidence_payload.model_dump(mode="json"),
                 inference=phase.inference_payload.model_dump(mode="json"),
                 search_text=phase.search_text,
+                input_high_water_mark=phase.input_high_water_mark,
+                input_high_water_mark_source=phase.input_high_water_mark_source,
             )
         _archive_upsert_materialization(
             conn,
@@ -1150,6 +1157,7 @@ def _rebuild_archive_session_insights(
             source_updated_at=profile.source_updated_at,
             source_sort_key=profile.source_sort_key,
             input_high_water_mark=profile.input_high_water_mark,
+            input_high_water_mark_source=profile.input_high_water_mark_source,
             input_row_count=len(bundle.phase_records),
         )
         counts.add(profiles=1, work_events=len(bundle.work_event_records), phases=len(bundle.phase_records))
@@ -1187,6 +1195,7 @@ def _archive_upsert_materialization(
     source_updated_at: str | None,
     source_sort_key: float | None,
     input_high_water_mark: str | None,
+    input_high_water_mark_source: str | None,
     input_row_count: int,
 ) -> None:
     source_sort_key_ms = int(source_sort_key * 1000) if source_sort_key is not None else None
@@ -1199,6 +1208,7 @@ def _archive_upsert_materialization(
         source_updated_at_ms=_archive_epoch_ms(source_updated_at),
         source_sort_key_ms=source_sort_key_ms,
         input_high_water_mark_ms=_archive_epoch_ms(input_high_water_mark),
+        input_high_water_mark_source=input_high_water_mark_source,
         input_row_count=input_row_count,
     )
 
@@ -1243,6 +1253,9 @@ def _archive_rebuild_threads(conn: Any, upsert_materialization: Any) -> int:
                     source_updated_at_ms=updated_at_ms or None,
                     source_sort_key_ms=updated_at_ms or created_at_ms or None,
                     input_high_water_mark_ms=updated_at_ms or created_at_ms or None,
+                    input_high_water_mark_source=(
+                        "provider_ts" if (updated_at_ms or created_at_ms) else "fallback_date"
+                    ),
                     input_row_count=len(record.session_ids),
                 )
         total_threads += len(records_by_root)

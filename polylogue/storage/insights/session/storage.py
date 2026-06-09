@@ -132,6 +132,8 @@ _SESSION_WORK_EVENT_BASE_COLUMNS = (
     "duration_ms",
     "file_paths_json",
     "tools_used_json",
+    "input_high_water_mark",
+    "input_high_water_mark_source",
 )
 _TIMELINE_PAYLOAD_COLUMNS = (
     "evidence_json",
@@ -150,6 +152,8 @@ _SESSION_PHASE_BASE_COLUMNS = (
     "duration_ms",
     "tool_counts_json",
     "word_count",
+    "input_high_water_mark",
+    "input_high_water_mark_source",
 )
 
 
@@ -386,6 +390,8 @@ def session_work_event_insert_values(
         record.duration_ms,
         _json_array_or_none(record.file_paths) or "[]",
         _json_array_or_none(record.tools_used) or "[]",
+        record.input_high_water_mark,
+        record.input_high_water_mark_source,
     ]
     payload_values: tuple[SqlValue, ...] = (
         _json_or_none(record.evidence_payload),
@@ -428,6 +434,8 @@ def session_phase_insert_values(
         record.duration_ms,
         _json_or_none(record.tool_counts),
         record.word_count,
+        record.input_high_water_mark,
+        record.input_high_water_mark_source,
     ]
     payload_values: tuple[SqlValue, ...] = (
         _json_or_none(record.evidence_payload),

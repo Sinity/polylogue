@@ -116,16 +116,6 @@ def temporal_source_db(workspace_env: Mapping[str, Path]) -> Path:
     return db_path
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Archive gap (#1781): the archive insight_materialization table does "
-        "not yet persist input_high_water_mark_source; the per-record "
-        "classifier value is computed but dropped by the archive rebuild. "
-        "Carrying it is a schema-touching change tracked in #1781 (overlaps "
-        "the #1743 archive redesign)."
-    ),
-    strict=False,
-)
 class TestMaterializationPathsCarryTaxonomy:
     """Every materialization path must set ``input_high_water_mark_source``."""
 
@@ -174,14 +164,6 @@ class TestMaterializationPathsCarryTaxonomy:
         self._assert_all_rows_tagged(temporal_source_db, "session_tag_rollups")
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Archive gap (#1781): the archive store does not persist "
-        "input_high_water_mark_source, so the archive profile record cannot "
-        "round-trip it. Tracked in #1781."
-    ),
-    strict=False,
-)
 class TestProvenanceRecordRoundTrips:
     """The record-level field round-trips through the storage mappers."""
 

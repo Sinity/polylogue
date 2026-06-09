@@ -117,6 +117,7 @@ class ArchiveInsightMaterialization:
     source_sort_key_ms: int | None
     input_high_water_mark_ms: int | None
     input_row_count: int
+    input_high_water_mark_source: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,6 +148,8 @@ class ArchiveSessionWorkEvent:
     evidence: dict[str, object]
     inference: dict[str, object]
     search_text: str
+    input_high_water_mark: str | None = None
+    input_high_water_mark_source: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,6 +169,8 @@ class ArchiveSessionPhase:
     evidence: dict[str, object]
     inference: dict[str, object]
     search_text: str
+    input_high_water_mark: str | None = None
+    input_high_water_mark_source: str | None = None
 
 
 def write_parsed_session_to_archive(
@@ -344,6 +349,7 @@ def apply_insight_materialization(
     source_updated_at_ms: int | None = None,
     source_sort_key_ms: int | None = None,
     input_high_water_mark_ms: int | None = None,
+    input_high_water_mark_source: str | None = None,
     input_row_count: int = 0,
 ) -> None:
     """Stamp one session-insight materialization row without committing.
@@ -358,14 +364,16 @@ def apply_insight_materialization(
         """
         INSERT INTO insight_materialization (
             insight_type, session_id, materializer_version, materialized_at_ms,
-            source_updated_at_ms, source_sort_key_ms, input_high_water_mark_ms, input_row_count
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            source_updated_at_ms, source_sort_key_ms, input_high_water_mark_ms,
+            input_high_water_mark_source, input_row_count
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(insight_type, session_id) DO UPDATE SET
             materializer_version = excluded.materializer_version,
             materialized_at_ms = excluded.materialized_at_ms,
             source_updated_at_ms = excluded.source_updated_at_ms,
             source_sort_key_ms = excluded.source_sort_key_ms,
             input_high_water_mark_ms = excluded.input_high_water_mark_ms,
+            input_high_water_mark_source = excluded.input_high_water_mark_source,
             input_row_count = excluded.input_row_count
         """,
         (
@@ -376,6 +384,7 @@ def apply_insight_materialization(
             source_updated_at_ms,
             source_sort_key_ms,
             input_high_water_mark_ms,
+            input_high_water_mark_source,
             input_row_count,
         ),
     )
@@ -391,6 +400,7 @@ def upsert_insight_materialization(
     source_updated_at_ms: int | None = None,
     source_sort_key_ms: int | None = None,
     input_high_water_mark_ms: int | None = None,
+    input_high_water_mark_source: str | None = None,
     input_row_count: int = 0,
 ) -> ArchiveInsightMaterialization:
     """Upsert the shared materialization state for one session insight."""
@@ -405,6 +415,7 @@ def upsert_insight_materialization(
             source_updated_at_ms=source_updated_at_ms,
             source_sort_key_ms=source_sort_key_ms,
             input_high_water_mark_ms=input_high_water_mark_ms,
+            input_high_water_mark_source=input_high_water_mark_source,
             input_row_count=input_row_count,
         )
     return read_insight_materialization(conn, insight_type, session_id)
@@ -420,7 +431,8 @@ def read_insight_materialization(
     row = conn.execute(
         """
         SELECT insight_type, session_id, materializer_version, materialized_at_ms,
-            source_updated_at_ms, source_sort_key_ms, input_high_water_mark_ms, input_row_count
+            source_updated_at_ms, source_sort_key_ms, input_high_water_mark_ms,
+            input_high_water_mark_source, input_row_count
         FROM insight_materialization
         WHERE insight_type = ? AND session_id = ?
         """,
@@ -436,6 +448,7 @@ def read_insight_materialization(
         source_updated_at_ms=row["source_updated_at_ms"],
         source_sort_key_ms=row["source_sort_key_ms"],
         input_high_water_mark_ms=row["input_high_water_mark_ms"],
+        input_high_water_mark_source=row["input_high_water_mark_source"],
         input_row_count=row["input_row_count"],
     )
 
@@ -534,6 +547,8 @@ def upsert_session_work_event(
     evidence: dict[str, object] | None = None,
     inference: dict[str, object] | None = None,
     search_text: str = "",
+    input_high_water_mark: str | None = None,
+    input_high_water_mark_source: str | None = None,
 ) -> ArchiveSessionWorkEvent:
     """Upsert one deterministic session work-event row."""
     conn.execute("PRAGMA foreign_keys = ON")
@@ -543,8 +558,10 @@ def upsert_session_work_event(
             INSERT INTO session_work_events (
                 session_id, position, work_event_type, summary, confidence,
                 start_index, end_index, started_at_ms, ended_at_ms, duration_ms,
-                file_paths_json, tools_used_json, evidence_json, inference_json, search_text
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                file_paths_json, tools_used_json,
+                input_high_water_mark, input_high_water_mark_source,
+                evidence_json, inference_json, search_text
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(session_id, position) DO UPDATE SET
                 work_event_type = excluded.work_event_type,
                 summary = excluded.summary,
@@ -556,6 +573,8 @@ def upsert_session_work_event(
                 duration_ms = excluded.duration_ms,
                 file_paths_json = excluded.file_paths_json,
                 tools_used_json = excluded.tools_used_json,
+                input_high_water_mark = excluded.input_high_water_mark,
+                input_high_water_mark_source = excluded.input_high_water_mark_source,
                 evidence_json = excluded.evidence_json,
                 inference_json = excluded.inference_json,
                 search_text = excluded.search_text
@@ -573,6 +592,8 @@ def upsert_session_work_event(
                 duration_ms,
                 _json_dumps(list(file_paths)),
                 _json_dumps(list(tools_used)),
+                input_high_water_mark,
+                input_high_water_mark_source,
                 _json_dumps(evidence or {}),
                 _json_dumps(inference or {}),
                 search_text,
@@ -593,7 +614,9 @@ def read_session_work_events(
         """
         SELECT event_id, session_id, position, work_event_type, summary, confidence,
             start_index, end_index, started_at_ms, ended_at_ms, duration_ms,
-            file_paths_json, tools_used_json, evidence_json, inference_json, search_text
+            file_paths_json, tools_used_json,
+            input_high_water_mark, input_high_water_mark_source,
+            evidence_json, inference_json, search_text
         FROM session_work_events
         WHERE session_id = ?
         ORDER BY position
@@ -618,6 +641,8 @@ def read_session_work_events(
             evidence=_json_loads(row["evidence_json"]),
             inference=_json_loads(row["inference_json"]),
             search_text=row["search_text"],
+            input_high_water_mark=row["input_high_water_mark"],
+            input_high_water_mark_source=row["input_high_water_mark_source"],
         )
         for row in rows
     }
@@ -640,6 +665,8 @@ def upsert_session_phase(
     evidence: dict[str, object] | None = None,
     inference: dict[str, object] | None = None,
     search_text: str = "",
+    input_high_water_mark: str | None = None,
+    input_high_water_mark_source: str | None = None,
 ) -> ArchiveSessionPhase:
     """Upsert one deterministic session phase row."""
     conn.execute("PRAGMA foreign_keys = ON")
@@ -649,8 +676,9 @@ def upsert_session_phase(
             INSERT INTO session_phases (
                 session_id, position, phase_type, confidence, start_index, end_index,
                 started_at_ms, ended_at_ms, duration_ms, tool_counts_json, word_count,
+                input_high_water_mark, input_high_water_mark_source,
                 evidence_json, inference_json, search_text
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(session_id, position) DO UPDATE SET
                 phase_type = excluded.phase_type,
                 confidence = excluded.confidence,
@@ -661,6 +689,8 @@ def upsert_session_phase(
                 duration_ms = excluded.duration_ms,
                 tool_counts_json = excluded.tool_counts_json,
                 word_count = excluded.word_count,
+                input_high_water_mark = excluded.input_high_water_mark,
+                input_high_water_mark_source = excluded.input_high_water_mark_source,
                 evidence_json = excluded.evidence_json,
                 inference_json = excluded.inference_json,
                 search_text = excluded.search_text
@@ -677,6 +707,8 @@ def upsert_session_phase(
                 duration_ms,
                 _json_dumps(tool_counts or {}),
                 word_count,
+                input_high_water_mark,
+                input_high_water_mark_source,
                 _json_dumps(evidence or {}),
                 _json_dumps(inference or {}),
                 search_text,
@@ -697,6 +729,7 @@ def read_session_phases(
         """
         SELECT phase_id, session_id, position, phase_type, confidence, start_index, end_index,
             started_at_ms, ended_at_ms, duration_ms, tool_counts_json, word_count,
+            input_high_water_mark, input_high_water_mark_source,
             evidence_json, inference_json, search_text
         FROM session_phases
         WHERE session_id = ?
@@ -721,6 +754,8 @@ def read_session_phases(
             evidence=_json_loads(row["evidence_json"]),
             inference=_json_loads(row["inference_json"]),
             search_text=row["search_text"],
+            input_high_water_mark=row["input_high_water_mark"],
+            input_high_water_mark_source=row["input_high_water_mark_source"],
         )
         for row in rows
     }

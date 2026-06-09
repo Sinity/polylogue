@@ -5,7 +5,7 @@ from __future__ import annotations
 from polylogue.core.enums import BlockType, BranchType, LinkType, MessageType, Origin, PasteBoundary, Role
 from polylogue.storage.sqlite.archive_tiers.common import CONTENT_HASH_CHECK, check, nullable_check
 
-INDEX_SCHEMA_VERSION = 2
+INDEX_SCHEMA_VERSION = 3
 
 INDEX_DDL = f"""
 CREATE TABLE IF NOT EXISTS sessions (
@@ -465,6 +465,7 @@ CREATE TABLE IF NOT EXISTS insight_materialization (
     source_updated_at_ms         INTEGER,
     source_sort_key_ms           INTEGER,
     input_high_water_mark_ms     INTEGER,
+    input_high_water_mark_source TEXT,
     input_row_count              INTEGER NOT NULL DEFAULT 0 CHECK(input_row_count >= 0),
     PRIMARY KEY(insight_type, session_id)
 ) STRICT;
@@ -483,6 +484,8 @@ CREATE TABLE IF NOT EXISTS session_work_events (
     duration_ms        INTEGER NOT NULL DEFAULT 0 CHECK(duration_ms >= 0),
     file_paths_json    TEXT NOT NULL DEFAULT '[]',
     tools_used_json    TEXT NOT NULL DEFAULT '[]',
+    input_high_water_mark        TEXT,
+    input_high_water_mark_source TEXT,
     evidence_json      TEXT NOT NULL DEFAULT '{{}}',
     inference_json     TEXT NOT NULL DEFAULT '{{}}',
     search_text        TEXT NOT NULL DEFAULT '',
@@ -522,6 +525,8 @@ CREATE TABLE IF NOT EXISTS session_phases (
     duration_ms     INTEGER NOT NULL DEFAULT 0 CHECK(duration_ms >= 0),
     tool_counts_json TEXT NOT NULL DEFAULT '{{}}',
     word_count      INTEGER NOT NULL DEFAULT 0 CHECK(word_count >= 0),
+    input_high_water_mark        TEXT,
+    input_high_water_mark_source TEXT,
     evidence_json   TEXT NOT NULL DEFAULT '{{}}',
     inference_json  TEXT NOT NULL DEFAULT '{{}}',
     search_text     TEXT NOT NULL DEFAULT '',

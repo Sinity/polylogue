@@ -179,8 +179,8 @@
         "path": "<PATH>",
         "exists": true,
         "size_bytes": 532480,
-        "expected_user_version": 2,
-        "user_version": 2,
+        "expected_user_version": 3,
+        "user_version": 3,
         "version_status": "ok",
         "table_counts": {
           "sessions": 2,

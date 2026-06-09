@@ -606,6 +606,7 @@ def _stamp_bundle_materialization(conn: sqlite3.Connection, bundle: SessionInsig
             source_updated_at_ms=source_updated_at_ms,
             source_sort_key_ms=source_sort_key_ms,
             input_high_water_mark_ms=input_high_water_mark_ms,
+            input_high_water_mark_source=profile.input_high_water_mark_source,
             input_row_count=input_row_count,
         )
 
