@@ -7,6 +7,7 @@ import asyncio
 import json
 import sqlite3
 import time
+import zipfile
 from collections.abc import Callable, Iterable
 from datetime import timedelta
 from pathlib import Path
@@ -1092,6 +1093,78 @@ async def test_live_append_merges_tail_visible_through_public_archive_read(works
             "fourth appended reply",
             "fifth appended followup",
         ]
+    finally:
+        await archive.close()
+
+
+@pytest.mark.asyncio
+async def test_live_full_ingest_expands_inbox_zip_members(
+    workspace_env: dict[str, Path],
+) -> None:
+    """A ZIP dropped into a watched root ingests every session member (#1683).
+
+    Regression: ZIP paths previously fell through to the byte-level detection
+    branch, where ``orjson.loads`` over the ZIP container raised and the whole
+    archive was silently marked excluded. The fix expands ZIP members through
+    the maintenance acquisition path, so each member becomes a session.
+    """
+    root = workspace_env["data_root"] / "claude-projects"
+    root.mkdir(parents=True)
+    member_a = "\n".join(
+        json.dumps(record)
+        for record in (
+            _claude_code_message(
+                session_id="zip-session-a",
+                uuid="a-1",
+                role="user",
+                text="first zip member message",
+                timestamp="2026-05-01T00:00:00Z",
+            ),
+        )
+    )
+    member_b = "\n".join(
+        json.dumps(record)
+        for record in (
+            _claude_code_message(
+                session_id="zip-session-b",
+                uuid="b-1",
+                role="user",
+                text="second zip member message",
+                timestamp="2026-05-01T00:00:01Z",
+            ),
+        )
+    )
+    zip_path = root / "claude-export.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("session-a.jsonl", member_a + "\n")
+        zf.writestr("session-b.jsonl", member_b + "\n")
+
+    db_path = workspace_env["data_root"] / "inbox-zip-live.db"
+    archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
+    cursor = CursorStore(db_path)
+    processor = LiveBatchProcessor(
+        archive,
+        (WatchSource(name="claude-code", root=root),),
+        cursor=cursor,
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+
+    try:
+        metrics = await processor.ingest_files([zip_path], emit_event=False)
+        record = cursor.get_record(zip_path)
+
+        session_a = await archive.get_session("claude-code:zip-session-a")
+        session_b = await archive.get_session("claude-code:zip-session-b")
+
+        assert metrics.succeeded_file_count == 1
+        assert metrics.failed_file_count == 0
+        assert metrics.source_payload_read_bytes > 0
+        assert record is not None
+        assert record.excluded is False
+        assert session_a is not None
+        assert session_b is not None
+        assert [message.text for message in session_a.messages] == ["first zip member message"]
+        assert [message.text for message in session_b.messages] == ["second zip member message"]
     finally:
         await archive.close()
 

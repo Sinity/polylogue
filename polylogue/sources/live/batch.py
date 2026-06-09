@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 import time
+import zipfile
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -15,6 +16,7 @@ from json import loads as json_loads
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from polylogue.config import Source
 from polylogue.core.degraded import is_degraded
 from polylogue.core.memory import release_process_memory
 from polylogue.core.metrics import (
@@ -31,7 +33,7 @@ from polylogue.errors import DatabaseError, SchemaVersionMismatchError
 from polylogue.logging import get_logger
 from polylogue.paths import blob_store_root
 from polylogue.pipeline.services.ingest_batch._models import _IngestBatchSummary
-from polylogue.sources.decoders import _iter_json_stream
+from polylogue.sources.decoders import _iter_json_stream, _ZipEntryValidator
 from polylogue.sources.dispatch import _detect_provider_from_raw_bytes, parse_payload
 from polylogue.sources.live.append_ingest import ingest_append_plans
 from polylogue.sources.live.batch_observability import (
@@ -85,6 +87,10 @@ from polylogue.sources.live.deferred_cursor import record_deferred_append_cursor
 from polylogue.sources.live.metrics import LiveBatchMetrics, LiveFullIngestAggregate
 from polylogue.sources.live.session_convergence import converge_known_sessions
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
+from polylogue.sources.source_acquisition_components import (
+    ZipEntryReadContext,
+    iter_zip_entry_raw_data,
+)
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
@@ -852,6 +858,30 @@ class LiveBatchProcessor:
                     current_path=path,
                     source_payload_read_bytes=source_payload_read_bytes,
                 )
+            if path.suffix.lower() == ".zip":
+                file_mtime = datetime.fromtimestamp(stat.st_mtime_ns / 1_000_000_000, UTC).isoformat()
+                zip_records, zip_bytes = self._extract_zip_member_records(
+                    path,
+                    blob_store=blob_store,
+                    fallback_provider=fallback_provider,
+                    file_mtime=file_mtime,
+                )
+                if not zip_records:
+                    self._mark_excluded_cursor(path, stat, source_name=fallback_provider.value)
+                    continue
+                for member_raw_id, member_record in zip_records:
+                    raw_records.append(member_record)
+                    raw_by_id[member_raw_id] = path
+                source_payload_read_bytes += zip_bytes
+                if heartbeat is not None:
+                    heartbeat(
+                        "full_blob_copy",
+                        current_path=path,
+                        source_payload_read_bytes=source_payload_read_bytes,
+                    )
+                ingested.append(path)
+                raw_byte_sizes[path] = stat.st_size
+                continue
             jsonl_like = path.suffix.lower() == ".jsonl"
             if jsonl_like:
                 provider, parse_as_session = _jsonl_provider_and_session_artifact(path, fallback_provider)
@@ -1119,6 +1149,79 @@ class LiveBatchProcessor:
                 except Exception:
                     logger.warning("live.watcher: archive full ingest failed for %s", record.source_path, exc_info=True)
         return result
+
+    def _extract_zip_member_records(
+        self,
+        path: Path,
+        *,
+        blob_store: BlobStore,
+        fallback_provider: Provider,
+        file_mtime: str,
+    ) -> tuple[list[tuple[str, RawSessionRecord]], int]:
+        """Expand an inbox ZIP into one raw record per session member.
+
+        Inbox ZIPs (account exports dropped into the watched inbox) were
+        previously routed into the byte-level provider-detection branch, where
+        ``orjson.loads`` over the ZIP container raised and the entire archive
+        was silently marked excluded (#1683). This reuses the maintenance
+        acquisition path's member extraction so inbox ZIPs ingest the same way
+        as ``polylogue run`` source ZIPs: each member is provider-detected,
+        multi-session members are split, and grouped/metadata entries preserve
+        their original bytes.
+
+        Returns ``([], 0)`` (caller marks the path excluded) only when the ZIP
+        is unreadable or contains no session-bearing members.
+        """
+        source = Source(name=fallback_provider.value, path=path.parent)
+        acquired_at = datetime.now(UTC).isoformat()
+        records: list[tuple[str, RawSessionRecord]] = []
+        total_bytes = 0
+        validator = _ZipEntryValidator(
+            fallback_provider,
+            cursor_state=None,
+            zip_path=path,
+            session_only=False,
+        )
+        try:
+            with zipfile.ZipFile(path) as zf:
+                for info in validator.filter_entries(zf.infolist()):
+                    if info.file_size == 0:
+                        continue
+                    for raw_data in iter_zip_entry_raw_data(
+                        zf,
+                        ZipEntryReadContext(
+                            source=source,
+                            zip_path=path,
+                            entry=info,
+                            file_mtime=file_mtime,
+                            provider_hint=fallback_provider,
+                            blob_store=blob_store,
+                        ),
+                    ):
+                        if raw_data.blob_hash is None:
+                            continue
+                        member_provider = raw_data.provider_hint or fallback_provider
+                        member_size = raw_data.blob_size or 0
+                        total_bytes += member_size
+                        records.append(
+                            (
+                                raw_data.blob_hash,
+                                RawSessionRecord(
+                                    raw_id=raw_data.blob_hash,
+                                    payload_provider=member_provider,
+                                    source_name=member_provider.value,
+                                    source_path=raw_data.source_path,
+                                    source_index=raw_data.source_index or 0,
+                                    blob_size=member_size,
+                                    acquired_at=acquired_at,
+                                    file_mtime=raw_data.file_mtime,
+                                ),
+                            )
+                        )
+        except (zipfile.BadZipFile, OSError) as exc:
+            logger.warning("Failed to expand inbox ZIP %s: %s", path, exc)
+            return [], 0
+        return records, total_bytes
 
     def _mark_excluded_cursor(self, path: Path, stat: object, *, source_name: str) -> None:
         st_size = int(getattr(stat, "st_size", 0))
