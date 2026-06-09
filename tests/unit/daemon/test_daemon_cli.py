@@ -117,7 +117,7 @@ def test_polylogued_status_json_reports_archive_storage(tmp_path: Path) -> None:
     tiers = cast(list[dict[str, object]], storage["tiers"])
     assert {tier["name"]: tier["user_version"] for tier in tiers} == {
         "source": 1,
-        "index": 2,
+        "index": 3,
         "embeddings": 1,
         "user": 1,
         "ops": 1,
