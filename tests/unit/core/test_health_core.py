@@ -41,15 +41,6 @@ def test_health_check_dataclass_contract(name: str, status_name: str, detail: st
     } == expected
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Archive gap (#1783): run_archive_readiness is not archive-aware. "
-        "Against the index.db the database probe rejects user_version=1 "
-        "and the table-dependent derived-model checks are skipped, so the "
-        "full check name set is not emitted."
-    ),
-    strict=False,
-)
 @pytest.mark.parametrize(
     ("deep", "expected_checks"),
     [
@@ -109,14 +100,6 @@ def test_run_health_core_contract(
     assert sum(report.summary.values()) == len(report.checks)
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Archive gap (#1783): the archive database probe rejects user_version=1 "
-        "before the patched derived-status collector is consulted, so the "
-        "transcript_embeddings check is never produced."
-    ),
-    strict=False,
-)
 @pytest.mark.parametrize(
     ("embedded_sessions", "embedded_messages", "pending_sessions", "expected_status", "expected_text"),
     [
@@ -229,10 +212,6 @@ def test_run_health_path_contracts(tmp_path: Path, path_name: str, missing: bool
     assert check.status == (VerifyStatus.WARNING if missing else VerifyStatus.OK)
 
 
-@pytest.mark.xfail(
-    reason=("Archive gap (#1783): run_archive_readiness does not emit source: checks when probing the archive."),
-    strict=False,
-)
 def test_run_health_includes_source_checks(cli_workspace: Mapping[str, Path]) -> None:
     from polylogue.config import get_config
     from polylogue.readiness import run_archive_readiness
