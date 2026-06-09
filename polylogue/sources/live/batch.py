@@ -121,6 +121,26 @@ class _ArchiveFullWriteResult:
     session_ids: list[str] = field(default_factory=list)
     session_count: int = 0
     message_count: int = 0
+    errors: list[str] = field(default_factory=list)
+
+
+def _summarize_attempt_error(errors: list[str], retry_paths: list[str]) -> str | None:
+    """Build the ``ingest_attempts.error_message`` value for a finished batch.
+
+    Prefers actual materialization error text (deduped, capped) so the column
+    is diagnosable. Falls back to a retry-path *count* — never a dump of source
+    paths, which is what the column previously stored and which carried no
+    failure reason. Returns ``None`` when nothing needs retry.
+    """
+    distinct = list(dict.fromkeys(message for message in errors if message))
+    if distinct:
+        summary = "; ".join(distinct[:3])
+        if len(distinct) > 3:
+            summary += f" (+{len(distinct) - 3} more)"
+        return summary
+    if retry_paths:
+        return f"{len(retry_paths)} path(s) pending retry"
+    return None
 
 
 class LiveBatchProcessor:
@@ -192,6 +212,7 @@ class LiveBatchProcessor:
         convergence_time_s = 0.0
         stage_timings: dict[str, float] = {}
         failed_paths: list[str] = []
+        materialization_errors: list[str] = []
         succeeded_paths: set[Path] = set()
         ingest_worker_count_max = 0
         full_ingest_aggregate = LiveFullIngestAggregate()
@@ -436,6 +457,7 @@ class LiveBatchProcessor:
                 for path in full_result.failed:
                     failed_paths.append(str(path))
                     cursor_fingerprint_read_bytes += self._record_failed_cursor(path)
+                materialization_errors.extend(full_result.materialization_errors)
                 logger.info(
                     "live.watcher: batch ingested %s — %d in %.1fs (%.1f/s)",
                     source_name,
@@ -517,7 +539,7 @@ class LiveBatchProcessor:
             attempt_id,
             status="completed" if not retry_paths else "completed_with_failures",
             phase="completed",
-            error="; ".join(retry_paths[:3]) if retry_paths else None,
+            error=_summarize_attempt_error(materialization_errors, retry_paths),
         )
         return metrics
 
@@ -998,6 +1020,7 @@ class LiveBatchProcessor:
             raw_by_id[raw_id] = path
 
         summary: _IngestBatchSummary | None = None
+        archive_write: _ArchiveFullWriteResult | None = None
         if raw_records:
             available_records = [record for record in raw_records if record.raw_id in raw_payloads]
             missing_payload_records = [record for record in raw_records if record.raw_id not in raw_payloads]
@@ -1053,6 +1076,7 @@ class LiveBatchProcessor:
             raw_fingerprints=raw_fingerprints,
             raw_byte_sizes=raw_byte_sizes,
             summary=summary,
+            materialization_errors=archive_write.errors if archive_write is not None else [],
         )
         raw_records.clear()
         raw_by_id.clear()
@@ -1146,8 +1170,26 @@ class LiveBatchProcessor:
                         result.session_ids.append(session_id)
                         result.session_count += 1
                         result.message_count += len(session.messages)
-                except Exception:
+                except sqlite3.OperationalError as exc:
+                    if is_transient_sqlite_lock(exc):
+                        # Lost the write-lock race to a concurrent bulk write.
+                        # The path stays out of result.raw_ids, so it is marked
+                        # failed and re-queued; the next cursor pass retries it.
+                        # Log quietly without a traceback — this is expected,
+                        # self-healing contention, not a fault to investigate.
+                        logger.debug(
+                            "live.watcher: archive full ingest deferred (database locked, retryable) for %s",
+                            record.source_path,
+                        )
+                        result.errors.append("database is locked (retryable)")
+                    else:
+                        logger.warning(
+                            "live.watcher: archive full ingest failed for %s", record.source_path, exc_info=True
+                        )
+                        result.errors.append(str(exc))
+                except Exception as exc:
                     logger.warning("live.watcher: archive full ingest failed for %s", record.source_path, exc_info=True)
+                    result.errors.append(str(exc))
         return result
 
     def _extract_zip_member_records(

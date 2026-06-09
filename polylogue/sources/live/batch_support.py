@@ -90,6 +90,7 @@ class _FullIngestResult:
     source_payload_read_bytes: int
     raw_fingerprints: dict[Path, str] = field(default_factory=dict)
     raw_byte_sizes: dict[Path, int] = field(default_factory=dict)
+    materialization_errors: list[str] = field(default_factory=list)
     worker_count: int = 0
     ingested_session_count: int = 0
     ingested_message_count: int = 0
@@ -111,6 +112,7 @@ def _full_ingest_result_from_summary(
     raw_fingerprints: dict[Path, str],
     raw_byte_sizes: dict[Path, int],
     summary: object | None,
+    materialization_errors: list[str] | None = None,
 ) -> _FullIngestResult:
     error = getattr(summary, "wal_checkpoint_error", None) if summary is not None else None
     return _FullIngestResult(
@@ -119,6 +121,7 @@ def _full_ingest_result_from_summary(
         source_payload_read_bytes=source_payload_read_bytes,
         raw_fingerprints=raw_fingerprints,
         raw_byte_sizes=raw_byte_sizes,
+        materialization_errors=list(materialization_errors) if materialization_errors else [],
         worker_count=int(getattr(summary, "worker_count", 0)) if summary is not None else 0,
         ingested_session_count=int(getattr(summary, "total_convos", 0)) if summary is not None else 0,
         ingested_message_count=int(getattr(summary, "total_msgs", 0)) if summary is not None else 0,
