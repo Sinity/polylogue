@@ -784,7 +784,7 @@ def test_archive_insights_execute_ids_deduplicates_session_ids(tmp_path: Path, m
 
     seen_session_ids: list[list[str]] = []
 
-    def fake_rebuild(conn: sqlite3.Connection, *, session_ids: list[str], page_size: int):
+    def fake_rebuild(conn: sqlite3.Connection, *, session_ids: list[str], page_size: int) -> SimpleNamespace:
         del conn, page_size
         seen_session_ids.append(session_ids)
         return SimpleNamespace(profiles=1, work_events=0, phases=0, threads=0)
