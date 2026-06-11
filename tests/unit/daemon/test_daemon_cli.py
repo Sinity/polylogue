@@ -263,7 +263,7 @@ def test_periodic_convergence_check_waits_for_catch_up_complete(
     async def exercise() -> None:
         catch_up_complete = asyncio.Event()
         monkeypatch.setattr(daemon_cli, "_CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS", 0)
-        monkeypatch.setattr(daemon_cli.asyncio, "to_thread", fake_to_thread)
+        monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
         monkeypatch.setattr(daemon_cli, "_active_index_db_path", lambda: db)
         task = asyncio.create_task(daemon_cli._periodic_convergence_check((), catch_up_complete=catch_up_complete))
         await asyncio.sleep(0)
