@@ -828,6 +828,28 @@ def test_archive_insights_execute_ids_deduplicates_session_ids(tmp_path: Path, m
     assert seen_session_ids == [["codex-session:conv-dupe"]]
 
 
+def test_archive_insights_execute_sessions_uses_write_connection_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "index.db"
+    with open_connection(db_path) as conn:
+        session_id = _seed_index_session(conn, session_id="conv-profile", text="Message for connection profile")
+        conn.commit()
+
+    seen_busy_timeout: list[int] = []
+
+    def fake_execute_ids(conn: sqlite3.Connection, session_ids: list[str]) -> bool:
+        assert session_ids == [session_id]
+        seen_busy_timeout.append(int(conn.execute("PRAGMA busy_timeout").fetchone()[0]))
+        return True
+
+    monkeypatch.setattr(stages, "_archive_insights_execute_ids", fake_execute_ids)
+
+    assert stages._archive_insights_execute_sessions(db_path, [session_id]) is True
+    assert seen_busy_timeout == [stages._ARCHIVE_INSIGHT_WRITE_BUSY_TIMEOUT_MS]
+
+
 def test_embedding_config_enabled_with_key() -> None:
     """Embedding is enabled when config has both enabled flag and API key."""
     from unittest.mock import patch
