@@ -44,6 +44,13 @@ _DAEMON_EMBED_MAX_ERRORS = 3
 _ARCHIVE_INSIGHT_WRITE_BUSY_TIMEOUT_MS = 120_000
 
 
+def _is_transient_sqlite_lock(exc: BaseException) -> bool:
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    message = str(exc).lower()
+    return "database is locked" in message or "database table is locked" in message or "database is busy" in message
+
+
 def _open_archive_insight_write_connection(db_path: Path) -> sqlite3.Connection:
     conn = open_connection(db_path, timeout=_ARCHIVE_INSIGHT_WRITE_BUSY_TIMEOUT_MS / 1000)
     try:
@@ -1317,7 +1324,10 @@ def _archive_insights_execute(db_path: Path, path: Path) -> bool:
             return _archive_insights_execute_ids(conn, session_ids)
         finally:
             conn.close()
-    except Exception:
+    except Exception as exc:
+        if _is_transient_sqlite_lock(exc):
+            logger.info("insights: archive refresh deferred because sqlite is busy: %s", exc)
+            return False
         logger.warning("insights: archive refresh failed", exc_info=True)
         return False
 
@@ -1354,7 +1364,10 @@ def _archive_insights_execute_many(db_path: Path, paths: Sequence[Path]) -> bool
             return _archive_insights_execute_ids(conn, session_ids)
         finally:
             conn.close()
-    except Exception:
+    except Exception as exc:
+        if _is_transient_sqlite_lock(exc):
+            logger.info("insights: archive batch refresh deferred because sqlite is busy: %s", exc)
+            return False
         logger.warning("insights: archive batch refresh failed", exc_info=True)
         return False
 
@@ -1379,7 +1392,10 @@ def _archive_insights_execute_sessions(db_path: Path, session_ids: Sequence[str]
             return _archive_insights_execute_ids(conn, ids)
         finally:
             conn.close()
-    except Exception:
+    except Exception as exc:
+        if _is_transient_sqlite_lock(exc):
+            logger.info("insights: archive session refresh deferred because sqlite is busy: %s", exc)
+            return False
         logger.warning("insights: archive session refresh failed", exc_info=True)
         return False
 

@@ -850,6 +850,23 @@ def test_archive_insights_execute_sessions_uses_write_connection_profile(
     assert seen_busy_timeout == [stages._ARCHIVE_INSIGHT_WRITE_BUSY_TIMEOUT_MS]
 
 
+def test_archive_insights_execute_sessions_defers_transient_sqlite_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "index.db"
+    with open_connection(db_path) as conn:
+        session_id = _seed_index_session(conn, session_id="conv-locked", text="Message for locked insight rebuild")
+        conn.commit()
+
+    def fail_locked(_conn: sqlite3.Connection, _session_ids: list[str]) -> bool:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(stages, "_archive_insights_execute_ids", fail_locked)
+
+    assert stages._archive_insights_execute_sessions(db_path, [session_id]) is False
+
+
 def test_embedding_config_enabled_with_key() -> None:
     """Embedding is enabled when config has both enabled flag and API key."""
     from unittest.mock import patch
