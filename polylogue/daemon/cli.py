@@ -246,9 +246,15 @@ async def _sweep_orphaned_blob_leases() -> None:
     await asyncio.to_thread(_sweep_orphaned_blob_leases_sync)
 
 
-async def _periodic_convergence_check(sources: tuple[WatchSource, ...]) -> None:
+async def _periodic_convergence_check(
+    sources: tuple[WatchSource, ...],
+    *,
+    catch_up_complete: asyncio.Event | None = None,
+) -> None:
     """Periodically retry recorded derived convergence debt."""
     db = _active_index_db_path()
+    if catch_up_complete is not None:
+        await catch_up_complete.wait()
     while True:
         await asyncio.sleep(_CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS)
         if not db.exists():
@@ -602,13 +608,14 @@ async def run_daemon_services(
                 for loop in (
                     _periodic_wal_checkpoint(),
                     _periodic_heartbeat(),
-                    _periodic_convergence_check(sources),
                     periodic_embedding_backlog_check(),
                     _periodic_health_check(),
                     _periodic_db_optimize(),
                     _periodic_status_snapshot_refresh(),
                 )
             )
+            if not enable_watch:
+                maintenance_tasks.append(asyncio.create_task(_periodic_convergence_check(sources)))
             # Reclaim blob leases leaked by a previously SIGKILLed writer so a
             # later GC pass is not blocked indefinitely (#1746).
             maintenance_tasks.append(asyncio.create_task(_sweep_orphaned_blob_leases()))
@@ -630,6 +637,14 @@ async def run_daemon_services(
                         debounce_s=debounce_s,
                         converger=converger,
                         event_emitter=_emit_live_batch_event,
+                    )
+                    maintenance_tasks.append(
+                        asyncio.create_task(
+                            _periodic_convergence_check(
+                                sources,
+                                catch_up_complete=watcher.catch_up_complete,
+                            )
+                        )
                     )
                     watcher_task = asyncio.create_task(watcher.run())
                     tasks.append(watcher_task)

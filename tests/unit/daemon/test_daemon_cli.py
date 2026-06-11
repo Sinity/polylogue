@@ -246,6 +246,37 @@ def test_periodic_convergence_check_treats_sqlite_lock_as_archive_busy(tmp_path:
     warning.assert_not_called()
 
 
+def test_periodic_convergence_check_waits_for_catch_up_complete(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    db = tmp_path / "index.db"
+    db.touch()
+    calls: list[str] = []
+
+    async def fake_to_thread(_func: object, *_args: object, **_kwargs: object) -> object:
+        calls.append("drain")
+        raise asyncio.CancelledError
+
+    async def exercise() -> None:
+        catch_up_complete = asyncio.Event()
+        monkeypatch.setattr(daemon_cli, "_CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS", 0)
+        monkeypatch.setattr(daemon_cli.asyncio, "to_thread", fake_to_thread)
+        monkeypatch.setattr(daemon_cli, "_active_index_db_path", lambda: db)
+        task = asyncio.create_task(daemon_cli._periodic_convergence_check((), catch_up_complete=catch_up_complete))
+        await asyncio.sleep(0)
+        assert calls == []
+        catch_up_complete.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(exercise())
+
+    assert calls == ["drain"]
+
+
 def test_periodic_convergence_check_warns_on_non_lock_failures(tmp_path: Path) -> None:
     from polylogue.daemon import cli as daemon_cli
 
@@ -927,10 +958,11 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
 
     class FakeWatcher:
         def __init__(self, *_args: object, **_kwargs: object) -> None:
-            pass
+            self.catch_up_complete = asyncio.Event()
 
         async def run(self) -> None:
             events.append("watcher")
+            self.catch_up_complete.set()
             raise RuntimeError("watch stopped")
 
         def stop(self) -> None:
@@ -963,7 +995,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
         patch.object(daemon_cli, "_sweep_orphaned_blob_leases", fake_sweep_orphaned_blob_leases),
         patch.object(daemon_cli, "_periodic_wal_checkpoint", lambda: fake_loop("wal")),
         patch.object(daemon_cli, "_periodic_heartbeat", lambda: fake_loop("heartbeat")),
-        patch.object(daemon_cli, "_periodic_convergence_check", lambda _sources: fake_loop("convergence")),
+        patch.object(daemon_cli, "_periodic_convergence_check", lambda _sources, **_kwargs: fake_loop("convergence")),
         patch.object(daemon_cli, "_periodic_health_check", lambda: fake_loop("health")),
         patch.object(daemon_cli, "_periodic_db_optimize", lambda: fake_loop("optimize")),
         patch.object(daemon_cli, "_periodic_status_snapshot_refresh", lambda: fake_loop("status")),

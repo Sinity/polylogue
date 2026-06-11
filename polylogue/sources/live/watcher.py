@@ -108,6 +108,7 @@ class LiveWatcher:
         self._batch_lock = asyncio.Lock()
         self._ingest_lock = asyncio.Lock()
         self._stop = asyncio.Event()
+        self._catch_up_complete = asyncio.Event()
         self._batch_processor = LiveBatchProcessor(
             polylogue,
             self._sources,
@@ -118,15 +119,23 @@ class LiveWatcher:
             event_emitter=event_emitter,
         )
 
+    @property
+    def catch_up_complete(self) -> asyncio.Event:
+        return self._catch_up_complete
+
     async def run(self) -> None:
         from watchfiles import Change, awatch
 
         roots = [s.root for s in self._sources if s.exists()]
         if not roots:
             logger.warning("live.watcher: no source roots exist; nothing to watch")
+            self._catch_up_complete.set()
             return
 
-        await self._catch_up(roots)
+        try:
+            await self._catch_up(roots)
+        finally:
+            self._catch_up_complete.set()
         self._schedule_failed_retry_scan()
         self._ensure_pending_scheduled()
 
