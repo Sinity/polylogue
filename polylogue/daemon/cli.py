@@ -612,10 +612,12 @@ async def run_daemon_services(
             api_server_task = asyncio.create_task(asyncio.to_thread(api_server.serve_forever, 0.5))
             tasks.append(api_server_task)
 
-        # Ensure FTS structure after HTTP surfaces are bound. On multi-GB
-        # archives, bounded SQLite maintenance can fault substantial file cache.
+        # Ensure FTS structure after HTTP surfaces are bound and before live
+        # catch-up starts. Startup FTS maintenance and catch-up ingestion are
+        # both write-heavy; running them concurrently makes SQLite maintenance
+        # time out behind the daemon's own writer.
         if not watcher_blocked:
-            maintenance_tasks.append(asyncio.create_task(_ensure_fts_startup_readiness()))
+            await _ensure_fts_startup_readiness()
             # Reclaim blob leases leaked by a previously SIGKILLed writer so a
             # later GC pass is not blocked indefinitely (#1746).
             maintenance_tasks.append(asyncio.create_task(_sweep_orphaned_blob_leases()))

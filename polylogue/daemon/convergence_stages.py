@@ -23,11 +23,11 @@ from polylogue.config import load_polylogue_config
 from polylogue.daemon.convergence import ConvergenceStage
 from polylogue.logging import get_logger
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
-from polylogue.storage.sqlite.connection_profile import open_connection
 from polylogue.storage.source_sessions import (
     session_ids_for_source_path,
     session_ids_for_source_paths,
 )
+from polylogue.storage.sqlite.connection_profile import open_connection
 
 if TYPE_CHECKING:
     pass

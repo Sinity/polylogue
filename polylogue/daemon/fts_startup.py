@@ -22,6 +22,19 @@ _SESSION_WORK_EVENT_FTS_TRIGGERS = (
     "session_work_events_fts_au",
 )
 _THREAD_FTS_TRIGGERS = ("threads_fts_ai", "threads_fts_ad", "threads_fts_au")
+_FTS_STARTUP_BUSY_TIMEOUT_MS = 120_000
+
+
+def _open_fts_startup_write_connection(db_path: Path) -> sqlite3.Connection:
+    from polylogue.storage.sqlite.connection_profile import open_connection
+
+    conn = open_connection(db_path, timeout=_FTS_STARTUP_BUSY_TIMEOUT_MS / 1000)
+    try:
+        conn.execute(f"PRAGMA busy_timeout = {_FTS_STARTUP_BUSY_TIMEOUT_MS}")
+    except BaseException:
+        conn.close()
+        raise
+    return conn
 
 
 def missing_fts_triggers_sync(conn: sqlite3.Connection) -> list[str]:
@@ -170,15 +183,13 @@ def ensure_fts_startup_readiness_sync() -> None:
     full-archive invariant scans during ordinary startup; bounded missing-row
     repair is enough for the normal SIGKILL-after-trigger-suspend failure mode.
     """
-    from polylogue.storage.sqlite.connection_profile import open_connection
-
     db = _active_fts_startup_db_path()
     if not db.exists():
         return
 
     conn: sqlite3.Connection | None = None
     try:
-        conn = open_connection(db, timeout=10.0)
+        conn = _open_fts_startup_write_connection(db)
         if _ensure_archive_messages_fts_startup_readiness_sync(conn):
             conn.commit()
             return

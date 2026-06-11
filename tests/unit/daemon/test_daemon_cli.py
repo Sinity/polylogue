@@ -829,6 +829,48 @@ def test_ensure_fts_startup_readiness_handles_archive(
     assert row == ("ready", 1, 1)
 
 
+def test_ensure_fts_startup_readiness_uses_extended_write_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import polylogue.daemon.fts_startup as fts_startup
+    from polylogue.archive.message.roles import Role
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.types import BlockType, Provider
+
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+    with ArchiveStore(tmp_path) as archive:
+        archive.write_parsed(
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="daemon-startup-timeout-v1",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.USER,
+                        text="startup timeout v1",
+                        content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="startup timeout v1")],
+                    )
+                ],
+            )
+        )
+
+    seen_busy_timeout: list[int] = []
+    real_ensure = fts_startup._ensure_archive_messages_fts_startup_readiness_sync
+
+    def wrapped_ensure(conn: sqlite3.Connection) -> bool:
+        seen_busy_timeout.append(int(conn.execute("PRAGMA busy_timeout").fetchone()[0]))
+        return real_ensure(conn)
+
+    monkeypatch.setattr(fts_startup, "_ensure_archive_messages_fts_startup_readiness_sync", wrapped_ensure)
+
+    asyncio.run(daemon_cli._ensure_fts_startup_readiness())
+
+    assert seen_busy_timeout == [fts_startup._FTS_STARTUP_BUSY_TIMEOUT_MS]
+
+
 def test_run_daemon_services_stops_live_watcher_on_failure() -> None:
     from polylogue.daemon import cli as daemon_cli
 
@@ -869,6 +911,58 @@ def test_run_daemon_services_stops_live_watcher_on_failure() -> None:
         )
 
     assert stopped == [True]
+
+
+def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    events: list[str] = []
+
+    class FakePolylogue:
+        async def __aenter__(self) -> object:
+            return object()
+
+        async def __aexit__(self, *exc: object) -> None:
+            return None
+
+    class FakeWatcher:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        async def run(self) -> None:
+            events.append("watcher")
+            raise RuntimeError("watch stopped")
+
+        def stop(self) -> None:
+            events.append("stop")
+
+    async def fake_fts_startup() -> None:
+        events.append("fts")
+
+    async def fake_sweep_orphaned_blob_leases() -> None:
+        events.append("sweep")
+
+    with (
+        patch.object(daemon_cli, "Polylogue", FakePolylogue),
+        patch.object(daemon_cli, "LiveWatcher", FakeWatcher),
+        patch.object(daemon_cli, "_ensure_fts_startup_readiness", fake_fts_startup),
+        patch.object(daemon_cli, "_sweep_orphaned_blob_leases", fake_sweep_orphaned_blob_leases),
+        pytest.raises(RuntimeError, match="watch stopped"),
+    ):
+        asyncio.run(
+            daemon_cli.run_daemon_services(
+                sources=(WatchSource(name="codex", root=Path("/tmp/codex")),),
+                debounce_s=1.0,
+                enable_watch=True,
+                enable_browser_capture=False,
+                browser_capture_host="127.0.0.1",
+                browser_capture_port=8765,
+                browser_capture_spool_path=None,
+            )
+        )
+
+    assert "watcher" in events
+    assert events.index("fts") < events.index("watcher")
 
 
 def test_run_daemon_services_closes_browser_capture_server_on_failure() -> None:

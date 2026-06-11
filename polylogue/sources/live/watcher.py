@@ -189,7 +189,7 @@ class LiveWatcher:
                     queued_file_count=len(plan.candidates) if index == 1 else len(chunk),
                     skipped_file_count=plan.skipped_file_count if index == 1 else 0,
                 )
-                self._schedule_failed_retry_scan()
+            self._schedule_failed_retry_scan()
 
     def _scan_catch_up_candidates(self, roots: list[Path]) -> tuple[CandidateSourceFile, ...]:
         root_set = {root.resolve() for root in roots}

@@ -71,6 +71,7 @@ def test_catch_up_ingests_needed_files_in_bounded_chunks(
     monkeypatch.setattr(live_watcher, "_CATCH_UP_MAX_BATCH_BYTES", 100)
 
     calls: list[tuple[list[Path], int | None, int]] = []
+    retry_scan_calls: list[int] = []
 
     async def fake_ingest_files(
         paths: list[Path],
@@ -81,6 +82,7 @@ def test_catch_up_ingests_needed_files_in_bounded_chunks(
         calls.append((paths, queued_file_count, skipped_file_count))
 
     watcher._ingest_files = fake_ingest_files  # type: ignore[assignment,method-assign]
+    watcher._schedule_failed_retry_scan = lambda: retry_scan_calls.append(len(calls))  # type: ignore[method-assign]
 
     asyncio.run(watcher._catch_up([root]))
 
@@ -88,6 +90,7 @@ def test_catch_up_ingests_needed_files_in_bounded_chunks(
     assert calls[0][1:] == (5, 0)
     assert calls[1][1:] == (2, 0)
     assert calls[2][1:] == (1, 0)
+    assert retry_scan_calls == [3]
 
 
 def test_catch_up_does_not_immediately_requeue_failed_paths(tmp_path: Path) -> None:
