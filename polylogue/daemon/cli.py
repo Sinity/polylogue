@@ -543,22 +543,12 @@ async def run_daemon_services(
     # not start any background loop that opens the archive: a mismatched
     # runtime/database pair must remain observable without doing catch-up,
     # FTS repair, status snapshots, WAL checkpointing, or convergence work.
+    #
+    # The task list is populated only after startup FTS readiness completes.
+    # Several maintenance loops can write the archive, especially convergence
+    # debt retry; starting them before FTS startup repair self-contends on
+    # SQLite during daemon bootstrap.
     maintenance_tasks: list[asyncio.Task[None]] = []
-    if not watcher_blocked:
-        from polylogue.daemon.embedding_backlog import periodic_embedding_backlog_check
-
-        maintenance_tasks.extend(
-            asyncio.create_task(loop)
-            for loop in (
-                _periodic_wal_checkpoint(),
-                _periodic_heartbeat(),
-                _periodic_convergence_check(sources),
-                periodic_embedding_backlog_check(),
-                _periodic_health_check(),
-                _periodic_db_optimize(),
-                _periodic_status_snapshot_refresh(),
-            )
-        )
 
     api_server: ThreadingHTTPServer | None = None
     api_server_task: asyncio.Task[None] | None = None
@@ -570,21 +560,6 @@ async def run_daemon_services(
     tasks: list[asyncio.Task[None]] = []
 
     try:
-        # Start the post-ingest convergence engine. The live watcher owns
-        # batched source ingestion; these stages repair archive indexes and
-        # refresh derived state after successful writes.
-        from polylogue.daemon.convergence import DaemonConverger
-        from polylogue.daemon.convergence_stages import make_default_convergence_stages
-
-        _db = _active_index_db_path()
-
-        if not watcher_blocked:
-            converger = DaemonConverger(
-                stages=make_default_convergence_stages(_db),
-                max_workers=2,
-            )
-            await converger.start()
-
         if enable_browser_capture:
             server = make_server(
                 browser_capture_host,
@@ -617,10 +592,32 @@ async def run_daemon_services(
         # both write-heavy; running them concurrently makes SQLite maintenance
         # time out behind the daemon's own writer.
         if not watcher_blocked:
+            from polylogue.daemon.convergence import DaemonConverger
+            from polylogue.daemon.convergence_stages import make_default_convergence_stages
+            from polylogue.daemon.embedding_backlog import periodic_embedding_backlog_check
+
             await _ensure_fts_startup_readiness()
+            maintenance_tasks.extend(
+                asyncio.create_task(loop)
+                for loop in (
+                    _periodic_wal_checkpoint(),
+                    _periodic_heartbeat(),
+                    _periodic_convergence_check(sources),
+                    periodic_embedding_backlog_check(),
+                    _periodic_health_check(),
+                    _periodic_db_optimize(),
+                    _periodic_status_snapshot_refresh(),
+                )
+            )
             # Reclaim blob leases leaked by a previously SIGKILLed writer so a
             # later GC pass is not blocked indefinitely (#1746).
             maintenance_tasks.append(asyncio.create_task(_sweep_orphaned_blob_leases()))
+            _db = _active_index_db_path()
+            converger = DaemonConverger(
+                stages=make_default_convergence_stages(_db),
+                max_workers=2,
+            )
+            await converger.start()
 
         # Preflight already ran at the top of run_daemon_services (see
         # ``watcher_blocked`` above); reuse that result.

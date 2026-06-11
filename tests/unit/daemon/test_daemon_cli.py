@@ -942,11 +942,34 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
     async def fake_sweep_orphaned_blob_leases() -> None:
         events.append("sweep")
 
+    async def fake_loop(name: str) -> None:
+        events.append(name)
+        await asyncio.Event().wait()
+
+    class FakeConverger:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        async def start(self) -> None:
+            events.append("converger")
+
+        async def stop(self) -> None:
+            events.append("converger-stop")
+
     with (
         patch.object(daemon_cli, "Polylogue", FakePolylogue),
         patch.object(daemon_cli, "LiveWatcher", FakeWatcher),
         patch.object(daemon_cli, "_ensure_fts_startup_readiness", fake_fts_startup),
         patch.object(daemon_cli, "_sweep_orphaned_blob_leases", fake_sweep_orphaned_blob_leases),
+        patch.object(daemon_cli, "_periodic_wal_checkpoint", lambda: fake_loop("wal")),
+        patch.object(daemon_cli, "_periodic_heartbeat", lambda: fake_loop("heartbeat")),
+        patch.object(daemon_cli, "_periodic_convergence_check", lambda _sources: fake_loop("convergence")),
+        patch.object(daemon_cli, "_periodic_health_check", lambda: fake_loop("health")),
+        patch.object(daemon_cli, "_periodic_db_optimize", lambda: fake_loop("optimize")),
+        patch.object(daemon_cli, "_periodic_status_snapshot_refresh", lambda: fake_loop("status")),
+        patch("polylogue.daemon.embedding_backlog.periodic_embedding_backlog_check", lambda: fake_loop("embedding")),
+        patch("polylogue.daemon.convergence.DaemonConverger", FakeConverger),
+        patch("polylogue.daemon.convergence_stages.make_default_convergence_stages", return_value=()),
         pytest.raises(RuntimeError, match="watch stopped"),
     ):
         asyncio.run(
@@ -963,6 +986,8 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
 
     assert "watcher" in events
     assert events.index("fts") < events.index("watcher")
+    assert events.index("fts") < events.index("convergence")
+    assert events.index("fts") < events.index("converger")
 
 
 def test_run_daemon_services_closes_browser_capture_server_on_failure() -> None:
