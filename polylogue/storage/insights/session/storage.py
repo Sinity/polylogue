@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Mapping, Sequence
+from typing import TypeVar
 
 from pydantic import BaseModel
 
@@ -28,6 +29,19 @@ _SYNC_COLUMN_CACHE: dict[tuple[int, str], bool] = {}
 _DELETE_WHERE_IN_CHUNK_SIZE = 900
 SqlValue = str | int | float | None
 SqlBindings = tuple[SqlValue, ...]
+
+
+_SessionRecordT = TypeVar("_SessionRecordT")
+
+
+def _dedupe_records_by_session(records: Sequence[_SessionRecordT]) -> list[_SessionRecordT]:
+    deduped: dict[str, _SessionRecordT] = {}
+    for record in records:
+        session_id = str(getattr(record, "session_id", ""))
+        if session_id:
+            deduped[session_id] = record
+    return list(deduped.values())
+
 
 _SESSION_PROFILE_BASE_COLUMNS = (
     "session_id",
@@ -621,6 +635,7 @@ def replace_session_profiles_bulk_sync(
 ) -> None:
     if not records:
         return
+    records = _dedupe_records_by_session(records)
     _delete_where_in(conn, "session_profiles", "session_id", [record.session_id for record in records])
     has_fallback_payload = table_has_column(conn, "session_profiles", "payload_json")
     columns = session_profile_insert_columns(has_fallback_payload=has_fallback_payload)
@@ -636,6 +651,7 @@ def replace_session_latency_profiles_bulk_sync(
 ) -> None:
     if not records:
         return
+    records = _dedupe_records_by_session(records)
     _delete_where_in(conn, "session_latency_profiles", "session_id", [record.session_id for record in records])
     conn.executemany(
         build_insert_sql("session_latency_profiles", _SESSION_LATENCY_PROFILE_COLUMNS),

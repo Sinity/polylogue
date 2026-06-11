@@ -21,6 +21,7 @@ from polylogue.daemon.convergence_stages import (
     make_insights_stage,
 )
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.storage.insights.session import storage as session_storage
 from polylogue.storage.insights.session.runtime import SessionInsightCounts
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
@@ -29,6 +30,27 @@ from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to
 from polylogue.storage.sqlite.connection import open_connection
 from polylogue.types import BlockType, Provider
 from tests.infra.frozen_clock import FrozenClock
+
+
+class _SessionIdOnly:
+    def __init__(self, session_id: str, marker: str) -> None:
+        self.session_id = session_id
+        self.marker = marker
+
+
+def test_session_storage_dedupes_records_by_session_id() -> None:
+    records = [
+        _SessionIdOnly("codex-session:one", "first"),
+        _SessionIdOnly("codex-session:one", "second"),
+        _SessionIdOnly("codex-session:two", "third"),
+    ]
+
+    deduped = session_storage._dedupe_records_by_session(records)
+
+    assert [(record.session_id, record.marker) for record in deduped] == [
+        ("codex-session:one", "second"),
+        ("codex-session:two", "third"),
+    ]
 
 
 def _main_db_path(conn: sqlite3.Connection) -> Path:
