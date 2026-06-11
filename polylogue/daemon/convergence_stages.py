@@ -892,7 +892,7 @@ def _archive_existing_session_ids(conn: sqlite3.Connection, session_ids: Sequenc
         """,
         unique_ids,
     ).fetchall()
-    return [str(row[0]) for row in rows]
+    return list(dict.fromkeys(str(row[0]) for row in rows))
 
 
 def _archive_text_block_count(conn: sqlite3.Connection, session_ids: Sequence[str] | None = None) -> int:
@@ -1375,6 +1375,7 @@ def _archive_insights_execute_sessions(db_path: Path, session_ids: Sequence[str]
 def _archive_insights_execute_ids(conn: sqlite3.Connection, session_ids: Sequence[str]) -> bool:
     from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
 
+    session_ids = list(dict.fromkeys(str(session_id) for session_id in session_ids if session_id))
     if not session_ids:
         return True
     hot_ids = _archive_hot_insight_session_ids(conn, session_ids)

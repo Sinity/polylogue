@@ -7,6 +7,7 @@ import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -773,6 +774,36 @@ def test_insights_stage_scopes_session_debt_to_stale_profiles(tmp_path: Path) ->
         "codex-session:conv-stale-source",
         "codex-session:conv-stale-version",
     }
+
+
+def test_archive_insights_execute_ids_deduplicates_session_ids(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_path = tmp_path / "index.db"
+    with open_connection(db_path) as conn:
+        _seed_index_session(conn, session_id="conv-dupe", text="Message for duplicated session")
+        conn.commit()
+
+    seen_session_ids: list[list[str]] = []
+
+    def fake_rebuild(conn: sqlite3.Connection, *, session_ids: list[str], page_size: int):
+        del conn, page_size
+        seen_session_ids.append(session_ids)
+        return SimpleNamespace(profiles=1, work_events=0, phases=0, threads=0)
+
+    monkeypatch.setattr("polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync", fake_rebuild)
+    monkeypatch.setattr(stages, "_archive_hot_insight_session_ids", lambda _conn, _ids: set())
+    monkeypatch.setattr(stages, "_archive_stale_session_profile_ids", lambda _conn, _ids: [])
+
+    with sqlite3.connect(db_path) as conn:
+        assert stages._archive_insights_execute_ids(
+            conn,
+            [
+                "codex-session:conv-dupe",
+                "codex-session:conv-dupe",
+                "codex-session:conv-dupe",
+            ],
+        )
+
+    assert seen_session_ids == [["codex-session:conv-dupe"]]
 
 
 def test_embedding_config_enabled_with_key() -> None:
