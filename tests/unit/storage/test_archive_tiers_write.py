@@ -169,6 +169,38 @@ def test_archive_tiers_writer_ingests_session_with_root_cwd_and_no_repo_name(tmp
     assert len(envelope.messages) == 1
 
 
+def test_archive_tiers_writer_replaces_lone_surrogates_before_sqlite(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    session = ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id="surrogate-session",
+        title="Surrogate \udce2 title",
+        messages=[
+            ParsedMessage(
+                provider_message_id="u1",
+                role=Role.USER,
+                text="plain text",
+                position=0,
+                content_blocks=[
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_USE,
+                        tool_name="edit",
+                        tool_id="tool-1",
+                        tool_input={"new_string": "broken \ud83d\udbe0 heading"},
+                    )
+                ],
+            ),
+        ],
+    )
+
+    session_id = write_parsed_session_to_archive(conn, session)
+
+    session_row = conn.execute("SELECT title FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+    block_row = conn.execute("SELECT tool_input FROM blocks WHERE session_id = ?", (session_id,)).fetchone()
+    assert session_row["title"] == "Surrogate \ufffd title"
+    assert '"new_string":"broken �� heading"' in block_row["tool_input"]
+
+
 def test_archive_tiers_writer_preserves_chatgpt_branch_variants(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     session = ParsedSession(

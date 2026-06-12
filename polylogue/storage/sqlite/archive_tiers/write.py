@@ -225,12 +225,12 @@ def write_parsed_session_to_archive(
                 raw_id,
                 _enum_value(session.branch_type),
                 active_leaf_message_id,
-                session.title,
+                _sqlite_text(session.title),
                 _enum_value(session.title_source),
-                session.git_branch,
-                session.git_repository_url,
-                session.git_commit_hash,
-                session.instructions_text,
+                _sqlite_text(session.git_branch),
+                _sqlite_text(session.git_repository_url),
+                _sqlite_text(session.git_commit_hash),
+                _sqlite_text(session.instructions_text),
                 session.reported_duration_ms,
                 len(messages),
                 sum(_word_count(message.text) for message in messages),
@@ -980,12 +980,12 @@ def _write_messages(
             """,
             (
                 session_id,
-                message.provider_message_id or None,
+                _sqlite_text(message.provider_message_id) or None,
                 position,
                 _enum_value(message.role),
                 _enum_value(message.message_type),
-                message.model_name,
-                message.model_effort,
+                _sqlite_text(message.model_name),
+                _sqlite_text(message.model_effort),
                 _has_block(message, BlockType.TOOL_USE),
                 _has_block(message, BlockType.THINKING),
                 _has_paste(message),
@@ -1030,13 +1030,13 @@ def _write_blocks(
                     session_id,
                     position,
                     _block_type(block).value,
-                    block.text,
-                    block.tool_name,
-                    block.tool_id,
+                    _sqlite_text(block.text),
+                    _sqlite_text(block.tool_name),
+                    _sqlite_text(block.tool_id),
                     _json_dumps(block.tool_input) if block.tool_input is not None else None,
-                    _semantic_type(block),
-                    block.media_type,
-                    _block_language(block),
+                    _sqlite_text(_semantic_type(block)),
+                    _sqlite_text(block.media_type),
+                    _sqlite_text(_block_language(block)),
                 ),
             )
 
@@ -1109,8 +1109,8 @@ def _write_attachments(
             """,
             (
                 attachment_id,
-                attachment.name,
-                attachment.mime_type,
+                _sqlite_text(attachment.name),
+                _sqlite_text(attachment.mime_type),
                 attachment.size_bytes or 0,
                 _attachment_blob_hash(attachment_id, attachment),
             ),
@@ -1127,9 +1127,9 @@ def _write_attachments(
                 session_id,
                 message_id,
                 ref_position,
-                attachment.upload_origin,
-                _attachment_source_url(attachment),
-                _attachment_caption(attachment),
+                _sqlite_text(attachment.upload_origin),
+                _sqlite_text(_attachment_source_url(attachment)),
+                _sqlite_text(_attachment_caption(attachment)),
             ),
         )
         ref_id = f"{message_id}:attachment:{ref_position}"
@@ -1174,8 +1174,8 @@ def _write_paste_spans(
                     start_offset,
                     end_offset,
                     boundary.value,
-                    evidence.source_event_id,
-                    evidence.source_marker,
+                    _sqlite_text(evidence.source_event_id),
+                    _sqlite_text(evidence.source_marker),
                     evidence.content_hash or _hash_bytes("paste", message_id, str(evidence.position), text),
                     evidence.observed_at_ms
                     if evidence.observed_at_ms is not None
@@ -1232,7 +1232,7 @@ def _write_session_link(conn: sqlite3.Connection, session_id: str, session: Pars
         (
             session_id,
             origin_from_provider(session.source_name).value,
-            session.parent_session_provider_id,
+            _sqlite_text(session.parent_session_provider_id),
             link_type,
             "parser-parent",
             1.0,
@@ -1475,8 +1475,8 @@ def _write_session_events(
                     session_id,
                     by_native_id.get(event.source_message_provider_id or ""),
                     position,
-                    event.event_type,
-                    _event_summary(event) or "",
+                    _sqlite_text(event.event_type),
+                    _sqlite_text(_event_summary(event) or ""),
                     _timestamp_ms(event.timestamp),
                 ),
             )
@@ -1493,9 +1493,9 @@ def _write_session_events(
                     session_id,
                     by_native_id.get(event.source_message_provider_id or ""),
                     position,
-                    _payload_string(event.payload, "approval", "approval_policy"),
-                    _payload_string(event.payload, "sandbox", "sandbox_policy"),
-                    _payload_string(event.payload, "network", "network_policy"),
+                    _sqlite_text(_payload_string(event.payload, "approval", "approval_policy")),
+                    _sqlite_text(_payload_string(event.payload, "sandbox", "sandbox_policy")),
+                    _sqlite_text(_payload_string(event.payload, "network", "network_policy")),
                     _timestamp_ms(event.timestamp),
                 ),
             )
@@ -1509,7 +1509,7 @@ def _write_working_dirs(conn: sqlite3.Connection, session_id: str, working_direc
             INSERT OR REPLACE INTO session_working_dirs (session_id, path, position)
             VALUES (?, ?, ?)
             """,
-            (session_id, path, position),
+            (session_id, _sqlite_text(path), position),
         )
 
 
@@ -1533,7 +1533,7 @@ def _write_reported_costs(conn: sqlite3.Connection, session_id: str, session: Pa
                 session_id, model_name, cost_provenance
             ) VALUES (?, ?, 'origin_reported')
             """,
-            (session_id, model_name),
+            (session_id, _sqlite_text(model_name)),
         )
     _aggregate_message_tokens_into_model_usage(conn, session_id)
 
@@ -1669,7 +1669,13 @@ def _write_repo_edges(conn: sqlite3.Connection, session_id: str, session: Parsed
             # "."): insert the schema's empty-string sentinel instead of NULL so
             # the session is not dropped, while the NULLIF above keeps a later
             # re-ingest from clobbering a previously-derived name with ''.
-            (origin_url, root_path, repo_name or "", observed_at_ms or 0, observed_at_ms or 0),
+            (
+                _sqlite_text(origin_url),
+                _sqlite_text(root_path),
+                _sqlite_text(repo_name or ""),
+                observed_at_ms or 0,
+                observed_at_ms or 0,
+            ),
         )
         conn.execute(
             """
@@ -1677,7 +1683,7 @@ def _write_repo_edges(conn: sqlite3.Connection, session_id: str, session: Parsed
                 session_id, repo_id, branch_name, observed_at_ms
             ) VALUES (?, ?, ?, ?)
             """,
-            (session_id, repo_id, session.git_branch or "", observed_at_ms or 0),
+            (session_id, repo_id, _sqlite_text(session.git_branch or ""), observed_at_ms or 0),
         )
         if session.git_commit_hash:
             conn.execute(
@@ -1689,7 +1695,7 @@ def _write_repo_edges(conn: sqlite3.Connection, session_id: str, session: Parsed
                 """,
                 (
                     session_id,
-                    session.git_commit_hash,
+                    _sqlite_text(session.git_commit_hash),
                     repo_id,
                     "explicit_ref",
                     "parser-git-meta",
@@ -1886,7 +1892,7 @@ def _write_attachment_native_ids(conn: sqlite3.Connection, ref_id: str, attachme
                 INSERT OR IGNORE INTO attachment_native_ids (ref_id, id_kind, native_id)
                 VALUES (?, ?, ?)
                 """,
-                (ref_id, id_kind, native_id),
+                (ref_id, id_kind, _sqlite_text(native_id)),
             )
 
 
@@ -1899,7 +1905,27 @@ def _hash_bytes(*parts: str) -> bytes:
 
 
 def _json_dumps(value: object) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return json.dumps(_sqlite_json_value(value), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _sqlite_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if not any(0xD800 <= ord(char) <= 0xDFFF for char in value):
+        return value
+    return "".join("\ufffd" if 0xD800 <= ord(char) <= 0xDFFF else char for char in value)
+
+
+def _sqlite_json_value(value: object) -> object:
+    if isinstance(value, str):
+        return _sqlite_text(value)
+    if isinstance(value, list):
+        return [_sqlite_json_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_sqlite_json_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(_sqlite_text(str(key))): _sqlite_json_value(item) for key, item in value.items()}
+    return value
 
 
 def _json_loads(raw_json: str | bytes) -> dict[str, object]:
