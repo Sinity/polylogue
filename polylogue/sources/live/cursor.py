@@ -167,6 +167,8 @@ def _required_epoch_ms(value: str | None) -> int:
 def _archive_attempt_status(status: str) -> str:
     if status == "abandoned":
         return "interrupted"
+    if status == "completed_with_failures":
+        return "completed"
     if status in {"running", "completed", "failed", "interrupted"}:
         return status
     return "failed"

@@ -253,6 +253,43 @@ def test_cursor_records_live_ingest_attempt_progress(tmp_path: Path) -> None:
     )
 
 
+def test_cursor_archives_partial_success_as_completed_with_error(tmp_path: Path) -> None:
+    store = CursorStore(tmp_path / "live.sqlite")
+    source = tmp_path / "session.jsonl"
+    source.write_text('{"a":1}\n')
+
+    attempt_id = store.begin_ingest_attempt(
+        paths=[source],
+        input_bytes=source.stat().st_size,
+        queued_file_count=1,
+    )
+    store.update_ingest_attempt(
+        attempt_id,
+        phase="completed",
+        status="completed",
+        succeeded_file_count=1,
+        failed_file_count=1,
+    )
+    store.finish_ingest_attempt(
+        attempt_id,
+        status="completed_with_failures",
+        phase="completed",
+        error="/tmp/skipped-or-failed.jsonl",
+    )
+
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        row = conn.execute(
+            """
+            SELECT status, phase, parsed_raw_count, materialized_count, error_message
+            FROM ingest_attempts
+            WHERE attempt_id = ?
+            """,
+            (attempt_id,),
+        ).fetchone()
+
+    assert row == ("completed", "completed", 1, 1, "/tmp/skipped-or-failed.jsonl")
+
+
 def test_cursor_syncs_positions_to_archive_ops_db(tmp_path: Path) -> None:
     store = CursorStore(tmp_path / "live.sqlite")
     source = tmp_path / "session.jsonl"
