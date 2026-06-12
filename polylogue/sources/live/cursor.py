@@ -42,6 +42,7 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_connection
 
 _INSIGHT_DEFERRED_UNTIL_QUIET = "insights deferred until source quiet"
+_MAX_CURSOR_FAILURES_BEFORE_EXCLUDE = 5
 
 # Per-source-family cursor-lag sample history (#1349). Daemon-runtime state,
 # not part of SCHEMA_VERSION — same lifecycle as live_cursor / live_convergence_debt.
@@ -956,6 +957,27 @@ class CursorStore:
             if record is None:
                 return
         failures = record.failure_count + 1
+        if failures >= _MAX_CURSOR_FAILURES_BEFORE_EXCLUDE:
+            self.set(
+                path,
+                record.byte_size,
+                byte_offset=record.byte_offset,
+                last_complete_newline=record.last_complete_newline,
+                record_count=record.record_count,
+                last_record_ts=record.last_record_ts,
+                parser_fingerprint=record.parser_fingerprint,
+                content_fingerprint=record.content_fingerprint,
+                tail_hash=record.tail_hash,
+                source_name=record.source_name,
+                st_dev=record.st_dev,
+                st_ino=record.st_ino,
+                mtime_ns=record.mtime_ns,
+                failure_count=failures,
+                next_retry_at=None,
+                excluded=True,
+                allow_backward=True,
+            )
+            return
         delay_s = min(60 * (2 ** (failures - 1)), 3600)  # cap at 1 hour
         retry_at = datetime.now(UTC).timestamp() + delay_s
         self.set(

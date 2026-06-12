@@ -411,6 +411,22 @@ def test_cursor_mark_failed_creates_record_for_new_path(tmp_path: Path) -> None:
     assert record.next_retry_at is not None
 
 
+def test_cursor_mark_failed_quarantines_repeated_failures(tmp_path: Path) -> None:
+    store = CursorStore(tmp_path / "live.sqlite")
+    p = tmp_path / "poison.jsonl"
+    p.write_text('{"a":1}\n')
+
+    for _ in range(5):
+        store.mark_failed(p)
+
+    record = store.get_record(p)
+    assert record is not None
+    assert record.failure_count == 5
+    assert record.next_retry_at is None
+    assert record.excluded is True
+    assert store.list_failed_with_retry() == []
+
+
 def test_cursor_round_trips_freshness_metadata(tmp_path: Path) -> None:
     store = CursorStore(tmp_path / "live.sqlite")
     p = tmp_path / "session.jsonl"
