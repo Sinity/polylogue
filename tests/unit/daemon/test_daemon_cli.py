@@ -626,6 +626,8 @@ def test_ensure_fts_startup_readiness_skips_when_blocks_table_absent(
         def execute(self, sql: str, _params: object = ()) -> FakeCursor:
             query = " ".join(sql.split())
             self.queries.append(query)
+            if query == "PRAGMA busy_timeout = 120000":
+                return FakeCursor(None)
             if query == "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1":
                 return FakeCursor(None)
             raise AssertionError(f"unexpected query: {query}")
@@ -652,6 +654,93 @@ def test_ensure_fts_startup_readiness_skips_when_blocks_table_absent(
 
     assert "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1" in conn.queries
     assert conn.committed is False
+    assert conn.closed is True
+
+
+def test_ensure_fts_startup_readiness_trusts_ready_freshness_without_counts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    db = tmp_path / "index.db"
+    db.write_bytes(b"sqlite placeholder")
+
+    class FakeCursor:
+        def __init__(self, row: tuple[object, ...] | None, rows: list[tuple[object, ...]] | None = None) -> None:
+            self._row = row
+            self._rows = rows if rows is not None else ([] if row is None else [row])
+
+        def fetchone(self) -> tuple[object, ...] | None:
+            return self._row
+
+        def fetchall(self) -> list[tuple[object, ...]]:
+            return self._rows
+
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+            self.committed = False
+            self.closed = False
+
+        def execute(self, sql: str, params: object = ()) -> FakeCursor:
+            query = " ".join(sql.split())
+            self.queries.append(query)
+            lowered = query.lower()
+            if "count(*)" in lowered:
+                raise AssertionError(f"startup readiness must not exact-count ready FTS ledgers: {query}")
+            if query == "PRAGMA busy_timeout = 120000":
+                return FakeCursor(None)
+            if query.startswith("CREATE TABLE IF NOT EXISTS fts_freshness_state"):
+                return FakeCursor(None)
+            if query == "PRAGMA table_info(fts_freshness_state)":
+                return FakeCursor(
+                    None,
+                    rows=[
+                        (0, "surface"),
+                        (1, "state"),
+                        (2, "checked_at"),
+                        (3, "source_rows"),
+                        (4, "indexed_rows"),
+                        (5, "missing_rows"),
+                        (6, "excess_rows"),
+                        (7, "duplicate_rows"),
+                        (8, "detail"),
+                    ],
+                )
+            if query == "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1":
+                name = str(params[0]) if isinstance(params, tuple) and params else ""
+                return (
+                    FakeCursor((1,)) if name in {"blocks", "messages_fts", "messages_fts_docsize"} else FakeCursor(None)
+                )
+            if query.startswith("SELECT name FROM sqlite_master WHERE type='trigger'"):
+                triggers: list[tuple[object, ...]] = [
+                    ("messages_fts_ai",),
+                    ("messages_fts_ad",),
+                    ("messages_fts_au",),
+                ]
+                return FakeCursor(None, rows=triggers)
+            if query.startswith("SELECT state, source_rows, indexed_rows, missing_rows, excess_rows, duplicate_rows"):
+                return FakeCursor(("ready", 10, 10, 0, 0, 0))
+            raise AssertionError(f"unexpected query: {query}")
+
+        def commit(self) -> None:
+            self.committed = True
+
+        def close(self) -> None:
+            self.closed = True
+
+    conn = FakeConnection()
+    rebuilds: list[FakeConnection] = []
+    monkeypatch.setattr("polylogue.paths.active_index_db_path", lambda: db)
+    monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", lambda _db, timeout: conn)
+    monkeypatch.setattr("polylogue.storage.sqlite.archive_tiers.bootstrap.initialize_archive_tier", lambda *_args: None)
+    monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.rebuild_fts_index_sync", lambda c: rebuilds.append(c))
+
+    asyncio.run(daemon_cli._ensure_fts_startup_readiness())
+
+    assert rebuilds == []
+    assert conn.committed is True
     assert conn.closed is True
 
 

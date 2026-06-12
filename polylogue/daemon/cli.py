@@ -642,7 +642,7 @@ async def run_daemon_services(
                         asyncio.create_task(
                             _periodic_convergence_check(
                                 sources,
-                                catch_up_complete=watcher.catch_up_complete,
+                                catch_up_complete=getattr(watcher, "catch_up_complete", None),
                             )
                         )
                     )
