@@ -798,6 +798,33 @@ def test_insights_stage_scopes_session_debt_to_stale_profiles(tmp_path: Path) ->
     }
 
 
+def test_archive_insights_execute_ids_preserves_millisecond_sort_key(tmp_path: Path) -> None:
+    db_path = tmp_path / "index.db"
+    session_id = "codex-session:conv-ms"
+    source_sort_key_ms = 1_779_606_000_953
+    with open_connection(db_path) as conn:
+        _seed_index_session(conn, session_id="conv-ms", text="Message with millisecond sort key")
+        conn.execute(
+            """
+            UPDATE sessions
+            SET updated_at_ms = ?
+            WHERE session_id = ?
+            """,
+            (source_sort_key_ms, session_id),
+        )
+        conn.commit()
+
+        assert stages._archive_insights_execute_ids(conn, [session_id])
+
+        profile = conn.execute(
+            "SELECT source_sort_key FROM session_profiles WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        assert profile is not None
+        assert profile["source_sort_key"] == pytest.approx(source_sort_key_ms / 1000.0)
+        assert stages._archive_stale_session_profile_ids(conn, [session_id]) == []
+
+
 def test_archive_insights_execute_ids_deduplicates_session_ids(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     db_path = tmp_path / "index.db"
     with open_connection(db_path) as conn:
