@@ -56,6 +56,43 @@ def test_catch_up_plan_carries_statted_candidates_without_payload_reads(
     assert plan.needed_bytes == changed.stat().st_size
 
 
+def test_catch_up_repairs_missing_cursor_from_archive_source_row(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session_blob_ref
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    root = tmp_path / "src"
+    root.mkdir()
+    archived = root / "archived.jsonl"
+    archived.write_text('{"type":"session_meta","payload":{"id":"archived"}}\n', encoding="utf-8")
+    polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
+    cursor = CursorStore(tmp_path / "ops.db")
+    source_db = tmp_path / "source.db"
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    with sqlite3.connect(source_db) as conn:
+        write_source_raw_session_blob_ref(
+            conn,
+            origin="codex-session",
+            source_path=str(archived),
+            source_index=0,
+            blob_hash=b"a" * 32,
+            blob_size=archived.stat().st_size,
+            acquired_at_ms=1,
+            native_id="archived",
+        )
+    watcher = LiveWatcher(cast(Any, polylogue), (WatchSource(name="codex", root=root),), cursor=cursor)
+
+    plan = watcher._plan_catch_up(watcher._scan_catch_up_candidates([root]))
+    record = cursor.get_record(archived)
+
+    assert plan.needed == ()
+    assert plan.skipped_file_count == 1
+    assert record is not None
+    assert record.byte_size == archived.stat().st_size
+    assert record.content_fingerprint == ("61" * 32)
+    assert record.parser_fingerprint == live_watcher._PARSER_FINGERPRINT
+
+
 def test_catch_up_ingests_needed_files_in_bounded_chunks(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

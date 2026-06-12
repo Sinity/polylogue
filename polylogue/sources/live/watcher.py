@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING
 
 from polylogue.logging import get_logger
 from polylogue.sources.live.batch import LiveBatchEventEmitter, LiveBatchProcessor, fingerprint_file
-from polylogue.sources.live.batch_support import tail_hash_from_path
+from polylogue.sources.live.batch_support import tail_hash_and_last_complete_newline_from_path, tail_hash_from_path
 from polylogue.sources.live.cursor import CursorRecord, CursorStore
 from polylogue.sources.live.metrics import LiveBatchMetrics
 
@@ -422,10 +422,12 @@ class LiveWatcher:
     def _needs_work_from_state(self, path: Path, *, stat: os.stat_result, cursor: CursorRecord | None) -> bool:
         size = stat.st_size
         if cursor is None:
-            return True
+            return not self._reconcile_archived_cursor(path, stat=stat)
         if cursor.excluded:
             return False
         if cursor.failure_count > 0:
+            if self._reconcile_archived_cursor(path, stat=stat):
+                return False
             return _retry_due(cursor.next_retry_at)
         parser_matches = cursor.parser_fingerprint == _PARSER_FINGERPRINT
         if not parser_matches:
@@ -451,6 +453,69 @@ class LiveWatcher:
         except FileNotFoundError:
             return False
         return not (size == cursor.byte_size and fingerprint == cursor.content_fingerprint)
+
+    def _reconcile_archived_cursor(self, path: Path, *, stat: os.stat_result) -> bool:
+        """Restore a missing/stale cursor from proven archive raw state.
+
+        A daemon interruption can leave the archive source tier populated but
+        the live cursor absent. Without this repair, startup catch-up replays
+        the whole source file through the archive writer again. The archive row
+        is enough to prove the file was already stored only when the exact
+        path and byte size match the current source file; tail hashing then
+        preserves the usual cheap drift check for future scans.
+        """
+        archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
+        source_db = archive_root / "source.db"
+        if not source_db.exists():
+            return False
+        try:
+            with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=1.0) as conn:
+                row = conn.execute(
+                    """
+                    SELECT blob_hash, blob_size
+                    FROM raw_sessions
+                    WHERE source_path = ?
+                      AND COALESCE(source_index, 0) >= 0
+                    ORDER BY acquired_at_ms DESC, raw_id DESC
+                    LIMIT 1
+                    """,
+                    (str(path),),
+                ).fetchone()
+        except sqlite3.Error:
+            return False
+        if row is None:
+            return False
+        blob_hash, blob_size = row
+        if int(blob_size or 0) != int(stat.st_size):
+            return False
+        if isinstance(blob_hash, bytes):
+            content_fingerprint = blob_hash.hex()
+        elif isinstance(blob_hash, str):
+            content_fingerprint = blob_hash.lower()
+        else:
+            return False
+        try:
+            tail_hash, last_complete_newline, _bytes_read = tail_hash_and_last_complete_newline_from_path(
+                path, stat.st_size
+            )
+        except FileNotFoundError:
+            return False
+        self._cursor.set(
+            path,
+            stat.st_size,
+            byte_offset=last_complete_newline,
+            last_complete_newline=last_complete_newline,
+            parser_fingerprint=_PARSER_FINGERPRINT,
+            content_fingerprint=content_fingerprint,
+            tail_hash=tail_hash,
+            source_name=self._source_name_for(path),
+            st_dev=stat.st_dev,
+            st_ino=stat.st_ino,
+            mtime_ns=stat.st_mtime_ns,
+        )
+        self._cursor.reset_failures(path)
+        logger.info("live.watcher: reconciled cursor from archive source row for %s", path)
+        return True
 
     async def _ingest_files(
         self,
