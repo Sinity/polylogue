@@ -268,14 +268,6 @@ ASSURANCE_REGISTRY: tuple[OutputAssurance, ...] = (
         notes="--machine emits success/error envelope per ingest run.",
     ),
     OutputAssurance(
-        command="export",
-        family=INGEST_FAMILY,
-        json_contract=True,
-        snapshot=True,
-        plain=True,
-        streaming=False,
-    ),
-    OutputAssurance(
         command="embed",
         family=INGEST_FAMILY,
         json_contract=True,

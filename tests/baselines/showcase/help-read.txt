@@ -1,0 +1,40 @@
+Usage: polylogue read [OPTIONS]
+
+  Read matched sessions.
+
+  Routes to the appropriate renderer based on --view and delivers the
+  output to --to (terminal, stdout, browser, clipboard, or file).
+
+  Examples:
+      polylogue --id abc123 read
+      polylogue find id:abc then read --view messages
+      polylogue find id:abc then read --view raw --format json
+      polylogue find id:abc then read --to browser
+      polylogue find 'repo:polylogue has:paste' then read --all --format ndjson
+      polylogue find 'archive runtime' then read --view context
+
+  Deferred views (not yet implemented; note in PR body):
+      timeline, tools, files, metadata, continuation
+
+Options:
+  -v, --view [summary|conversation|messages|raw|context]
+                                  What to render (summary, conversation,
+                                  messages, raw, context).  [default: summary]
+  --to [terminal|stdout|browser|clipboard|file]
+                                  Output destination.  [default: terminal]
+  -f, --format [text|markdown|json|ndjson|yaml|html|obsidian|org|csv]
+                                  Output format (where applicable).
+  --out PATH                      File path for --to file.
+  --all                           Apply to all matched sessions (bulk export).
+  -r, --message-role TEXT         Filter by message role (--view messages).
+  --message-type TYPE             Filter by message content type (--view
+                                  messages).
+  -l, -n, --limit INTEGER         Max items to return.
+  --offset INTEGER                Pagination offset.
+  --no-code-blocks                Exclude code blocks (--view messages).
+  --no-tool-calls                 Exclude tool calls (--view messages).
+  --no-tool-outputs               Exclude tool outputs (--view messages).
+  --no-file-reads                 Exclude file reads (--view messages).
+  --prose-only                    Show only prose text (--view messages).
+  --fields TEXT                   Fields for JSON/YAML outputs (--all).
+  --help                          Show this message and exit.
