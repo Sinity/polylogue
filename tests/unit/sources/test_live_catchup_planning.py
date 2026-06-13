@@ -56,6 +56,43 @@ def test_catch_up_plan_carries_statted_candidates_without_payload_reads(
     assert plan.needed_bytes == changed.stat().st_size
 
 
+def test_catch_up_repairs_missing_cursor_from_archive_source_row(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session_blob_ref
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    root = tmp_path / "src"
+    root.mkdir()
+    archived = root / "archived.jsonl"
+    archived.write_text('{"type":"session_meta","payload":{"id":"archived"}}\n', encoding="utf-8")
+    polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
+    cursor = CursorStore(tmp_path / "ops.db")
+    source_db = tmp_path / "source.db"
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    with sqlite3.connect(source_db) as conn:
+        write_source_raw_session_blob_ref(
+            conn,
+            origin="codex-session",
+            source_path=str(archived),
+            source_index=0,
+            blob_hash=b"a" * 32,
+            blob_size=archived.stat().st_size,
+            acquired_at_ms=1,
+            native_id="archived",
+        )
+    watcher = LiveWatcher(cast(Any, polylogue), (WatchSource(name="codex", root=root),), cursor=cursor)
+
+    plan = watcher._plan_catch_up(watcher._scan_catch_up_candidates([root]))
+    record = cursor.get_record(archived)
+
+    assert plan.needed == ()
+    assert plan.skipped_file_count == 1
+    assert record is not None
+    assert record.byte_size == archived.stat().st_size
+    assert record.content_fingerprint == ("61" * 32)
+    assert record.parser_fingerprint == live_watcher._PARSER_FINGERPRINT
+
+
 def test_catch_up_ingests_needed_files_in_bounded_chunks(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -71,6 +108,7 @@ def test_catch_up_ingests_needed_files_in_bounded_chunks(
     monkeypatch.setattr(live_watcher, "_CATCH_UP_MAX_BATCH_BYTES", 100)
 
     calls: list[tuple[list[Path], int | None, int]] = []
+    retry_scan_calls: list[int] = []
 
     async def fake_ingest_files(
         paths: list[Path],
@@ -81,6 +119,7 @@ def test_catch_up_ingests_needed_files_in_bounded_chunks(
         calls.append((paths, queued_file_count, skipped_file_count))
 
     watcher._ingest_files = fake_ingest_files  # type: ignore[assignment,method-assign]
+    watcher._schedule_failed_retry_scan = lambda: retry_scan_calls.append(len(calls))  # type: ignore[method-assign]
 
     asyncio.run(watcher._catch_up([root]))
 
@@ -88,6 +127,7 @@ def test_catch_up_ingests_needed_files_in_bounded_chunks(
     assert calls[0][1:] == (5, 0)
     assert calls[1][1:] == (2, 0)
     assert calls[2][1:] == (1, 0)
+    assert retry_scan_calls == [3]
 
 
 def test_catch_up_does_not_immediately_requeue_failed_paths(tmp_path: Path) -> None:

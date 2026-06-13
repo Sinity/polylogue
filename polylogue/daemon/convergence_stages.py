@@ -27,6 +27,7 @@ from polylogue.storage.source_sessions import (
     session_ids_for_source_path,
     session_ids_for_source_paths,
 )
+from polylogue.storage.sqlite.connection_profile import open_connection
 
 if TYPE_CHECKING:
     pass
@@ -40,6 +41,24 @@ _DAEMON_EMBED_MAX_SESSIONS = 25
 _DAEMON_EMBED_MAX_MESSAGES = 2_500
 _DAEMON_EMBED_STOP_AFTER_SECONDS = 30
 _DAEMON_EMBED_MAX_ERRORS = 3
+_ARCHIVE_INSIGHT_WRITE_BUSY_TIMEOUT_MS = 120_000
+
+
+def _is_transient_sqlite_lock(exc: BaseException) -> bool:
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    message = str(exc).lower()
+    return "database is locked" in message or "database table is locked" in message or "database is busy" in message
+
+
+def _open_archive_insight_write_connection(db_path: Path) -> sqlite3.Connection:
+    conn = open_connection(db_path, timeout=_ARCHIVE_INSIGHT_WRITE_BUSY_TIMEOUT_MS / 1000)
+    try:
+        conn.execute(f"PRAGMA busy_timeout = {_ARCHIVE_INSIGHT_WRITE_BUSY_TIMEOUT_MS}")
+    except BaseException:
+        conn.close()
+        raise
+    return conn
 
 
 @dataclass(frozen=True, slots=True)
@@ -892,7 +911,7 @@ def _archive_existing_session_ids(conn: sqlite3.Connection, session_ids: Sequenc
         """,
         unique_ids,
     ).fetchall()
-    return [str(row[0]) for row in rows]
+    return list(dict.fromkeys(str(row[0]) for row in rows))
 
 
 def _archive_text_block_count(conn: sqlite3.Connection, session_ids: Sequence[str] | None = None) -> int:
@@ -1297,7 +1316,7 @@ def _archive_insights_check(db_path: Path, path: Path) -> bool:
 
 def _archive_insights_execute(db_path: Path, path: Path) -> bool:
     try:
-        conn = sqlite3.connect(db_path, timeout=30.0)
+        conn = _open_archive_insight_write_connection(db_path)
         try:
             session_ids = _schema_archive_session_ids_for_source_path(
                 conn, path
@@ -1305,7 +1324,10 @@ def _archive_insights_execute(db_path: Path, path: Path) -> bool:
             return _archive_insights_execute_ids(conn, session_ids)
         finally:
             conn.close()
-    except Exception:
+    except Exception as exc:
+        if _is_transient_sqlite_lock(exc):
+            logger.info("insights: archive refresh deferred because sqlite is busy: %s", exc)
+            return False
         logger.warning("insights: archive refresh failed", exc_info=True)
         return False
 
@@ -1333,7 +1355,7 @@ def _archive_insights_check_many(db_path: Path, paths: Sequence[Path]) -> set[Pa
 
 def _archive_insights_execute_many(db_path: Path, paths: Sequence[Path]) -> bool:
     try:
-        conn = sqlite3.connect(db_path, timeout=30.0)
+        conn = _open_archive_insight_write_connection(db_path)
         try:
             by_path = _schema_archive_session_ids_for_source_paths(conn, paths)
             session_ids = list(dict.fromkeys(session_id for ids in by_path.values() for session_id in ids))
@@ -1342,7 +1364,10 @@ def _archive_insights_execute_many(db_path: Path, paths: Sequence[Path]) -> bool
             return _archive_insights_execute_ids(conn, session_ids)
         finally:
             conn.close()
-    except Exception:
+    except Exception as exc:
+        if _is_transient_sqlite_lock(exc):
+            logger.info("insights: archive batch refresh deferred because sqlite is busy: %s", exc)
+            return False
         logger.warning("insights: archive batch refresh failed", exc_info=True)
         return False
 
@@ -1361,13 +1386,16 @@ def _archive_insights_check_sessions(db_path: Path, session_ids: Sequence[str]) 
 
 def _archive_insights_execute_sessions(db_path: Path, session_ids: Sequence[str]) -> bool:
     try:
-        conn = sqlite3.connect(db_path, timeout=30.0)
+        conn = _open_archive_insight_write_connection(db_path)
         try:
             ids = _archive_existing_session_ids(conn, session_ids)
             return _archive_insights_execute_ids(conn, ids)
         finally:
             conn.close()
-    except Exception:
+    except Exception as exc:
+        if _is_transient_sqlite_lock(exc):
+            logger.info("insights: archive session refresh deferred because sqlite is busy: %s", exc)
+            return False
         logger.warning("insights: archive session refresh failed", exc_info=True)
         return False
 
@@ -1375,6 +1403,7 @@ def _archive_insights_execute_sessions(db_path: Path, session_ids: Sequence[str]
 def _archive_insights_execute_ids(conn: sqlite3.Connection, session_ids: Sequence[str]) -> bool:
     from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
 
+    session_ids = list(dict.fromkeys(str(session_id) for session_id in session_ids if session_id))
     if not session_ids:
         return True
     hot_ids = _archive_hot_insight_session_ids(conn, session_ids)

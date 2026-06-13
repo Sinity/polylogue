@@ -246,6 +246,37 @@ def test_periodic_convergence_check_treats_sqlite_lock_as_archive_busy(tmp_path:
     warning.assert_not_called()
 
 
+def test_periodic_convergence_check_waits_for_catch_up_complete(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    db = tmp_path / "index.db"
+    db.touch()
+    calls: list[str] = []
+
+    async def fake_to_thread(_func: object, *_args: object, **_kwargs: object) -> object:
+        calls.append("drain")
+        raise asyncio.CancelledError
+
+    async def exercise() -> None:
+        catch_up_complete = asyncio.Event()
+        monkeypatch.setattr(daemon_cli, "_CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS", 0)
+        monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
+        monkeypatch.setattr(daemon_cli, "_active_index_db_path", lambda: db)
+        task = asyncio.create_task(daemon_cli._periodic_convergence_check((), catch_up_complete=catch_up_complete))
+        await asyncio.sleep(0)
+        assert calls == []
+        catch_up_complete.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(exercise())
+
+    assert calls == ["drain"]
+
+
 def test_periodic_convergence_check_warns_on_non_lock_failures(tmp_path: Path) -> None:
     from polylogue.daemon import cli as daemon_cli
 
@@ -595,6 +626,8 @@ def test_ensure_fts_startup_readiness_skips_when_blocks_table_absent(
         def execute(self, sql: str, _params: object = ()) -> FakeCursor:
             query = " ".join(sql.split())
             self.queries.append(query)
+            if query == "PRAGMA busy_timeout = 120000":
+                return FakeCursor(None)
             if query == "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1":
                 return FakeCursor(None)
             raise AssertionError(f"unexpected query: {query}")
@@ -621,6 +654,93 @@ def test_ensure_fts_startup_readiness_skips_when_blocks_table_absent(
 
     assert "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1" in conn.queries
     assert conn.committed is False
+    assert conn.closed is True
+
+
+def test_ensure_fts_startup_readiness_trusts_ready_freshness_without_counts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    db = tmp_path / "index.db"
+    db.write_bytes(b"sqlite placeholder")
+
+    class FakeCursor:
+        def __init__(self, row: tuple[object, ...] | None, rows: list[tuple[object, ...]] | None = None) -> None:
+            self._row = row
+            self._rows = rows if rows is not None else ([] if row is None else [row])
+
+        def fetchone(self) -> tuple[object, ...] | None:
+            return self._row
+
+        def fetchall(self) -> list[tuple[object, ...]]:
+            return self._rows
+
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+            self.committed = False
+            self.closed = False
+
+        def execute(self, sql: str, params: object = ()) -> FakeCursor:
+            query = " ".join(sql.split())
+            self.queries.append(query)
+            lowered = query.lower()
+            if "count(*)" in lowered:
+                raise AssertionError(f"startup readiness must not exact-count ready FTS ledgers: {query}")
+            if query == "PRAGMA busy_timeout = 120000":
+                return FakeCursor(None)
+            if query.startswith("CREATE TABLE IF NOT EXISTS fts_freshness_state"):
+                return FakeCursor(None)
+            if query == "PRAGMA table_info(fts_freshness_state)":
+                return FakeCursor(
+                    None,
+                    rows=[
+                        (0, "surface"),
+                        (1, "state"),
+                        (2, "checked_at"),
+                        (3, "source_rows"),
+                        (4, "indexed_rows"),
+                        (5, "missing_rows"),
+                        (6, "excess_rows"),
+                        (7, "duplicate_rows"),
+                        (8, "detail"),
+                    ],
+                )
+            if query == "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1":
+                name = str(params[0]) if isinstance(params, tuple) and params else ""
+                return (
+                    FakeCursor((1,)) if name in {"blocks", "messages_fts", "messages_fts_docsize"} else FakeCursor(None)
+                )
+            if query.startswith("SELECT name FROM sqlite_master WHERE type='trigger'"):
+                triggers: list[tuple[object, ...]] = [
+                    ("messages_fts_ai",),
+                    ("messages_fts_ad",),
+                    ("messages_fts_au",),
+                ]
+                return FakeCursor(None, rows=triggers)
+            if query.startswith("SELECT state, source_rows, indexed_rows, missing_rows, excess_rows, duplicate_rows"):
+                return FakeCursor(("ready", 10, 10, 0, 0, 0))
+            raise AssertionError(f"unexpected query: {query}")
+
+        def commit(self) -> None:
+            self.committed = True
+
+        def close(self) -> None:
+            self.closed = True
+
+    conn = FakeConnection()
+    rebuilds: list[FakeConnection] = []
+    monkeypatch.setattr("polylogue.paths.active_index_db_path", lambda: db)
+    monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", lambda _db, timeout: conn)
+    monkeypatch.setattr("polylogue.storage.sqlite.archive_tiers.bootstrap.initialize_archive_tier", lambda *_args: None)
+    monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.rebuild_fts_index_sync", lambda c: rebuilds.append(c))
+
+    asyncio.run(daemon_cli._ensure_fts_startup_readiness())
+
+    assert rebuilds == []
+    assert conn.committed is True
     assert conn.closed is True
 
 
@@ -829,6 +949,48 @@ def test_ensure_fts_startup_readiness_handles_archive(
     assert row == ("ready", 1, 1)
 
 
+def test_ensure_fts_startup_readiness_uses_extended_write_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import polylogue.daemon.fts_startup as fts_startup
+    from polylogue.archive.message.roles import Role
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.types import BlockType, Provider
+
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+    with ArchiveStore(tmp_path) as archive:
+        archive.write_parsed(
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="daemon-startup-timeout-v1",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.USER,
+                        text="startup timeout v1",
+                        content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="startup timeout v1")],
+                    )
+                ],
+            )
+        )
+
+    seen_busy_timeout: list[int] = []
+    real_ensure = fts_startup._ensure_archive_messages_fts_startup_readiness_sync
+
+    def wrapped_ensure(conn: sqlite3.Connection) -> bool:
+        seen_busy_timeout.append(int(conn.execute("PRAGMA busy_timeout").fetchone()[0]))
+        return real_ensure(conn)
+
+    monkeypatch.setattr(fts_startup, "_ensure_archive_messages_fts_startup_readiness_sync", wrapped_ensure)
+
+    asyncio.run(daemon_cli._ensure_fts_startup_readiness())
+
+    assert seen_busy_timeout == [fts_startup._FTS_STARTUP_BUSY_TIMEOUT_MS]
+
+
 def test_run_daemon_services_stops_live_watcher_on_failure() -> None:
     from polylogue.daemon import cli as daemon_cli
 
@@ -869,6 +1031,84 @@ def test_run_daemon_services_stops_live_watcher_on_failure() -> None:
         )
 
     assert stopped == [True]
+
+
+def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    events: list[str] = []
+
+    class FakePolylogue:
+        async def __aenter__(self) -> object:
+            return object()
+
+        async def __aexit__(self, *exc: object) -> None:
+            return None
+
+    class FakeWatcher:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            self.catch_up_complete = asyncio.Event()
+
+        async def run(self) -> None:
+            events.append("watcher")
+            self.catch_up_complete.set()
+            raise RuntimeError("watch stopped")
+
+        def stop(self) -> None:
+            events.append("stop")
+
+    async def fake_fts_startup() -> None:
+        events.append("fts")
+
+    async def fake_sweep_orphaned_blob_leases() -> None:
+        events.append("sweep")
+
+    async def fake_loop(name: str) -> None:
+        events.append(name)
+        await asyncio.Event().wait()
+
+    class FakeConverger:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        async def start(self) -> None:
+            events.append("converger")
+
+        async def stop(self) -> None:
+            events.append("converger-stop")
+
+    with (
+        patch.object(daemon_cli, "Polylogue", FakePolylogue),
+        patch.object(daemon_cli, "LiveWatcher", FakeWatcher),
+        patch.object(daemon_cli, "_ensure_fts_startup_readiness", fake_fts_startup),
+        patch.object(daemon_cli, "_sweep_orphaned_blob_leases", fake_sweep_orphaned_blob_leases),
+        patch.object(daemon_cli, "_periodic_wal_checkpoint", lambda: fake_loop("wal")),
+        patch.object(daemon_cli, "_periodic_heartbeat", lambda: fake_loop("heartbeat")),
+        patch.object(daemon_cli, "_periodic_convergence_check", lambda _sources, **_kwargs: fake_loop("convergence")),
+        patch.object(daemon_cli, "_periodic_health_check", lambda: fake_loop("health")),
+        patch.object(daemon_cli, "_periodic_db_optimize", lambda: fake_loop("optimize")),
+        patch.object(daemon_cli, "_periodic_status_snapshot_refresh", lambda: fake_loop("status")),
+        patch("polylogue.daemon.embedding_backlog.periodic_embedding_backlog_check", lambda: fake_loop("embedding")),
+        patch("polylogue.daemon.convergence.DaemonConverger", FakeConverger),
+        patch("polylogue.daemon.convergence_stages.make_default_convergence_stages", return_value=()),
+        pytest.raises(RuntimeError, match="watch stopped"),
+    ):
+        asyncio.run(
+            daemon_cli.run_daemon_services(
+                sources=(WatchSource(name="codex", root=Path("/tmp/codex")),),
+                debounce_s=1.0,
+                enable_watch=True,
+                enable_browser_capture=False,
+                browser_capture_host="127.0.0.1",
+                browser_capture_port=8765,
+                browser_capture_spool_path=None,
+            )
+        )
+
+    assert "watcher" in events
+    assert events.index("fts") < events.index("watcher")
+    assert events.index("fts") < events.index("convergence")
+    assert events.index("fts") < events.index("converger")
 
 
 def test_run_daemon_services_closes_browser_capture_server_on_failure() -> None:

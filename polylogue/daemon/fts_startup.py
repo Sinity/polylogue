@@ -22,6 +22,19 @@ _SESSION_WORK_EVENT_FTS_TRIGGERS = (
     "session_work_events_fts_au",
 )
 _THREAD_FTS_TRIGGERS = ("threads_fts_ai", "threads_fts_ad", "threads_fts_au")
+_FTS_STARTUP_BUSY_TIMEOUT_MS = 120_000
+
+
+def _open_fts_startup_write_connection(db_path: Path) -> sqlite3.Connection:
+    from polylogue.storage.sqlite.connection_profile import open_connection
+
+    conn = open_connection(db_path, timeout=_FTS_STARTUP_BUSY_TIMEOUT_MS / 1000)
+    try:
+        conn.execute(f"PRAGMA busy_timeout = {_FTS_STARTUP_BUSY_TIMEOUT_MS}")
+    except BaseException:
+        conn.close()
+        raise
+    return conn
 
 
 def missing_fts_triggers_sync(conn: sqlite3.Connection) -> list[str]:
@@ -117,10 +130,13 @@ def _ensure_archive_messages_fts_startup_readiness_sync(conn: sqlite3.Connection
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
     initialize_archive_tier(conn, ArchiveTier.INDEX)
-    source_rows = _count_or_zero(conn, "SELECT COUNT(*) FROM blocks WHERE search_text != ''")
     fts_exists = table_exists_sync(conn, "messages_fts")
     docsize_exists = table_exists_sync(conn, "messages_fts_docsize")
     triggers_present = not _missing_named_triggers_sync(conn, _ARCHIVE_MESSAGE_FTS_TRIGGERS)
+    if fts_exists and docsize_exists and triggers_present and _message_fts_freshness_ready_sync(conn):
+        logger.info("daemon: archive message FTS startup readiness trusted freshness ledger")
+        return True
+    source_rows = _count_or_zero(conn, "SELECT COUNT(*) FROM blocks WHERE search_text != ''")
     indexed_rows = _count_or_zero(conn, "SELECT COUNT(*) FROM messages_fts_docsize") if docsize_exists else 0
     if fts_exists and (not triggers_present or indexed_rows != source_rows):
         from polylogue.storage.fts.fts_lifecycle import rebuild_fts_index_sync
@@ -142,6 +158,70 @@ def _ensure_archive_messages_fts_startup_readiness_sync(conn: sqlite3.Connection
         detail=None if ready else "archive startup FTS readiness failed",
     )
     return True
+
+
+def _message_fts_freshness_ready_sync(conn: sqlite3.Connection) -> bool:
+    from polylogue.storage.fts.freshness import (
+        MESSAGE_SURFACE,
+        ensure_fts_freshness_table_sync,
+        freshness_ready_record_trusted,
+    )
+
+    try:
+        ensure_fts_freshness_table_sync(conn)
+        row = conn.execute(
+            """
+            SELECT state, source_rows, indexed_rows, missing_rows, excess_rows, duplicate_rows
+            FROM fts_freshness_state
+            WHERE surface = ?
+            """,
+            (MESSAGE_SURFACE,),
+        ).fetchone()
+    except sqlite3.Error:
+        return False
+    if row is None:
+        return False
+    state = str(row[0]) if row[0] is not None else None
+    source_rows = _int_or_zero(row[1])
+    indexed_rows = _int_or_zero(row[2])
+    missing_rows = _int_or_zero(row[3])
+    excess_rows = _int_or_zero(row[4])
+    duplicate_rows = _int_or_zero(row[5])
+    source_has_rows: bool | None = None
+    if source_rows == 0 and indexed_rows == 0:
+        source_has_rows = _blocks_search_text_has_rows_sync(conn)
+    return freshness_ready_record_trusted(
+        state=state,
+        source_rows=source_rows,
+        indexed_rows=indexed_rows,
+        missing_rows=missing_rows,
+        excess_rows=excess_rows,
+        duplicate_rows=duplicate_rows,
+        source_has_rows=source_has_rows,
+    )
+
+
+def _int_or_zero(value: object) -> int:
+    if isinstance(value, bool) or value is None:
+        return 0
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float | str | bytes | bytearray):
+        try:
+            return int(value)
+        except ValueError:
+            return 0
+    try:
+        return int(str(value))
+    except ValueError:
+        return 0
+
+
+def _blocks_search_text_has_rows_sync(conn: sqlite3.Connection) -> bool | None:
+    try:
+        return conn.execute("SELECT 1 FROM blocks WHERE search_text != '' LIMIT 1").fetchone() is not None
+    except sqlite3.Error:
+        return None
 
 
 async def ensure_fts_startup_readiness() -> None:
@@ -170,15 +250,13 @@ def ensure_fts_startup_readiness_sync() -> None:
     full-archive invariant scans during ordinary startup; bounded missing-row
     repair is enough for the normal SIGKILL-after-trigger-suspend failure mode.
     """
-    from polylogue.storage.sqlite.connection_profile import open_connection
-
     db = _active_fts_startup_db_path()
     if not db.exists():
         return
 
     conn: sqlite3.Connection | None = None
     try:
-        conn = open_connection(db, timeout=10.0)
+        conn = _open_fts_startup_write_connection(db)
         if _ensure_archive_messages_fts_startup_readiness_sync(conn):
             conn.commit()
             return

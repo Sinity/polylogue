@@ -138,7 +138,7 @@ let
     };
     memoryHigh = mkOption {
       type = types.nullOr types.str;
-      default = "1G";
+      default = "2G";
       description = ''
         systemd MemoryHigh for the polylogued unit. Set to null to
         omit the directive entirely.
