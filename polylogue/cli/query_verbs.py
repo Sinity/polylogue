@@ -52,7 +52,7 @@ def _lazy_shell_complete(source: str):  # type: ignore[no-untyped-def]
 _complete_session_id = _lazy_shell_complete("session_id")
 _complete_message_type = _lazy_shell_complete("message_type")
 
-_READ_VIEWS = ("summary", "conversation", "messages", "raw", "context")
+_READ_VIEWS = ("summary", "transcript", "messages", "raw", "context")
 _READ_DESTINATIONS = ("terminal", "stdout", "browser", "clipboard", "file")
 _READ_FORMATS = ("text", "markdown", "json", "ndjson", "yaml", "html", "obsidian", "org", "csv")
 
@@ -147,7 +147,7 @@ def recent_verb(
     type=click.Choice(_READ_VIEWS),
     default="summary",
     show_default=True,
-    help="What to render (summary, conversation, messages, raw, context).",
+    help="What to render (summary, transcript, messages, raw, context).",
 )
 @click.option(
     "--to",
@@ -276,7 +276,7 @@ def read_verb(
         _run_read_context(env, request, destination=destination, out_path=out_path)
         return
 
-    # summary / conversation: standard show/query path with destination routing.
+    # summary / transcript: standard show/query path with destination routing.
     if destination == "browser":
         _run_read_browser(env, request, output_format=output_format)
         return

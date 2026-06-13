@@ -270,8 +270,8 @@ Usage: polylogue read [OPTIONS]
       timeline, tools, files, metadata, continuation
 
 Options:
-  -v, --view [summary|conversation|messages|raw|context]
-                                  What to render (summary, conversation,
+  -v, --view [summary|transcript|messages|raw|context]
+                                  What to render (summary, transcript,
                                   messages, raw, context).  [default: summary]
   --to [terminal|stdout|browser|clipboard|file]
                                   Output destination.  [default: terminal]
