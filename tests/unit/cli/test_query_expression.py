@@ -272,7 +272,7 @@ class TestRejection:
             compile_expression("repo:polylogue OR repo:sinex")
 
     def test_cross_field_or_mentions_follow_up_issue(self) -> None:
-        with pytest.raises(ExpressionCompileError, match="1858"):
+        with pytest.raises(ExpressionCompileError, match="1812"):
             compile_expression("repo:polylogue OR origin:claude-code-session")
 
     def test_unknown_origin_raises(self) -> None:
@@ -483,3 +483,144 @@ class TestFieldRegistry:
         for field, info in EXPRESSION_FIELD_REGISTRY.items():
             assert "description" in info, f"{field} missing description"
             assert info["description"], f"{field} has empty description"
+
+    def test_origin_description_has_no_provider_source_wording(self) -> None:
+        """Regression: origin field description must not use 'provider source' (#1861)."""
+        desc = EXPRESSION_FIELD_REGISTRY["origin"]["description"]
+        assert "provider source" not in desc, "origin description must not use 'provider source' wording; got: " + repr(
+            desc
+        )
+
+    def test_cross_field_or_error_cites_1812(self) -> None:
+        """Regression: cross-field OR error must cite issue #1812, not #1858 (#1861)."""
+        with pytest.raises(ExpressionCompileError, match="1812"):
+            compile_expression("repo:x OR origin:y")
+
+
+# ---------------------------------------------------------------------------
+# MCP surface wiring (#1860)
+# ---------------------------------------------------------------------------
+
+
+class TestMCPWiring:
+    """build_query_spec routes free-text query through the shared compiler."""
+
+    def test_bare_words_preserved_as_fts(self) -> None:
+        from polylogue.mcp.query_contracts import build_query_spec
+
+        spec = build_query_spec(query="json envelope")
+        # Bare words must end up in query_terms (FTS), not in structured fields.
+        assert spec.query_terms == ("json", "envelope")
+
+    def test_dsl_origin_clause_compiled(self) -> None:
+        from polylogue.mcp.query_contracts import build_query_spec
+
+        spec = build_query_spec(query="origin:claude-code-session")
+        assert spec.origins == ("claude-code-session",)
+        # Must NOT go to FTS query_terms.
+        assert not any("origin" in t for t in spec.query_terms)
+
+    def test_dsl_has_paste_compiled(self) -> None:
+        from polylogue.mcp.query_contracts import build_query_spec
+
+        spec = build_query_spec(query="has:paste")
+        assert spec.filter_has_paste is True
+        assert spec.query_terms == ()
+
+    def test_dsl_flags_merged_with_base_params(self) -> None:
+        """DSL expression merges additively with flag-derived base spec."""
+        from polylogue.mcp.query_contracts import build_query_spec
+
+        # Simulate: MCP caller passes both a structured 'tag' param and a DSL
+        # expression in 'query'.
+        spec = build_query_spec(query="origin:codex-session", tag="review")
+        assert spec.origins == ("codex-session",)
+        assert spec.tags == ("review",)
+
+    def test_unknown_field_raises(self) -> None:
+        from polylogue.mcp.query_contracts import build_query_spec
+
+        with pytest.raises(ExpressionCompileError, match="unknown query field"):
+            build_query_spec(query="nosuchfield:value")
+
+    def test_cross_field_or_raises(self) -> None:
+        from polylogue.mcp.query_contracts import build_query_spec
+
+        with pytest.raises(ExpressionCompileError, match="cross-field OR"):
+            build_query_spec(query="repo:x OR origin:y")
+
+    def test_none_query_returns_base_spec(self) -> None:
+        from polylogue.mcp.query_contracts import build_query_spec
+
+        spec = build_query_spec(query=None, tag="review")
+        # With no query expression, must still apply the flag-derived filters.
+        assert spec.tags == ("review",)
+        assert spec.query_terms == ()
+
+
+# ---------------------------------------------------------------------------
+# Cross-surface parity (#1860 / #1812)
+# ---------------------------------------------------------------------------
+
+
+class TestCrossSurfaceParity:
+    """Same DSL expression → same SessionQuerySpec on all three surfaces.
+
+    CLI path:   RootModeRequest.query_spec()
+    MCP path:   build_query_spec(query=...)
+    Daemon path: compile_expression_into(query_str, base_spec)  (same function)
+
+    Because all three surfaces ultimately call compile_expression_into, these
+    tests verify that the compiler is wired symmetrically and that no surface
+    silently re-parses the expression through its own ad-hoc logic.
+    """
+
+    _EXPRESSION = "origin:claude-code-session has:paste repo:polylogue"
+
+    def _cli_spec(self) -> SessionQuerySpec:
+        from polylogue.cli.root_request import RootModeRequest
+
+        # CLI receives the expression as individual shell-split tokens.
+        request = RootModeRequest(
+            params={},
+            query_terms=tuple(self._EXPRESSION.split()),
+        )
+        return request.query_spec()
+
+    def _mcp_spec(self) -> SessionQuerySpec:
+        from polylogue.mcp.query_contracts import build_query_spec
+
+        return build_query_spec(query=self._EXPRESSION)
+
+    def _daemon_spec(self) -> SessionQuerySpec:
+        # The daemon path: compile_expression_into(query_str, base_spec).
+        # Reproduce the same logic as _do_list with no extra flag-based params.
+        base = SessionQuerySpec()
+        return compile_expression_into(self._EXPRESSION, base)
+
+    def test_cli_and_mcp_origins_match(self) -> None:
+        assert self._cli_spec().origins == self._mcp_spec().origins
+
+    def test_cli_and_daemon_origins_match(self) -> None:
+        assert self._cli_spec().origins == self._daemon_spec().origins
+
+    def test_cli_and_mcp_has_paste_match(self) -> None:
+        assert self._cli_spec().filter_has_paste == self._mcp_spec().filter_has_paste
+
+    def test_cli_and_daemon_has_paste_match(self) -> None:
+        assert self._cli_spec().filter_has_paste == self._daemon_spec().filter_has_paste
+
+    def test_cli_and_mcp_repo_names_match(self) -> None:
+        assert self._cli_spec().repo_names == self._mcp_spec().repo_names
+
+    def test_cli_and_daemon_repo_names_match(self) -> None:
+        assert self._cli_spec().repo_names == self._daemon_spec().repo_names
+
+    def test_all_three_query_terms_are_empty(self) -> None:
+        """Pure DSL expression (no bare words) → query_terms empty on all surfaces."""
+        cli_spec = self._cli_spec()
+        mcp_spec = self._mcp_spec()
+        daemon_spec = self._daemon_spec()
+        assert cli_spec.query_terms == ()
+        assert mcp_spec.query_terms == ()
+        assert daemon_spec.query_terms == ()
