@@ -3251,9 +3251,9 @@ files:
     loc: 113
     target: polylogue/storage/sqlite/queries/artifacts.py
     owner: stable
-  - path: polylogue/storage/sqlite/queries/attachment_content_blocks.py
+  - path: polylogue/storage/sqlite/queries/attachment_blocks.py
     loc: 54
-    target: polylogue/storage/sqlite/queries/attachment_content_blocks.py
+    target: polylogue/storage/sqlite/queries/attachment_blocks.py
     owner: stable
   - path: polylogue/storage/sqlite/queries/attachment_mutations.py
     loc: 70
