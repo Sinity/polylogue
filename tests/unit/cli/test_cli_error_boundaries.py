@@ -38,7 +38,7 @@ SUBCOMMANDS = [
     "list",
     "count",
     "stats",
-    "open",
+    "read",
     "delete",
 ]
 

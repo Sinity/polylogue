@@ -17,7 +17,7 @@ SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("List Verb", ("list",)),
     ("Stats Verb", ("stats",)),
     ("Count Verb", ("count",)),
-    ("Open Verb", ("open",)),
+    ("Read Verb", ("read",)),
     ("Delete Verb", ("delete",)),
     ("Insights", ("insights",)),
     ("Doctor", ("doctor",)),
