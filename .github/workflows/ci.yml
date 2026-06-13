@@ -38,7 +38,12 @@ jobs:
       - run: bash tools/cleanup/polylogue_public_surface_audit.sh
 
   test:
-    timeout-minutes: 45
+    # The full non-integration suite runs single-process under coverage
+    # instrumentation across three Python versions; 45 min was on the edge and
+    # legs were being cut mid-run (reported as "cancelled"), so the test gate
+    # could never go green. 90 min gives headroom; passing runs cost their
+    # actual ~45-50 min regardless of the ceiling.
+    timeout-minutes: 90
     runs-on: ubuntu-latest
     strategy:
       matrix:
