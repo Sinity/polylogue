@@ -602,7 +602,6 @@ Published JSON Schemas live under [`docs/schemas/cli-output/`](./schemas/cli-out
 | Command | JSON contract | Snapshot | `--plain` | NDJSON | Schema | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
 | `embed` | yes | yes | yes | no | — | Embedding pipeline status; --json emits structured progress. |
-| `export` | yes | yes | yes | no | — |  |
 | `ingest` | yes | yes | yes | no | — | --machine emits success/error envelope per ingest run. |
 
 ### Family: `config`
