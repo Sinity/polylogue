@@ -386,9 +386,13 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
       polylogue --has thinking --sort tokens list --limit 10
       polylogue --origin chatgpt-export count
       polylogue --origin codex-session stats --by origin
-      polylogue --latest open
+      polylogue --latest read
       polylogue &quot;urgent&quot; --tag review delete --dry-run
       polylogue list --format json
+      polylogue find id:abc then read
+      polylogue find id:abc then read --view messages
+      polylogue find id:abc then read --to browser
+      polylogue find 'repo:polylogue' then read --all --format ndjson
 
   Combined filters:
       polylogue --referenced-path README.md --action file_read list
@@ -518,7 +522,6 @@ Commands:
   auth               Authenticate optional external services.
   backup             Create a timestamped durability-tier backup.
   blackboard
-  bulk-export        Bulk export every matched session in one process.
   commands
   completions        Emit shell completion setup for polylogue.
   config             Show configuration paths and resolved settings.
@@ -533,7 +536,6 @@ Commands:
   diagnostics        Temporal session diagnostics
   doctor             Run archive health checks and repairs.
   embed              Enable, preflight, and backfill the embedding pipeline.
-  export             Export sessions.
   facets
   feedback           Record learning corrections for derived insights.
   ingest             Import sessions from configured sources.
@@ -541,18 +543,14 @@ Commands:
   insights           Rebuild and inspect derived session insights.
   list               List matched sessions.
   maintenance        Preview and run maintenance backfill operations.
-  messages           List messages from matched sessions.
   neighbors          Show semantic neighbors for a session.
-  open               Open matched session in the daemon web reader.
   paths              Print canonical archive paths and bind-mount detection.
-  raw                Show raw archive payloads for matched sessions.
-  recent
+  read               Read matched sessions (route to view/destination).
+  recent             List the most recently updated sessions.
   reset              Reset local archive state.
   resume             Resume from recent session context.
   resume-candidates  Rank resume candidates for the current context.
   schema             Inspect and audit provider schemas.
-  select             Select one matched session and print a field.
-  show               Show matched sessions with default full-content output.
   stats              Show statistics for matched sessions.
   status             Show daemon and archive status.
   tags               Manage session tags.
@@ -595,14 +593,47 @@ Options:
 Options:
   --help  Show this message and exit.
 </code></pre>
-<h2>Open Verb</h2>
-<pre><code class="language-text">Usage: polylogue open [OPTIONS] [TARGET_TERMS]...
+<h2>Read Verb</h2>
+<pre><code class="language-text">Usage: polylogue read [OPTIONS]
 
-  Open matched session in the daemon web reader.
+  Read matched sessions.
+
+  Routes to the appropriate renderer based on --view and delivers the
+  output to --to (terminal, stdout, browser, clipboard, or file).
+
+  Examples:
+      polylogue --id abc123 read
+      polylogue find id:abc then read --view messages
+      polylogue find id:abc then read --view raw --format json
+      polylogue find id:abc then read --to browser
+      polylogue find 'repo:polylogue has:paste' then read --all --format ndjson
+      polylogue find 'archive runtime' then read --view context
+
+  Deferred views (not yet implemented; note in PR body):
+      timeline, tools, files, metadata, continuation
 
 Options:
-  --print-url  Print the matched daemon web URL instead of opening it
-  --help       Show this message and exit.
+  -v, --view [summary|conversation|messages|raw|context]
+                                  What to render (summary, conversation,
+                                  messages, raw, context).  [default: summary]
+  --to [terminal|stdout|browser|clipboard|file]
+                                  Output destination.  [default: terminal]
+  -f, --format [text|markdown|json|ndjson|yaml|html|obsidian|org|csv]
+                                  Output format (where applicable).
+  --out PATH                      File path for --to file.
+  --all                           Apply to all matched sessions (bulk export).
+  -r, --message-role TEXT         Filter by message role (--view messages).
+  --message-type TYPE             Filter by message content type (--view
+                                  messages).
+  -l, -n, --limit INTEGER         Max items to return.
+  --offset INTEGER                Pagination offset.
+  --no-code-blocks                Exclude code blocks (--view messages).
+  --no-tool-calls                 Exclude tool calls (--view messages).
+  --no-tool-outputs               Exclude tool outputs (--view messages).
+  --no-file-reads                 Exclude file reads (--view messages).
+  --prose-only                    Show only prose text (--view messages).
+  --fields TEXT                   Fields for JSON/YAML outputs (--all).
+  --help                          Show this message and exit.
 </code></pre>
 <h2>Delete Verb</h2>
 <pre><code class="language-text">Usage: polylogue delete [OPTIONS]
@@ -837,15 +868,6 @@ Options:
 </thead>
 <tbody>
 <tr>
-<td><code>bulk-export</code></td>
-<td>yes</td>
-<td>no</td>
-<td>yes</td>
-<td>yes</td>
-<td>—</td>
-<td>--format jsonl emits one full session JSON per line; no published row schema (Session shape is large and provider-specific).</td>
-</tr>
-<tr>
 <td><code>context-pack</code></td>
 <td>yes</td>
 <td>no</td>
@@ -891,15 +913,6 @@ Options:
 <td>record/list/clear subgroup; --machine wraps output in MachineSuccessPayload.</td>
 </tr>
 <tr>
-<td><code>messages</code></td>
-<td>yes</td>
-<td>yes</td>
-<td>yes</td>
-<td>yes</td>
-<td>—</td>
-<td>--format jsonl emits one message JSON per line.</td>
-</tr>
-<tr>
 <td><code>neighbors</code></td>
 <td>yes</td>
 <td>yes</td>
@@ -909,22 +922,13 @@ Options:
 <td></td>
 </tr>
 <tr>
-<td><code>open</code></td>
-<td>no</td>
+<td><code>read</code></td>
 <td>yes</td>
 <td>yes</td>
-<td>no</td>
+<td>yes</td>
+<td>yes</td>
 <td>—</td>
-<td>Side-effect command (opens browser/URL); --print-url emits a single URL string.</td>
-</tr>
-<tr>
-<td><code>raw</code></td>
-<td>no</td>
-<td>yes</td>
-<td>yes</td>
-<td>no</td>
-<td>—</td>
-<td>Dumps provider-specific raw payload as-is; no normalized shape.</td>
+<td>Router verb: --view selects renderer; --to selects destination. --view messages --format json emits a messages JSON envelope; --all --format ndjson streams one session JSON per line.</td>
 </tr>
 <tr>
 <td><code>resume</code></td>
@@ -943,24 +947,6 @@ Options:
 <td>no</td>
 <td>—</td>
 <td>Ranks read-pull resume candidates; --format json emits a typed success envelope.</td>
-</tr>
-<tr>
-<td><code>select</code></td>
-<td>no</td>
-<td>yes</td>
-<td>yes</td>
-<td>no</td>
-<td>—</td>
-<td>Selects one match and prints chosen field; single-line output.</td>
-</tr>
-<tr>
-<td><code>show</code></td>
-<td>no</td>
-<td>yes</td>
-<td>yes</td>
-<td>no</td>
-<td>—</td>
-<td>Renders full session in markdown/plaintext/html; not a stable JSON surface.</td>
 </tr>
 <tr>
 <td><code>tags</code></td>
@@ -1192,15 +1178,6 @@ Options:
 <td>no</td>
 <td>—</td>
 <td>Embedding pipeline status; --json emits structured progress.</td>
-</tr>
-<tr>
-<td><code>export</code></td>
-<td>yes</td>
-<td>yes</td>
-<td>yes</td>
-<td>no</td>
-<td>—</td>
-<td></td>
 </tr>
 <tr>
 <td><code>ingest</code></td>
