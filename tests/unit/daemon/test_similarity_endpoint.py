@@ -148,7 +148,7 @@ def _disable_embeddings(monkeypatch: pytest.MonkeyPatch) -> None:
 
     class _Cfg:
         embedding_enabled = False
-        voyage_api_key = None
+        voyage_api_key: str | None = None
 
     monkeypatch.setattr(similarity_mod, "load_polylogue_config", lambda: _Cfg())
 
@@ -263,7 +263,7 @@ class TestSimilarPayloadStates:
 
         class _Cfg:
             embedding_enabled = True
-            voyage_api_key = None
+            voyage_api_key: str | None = None
 
         monkeypatch.setattr(similarity_mod, "load_polylogue_config", lambda: _Cfg())
         session_id = _seed_archive_session("c1")
