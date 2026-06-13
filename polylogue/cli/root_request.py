@@ -66,7 +66,36 @@ class RootModeRequest:
         return params
 
     def query_spec(self) -> SessionQuerySpec:
-        return SessionQuerySpec.from_params(self.query_params())
+        """Build the canonical query spec for this request.
+
+        When query_terms are present, they are compiled as a DSL expression
+        and merged with the flag-derived spec.  Field clauses such as
+        ``repo:polylogue`` or ``since:7d`` are compiled to the appropriate
+        spec fields; bare words and quoted phrases continue to go to FTS.
+        """
+        from polylogue.archive.query.expression import compile_expression_into
+
+        # Build the base spec from CLI flags (query_terms excluded).
+        base = SessionQuerySpec.from_params(self.params)
+
+        if not self.query_terms:
+            return base
+
+        # Re-join query_terms into a DSL expression string.  Terms that
+        # contain spaces (e.g. shell-quoted phrases) are re-wrapped in
+        # double-quotes so the lexer treats them as quoted phrases.
+        parts: list[str] = []
+        for term in self.query_terms:
+            if " " in term:
+                # Quote term with embedded spaces so the lexer handles them
+                # as quoted phrases rather than splitting on the space.
+                escaped = term.replace('"', '\\"')
+                parts.append(f'"{escaped}"')
+            else:
+                parts.append(term)
+        expression = " ".join(parts)
+
+        return compile_expression_into(expression, base)
 
     @property
     def verbose(self) -> bool:

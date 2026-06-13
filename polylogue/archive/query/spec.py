@@ -456,6 +456,30 @@ class SessionQuerySpec:
         """
         return build_query_spec_from_params(cls, params, strict_params=strict)
 
+    @classmethod
+    def from_expression(cls, expression: str) -> SessionQuerySpec:
+        """Compile a DSL query expression string into a ``SessionQuerySpec``.
+
+        This is the Python-facade entry point for the shared expression
+        compiler.  Field clauses such as ``repo:polylogue``, ``since:7d``,
+        or ``origin:(claude-code-session|codex-session)`` are mapped to the
+        corresponding spec fields.  Bare words and quoted phrases go to
+        ``query_terms`` (FTS).
+
+        Raises:
+            ExpressionCompileError: When an unknown field or structural error
+                is encountered.
+
+        Example::
+
+            spec = SessionQuerySpec.from_expression(
+                'repo:polylogue since:7d "json envelope"'
+            )
+        """
+        from polylogue.archive.query.expression import compile_expression
+
+        return compile_expression(expression)
+
     def describe(self) -> list[str]:
         """Human-readable filter descriptions for UX/error output."""
         return describe_query_spec(self)
@@ -534,4 +558,5 @@ __all__ = [
     "QuerySpecError",
     "clamp_query_limit",
     "normalize_retrieval_lane",
+    "build_query_spec_from_params",
 ]
