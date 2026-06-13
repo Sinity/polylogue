@@ -328,6 +328,16 @@ def _run_read_browser(env: AppEnv, request: RootModeRequest, *, output_format: s
 
     session_id = run_coroutine_sync(_find_first())
     if session_id is None:
+        # Preserve the machine no-results contract that the removed
+        # `open --print-url --format json` route carried: a JSON consumer gets a
+        # structured error envelope and exit 2, not human text on stdout. The
+        # JSON intent can arrive on the verb (`read -f json`) or the root
+        # (`--format json … read`), so honor both.
+        effective_format = output_format or request.params.get("output_format")
+        if effective_format == "json":
+            from polylogue.cli.shared.machine_errors import error_no_results
+
+            error_no_results("No sessions matched.").emit(exit_code=2)
         env.ui.error("No sessions matched.")
         return
 
