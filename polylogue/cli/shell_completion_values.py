@@ -207,14 +207,6 @@ def complete_session_ids(
     return _run_completion(_query)
 
 
-def complete_open_targets(
-    ctx: click.Context,
-    param: click.Parameter,
-    incomplete: str,
-) -> list[CompletionItem]:
-    return complete_session_ids(ctx, param, incomplete)
-
-
 def complete_tag_values(
     ctx: click.Context,
     param: click.Parameter,
@@ -310,7 +302,6 @@ __all__ = [
     "complete_session_ids",
     "complete_cwd_prefix_values",
     "complete_message_type_values",
-    "complete_open_targets",
     "complete_origin_values",
     "complete_query_source",
     "complete_repo_values",

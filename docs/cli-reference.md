@@ -31,9 +31,13 @@ Usage: polylogue [OPTIONS] COMMAND [ARGS]...
       polylogue --has thinking --sort tokens list --limit 10
       polylogue --origin chatgpt-export count
       polylogue --origin codex-session stats --by origin
-      polylogue --latest open
+      polylogue --latest read
       polylogue "urgent" --tag review delete --dry-run
       polylogue list --format json
+      polylogue find id:abc then read
+      polylogue find id:abc then read --view messages
+      polylogue find id:abc then read --to browser
+      polylogue find 'repo:polylogue' then read --all --format ndjson
 
   Combined filters:
       polylogue --referenced-path README.md --action file_read list
@@ -163,7 +167,6 @@ Commands:
   auth               Authenticate optional external services.
   backup             Create a timestamped durability-tier backup.
   blackboard
-  bulk-export        Bulk export every matched session in one process.
   commands
   completions        Emit shell completion setup for polylogue.
   config             Show configuration paths and resolved settings.
@@ -178,7 +181,6 @@ Commands:
   diagnostics        Temporal session diagnostics
   doctor             Run archive health checks and repairs.
   embed              Enable, preflight, and backfill the embedding pipeline.
-  export             Export sessions.
   facets
   feedback           Record learning corrections for derived insights.
   ingest             Import sessions from configured sources.
@@ -186,18 +188,14 @@ Commands:
   insights           Rebuild and inspect derived session insights.
   list               List matched sessions.
   maintenance        Preview and run maintenance backfill operations.
-  messages           List messages from matched sessions.
   neighbors          Show semantic neighbors for a session.
-  open               Open matched session in the daemon web reader.
   paths              Print canonical archive paths and bind-mount detection.
-  raw                Show raw archive payloads for matched sessions.
-  recent
+  read               Read matched sessions (route to view/destination).
+  recent             List the most recently updated sessions.
   reset              Reset local archive state.
   resume             Resume from recent session context.
   resume-candidates  Rank resume candidates for the current context.
   schema             Inspect and audit provider schemas.
-  select             Select one matched session and print a field.
-  show               Show matched sessions with default full-content output.
   stats              Show statistics for matched sessions.
   status             Show daemon and archive status.
   tags               Manage session tags.
@@ -250,16 +248,49 @@ Options:
   --help  Show this message and exit.
 ```
 
-## Open Verb
+## Read Verb
 
 ```text
-Usage: polylogue open [OPTIONS] [TARGET_TERMS]...
+Usage: polylogue read [OPTIONS]
 
-  Open matched session in the daemon web reader.
+  Read matched sessions.
+
+  Routes to the appropriate renderer based on --view and delivers the
+  output to --to (terminal, stdout, browser, clipboard, or file).
+
+  Examples:
+      polylogue --id abc123 read
+      polylogue find id:abc then read --view messages
+      polylogue find id:abc then read --view raw --format json
+      polylogue find id:abc then read --to browser
+      polylogue find 'repo:polylogue has:paste' then read --all --format ndjson
+      polylogue find 'archive runtime' then read --view context
+
+  Deferred views (not yet implemented; note in PR body):
+      timeline, tools, files, metadata, continuation
 
 Options:
-  --print-url  Print the matched daemon web URL instead of opening it
-  --help       Show this message and exit.
+  -v, --view [summary|conversation|messages|raw|context]
+                                  What to render (summary, conversation,
+                                  messages, raw, context).  [default: summary]
+  --to [terminal|stdout|browser|clipboard|file]
+                                  Output destination.  [default: terminal]
+  -f, --format [text|markdown|json|ndjson|yaml|html|obsidian|org|csv]
+                                  Output format (where applicable).
+  --out PATH                      File path for --to file.
+  --all                           Apply to all matched sessions (bulk export).
+  -r, --message-role TEXT         Filter by message role (--view messages).
+  --message-type TYPE             Filter by message content type (--view
+                                  messages).
+  -l, -n, --limit INTEGER         Max items to return.
+  --offset INTEGER                Pagination offset.
+  --no-code-blocks                Exclude code blocks (--view messages).
+  --no-tool-calls                 Exclude tool calls (--view messages).
+  --no-tool-outputs               Exclude tool outputs (--view messages).
+  --no-file-reads                 Exclude file reads (--view messages).
+  --prose-only                    Show only prose text (--view messages).
+  --fields TEXT                   Fields for JSON/YAML outputs (--all).
+  --help                          Show this message and exit.
 ```
 
 ## Delete Verb
@@ -517,20 +548,15 @@ Published JSON Schemas live under [`docs/schemas/cli-output/`](./schemas/cli-out
 
 | Command | JSON contract | Snapshot | `--plain` | NDJSON | Schema | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
-| `bulk-export` | yes | no | yes | yes | — | --format jsonl emits one full session JSON per line; no published row schema (Session shape is large and provider-specific). |
 | `context-pack` | yes | no | yes | no | — | Provenance-rich JSON document; downstream agent surface. |
 | `count` | no | yes | yes | no | — | Single integer to stdout; no JSON envelope. |
 | `delete` | no | yes | yes | no | — | Side-effect command; --dry-run prints affected IDs. |
 | `facets` | yes | no | yes | no | — | Scoped vs global facet aggregates over the archive (#1269 / slice D of #873); ``--format json`` emits FacetsResponse. |
 | `feedback` | yes | yes | yes | no | — | record/list/clear subgroup; --machine wraps output in MachineSuccessPayload. |
-| `messages` | yes | yes | yes | yes | — | --format jsonl emits one message JSON per line. |
 | `neighbors` | yes | yes | yes | no | [`session-neighbor-candidate.schema.json`](./schemas/cli-output/session-neighbor-candidate.schema.json) |  |
-| `open` | no | yes | yes | no | — | Side-effect command (opens browser/URL); --print-url emits a single URL string. |
-| `raw` | no | yes | yes | no | — | Dumps provider-specific raw payload as-is; no normalized shape. |
+| `read` | yes | yes | yes | yes | — | Router verb: --view selects renderer; --to selects destination. --view messages --format json emits a messages JSON envelope; --all --format ndjson streams one session JSON per line. |
 | `resume` | no | yes | yes | no | — |  |
 | `resume-candidates` | yes | yes | yes | no | — | Ranks read-pull resume candidates; --format json emits a typed success envelope. |
-| `select` | no | yes | yes | no | — | Selects one match and prints chosen field; single-line output. |
-| `show` | no | yes | yes | no | — | Renders full session in markdown/plaintext/html; not a stable JSON surface. |
 | `tags` | no | yes | yes | no | — | Tag-management subgroup; mutation-side commands. |
 | `tutorial` | no | yes | yes | no | — | Interactive first-run walkthrough; output is operator-facing prose and not contracted as machine-readable. |
 
@@ -576,7 +602,6 @@ Published JSON Schemas live under [`docs/schemas/cli-output/`](./schemas/cli-out
 | Command | JSON contract | Snapshot | `--plain` | NDJSON | Schema | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
 | `embed` | yes | yes | yes | no | — | Embedding pipeline status; --json emits structured progress. |
-| `export` | yes | yes | yes | no | — |  |
 | `ingest` | yes | yes | yes | no | — | --machine emits success/error envelope per ingest run. |
 
 ### Family: `config`

@@ -90,9 +90,13 @@
         polylogue --has thinking --sort tokens list --limit 10
         polylogue --origin chatgpt-export count
         polylogue --origin codex-session stats --by origin
-        polylogue --latest open
+        polylogue --latest read
         polylogue "urgent" --tag review delete --dry-run
         polylogue list --format json
+        polylogue find id:abc then read
+        polylogue find id:abc then read --view messages
+        polylogue find id:abc then read --to browser
+        polylogue find 'repo:polylogue' then read --all --format ndjson
     Combined filters:
         polylogue --referenced-path README.md --action file_read list
         polylogue --action search --action file_edit list
@@ -219,7 +223,6 @@
     auth               Authenticate optional external services.
     backup             Create a timestamped durability-tier backup.
     blackboard
-    bulk-export        Bulk export every matched session in one process.
     commands
     completions        Emit shell completion setup for polylogue.
     config             Show configuration paths and resolved settings.
@@ -234,7 +237,6 @@
     diagnostics        Temporal session diagnostics
     doctor             Run archive health checks and repairs.
     embed              Enable, preflight, and backfill the embedding pipeline.
-    export             Export sessions.
     facets
     feedback           Record learning corrections for derived insights.
     ingest             Import sessions from configured sources.
@@ -242,18 +244,14 @@
     insights           Rebuild and inspect derived session insights.
     list               List matched sessions.
     maintenance        Preview and run maintenance backfill operations.
-    messages           List messages from matched sessions.
     neighbors          Show semantic neighbors for a session.
-    open               Open matched session in the daemon web reader.
     paths              Print canonical archive paths and bind-mount detection.
-    raw                Show raw archive payloads for matched sessions.
-    recent
+    read               Read matched sessions (route to view<PATH>).
+    recent             List the most recently updated sessions.
     reset              Reset local archive state.
     resume             Resume from recent session context.
     resume-candidates  Rank resume candidates for the current context.
     schema             Inspect and audit provider schemas.
-    select             Select one matched session and print a field.
-    show               Show matched sessions with default full-content output.
     stats              Show statistics for matched sessions.
     status             Show daemon and archive status.
     tags               Manage session tags.
@@ -288,9 +286,14 @@
         polylogue --has thinking --sort tokens list --limit 10
         polylogue --origin chatgpt-export count
         polylogue --origin codex-session stats --by origin
-        polylogue --latest open
+        polylogue --latest read
         polylogue "urgent" --tag review delete --dry-run
         polylogue list --format json
+        polylogue find id:abc then read
+        polylogue find id:abc then read --view messages
+        polylogue find id:abc then read --to browser
+        polylogue find 'repo:polylogue' then read --all --form
+  at ndjson
     Combined filters:
         polylogue --referenced-path README.md --action file_re
   ad list
@@ -490,8 +493,6 @@
     backup             Create a timestamped durability-tier ba
   ckup.
     blackboard
-    bulk-export        Bulk export every matched session in on
-  e process.
     commands
     completions        Emit shell completion setup for polylog
   ue.
@@ -512,7 +513,6 @@
     doctor             Run archive health checks and repairs.
     embed              Enable, preflight, and backfill the emb
   edding pipeline.
-    export             Export sessions.
     facets
     feedback           Record learning corrections for derived
    insights.
@@ -525,24 +525,18 @@
     list               List matched sessions.
     maintenance        Preview and run maintenance backfill op
   erations.
-    messages           List messages from matched sessions.
     neighbors          Show semantic neighbors for a session.
-    open               Open matched session in the daemon web
-  reader.
     paths              Print canonical archive paths and bind-
   mount detection.
-    raw                Show raw archive payloads for matched s
-  essions.
-    recent
+    read               Read matched sessions (route to view<PATH>
+  stination).
+    recent             List the most recently updated sessions
+  .
     reset              Reset local archive state.
     resume             Resume from recent session context.
     resume-candidates  Rank resume candidates for the current
   context.
     schema             Inspect and audit provider schemas.
-    select             Select one matched session and print a
-  field.
-    show               Show matched sessions with default full
-  -content output.
     stats              Show statistics for matched sessions.
     status             Show daemon and archive status.
     tags               Manage session tags.
@@ -570,9 +564,13 @@
         polylogue --has thinking --sort tokens list --limit 10
         polylogue --origin chatgpt-export count
         polylogue --origin codex-session stats --by origin
-        polylogue --latest open
+        polylogue --latest read
         polylogue "urgent" --tag review delete --dry-run
         polylogue list --format json
+        polylogue find id:abc then read
+        polylogue find id:abc then read --view messages
+        polylogue find id:abc then read --to browser
+        polylogue find 'repo:polylogue' then read --all --format ndjson
     Combined filters:
         polylogue --referenced-path README.md --action file_read list
         polylogue --action search --action file_edit list
@@ -697,7 +695,6 @@
     auth               Authenticate optional external services.
     backup             Create a timestamped durability-tier backup.
     blackboard
-    bulk-export        Bulk export every matched session in one process.
     commands
     completions        Emit shell completion setup for polylogue.
     config             Show configuration paths and resolved settings.
@@ -712,7 +709,6 @@
     diagnostics        Temporal session diagnostics
     doctor             Run archive health checks and repairs.
     embed              Enable, preflight, and backfill the embedding pipeline.
-    export             Export sessions.
     facets
     feedback           Record learning corrections for derived insights.
     ingest             Import sessions from configured sources.
@@ -720,18 +716,14 @@
     insights           Rebuild and inspect derived session insights.
     list               List matched sessions.
     maintenance        Preview and run maintenance backfill operations.
-    messages           List messages from matched sessions.
     neighbors          Show semantic neighbors for a session.
-    open               Open matched session in the daemon web reader.
     paths              Print canonical archive paths and bind-mount detection.
-    raw                Show raw archive payloads for matched sessions.
-    recent
+    read               Read matched sessions (route to view<PATH>).
+    recent             List the most recently updated sessions.
     reset              Reset local archive state.
     resume             Resume from recent session context.
     resume-candidates  Rank resume candidates for the current context.
     schema             Inspect and audit provider schemas.
-    select             Select one matched session and print a field.
-    show               Show matched sessions with default full-content output.
     stats              Show statistics for matched sessions.
     status             Show daemon and archive status.
     tags               Manage session tags.

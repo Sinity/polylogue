@@ -1,9 +1,0 @@
-Usage: polylogue raw [OPTIONS] [SESSION_ID]
-
-  Show raw archive artifacts for a session.
-
-Options:
-  -l, -n, --limit INTEGER   Max raw artifacts to return
-  --offset INTEGER          Offset for pagination
-  -f, --format [json|yaml]  Output format
-  --help                    Show this message and exit.

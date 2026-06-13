@@ -1,7 +1,0 @@
-Usage: polylogue open [OPTIONS] [TARGET_TERMS]...
-
-  Open matched session in the daemon web reader.
-
-Options:
-  --print-url  Print the matched daemon web URL instead of opening it
-  --help       Show this message and exit.
