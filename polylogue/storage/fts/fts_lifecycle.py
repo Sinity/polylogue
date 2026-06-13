@@ -263,7 +263,16 @@ def ensure_fts_triggers_sync(conn: sqlite3.Connection) -> None:
     Steady-state archive writes must not create a dropped-trigger window.
     ``restore_fts_triggers_sync`` remains the explicit recovery/rebuild path
     for replacing trigger definitions and repairing global FTS state.
+
+    Fast-path: when all expected triggers are already present, return
+    immediately without issuing any ``executescript()`` calls.  Each
+    ``executescript()`` call issues an implicit COMMIT that fragments the
+    caller's WAL transaction into multiple smaller ones; avoiding it in
+    steady state preserves the intended one-transaction boundary for
+    ``commit_archive_write_effects`` (#1851).
     """
+    if _triggers_present_sync(conn, _FTS_TRIGGER_NAMES):
+        return
     for ddl in _fts_trigger_ddl_for_existing_surfaces_sync(conn):
         conn.executescript(ddl) if ";" in ddl else conn.execute(ddl)
 
