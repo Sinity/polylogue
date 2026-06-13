@@ -373,7 +373,7 @@ function _polyAttachmentLibraryRender() {
   var html = order.map(function(cid) {
     var g = groups[cid];
     var rows = g.items.map(function(it) {
-      var href = '/c/' + encodeURIComponent(cid);
+      var href = '/s/' + encodeURIComponent(cid);
       if (it.message_anchor) href += '#' + encodeURIComponent(it.message_anchor);
       var sizeStr = _polyFormatBytes(it.size_bytes);
       var meta = [];
@@ -391,7 +391,7 @@ function _polyAttachmentLibraryRender() {
     return ''
       + '<div class="att-group">'
       +   '<div class="att-group-title">'
-      +     '<a href="/c/' + encodeURIComponent(cid) + '">'
+      +     '<a href="/s/' + encodeURIComponent(cid) + '">'
       +     (g.title || cid).replace(/[<&]/g, function(c) { return c === '<' ? '&lt;' : '&amp;'; })
       +     '</a>'
       +     '<span class="att-origin">' + (g.origin || '') + '</span>'

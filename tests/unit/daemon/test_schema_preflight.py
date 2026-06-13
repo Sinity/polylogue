@@ -230,8 +230,8 @@ async def test_ingest_files_short_circuits_when_degraded(tmp_path: Path) -> None
 
     class _StubPolylogue:
         archive_root = tmp_path
-        backend = None
-        config = None
+        backend: object | None = None
+        config: object | None = None
 
     sources_root = type(
         "SourceRoot",
@@ -342,8 +342,8 @@ async def test_ingest_files_short_circuits_under_burst_after_degraded(
 
     class _StubPolylogue:
         archive_root = tmp_path
-        backend = None
-        config = None
+        backend: object | None = None
+        config: object | None = None
 
     sources_root = type("SourceRoot", (), {"name": "claude-code", "root": tmp_path})()
     processor = LiveBatchProcessor(
@@ -381,8 +381,8 @@ async def test_live_batch_marks_structural_database_error_degraded(
 
     class _StubPolylogue:
         archive_root = tmp_path
-        backend = None
-        config = None
+        backend: object | None = None
+        config: object | None = None
 
     sources_root = type("SourceRoot", (), {"name": "claude-code", "root": tmp_path})()
     processor = LiveBatchProcessor(

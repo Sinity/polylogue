@@ -571,6 +571,21 @@ class TestReaderWorkspaceRoutes:
         assert compare_status == 200
         assert "renderCompareWorkspace" in compare_body
 
+    def test_session_deep_link_route_serves_web_shell(self, workspace_env: dict[str, Path]) -> None:
+        """The session reader deep link is ``/s/{session_id}`` (schema-v1 vocabulary)."""
+        with _running_server(workspace_env) as (_, base_url):
+            status, content_type, body = _get_text(base_url, "/s/claude-code-session:c1")
+        assert status == 200
+        assert "text/html" in content_type
+        assert "<title>Polylogue</title>" in body
+        assert "getSessionIdFromURL" in body
+
+    def test_legacy_conversation_route_is_gone(self, workspace_env: dict[str, Path]) -> None:
+        """The stale ``/c/{conversation_id}`` route must not resolve — no compat alias."""
+        with _running_server(workspace_env) as (_, base_url):
+            status, _, _ = _get_text(base_url, "/c/claude-code-session:c1")
+        assert status == 404
+
     def test_archive_file_set_stack_route_from_archive_tiers(
         self,
         workspace_env: dict[str, Path],

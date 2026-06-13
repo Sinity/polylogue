@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 
 class MockServer:
-    auth_token = None
+    auth_token: str | None = None
     api_host = "127.0.0.1"
 
 

@@ -41,12 +41,12 @@ operator-facing wrapper for the visual/DOM lane.
 | Reader state | Artefact id | Routes exercised |
 |---|---|---|
 | List / search | `polylogue.local_reader.search` | `/`, `/api/sessions`, `/api/sessions?query=...`, `/api/facets`, `/api/facets?origin=...`, `/api/facets?query=...` |
-| Detail / session | `polylogue.local_reader.session` | `/c/{id}`, `/api/sessions/{id}`, `/api/sessions/{id}/messages`, `/api/sessions/{id}/raw` |
+| Detail / session | `polylogue.local_reader.session` | `/s/{id}`, `/api/sessions/{id}`, `/api/sessions/{id}/messages`, `/api/sessions/{id}/raw` |
 | Stack workspace | `polylogue.local_reader.workspace.stack` | `/w/stack?ids=...`, `/api/stack?ids=...` |
 | Compare workspace | `polylogue.local_reader.workspace.compare` | `/w/compare?left=...&right=...&align=prompt`, `/api/compare?left=...&right=...&align=prompt` |
 | Empty archive | — | `/api/sessions`, `/api/facets` |
 | Degraded FTS | `polylogue.local_reader.degraded` | `/api/sessions?query=...` with message FTS absent |
-| Privacy boundary | — | `/`, `/c/{id}`, `/api/facets`, `/api/sessions`, `/api/sessions/{id}`, `/api/sessions/{id}/messages` (auditing for absolute local paths) |
+| Privacy boundary | — | `/`, `/s/{id}`, `/api/facets`, `/api/sessions`, `/api/sessions/{id}`, `/api/sessions/{id}/messages` (auditing for absolute local paths) |
 | Auth boundary | — | `/api/sessions` with/without `Authorization: Bearer ...` |
 
 The artefact ids match the names referenced in the design packs and in #848 so
@@ -56,7 +56,7 @@ palette screenshots under `docs/design/mk3/screens/`.
 
 ## What the lane checks
 
-- **Page structure.** The HTML payloads at `/`, `/c/{id}`, and `/w/{mode}` contain the region
+- **Page structure.** The HTML payloads at `/`, `/s/{id}`, and `/w/{mode}` contain the region
   hooks (`renderSidebarState`, `renderSessions`, `renderFacets`,
   `renderMain`, `renderWorkspaceToolbar`, `renderStackWorkspace`,
   `renderCompareWorkspace`, `renderInspector`) the JS bundle hydrates. A regression

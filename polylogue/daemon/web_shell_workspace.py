@@ -100,7 +100,7 @@ function getWorkspaceRouteFromURL() {
 
 function pushSingleURL(convId) {
   if (convId) {
-    var url = '/c/' + encodeURIComponent(convId);
+    var url = '/s/' + encodeURIComponent(convId);
     if (window.location.pathname + window.location.search !== url) history.pushState({}, '', url);
   } else {
     if (window.location.pathname + window.location.search !== '/') history.pushState({}, '', '/');

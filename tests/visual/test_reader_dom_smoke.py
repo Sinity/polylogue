@@ -191,7 +191,7 @@ def test_reader_compare_workspace_dom_evidence(reader_workspace: ReaderWorkspace
 
 def test_reader_session_deeplink_and_detail_evidence(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:
     with running_reader_server(reader_workspace) as (_, base_url):
-        status, content_type, shell = get_text(base_url, f"/c/{READER_C1}")
+        status, content_type, shell = get_text(base_url, f"/s/{READER_C1}")
         detail = cast(dict[str, object], get_json(base_url, f"/api/sessions/{READER_C1}"))
         messages = cast(dict[str, object], get_json(base_url, f"/api/sessions/{READER_C1}/messages"))
         raw = cast(dict[str, object], get_json(base_url, f"/api/sessions/{READER_C1}/raw"))
@@ -250,7 +250,7 @@ def test_reader_session_deeplink_and_detail_evidence(reader_workspace: ReaderWor
     write_evidence_manifest(
         tmp_path / "reader-session-dom-evidence.json",
         artifact_id="polylogue.local_reader.session",
-        route=f"/c/{READER_C1}",
+        route=f"/s/{READER_C1}",
         fixture_id="reader-visual-synthetic-v1",
         checks=checks,
     )
@@ -307,7 +307,7 @@ def test_reader_cost_panel_evidence(reader_workspace: ReaderWorkspace, tmp_path:
       so the panel is reachable through the inspector tab strip.
     """
     with running_reader_server(reader_workspace) as (_, base_url):
-        status, content_type, shell = get_text(base_url, f"/c/{READER_C1}")
+        status, content_type, shell = get_text(base_url, f"/s/{READER_C1}")
         known_cost = cast(dict[str, object], get_json(base_url, f"/api/sessions/{READER_C1}/cost"))
         unknown_status, _, unknown_body = get_text(base_url, "/api/sessions/does-not-exist/cost")
 
@@ -378,7 +378,7 @@ def test_reader_insights_browser_evidence(reader_workspace: ReaderWorkspace, tmp
       the readiness chip CSS classes.
     """
     with running_reader_server(reader_workspace) as (_, base_url):
-        status, content_type, shell = get_text(base_url, f"/c/{READER_C1}")
+        status, content_type, shell = get_text(base_url, f"/s/{READER_C1}")
         known = cast(dict[str, object], get_json(base_url, f"/api/insights/sessions/{READER_C1}"))
         subset = cast(
             dict[str, object],
