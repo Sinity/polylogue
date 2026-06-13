@@ -39,7 +39,7 @@ def _make_session_with_messages() -> Session:
     # Add content_blocks to messages
     for msg in conv.messages:
         if msg.id == "msg-2":
-            msg.content_blocks = [
+            msg.blocks = [
                 {
                     "type": "tool_use",
                     "name": "Read",
@@ -47,7 +47,7 @@ def _make_session_with_messages() -> Session:
                 }
             ]
         elif msg.id == "msg-1":
-            msg.content_blocks = []
+            msg.blocks = []
     return conv
 
 

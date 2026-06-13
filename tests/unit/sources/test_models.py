@@ -275,7 +275,7 @@ class TestClaudeCodeRecordContentBlocksRaw2:
 
     def test_no_message_returns_empty_list(self) -> None:
         record = ClaudeCodeRecord(type="user", message=None)
-        assert record.content_blocks_raw == []
+        assert record.blocks_raw == []
 
     def test_dict_message_with_list_content(self) -> None:
         blocks = [{"type": "text", "text": "hello"}, {"type": "tool_use", "name": "Read"}]
@@ -283,7 +283,7 @@ class TestClaudeCodeRecordContentBlocksRaw2:
             type="assistant",
             message={"role": "assistant", "content": blocks},
         )
-        assert record.content_blocks_raw == blocks
+        assert record.blocks_raw == blocks
 
     def test_dict_message_with_string_content(self) -> None:
         """String content is not a list, returns empty."""
@@ -291,7 +291,7 @@ class TestClaudeCodeRecordContentBlocksRaw2:
             type="user",
             message={"role": "user", "content": "just a string"},
         )
-        assert record.content_blocks_raw == []
+        assert record.blocks_raw == []
 
     def test_typed_message_with_list_content(self) -> None:
         msg = ClaudeCodeMessageContent(
@@ -299,8 +299,8 @@ class TestClaudeCodeRecordContentBlocksRaw2:
             content=[{"type": "text", "text": "hello"}],
         )
         record = ClaudeCodeRecord(type="assistant", message=msg)
-        assert len(record.content_blocks_raw) == 1
-        assert _object_mapping(record.content_blocks_raw[0]).get("type") == "text"
+        assert len(record.blocks_raw) == 1
+        assert _object_mapping(record.blocks_raw[0]).get("type") == "text"
 
 
 class TestClaudeCodeRecordToMeta2:

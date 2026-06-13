@@ -39,7 +39,7 @@ def _timeline_session() -> Session:
                 provider=Provider.CLAUDE_CODE,
                 text="I inspected the file and ran pytest.",
                 timestamp=datetime(2026, 4, 2, 12, 1, tzinfo=timezone.utc),
-                content_blocks=[
+                blocks=[
                     {
                         "type": "tool_use",
                         "tool_name": "Read",

@@ -28,7 +28,7 @@ from polylogue.storage.query_models import SessionRecordQuery
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.runtime import (
     AttachmentRecord,
-    ContentBlockRecord,
+    BlockRecord,
     MessageRecord,
     SessionRecord,
     _json_or_none,
@@ -125,7 +125,7 @@ def _content_block(
     media_type: str | None = None,
     metadata: str | None = None,
     semantic_type: str | None = None,
-) -> ContentBlockRecord:
+) -> BlockRecord:
     # #1240: media_type now lives inside the metadata JSON envelope.
     if media_type:
         from polylogue.core.json import dumps as _json_dumps
@@ -141,7 +141,7 @@ def _content_block(
                 base.update(parsed)
         base.setdefault("media_type", media_type)
         metadata = _json_dumps(base)
-    return ContentBlockRecord(
+    return BlockRecord(
         block_id=block_id,
         message_id=_message_id(message_id),
         session_id=_session_id(session_id),
@@ -402,7 +402,7 @@ async def test_aggregate_message_stats_reports_role_counts_and_words(workspace_e
     assert filtered["providers"] == {"chatgpt": 1}
 
 
-def _file_read_block(*, message_id: str, session_id: str, path: str, block_index: int = 0) -> ContentBlockRecord:
+def _file_read_block(*, message_id: str, session_id: str, path: str, block_index: int = 0) -> BlockRecord:
     """A native ``Read`` tool_use block whose path lives in ``tool_input.file_path``.
 
     Native ``tool_path`` (and therefore referenced-path filtering) is the
@@ -440,7 +440,7 @@ async def test_backend_referenced_path_filter_contract(workspace_env: dict[str, 
         .add_message(
             "m1",
             role="assistant",
-            content_blocks=[
+            blocks=[
                 {"type": "text", "text": "Inspecting the repository README"},
                 _file_read_block(message_id="m1", session_id="conv-readme", path=target_path),
             ],
@@ -455,7 +455,7 @@ async def test_backend_referenced_path_filter_contract(workspace_env: dict[str, 
         .add_message(
             "m2",
             role="assistant",
-            content_blocks=[
+            blocks=[
                 {"type": "text", "text": "Inspecting docs"},
                 _file_read_block(message_id="m2", session_id="conv-other", path=other_path),
             ],
@@ -525,7 +525,7 @@ def test_actions_view_uses_blocks_without_session_payload_bloat(workspace_env: d
         .add_message(
             "m-heavy-action",
             role="assistant",
-            content_blocks=[
+            blocks=[
                 {"type": "text", "text": "Searching the repo for current archive handling."},
                 _tool_block(
                     message_id="m-heavy-action",
@@ -570,7 +570,7 @@ async def test_filter_referenced_path_apply_after_fts_search(workspace_env: dict
         .add_message(
             "m1",
             role="assistant",
-            content_blocks=[
+            blocks=[
                 {"type": "text", "text": "Investigating the same parser regression"},
                 _file_read_block(message_id="m1", session_id="conv-match", path=target_path),
             ],
@@ -585,7 +585,7 @@ async def test_filter_referenced_path_apply_after_fts_search(workspace_env: dict
         .add_message(
             "m2",
             role="assistant",
-            content_blocks=[
+            blocks=[
                 {"type": "text", "text": "Investigating the same parser regression"},
                 _file_read_block(
                     message_id="m2",
@@ -604,7 +604,7 @@ async def test_filter_referenced_path_apply_after_fts_search(workspace_env: dict
 
 def _tool_block(
     *, message_id: str, session_id: str, tool_name: str, semantic_type: str, tool_input: str | None = None
-) -> ContentBlockRecord:
+) -> BlockRecord:
     return _content_block(
         block_id=f"{message_id}-0",
         message_id=message_id,
@@ -634,9 +634,7 @@ async def test_backend_action_terms_filter_contract(workspace_env: dict[str, Pat
         .add_message(
             "m1",
             role="assistant",
-            content_blocks=[
-                _tool_block(message_id="m1", session_id="conv-search", tool_name="Grep", semantic_type="search")
-            ],
+            blocks=[_tool_block(message_id="m1", session_id="conv-search", tool_name="Grep", semantic_type="search")],
         )
         .save()
     )
@@ -647,7 +645,7 @@ async def test_backend_action_terms_filter_contract(workspace_env: dict[str, Pat
         .add_message(
             "m2",
             role="assistant",
-            content_blocks=[
+            blocks=[
                 _tool_block(
                     message_id="m2",
                     session_id="conv-git",
@@ -670,9 +668,7 @@ async def test_backend_action_terms_filter_contract(workspace_env: dict[str, Pat
         .add_message(
             "m3",
             role="assistant",
-            content_blocks=[
-                _tool_block(message_id="m3", session_id="conv-edit", tool_name="Edit", semantic_type="file_edit")
-            ],
+            blocks=[_tool_block(message_id="m3", session_id="conv-edit", tool_name="Edit", semantic_type="file_edit")],
         )
         .save()
     )
@@ -730,7 +726,7 @@ async def test_filter_action_terms_apply_after_fts_search(workspace_env: dict[st
         .add_message(
             "m1",
             role="assistant",
-            content_blocks=[
+            blocks=[
                 {"type": "text", "text": "Investigating the same parser regression"},
                 _tool_block(message_id="m1", session_id="conv-search", tool_name="Grep", semantic_type="search"),
             ],
@@ -745,7 +741,7 @@ async def test_filter_action_terms_apply_after_fts_search(workspace_env: dict[st
         .add_message(
             "m2",
             role="assistant",
-            content_blocks=[
+            blocks=[
                 {"type": "text", "text": "Investigating the same parser regression"},
                 _tool_block(
                     message_id="m2",
@@ -794,7 +790,7 @@ async def test_filter_action_terms_reconcile_runtime_semantics_after_sql_candida
         .add_message(
             "m1",
             role="assistant",
-            content_blocks=[
+            blocks=[
                 {"type": "text", "text": "Create a task for the next review pass"},
                 _tool_block(
                     message_id="m1",

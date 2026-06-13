@@ -43,7 +43,7 @@ def test_context_pack_reads_archive_from_archive_tiers(tmp_path: Path) -> None:
                         provider_message_id="m1",
                         role=Role.USER,
                         text="hello archive pack",
-                        content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="hello archive pack")],
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text="hello archive pack")],
                     )
                 ],
             )

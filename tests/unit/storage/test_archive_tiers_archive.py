@@ -19,7 +19,7 @@ def test_active_archive_root_facade_writes_reads_and_searches_archive_db(tmp_pat
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="one searchable needle")],
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="one searchable needle")],
             )
         ],
     )
@@ -45,7 +45,7 @@ def test_archive_tiers_archive_facade_sorts_search_matches(tmp_path: Path) -> No
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="needle short")],
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="needle short")],
             )
         ],
     )
@@ -57,12 +57,12 @@ def test_archive_tiers_archive_facade_sorts_search_matches(tmp_path: Path) -> No
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="needle first")],
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="needle first")],
             ),
             ParsedMessage(
                 provider_message_id="m2",
                 role=Role.ASSISTANT,
-                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="needle second")],
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="needle second")],
             ),
         ],
     )
@@ -90,7 +90,7 @@ def test_archive_tiers_archive_facade_links_raw_and_parsed_rows(tmp_path: Path) 
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="raw linked")],
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="raw linked")],
             )
         ],
     )
@@ -137,7 +137,7 @@ def test_archive_tiers_archive_facade_adds_user_tags(tmp_path: Path) -> None:
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="taggable")],
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="taggable")],
             )
         ],
     )
@@ -174,7 +174,7 @@ def test_archive_tiers_archive_facade_deletes_archive_sessions_but_keeps_user_ta
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="delete me")],
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="delete me")],
             )
         ],
     )
@@ -206,7 +206,7 @@ def test_archive_tiers_archive_facade_sets_user_metadata(tmp_path: Path) -> None
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="metadata target")],
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="metadata target")],
             )
         ],
     )
@@ -248,7 +248,7 @@ def test_archive_tiers_archive_facade_lists_and_searches_session_summaries(tmp_p
                 provider_message_id="m1",
                 role=Role.USER,
                 message_type=MessageType.TOOL_USE,
-                content_blocks=[
+                blocks=[
                     ParsedContentBlock(type=BlockType.TEXT, text="alpha read token"),
                     ParsedContentBlock(type=BlockType.THINKING, text="plan"),
                     ParsedContentBlock(
@@ -276,7 +276,7 @@ def test_archive_tiers_archive_facade_lists_and_searches_session_summaries(tmp_p
                 provider_message_id="m1",
                 role=Role.USER,
                 paste_spans=[ParsedPasteEvidence(position=0, start_offset=0, end_offset=4, boundary_state="exact")],
-                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="beta read token")],
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="beta read token")],
             )
         ],
     )
@@ -463,7 +463,7 @@ def test_archive_tiers_archive_facade_resolves_exact_and_prefix_session_ids(tmp_
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="resolve me")],
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="resolve me")],
             )
         ],
     )
@@ -488,7 +488,7 @@ def test_archive_tiers_archive_facade_filters_since_session_scope(tmp_path: Path
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="anchor token")],
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="anchor token")],
             )
         ],
     )
@@ -502,7 +502,7 @@ def test_archive_tiers_archive_facade_filters_since_session_scope(tmp_path: Path
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="needle same scope")],
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="needle same scope")],
             )
         ],
     )
@@ -516,7 +516,7 @@ def test_archive_tiers_archive_facade_filters_since_session_scope(tmp_path: Path
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="needle other scope")],
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="needle other scope")],
             )
         ],
     )
@@ -530,7 +530,7 @@ def test_archive_tiers_archive_facade_filters_since_session_scope(tmp_path: Path
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="needle earlier scope")],
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="needle earlier scope")],
             )
         ],
     )

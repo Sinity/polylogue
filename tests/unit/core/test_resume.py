@@ -35,7 +35,7 @@ def _seed_resume_sessions(db_path: Path) -> None:
             role="assistant",
             text="I will inspect command wiring and insight surfaces.",
             timestamp="2026-04-20T10:05:00+00:00",
-            content_blocks=[
+            blocks=[
                 {
                     "type": "tool_use",
                     "tool_name": "Read",
@@ -65,7 +65,7 @@ def _seed_resume_sessions(db_path: Path) -> None:
             role="assistant",
             text="Continuing implementation and running pytest for resume tests.",
             timestamp="2026-04-20T11:15:00+00:00",
-            content_blocks=[
+            blocks=[
                 {
                     "type": "tool_use",
                     "tool_name": "Bash",

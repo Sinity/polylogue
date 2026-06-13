@@ -236,7 +236,7 @@ async def test_apply_session_insight_session_updates_async_uses_session_events_f
                     "conv-provider-terminal:msg-1",
                     "conv-provider-terminal",
                     text="Run the command",
-                    content_blocks=[
+                    blocks=[
                         {
                             "type": "tool_use",
                             "tool_name": "bash",
@@ -537,14 +537,14 @@ def test_session_insight_load_skips_plain_text_blocks(tmp_path: Path) -> None:
                     "conv-blocks:msg-1",
                     "conv-blocks",
                     text="Plain text is already stored on the message row.",
-                    content_blocks=[{"type": "text", "text": "Plain text is already stored on the message row."}],
+                    blocks=[{"type": "text", "text": "Plain text is already stored on the message row."}],
                 ),
                 make_message(
                     "conv-blocks:msg-2",
                     "conv-blocks",
                     role="assistant",
                     text="exec_command",
-                    content_blocks=[
+                    blocks=[
                         {
                             "type": "tool_use",
                             "name": "exec_command",
@@ -616,7 +616,7 @@ def test_session_insight_load_bounds_large_text_payloads(tmp_path: Path) -> None
                     "conv-large-text",
                     role="assistant",
                     text=large_message,
-                    content_blocks=[
+                    blocks=[
                         {
                             "type": "text",
                             "text": large_message,

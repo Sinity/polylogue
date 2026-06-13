@@ -18,7 +18,7 @@ def test_projection_removes_only_file_read_payloads_when_requested() -> None:
                 id="a1",
                 role="assistant",
                 text="Working",
-                content_blocks=[
+                blocks=[
                     {"type": "text", "text": "Working"},
                     {
                         "type": "tool_use",
@@ -40,13 +40,13 @@ def test_projection_removes_only_file_read_payloads_when_requested() -> None:
                 id="t1",
                 role="tool",
                 text="README contents",
-                content_blocks=[{"type": "tool_result", "tool_id": "tool-read", "text": "README contents"}],
+                blocks=[{"type": "tool_result", "tool_id": "tool-read", "text": "README contents"}],
             ),
             make_msg(
                 id="t2",
                 role="tool",
                 text="pytest ok",
-                content_blocks=[{"type": "tool_result", "tool_id": "tool-shell", "text": "pytest ok"}],
+                blocks=[{"type": "tool_result", "tool_id": "tool-shell", "text": "pytest ok"}],
             ),
         ]
     )
@@ -85,7 +85,7 @@ def test_projection_filters_structured_code_and_tool_outputs_without_losing_pros
                 id="mixed",
                 role="assistant",
                 text="ignored",
-                content_blocks=[
+                blocks=[
                     {"type": "text", "text": "Plan"},
                     {"type": "code", "text": "print('x')", "language": "python"},
                     {
@@ -112,7 +112,7 @@ def test_projection_filters_structured_code_and_tool_outputs_without_losing_pros
 
     message = next(iter(projected.messages))
     assert message.text == "Plan\n\n[Tool: Read] `README.md`"
-    assert [block["type"] for block in message.content_blocks] == ["text", "tool_use"]
+    assert [block["type"] for block in message.blocks] == ["text", "tool_use"]
 
 
 def test_prose_only_drops_attachment_only_messages() -> None:
@@ -151,14 +151,14 @@ def test_prose_only_drops_claude_code_protocol_artifacts() -> None:
             role=Role.USER,
             message_type=MessageType.MESSAGE,
             text="This is a real typed request.",
-            content_blocks=[{"type": "text", "text": "This is a real typed request."}],
+            blocks=[{"type": "text", "text": "This is a real typed request."}],
         ),
         make_msg(
             id="leading-reminder",
             role=Role.USER,
             message_type=MessageType.MESSAGE,
             text="<system-reminder>model-only reminder</system-reminder>\n\nActual user prompt.",
-            content_blocks=[
+            blocks=[
                 {
                     "type": "text",
                     "text": "<system-reminder>model-only reminder</system-reminder>\n\nActual user prompt.",
@@ -170,7 +170,7 @@ def test_prose_only_drops_claude_code_protocol_artifacts() -> None:
             role=Role.USER,
             message_type=MessageType.PROTOCOL,
             text="<command-name>status</command-name>\n<command-message>status</command-message>",
-            content_blocks=[
+            blocks=[
                 {
                     "type": "text",
                     "text": "<command-name>status</command-name>\n<command-message>status</command-message>",
@@ -182,7 +182,7 @@ def test_prose_only_drops_claude_code_protocol_artifacts() -> None:
             role=Role.USER,
             message_type=MessageType.MESSAGE,
             text="Please explain literal <system-reminder> tags.",
-            content_blocks=[{"type": "text", "text": "Please explain literal <system-reminder> tags."}],
+            blocks=[{"type": "text", "text": "Please explain literal <system-reminder> tags."}],
         ),
         make_msg(
             id="local-command-caveat",
@@ -193,7 +193,7 @@ def test_prose_only_drops_claude_code_protocol_artifacts() -> None:
                 "DO NOT respond to these messages or otherwise consider them in your response unless "
                 "the user explicitly asks you to."
             ),
-            content_blocks=[
+            blocks=[
                 {
                     "type": "text",
                     "text": (
@@ -209,7 +209,7 @@ def test_prose_only_drops_claude_code_protocol_artifacts() -> None:
             role=Role.USER,
             message_type=MessageType.PROTOCOL,
             text="<task-notification><status>completed</status><result>Tool payload</result></task-notification>",
-            content_blocks=[
+            blocks=[
                 {
                     "type": "text",
                     "text": (
@@ -223,7 +223,7 @@ def test_prose_only_drops_claude_code_protocol_artifacts() -> None:
             role=Role.USER,
             message_type=MessageType.CONTEXT,
             text="Base directory for this skill: /home/sinity/.claude/skills/enhance\n\n# Prompt Enhancement",
-            content_blocks=[
+            blocks=[
                 {
                     "type": "text",
                     "text": (
@@ -244,7 +244,7 @@ def test_prose_only_drops_claude_code_protocol_artifacts() -> None:
 
     assert [message.id for message in projected] == ["direct-user", "leading-reminder", "inline-reminder-example"]
     assert projected[1].text == "Actual user prompt."
-    assert projected[1].content_blocks == [{"type": "text", "text": "Actual user prompt."}]
+    assert projected[1].blocks == [{"type": "text", "text": "Actual user prompt."}]
     assert projected[2].text == "Please explain literal <system-reminder> tags."
 
 
@@ -269,7 +269,7 @@ def test_projection_classifies_text_blocks_tools_attachments_and_system_noise() 
             id="blocks",
             role=Role.ASSISTANT,
             text="ignored",
-            content_blocks=[
+            blocks=[
                 {"type": "code", "code": "print('block')"},
                 {"type": "thinking", "thinking": "reason"},
                 {

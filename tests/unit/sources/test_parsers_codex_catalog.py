@@ -314,9 +314,9 @@ def _assert_roundtrip(
         assert hydrated_roles == expected_roles, f"[{label}] roles expected {expected_roles}, got {hydrated_roles}"
 
     # Content-block kinds: assert at the materialization boundary
-    # (``bundle.content_blocks``) — see test_parsers_claude_ai_catalog
+    # (``bundle.blocks``) — see test_parsers_claude_ai_catalog
     # for rationale.
-    observed_kinds = {str(b.type) for m in roundtrip.parsed.messages for b in m.content_blocks}
+    observed_kinds = {str(b.type) for m in roundtrip.parsed.messages for b in m.blocks}
 
     block_types_any_of = expectations.get("block_types_any_of")
     if block_types_any_of is not None:

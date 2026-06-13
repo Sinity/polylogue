@@ -171,7 +171,7 @@ def test_tool_use_roundtrip_markdown_snapshot(snapshot: object) -> None:
             id="m2",
             role="assistant",
             text="",
-            content_blocks=[
+            blocks=[
                 {
                     "type": BlockType.TOOL_USE.value,
                     "name": "bash",
@@ -184,7 +184,7 @@ def test_tool_use_roundtrip_markdown_snapshot(snapshot: object) -> None:
             id="m3",
             role="tool",
             text="",
-            content_blocks=[
+            blocks=[
                 {
                     "type": BlockType.TOOL_RESULT.value,
                     "tool_use_id": "call-1",
@@ -210,7 +210,7 @@ def test_thinking_block_markdown_snapshot(snapshot: object) -> None:
             id="m1",
             role="assistant",
             text="",
-            content_blocks=[
+            blocks=[
                 {
                     "type": BlockType.THINKING.value,
                     "text": "Let me think step by step about this.",
@@ -266,7 +266,7 @@ def test_code_fence_with_backticks_markdown_snapshot(snapshot: object) -> None:
             id="m1",
             role="assistant",
             text="",
-            content_blocks=[
+            blocks=[
                 {
                     "type": BlockType.CODE.value,
                     "language": "python",
@@ -348,7 +348,7 @@ def test_tool_use_roundtrip_html_snapshot(snapshot: object) -> None:
             id="m2",
             role="assistant",
             text="",
-            content_blocks=[
+            blocks=[
                 {
                     "type": BlockType.TOOL_USE.value,
                     "name": "bash",
@@ -361,7 +361,7 @@ def test_tool_use_roundtrip_html_snapshot(snapshot: object) -> None:
             id="m3",
             role="tool",
             text="",
-            content_blocks=[
+            blocks=[
                 {
                     "type": BlockType.TOOL_RESULT.value,
                     "tool_use_id": "call-1",
@@ -387,7 +387,7 @@ def test_thinking_block_html_snapshot(snapshot: object) -> None:
             id="m1",
             role="assistant",
             text="",
-            content_blocks=[
+            blocks=[
                 {
                     "type": BlockType.THINKING.value,
                     "text": "Let me think step by step about this.",
@@ -416,7 +416,7 @@ def test_code_fence_with_backticks_html_snapshot(snapshot: object) -> None:
             id="m1",
             role="assistant",
             text="",
-            content_blocks=[
+            blocks=[
                 {
                     "type": BlockType.CODE.value,
                     "language": "python",
@@ -442,7 +442,7 @@ def test_media_blocks_render_in_session_html() -> None:
             id="m1",
             role="assistant",
             text="This fallback text should not be rendered",
-            content_blocks=[
+            blocks=[
                 {
                     "type": BlockType.DOCUMENT.value,
                     "name": "Spec",

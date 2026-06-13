@@ -400,7 +400,7 @@ def _assert_roundtrip(
 
     # Content-block kinds are the parser's contract: assert on the parsed
     # messages the parser emitted.
-    observed_kinds = {str(b.type) for m in roundtrip.parsed.messages for b in m.content_blocks}
+    observed_kinds = {str(b.type) for m in roundtrip.parsed.messages for b in m.blocks}
 
     block_types_any_of = expectations.get("block_types_any_of")
     if block_types_any_of is not None:

@@ -180,7 +180,7 @@ class TestChunkedPromptEnvelopeShape:
 class TestPerChunkContentBlocks:
     """Pin how a chunk's typed payload realises as ``content_blocks``.
 
-    ``msg.content_blocks`` is the structured representation that downstream
+    ``msg.blocks`` is the structured representation that downstream
     surfaces (renderers, FTS indexing, MCP) consume. The contract: a thought
     chunk emits a ``thinking`` block; ``executableCode`` emits a ``code``
     block carrying the source; ``codeExecutionResult`` emits a
@@ -190,25 +190,23 @@ class TestPerChunkContentBlocks:
     def test_thought_chunk_emits_thinking_block(self) -> None:
         payload = _load_catalog("code_execution_prompt.json")
         session = _parse(payload, "code_execution_prompt")
-        thought_msgs = [m for m in session.messages if any(b.type == BlockType.THINKING for b in m.content_blocks)]
+        thought_msgs = [m for m in session.messages if any(b.type == BlockType.THINKING for b in m.blocks)]
         assert len(thought_msgs) == 1
-        thinking_block = next(b for b in thought_msgs[0].content_blocks if b.type == BlockType.THINKING)
+        thinking_block = next(b for b in thought_msgs[0].blocks if b.type == BlockType.THINKING)
         assert thinking_block.text == "I should use code execution."
 
     def test_executable_code_chunk_emits_code_block_with_source(self) -> None:
         payload = _load_catalog("code_execution_prompt.json")
         session = _parse(payload, "code_execution_prompt")
-        code_msgs = [m for m in session.messages if any(b.type == BlockType.CODE for b in m.content_blocks)]
+        code_msgs = [m for m in session.messages if any(b.type == BlockType.CODE for b in m.blocks)]
         assert len(code_msgs) == 1
-        code_block = next(b for b in code_msgs[0].content_blocks if b.type == BlockType.CODE)
+        code_block = next(b for b in code_msgs[0].blocks if b.type == BlockType.CODE)
         assert code_block.text == "print(2+2)"
 
     def test_code_execution_result_chunk_emits_tool_result_block(self) -> None:
         payload = _load_catalog("code_execution_prompt.json")
         session = _parse(payload, "code_execution_prompt")
-        result_blocks = [
-            block for m in session.messages for block in m.content_blocks if block.type == BlockType.TOOL_RESULT
-        ]
+        result_blocks = [block for m in session.messages for block in m.blocks if block.type == BlockType.TOOL_RESULT]
         assert len(result_blocks) == 1
         # The on-disk output ("4\n") is surfaced verbatim, not the outcome label.
         result_text = result_blocks[0].text
@@ -219,9 +217,9 @@ class TestPerChunkContentBlocks:
         payload = _load_catalog("text_only_prompt.json")
         session = _parse(payload, "text_only_prompt")
         for message in session.messages:
-            assert len(message.content_blocks) == 1
-            assert message.content_blocks[0].type == BlockType.TEXT
-            assert message.content_blocks[0].text == message.text
+            assert len(message.blocks) == 1
+            assert message.blocks[0].type == BlockType.TEXT
+            assert message.blocks[0].text == message.text
 
 
 # ---------------------------------------------------------------------------
@@ -234,7 +232,7 @@ class TestMetadataRoundtrip:
 
     provider_meta and its sub-keys (raw, isThought, tokenCount, finishReason,
     thinkingBudget, safetyRatings, executableCode, codeExecutionResult) are no
-    longer retained. The canonical surface is msg.content_blocks. These tests
+    longer retained. The canonical surface is msg.blocks. These tests
     assert the surviving typed contracts.
     """
 
@@ -243,7 +241,7 @@ class TestMetadataRoundtrip:
         # that every parsed chunk produces at least one content block.
         payload = _load_catalog("text_only_prompt.json")
         session = _parse(payload, "text_only_prompt")
-        assert all(len(m.content_blocks) > 0 for m in session.messages)
+        assert all(len(m.blocks) > 0 for m in session.messages)
 
     def test_token_count_and_finish_reason_surface_at_top_level(self) -> None:
         # tokenCount / finishReason are no longer retained in provider_meta;
@@ -252,16 +250,16 @@ class TestMetadataRoundtrip:
         session = _parse(payload, "text_only_prompt")
         assistant_msgs = [m for m in session.messages if m.role == Role.ASSISTANT]
         assert assistant_msgs
-        assert all(any(b.type == BlockType.TEXT for b in m.content_blocks) for m in assistant_msgs)
+        assert all(any(b.type == BlockType.TEXT for b in m.blocks) for m in assistant_msgs)
 
     def test_thinking_budget_and_is_thought_surface_at_top_level(self) -> None:
         # isThought / thinkingBudget are no longer retained in provider_meta;
         # the canonical signal is the thinking block on the message.
         payload = _load_catalog("code_execution_prompt.json")
         session = _parse(payload, "code_execution_prompt")
-        thought_msgs = [m for m in session.messages if any(b.type == BlockType.THINKING for b in m.content_blocks)]
+        thought_msgs = [m for m in session.messages if any(b.type == BlockType.THINKING for b in m.blocks)]
         assert len(thought_msgs) == 1
-        thinking_block = next(b for b in thought_msgs[0].content_blocks if b.type == BlockType.THINKING)
+        thinking_block = next(b for b in thought_msgs[0].blocks if b.type == BlockType.THINKING)
         assert thinking_block.text == "I should use code execution."
 
     def test_safety_ratings_round_trip_into_provider_meta(self) -> None:
@@ -277,10 +275,10 @@ class TestMetadataRoundtrip:
         # as raw dicts; they surface as typed CODE and TOOL_RESULT blocks.
         payload = _load_catalog("code_execution_prompt.json")
         session = _parse(payload, "code_execution_prompt")
-        code_blocks = [b for m in session.messages for b in m.content_blocks if b.type == BlockType.CODE]
+        code_blocks = [b for m in session.messages for b in m.blocks if b.type == BlockType.CODE]
         assert len(code_blocks) == 1
         assert code_blocks[0].text == "print(2+2)"
-        result_blocks = [b for m in session.messages for b in m.content_blocks if b.type == BlockType.TOOL_RESULT]
+        result_blocks = [b for m in session.messages for b in m.blocks if b.type == BlockType.TOOL_RESULT]
         assert len(result_blocks) == 1
         assert result_blocks[0].text is not None
         assert result_blocks[0].text.strip() == "4"
@@ -298,8 +296,8 @@ class TestMetadataRoundtrip:
         assert [m.role for m in first.messages] == [m.role for m in second.messages]
         assert [m.text for m in first.messages] == [m.text for m in second.messages]
         assert [m.timestamp for m in first.messages] == [m.timestamp for m in second.messages]
-        assert [[b.type for b in m.content_blocks] for m in first.messages] == [
-            [b.type for b in m.content_blocks] for m in second.messages
+        assert [[b.type for b in m.blocks] for m in first.messages] == [
+            [b.type for b in m.blocks] for m in second.messages
         ]
 
 

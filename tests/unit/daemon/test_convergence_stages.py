@@ -97,7 +97,7 @@ def _seed_raw_source_session(conn: sqlite3.Connection, *, session_id: str, sourc
                     role=Role.normalize("user"),
                     text=f"Message for {session_id}",
                     position=0,
-                    content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text=f"Message for {session_id}")],
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text=f"Message for {session_id}")],
                 )
             ],
         ),
@@ -122,7 +122,7 @@ def _seed_index_session(conn: sqlite3.Connection, *, session_id: str, text: str)
                     role=Role.normalize("user"),
                     text=text,
                     position=0,
-                    content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
                 )
             ],
         ),
@@ -143,7 +143,7 @@ def _seed_empty_text_index_session(conn: sqlite3.Connection, *, session_id: str)
                     role=Role.normalize("user"),
                     text="",
                     position=0,
-                    content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="")],
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="")],
                 )
             ],
         ),

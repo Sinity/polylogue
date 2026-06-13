@@ -199,7 +199,7 @@ def test_build_session_profile_normalizes_repo_roots_from_workdirs_and_tool_path
                     provider=Provider.CLAUDE_CODE,
                     text="Inspecting those paths.",
                     timestamp=datetime(2026, 3, 24, 10, 1, tzinfo=timezone.utc),
-                    content_blocks=[
+                    blocks=[
                         {
                             "type": "tool_use",
                             "tool_name": "Read",
@@ -273,7 +273,7 @@ def test_extract_attribution_ignores_configured_claude_transcript_repo(tmp_path:
                     provider=Provider.CLAUDE_CODE,
                     text="Inspecting.",
                     timestamp=datetime(2026, 3, 24, 10, 1, tzinfo=timezone.utc),
-                    content_blocks=[
+                    blocks=[
                         {
                             "type": "tool_use",
                             "tool_name": "Read",

@@ -77,7 +77,7 @@ def _has_text_content(payload: object, provider: str) -> bool:
             if msg.text and msg.text.strip():
                 return True
             # Also check content_blocks for text.
-            for blk in msg.content_blocks:
+            for blk in msg.blocks:
                 if blk.text and blk.text.strip():
                     return True
     return False
@@ -139,7 +139,7 @@ def test_generated_claude_code_contains_varied_block_types() -> None:
     block_types_found: set[str] = set()
     for conv in sessions:
         for msg in conv.messages:
-            for blk in msg.content_blocks:
+            for blk in msg.blocks:
                 block_types_found.add(str(blk.type))
             if msg.text:
                 block_types_found.add("text")

@@ -40,7 +40,7 @@ def _seed_context_pack_archive(tmp_path: Path, *, provider_session_id: str) -> P
                         provider_message_id="m1",
                         role=Role.USER,
                         text="context pack body",
-                        content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="context pack body")],
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text="context pack body")],
                     )
                 ],
             )
@@ -197,7 +197,7 @@ class TestBuildContextPackRegistration:
                             provider_message_id="m1",
                             role=Role.USER,
                             text="mcp context needle",
-                            content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="mcp context needle")],
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="mcp context needle")],
                         )
                     ],
                 )
@@ -245,7 +245,7 @@ class TestBuildContextPackRegistration:
                             provider_message_id="m1",
                             role=Role.USER,
                             text="mixed context needle",
-                            content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="mixed context needle")],
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="mixed context needle")],
                         )
                     ],
                 )

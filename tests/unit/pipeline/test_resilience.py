@@ -672,7 +672,7 @@ def test_transform_with_tool_use_message_keeps_non_empty_message_hash(tmp_path: 
                 role=Role.ASSISTANT,
                 text="Running a shell command.",
                 timestamp="2026-04-02T00:00:01Z",
-                content_blocks=[
+                blocks=[
                     ParsedContentBlock(
                         type=BlockType.TOOL_USE,
                         tool_name="bash",
@@ -718,14 +718,14 @@ def test_transform_deduplicates_materialized_message_rows_by_primary_key(tmp_pat
                 role=Role.USER,
                 text="older text",
                 timestamp="2026-04-02T00:00:01Z",
-                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="older text")],
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="older text")],
             ),
             ParsedMessage(
                 provider_message_id="msg-1",
                 role=Role.USER,
                 text="newer text",
                 timestamp="2026-04-02T00:00:02Z",
-                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="newer text")],
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="newer text")],
             ),
         ],
         attachments=[],

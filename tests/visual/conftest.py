@@ -190,7 +190,7 @@ def _build_reader_c1(workspace: ReaderWorkspace, *, attachments: bool = False) -
             text="python -m pytest tests/visual\nstatus: passed",
             timestamp="2026-05-15T00:02:00+00:00",
             message_type="tool_result",
-            content_blocks=[
+            blocks=[
                 {
                     "type": BlockType.TOOL_RESULT.value,
                     "text": "python -m pytest tests/visual\nstatus: passed",

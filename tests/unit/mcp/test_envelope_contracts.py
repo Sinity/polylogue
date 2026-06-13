@@ -540,7 +540,7 @@ class TestNativeReadSurfaceHonorsContract:
                             provider_message_id="m1",
                             role=Role.USER,
                             text="needle contract evidence",
-                            content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="needle contract evidence")],
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="needle contract evidence")],
                         )
                     ],
                 )

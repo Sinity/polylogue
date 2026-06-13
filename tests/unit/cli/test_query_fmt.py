@@ -307,7 +307,7 @@ def _make_msg(
     id: str | None = None,
     timestamp: datetime | None = None,
     attachments: list[Attachment] | None = None,
-    content_blocks: list[dict[str, object]] | None = None,
+    blocks: list[dict[str, object]] | None = None,
     provider_meta: dict[str, object] | None = None,
 ) -> Message:
     return build_msg(
@@ -316,7 +316,7 @@ def _make_msg(
         text=text,
         timestamp=timestamp,
         attachments=attachments or [],
-        content_blocks=content_blocks or [],
+        blocks=blocks or [],
         provider_meta=provider_meta,
     )
 
@@ -755,7 +755,7 @@ class TestGroupedStatsOutput:
                         "assistant",
                         str(item.get("text", "")),
                         id=f"{conv_id}-{index}",
-                        content_blocks=[
+                        blocks=[
                             {
                                 "type": "tool_use",
                                 "tool_name": item.get("tool_name", item.get("semantic_type", "unknown")),
@@ -804,7 +804,7 @@ class TestGroupedStatsOutput:
                         "assistant",
                         "read one",
                         id="conv-1-0",
-                        content_blocks=[
+                        blocks=[
                             {
                                 "type": "tool_use",
                                 "tool_name": "Read",
@@ -854,7 +854,7 @@ class TestGroupedStatsOutput:
                         "assistant",
                         "grep one",
                         id="conv-1-0",
-                        content_blocks=[
+                        blocks=[
                             {
                                 "type": "tool_use",
                                 "tool_name": "Grep",

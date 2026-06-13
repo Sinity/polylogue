@@ -219,7 +219,7 @@ class TestPreflightCommand:
                             provider_message_id="m1",
                             role=Role.USER,
                             text="embed me",
-                            content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="embed me")],
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="embed me")],
                         )
                     ],
                 )
@@ -262,7 +262,7 @@ class TestPreflightCommand:
                                 provider_message_id="m1",
                                 role=Role.USER,
                                 text=f"embed me {index}",
-                                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text=f"embed me {index}")],
+                                blocks=[ParsedContentBlock(type=BlockType.TEXT, text=f"embed me {index}")],
                             )
                         ],
                     )

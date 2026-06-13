@@ -247,7 +247,7 @@ class TestListArchiveCoverageInsights:
                 "tool-msg-1",
                 role="assistant",
                 text="Let me search for that",
-                content_blocks=[{"type": "tool_use", "name": "search", "id": "toolu_123"}],
+                blocks=[{"type": "tool_use", "name": "search", "id": "toolu_123"}],
             )
             .save()
         )
@@ -273,7 +273,7 @@ class TestListArchiveCoverageInsights:
                 "think-msg-1",
                 role="assistant",
                 text="Let me think about this",
-                content_blocks=[{"type": "thinking", "thinking": "Reasoning..."}],
+                blocks=[{"type": "thinking", "thinking": "Reasoning..."}],
             )
             .save()
         )
@@ -299,13 +299,13 @@ class TestListArchiveCoverageInsights:
                 "mt-msg-1",
                 role="assistant",
                 text="Tool 1",
-                content_blocks=[{"type": "tool_use", "name": "a"}],
+                blocks=[{"type": "tool_use", "name": "a"}],
             )
             .add_message(
                 "mt-msg-2",
                 role="assistant",
                 text="Tool 2",
-                content_blocks=[{"type": "tool_use", "name": "b"}],
+                blocks=[{"type": "tool_use", "name": "b"}],
             )
             .save()
         )
@@ -376,7 +376,7 @@ def _seed_db(
                 role=role,
                 text="" if text is None else text,
                 timestamp=None,
-                content_blocks=content_blocks,
+                blocks=content_blocks,
             )
         builder.save()
 

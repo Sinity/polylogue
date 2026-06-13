@@ -235,7 +235,7 @@ class TestPinnedSemanticRegressions:
             id="m1",
             role=Role.ASSISTANT,
             text="<thinking>xml fallback</thinking>",
-            content_blocks=[
+            blocks=[
                 {"type": "thinking", "text": "db thought 1"},
                 {"type": "thinking", "text": "db thought 2"},
             ],
@@ -247,7 +247,7 @@ class TestPinnedSemanticRegressions:
             id="m1",
             role=Role.ASSISTANT,
             text="fallback text",
-            content_blocks=[
+            blocks=[
                 {"type": "text", "text": "ignore me"},
                 {"type": "thinking", "text": 123},
                 {"type": "thinking", "text": "db-only thinking"},
@@ -262,7 +262,7 @@ class TestPinnedSemanticRegressions:
             role=Role.ASSISTANT,
             text="I will inspect the file",
             provider=Provider.CLAUDE_CODE,
-            content_blocks=[
+            blocks=[
                 {"type": "text", "text": "I will inspect the file"},
                 {
                     "type": "tool_use",
@@ -280,7 +280,7 @@ class TestPinnedSemanticRegressions:
             role=Role.ASSISTANT,
             text="",
             provider=Provider.CLAUDE_CODE,
-            content_blocks=[{"type": "thinking", "text": "step by step"}],
+            blocks=[{"type": "thinking", "text": "step by step"}],
         )
         assert msg.is_thinking is True
 
@@ -322,7 +322,7 @@ class TestMessageFromRecord:
             session_id="c1",
             role="assistant",
             text="Inspecting file",
-            content_blocks=[
+            blocks=[
                 make_content_block(
                     message_id="m1",
                     session_id="c1",
@@ -339,7 +339,7 @@ class TestMessageFromRecord:
 
         message = message_from_record(record, [])
 
-        assert message.content_blocks == [
+        assert message.blocks == [
             {
                 "type": "tool_use",
                 "text": None,

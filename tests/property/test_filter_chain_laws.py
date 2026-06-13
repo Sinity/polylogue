@@ -164,7 +164,7 @@ def _seed_diverse_archive(db_path: Path) -> None:
                     role="assistant",
                     text="tool response",
                     timestamp=ts,
-                    content_blocks=[{"type": "tool_use", "tool_name": "bash", "tool_id": f"tid-{cid}"}],
+                    blocks=[{"type": "tool_use", "tool_name": "bash", "tool_id": f"tid-{cid}"}],
                 )
 
             # Add thinking block on every third session
@@ -173,7 +173,7 @@ def _seed_diverse_archive(db_path: Path) -> None:
                     role="assistant",
                     text="answer",
                     timestamp=ts,
-                    content_blocks=[{"type": "thinking", "text": "thinking..."}],
+                    blocks=[{"type": "thinking", "text": "thinking..."}],
                 )
 
             builder.save()

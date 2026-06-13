@@ -330,7 +330,7 @@ async def test_rebuild_index_populates_action_search_rows(
         "conv-actions",
         role="assistant",
         text="Ran tests",
-        content_blocks=[
+        blocks=[
             make_content_block(
                 message_id="msg-actions",
                 session_id="conv-actions",

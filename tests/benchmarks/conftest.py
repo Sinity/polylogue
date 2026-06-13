@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.storage.index import rebuild_index
-from polylogue.storage.runtime import ContentBlockRecord, MessageRecord, SessionRecord
+from polylogue.storage.runtime import BlockRecord, MessageRecord, SessionRecord
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import open_connection
 from tests.infra.storage_records import make_content_block, make_message, make_session, store_records
@@ -172,7 +172,7 @@ def _generate_realistic_text(rng: random.Random, role: str, msg_index: int) -> s
     return " ".join(rng.choices(words, k=length))
 
 
-def _make_content_block(rng: random.Random, msg_id: str, conv_id: str, block_index: int) -> ContentBlockRecord | None:
+def _make_content_block(rng: random.Random, msg_id: str, conv_id: str, block_index: int) -> BlockRecord | None:
     """Generate a content block matching real distribution."""
     # ~67% of assistant messages have at least one block
     sem = SEMANTIC_CYCLE[block_index % len(SEMANTIC_CYCLE)]
@@ -245,7 +245,7 @@ def _seed_realistic_db(db_path: Path, target_messages: int, seed: int = 42) -> d
             # Generate content blocks for assistant messages. Blocks are folded
             # into the message so the production writer derives has_tool_use /
             # has_thinking and the per-session stat columns in one pass.
-            blocks: list[ContentBlockRecord] = []
+            blocks: list[BlockRecord] = []
             if role == "assistant" and rng.random() < 0.67:
                 block_count = rng.randint(1, 4)
                 for bi in range(block_count):
@@ -264,7 +264,7 @@ def _seed_realistic_db(db_path: Path, target_messages: int, seed: int = 42) -> d
                     content_hash=_make_content_hash(f"msg-{conv_index}-{j}"),
                     source_name=provider,
                     word_count=len(text.split()),
-                    content_blocks=blocks,
+                    blocks=blocks,
                 )
             )
             total_msgs += 1

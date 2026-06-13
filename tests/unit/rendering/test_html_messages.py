@@ -14,7 +14,7 @@ def test_render_session_html_keeps_messages_with_structured_blocks_only() -> Non
                 id="m1",
                 role="assistant",
                 text="",
-                content_blocks=[
+                blocks=[
                     {
                         "type": "code",
                         "text": "print('hello from blocks')",

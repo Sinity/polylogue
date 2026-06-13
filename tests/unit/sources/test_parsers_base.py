@@ -150,11 +150,11 @@ def test_extract_messages_from_list_preserves_wrapped_segment_semantics() -> Non
     assert [message.provider_message_id for message in messages] == ["m-assistant", "m-user"]
     assert [message.role.value for message in messages] == ["assistant", "user"]
     assert messages[0].text == "reason\nprint('ok')"
-    assert [block.type for block in messages[0].content_blocks] == ["thinking", "code"]
-    assert messages[0].content_blocks[1].metadata == {"language": "python"}
+    assert [block.type for block in messages[0].blocks] == ["thinking", "code"]
+    assert messages[0].blocks[1].metadata == {"language": "python"}
     assert messages[1].text == "question\nmore context"
-    assert [block.type for block in messages[1].content_blocks] == ["text", "text"]
-    assert [block.text for block in messages[1].content_blocks] == ["question", "more context"]
+    assert [block.type for block in messages[1].blocks] == ["text", "text"]
+    assert [block.text for block in messages[1].blocks] == ["question", "more context"]
 
 
 def test_extract_messages_from_chat_messages_preserves_structured_segments_and_attachments() -> None:
@@ -187,8 +187,8 @@ def test_extract_messages_from_chat_messages_preserves_structured_segments_and_a
         '{"content": [{"text": "done", "type": "text"}], '
         '"tool_use_id": "tool-1", "type": "tool_result"}'
     )
-    assert [block.type for block in messages[0].content_blocks] == ["thinking", "tool_result", "code"]
-    assert messages[0].content_blocks[2].metadata == {"language": "python"}
+    assert [block.type for block in messages[0].blocks] == ["thinking", "tool_result", "code"]
+    assert messages[0].blocks[2].metadata == {"language": "python"}
     assert [message.position for message in messages] == [0, 1]
     assert [message.variant_index for message in messages] == [0, 0]
     assert [message.is_active_path for message in messages] == [True, True]
@@ -426,7 +426,7 @@ def test_parse_code_tool_result_content_preserved() -> None:
     ]
     result = parse_code(items, "fallback")
     assert result.messages, "Expected at least one message"
-    blocks = result.messages[0].content_blocks
+    blocks = result.messages[0].blocks
     tool_results = [b for b in blocks if b.type == "tool_result"]
     assert tool_results, "Expected tool_result content block"
     tr = tool_results[0]
@@ -459,7 +459,7 @@ def test_parse_code_tool_result_error_preserved() -> None:
         },
     ]
     result = parse_code(items, "fallback")
-    blocks = result.messages[0].content_blocks
+    blocks = result.messages[0].blocks
     tool_results = [b for b in blocks if b.type == "tool_result"]
     assert tool_results, "Expected tool_result content block"
 
@@ -484,7 +484,7 @@ def test_parse_code_mixed_content_blocks_all_preserved() -> None:
         },
     ]
     result = parse_code(items, "fallback")
-    blocks = result.messages[0].content_blocks
+    blocks = result.messages[0].blocks
     block_types = {b.type for b in blocks}
     assert "thinking" in block_types
     assert "text" in block_types
@@ -1254,11 +1254,11 @@ def test_parse_code_semantic_projection_contract() -> None:
     result = parse_code(payload, "test-session")
 
     assert len(result.messages) == 3
-    first_types = [block.type for block in result.messages[0].content_blocks]
+    first_types = [block.type for block in result.messages[0].blocks]
     assert "thinking" in first_types and "tool_use" in first_types
     assert result.messages[1].message_type.value == "summary"
     assert result.messages[1].text == "Summary of session"
-    bash_blocks = [block for block in result.messages[2].content_blocks if block.tool_name == "Bash"]
+    bash_blocks = [block for block in result.messages[2].blocks if block.tool_name == "Bash"]
     assert len(bash_blocks) == 1
     assert bash_blocks[0].tool_input is not None
     assert bash_blocks[0].tool_input.get("command") == "git commit -m 'Fix bug'"

@@ -38,7 +38,7 @@ def _populated_index(db: Path) -> None:
                     role=Role.USER,
                     text="searchable content here",
                     position=0,
-                    content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="searchable content here")],
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="searchable content here")],
                 ),
             ],
         )
@@ -93,14 +93,14 @@ def test_exact_coverage_counts_tool_blocks_as_indexable(tmp_path: Path) -> None:
                     role=Role.USER,
                     text="run the build",
                     position=0,
-                    content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="run the build")],
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="run the build")],
                 ),
                 ParsedMessage(
                     provider_message_id="a1",
                     role=Role.ASSISTANT,
                     text=None,
                     position=1,
-                    content_blocks=[
+                    blocks=[
                         ParsedContentBlock(
                             type=BlockType.TOOL_USE,
                             tool_name="exec_command",

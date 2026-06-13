@@ -113,21 +113,21 @@ def _messages(
     *,
     placeholder: bool = True,
     non_empty_only: bool = False,
-    content_blocks: list[dict[str, object]] | None = None,
+    blocks: list[dict[str, object]] | None = None,
 ) -> list[Message]:
     messages: list[Message] = []
     for index, item in enumerate(payload["messages"]):
         text = _message_text(item, placeholder=placeholder)
         if non_empty_only and not text.strip():
             continue
-        blocks = content_blocks if content_blocks is not None and index == 0 and item["role"] == "assistant" else []
+        row_blocks = blocks if blocks is not None and index == 0 and item["role"] == "assistant" else []
         messages.append(
             Message(
                 id=item["id"],
                 role=Role.normalize(item["role"]),
                 text=text,
                 timestamp=None,
-                content_blocks=blocks,
+                blocks=row_blocks,
             )
         )
     return messages
@@ -278,7 +278,7 @@ def test_content_blocks_produce_structured_markdown(conv_data: RenderSessionPayl
         {"type": "text", "text": "Here's what I found."},
     ]
 
-    messages = _messages(conv_data, content_blocks=blocks)
+    messages = _messages(conv_data, blocks=blocks)
     md = format_session_markdown(_session(conv_data, messages))
 
     # If first message was assistant and had blocks, check structure

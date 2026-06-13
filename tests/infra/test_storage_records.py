@@ -99,7 +99,7 @@ def test_make_message_rejects_non_json_provider_meta() -> None:
 def test_make_message_rejects_non_json_content_block_input() -> None:
     with pytest.raises(TypeError, match="content block tool input"):
         make_message(
-            content_blocks=[
+            blocks=[
                 {
                     "type": "tool_use",
                     "tool_name": "shell",
@@ -111,7 +111,7 @@ def test_make_message_rejects_non_json_content_block_input() -> None:
 
 def test_make_message_preserves_json_content_block_input() -> None:
     message = make_message(
-        content_blocks=[
+        blocks=[
             {
                 "type": "tool_use",
                 "tool_name": "shell",
@@ -120,5 +120,5 @@ def test_make_message_preserves_json_content_block_input() -> None:
         ]
     )
 
-    assert len(message.content_blocks) == 1
-    assert message.content_blocks[0].tool_input == '{"command":"pytest -q"}'
+    assert len(message.blocks) == 1
+    assert message.blocks[0].tool_input == '{"command":"pytest -q"}'

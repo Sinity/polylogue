@@ -181,7 +181,7 @@ def _sample_session() -> Session:
                 id="m-thinking",
                 role=Role.ASSISTANT,
                 text="chain",
-                content_blocks=[{"type": "thinking", "text": "chain"}],
+                blocks=[{"type": "thinking", "text": "chain"}],
             ),
             make_msg(id="m-tool", role=Role.TOOL, text="tool output"),
             make_msg(id="m-assistant", role=Role.ASSISTANT, text="answer"),

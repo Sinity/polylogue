@@ -212,6 +212,9 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "get_session_topology",
         "get_siblings",
         "get_thread",
+        # Blackboard note methods exposed in tests/unit/mcp/test_mcp_edge_cases.py.
+        "list_blackboard_notes",
+        "post_blackboard_note",
     }
 )
 
@@ -275,7 +278,7 @@ async def test_archive_tiers_facade_reads_active_db_override_root(tmp_path: Path
                         provider_message_id="m1",
                         role=Role.USER,
                         text="override root needle",
-                        content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="override root needle")],
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text="override root needle")],
                     )
                 ],
             )
@@ -302,13 +305,13 @@ async def _seed_two_sessions(db_path: Path) -> None:
                         provider_message_id="alpha-m1",
                         role=Role.USER,
                         text="alpha body",
-                        content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="alpha body")],
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text="alpha body")],
                     ),
                     ParsedMessage(
                         provider_message_id="alpha-m2",
                         role=Role.ASSISTANT,
                         text="alpha reply",
-                        content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="alpha reply")],
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text="alpha reply")],
                     ),
                 ],
             )
@@ -323,7 +326,7 @@ async def _seed_two_sessions(db_path: Path) -> None:
                         provider_message_id="beta-m1",
                         role=Role.USER,
                         text="beta body",
-                        content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="beta body")],
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text="beta body")],
                     )
                 ],
             )
@@ -641,7 +644,7 @@ async def test_get_actions_derives_from_archive_blocks(tmp_path: Path) -> None:
                         provider_message_id="m1",
                         role=Role.ASSISTANT,
                         text="running a command",
-                        content_blocks=[
+                        blocks=[
                             ParsedContentBlock(
                                 type=BlockType.TOOL_USE,
                                 tool_name="Bash",
@@ -867,7 +870,7 @@ async def test_archive_tiers_api_reads_native_sessions(tmp_path: Path) -> None:
                 provider_message_id="m1",
                 role=Role.USER,
                 message_type=MessageType.TOOL_USE,
-                content_blocks=[
+                blocks=[
                     ParsedContentBlock(type=BlockType.TEXT, text="api archive needle"),
                     ParsedContentBlock(
                         type=BlockType.TOOL_USE,
@@ -1082,7 +1085,7 @@ async def test_archive_tiers_api_reads_session_topology(tmp_path: Path) -> None:
             ParsedMessage(
                 provider_message_id="root-message",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="root")],
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="root")],
             )
         ],
     )
@@ -1096,7 +1099,7 @@ async def test_archive_tiers_api_reads_session_topology(tmp_path: Path) -> None:
             ParsedMessage(
                 provider_message_id="child-message",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="child")],
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="child")],
             )
         ],
     )
@@ -1201,7 +1204,7 @@ async def test_archive_tiers_api_user_mutations_write_user_tier(tmp_path: Path) 
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="user state target")],
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="user state target")],
             )
         ],
     )
@@ -1273,7 +1276,7 @@ async def test_archive_tiers_api_tag_rollups_read_index_and_user_tiers(tmp_path:
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="rollup one")],
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="rollup one")],
             )
         ],
     )
@@ -1287,7 +1290,7 @@ async def test_archive_tiers_api_tag_rollups_read_index_and_user_tiers(tmp_path:
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="rollup two")],
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="rollup two")],
             )
         ],
     )
@@ -1342,7 +1345,7 @@ async def test_archive_tiers_api_archive_coverage_reads_index_tier(tmp_path: Pat
                 provider_message_id="m1",
                 role=Role.USER,
                 text="one two three",
-                content_blocks=[
+                blocks=[
                     ParsedContentBlock(type=BlockType.TEXT, text="one two three"),
                     ParsedContentBlock(
                         type=BlockType.TOOL_USE,
@@ -1356,7 +1359,7 @@ async def test_archive_tiers_api_archive_coverage_reads_index_tier(tmp_path: Pat
                 provider_message_id="m2",
                 role=Role.ASSISTANT,
                 text="four five",
-                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="four five")],
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="four five")],
             ),
         ],
     )
@@ -1370,7 +1373,7 @@ async def test_archive_tiers_api_archive_coverage_reads_index_tier(tmp_path: Pat
                 provider_message_id="m1",
                 role=Role.USER,
                 text="plain",
-                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="plain")],
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="plain")],
             )
         ],
     )
@@ -1462,7 +1465,7 @@ async def test_archive_tiers_api_tool_usage_reads_index_actions(tmp_path: Path) 
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[
+                blocks=[
                     ParsedContentBlock(type=BlockType.TEXT, text="inspect file"),
                     ParsedContentBlock(
                         type=BlockType.TOOL_USE,
@@ -1487,7 +1490,7 @@ async def test_archive_tiers_api_tool_usage_reads_index_actions(tmp_path: Path) 
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="plain chat")],
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="plain chat")],
             )
         ],
     )
@@ -1542,7 +1545,7 @@ async def test_archive_tiers_api_delete_uses_index_tier_and_keeps_user_overlay(t
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="delete through v1")],
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="delete through v1")],
             )
         ],
     )
@@ -1587,7 +1590,7 @@ async def test_archive_tiers_api_raw_artifacts_read_source_tier(tmp_path: Path) 
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="raw artifact target")],
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="raw artifact target")],
             )
         ],
     )
@@ -1644,7 +1647,7 @@ async def test_archive_tiers_api_timeline_insights_read_index_tier(tmp_path: Pat
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="timeline target")],
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="timeline target")],
             )
         ],
     )
@@ -1762,7 +1765,7 @@ async def test_archive_tiers_api_threads_read_index_tier(tmp_path: Path) -> None
             ParsedMessage(
                 provider_message_id="p1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="thread parent")],
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="thread parent")],
             )
         ],
     )
@@ -1780,12 +1783,12 @@ async def test_archive_tiers_api_threads_read_index_tier(tmp_path: Path) -> None
             ParsedMessage(
                 provider_message_id="c1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="thread child")],
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="thread child")],
             ),
             ParsedMessage(
                 provider_message_id="c2",
                 role=Role.ASSISTANT,
-                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="thread reply")],
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="thread reply")],
             ),
         ],
     )
@@ -1955,7 +1958,7 @@ async def test_archive_tiers_api_session_costs_read_index_tier(tmp_path: Path) -
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="priced cost")],
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="priced cost")],
             )
         ],
     )
@@ -1969,7 +1972,7 @@ async def test_archive_tiers_api_session_costs_read_index_tier(tmp_path: Path) -
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="unpriced cost")],
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="unpriced cost")],
             )
         ],
     )
@@ -2066,13 +2069,13 @@ async def test_archive_tiers_api_latency_profiles_read_index_tier(tmp_path: Path
                 provider_message_id="m1",
                 role=Role.USER,
                 occurred_at_ms=1_770_000_000_000,
-                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="first prompt")],
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="first prompt")],
             ),
             ParsedMessage(
                 provider_message_id="m2",
                 role=Role.ASSISTANT,
                 occurred_at_ms=1_770_000_060_000,
-                content_blocks=[
+                blocks=[
                     ParsedContentBlock(type=BlockType.TEXT, text="using tool"),
                     ParsedContentBlock(
                         type=BlockType.TOOL_USE,
@@ -2086,13 +2089,13 @@ async def test_archive_tiers_api_latency_profiles_read_index_tier(tmp_path: Path
                 provider_message_id="m3",
                 role=Role.USER,
                 occurred_at_ms=1_770_000_180_000,
-                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="follow up")],
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="follow up")],
             ),
             ParsedMessage(
                 provider_message_id="m4",
                 role=Role.ASSISTANT,
                 occurred_at_ms=1_770_000_300_000,
-                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="answer")],
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="answer")],
             ),
         ],
     )
@@ -2157,7 +2160,7 @@ async def test_archive_tiers_api_archive_debt_reads_archive_consistency(tmp_path
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="debt target")],
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="debt target")],
             )
         ],
     )
@@ -2215,7 +2218,7 @@ async def test_archive_tiers_api_session_profiles_read_index_tier(tmp_path: Path
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="profile target")],
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="profile target")],
             )
         ],
     )
@@ -2327,7 +2330,7 @@ async def test_archive_tiers_api_session_insight_status_reads_index_tier(tmp_pat
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="status target")],
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="status target")],
             )
         ],
     )
@@ -2339,7 +2342,7 @@ async def test_archive_tiers_api_session_insight_status_reads_index_tier(tmp_pat
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="missing profile")],
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="missing profile")],
             )
         ],
     )
@@ -2421,7 +2424,7 @@ async def test_archive_tiers_api_marks_and_annotations_write_user_tier(tmp_path:
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="overlay target")],
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="overlay target")],
             )
         ],
     )
@@ -2484,7 +2487,7 @@ async def test_archive_tiers_api_reader_artifacts_write_user_tier(tmp_path: Path
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="reader artifact target")],
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="reader artifact target")],
             )
         ],
     )
@@ -2583,7 +2586,7 @@ async def test_archive_tiers_api_corrections_write_user_tier(tmp_path: Path) -> 
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="correction target")],
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="correction target")],
             )
         ],
     )

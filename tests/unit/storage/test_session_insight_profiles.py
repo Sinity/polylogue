@@ -43,7 +43,7 @@ def _enrichment_session() -> Session:
                 provider=Provider.CLAUDE_CODE,
                 text="I inspected app.py and ran pytest.",
                 timestamp=datetime(2026, 4, 2, 10, 1, tzinfo=timezone.utc),
-                content_blocks=[
+                blocks=[
                     {
                         "type": "tool_use",
                         "tool_name": "Read",
@@ -134,7 +134,7 @@ def test_session_profile_infers_codex_topic_from_repo_and_first_user_turn() -> N
                 role="user",
                 provider=Provider.CODEX,
                 text="Implement the daemon workload probe evidence surface and update docs.",
-                content_blocks=[
+                blocks=[
                     {
                         "type": "tool_use",
                         "tool_name": "Read",

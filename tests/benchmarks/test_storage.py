@@ -158,7 +158,7 @@ def test_bench_write_session_with_blocks(benchmark: BenchmarkFixture, tmp_path: 
                 content_hash=_make_hash(f"blocks-msg-{j}"),
                 source_name="chatgpt",
                 word_count=4,
-                content_blocks=[
+                blocks=[
                     make_content_block(
                         message_id=f"bench-blocks-conv-m{j}",
                         session_id="bench-blocks-conv",
