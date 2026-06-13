@@ -1323,3 +1323,98 @@ def test_agent_policy_absent_when_no_events(tmp_path: Path) -> None:
     )
     session_id = write_parsed_session_to_archive(conn, session)
     assert read_session_agent_policies(conn, session_id) == []
+
+
+# ---------------------------------------------------------------------------
+# Regression: ingest_flags written as auto-tags at write time (#1764)
+# ---------------------------------------------------------------------------
+
+
+def test_ingest_flags_written_as_auto_tags(tmp_path: Path) -> None:
+    """ParsedSession.ingest_flags are persisted as auto-tags during write.
+
+    The storage layer calls _write_ingest_flag_tags inside the same transaction
+    as the session row, so the tags are always present when the session is
+    readable.  This is the durable persistence path for parser-level quality
+    flags (e.g. ``degraded:brain-metadata-fragment`` for Antigravity brain-
+    artifact fallback sessions, issue #1764).
+    """
+    conn = _connect(tmp_path / "index.db")
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="flagged-session",
+        title="Flagged session",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.ASSISTANT,
+                text="artifact body",
+                position=0,
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="artifact body")],
+            ),
+        ],
+        ingest_flags=["degraded:brain-metadata-fragment"],
+    )
+
+    session_id = write_parsed_session_to_archive(conn, session)
+
+    tags = read_session_tags(conn, session_id=session_id, tag_source="auto")
+    assert "degraded:brain-metadata-fragment" in tags, (
+        f"Expected degraded:brain-metadata-fragment auto-tag, got: {list(tags)}"
+    )
+    tag = tags["degraded:brain-metadata-fragment"]
+    assert isinstance(tag, ArchiveSessionTag)
+    assert tag.tag_source == "auto"
+    assert tag.method == "parser"
+
+
+def test_ingest_flags_empty_writes_no_auto_tags(tmp_path: Path) -> None:
+    """Sessions with no ingest_flags do not gain spurious auto-tags."""
+    conn = _connect(tmp_path / "index.db")
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="clean-session",
+        title="Clean session",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                text="hello",
+                position=0,
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="hello")],
+            ),
+        ],
+    )
+
+    session_id = write_parsed_session_to_archive(conn, session)
+
+    auto_tags = read_session_tags(conn, session_id=session_id, tag_source="auto")
+    assert auto_tags == {}, f"Expected no auto-tags for clean session, got: {list(auto_tags)}"
+
+
+def test_ingest_flags_re_ingest_is_idempotent(tmp_path: Path) -> None:
+    """Re-ingesting a session with ingest_flags does not duplicate auto-tags."""
+    conn = _connect(tmp_path / "index.db")
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="re-ingest-session",
+        title="Re-ingest test",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.ASSISTANT,
+                text="body",
+                position=0,
+                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="body")],
+            ),
+        ],
+        ingest_flags=["degraded:brain-metadata-fragment"],
+    )
+
+    write_parsed_session_to_archive(conn, session)
+    write_parsed_session_to_archive(conn, session)
+
+    auto_tags = read_session_tags(conn, session_id=write_parsed_session_to_archive(conn, session), tag_source="auto")
+    assert len(auto_tags) == 1, (
+        f"Expected exactly one auto-tag after re-ingest, got {len(auto_tags)}: {list(auto_tags)}"
+    )

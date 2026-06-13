@@ -281,7 +281,33 @@ def write_parsed_session_to_archive(
         _write_reported_costs(conn, session_id, session)
         _refresh_session_counts(conn, session_id)
         _resolve_session_graph(conn, session_id, native_id, origin.value)
+        if session.ingest_flags:
+            _write_ingest_flag_tags(conn, session_id, session.ingest_flags)
     return session_id
+
+
+def _write_ingest_flag_tags(conn: sqlite3.Connection, session_id: str, flags: list[str]) -> None:
+    """Write parser-level ingest flags as auto-tags in the same transaction.
+
+    Each flag is lowercased and written as ``(session_id, flag, 'auto')`` with
+    ``method='parser'``.  Duplicate flags on re-ingest are silently skipped
+    (``ON CONFLICT DO NOTHING``) so repeated ingest of the same session is
+    idempotent.  Called from inside the ``with conn:`` block of
+    ``write_parsed_session_to_archive`` so the tag rows are committed atomically
+    with the session row they reference.
+    """
+    for raw_flag in flags:
+        normalized = raw_flag.strip().lower()
+        if not normalized:
+            continue
+        conn.execute(
+            """
+            INSERT INTO session_tags (session_id, tag, tag_source, method)
+            VALUES (?, ?, 'auto', 'parser')
+            ON CONFLICT(session_id, tag, tag_source) DO NOTHING
+            """,
+            (session_id, normalized),
+        )
 
 
 def _clear_session_projection_rows(conn: sqlite3.Connection, session_id: str) -> None:

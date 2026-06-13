@@ -240,7 +240,23 @@ def parse_markdown_export_payload(payload: JSONDocument, fallback_id: str) -> Pa
     return parse_markdown_export(_string(payload.get("markdown")) or "", summary)
 
 
+BRAIN_METADATA_FRAGMENT_FLAG = "degraded:brain-metadata-fragment"
+
+
 def parse_brain_metadata(payload: JSONDocument, source_path: Path, fallback_id: str) -> ParsedSession:
+    """Parse a single Antigravity brain-artifact metadata file into a session.
+
+    Each ``*.metadata.json`` file becomes its own session whose
+    ``provider_session_id`` is ``{parent_dir}:{artifact_name}``.  Because one
+    logical work session typically produces many artifacts, this path fragments
+    a single conversation into N single-message sessions — one per artifact.
+
+    The session is flagged ``degraded:brain-metadata-fragment`` (written as an
+    auto-tag at ingest time) so it can be excluded from primary session counts
+    and insight rollups.  The underlying cause and the viable fix paths
+    (aggregate by parent-dir key, or prefer the language-server export) are
+    tracked in GitHub issue #1764.
+    """
     artifact_path = _artifact_path_for_metadata(source_path)
     session_id = artifact_path.parent.name if artifact_path.parent.name else fallback_id
     artifact_name = artifact_path.name if artifact_path.name else fallback_id
@@ -269,6 +285,7 @@ def parse_brain_metadata(payload: JSONDocument, source_path: Path, fallback_id: 
             )
         ],
         active_leaf_message_provider_id=f"{composed_session_id}:artifact",
+        ingest_flags=[BRAIN_METADATA_FRAGMENT_FLAG],
     )
 
 
@@ -443,6 +460,7 @@ __all__ = [
     "AntigravityExportError",
     "AntigravityLanguageServerClient",
     "AntigravityPartialExportError",
+    "BRAIN_METADATA_FRAGMENT_FLAG",
     "discover_language_server",
     "iter_language_server_exports",
     "looks_like_brain_metadata",
