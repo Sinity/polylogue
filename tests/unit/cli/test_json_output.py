@@ -85,11 +85,7 @@ _COMMANDS: list[tuple[list[str], bool]] = [
     (["list"], True),
     (["count"], True),
     (["stats"], True),
-    (["messages"], True),
-    (["raw"], True),
-    (["show"], True),
-    (["select"], True),
-    (["bulk-export"], True),
+    (["read"], True),
     # ── Top-level commands ───────────────────────────────────────────
     (["commands"], False),
     (["doctor"], False),
@@ -100,7 +96,6 @@ _COMMANDS: list[tuple[list[str], bool]] = [
     (["resume"], True),
     (["resume-candidates"], True),
     (["tags"], False),
-    (["--latest", "export"], True),  # --latest at root level resolves session
     # ── Insights subcommands ─────────────────────────────────────────
     (["insights", "status"], False),
     (["insights", "audit"], False),

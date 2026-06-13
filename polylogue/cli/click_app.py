@@ -176,9 +176,13 @@ def cli(
         polylogue --has thinking --sort tokens list --limit 10
         polylogue --origin chatgpt-export count
         polylogue --origin codex-session stats --by origin
-        polylogue --latest open
+        polylogue --latest read
         polylogue "urgent" --tag review delete --dry-run
         polylogue list --format json
+        polylogue find id:abc then read
+        polylogue find id:abc then read --view messages
+        polylogue find id:abc then read --to browser
+        polylogue find 'repo:polylogue' then read --all --format ndjson
 
     \b
     Combined filters:
@@ -219,15 +223,11 @@ def cli(
 register_root_commands(cli)
 
 _QUERY_VERB_HELP: dict[str, str] = {
-    "bulk-export": "Bulk export every matched session in one process.",
     "count": "Print count of matched sessions.",
     "delete": "Delete matched sessions.",
     "list": "List matched sessions.",
-    "messages": "List messages from matched sessions.",
-    "open": "Open matched session in the daemon web reader.",
-    "raw": "Show raw archive payloads for matched sessions.",
-    "select": "Select one matched session and print a field.",
-    "show": "Show matched sessions with default full-content output.",
+    "read": "Read matched sessions (route to view/destination).",
+    "recent": "List the most recently updated sessions.",
     "stats": "Show statistics for matched sessions.",
 }
 

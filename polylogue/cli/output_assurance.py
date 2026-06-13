@@ -107,52 +107,17 @@ ASSURANCE_REGISTRY: tuple[OutputAssurance, ...] = (
         notes="Single integer to stdout; no JSON envelope.",
     ),
     OutputAssurance(
-        command="show",
-        family=QUERY_FAMILY,
-        json_contract=False,
-        snapshot=True,
-        plain=True,
-        streaming=False,
-        notes="Renders full session in markdown/plaintext/html; not a stable JSON surface.",
-    ),
-    OutputAssurance(
-        command="open",
-        family=QUERY_FAMILY,
-        json_contract=False,
-        snapshot=True,
-        plain=True,
-        streaming=False,
-        notes="Side-effect command (opens browser/URL); --print-url emits a single URL string.",
-    ),
-    OutputAssurance(
-        command="select",
-        family=QUERY_FAMILY,
-        json_contract=False,
-        snapshot=True,
-        plain=True,
-        streaming=False,
-        notes="Selects one match and prints chosen field; single-line output.",
-    ),
-    OutputAssurance(
-        command="bulk-export",
+        command="read",
         family=QUERY_FAMILY,
         json_contract=True,
-        snapshot=False,
+        snapshot=True,
         plain=True,
         streaming=True,
         notes=(
-            "--format jsonl emits one full session JSON per line; no published row schema "
-            "(Session shape is large and provider-specific)."
+            "Router verb: --view selects renderer; --to selects destination. "
+            "--view messages --format json emits a messages JSON envelope; "
+            "--all --format ndjson streams one session JSON per line."
         ),
-    ),
-    OutputAssurance(
-        command="messages",
-        family=QUERY_FAMILY,
-        json_contract=True,
-        snapshot=True,
-        plain=True,
-        streaming=True,
-        notes="--format jsonl emits one message JSON per line.",
     ),
     OutputAssurance(
         command="delete",
@@ -162,15 +127,6 @@ ASSURANCE_REGISTRY: tuple[OutputAssurance, ...] = (
         plain=True,
         streaming=False,
         notes="Side-effect command; --dry-run prints affected IDs.",
-    ),
-    OutputAssurance(
-        command="raw",
-        family=QUERY_FAMILY,
-        json_contract=False,
-        snapshot=True,
-        plain=True,
-        streaming=False,
-        notes="Dumps provider-specific raw payload as-is; no normalized shape.",
     ),
     OutputAssurance(
         command="tags",

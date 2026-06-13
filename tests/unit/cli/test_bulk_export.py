@@ -7,7 +7,6 @@ from types import SimpleNamespace
 from typing import cast
 from unittest.mock import patch
 
-import click
 from click.testing import CliRunner
 
 from polylogue.archive.models import Session
@@ -79,8 +78,8 @@ def test_run_bulk_export_separates_markdown_with_horizontal_rule() -> None:
     assert text.count("\n---\n") == 1
 
 
-def test_bulk_export_verb_registered_and_dispatches_via_root_cli() -> None:
-    """Smoke test: the CLI parser routes ``bulk-export`` as a query verb."""
+def test_read_all_registered_and_dispatches_via_root_cli() -> None:
+    """Smoke: ``read --all`` routes to run_bulk_export via the read verb."""
     convs = [make_conv(id="a", title="Smoke", messages=[make_msg(text="hi")])]
 
     captured: dict[str, object] = {}
@@ -91,46 +90,25 @@ def test_bulk_export_verb_registered_and_dispatches_via_root_cli() -> None:
         captured["output_format"] = output_format
         captured["fields"] = fields
 
-    with (
-        patch("polylogue.cli.bulk_export.run_bulk_export", side_effect=_capture),
-        patch.object(query_verbs, "_parent_request", wraps=query_verbs._parent_request),
-    ):
+    with patch("polylogue.cli.bulk_export.run_bulk_export", side_effect=_capture):
         runner = CliRunner()
         result = runner.invoke(
             cli,
-            ["--plain", "--origin", "claude-code-session", "bulk-export", "--format", "jsonl"],
+            ["--plain", "--origin", "claude-code-session", "read", "--all", "--format", "ndjson"],
             catch_exceptions=False,
         )
 
     # The CLI must accept the verb without error even though no archive exists in the test env.
     assert result.exit_code == 0, result.output
+    # ndjson is mapped to jsonl internally
     assert captured["output_format"] == "jsonl"
     assert isinstance(captured["request"], RootModeRequest)
     assert captured["request"].query_params()["origin"] == "claude-code-session"
-    # Mark sessions referenced (lints the import path).
     assert convs
 
 
-def test_bulk_export_verb_in_verb_names() -> None:
-    assert "bulk-export" in query_verbs.VERB_NAMES
-
-
-def test_bulk_export_verb_callback_passes_fields_through() -> None:
-    parent = click.Context(click.Command("query"))
-    parent.params = {"query_term": (), "origin": "codex-session"}
-    parent.meta["polylogue_query_terms"] = ()
-    child = click.Context(click.Command("verb"), parent=parent)
-    child.obj = SimpleNamespace()
-
-    wrapped = getattr(query_verbs.bulk_export_verb.callback, "__wrapped__", None)
-    assert callable(wrapped)
-
-    with patch("polylogue.cli.bulk_export.run_bulk_export") as run_export:
-        wrapped(child, "json", "id,title")
-
-    args, kwargs = run_export.call_args
-    assert isinstance(args[1], RootModeRequest)
-    assert kwargs == {"output_format": "json", "fields": "id,title"}
+def test_read_verb_in_verb_names() -> None:
+    assert "read" in query_verbs.VERB_NAMES
 
 
 def test_authored_content_bulk_export_workflow_filters_user_messages() -> None:
