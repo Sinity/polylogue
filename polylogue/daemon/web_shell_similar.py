@@ -153,7 +153,7 @@ function openSimilarHit(sessionId) {
     loadWorkspaceRoute({mode: 'single', id: sessionId}, true).catch(function() {});
     return;
   }
-  window.location.hash = '#/c/' + encodeURIComponent(sessionId);
+  window.location.hash = '#/s/' + encodeURIComponent(sessionId);
 }
 """
 

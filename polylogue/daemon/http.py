@@ -758,7 +758,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         # Web shell is the only unauthenticated endpoint (localhost only).
         if (
             path == [""]
-            or (len(path) == 2 and path[0] == "c" and bool(path[1]))
+            or (len(path) == 2 and path[0] == "s" and bool(path[1]))
             or (len(path) == 2 and path[0] == "w" and path[1] in workspace_routes.WORKSPACE_SHELL_MODES)
         ):
             self._serve_web_shell()

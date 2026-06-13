@@ -538,7 +538,7 @@ function _polyPasteBrowserRender(items) {
   var html = order.map(function(cid) {
     var g = groups[cid];
     var rows = g.items.map(function(it) {
-      var href = '/c/' + encodeURIComponent(cid) + '#' + encodeURIComponent(it.message_anchor);
+      var href = '/s/' + encodeURIComponent(cid) + '#' + encodeURIComponent(it.message_anchor);
       var badges = '';
       if (it.has_diff) badges += '<span class="pb-badge pb-diff">diff</span>';
       var spanCount = (it.paste_spans || []).length;
@@ -553,7 +553,7 @@ function _polyPasteBrowserRender(items) {
     return ''
       + '<div class="pb-group">'
       +   '<div class="pb-group-title">'
-      +     '<a href="/c/' + encodeURIComponent(cid) + '">'
+      +     '<a href="/s/' + encodeURIComponent(cid) + '">'
       +     (g.title || cid).replace(/[<&]/g, function(c) { return c === '<' ? '&lt;' : '&amp;'; })
       +     '</a>'
       +     '<span class="pb-origin">' + (g.origin || '') + '</span>'

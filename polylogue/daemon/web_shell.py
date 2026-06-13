@@ -386,15 +386,15 @@ function annotationsFor(sessionId) {
   return state.annotations[sessionId] || [];
 }
 
-function getConvIdFromURL() {
-  var m = window.location.pathname.match(/^\/c\/(.+)$/);
+function getSessionIdFromURL() {
+  var m = window.location.pathname.match(/^\/s\/(.+)$/);
   return m ? decodeURIComponent(m[1]) : null;
 }
 __WORKSPACE_JS__
 window.addEventListener('popstate', function() {
   var route = getWorkspaceRouteFromURL();
   if (route) { loadWorkspaceRoute(route, false); return; }
-  var cid = getConvIdFromURL();
+  var cid = getSessionIdFromURL();
   if (cid) selectSession(cid, false);
   else { state.mode = 'single'; state.selected = null; state.selectedRaw = null; renderMain(); renderInspector(); renderSessions(); }
 });
@@ -1437,7 +1437,7 @@ document.getElementById('inspector-tabs').addEventListener('click', function(e) 
 loadSessions().then(function() {
   var route = getWorkspaceRouteFromURL();
   if (route) { loadWorkspaceRoute(route, false); return; }
-  var cid = getConvIdFromURL();
+  var cid = getSessionIdFromURL();
   if (cid) selectSession(cid, false);
 });
 loadFacets();
