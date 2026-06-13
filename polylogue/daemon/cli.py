@@ -129,6 +129,57 @@ def _heartbeat_counts(db: Path) -> tuple[int, int, str]:
         conn.close()
 
 
+async def _configure_fts_automerge() -> None:
+    """Persist FTS5 automerge=0 for all surfaces at daemon startup (#1851).
+
+    FTS5's default automerge=8 merges existing (large) segments whenever a
+    write accumulates ≥8 level-0 segments.  On a mature archive this causes
+    ~8–12 MiB of WAL writes per small ingest batch.  Setting automerge=0
+    disables per-write merging; the periodic ``_periodic_fts_merge`` loop
+    amortises merge cost over time instead.
+    """
+    db = _active_index_db_path()
+    if not db.exists():
+        return
+    try:
+        await asyncio.to_thread(_configure_fts_automerge_sync, db)
+    except Exception:
+        logger.warning("daemon: FTS automerge configuration failed", exc_info=True)
+
+
+def _configure_fts_automerge_sync(db: Path) -> None:
+    from polylogue.daemon.fts_automerge import configure_fts_automerge_sync
+    from polylogue.storage.sqlite.connection_profile import open_connection
+
+    conn = open_connection(db, timeout=30.0)
+    try:
+        configure_fts_automerge_sync(conn)
+    finally:
+        conn.close()
+
+
+async def _periodic_fts_merge() -> None:
+    """Run a bounded FTS5 merge every 5 minutes to amortise segment cost (#1851).
+
+    With automerge=0, level-0 FTS5 segments accumulate over time.  This
+    periodic pass merges them in bounded 500-work-unit chunks so query
+    performance stays good without ever paying the full merge cost in a
+    single write transaction.  The 5-minute interval matches the WAL
+    checkpoint loop so the two share the same maintenance cadence.
+    """
+    from polylogue.daemon.fts_automerge import run_periodic_fts_merge_sync
+
+    while True:
+        await asyncio.sleep(300)
+        db = _active_index_db_path()
+        if not db.exists():
+            continue
+        try:
+            await asyncio.to_thread(run_periodic_fts_merge_sync, db)
+        except Exception:
+            logger.warning("daemon: FTS periodic merge failed", exc_info=True)
+
+
 async def _periodic_wal_checkpoint() -> None:
     """Run WAL checkpoint every 5 minutes to keep the WAL file bounded."""
     from polylogue.storage.sqlite.wal_checkpoint import maybe_checkpoint_wal
@@ -603,10 +654,15 @@ async def run_daemon_services(
             from polylogue.daemon.embedding_backlog import periodic_embedding_backlog_check
 
             await _ensure_fts_startup_readiness()
+            # Disable per-write FTS5 automerge so each small ingest batch does
+            # not trigger a merge of the full (hundreds-of-MB) existing
+            # segments (#1851).  A periodic merge pass amortises the cost.
+            await _configure_fts_automerge()
             maintenance_tasks.extend(
                 asyncio.create_task(loop)
                 for loop in (
                     _periodic_wal_checkpoint(),
+                    _periodic_fts_merge(),
                     _periodic_heartbeat(),
                     periodic_embedding_backlog_check(),
                     _periodic_health_check(),
