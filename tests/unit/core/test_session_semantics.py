@@ -83,13 +83,13 @@ def dialogue_noise_mix() -> Session:
             id="a2",
             role="assistant",
             text="<thinking>Reasoning trace</thinking>",
-            content_blocks=[{"type": "thinking", "text": "Reasoning trace"}],
+            blocks=[{"type": "thinking", "text": "Reasoning trace"}],
         ),
         make_msg(
             id="a3",
             role="assistant",
             text="Calling tool",
-            content_blocks=[{"type": "tool_use"}],
+            blocks=[{"type": "tool_use"}],
         ),
     ]
     return make_conv(id="mixed", provider="claude-ai", messages=MessageCollection(messages=messages))
@@ -144,7 +144,7 @@ class TestDialoguePairContracts:
                 id="a1",
                 role="assistant",
                 text="<thinking>Complex reasoning</thinking>\nAnswer",
-                content_blocks=[{"type": "thinking", "text": "Complex reasoning"}],
+                blocks=[{"type": "thinking", "text": "Complex reasoning"}],
             ),
         )
         assert "User: Hard problem" in pair.exchange
@@ -175,7 +175,7 @@ class TestMessageSemanticProjection:
     ) -> None:
         # Hydrated messages source thinking from typed content_blocks; the
         # XML fallback exists for text-only providers (#1256).
-        msg = make_msg(id="m1", role="assistant", text=text, content_blocks=content_blocks)
+        msg = make_msg(id="m1", role="assistant", text=text, blocks=content_blocks)
         assert msg.extract_thinking() == expected
 
     def test_message_attachments_and_classification_contract(self) -> None:
@@ -189,13 +189,13 @@ class TestMessageSemanticProjection:
             id="m-thinking",
             role="assistant",
             text="<thinking>...</thinking>",
-            content_blocks=[{"type": "thinking", "text": "..."}],
+            blocks=[{"type": "thinking", "text": "..."}],
         )
         tool = make_msg(
             id="m-tool",
             role="assistant",
             text="Calling tool",
-            content_blocks=[{"type": "tool_use"}],
+            blocks=[{"type": "tool_use"}],
         )
         msg = make_msg(id="m-user", role="user", text="Review this", attachments=[attachment])
 
@@ -354,7 +354,7 @@ VIEW_CASES = [
                 id="a2",
                 role="assistant",
                 text="<thinking>Reasoning</thinking>",
-                content_blocks=[{"type": "thinking", "text": "Reasoning"}],
+                blocks=[{"type": "thinking", "text": "Reasoning"}],
             ),
             make_msg(id="t1", role="tool", text="Tool result"),
         ],
@@ -489,14 +489,14 @@ class TestSessionProjectionContracts:
                         role="assistant",
                         text="Thinking step",
                         timestamp=datetime(2024, 1, 1, 9, 10),
-                        content_blocks=[{"type": "thinking", "text": "step"}],
+                        blocks=[{"type": "thinking", "text": "step"}],
                     ),
                     make_msg(
                         id="a3",
                         role="assistant",
                         text="Calling tool",
                         timestamp=datetime(2024, 1, 1, 9, 15),
-                        content_blocks=[{"type": "tool_use", "name": "Edit"}],
+                        blocks=[{"type": "tool_use", "name": "Edit"}],
                     ),
                     make_msg(
                         id="s1",
@@ -563,13 +563,13 @@ class TestSessionProjectionContracts:
                         id="a2",
                         role="assistant",
                         text="Thinking trace",
-                        content_blocks=[{"type": "thinking", "text": "trace"}],
+                        blocks=[{"type": "thinking", "text": "trace"}],
                     ),
                     make_msg(
                         id="a3",
                         role="assistant",
                         text="Tool output",
-                        content_blocks=[{"type": "tool_use", "name": "Edit"}],
+                        blocks=[{"type": "tool_use", "name": "Edit"}],
                     ),
                 ]
             ),

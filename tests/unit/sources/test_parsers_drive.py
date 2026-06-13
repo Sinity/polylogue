@@ -205,24 +205,24 @@ def test_parse_chunked_prompt_preserves_reasoning_code_tool_results_and_attachme
         "msg-thought",
         "msg-code",
     ]
-    assert [block.type for block in result.messages[0].content_blocks] == ["text", "document"]
-    assert [block.type for block in result.messages[1].content_blocks] == ["thinking"]
-    assert [block.type for block in result.messages[2].content_blocks] == ["text", "code", "tool_result"]
+    assert [block.type for block in result.messages[0].blocks] == ["text", "document"]
+    assert [block.type for block in result.messages[1].blocks] == ["thinking"]
+    assert [block.type for block in result.messages[2].blocks] == ["text", "code", "tool_result"]
 
     user_msg = result.messages[0]
-    assert user_msg.content_blocks[0].text == "question"
-    assert user_msg.content_blocks[1].metadata is not None
-    drive_document = user_msg.content_blocks[1].metadata.get("driveDocument")
+    assert user_msg.blocks[0].text == "question"
+    assert user_msg.blocks[1].metadata is not None
+    drive_document = user_msg.blocks[1].metadata.get("driveDocument")
     assert isinstance(drive_document, dict)
     assert drive_document["id"] == "doc-1"
 
     thought_msg = result.messages[1]
-    assert thought_msg.content_blocks[0].text == "reasoning"
+    assert thought_msg.blocks[0].text == "reasoning"
 
     code_msg = result.messages[2]
-    assert code_msg.content_blocks[0].text == "inline"
-    assert code_msg.content_blocks[1].text == "print('ok')"
-    assert code_msg.content_blocks[2].text == "ok"
+    assert code_msg.blocks[0].text == "inline"
+    assert code_msg.blocks[1].text == "print('ok')"
+    assert code_msg.blocks[2].text == "ok"
     assert len(result.attachments) == 1
     assert result.attachments[0].provider_attachment_id == "doc-1"
     assert result.attachments[0].mime_type == "application/pdf"
@@ -268,7 +268,7 @@ def test_parse_chunked_prompt_preserves_attachment_only_chunks_and_chunk_timesta
     assert result.active_leaf_message_provider_id == "msg-video"
     assert result.created_at == "2024-01-15T10:30:00Z"
     assert result.updated_at == "2024-01-15T10:32:00Z"
-    assert [block.type for block in result.messages[0].content_blocks] == ["document"]
+    assert [block.type for block in result.messages[0].blocks] == ["document"]
     assert len(result.attachments) == 3
     assert result.attachments[0].provider_attachment_id == "doc-1"
     assert result.attachments[1].provider_attachment_id.startswith("inline-file-")
@@ -303,4 +303,4 @@ def test_parse_chunked_prompt_accepts_synthetic_exports(synthetic_gemini_payload
     assert result.source_name == "gemini"
     assert result.messages
     assert all(message.text for message in result.messages)
-    assert all(len(message.content_blocks) > 0 for message in result.messages)
+    assert all(len(message.blocks) > 0 for message in result.messages)

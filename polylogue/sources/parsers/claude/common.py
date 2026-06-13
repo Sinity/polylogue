@@ -186,7 +186,7 @@ def extract_messages_from_chat_messages(
                     role=role,
                     text=text,
                     timestamp=timestamp,
-                    content_blocks=content_blocks,
+                    blocks=content_blocks,
                     position=message_position,
                     variant_index=0,
                     is_active_path=True,

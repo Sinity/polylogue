@@ -38,7 +38,7 @@ def test_archive_tiers_archive_self_verify_envelope_is_stable(tmp_path: Path) ->
                 role=Role.USER,
                 text="seed baseline",
                 position=0,
-                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="seed baseline")],
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="seed baseline")],
             ),
             ParsedMessage(
                 provider_message_id="msg-assistant",
@@ -47,7 +47,7 @@ def test_archive_tiers_archive_self_verify_envelope_is_stable(tmp_path: Path) ->
                 position=1,
                 is_active_path=True,
                 is_active_leaf=True,
-                content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="query token")],
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="query token")],
             ),
         ],
         active_leaf_message_provider_id="msg-assistant",

@@ -47,7 +47,7 @@ def _seed_user_state_session(
                         provider_message_id=message_native_id,
                         role=Role.USER,
                         text=text,
-                        content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
                     )
                 ],
             )
@@ -199,7 +199,7 @@ async def test_user_state_target_resolution_reads_archive_file_set_from_archive_
                         provider_message_id="m1",
                         role=Role.USER,
                         text="mark me",
-                        content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="mark me")],
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text="mark me")],
                     )
                 ],
             )

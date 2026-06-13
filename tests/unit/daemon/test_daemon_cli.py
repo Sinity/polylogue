@@ -899,7 +899,7 @@ def test_daemon_cli_heartbeat_counts_archive(tmp_path: Path) -> None:
                         provider_message_id="m1",
                         role=Role.USER,
                         text="heartbeat v1",
-                        content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="heartbeat v1")],
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text="heartbeat v1")],
                     )
                 ],
             )
@@ -929,7 +929,7 @@ def test_ensure_fts_startup_readiness_handles_archive(
                         provider_message_id="m1",
                         role=Role.USER,
                         text="startup v1",
-                        content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="startup v1")],
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text="startup v1")],
                     )
                 ],
             )
@@ -971,7 +971,7 @@ def test_ensure_fts_startup_readiness_uses_extended_write_timeout(
                         provider_message_id="m1",
                         role=Role.USER,
                         text="startup timeout v1",
-                        content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="startup timeout v1")],
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text="startup timeout v1")],
                     )
                 ],
             )

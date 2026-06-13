@@ -273,7 +273,7 @@ def extract_messages_from_mapping(
             role=role,
             text=text,
             timestamp=str(timestamp) if timestamp is not None else None,
-            content_blocks=content_blocks,
+            blocks=content_blocks,
             parent_message_provider_id=parent_message_provider_id,
             position=idx - 1,
             branch_index=branch_index,

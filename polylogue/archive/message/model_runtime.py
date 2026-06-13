@@ -40,7 +40,7 @@ class MessageRuntimeMixin:
     timestamp: datetime | None
     provider: Provider | None
     attachments: list[Attachment]
-    content_blocks: list[dict[str, object]]
+    blocks: list[dict[str, object]]
     message_type: MessageType
     parent_id: str | None
     branch_index: int
@@ -71,7 +71,7 @@ class MessageRuntimeMixin:
         if message_type in {MessageType.TOOL_USE, MessageType.TOOL_RESULT}:
             return True
 
-        if any(block.get("type") in {"tool_use", "tool_result"} for block in self.content_blocks):
+        if any(block.get("type") in {"tool_use", "tool_result"} for block in self.blocks):
             return True
 
         if self.role == Role.TOOL:
@@ -79,13 +79,13 @@ class MessageRuntimeMixin:
             # ``THINKING`` content block disambiguates them from real
             # tool calls. Pre-#839 rows without typed blocks are
             # reclassified through the backfill path, not at read time.
-            return not any(block.get("type") == "thinking" for block in self.content_blocks)
+            return not any(block.get("type") == "thinking" for block in self.blocks)
 
         return False
 
     @cached_property
     def is_thinking(self) -> bool:
-        return any(block.get("type") == "thinking" for block in self.content_blocks)
+        return any(block.get("type") == "thinking" for block in self.blocks)
 
     @cached_property
     def is_context_dump(self) -> bool:
@@ -124,7 +124,7 @@ class MessageRuntimeMixin:
         return len(text.split())
 
     def extract_thinking(self) -> str | None:
-        direct_texts = _block_texts(self.content_blocks, block_type="thinking")
+        direct_texts = _block_texts(self.blocks, block_type="thinking")
         if direct_texts:
             return "\n\n".join(direct_texts).strip() or None
 

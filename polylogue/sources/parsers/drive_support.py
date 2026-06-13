@@ -11,7 +11,7 @@ from polylogue.sources.parsers.drive_support_attachments import (
     collect_drive_docs,
 )
 from polylogue.sources.parsers.drive_support_blocks import (
-    parsed_content_blocks_from_meta,
+    parsed_blocks_from_meta,
     viewport_block_payload,
 )
 from polylogue.sources.parsers.drive_support_text import (
@@ -28,7 +28,7 @@ __all__ = [
     "collect_chunk_attachments",
     "collect_drive_docs",
     "extract_text_from_chunk",
-    "parsed_content_blocks_from_meta",
+    "parsed_blocks_from_meta",
     "select_timestamp",
     "viewport_block_payload",
 ]

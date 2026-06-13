@@ -89,8 +89,8 @@ def _message_hash_payload(message: ParsedMessage, message_id: str) -> dict[str, 
         "text": _normalize_for_hash(message.text),
         "timestamp": _normalize_for_hash(message.timestamp),
     }
-    if message.content_blocks:
-        payload["content_blocks"] = [_content_block_payload(b) for b in message.content_blocks]
+    if message.blocks:
+        payload["content_blocks"] = [_content_block_payload(b) for b in message.blocks]
     return payload
 
 

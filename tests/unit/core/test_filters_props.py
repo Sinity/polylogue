@@ -155,7 +155,7 @@ def filter_db_advanced(tmp_path: Path) -> Path:
             "m2",
             role="assistant",
             text="The answer is 42.",
-            content_blocks=[{"type": "thinking", "text": "Let me break this down step by step..."}],
+            blocks=[{"type": "thinking", "text": "Let me break this down step by step..."}],
         )
         .add_message("m3", role="user", text="Can you explain further?")
         .metadata({"tags": ["math", "complex"], "summary": "Math problem solving"})
@@ -171,7 +171,7 @@ def filter_db_advanced(tmp_path: Path) -> Path:
             "m5",
             role="assistant",
             text="I'll help you with that.",
-            content_blocks=[{"type": "tool_use", "tool_name": "bash", "input": {}}],
+            blocks=[{"type": "tool_use", "tool_name": "bash", "input": {}}],
         )
         .add_message("m6", role="user", text="Show me an example")
         .add_message("m7", role="assistant", text="Here is a complete working example with error handling.")

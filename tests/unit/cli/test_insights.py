@@ -116,7 +116,7 @@ def _seed_products(cli_workspace: CliWorkspace) -> None:
             role="assistant",
             text="Inspecting and editing files",
             timestamp="2026-03-01T10:05:00+00:00",
-            content_blocks=[
+            blocks=[
                 {
                     "type": "tool_use",
                     "tool_name": "Read",
@@ -152,7 +152,7 @@ def _seed_products(cli_workspace: CliWorkspace) -> None:
             role="assistant",
             text="Running pytest",
             timestamp="2026-03-01T11:04:00+00:00",
-            content_blocks=[
+            blocks=[
                 {
                     "type": "tool_use",
                     "tool_name": "Bash",

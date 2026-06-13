@@ -81,7 +81,7 @@ def correlate_command(
             "role": msg.role.value if hasattr(msg.role, "value") else str(msg.role),
             "text": msg.text,
         }
-        content_blocks = msg.content_blocks if hasattr(msg, "content_blocks") else []
+        content_blocks = msg.blocks if hasattr(msg, "blocks") else []
         msg_dict["content_blocks"] = list(content_blocks) if content_blocks else []
         messages.append(msg_dict)
 

@@ -142,17 +142,17 @@ class ClaudeCodeRecord(BaseModel):
         return ""
 
     @property
-    def content_blocks_raw(self) -> JSONDocumentList:
+    def blocks_raw(self) -> JSONDocumentList:
         return _message_content_blocks(self.message)
 
     def extract_reasoning_traces(self) -> list[ReasoningTrace]:
-        return extract_reasoning_traces(self.content_blocks_raw, "claude-code")
+        return extract_reasoning_traces(self.blocks_raw, "claude-code")
 
     def extract_tool_calls(self) -> list[ToolCall]:
-        return extract_tool_calls(self.content_blocks_raw, "claude-code")
+        return extract_tool_calls(self.blocks_raw, "claude-code")
 
     def extract_content_blocks(self) -> list[ContentBlock]:
-        return extract_content_blocks(self.content_blocks_raw)
+        return extract_content_blocks(self.blocks_raw)
 
     def to_meta(self) -> MessageMeta:
         tokens = None

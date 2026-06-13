@@ -143,7 +143,7 @@ class ParserCase:
 
 def _assert_claude_code_cleanup(_payload: ParserPayload, result: ParsedSession) -> None:
     for message in result.messages:
-        assert isinstance(message.content_blocks, list)
+        assert isinstance(message.blocks, list)
         assert message.timestamp is None or isinstance(message.timestamp, str)
 
 

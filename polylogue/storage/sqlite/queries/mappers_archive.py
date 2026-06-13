@@ -12,7 +12,7 @@ from polylogue.core.enums import Origin
 from polylogue.core.sources import provider_from_origin
 from polylogue.storage.runtime import (
     ArtifactObservationRecord,
-    ContentBlockRecord,
+    BlockRecord,
     MessageRecord,
     RawSessionRecord,
     SessionRecord,
@@ -89,9 +89,9 @@ def _row_to_message(row: sqlite3.Row) -> MessageRecord:
     )
 
 
-def _row_to_content_block(row: sqlite3.Row) -> ContentBlockRecord:
+def _row_to_content_block(row: sqlite3.Row) -> BlockRecord:
     semantic_type = _row_text(row, "semantic_type")
-    return ContentBlockRecord(
+    return BlockRecord(
         block_id=row["block_id"],
         message_id=MessageId(row["message_id"]),
         session_id=SessionId(row["session_id"]),

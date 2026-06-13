@@ -735,7 +735,7 @@ class TestEdgeCases:
         assert len(result.messages) == 2
         assert [message.position for message in result.messages] == [0, 1]
         assert result.active_leaf_message_provider_id == "call_1"
-        assert result.messages[0].content_blocks[0].type == "tool_use"
-        assert result.messages[0].content_blocks[0].tool_name == "exec_command"
-        assert result.messages[0].content_blocks[0].tool_input == {"cmd": "git status"}
-        assert result.messages[1].content_blocks[0].type == "tool_result"
+        assert result.messages[0].blocks[0].type == "tool_use"
+        assert result.messages[0].blocks[0].tool_name == "exec_command"
+        assert result.messages[0].blocks[0].tool_input == {"cmd": "git status"}
+        assert result.messages[1].blocks[0].type == "tool_result"

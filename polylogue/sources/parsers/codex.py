@@ -285,7 +285,7 @@ def _codex_tool_message(record: dict[str, object], *, index: int, position: int)
             position=position,
             variant_index=0,
             is_active_path=True,
-            content_blocks=[
+            blocks=[
                 ParsedContentBlock(
                     type=BlockType.TOOL_USE,
                     tool_name=tool_name,
@@ -308,7 +308,7 @@ def _codex_tool_message(record: dict[str, object], *, index: int, position: int)
             position=position,
             variant_index=0,
             is_active_path=True,
-            content_blocks=[
+            blocks=[
                 ParsedContentBlock(
                     type=BlockType.TOOL_RESULT,
                     tool_id=str(tool_id) if tool_id else None,
@@ -547,7 +547,7 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
                     role=role,
                     text=text,
                     timestamp=timestamp,
-                    content_blocks=content_blocks,
+                    blocks=content_blocks,
                     message_type=_message_type_from_codex_message(message_record, text),
                     position=message_position,
                     variant_index=0,

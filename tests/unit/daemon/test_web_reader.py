@@ -163,7 +163,7 @@ def _seed_test_db(workspace: dict[str, Path]) -> None:
                             role=Role.USER,
                             text="Hello reader",
                             timestamp="2026-01-01T00:00:00+00:00",
-                            content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="Hello reader")],
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="Hello reader")],
                         )
                     ],
                 )
@@ -191,7 +191,7 @@ def _seed_archive_test_archive(workspace: dict[str, Path]) -> str:
                         role=Role.USER,
                         text="Hello archive reader",
                         timestamp="2026-01-01T00:00:00+00:00",
-                        content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="Hello archive reader")],
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text="Hello archive reader")],
                     )
                 ],
             )

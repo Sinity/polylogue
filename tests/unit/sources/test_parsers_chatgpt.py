@@ -464,8 +464,8 @@ def test_chatgpt_metadata_extracted_into_content_blocks() -> None:
 
     # The assistant message should have content_blocks with chatgpt_ metadata.
     assistant_msg = next(m for m in parsed.messages if m.role == "assistant")
-    assert len(assistant_msg.content_blocks) >= 1
-    block_meta = assistant_msg.content_blocks[0].metadata
+    assert len(assistant_msg.blocks) >= 1
+    block_meta = assistant_msg.blocks[0].metadata
     assert block_meta is not None, "content_block metadata should be set"
     assert block_meta.get("chatgpt_model") == "gpt-4"
     assert block_meta.get("chatgpt_author_name") == "dalle"
@@ -478,8 +478,8 @@ def test_chatgpt_metadata_extracted_into_content_blocks() -> None:
 
     # The user message should also have model metadata.
     user_msg = next(m for m in parsed.messages if m.role == "user")
-    assert len(user_msg.content_blocks) >= 1
-    user_block_meta = user_msg.content_blocks[0].metadata
+    assert len(user_msg.blocks) >= 1
+    user_block_meta = user_msg.blocks[0].metadata
     assert user_block_meta is not None
     assert user_block_meta.get("chatgpt_model") == "gpt-4"
     # User message should NOT have tool-specific metadata.
@@ -658,7 +658,7 @@ def test_chatgpt_metadata_permutation_extracted_by_parser(
     assert parsed.source_name == "chatgpt"
     assert len(parsed.messages) >= 1
 
-    blocks = parsed.messages[0].content_blocks
+    blocks = parsed.messages[0].blocks
     assert len(blocks) >= 1
     meta = blocks[0].metadata
     assert isinstance(meta, dict), f"Expected dict metadata, got {type(meta)}: {desc}"
@@ -848,6 +848,6 @@ def test_code_interpreter_content_is_preserved() -> None:
     from polylogue.types import BlockType
 
     code_msg = next(m for m in conv.messages if m.text == "print(1)")
-    assert any(b.type == BlockType.CODE for b in code_msg.content_blocks)
+    assert any(b.type == BlockType.CODE for b in code_msg.blocks)
     out_msg = next(m for m in conv.messages if m.text == "1\n")
-    assert any(b.type == BlockType.TOOL_RESULT for b in out_msg.content_blocks)
+    assert any(b.type == BlockType.TOOL_RESULT for b in out_msg.blocks)

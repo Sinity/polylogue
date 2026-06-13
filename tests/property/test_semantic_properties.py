@@ -62,7 +62,7 @@ def test_parse_produces_valid_content_block_types(provider: str, data: st.DataOb
     valid_types = set(BlockType)
     for conv in sessions:
         for msg in conv.messages:
-            for block in msg.content_blocks:
+            for block in msg.blocks:
                 assert block.type in valid_types, f"Invalid content block type {block.type!r} from {provider}"
 
 

@@ -35,7 +35,7 @@ class MarkdownMessage:
     role: str
     text: str | None
     timestamp: str | None
-    content_blocks: tuple[RenderableBlock, ...] = ()
+    blocks: tuple[RenderableBlock, ...] = ()
 
 
 def format_message_text(text: str) -> str:
@@ -87,9 +87,9 @@ def render_markdown_document(
         text = msg.text or ""
         timestamp = msg.timestamp
         msg_atts = attachments_by_message.get(message_id, [])
-        content_blocks = msg.content_blocks
+        blocks = msg.blocks
 
-        if not text.strip() and not msg_atts and not content_blocks:
+        if not text.strip() and not msg_atts and not blocks:
             continue
 
         lines.append(f"## {role}")
@@ -98,8 +98,8 @@ def render_markdown_document(
         lines.append("")
 
         # Structure-preserving: if we have typed content blocks, render them
-        if content_blocks and has_structured_blocks(content_blocks):
-            block_text = render_blocks_markdown(content_blocks)
+        if blocks and has_structured_blocks(blocks):
+            block_text = render_blocks_markdown(blocks)
             if block_text:
                 lines.append(block_text)
                 lines.append("")
@@ -145,7 +145,7 @@ def _normalize_markdown_message(
     text: str | None,
     timestamp: object,
     default_role: Role | str,
-    content_blocks: tuple[RenderableBlock, ...] = (),
+    blocks: tuple[RenderableBlock, ...] = (),
 ) -> MarkdownMessage:
     normalized_role = role if isinstance(role, Role) else (Role.normalize(str(role)) if role else default_role)
     return MarkdownMessage(
@@ -153,7 +153,7 @@ def _normalize_markdown_message(
         role=str(normalized_role),
         text=text,
         timestamp=normalize_render_timestamp(timestamp),
-        content_blocks=content_blocks,
+        blocks=blocks,
     )
 
 
@@ -186,7 +186,7 @@ def format_session_markdown(conv: Session) -> str:
                 text=msg.text,
                 timestamp=msg.timestamp,
                 default_role="message",
-                content_blocks=coerce_renderable_blocks(getattr(msg, "content_blocks", None)),
+                blocks=coerce_renderable_blocks(getattr(msg, "blocks", None)),
             )
         )
         if getattr(msg, "attachments", None):

@@ -22,7 +22,7 @@ def build_projection_html_messages(
 ) -> list[RenderedMessage]:
     raw_messages: list[RenderedMessage] = []
     for msg in projection.messages:
-        content_blocks = coerce_renderable_blocks(msg.content_blocks)
+        content_blocks = coerce_renderable_blocks(msg.blocks)
         text = msg.text or ""
         if not text and not content_blocks:
             continue
@@ -49,7 +49,7 @@ def build_session_html_messages(
 ) -> list[RenderedMessage]:
     raw_messages: list[RenderedMessage] = []
     for msg in session.messages:
-        content_blocks = coerce_renderable_blocks(getattr(msg, "content_blocks", None))
+        content_blocks = coerce_renderable_blocks(getattr(msg, "blocks", None))
         text = msg.text or ""
         if not text and not content_blocks:
             continue

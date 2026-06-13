@@ -168,7 +168,7 @@ def test_content_blocks_affect_session_hash() -> None:
         role=Role.ASSISTANT,
         text="ran a command",
         timestamp="2024-01-01T00:00:00Z",
-        content_blocks=[_mk_block()],
+        blocks=[_mk_block()],
     )
     assert session_content_hash(_one(msg_plain)) != session_content_hash(_one(msg_with_block))
 
@@ -182,14 +182,14 @@ def test_content_block_tool_input_affects_hash() -> None:
         role=Role.ASSISTANT,
         text="cmd",
         timestamp="2024-01-01T00:00:00Z",
-        content_blocks=[block_a],
+        blocks=[block_a],
     )
     msg_b = ParsedMessage(
         provider_message_id="m1",
         role=Role.ASSISTANT,
         text="cmd",
         timestamp="2024-01-01T00:00:00Z",
-        content_blocks=[block_b],
+        blocks=[block_b],
     )
     assert session_content_hash(_one(msg_a)) != session_content_hash(_one(msg_b))
 
@@ -203,14 +203,14 @@ def test_content_block_type_affects_hash() -> None:
         role=Role.ASSISTANT,
         text="cmd",
         timestamp="2024-01-01T00:00:00Z",
-        content_blocks=[block_tool],
+        blocks=[block_tool],
     )
     msg_text = ParsedMessage(
         provider_message_id="m1",
         role=Role.ASSISTANT,
         text="cmd",
         timestamp="2024-01-01T00:00:00Z",
-        content_blocks=[block_text],
+        blocks=[block_text],
     )
     assert session_content_hash(_one(msg_tool)) != session_content_hash(_one(msg_text))
 

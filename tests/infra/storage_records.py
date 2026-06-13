@@ -25,7 +25,7 @@ from polylogue.sources.parsers.base import (
 )
 from polylogue.storage.runtime import (
     AttachmentRecord,
-    ContentBlockRecord,
+    BlockRecord,
     MessageRecord,
     RawSessionRecord,
     SessionRecord,
@@ -187,11 +187,11 @@ def _content_block_record(
     media_type: str | None = None,
     metadata: str | None = None,
     semantic_type: str | None = None,
-) -> ContentBlockRecord:
+) -> BlockRecord:
     # #1240: media_type is now stored inside the block-metadata JSON.
     merged_metadata = _merge_media_type_into_metadata(metadata, media_type)
-    return ContentBlockRecord(
-        block_id=ContentBlockRecord.make_id(message_id, block_index),
+    return BlockRecord(
+        block_id=BlockRecord.make_id(message_id, block_index),
         message_id=_message_id(message_id),
         session_id=_session_id(session_id),
         block_index=block_index,
@@ -211,7 +211,7 @@ def _content_block_from_mapping(
     message_id: str,
     session_id: str,
     block_index: int,
-) -> ContentBlockRecord:
+) -> BlockRecord:
     raw_tool_input = block.get("tool_input", block.get("input"))
     raw_metadata = block.get("metadata")
     return _content_block_record(
@@ -234,12 +234,12 @@ def _normalize_content_blocks(
     raw_blocks: object,
     message_id: str,
     session_id: str,
-) -> list[ContentBlockRecord]:
+) -> list[BlockRecord]:
     if not isinstance(raw_blocks, list):
         return []
-    blocks: list[ContentBlockRecord] = []
+    blocks: list[BlockRecord] = []
     for idx, raw_block in enumerate(raw_blocks):
-        if isinstance(raw_block, ContentBlockRecord):
+        if isinstance(raw_block, BlockRecord):
             blocks.append(raw_block)
             continue
         if isinstance(raw_block, Mapping):
@@ -269,7 +269,7 @@ def make_content_block(
     media_type: str | None = None,
     metadata: str | None = None,
     semantic_type: str | None = None,
-) -> ContentBlockRecord:
+) -> BlockRecord:
     return _content_block_record(
         message_id=message_id,
         session_id=session_id,
@@ -514,7 +514,7 @@ def upsert_message(conn: sqlite3.Connection, record: MessageRecord) -> bool:
         )
 
     # Persist message blocks if any.
-    for blk in record.content_blocks:
+    for blk in record.blocks:
         conn.execute(
             """
             INSERT INTO blocks (
@@ -857,7 +857,7 @@ def _record_to_parsed_session(
                 tool_input=_maybe_json_object(block.tool_input),
                 metadata=_maybe_json_object(block.metadata),
             )
-            for block in (message.content_blocks or [])
+            for block in (message.blocks or [])
         ]
 
     parsed_messages = [
@@ -866,7 +866,7 @@ def _record_to_parsed_session(
             or str(message.message_id),
             role=message.role if message.role is not None else Role.USER,
             text=message.text,
-            content_blocks=_blocks(message),
+            blocks=_blocks(message),
             message_type=message.message_type,
             parent_message_provider_id=_provider_message_id(message.parent_message_id),
             position=position,
@@ -1055,7 +1055,7 @@ class SessionBuilder:
         ts = _resolve_timestamp(timestamp)
 
         existing_blocks = _normalize_content_blocks(
-            raw_blocks=kwargs.pop("content_blocks", []),
+            raw_blocks=kwargs.pop("blocks", []),
             message_id=msg_id,
             session_id=str(self.conv.session_id),
         )
@@ -1083,7 +1083,7 @@ class SessionBuilder:
             "content_hash": _coerce_content_hash(
                 kwargs.pop("content_hash", default_content_hash), default_content_hash
             ),
-            "content_blocks": all_blocks,
+            "blocks": all_blocks,
             "word_count": _coerce_int(kwargs.pop("word_count", word_count), word_count),
             "has_tool_use": _coerce_int(kwargs.pop("has_tool_use", has_tool_use), has_tool_use),
             "has_thinking": _coerce_int(kwargs.pop("has_thinking", has_thinking), has_thinking),
@@ -1190,7 +1190,7 @@ def make_message(
     if "provider_meta" in kwargs:
         require_json_value(kwargs["provider_meta"], context="message provider_meta")
     existing_blocks = _normalize_content_blocks(
-        raw_blocks=kwargs.pop("content_blocks", []),
+        raw_blocks=kwargs.pop("blocks", []),
         message_id=message_id,
         session_id=session_id,
     )
@@ -1214,7 +1214,7 @@ def make_message(
             default_sort_key,
         ),
         "content_hash": _coerce_content_hash(kwargs.pop("content_hash", default_content_hash), default_content_hash),
-        "content_blocks": all_blocks,
+        "blocks": all_blocks,
         "word_count": _coerce_int(kwargs.pop("word_count", word_count), word_count),
         "has_tool_use": _coerce_int(kwargs.pop("has_tool_use", has_tool_use), has_tool_use),
         "has_thinking": _coerce_int(kwargs.pop("has_thinking", has_thinking), has_thinking),
@@ -1329,7 +1329,7 @@ class DbFactory:
                 "provider_message_id": _optional_str(msg.get("provider_message_id")),
                 "parent_message_id": _optional_str(msg.get("parent_message_id")),
                 "branch_index": _optional_int(msg.get("branch_index")) or 0,
-                "content_blocks": msg.get("content_blocks", []),
+                "blocks": msg.get("blocks", []),
             }
             if (word_count := _optional_int(msg.get("word_count"))) is not None:
                 message_kwargs["word_count"] = word_count

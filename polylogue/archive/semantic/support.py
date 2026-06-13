@@ -22,7 +22,7 @@ class SemanticMessageLike(TextMessageLike, Protocol):
     def provider(self) -> Provider | str | None: ...
 
     @property
-    def content_blocks(self) -> ContentBlockSequence: ...
+    def blocks(self) -> ContentBlockSequence: ...
 
 
 def normalized_role_label(value: object) -> str:
@@ -86,7 +86,7 @@ def _message_content_block_tool_calls(message: SemanticMessageLike) -> tuple[Too
 
     return build_tool_calls_from_content_blocks(
         provider=message.provider,
-        content_blocks=message.content_blocks,
+        content_blocks=message.blocks,
     )
 
 
@@ -99,7 +99,7 @@ def _message_content_block_reasoning_traces(message: SemanticMessageLike) -> tup
         if isinstance(message.provider, str)
         else None
     )
-    for block in message.content_blocks:
+    for block in message.blocks:
         if str(block.get("type")) != "thinking":
             continue
         text = block.get("text")

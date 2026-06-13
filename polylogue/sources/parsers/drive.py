@@ -32,7 +32,7 @@ from .drive_support import (
     extract_text_from_chunk,
 )
 from .drive_support import (
-    parsed_content_blocks_from_meta as _parsed_content_blocks_from_meta,
+    parsed_blocks_from_meta as _parsed_blocks_from_meta,
 )
 from .drive_support import (
     select_timestamp as _select_timestamp,
@@ -182,7 +182,7 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
                 role=role,
                 text=text,
                 timestamp=message_timestamp,
-                content_blocks=_parsed_content_blocks_from_meta(content_block_payloads),
+                blocks=_parsed_blocks_from_meta(content_block_payloads),
                 position=message_position,
                 variant_index=0,
                 is_active_path=True,

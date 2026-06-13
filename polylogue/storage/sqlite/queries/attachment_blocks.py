@@ -1,21 +1,21 @@
-"""Content-block query helpers."""
+"""Block query helpers."""
 
 from __future__ import annotations
 
 import aiosqlite
 
-from polylogue.storage.runtime import ContentBlockRecord
+from polylogue.storage.runtime import BlockRecord
 from polylogue.storage.sqlite.queries.mappers import _row_to_content_block
 
 
-async def get_content_blocks(
+async def get_blocks(
     conn: aiosqlite.Connection,
     message_ids: list[str],
-) -> dict[str, list[ContentBlockRecord]]:
-    """Get content blocks for a list of message IDs."""
+) -> dict[str, list[BlockRecord]]:
+    """Get blocks for a list of message IDs."""
     if not message_ids:
         return {}
-    result: dict[str, list[ContentBlockRecord]] = {mid: [] for mid in message_ids}
+    result: dict[str, list[BlockRecord]] = {mid: [] for mid in message_ids}
     batch_size = 900
     table_query = """
         SELECT
@@ -50,5 +50,5 @@ async def get_content_blocks(
 
 
 __all__ = [
-    "get_content_blocks",
+    "get_blocks",
 ]

@@ -58,7 +58,7 @@ def test_gemini_cli_session_document_parses_through_dispatch() -> None:
     assert session.messages[1].duration_ms == 900
     assert session.messages[1].input_tokens == 0
     assert session.messages[1].output_tokens == 10
-    assert {block.type for block in session.messages[1].content_blocks} >= {
+    assert {block.type for block in session.messages[1].blocks} >= {
         BlockType.TEXT,
         BlockType.THINKING,
         BlockType.TOOL_USE,
@@ -112,7 +112,7 @@ def test_hermes_session_document_parses_through_dispatch() -> None:
     assert session.messages[2].duration_ms == 1250
     assert session.messages[2].input_tokens == 4
     assert session.messages[2].output_tokens == 6
-    assert {block.type for block in session.messages[2].content_blocks} >= {
+    assert {block.type for block in session.messages[2].blocks} >= {
         BlockType.TEXT,
         BlockType.THINKING,
         BlockType.TOOL_USE,
@@ -120,7 +120,7 @@ def test_hermes_session_document_parses_through_dispatch() -> None:
     assert session.messages[3].role == "tool"
     assert session.messages[3].is_active_leaf is True
     assert session.active_leaf_message_provider_id == "call-1"
-    assert any(block.type is BlockType.TOOL_RESULT for block in session.messages[3].content_blocks)
+    assert any(block.type is BlockType.TOOL_RESULT for block in session.messages[3].blocks)
 
 
 def test_agent_sidecars_are_classified_as_non_session() -> None:

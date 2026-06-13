@@ -17,7 +17,7 @@ from polylogue.api import Polylogue
 from polylogue.core.enums import BlockType, Origin, Role
 from polylogue.core.json import JSONDocument, JSONValue, require_json_document
 from polylogue.storage.hydrators import session_from_records
-from polylogue.storage.runtime import AttachmentRecord, ContentBlockRecord, MessageRecord, SessionRecord
+from polylogue.storage.runtime import AttachmentRecord, BlockRecord, MessageRecord, SessionRecord
 from polylogue.types import AttachmentId, ContentHash, MessageId, SessionId
 from tests.infra.semantic_facts import SessionFacts
 from tests.infra.storage_records import JSONRecord, SessionBuilder, db_setup
@@ -126,7 +126,7 @@ class ScenarioMessage:
     message_id: str | None = None
     timestamp: str | None = None
     provider_meta: JSONRecord | None = None
-    content_blocks: Sequence[ScenarioContentBlock] = ()
+    blocks: Sequence[ScenarioContentBlock] = ()
     attachments: Sequence[ScenarioAttachment] = ()
 
 
@@ -179,7 +179,7 @@ class ArchiveScenario:
         )
         for message_index, message in enumerate(self.messages or _default_messages(), start=1):
             message_id = message.message_id or f"m{message_index}"
-            message_kwargs: dict[str, object] = {"content_blocks": _content_block_payloads(message.content_blocks)}
+            message_kwargs: dict[str, object] = {"blocks": _content_block_payloads(message.blocks)}
             if message.provider_meta is not None:
                 message_kwargs["provider_meta"] = message.provider_meta
             builder.add_message(
@@ -287,7 +287,7 @@ def read_session_records(
             word_count=int(row["word_count"] or 0),
             has_tool_use=int(row["has_tool_use"] or 0),
             has_thinking=int(row["has_thinking"] or 0),
-            content_blocks=content_blocks_by_message.get(str(row["message_id"]), []),
+            blocks=content_blocks_by_message.get(str(row["message_id"]), []),
         )
         for row in msg_rows
     ]
@@ -315,7 +315,7 @@ def _content_block_payloads(blocks: Sequence[ScenarioContentBlock]) -> list[JSON
     return payloads
 
 
-def _message_text(blocks: Sequence[ContentBlockRecord]) -> str | None:
+def _message_text(blocks: Sequence[BlockRecord]) -> str | None:
     """Concatenate text-block content the way archive hydration does."""
     texts = [block.text for block in blocks if block.type == "text" and block.text]
     return "\n".join(texts) if texts else None
@@ -342,7 +342,7 @@ def _attachment_records_for_session(conn: sqlite3.Connection, session_id: str) -
     return [_attachment_record_from_row(row, session_id) for row in rows]
 
 
-def _content_blocks_by_message(conn: sqlite3.Connection, session_id: str) -> dict[str, list[ContentBlockRecord]]:
+def _content_blocks_by_message(conn: sqlite3.Connection, session_id: str) -> dict[str, list[BlockRecord]]:
     rows = conn.execute(
         """
         SELECT message_id, position, block_type, text, tool_name, tool_id, tool_input, semantic_type
@@ -352,13 +352,13 @@ def _content_blocks_by_message(conn: sqlite3.Connection, session_id: str) -> dic
         """,
         (session_id,),
     ).fetchall()
-    blocks_by_message: dict[str, list[ContentBlockRecord]] = {}
+    blocks_by_message: dict[str, list[BlockRecord]] = {}
     for row in rows:
         message_id = str(row["message_id"])
-        # ``ContentBlockRecord.tool_input`` carries the serialized JSON string
+        # ``BlockRecord.tool_input`` carries the serialized JSON string
         # exactly as the native ``blocks.tool_input`` column stores it.
         tool_input = row["tool_input"] if isinstance(row["tool_input"], str) else None
-        block = ContentBlockRecord(
+        block = BlockRecord(
             block_id=f"{message_id}:{row['position']}",
             message_id=MessageId(message_id),
             session_id=SessionId(session_id),

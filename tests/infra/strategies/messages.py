@@ -230,7 +230,7 @@ def message_model_strategy(draw: st.DrawFn, *, role: str | None = None) -> Messa
         id=draw(st.text(min_size=1, max_size=40, alphabet=st.characters(whitelist_categories=("L", "N")))),
         role=Role.normalize(role_val),
         text=text,
-        content_blocks=content_blocks,
+        blocks=content_blocks,
     )
 
 

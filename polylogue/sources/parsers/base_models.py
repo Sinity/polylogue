@@ -59,7 +59,7 @@ class ParsedMessage(BaseModel):
     text: str | None = None
     timestamp: str | None = None
     occurred_at_ms: int | None = None
-    content_blocks: list[ParsedContentBlock] = Field(default_factory=list)
+    blocks: list[ParsedContentBlock] = Field(default_factory=list)
     message_type: MessageType = MessageType.MESSAGE
     parent_message_provider_id: str | None = None
     position: int | None = None

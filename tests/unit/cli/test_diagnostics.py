@@ -36,14 +36,14 @@ def _message(
     timestamp: datetime | None,
     text: str = "hello",
     *,
-    content_blocks: list[dict[str, object]] | None = None,
+    blocks: list[dict[str, object]] | None = None,
     duration_ms: int = 0,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         role=role,
         timestamp=timestamp,
         text=text,
-        content_blocks=content_blocks or [],
+        blocks=blocks or [],
         duration_ms=duration_ms,
     )
 
@@ -93,7 +93,7 @@ async def test_turns_reports_duration_thinking_tools_and_characters(monkeypatch:
             "assistant",
             datetime(2026, 1, 1, tzinfo=timezone.utc),
             "assistant text",
-            content_blocks=[
+            blocks=[
                 {"type": "thinking", "text": "reason"},
                 {"type": "tool_use", "name": "bash"},
                 {"type": "tool_result", "text": "ok"},

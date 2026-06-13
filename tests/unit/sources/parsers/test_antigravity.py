@@ -46,7 +46,7 @@ The focused checks passed.
         "Run pytest.",
         "The focused checks passed.",
     ]
-    assert session.messages[0].content_blocks[0].type == BlockType.TEXT
+    assert session.messages[0].blocks[0].type == BlockType.TEXT
     assert session.messages[0].provider_message_id == "cascade-1:0:user_input"
     assert session.messages[1].provider_message_id == "cascade-1:1:planner_response"
     assert [message.position for message in session.messages] == [0, 1]
@@ -100,7 +100,7 @@ def test_parse_brain_metadata_reads_adjacent_artifact(tmp_path: Path) -> None:
     assert session.messages[0].position == 0
     assert session.messages[0].is_active_leaf is True
     assert session.active_leaf_message_provider_id == "session-1:implementation_plan.md:artifact"
-    assert session.messages[0].content_blocks[0].type == BlockType.TEXT
+    assert session.messages[0].blocks[0].type == BlockType.TEXT
 
 
 def test_parse_brain_metadata_marks_missing_artifact(tmp_path: Path) -> None:

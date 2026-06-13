@@ -177,7 +177,7 @@ class TestIndexService:
                     text="Ran rg",
                     sort_key=1.0,
                     content_hash="message-hash-action",
-                    content_blocks=[
+                    blocks=[
                         make_content_block(
                             message_id="msg-action",
                             session_id="conv-action",

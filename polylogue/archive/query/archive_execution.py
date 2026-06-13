@@ -187,7 +187,7 @@ def _message_to_domain(message: ArchiveMessageRow, *, provider: Provider) -> Mes
         text=text,
         timestamp=_parse_archive_datetime(message.occurred_at),
         provider=provider,
-        content_blocks=content_blocks,
+        blocks=content_blocks,
         message_type=MessageType.normalize(message.message_type),
         has_tool_use=message.has_tool_use,
         has_thinking=message.has_thinking,

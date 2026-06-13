@@ -148,7 +148,7 @@ def _session_data(
         blocks_by_message.setdefault(message_id, []).append(block)
     if blocks_by_message:
         messages = [
-            message.model_copy(update={"content_blocks": blocks_by_message.get(message.provider_message_id, [])})
+            message.model_copy(update={"blocks": blocks_by_message.get(message.provider_message_id, [])})
             for message in messages
         ]
     attachment_message_ids = dict(attachment_ref_tuples or [])

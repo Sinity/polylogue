@@ -62,7 +62,7 @@ def _semantic_session() -> SessionModel:
                     origin="claude-code",
                     text="I will inspect the file",
                     timestamp=datetime(2026, 3, 23, 9, 1, tzinfo=timezone.utc),
-                    content_blocks=[
+                    blocks=[
                         {"type": "text", "text": "I will inspect the file"},
                         {
                             "type": "tool_use",
@@ -80,7 +80,7 @@ def _semantic_session() -> SessionModel:
                     timestamp=datetime(2026, 3, 23, 9, 4, tzinfo=timezone.utc),
                     branch_index=1,
                     attachments=[],
-                    content_blocks=[{"type": "thinking", "text": "step by step"}],
+                    blocks=[{"type": "thinking", "text": "step by step"}],
                 ),
             ]
         ),
@@ -110,7 +110,7 @@ def _protocol_summary_session() -> SessionModel:
                     origin="claude-code",
                     text="I will inspect the file.",
                     timestamp=datetime(2026, 3, 23, 10, 1, tzinfo=timezone.utc),
-                    content_blocks=[
+                    blocks=[
                         {"type": "text", "text": "I will inspect the file."},
                         {
                             "type": "tool_use",
@@ -374,7 +374,7 @@ def test_build_session_profile_classifies_workflow_shape_from_observable_feature
                 role="assistant",
                 origin=Provider.CLAUDE_CODE,
                 text="I inspected the files.",
-                content_blocks=[
+                blocks=[
                     {"type": "tool_use", "tool_name": "Read", "tool_input": {"file_path": str(README_PATH)}},
                     {"type": "tool_use", "tool_name": "Grep", "tool_input": {"pattern": "Polylogue"}},
                     {"type": "tool_use", "tool_name": "Glob", "tool_input": {"pattern": "*.md"}},
@@ -403,9 +403,7 @@ def test_build_session_profile_classifies_subagent_dispatch_shape() -> None:
                 role="assistant",
                 origin=Provider.CLAUDE_CODE,
                 text="Launching a worker.",
-                content_blocks=[
-                    {"type": "tool_use", "tool_name": "Task", "tool_input": {"description": "inspect storage"}}
-                ],
+                blocks=[{"type": "tool_use", "tool_name": "Task", "tool_input": {"description": "inspect storage"}}],
             ),
         ],
     )
@@ -685,7 +683,7 @@ def test_build_session_semantic_facts_uses_canonical_db_content_blocks() -> None
                     origin="claude-code",
                     text="I checked the file.",
                     timestamp=datetime(2026, 3, 23, 9, 1, tzinfo=timezone.utc),
-                    content_blocks=[
+                    blocks=[
                         {
                             "type": "tool_use",
                             "tool_name": "Read",
@@ -727,7 +725,7 @@ def test_build_session_semantic_facts_preserves_tool_results_before_tool_use() -
                     role="assistant",
                     origin="claude-code",
                     text="I checked the file.",
-                    content_blocks=[
+                    blocks=[
                         {
                             "type": "tool_result",
                             "tool_id": "tool-1",
@@ -770,7 +768,7 @@ def test_build_session_semantic_facts_upgrades_stale_other_semantic_type() -> No
                     origin="claude-code",
                     text="Applying edits.",
                     timestamp=datetime(2026, 3, 23, 9, 1, tzinfo=timezone.utc),
-                    content_blocks=[
+                    blocks=[
                         {
                             "type": "tool_use",
                             "tool_name": "MultiEdit",
@@ -808,7 +806,7 @@ def test_actions_capture_normalized_command_query_branch_and_cwd() -> None:
                     origin="claude-code",
                     text="Running git and search actions.",
                     timestamp=datetime(2026, 3, 23, 10, 0, tzinfo=timezone.utc),
-                    content_blocks=[
+                    blocks=[
                         {
                             "type": "tool_use",
                             "tool_name": "Bash",
@@ -864,7 +862,7 @@ def test_actions_do_not_treat_checkout_pathspec_as_branch_or_commit_message_word
                     origin="claude-code",
                     text="Running git maintenance.",
                     timestamp=datetime(2026, 3, 23, 10, 0, tzinfo=timezone.utc),
-                    content_blocks=[
+                    blocks=[
                         {
                             "type": "tool_use",
                             "tool_name": "Bash",
@@ -993,7 +991,7 @@ def test_build_session_profile_discards_shell_path_noise_from_actions() -> None:
                     origin="claude-code",
                     text="Running a shell command.",
                     timestamp=datetime(2026, 3, 23, 9, 0, tzinfo=timezone.utc),
-                    content_blocks=[
+                    blocks=[
                         {
                             "type": "tool_use",
                             "tool_name": "Bash",

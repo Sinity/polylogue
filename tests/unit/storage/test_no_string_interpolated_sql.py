@@ -57,14 +57,14 @@ _AUDITED_SITES: Final[dict[tuple[str, int], str]] = {
     # from the (column, path) pairs in the closed ``_INSIGHT_FALLBACK_PAYLOAD``
     # constant; ``clause`` comes from ``_readiness_session_filter`` whose values
     # flow through bound params. No user input enters the format string.
-    ("polylogue/storage/sqlite/archive_tiers/archive.py", 2529): (
+    ("polylogue/storage/sqlite/archive_tiers/archive.py", 2610): (
         "readiness fallback coverage: closed insight-table + _INSIGHT_FALLBACK_PAYLOAD column/path; values bound"
     ),
     # #1743 readiness fallback reason counts (_archive_fallback_coverage):
     #   rows = self._conn.execute(f"... FROM {table_name} ... json_each(... '{path}') ...{clause}")
     # ``table_name``/``column``/``path`` are the closed-constant identifiers
     # above; ``clause`` values are bound. No user input enters the format string.
-    ("polylogue/storage/sqlite/archive_tiers/archive.py", 2538): (
+    ("polylogue/storage/sqlite/archive_tiers/archive.py", 2619): (
         "readiness fallback reason counts: closed insight-table + _INSIGHT_FALLBACK_PAYLOAD column/path; values bound"
     ),
 }

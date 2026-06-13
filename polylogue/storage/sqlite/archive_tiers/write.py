@@ -1750,8 +1750,8 @@ def _normalized_messages(messages: list[ParsedMessage]) -> list[ParsedMessage]:
 
 
 def _message_blocks(message: ParsedMessage) -> list[ParsedContentBlock]:
-    if message.content_blocks:
-        return list(message.content_blocks)
+    if message.blocks:
+        return list(message.blocks)
     if message.text:
         return [ParsedContentBlock(type=BlockType.TEXT, text=message.text)]
     return []
@@ -1825,7 +1825,7 @@ def _semantic_type(block: ParsedContentBlock) -> str | None:
 
 
 def _has_block(message: ParsedMessage, block_type: BlockType) -> int:
-    return int(any(_enum_value(block.type) == block_type.value for block in message.content_blocks))
+    return int(any(_enum_value(block.type) == block_type.value for block in message.blocks))
 
 
 def _has_paste(message: ParsedMessage) -> int:

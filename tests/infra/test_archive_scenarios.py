@@ -31,7 +31,7 @@ def test_archive_scenario_seeds_record_and_hydration_facts(workspace_env: Mappin
                 role="assistant",
                 text="Using pytest",
                 message_id="m-tool",
-                content_blocks=(ScenarioContentBlock.tool_use(tool_name="shell", tool_input={"command": "pytest -q"}),),
+                blocks=(ScenarioContentBlock.tool_use(tool_name="shell", tool_input={"command": "pytest -q"}),),
                 attachments=(ScenarioAttachment(attachment_id="att-report", mime_type="text/plain"),),
             ),
         ),
@@ -53,7 +53,7 @@ def test_archive_scenario_rejects_raw_content_block_dicts(workspace_env: Mapping
             ScenarioMessage(
                 role="assistant",
                 text="Using pytest",
-                content_blocks=({"type": "tool_use", "tool_name": "shell"},),  # type: ignore[arg-type]
+                blocks=({"type": "tool_use", "tool_name": "shell"},),  # type: ignore[arg-type]
             ),
         ),
     )

@@ -259,7 +259,7 @@ class TestListToolUsageInsightsEndToEnd:
                 "cc-1-msg",
                 role="assistant",
                 text="Working",
-                content_blocks=[
+                blocks=[
                     {"type": "tool_use", "name": "Read", "id": "toolu_1", "tool_input": {"file_path": "a.py"}},
                     {"type": "tool_use", "name": "Read", "id": "toolu_2", "tool_input": {"file_path": "b.py"}},
                     {"type": "tool_use", "name": "Bash", "id": "toolu_3"},
@@ -276,7 +276,7 @@ class TestListToolUsageInsightsEndToEnd:
                 "cx-1-msg",
                 role="assistant",
                 text="Patching",
-                content_blocks=[{"type": "tool_use", "name": "apply_patch", "id": "p1"}],
+                blocks=[{"type": "tool_use", "name": "apply_patch", "id": "p1"}],
             )
             .save()
         )
@@ -326,7 +326,7 @@ class TestListToolUsageInsightsEndToEnd:
                 "cc-1-msg",
                 role="assistant",
                 text="Reading",
-                content_blocks=[{"type": "tool_use", "name": "Read", "id": "toolu_only"}],
+                blocks=[{"type": "tool_use", "name": "Read", "id": "toolu_only"}],
             )
             .save()
         )

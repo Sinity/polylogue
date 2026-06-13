@@ -345,7 +345,7 @@ class SessionMessagePayload(SurfacePayloadModel):
             anchor=reader_anchor("message", message.id),
             timestamp=message.timestamp,
             message_type=message_type,
-            content_blocks=message.content_blocks,
+            content_blocks=message.blocks,
             parent_id=message.parent_id,
             branch_index=int(getattr(message, "branch_index", 0) or 0),
             has_paste=bool(getattr(message, "has_paste", False)),

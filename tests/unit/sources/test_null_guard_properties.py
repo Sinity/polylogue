@@ -138,7 +138,7 @@ def sparse_message(draw: st.DrawFn) -> Message:
         role=Role.normalize(draw(_valid_roles)),
         text=draw(_text_or_none),
         timestamp=draw(_timestamp_or_none),
-        content_blocks=content_blocks,
+        blocks=content_blocks,
     )
 
 
@@ -452,7 +452,7 @@ class TestClaudeCodeNoneGuardProperty:
         from polylogue.sources.providers.claude_code import ClaudeCodeRecord
 
         record = ClaudeCodeRecord(type=record_type, message=message)
-        result = record.content_blocks_raw
+        result = record.blocks_raw
         assert isinstance(result, list)
 
     @given(

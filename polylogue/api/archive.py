@@ -469,7 +469,7 @@ def _archive_message_to_domain(message: ArchiveMessageRow, *, provider: Provider
         text=text,
         timestamp=_parse_archive_datetime(message.occurred_at),
         provider=provider,
-        content_blocks=content_blocks,
+        blocks=content_blocks,
         message_type=MessageType.normalize(message.message_type),
         has_tool_use=message.has_tool_use,
         has_thinking=message.has_thinking,
@@ -987,7 +987,7 @@ def _actions_for_session(session: Session) -> tuple[Action, ...]:
     for message in session.messages:
         calls = build_tool_calls_from_content_blocks(
             provider=provider_from_origin(session.origin),
-            content_blocks=message.content_blocks,
+            content_blocks=message.blocks,
         )
         events.extend(build_actions(message, calls))
     return tuple(events)

@@ -36,7 +36,7 @@ def test_archive_tiers_user_overlay_orphan_check_resolves_archive_targets(tmp_pa
                 ParsedMessage(
                     provider_message_id="m1",
                     role=Role.USER,
-                    content_blocks=[ParsedContentBlock(type=BlockType.TEXT, text="mark me")],
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="mark me")],
                 )
             ],
             attachments=[

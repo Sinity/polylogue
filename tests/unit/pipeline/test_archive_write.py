@@ -334,7 +334,7 @@ async def test_persists_structured_blocks_in_order(async_backend: SQLiteBackend)
                 role=Role.ASSISTANT,
                 text=None,
                 timestamp="2024-01-01T00:00:00Z",
-                content_blocks=[
+                blocks=[
                     ParsedContentBlock(type=BlockType.TEXT, text="inline"),
                     ParsedContentBlock(
                         type=BlockType.CODE,
@@ -349,7 +349,7 @@ async def test_persists_structured_blocks_in_order(async_backend: SQLiteBackend)
                 role=Role.ASSISTANT,
                 text=None,
                 timestamp="2024-01-01T00:00:01Z",
-                content_blocks=[ParsedContentBlock(type=BlockType.THINKING, text="reasoning")],
+                blocks=[ParsedContentBlock(type=BlockType.THINKING, text="reasoning")],
             ),
         ],
         attachments=[],
