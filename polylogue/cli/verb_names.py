@@ -7,14 +7,9 @@ VERB_NAMES: frozenset[str] = frozenset(
         "list",
         "count",
         "stats",
-        "open",
-        "show",
-        "bulk-export",
         "delete",
-        "messages",
-        "raw",
-        "select",
         "recent",
+        "read",
     }
 )
 QUERY_VERB_NAMES = VERB_NAMES

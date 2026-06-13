@@ -19,6 +19,13 @@ def _run_inbox(workspace: IsolatedWorkspace, *, cwd: Path) -> None:
     # to the daemon. These integration tests need a daemon fixture or direct
     # Python API to populate test archives. Skipping until the test infra catches
     # up with the daemon-based architecture.
+    #
+    # NOTE: several callers below still drive the pre-#1813 verb grammar
+    # (`open`, `select`, `messages`, `raw`) which #1813 folded into `read`
+    # (`read --to browser`, `read --view messages|raw`). They are inert today
+    # because this skip fires first; the #847 daemon-fixture rewrite must also
+    # migrate those invocations to the `read` grammar rather than resurrect the
+    # removed verbs.
     pytest.skip("'run --input' removed (#847); test needs daemon fixture rewrite")
 
 
@@ -161,11 +168,14 @@ def test_cli_query_summary_list_json_no_results_still_returns_json(tmp_path: Pat
     assert payload["total"] == 0
 
 
-def test_cli_query_open_print_url_json_no_results_still_returns_json(tmp_path: Path) -> None:
+def test_cli_query_read_browser_json_no_results_still_returns_json(tmp_path: Path) -> None:
     workspace = setup_isolated_workspace(tmp_path)
 
+    # `open --print-url` folded into `read --to browser` (#1813). The machine
+    # no-results contract is preserved: a JSON request that matches nothing
+    # returns a structured error envelope and exit 2, not human text.
     result = run_cli(
-        ["--plain", "--format", "json", "--latest", "open", "--print-url"], env=workspace["env"], cwd=tmp_path
+        ["--plain", "--format", "json", "--latest", "read", "--to", "browser"], env=workspace["env"], cwd=tmp_path
     )
 
     assert result.exit_code == 2, result.output

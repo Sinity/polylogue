@@ -120,7 +120,6 @@ def test_completion_functions_cover_origin_session_tag_tool_and_open_targets() -
         patch("polylogue.cli.shell_completion_values._db_exists", return_value=True),
     ):
         session_items = shell_completion_values.complete_session_ids(ctx, param, "conv")
-        open_items = shell_completion_values.complete_open_targets(ctx, param, "conv")
         tag_items = shell_completion_values.complete_tag_values(ctx, param, "alpha,rev")
         repo_items = shell_completion_values.complete_repo_values(ctx, param, "old,poly")
         cwd_items = shell_completion_values.complete_cwd_prefix_values(ctx, param, "/realm")
@@ -132,7 +131,6 @@ def test_completion_functions_cover_origin_session_tag_tool_and_open_targets() -
     assert [item.value for item in retrieval_lane_items] == ["hybrid"]
     assert session_items[0].value == "conv-1"
     assert session_items[0].help is not None and "claude-code" in session_items[0].help
-    assert open_items[0].value == "conv-1"
     assert [item.value for item in tag_items] == ["alpha,review"]
     assert tag_items[0].help == "3 sessions"
     assert [item.value for item in repo_items] == ["old,polylogue"]

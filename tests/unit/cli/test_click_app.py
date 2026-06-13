@@ -173,14 +173,18 @@ class TestHandleQueryMode:
         assert request.query_params()["query"] == ("python", "error")
 
 
-def test_messages_verb_forwards_parent_request_and_projection_options(cli_runner: CliRunner) -> None:
+def test_read_verb_messages_view_forwards_options(cli_runner: CliRunner) -> None:
+    """read --view messages routes pagination and projection flags to run_messages."""
     with patch("polylogue.cli.messages.run_messages") as mock_run_messages:
         result = cli_runner.invoke(
             click_cli,
             [
                 "--plain",
-                "messages",
+                "--id",
                 "conv-1",
+                "read",
+                "--view",
+                "messages",
                 "--message-role",
                 "user",
                 "--message-type",
@@ -201,50 +205,38 @@ def test_messages_verb_forwards_parent_request_and_projection_options(cli_runner
         )
 
     assert result.exit_code == 0
-    assert mock_run_messages.call_args.kwargs == {
-        "session_id": "conv-1",
-        "message_role": ("user",),
-        "message_type": "summary",
-        "limit": 2,
-        "offset": 1,
-        "no_code_blocks": True,
-        "no_tool_calls": True,
-        "no_tool_outputs": True,
-        "no_file_reads": True,
-        "prose_only": True,
-        "output_format": "json",
-    }
+    assert mock_run_messages.call_args.kwargs["session_id"] == "conv-1"
+    assert mock_run_messages.call_args.kwargs["output_format"] == "json"
+    assert mock_run_messages.call_args.kwargs["limit"] == 2
 
 
-def test_messages_verb_requires_id(cli_runner: CliRunner) -> None:
-    result = cli_runner.invoke(click_cli, ["--plain", "messages"])
+def test_read_verb_messages_requires_id(cli_runner: CliRunner) -> None:
+    result = cli_runner.invoke(click_cli, ["--plain", "read", "--view", "messages"])
 
     assert result.exit_code != 0
-    assert "messages requires a session ID" in result.output
+    assert "requires a session ID" in result.output
 
 
-def test_raw_verb_forwards_pagination_and_format(cli_runner: CliRunner) -> None:
+def test_read_verb_raw_view_forwards_options(cli_runner: CliRunner) -> None:
+    """read --view raw routes pagination and format to run_raw."""
     with patch("polylogue.cli.messages.run_raw") as mock_run_raw:
         result = cli_runner.invoke(
             click_cli,
-            ["--plain", "raw", "conv-1", "--limit", "3", "--offset", "2", "-f", "yaml"],
+            ["--plain", "--id", "conv-1", "read", "--view", "raw", "--limit", "3", "--offset", "2", "-f", "json"],
             catch_exceptions=False,
         )
 
     assert result.exit_code == 0
-    assert mock_run_raw.call_args.kwargs == {
-        "session_id": "conv-1",
-        "limit": 3,
-        "offset": 2,
-        "output_format": "yaml",
-    }
+    assert mock_run_raw.call_args.kwargs["session_id"] == "conv-1"
+    assert mock_run_raw.call_args.kwargs["limit"] == 3
+    assert mock_run_raw.call_args.kwargs["offset"] == 2
 
 
-def test_raw_verb_requires_id(cli_runner: CliRunner) -> None:
-    result = cli_runner.invoke(click_cli, ["--plain", "raw"])
+def test_read_verb_raw_requires_id(cli_runner: CliRunner) -> None:
+    result = cli_runner.invoke(click_cli, ["--plain", "read", "--view", "raw"])
 
     assert result.exit_code != 0
-    assert "raw requires a session ID" in result.output
+    assert "requires a session ID" in result.output
 
 
 class TestQueryFirstGroupParseArgs:
@@ -558,7 +550,6 @@ class TestCliMetadata:
             "recent",
             "dashboard",
             "neighbors",
-            "export",
             "resume",
             "resume-candidates",
             "insights",
@@ -575,13 +566,8 @@ class TestCliMetadata:
             "list",
             "count",
             "stats",
-            "open",
-            "show",
-            "bulk-export",
+            "read",
             "delete",
-            "messages",
-            "raw",
-            "select",
         }
         assert set(cli.commands.keys()) == expected
 

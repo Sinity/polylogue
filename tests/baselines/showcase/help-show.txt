@@ -1,6 +1,0 @@
-Usage: polylogue show [OPTIONS] [TARGET_TERMS]...
-
-  Show matched sessions with default full-content output.
-
-Options:
-  --help  Show this message and exit.

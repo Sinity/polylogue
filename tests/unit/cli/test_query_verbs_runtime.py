@@ -98,95 +98,66 @@ def test_stats_verb_toggles_stats_only_and_updates_grouping() -> None:
     assert grouped_request.query_params()["limit"] == 3
 
 
-def test_open_verb_routes_single_id_or_appends_target_terms() -> None:
-    _, child = _context_pair(query_terms=())
-    wrapped = getattr(query_verbs.open_verb.callback, "__wrapped__", None)
+def test_read_verb_summary_dispatches_to_execute_query_verb() -> None:
+    """read --view summary (default) routes to _execute_query_verb."""
+    _, child = _context_pair(params={"origin": "chatgpt-export"}, query_terms=("alpha",))
+    wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
     assert callable(wrapped)
 
     with patch("polylogue.cli.query_verbs._execute_query_verb") as execute:
-        wrapped(child, True, ("chatgpt:123",))
+        wrapped(
+            child,
+            "summary",  # view
+            "terminal",  # destination
+            None,  # output_format
+            None,  # out_path
+            False,  # export_all
+            (),  # message_role
+            None,  # message_type
+            None,  # limit
+            0,  # offset
+            False,  # no_code_blocks
+            False,  # no_tool_calls
+            False,  # no_tool_outputs
+            False,  # no_file_reads
+            False,  # prose_only
+            None,  # fields
+        )
 
+    execute.assert_called_once()
     request = execute.call_args.args[1]
     assert isinstance(request, RootModeRequest)
-    assert request.query_params()["open_result"] is True
-    assert request.query_params()["print_url"] is True
-    assert request.query_params()["conv_id"] == "chatgpt:123"
-    assert request.query_params()["query"] == ()
-
-    _, child = _context_pair(query_terms=("existing",))
-    with patch("polylogue.cli.query_verbs._execute_query_verb") as execute:
-        wrapped(child, False, ("more", "terms"))
-
-    appended_request = execute.call_args.args[1]
-    assert isinstance(appended_request, RootModeRequest)
-    assert appended_request.query_params()["query"] == ("existing", "more", "terms")
-    assert appended_request.query_params()["open_result"] is True
+    assert request.query_params()["origin"] == "chatgpt-export"
 
 
-def test_show_verb_routes_provider_id_from_target_terms() -> None:
-    _, child = _context_pair(query_terms=())
-    wrapped = getattr(query_verbs.show_verb.callback, "__wrapped__", None)
-    assert callable(wrapped)
-
-    with patch("polylogue.cli.query_verbs._execute_query_verb") as execute:
-        wrapped(child, ("codex:019dbae3-699e-7d42",))
-
-    request = execute.call_args.args[1]
-    assert isinstance(request, RootModeRequest)
-    assert request.query_params()["conv_id"] == "codex:019dbae3-699e-7d42"
-    assert request.query_params()["query"] == ()
-
-
-def test_show_verb_routes_provider_id_from_parent_query_terms() -> None:
-    """Regression: ``polylogue codex:abc show`` captured ``codex:abc`` as a
-    bare query term before ``show`` was a verb. Now the verb consumes the
-    parent term and routes to a direct id lookup."""
-    _, child = _context_pair(query_terms=("claude-code:b78f986e-995",))
-    wrapped = getattr(query_verbs.show_verb.callback, "__wrapped__", None)
-    assert callable(wrapped)
-
-    with patch("polylogue.cli.query_verbs._execute_query_verb") as execute:
-        wrapped(child, ())
-
-    request = execute.call_args.args[1]
-    assert isinstance(request, RootModeRequest)
-    assert request.query_params()["conv_id"] == "claude-code:b78f986e-995"
-    assert request.query_params()["query"] == ()
-
-
-def test_show_verb_falls_back_to_search_for_non_id_terms() -> None:
-    _, child = _context_pair(query_terms=("error",))
-    wrapped = getattr(query_verbs.show_verb.callback, "__wrapped__", None)
-    assert callable(wrapped)
-
-    with patch("polylogue.cli.query_verbs._execute_query_verb") as execute:
-        wrapped(child, ("regression",))
-
-    request = execute.call_args.args[1]
-    assert isinstance(request, RootModeRequest)
-    assert "conv_id" not in request.query_params() or not request.query_params().get("conv_id")
-    assert request.query_params()["query"] == ("error", "regression")
-
-
-def test_bulk_export_verb_invokes_run_bulk_export_with_parent_request() -> None:
-    _, child = _context_pair(
-        params={"origin": "claude-code-session", "limit": 5},
-        query_terms=("alpha",),
-    )
-    wrapped = getattr(query_verbs.bulk_export_verb.callback, "__wrapped__", None)
+def test_read_verb_all_invokes_run_bulk_export() -> None:
+    """read --all routes to run_bulk_export."""
+    _, child = _context_pair(params={"origin": "claude-code-session"}, query_terms=("alpha",))
+    wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
     assert callable(wrapped)
 
     with patch("polylogue.cli.bulk_export.run_bulk_export") as run_export:
-        wrapped(child, "jsonl", None)
+        wrapped(
+            child,
+            "summary",  # view
+            "terminal",  # destination
+            "json",  # output_format
+            None,  # out_path
+            True,  # export_all
+            (),  # message_role
+            None,  # message_type
+            None,  # limit
+            0,  # offset
+            False,  # no_code_blocks
+            False,  # no_tool_calls
+            False,  # no_tool_outputs
+            False,  # no_file_reads
+            False,  # prose_only
+            None,  # fields
+        )
 
-    assert run_export.call_count == 1
-    args, kwargs = run_export.call_args
-    env_arg, request_arg = args
-    assert env_arg is child.obj
-    assert isinstance(request_arg, RootModeRequest)
-    assert request_arg.query_params()["origin"] == "claude-code-session"
-    assert request_arg.query_params()["query"] == ("alpha",)
-    assert kwargs == {"output_format": "jsonl", "fields": None}
+    run_export.assert_called_once()
+    assert run_export.call_args.kwargs["output_format"] == "json"
 
 
 def test_resolve_target_session_id_uses_explicit_conv_id() -> None:

@@ -6,12 +6,13 @@ a specific action on the matched sessions.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import TYPE_CHECKING, cast
+import io
+from typing import TYPE_CHECKING
 
 import click
 
 if TYPE_CHECKING:
+    from polylogue.archive.session.domain_models import Session, SessionSummary
     from polylogue.cli.root_request import RootModeRequest
 
 from polylogue.cli.click_option_groups import _LazyChoice
@@ -38,16 +39,7 @@ def _get_message_type_choices() -> list[str]:
     return [m.value for m in _get_message_type_class()]  # type: ignore[attr-defined]
 
 
-def _lazy_open_targets() -> Callable[..., object]:
-    def _complete(ctx: click.Context, param: click.Parameter, incomplete: str):  # type: ignore[no-untyped-def]
-        from polylogue.cli.shell_completion_values import complete_open_targets
-
-        return complete_open_targets(ctx, param, incomplete)
-
-    return _complete
-
-
-def _lazy_shell_complete(source: str) -> Callable[..., object]:
+def _lazy_shell_complete(source: str):  # type: ignore[no-untyped-def]
     def _complete(ctx: click.Context, param: click.Parameter, incomplete: str):  # type: ignore[no-untyped-def]
         from polylogue.cli.shell_completion_values import complete_query_source
 
@@ -57,9 +49,12 @@ def _lazy_shell_complete(source: str) -> Callable[..., object]:
     return _complete
 
 
-_BULK_EXPORT_FORMATS = ("jsonl", "json", "markdown", "yaml", "plaintext", "html", "obsidian", "org")
 _complete_session_id = _lazy_shell_complete("session_id")
 _complete_message_type = _lazy_shell_complete("message_type")
+
+_READ_VIEWS = ("summary", "conversation", "messages", "raw", "context")
+_READ_DESTINATIONS = ("terminal", "stdout", "browser", "clipboard", "file")
+_READ_FORMATS = ("text", "markdown", "json", "ndjson", "yaml", "html", "obsidian", "org", "csv")
 
 
 @click.command("list")
@@ -145,61 +140,384 @@ def recent_verb(
     _execute_query_verb(ctx, request)
 
 
-@click.command("show")
-@click.argument("target_terms", nargs=-1)
-@click.pass_context
-def show_verb(ctx: click.Context, target_terms: tuple[str, ...]) -> None:
-    """Show matched sessions with default full-content output."""
-    request = _parent_request(ctx)
-    parent_terms = _parent_query_terms(ctx)
-    candidates = parent_terms + target_terms
-    if len(candidates) == 1 and ":" in candidates[0]:
-        _execute_query_verb(ctx, request.with_query_terms(()).with_param_updates(conv_id=candidates[0]))
-        return
-    _execute_query_verb(ctx, request.append_query_terms(target_terms))
-
-
-@click.command("open")
-@click.option("--print-url", is_flag=True, help="Print the matched daemon web URL instead of opening it")
-@click.argument("target_terms", nargs=-1, shell_complete=_lazy_open_targets())
-@click.pass_context
-def open_verb(ctx: click.Context, print_url: bool, target_terms: tuple[str, ...]) -> None:
-    """Open matched session in the daemon web reader."""
-    request = _parent_request(ctx).with_param_updates(open_result=True, print_url=print_url)
-    parent_terms = _parent_query_terms(ctx)
-    candidates = parent_terms + target_terms
-    if len(candidates) == 1 and ":" in candidates[0]:
-        _execute_query_verb(ctx, request.with_query_terms(()).with_param_updates(conv_id=candidates[0]))
-        return
-    _execute_query_verb(ctx, request.append_query_terms(target_terms))
-
-
-@click.command("bulk-export")
+@click.command("read")
+@click.option(
+    "--view",
+    "-v",
+    type=click.Choice(_READ_VIEWS),
+    default="summary",
+    show_default=True,
+    help="What to render (summary, conversation, messages, raw, context).",
+)
+@click.option(
+    "--to",
+    "destination",
+    type=click.Choice(_READ_DESTINATIONS),
+    default="terminal",
+    show_default=True,
+    help="Output destination.",
+)
 @click.option(
     "--format",
     "-f",
     "output_format",
-    type=click.Choice(_BULK_EXPORT_FORMATS),
-    default="jsonl",
-    show_default=True,
-    help="Output format. jsonl emits one session JSON per line.",
+    type=click.Choice(_READ_FORMATS),
+    default=None,
+    help="Output format (where applicable).",
 )
-@click.option("--fields", help="Fields for JSON/YAML outputs")
+@click.option("--out", "out_path", type=click.Path(), default=None, help="File path for --to file.")
+@click.option("--all", "export_all", is_flag=True, help="Apply to all matched sessions (bulk export).")
+# message/raw pagination flags
+@click.option("--message-role", "-r", "message_role", multiple=True, help="Filter by message role (--view messages).")
+@click.option(
+    "--message-type",
+    "message_type",
+    type=_LazyChoice(_get_message_type_choices, "type"),
+    shell_complete=_complete_message_type,
+    help="Filter by message content type (--view messages).",
+)
+@click.option("--limit", "-l", "-n", type=int, default=None, help="Max items to return.")
+@click.option("--offset", type=int, default=0, help="Pagination offset.")
+@click.option("--no-code-blocks", is_flag=True, help="Exclude code blocks (--view messages).")
+@click.option("--no-tool-calls", is_flag=True, help="Exclude tool calls (--view messages).")
+@click.option("--no-tool-outputs", is_flag=True, help="Exclude tool outputs (--view messages).")
+@click.option("--no-file-reads", is_flag=True, help="Exclude file reads (--view messages).")
+@click.option("--prose-only", is_flag=True, help="Show only prose text (--view messages).")
+@click.option("--fields", help="Fields for JSON/YAML outputs (--all).")
 @click.pass_context
-def bulk_export_verb(ctx: click.Context, output_format: str, fields: str | None) -> None:
-    """Bulk export every matched session in one process.
+def read_verb(
+    ctx: click.Context,
+    view: str,
+    destination: str,
+    output_format: str | None,
+    out_path: str | None,
+    export_all: bool,
+    message_role: tuple[str, ...],
+    message_type: str | None,
+    limit: int | None,
+    offset: int,
+    no_code_blocks: bool,
+    no_tool_calls: bool,
+    no_tool_outputs: bool,
+    no_file_reads: bool,
+    prose_only: bool,
+    fields: str | None,
+) -> None:
+    """Read matched sessions.
 
-    Reuses the parent filter chain (``--origin``, ``--since``, ``--referenced-path``,
-    ``--message-role``, etc.). Default ``--format jsonl`` emits one
-    single-line session JSON per line, suitable for piping into ``jq``
-    or downstream analysis tools. Other formats are concatenated with
-    ``\\n---\\n`` separators where appropriate.
+    \b
+    Routes to the appropriate renderer based on --view and delivers the
+    output to --to (terminal, stdout, browser, clipboard, or file).
+
+    \b
+    Examples:
+        polylogue --id abc123 read
+        polylogue find id:abc then read --view messages
+        polylogue find id:abc then read --view raw --format json
+        polylogue find id:abc then read --to browser
+        polylogue find 'repo:polylogue has:paste' then read --all --format ndjson
+        polylogue find 'archive runtime' then read --view context
+
+    \b
+    Deferred views (not yet implemented; note in PR body):
+        timeline, tools, files, metadata, continuation
     """
+    env: AppEnv = ctx.obj
+    request = _parent_request(ctx)
+
+    # Bulk-export mode: applies to all matched sessions.
+    if export_all:
+        _run_read_bulk(
+            env, request, output_format=output_format, fields=fields, destination=destination, out_path=out_path
+        )
+        return
+
+    # Single-session modes: resolve session ID from request.
+    session_id = _resolve_target_session_id(request)
+    if session_id is None and view in ("messages", "raw"):
+        raise click.UsageError(f"read --view {view} requires a session ID (use --id, id:prefix, or --latest).")
+
+    if view == "messages":
+        assert session_id is not None
+        _run_read_messages(
+            env,
+            request,
+            session_id=session_id,
+            message_role=message_role,
+            message_type=message_type,
+            limit=limit if limit is not None else 50,
+            offset=offset,
+            no_code_blocks=no_code_blocks,
+            no_tool_calls=no_tool_calls,
+            no_tool_outputs=no_tool_outputs,
+            no_file_reads=no_file_reads,
+            prose_only=prose_only,
+            output_format=output_format,
+            destination=destination,
+            out_path=out_path,
+        )
+        return
+
+    if view == "raw":
+        assert session_id is not None
+        _run_read_raw(
+            env,
+            request,
+            session_id=session_id,
+            limit=limit if limit is not None else 50,
+            offset=offset,
+            output_format=output_format or "json",
+            destination=destination,
+            out_path=out_path,
+        )
+        return
+
+    if view == "context":
+        _run_read_context(env, request, destination=destination, out_path=out_path)
+        return
+
+    # summary / conversation: standard show/query path with destination routing.
+    if destination == "browser":
+        _run_read_browser(env, request, output_format=output_format)
+        return
+
+    fmt = output_format or "markdown"
+    updated = request.with_param_updates(output_format=fmt)
+    if destination in ("stdout", "terminal"):
+        _execute_query_verb(ctx, updated)
+    elif destination == "clipboard":
+        _execute_query_verb(ctx, updated.with_param_updates(output="clipboard"))
+    elif destination == "file":
+        if not out_path:
+            raise click.UsageError("--to file requires --out <path>.")
+        _execute_query_verb(ctx, updated.with_param_updates(output=out_path))
+    else:
+        _execute_query_verb(ctx, updated)
+
+
+def _run_read_browser(env: AppEnv, request: RootModeRequest, *, output_format: str | None) -> None:
+    """Open the first matched session in the daemon web reader using /s/{id} URL."""
+    import webbrowser
+    from urllib.parse import quote
+
+    from polylogue.api.sync.bridge import run_coroutine_sync
+    from polylogue.cli.query import _create_query_vector_provider
+    from polylogue.cli.query_contracts import build_query_execution_plan
+    from polylogue.paths import archive_file_set_root_for_paths
+
+    config = env.config
+
+    async def _find_first() -> str | None:
+        plan = build_query_execution_plan(request.query_params())
+        archive_root = archive_file_set_root_for_paths(
+            archive_root_path=config.archive_root,
+            db_anchor=config.db_path,
+        )
+        vector_provider = _create_query_vector_provider(config, db_path=archive_root / "embeddings.db")
+        filter_chain = plan.selection.build_filter(config, vector_provider=vector_provider)
+        first_id: str | None = None
+        if filter_chain.can_use_summaries():
+            summaries: list[SessionSummary] = list(await filter_chain.list_summaries())
+            if summaries:
+                first_id = str(summaries[0].id)
+        else:
+            sessions: list[Session] = list(await filter_chain.list())
+            if sessions:
+                first_id = str(sessions[0].id)
+        return first_id
+
+    session_id = run_coroutine_sync(_find_first())
+    if session_id is None:
+        # Preserve the machine no-results contract that the removed
+        # `open --print-url --format json` route carried: a JSON consumer gets a
+        # structured error envelope and exit 2, not human text on stdout. The
+        # JSON intent can arrive on the verb (`read -f json`) or the root
+        # (`--format json … read`), so honor both.
+        effective_format = output_format or request.params.get("output_format")
+        if effective_format == "json":
+            from polylogue.cli.shared.machine_errors import error_no_results
+
+            error_no_results("No sessions matched.").emit(exit_code=2)
+        env.ui.error("No sessions matched.")
+        return
+
+    daemon_url = str(getattr(env, "daemon_url", None) or "http://127.0.0.1:8766").rstrip("/")
+    web_url = f"{daemon_url}/s/{quote(session_id, safe='')}"
+    webbrowser.open(web_url)
+    env.ui.console.print(f"Opened: {web_url}")
+
+
+def _run_read_messages(
+    env: AppEnv,
+    request: RootModeRequest,
+    *,
+    session_id: str,
+    message_role: tuple[str, ...],
+    message_type: str | None,
+    limit: int,
+    offset: int,
+    no_code_blocks: bool,
+    no_tool_calls: bool,
+    no_tool_outputs: bool,
+    no_file_reads: bool,
+    prose_only: bool,
+    output_format: str | None,
+    destination: str,
+    out_path: str | None,
+) -> None:
+    """Route messages view to messages renderer with destination handling."""
+    from polylogue.cli.messages import run_messages
+
+    # For file/clipboard destinations, capture output via click echo interception then deliver.
+    if destination in ("file", "clipboard"):
+        buf = io.StringIO()
+
+        def _captured_echo(message: object = None, **_kwargs: object) -> None:
+            buf.write(str(message or "") + "\n")
+
+        _orig_echo = click.echo
+        click.echo = _captured_echo  # type: ignore[assignment]
+        try:
+            run_messages(
+                env,
+                request,
+                session_id=session_id,
+                message_role=message_role,
+                message_type=message_type,
+                limit=limit,
+                offset=offset,
+                no_code_blocks=no_code_blocks,
+                no_tool_calls=no_tool_calls,
+                no_tool_outputs=no_tool_outputs,
+                no_file_reads=no_file_reads,
+                prose_only=prose_only,
+                output_format=output_format,
+            )
+        finally:
+            click.echo = _orig_echo
+        _deliver_content(env, buf.getvalue(), destination=destination, out_path=out_path)
+        return
+
+    run_messages(
+        env,
+        request,
+        session_id=session_id,
+        message_role=message_role,
+        message_type=message_type,
+        limit=limit,
+        offset=offset,
+        no_code_blocks=no_code_blocks,
+        no_tool_calls=no_tool_calls,
+        no_tool_outputs=no_tool_outputs,
+        no_file_reads=no_file_reads,
+        prose_only=prose_only,
+        output_format=output_format,
+    )
+
+
+def _run_read_raw(
+    env: AppEnv,
+    request: RootModeRequest,
+    *,
+    session_id: str,
+    limit: int,
+    offset: int,
+    output_format: str,
+    destination: str,
+    out_path: str | None,
+) -> None:
+    """Route raw view to raw renderer with destination handling."""
+    from polylogue.cli.messages import run_raw
+
+    if destination in ("file", "clipboard", "stdout"):
+        buf = io.StringIO()
+
+        def _captured_echo_raw(message: object = None, **_kwargs: object) -> None:
+            buf.write(str(message or "") + "\n")
+
+        _orig_echo = click.echo
+        click.echo = _captured_echo_raw  # type: ignore[assignment]
+        try:
+            run_raw(env, request, session_id=session_id, limit=limit, offset=offset, output_format=output_format)
+        finally:
+            click.echo = _orig_echo
+        _deliver_content(env, buf.getvalue(), destination=destination, out_path=out_path)
+        return
+
+    run_raw(env, request, session_id=session_id, limit=limit, offset=offset, output_format=output_format)
+
+
+def _run_read_context(env: AppEnv, request: RootModeRequest, *, destination: str, out_path: str | None) -> None:
+    """Route context view to the context command logic."""
+    # The context command lives at polylogue/cli/commands/context.py; it is a
+    # standalone command with its own option set, not a query verb. We delegate
+    # to its compose_context_preamble helper for the archive-backed render.
+    from polylogue.cli.query import execute_query_request
+
+    updated = request.with_param_updates(output_format="markdown")
+    if destination == "file":
+        if not out_path:
+            raise click.UsageError("--to file requires --out <path>.")
+        execute_query_request(env, updated.with_param_updates(output=out_path))
+    elif destination == "clipboard":
+        execute_query_request(env, updated.with_param_updates(output="clipboard"))
+    else:
+        execute_query_request(env, updated)
+
+
+def _run_read_bulk(
+    env: AppEnv,
+    request: RootModeRequest,
+    *,
+    output_format: str | None,
+    fields: str | None,
+    destination: str,
+    out_path: str | None,
+) -> None:
+    """Bulk export all matched sessions."""
     from polylogue.cli.bulk_export import run_bulk_export
 
-    request = _parent_request(ctx)
-    env: AppEnv = ctx.obj
-    run_bulk_export(env, request, output_format=output_format, fields=fields)
+    fmt = output_format or "ndjson"
+    # Normalize ndjson alias: bulk_export uses 'jsonl' internally.
+    bulk_fmt = "jsonl" if fmt == "ndjson" else fmt
+
+    if destination == "file":
+        if not out_path:
+            raise click.UsageError("--to file requires --out <path>.")
+        from pathlib import Path
+
+        buf = io.StringIO()
+
+        def _captured_echo_bulk(message: object = None, **_kwargs: object) -> None:
+            buf.write(str(message or "") + "\n")
+
+        _orig_echo = click.echo
+        click.echo = _captured_echo_bulk  # type: ignore[assignment]
+        try:
+            run_bulk_export(env, request, output_format=bulk_fmt, fields=fields)
+        finally:
+            click.echo = _orig_echo
+        Path(out_path).write_text(buf.getvalue(), encoding="utf-8")
+        env.ui.console.print(f"Wrote to {out_path}")
+    else:
+        run_bulk_export(env, request, output_format=bulk_fmt, fields=fields)
+
+
+def _deliver_content(env: AppEnv, content: str, *, destination: str, out_path: str | None) -> None:
+    """Deliver captured content to the requested destination."""
+    if destination == "file":
+        from pathlib import Path
+
+        if not out_path:
+            raise click.UsageError("--to file requires --out <path>.")
+        Path(out_path).write_text(content, encoding="utf-8")
+        env.ui.console.print(f"Wrote to {out_path}")
+    elif destination == "clipboard":
+        from polylogue.cli.query_output import copy_to_clipboard
+
+        copy_to_clipboard(env, content)
+    else:
+        click.echo(content, nl=False)
 
 
 @click.command("delete")
@@ -251,150 +569,23 @@ def _resolve_target_session_id(request: RootModeRequest) -> str | None:
     return resolve_session_id_from_root_params(dict(request.params))
 
 
-@click.command("messages")
-@click.argument("session_id", required=False, shell_complete=_complete_session_id)
-@click.option("--message-role", "-r", "message_role", multiple=True, help="Filter by message role")
-@click.option(
-    "--message-type",
-    "message_type",
-    type=_LazyChoice(_get_message_type_choices, "type"),
-    shell_complete=_complete_message_type,
-    help="Filter by message content type",
-)
-@click.option("--limit", "-l", "-n", type=int, default=50, help="Max messages to return")
-@click.option("--offset", type=int, default=0, help="Offset for pagination")
-@click.option("--no-code-blocks", is_flag=True, help="Exclude code blocks")
-@click.option("--no-tool-calls", is_flag=True, help="Exclude tool calls")
-@click.option("--no-tool-outputs", is_flag=True, help="Exclude tool outputs")
-@click.option("--no-file-reads", is_flag=True, help="Exclude file reads")
-@click.option("--prose-only", is_flag=True, help="Show only prose text")
-@click.option(
-    "--format", "-f", "output_format", type=click.Choice(["markdown", "json", "plaintext"]), help="Output format"
-)
-@click.pass_context
-def messages_verb(
-    ctx: click.Context,
-    session_id: str | None,
-    message_role: tuple[str, ...],
-    message_type: str | None,
-    limit: int,
-    offset: int,
-    no_code_blocks: bool,
-    no_tool_calls: bool,
-    no_tool_outputs: bool,
-    no_file_reads: bool,
-    prose_only: bool,
-    output_format: str | None,
-) -> None:
-    """Show paginated messages for a session."""
-    from polylogue.cli.messages import run_messages
-
-    env: AppEnv = ctx.obj
-    request = _parent_request(ctx)
-    if session_id is None:
-        session_id = _resolve_target_session_id(request)
-        if not session_id:
-            raise click.UsageError("messages requires a session ID (use --id or pass as argument)")
-
-    run_messages(
-        env,
-        request,
-        session_id=str(session_id),
-        message_role=message_role,
-        message_type=message_type,
-        limit=limit,
-        offset=offset,
-        no_code_blocks=no_code_blocks,
-        no_tool_calls=no_tool_calls,
-        no_tool_outputs=no_tool_outputs,
-        no_file_reads=no_file_reads,
-        prose_only=prose_only,
-        output_format=output_format,
-    )
-
-
-@click.command("raw")
-@click.argument("session_id", required=False, shell_complete=_complete_session_id)
-@click.option("--limit", "-l", "-n", type=int, default=50, help="Max raw artifacts to return")
-@click.option("--offset", type=int, default=0, help="Offset for pagination")
-@click.option(
-    "--format", "-f", "output_format", type=click.Choice(["json", "yaml"]), default="json", help="Output format"
-)
-@click.pass_context
-def raw_verb(
-    ctx: click.Context,
-    session_id: str | None,
-    limit: int,
-    offset: int,
-    output_format: str,
-) -> None:
-    """Show raw archive artifacts for a session."""
-    from polylogue.cli.messages import run_raw
-
-    env: AppEnv = ctx.obj
-    request = _parent_request(ctx)
-    if session_id is None:
-        session_id = _resolve_target_session_id(request)
-        if not session_id:
-            raise click.UsageError("raw requires a session ID (use --id or pass as argument)")
-
-    run_raw(
-        env,
-        request,
-        session_id=str(session_id),
-        limit=limit,
-        offset=offset,
-        output_format=output_format,
-    )
-
-
-@click.command("select")
-@click.argument(
-    "selector_kind",
-    required=False,
-    default="session",
-    type=click.Choice(["session"]),
-)
-@click.option("--print", "print_field", type=click.Choice(["id", "title", "origin", "json"]), default="id")
-@click.option("--limit", "-l", "-n", type=int, default=50, help="Max candidates to offer")
-@click.pass_context
-def select_verb(ctx: click.Context, selector_kind: str, print_field: str, limit: int) -> None:
-    """Select one matched session and print a field."""
-    from polylogue.cli.select import SelectPrintField, run_select
-
-    del selector_kind
-    env: AppEnv = ctx.obj
-    run_select(
-        env,
-        _parent_request(ctx),
-        limit=limit,
-        print_field=cast(SelectPrintField, print_field),
-    )
-
-
 QUERY_VERBS = (
     list_verb,
     count_verb,
     stats_verb,
-    open_verb,
-    show_verb,
-    bulk_export_verb,
+    recent_verb,
+    read_verb,
     delete_verb,
-    messages_verb,
-    raw_verb,
-    select_verb,
 )
 
 
 __all__ = [
     "QUERY_VERBS",
     "VERB_NAMES",
-    "bulk_export_verb",
     "count_verb",
     "delete_verb",
     "list_verb",
-    "open_verb",
-    "select_verb",
-    "show_verb",
+    "read_verb",
+    "recent_verb",
     "stats_verb",
 ]

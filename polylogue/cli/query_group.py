@@ -38,6 +38,11 @@ def _split_query_mode_args(group: click.Group, args: list[str]) -> tuple[list[st
             continue
         if not query_terms and arg in group.commands and arg not in VERB_NAMES:
             return args, (), True
+        # Optional `then` connector: `find Q then read` → strip `then` and
+        # treat the following token as the verb.
+        if arg == "then" and index + 1 < len(args) and args[index + 1] in VERB_NAMES:
+            index += 1
+            arg = args[index]
         if arg in VERB_NAMES:
             misplaced = _find_root_option_after_verb(group, arg, list(args[index + 1 :]))
             if misplaced is not None:
