@@ -10,8 +10,8 @@ from polylogue.archive.viewport.viewports import ReasoningTrace, TokenUsage, Too
 from polylogue.core.json import json_document
 from polylogue.types import Provider
 
-ClaudeCodeContentBlockRecord: TypeAlias = dict[str, object]
-ClaudeCodeContentBlocks: TypeAlias = list[ClaudeCodeContentBlockRecord]
+ClaudeCodeBlockRecord: TypeAlias = dict[str, object]
+ClaudeCodeContentBlocks: TypeAlias = list[ClaudeCodeBlockRecord]
 
 
 class ClaudeCodeToolUse(BaseModel):
@@ -22,7 +22,7 @@ class ClaudeCodeToolUse(BaseModel):
     type: Literal["tool_use"] = "tool_use"
     id: str
     name: str
-    input: ClaudeCodeContentBlockRecord = Field(default_factory=dict)
+    input: ClaudeCodeBlockRecord = Field(default_factory=dict)
 
     def to_tool_call(self) -> ToolCall:
         return ToolCall(

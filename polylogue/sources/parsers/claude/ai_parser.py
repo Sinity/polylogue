@@ -70,7 +70,7 @@ def parse_ai(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
                     role=msg.role_normalized,
                     text=msg.text,
                     timestamp=timestamp,
-                    content_blocks=content_blocks,
+                    blocks=content_blocks,
                     position=message_position,
                     variant_index=0,
                     is_active_path=True,

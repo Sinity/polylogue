@@ -20,7 +20,7 @@ class Message(MessageRuntimeMixin, BaseModel):
     timestamp: datetime | None = None
     provider: Provider | None = None
     attachments: list[Attachment] = Field(default_factory=list)
-    content_blocks: list[dict[str, object]] = Field(default_factory=list)
+    blocks: list[dict[str, object]] = Field(default_factory=list)
     message_type: MessageType = MessageType.MESSAGE
     parent_id: str | None = None
     branch_index: int = 0

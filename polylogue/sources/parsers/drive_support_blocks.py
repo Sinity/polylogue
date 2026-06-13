@@ -38,7 +38,7 @@ def viewport_block_payload(block: ContentBlock) -> JSONDocument | None:
     return payload
 
 
-def parsed_content_blocks_from_meta(blocks: object) -> list[ParsedContentBlock]:
+def parsed_blocks_from_meta(blocks: object) -> list[ParsedContentBlock]:
     parsed: list[ParsedContentBlock] = []
     for block in json_document_list(blocks):
         block_type = block.get("type")
@@ -66,4 +66,4 @@ def parsed_content_blocks_from_meta(blocks: object) -> list[ParsedContentBlock]:
     return parsed
 
 
-__all__ = ["parsed_content_blocks_from_meta", "viewport_block_payload"]
+__all__ = ["parsed_blocks_from_meta", "viewport_block_payload"]

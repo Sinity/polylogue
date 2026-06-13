@@ -996,13 +996,13 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                         "id": msg.id,
                         "role": msg.role.value if hasattr(msg.role, "value") else str(msg.role),
                         "text": msg.text,
-                        "content_blocks": list(msg.content_blocks) if msg.content_blocks else [],
+                        "content_blocks": list(msg.blocks) if msg.blocks else [],
                     }
                     messages.append(msg_dict)
                 else:
                     msg_id = getattr(msg, "id", "")
                     msg_text = getattr(msg, "text", None)
-                    content_blocks = getattr(msg, "content_blocks", None) or []
+                    content_blocks = getattr(msg, "blocks", None) or []
                     msg_dict = {
                         "id": str(msg_id),
                         "role": str(getattr(msg, "role", "")),

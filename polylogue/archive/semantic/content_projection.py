@@ -134,7 +134,7 @@ def project_message_content(
 def _tool_semantics_by_id(messages: Sequence[Message]) -> dict[str, str]:
     semantics: dict[str, str] = {}
     for message in messages:
-        for block in message.content_blocks:
+        for block in message.blocks:
             if block.get("type") != "tool_use":
                 continue
             tool_id = block.get("tool_id") or block.get("id")
@@ -161,7 +161,7 @@ def _project_message_content(
     return message.model_copy(
         update={
             "text": projected_text or None,
-            "content_blocks": kept_blocks,
+            "blocks": kept_blocks,
             "attachments": projected_attachments,
         }
     )
@@ -171,12 +171,12 @@ def _segments_for_message(
     message: Message,
     tool_semantics: Mapping[str, str],
 ) -> list[_Segment]:
-    whole_message_kind = _whole_message_kind(message, has_content_blocks=bool(message.content_blocks))
+    whole_message_kind = _whole_message_kind(message, has_content_blocks=bool(message.blocks))
     if whole_message_kind is not None:
         text = strip_system_reminders((message.text or "").strip())
         return [_Segment(whole_message_kind, text or (message.text or "").strip())]
-    if message.content_blocks:
-        return _segments_from_blocks(message.content_blocks, tool_semantics)
+    if message.blocks:
+        return _segments_from_blocks(message.blocks, tool_semantics)
     return _segments_from_text(message)
 
 

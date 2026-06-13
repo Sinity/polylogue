@@ -93,7 +93,7 @@ def message_from_record(
     # #1240: media_type is stored inside the block-metadata JSON (image/document
     # blocks). Lift it back to the top-level for callers that still expect it.
     blocks = []
-    for b in record.content_blocks:
+    for b in record.blocks:
         block_metadata = _parse_json_blob(b.metadata)
         media_type: object = None
         if isinstance(block_metadata, dict):
@@ -122,7 +122,7 @@ def message_from_record(
         timestamp=ts,
         provider=normalized_provider,
         attachments=[attachment_from_record(a) for a in attachments],
-        content_blocks=blocks,
+        blocks=blocks,
         message_type=record.message_type,
         parent_id=record.parent_message_id,
         branch_index=record.branch_index,

@@ -12,7 +12,7 @@ from polylogue.archive.message.roles import MessageRoleFilter
 from polylogue.storage.query_models import SessionRecordQuery
 from polylogue.storage.runtime import (
     AttachmentRecord,
-    ContentBlockRecord,
+    BlockRecord,
     MessageRecord,
     SessionEventRecord,
     SessionRecord,
@@ -41,7 +41,7 @@ def _hydrate_message_text_from_blocks(message: MessageRecord) -> None:
     """Reconstruct aggregate display text when storage keeps blocks canonical."""
     if message.text:
         return
-    parts = [block.text for block in message.content_blocks if block.text]
+    parts = [block.text for block in message.blocks if block.text]
     if parts:
         message.text = "\n".join(parts)
 
@@ -142,12 +142,12 @@ class SQLiteQueryStoreArchiveMixin:
             messages = await messages_q.get_messages(conn, session_id)
         if not messages:
             return []
-        blocks_by_message = await self.get_content_blocks([message.message_id for message in messages])
+        blocks_by_message = await self.get_blocks([message.message_id for message in messages])
         # In-place attachment avoids constructing a second pydantic instance
         # per message in the hot hydration path (#1314). The MessageRecord
         # instances were just constructed by _row_to_message and aren't shared.
         for message in messages:
-            message.content_blocks = blocks_by_message.get(message.message_id, [])
+            message.blocks = blocks_by_message.get(message.message_id, [])
             _hydrate_message_text_from_blocks(message)
         return messages
 
@@ -171,9 +171,9 @@ class SQLiteQueryStoreArchiveMixin:
             )
         if not messages:
             return [], total
-        blocks_by_message = await self.get_content_blocks([message.message_id for message in messages])
+        blocks_by_message = await self.get_blocks([message.message_id for message in messages])
         for message in messages:
-            message.content_blocks = blocks_by_message.get(message.message_id, [])
+            message.blocks = blocks_by_message.get(message.message_id, [])
             _hydrate_message_text_from_blocks(message)
         return messages, total
 
@@ -197,15 +197,15 @@ class SQLiteQueryStoreArchiveMixin:
             )
         if not all_messages:
             return result
-        blocks_by_message = await self.get_content_blocks([message.message_id for message in all_messages])
+        blocks_by_message = await self.get_blocks([message.message_id for message in all_messages])
         for message in all_messages:
-            message.content_blocks = blocks_by_message.get(message.message_id, [])
+            message.blocks = blocks_by_message.get(message.message_id, [])
             _hydrate_message_text_from_blocks(message)
         return result
 
-    async def get_content_blocks(self, message_ids: list[str]) -> dict[str, list[ContentBlockRecord]]:
+    async def get_blocks(self, message_ids: list[str]) -> dict[str, list[BlockRecord]]:
         async with self._connection_factory() as conn:
-            return await attachments_q.get_content_blocks(conn, message_ids)
+            return await attachments_q.get_blocks(conn, message_ids)
 
     async def get_attachments(self, session_id: str) -> list[AttachmentRecord]:
         async with self._connection_factory() as conn:

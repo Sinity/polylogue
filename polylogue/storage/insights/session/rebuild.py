@@ -57,7 +57,7 @@ from polylogue.storage.insights.session.timeline_rows import (
 )
 from polylogue.storage.runtime import (
     AttachmentRecord,
-    ContentBlockRecord,
+    BlockRecord,
     MessageRecord,
     SessionEventRecord,
     SessionLatencyProfileRecord,
@@ -191,7 +191,7 @@ class SessionInsightArchiveBatch:
     attachments_by_session: dict[str, list[AttachmentRecord]]
     session_events_by_session: dict[str, list[SessionEventRecord]]
     compaction_counts_by_session: dict[str, int]
-    blocks: list[ContentBlockRecord]
+    blocks: list[BlockRecord]
 
 
 @dataclass(slots=True)
@@ -294,14 +294,13 @@ def _row_to_session_insight_session(row: sqlite3.Row) -> SessionRecord:
 
 def attach_blocks_to_messages(
     messages: Sequence[MessageRecord],
-    content_blocks: Sequence[ContentBlockRecord],
+    content_blocks: Sequence[BlockRecord],
 ) -> list[MessageRecord]:
-    grouped: dict[str, list[ContentBlockRecord]] = defaultdict(list)
+    grouped: dict[str, list[BlockRecord]] = defaultdict(list)
     for block in content_blocks:
         grouped[str(block.message_id)].append(block)
     return [
-        message.model_copy(update={"content_blocks": list(grouped.get(str(message.message_id), []))})
-        for message in messages
+        message.model_copy(update={"blocks": list(grouped.get(str(message.message_id), []))}) for message in messages
     ]
 
 
@@ -496,7 +495,7 @@ def hydrate_sessions(
     batch: SessionInsightArchiveBatch,
 ) -> list[Session]:
     messages_by_session: dict[str, list[MessageRecord]] = defaultdict(list)
-    blocks_by_session: dict[str, list[ContentBlockRecord]] = defaultdict(list)
+    blocks_by_session: dict[str, list[BlockRecord]] = defaultdict(list)
     for message in batch.messages:
         messages_by_session[str(message.session_id)].append(message)
     for block in batch.blocks:

@@ -126,7 +126,7 @@ async def _turns(env: AppEnv, session_id: str, limit: int) -> None:
     for shown, msg in enumerate(msgs):
         if shown >= limit:
             break
-        blocks = getattr(msg, "content_blocks", []) or []
+        blocks = getattr(msg, "blocks", []) or []
         thinking_chars = sum(
             len(str(b.get("text", ""))) for b in blocks if isinstance(b, dict) and b.get("type") == "thinking"
         )

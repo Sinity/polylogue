@@ -204,7 +204,7 @@ def extract_messages_from_list(items: Sequence[object]) -> list[ParsedMessage]:
                     role=role,
                     text=text,
                     timestamp=str(timestamp) if timestamp is not None else None,
-                    content_blocks=content_blocks,
+                    blocks=content_blocks,
                 )
             )
     return messages

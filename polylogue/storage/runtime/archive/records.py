@@ -91,7 +91,7 @@ class SessionRecord(BaseModel):
         return canonical
 
 
-class ContentBlockRecord(BaseModel):
+class BlockRecord(BaseModel):
     block_id: str
     message_id: MessageId
     session_id: SessionId
@@ -134,7 +134,7 @@ class MessageRecord(BaseModel):
     version: int = 1
     parent_message_id: MessageId | None = None
     branch_index: int = 0
-    content_blocks: list[ContentBlockRecord] = Field(default_factory=list)
+    blocks: list[BlockRecord] = Field(default_factory=list)
     source_name: str = ""
     word_count: int = 0
     has_tool_use: int = 0

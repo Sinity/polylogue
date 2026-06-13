@@ -64,7 +64,7 @@ from polylogue.archive.message.roles import MessageRoleFilter
 from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
 from polylogue.storage.runtime import (
     AttachmentRecord,
-    ContentBlockRecord,
+    BlockRecord,
     MessageRecord,
     SessionEventRecord,
     SessionRecord,
@@ -163,9 +163,9 @@ class SQLiteArchiveMixin:
             message_role=message_role,
         )
 
-    async def get_content_blocks(self, message_ids: list[str]) -> dict[str, list[ContentBlockRecord]]:
+    async def get_blocks(self, message_ids: list[str]) -> dict[str, list[BlockRecord]]:
         """Get content blocks for a list of message IDs."""
-        return await self.queries.get_content_blocks(message_ids)
+        return await self.queries.get_blocks(message_ids)
 
     async def get_attachments(self, session_id: str) -> list[AttachmentRecord]:
         """Get all attachments for a session."""

@@ -7,7 +7,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from polylogue.core.json import JSONDocument, json_document
-from polylogue.storage.runtime import ContentBlockRecord
+from polylogue.storage.runtime import BlockRecord
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,7 +83,7 @@ def _coerce_mapping_block(block: Mapping[str, object]) -> RenderableBlock:
     )
 
 
-def _coerce_record_block(block: ContentBlockRecord) -> RenderableBlock:
+def _coerce_record_block(block: BlockRecord) -> RenderableBlock:
     metadata = _json_mapping(block.metadata)
     # #1240: media_type lives inside the block-metadata JSON envelope.
     mime_type = _optional_string(metadata.get("media_type")) if metadata is not None else None
@@ -104,7 +104,7 @@ def coerce_renderable_block(value: object) -> RenderableBlock | None:
     """Normalize arbitrary block payloads into the rendering contract."""
     if isinstance(value, RenderableBlock):
         return value
-    if isinstance(value, ContentBlockRecord):
+    if isinstance(value, BlockRecord):
         return _coerce_record_block(value)
     mapping = _mapping_with_string_keys(value)
     if mapping is not None:

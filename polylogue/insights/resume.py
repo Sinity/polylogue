@@ -357,7 +357,7 @@ def _tool_facts(session: Session) -> tuple[dict[str, int], tuple[str, ...]]:
     for message in session.messages:
         tool_calls = build_tool_calls_from_content_blocks(
             provider=provider_from_origin(session.origin),
-            content_blocks=message.content_blocks,
+            content_blocks=message.blocks,
         )
         for tool_call in tool_calls:
             category = getattr(tool_call.category, "value", str(tool_call.category))

@@ -20,7 +20,7 @@ from polylogue.storage.insights.session.records import (
 from polylogue.storage.insights.timeline.records import SessionPhaseRecord, SessionWorkEventRecord
 from polylogue.storage.runtime.archive.records import (
     AttachmentRecord,
-    ContentBlockRecord,
+    BlockRecord,
     MessageRecord,
     SessionEventRecord,
     SessionRecord,
@@ -63,7 +63,7 @@ def _make_ref_id(attachment_id: AttachmentId, session_id: SessionId, message_id:
 __all__ = [
     "AttachmentRecord",
     "ArtifactObservationRecord",
-    "ContentBlockRecord",
+    "BlockRecord",
     "SessionRecord",
     "DaySessionSummaryRecord",
     "MessageRecord",
