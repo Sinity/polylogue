@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ContinuationLaunchIntent.v4",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "intent_id",
+    "source_ref",
+    "agent_id",
+    "canonical_lineage"
+  ],
+  "properties": {
+    "intent_id": {
+      "type": "string"
+    },
+    "source_ref": {
+      "$ref": "archive-object-ref-v4.schema.json"
+    },
+    "agent_id": {
+      "type": "string"
+    },
+    "template_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "prompt_recipe": {
+      "type": "object"
+    },
+    "selected_context_refs": {
+      "type": "array",
+      "items": {
+        "$ref": "archive-object-ref-v4.schema.json"
+      }
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "prepared",
+        "opened",
+        "copied",
+        "matched",
+        "expired",
+        "dismissed"
+      ]
+    },
+    "matched_child_conversation_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "canonical_lineage": {
+      "const": false
+    }
+  }
+}

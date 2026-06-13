@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ActionAvailability.v4",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "action_id",
+    "enabled",
+    "status",
+    "side_effect"
+  ],
+  "properties": {
+    "action_id": {
+      "type": "string"
+    },
+    "enabled": {
+      "type": "boolean"
+    },
+    "status": {
+      "enum": [
+        "current",
+        "partial",
+        "target",
+        "disabled",
+        "forbidden"
+      ]
+    },
+    "disabled_reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "explanation": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "side_effect": {
+      "enum": [
+        "none",
+        "local_clipboard",
+        "local_navigation",
+        "archive_write",
+        "daemon_operation",
+        "external_launch"
+      ]
+    },
+    "confirm": {
+      "enum": [
+        "none",
+        "light",
+        "destructive",
+        "privacy"
+      ]
+    },
+    "requires": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "result_shape": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}

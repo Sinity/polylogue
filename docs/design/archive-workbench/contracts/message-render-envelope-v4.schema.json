@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MessageRenderEnvelope.v4",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "role",
+    "text",
+    "target_ref",
+    "anchor",
+    "actions"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "role": {
+      "type": "string"
+    },
+    "text": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "target_ref": {
+      "$ref": "archive-object-ref-v4.schema.json"
+    },
+    "anchor": {
+      "type": "string"
+    },
+    "timestamp": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "message_type": {
+      "type": "string"
+    },
+    "word_count": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "parent_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "branch_index": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "model_name": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "flags": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "boolean"
+      }
+    },
+    "content_blocks": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "paste_spans": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "attachments": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "actions": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "action-availability-v4.schema.json"
+      }
+    }
+  }
+}

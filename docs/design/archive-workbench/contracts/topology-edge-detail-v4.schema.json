@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TopologyEdgeDetailEnvelope.v4",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "edge_ref",
+    "src_conversation_id",
+    "dst_provider_native_id",
+    "edge_type",
+    "status"
+  ],
+  "properties": {
+    "edge_ref": {
+      "$ref": "archive-object-ref-v4.schema.json"
+    },
+    "src_conversation_id": {
+      "type": "string"
+    },
+    "dst_provider_native_id": {
+      "type": "string"
+    },
+    "dst_provider_name": {
+      "type": "string"
+    },
+    "resolved_dst_conversation_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "edge_type": {
+      "enum": [
+        "continuation",
+        "sidechain",
+        "subagent",
+        "branch",
+        "fork",
+        "resume",
+        "repaired"
+      ]
+    },
+    "status": {
+      "enum": [
+        "unresolved",
+        "resolved",
+        "repaired",
+        "quarantined"
+      ]
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "raw_evidence": {
+      "type": [
+        "object",
+        "string",
+        "null"
+      ]
+    },
+    "observed_at": {
+      "type": "string"
+    },
+    "resolved_at": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "readiness": {
+      "enum": [
+        "ok",
+        "partial",
+        "empty",
+        "error"
+      ]
+    }
+  }
+}
