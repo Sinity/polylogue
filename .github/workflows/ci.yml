@@ -33,6 +33,7 @@ jobs:
       - run: uv run devtools render-all --check --skip agents
       - run: uv run ruff check polylogue/ tests/ devtools/
       - run: uv run ruff format --check polylogue/ tests/ devtools/
+      - run: bash tools/cleanup/polylogue_public_surface_audit.sh
 
   test:
     timeout-minutes: 45
