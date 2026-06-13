@@ -414,6 +414,10 @@ def build_verify_steps(
                 ("verify-lane-assertions", _devtools_cmd("verify-lane-assertions")),
                 ("verify-test-infra-currency", _devtools_cmd("verify-test-infra-currency")),
                 ("verify-test-clock-hygiene", _devtools_cmd("verify-test-clock-hygiene")),
+                (
+                    "public-surface-audit",
+                    ["bash", str(ROOT / "tools" / "cleanup" / "polylogue_public_surface_audit.sh")],
+                ),
             ]
         )
 
