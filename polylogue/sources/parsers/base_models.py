@@ -201,6 +201,13 @@ class ParsedSession(BaseModel):
     # pin a session to an exact commit instead of the looser "session_date
     # +/- N hours" window. Empty string treated as None.
     git_commit_hash: str | None = None
+    # Parser-level ingest flags that the storage layer persists as auto-tags
+    # (tag_source='auto', method='parser') during write_parsed_session_to_archive.
+    # Parsers set these to communicate structural quality issues without requiring
+    # new storage columns — the existing session_tags table (index.db) absorbs them.
+    # Example: ["degraded:brain-metadata-fragment"] for Antigravity brain-artifact
+    # fallback sessions that fragment one work session into N single-message sessions.
+    ingest_flags: list[str] = Field(default_factory=list)
 
     @field_validator("source_name", mode="before")
     @classmethod

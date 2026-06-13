@@ -5,6 +5,7 @@ from pathlib import Path
 from polylogue.archive.message.roles import Role
 from polylogue.core.json import JSONDocument
 from polylogue.sources.parsers.antigravity import (
+    BRAIN_METADATA_FRAGMENT_FLAG,
     AntigravitySessionSummary,
     looks_like_brain_metadata,
     parse_brain_metadata,
@@ -115,3 +116,56 @@ def test_parse_brain_metadata_marks_missing_artifact(tmp_path: Path) -> None:
 
     assert session.provider_session_id == "session-2:missing.md"
     assert session.messages[0].text == "Missing body"
+
+
+# ---------------------------------------------------------------------------
+# Regression: brain-metadata fragmentation degraded flag (#1764)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_brain_metadata_sets_degraded_ingest_flag(tmp_path: Path) -> None:
+    """Brain-metadata sessions are flagged degraded:brain-metadata-fragment.
+
+    Each *.metadata.json artifact becomes its own single-message session,
+    fragmenting one work session into N sessions.  The ingest_flags field
+    carries the degraded marker so it is written as an auto-tag at storage
+    time and can be excluded from primary session counts and insight rollups.
+    """
+    session_dir = tmp_path / "brain" / "session-abc"
+    session_dir.mkdir(parents=True)
+    artifact_path = session_dir / "output.md"
+    artifact_path.write_text("# Output\n\nSome result.\n", encoding="utf-8")
+    metadata_path = session_dir / "output.md.metadata.json"
+    payload: JSONDocument = {
+        "artifactType": "ARTIFACT_TYPE_OTHER",
+        "summary": "Output",
+        "updatedAt": "2026-04-01T10:00:00Z",
+    }
+
+    session = parse_brain_metadata(payload, metadata_path, "fallback")
+
+    assert BRAIN_METADATA_FRAGMENT_FLAG in session.ingest_flags, (
+        f"Expected {BRAIN_METADATA_FRAGMENT_FLAG!r} in ingest_flags, got {session.ingest_flags!r}"
+    )
+
+
+def test_parse_markdown_export_has_no_degraded_flag() -> None:
+    """Language-server export sessions are whole transcripts — not fragmented.
+
+    Markdown export sessions must NOT carry the brain-metadata fragment flag;
+    they represent complete work sessions and must not be excluded from primary
+    views by the same filter that suppresses brain-metadata fragments.
+    """
+    markdown = "### User Input\n\nRun checks.\n\n### Planner Response\n\nDone.\n"
+    summary = AntigravitySessionSummary(
+        cascade_id="cascade-clean",
+        title="Clean session",
+        last_modified_time="2026-04-01T12:00:00Z",
+    )
+
+    session = parse_markdown_export(markdown, summary)
+
+    assert BRAIN_METADATA_FRAGMENT_FLAG not in session.ingest_flags, (
+        f"Markdown export session must not carry {BRAIN_METADATA_FRAGMENT_FLAG!r}, "
+        f"got ingest_flags={session.ingest_flags!r}"
+    )
