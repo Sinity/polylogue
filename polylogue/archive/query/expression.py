@@ -186,8 +186,8 @@ EXPRESSION_FIELD_REGISTRY: dict[str, dict[str, str]] = {
         "example": "messages:>=10",
     },
     "words": {
-        "description": "Count comparison for word count (>=N)",
-        "spec_field": "min_words",
+        "description": "Count comparison for word count (>=N, <=N, or =N)",
+        "spec_field": "min_words/max_words",
         "negatable": "no",
         "example": "words:>=200",
     },
@@ -359,12 +359,26 @@ def _lex(expression: str) -> list[_LexToken]:
         if remaining.startswith('"') or remaining.startswith('-"'):
             negated = remaining.startswith('-"')
             start = 2 if negated else 1
-            end = remaining.find('"', start)
-            if end == -1:
+            i = start
+            phrase_chars: list[str] = []
+            found_close = False
+            while i < len(remaining):
+                ch = remaining[i]
+                if ch == "\\":
+                    i += 1
+                    if i < len(remaining):
+                        phrase_chars.append(remaining[i])
+                elif ch == '"':
+                    found_close = True
+                    break
+                else:
+                    phrase_chars.append(ch)
+                i += 1
+            if not found_close:
                 raise ExpressionCompileError("unclosed quoted string", field=None)
-            phrase = remaining[start:end]
+            phrase = "".join(phrase_chars)
             tokens.append(_TextToken(text=phrase, quoted=True, negated=negated))
-            remaining = remaining[end + 1 :]
+            remaining = remaining[i + 1 :]
             continue
 
         # --- Cross-field OR detection: a bare `(` not attached to a field ---
@@ -475,6 +489,7 @@ class _SpecAccumulator:
     min_messages: int | None = None
     max_messages: int | None = None
     min_words: int | None = None
+    max_words: int | None = None
 
     def apply_token(self, tok: _LexToken) -> None:
         """Apply one token to the accumulator."""
@@ -501,9 +516,11 @@ class _SpecAccumulator:
             elif tok.field == "words":
                 if tok.op == ">=":
                     self.min_words = tok.number
-                elif tok.op in ("<=", "="):
-                    # min_words only — <=words not in spec; silently treat as >=
+                elif tok.op == "<=":
+                    self.max_words = tok.number
+                else:  # "="
                     self.min_words = tok.number
+                    self.max_words = tok.number
             return
 
         # _FieldToken
@@ -512,6 +529,8 @@ class _SpecAccumulator:
         values = _split_alternation(tok.raw_value) if tok.raw_value else ()
 
         if fname == "repo":
+            if tok.negated:
+                raise ExpressionCompileError("negation is not supported for 'repo'", field=fname)
             self.repo_names.extend(values)
 
         elif fname == "origin":
@@ -540,9 +559,13 @@ class _SpecAccumulator:
                 self.tags.extend(values)
 
         elif fname == "path":
+            if tok.negated:
+                raise ExpressionCompileError("negation is not supported for 'path'", field=fname)
             self.referenced_path.extend(values)
 
         elif fname == "cwd":
+            if tok.negated:
+                raise ExpressionCompileError("negation is not supported for 'cwd'", field=fname)
             if values:
                 self.cwd_prefix = values[-1]
 
@@ -567,6 +590,8 @@ class _SpecAccumulator:
                     self.action_terms.append(candidate)
 
         elif fname == "has":
+            if tok.negated:
+                raise ExpressionCompileError("negation is not supported for 'has'", field=fname)
             for v in values:
                 sub = v.strip().lower()
                 if sub in _HAS_BOOL_MAP:
@@ -575,28 +600,42 @@ class _SpecAccumulator:
                     self.has_types.append(sub)
 
         elif fname == "id":
+            if tok.negated:
+                raise ExpressionCompileError("negation is not supported for 'id'", field=fname)
             if values:
                 self.session_id = values[-1]
 
         elif fname == "title":
+            if tok.negated:
+                raise ExpressionCompileError("negation is not supported for 'title'", field=fname)
             self.title = " ".join(values)
 
         elif fname == "since":
+            if tok.negated:
+                raise ExpressionCompileError("negation is not supported for 'since'", field=fname)
             if values:
                 self.since = _parse_relative_date(values[-1])
 
         elif fname == "until":
+            if tok.negated:
+                raise ExpressionCompileError("negation is not supported for 'until'", field=fname)
             if values:
                 self.until = _parse_relative_date(values[-1])
 
         elif fname == "near":
+            if tok.negated:
+                raise ExpressionCompileError("negation is not supported for 'near'", field=fname)
             # near:"quoted phrase" → similar_text (value already stripped of quotes by lexer)
             self.similar_text = " ".join(values)
 
         elif fname == "contains":
+            if tok.negated:
+                raise ExpressionCompileError("negation is not supported for 'contains'", field=fname)
             self.contains_terms.extend(values)
 
         elif fname == "lane":
+            if tok.negated:
+                raise ExpressionCompileError("negation is not supported for 'lane'", field=fname)
             if values:
                 try:
                     self.retrieval_lane = normalize_retrieval_lane(values[-1])
@@ -649,6 +688,7 @@ class _SpecAccumulator:
             min_messages=self.min_messages,
             max_messages=self.max_messages,
             min_words=self.min_words,
+            max_words=self.max_words,
         )
 
     def merge_from_spec(self, other: SessionQuerySpec) -> None:
@@ -693,6 +733,8 @@ class _SpecAccumulator:
             self.max_messages = other.max_messages
         if other.min_words is not None:
             self.min_words = other.min_words
+        if other.max_words is not None:
+            self.max_words = other.max_words
 
 
 # ---------------------------------------------------------------------------
@@ -803,7 +845,7 @@ def _compile_json_spec(raw: str) -> SessionQuerySpec:
     if not isinstance(data, dict):
         raise ExpressionCompileError("JSON spec must be a JSON object", field=None)
     try:
-        return SessionQuerySpec.from_params(data)
+        return SessionQuerySpec.from_params(data, strict=True)
     except Exception as exc:
         raise ExpressionCompileError(f"invalid spec fields: {exc}", field=None) from exc
 
