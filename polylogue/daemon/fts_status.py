@@ -301,16 +301,14 @@ def _archive_readiness_payload(conn: sqlite3.Connection, *, exact: bool) -> dict
         return None
     blocks = _archive_exact_blocks_surface(conn) if exact else _archive_blocks_surface(conn)
     effective_exact = exact
-    if not exact and blocks.get("freshness_state") == UNKNOWN:
-        # The durable freshness cache is untrusted: the recorded state is
-        # "ready" but the counts are the poisoned 0/0 shape while the source
-        # actually has rows. This happens after a fresh-archive bootstrap, where
-        # daemon startup legitimately recorded ready|0|0 over an empty archive
-        # and trigger-maintained ingest then populated the index without ever
-        # triggering a rebuild that refreshes the counts. Recompute exact counts
-        # so coverage reflects the populated index instead of reporting 0%.
-        blocks = _archive_exact_blocks_surface(conn)
-        effective_exact = True
+    # The default (request-safe) path intentionally does NOT escalate to an exact
+    # FTS scan when freshness is UNKNOWN. fts_readiness_info's documented contract
+    # (and #1003) is that the default probe never scans source or FTS shadow
+    # tables: the daemon /metrics, /healthz, and CLI status surfaces call it
+    # frequently, and scanning a multi-GB FTS index per probe is exactly the IO
+    # storm that contract exists to prevent. An untrusted ready|0|0 record
+    # surfaces as freshness_state=UNKNOWN (coverage reported as unknown/0 rather
+    # than a false claim); callers that need recomputed counts pass exact=True.
     block_source_rows = _payload_int(blocks, "source_rows")
     block_indexed_rows = _payload_int(blocks, "indexed_rows")
     invariant_ready = bool(blocks["ready"])

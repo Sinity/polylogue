@@ -31,7 +31,9 @@ class TestMCPFacetsTool:
         mock_poly.facets.assert_awaited_once()
         spec = mock_poly.facets.await_args.args[0]
         assert isinstance(spec, SessionQuerySpec)
-        assert spec.query_terms == ("fts readiness",)
+        # The shared query-expression compiler splits a bare-word free-text
+        # query into one FTS term per word, so "fts readiness" forwards as two.
+        assert spec.query_terms == ("fts", "readiness")
         assert spec.origins == ("claude-code-session",)
 
     @pytest.mark.asyncio

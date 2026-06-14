@@ -42,6 +42,7 @@ def test_quick_verify_omits_pytest() -> None:
         "verify-lane-assertions",
         "verify-test-infra-currency",
         "verify-test-clock-hygiene",
+        "public-surface-audit",
     ]
 
 
@@ -65,12 +66,16 @@ def test_pytest_step_requests_structured_json_report() -> None:
         {},  # default testmon
     ):
         steps = build_verify_steps(quick=False, lab=False, skip_slow=False, **kwargs)
-        label, command = steps[-1]
-        assert label.startswith("pytest"), label
-        assert "--json-report" in command, f"{label}: {command}"
-        assert any(arg.startswith("--json-report-file=") for arg in command), label
+        pytest_steps = [(label, command) for label, command in steps if label.startswith("pytest")]
+        assert pytest_steps, kwargs
+        # Every pytest lane emits a structured JSON report.
+        for label, command in pytest_steps:
+            assert "--json-report" in command, f"{label}: {command}"
+            assert any(arg.startswith("--json-report-file=") for arg in command), label
+        # The canonical report path consumed by verify/dashboards is emitted by
+        # the primary lane; the #1775 isolated lane writes its own file.
         expected_target = f"--json-report-file={PYTEST_REPORT_PATH}"
-        assert expected_target in command, f"{label}: {command}"
+        assert any(expected_target in command for _label, command in pytest_steps), kwargs
 
 
 def test_seed_testmon_runs_full_collection_without_selection(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -89,11 +94,22 @@ def test_full_verify_includes_full_pytest_without_testmon(monkeypatch: pytest.Mo
     monkeypatch.delenv("POLYLOGUE_PYTEST_WORKERS", raising=False)
     steps = build_verify_steps(quick=False, lab=False, skip_slow=False, full_pytest=True)
 
-    label, command = steps[-1]
-    assert label == "pytest full"
-    assert "--testmon" not in command
-    assert "-n" in command
-    assert command[command.index("-n") + 1] == "16"
+    # #1775: the full diagnostic runs as two lanes — a parallel bulk lane plus a
+    # single-process isolated lane for load-sensitive/tui tests. Neither uses
+    # testmon; the bulk lane keeps xdist parallelism, the isolated lane forces -n 0.
+    labels = [label for label, _command in steps]
+    assert labels[-2:] == ["pytest full (parallel)", "pytest load-sensitive (isolated)"]
+
+    bulk_label, bulk_command = steps[-2]
+    assert bulk_label == "pytest full (parallel)"
+    assert "--testmon" not in bulk_command
+    assert "-n" in bulk_command
+    assert bulk_command[bulk_command.index("-n") + 1] == "16"
+
+    isolated_label, isolated_command = steps[-1]
+    assert isolated_label == "pytest load-sensitive (isolated)"
+    assert "--testmon" not in isolated_command
+    assert isolated_command[isolated_command.index("-n") + 1] == "0"
 
 
 def test_seed_testmon_worker_count_can_be_overridden(monkeypatch: pytest.MonkeyPatch) -> None:

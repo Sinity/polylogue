@@ -129,6 +129,15 @@ ASSURANCE_REGISTRY: tuple[OutputAssurance, ...] = (
         notes="Side-effect command; --dry-run prints affected IDs.",
     ),
     OutputAssurance(
+        command="mark",
+        family=QUERY_FAMILY,
+        json_contract=False,
+        snapshot=True,
+        plain=True,
+        streaming=False,
+        notes="Mutates user metadata (tags, notes, user-state marks) on matched sessions; side-effect command.",
+    ),
+    OutputAssurance(
         command="tags",
         family=QUERY_FAMILY,
         json_contract=False,
@@ -158,6 +167,19 @@ ASSURANCE_REGISTRY: tuple[OutputAssurance, ...] = (
         notes=(
             "Scoped vs global facet aggregates over the archive (#1269 / "
             "slice D of #873); ``--format json`` emits FacetsResponse."
+        ),
+    ),
+    OutputAssurance(
+        command="analyze",
+        family=QUERY_FAMILY,
+        json_contract=True,
+        snapshot=True,
+        plain=True,
+        streaming=False,
+        notes=(
+            "Analytics over the matched result set: wraps the stats and facets "
+            "surfaces; ``--by`` groups by dimension and ``--format json`` emits "
+            "structured aggregates."
         ),
     ),
     OutputAssurance(

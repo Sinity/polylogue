@@ -568,6 +568,8 @@ class TestCliMetadata:
             "stats",
             "read",
             "delete",
+            "mark",
+            "analyze",
         }
         assert set(cli.commands.keys()) == expected
 

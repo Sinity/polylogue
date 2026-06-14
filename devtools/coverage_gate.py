@@ -46,6 +46,14 @@ def build_coverage_command(
         # dump. The thread method works without per-test signal support.
         "--timeout=600",
         "--timeout-method=thread",
+        # Benchmarks are performance measurements with their own runner
+        # (`devtools run-benchmark-campaigns`, `--benchmark-enable`). Their
+        # correctness assertions pass standalone and as a whole file, but are
+        # flaky under the random-ordered, coverage-instrumented correctness gate
+        # because of cross-test global-state pollution (tracked separately). The
+        # gate measures correctness + coverage; benchmarks add no unique
+        # coverage over the integration convergence/ingest tests.
+        "--ignore=tests/benchmarks",
     ]
     if term_missing:
         command.append("--cov-report=term-missing:skip-covered")

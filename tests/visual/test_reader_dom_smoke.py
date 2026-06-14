@@ -201,8 +201,10 @@ def test_reader_session_deeplink_and_detail_evidence(reader_workspace: ReaderWor
 
     assert status == 200
     assert "text/html" in content_type
-    assert "getConvIdFromURL" in shell
-    assert_no_private_paths(shell, context="reader /c deeplink shell")
+    # Deeplink resolver in the reader shell JS. Renamed getConvIdFromURL ->
+    # getSessionIdFromURL in the conversation->session terminology sweep (#1810).
+    assert "getSessionIdFromURL" in shell
+    assert_no_private_paths(shell, context="reader /s deeplink shell")
     assert_no_private_paths(json.dumps(detail), context="reader detail JSON")
     assert_no_private_paths(json.dumps(messages), context="reader messages JSON")
 

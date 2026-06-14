@@ -206,12 +206,15 @@ def test_delete_verb_updates_force_and_dry_run_flags() -> None:
     wrapped = getattr(query_verbs.delete_verb.callback, "__wrapped__", None)
     assert callable(wrapped)
 
+    # Signature is delete_verb(ctx, dry_run, yes_flag, all_flag, force).
     with patch("polylogue.cli.query_verbs._execute_query_verb") as execute:
-        wrapped(child, True, False)
+        wrapped(child, True, False, False, False)
 
     request = execute.call_args.args[1]
     assert isinstance(request, RootModeRequest)
     assert request.query_params()["delete_matched"] is True
     assert request.query_params()["dry_run"] is True
-    assert request.query_params()["force"] is False
+    # The dry-run preview path runs with force=True so the preview never
+    # triggers the interactive confirmation prompt.
+    assert request.query_params()["force"] is True
     assert request.query_params()["query"] == ("alpha",)

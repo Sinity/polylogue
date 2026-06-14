@@ -220,6 +220,7 @@
     --version                       Show the version and exit.
     -h, --help                      Show this message and exit.
   Commands:
+    analyze
     auth               Authenticate optional external services.
     backup             Create a timestamped durability-tier backup.
     blackboard
@@ -244,6 +245,7 @@
     insights           Rebuild and inspect derived session insights.
     list               List matched sessions.
     maintenance        Preview and run maintenance backfill operations.
+    mark
     neighbors          Show semantic neighbors for a session.
     paths              Print canonical archive paths and bind-mount detection.
     read               Read matched sessions (route to view<PATH>).
@@ -488,6 +490,7 @@
     -h, --help                      Show this message and exit
   .
   Commands:
+    analyze
     auth               Authenticate optional external services
   .
     backup             Create a timestamped durability-tier ba
@@ -525,6 +528,7 @@
     list               List matched sessions.
     maintenance        Preview and run maintenance backfill op
   erations.
+    mark
     neighbors          Show semantic neighbors for a session.
     paths              Print canonical archive paths and bind-
   mount detection.
@@ -692,6 +696,7 @@
     --version                       Show the version and exit.
     -h, --help                      Show this message and exit.
   Commands:
+    analyze
     auth               Authenticate optional external services.
     backup             Create a timestamped durability-tier backup.
     blackboard
@@ -716,6 +721,7 @@
     insights           Rebuild and inspect derived session insights.
     list               List matched sessions.
     maintenance        Preview and run maintenance backfill operations.
+    mark
     neighbors          Show semantic neighbors for a session.
     paths              Print canonical archive paths and bind-mount detection.
     read               Read matched sessions (route to view<PATH>).
