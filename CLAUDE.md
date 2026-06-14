@@ -89,8 +89,43 @@ Issues and PR bodies are durable artifacts. Write them for a reader who
 has no conversation context — they should stand alone. Include file
 paths, acceptance criteria, and design references where applicable.
 
+## Cloud lane (Claude Code Web / Codex Cloud)
+
+Polylogue is well-suited for cloud sandboxes — pure Python, no native deps
+beyond pre-built wheels, all paths overridable via `POLYLOGUE_ARCHIVE_ROOT`.
+
+Bootstrap is handled by `.claude/setup.sh` (installs `uv`, runs
+`uv sync --extra dev --frozen`, prepares `/tmp/polylogue-archive`). Default
+env vars come from `.claude/settings.json`
+(`POLYLOGUE_ARCHIVE_ROOT=/tmp/polylogue-archive`, `POLYLOGUE_FORCE_PLAIN=1`,
+`HYPOTHESIS_PROFILE=ci`).
+
+Safe to run in cloud:
+
+- `uv run pytest tests/unit -q`
+- `uv run pytest tests/property -q`  (`HYPOTHESIS_PROFILE=ci` enforces budgets)
+- `uv run ruff check polylogue tests`
+- `uv run mypy polylogue`
+- `uv run devtools verify` (slow; scope with `--changed-only` if available)
+- `polylogued run --no-api` against `/tmp/polylogue-archive` (synthetic fixtures only)
+
+Do NOT in cloud:
+
+- Upload real `~/.claude/projects/` or `~/.codex/sessions/` archives. Fixtures
+  only. Real corpus testing happens on the self-hosted runner.
+- Run browser-capture flows — they need interactive cookies and are slated to
+  move to the ethereal companion host.
+- Point at `/realm/data/...` paths; the cloud sandbox has no access to that
+  data lake.
+
+Privacy: the data-handling tier is governed by your Anthropic/OpenAI plan;
+cloud-agent sandbox content inherits that tier (Pro/Max consumer = training by
+default unless opted out; Business/Enterprise = no training). See
+`docs/cloud-agents.md` for the full checklist.
+
 @CONTRIBUTING.md
 @TESTING.md
 @docs/architecture.md
 @docs/internals.md
 @docs/devtools.md
+@docs/cloud-agents.md

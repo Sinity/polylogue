@@ -22,7 +22,9 @@ venv/
 # Repo-local caches and generated working state
 /.cache/
 /.local/
-.claude/
+.claude/*
+!.claude/settings.json
+!.claude/setup.sh
 .vscode/
 
 # Legacy cache/output directories that may still appear at the repo root
