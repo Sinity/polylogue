@@ -158,18 +158,6 @@ ASSURANCE_REGISTRY: tuple[OutputAssurance, ...] = (
         ),
     ),
     OutputAssurance(
-        command="facets",
-        family=QUERY_FAMILY,
-        json_contract=True,
-        snapshot=False,
-        plain=True,
-        streaming=False,
-        notes=(
-            "Scoped vs global facet aggregates over the archive (#1269 / "
-            "slice D of #873); ``--format json`` emits FacetsResponse."
-        ),
-    ),
-    OutputAssurance(
         command="analyze",
         family=QUERY_FAMILY,
         json_contract=True,
