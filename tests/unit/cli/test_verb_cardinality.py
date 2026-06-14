@@ -312,6 +312,8 @@ class TestDeleteVerbCardinality:
                 self._call_delete(child, yes_flag=True, all_flag=False)
 
     def test_multi_match_with_yes_and_all_delegates(self) -> None:
+        # Bug 1 fix: delete uses execute_delete_by_session_ids (not _execute_query_verb)
+        # so all resolved IDs are deleted rather than only the first limit=20.
         _, child = _context_pair()
         child.obj = SimpleNamespace(config=MagicMock())
 
@@ -320,7 +322,7 @@ class TestDeleteVerbCardinality:
                 "polylogue.cli.verb_cardinality.resolve_session_ids_for_verb",
                 return_value=["id1", "id2"],
             ),
-            patch("polylogue.cli.query_verbs._execute_query_verb") as mock_exec,
+            patch("polylogue.cli.archive_query.execute_delete_by_session_ids") as mock_exec,
         ):
             self._call_delete(child, yes_flag=True, all_flag=True)
 
@@ -365,24 +367,28 @@ class TestDeleteVerbCardinality:
         )
 
     def test_yes_flag_sets_force_on_delegated_request(self) -> None:
+        # Bug 1 fix: delete passes force=True to execute_delete_by_session_ids.
         _, child = _context_pair()
         child.obj = SimpleNamespace(config=MagicMock())
 
-        captured: list[RootModeRequest] = []
+        captured_kwargs: list[dict[str, object]] = []
 
-        def _capture(ctx: click.Context, req: RootModeRequest) -> None:
-            captured.append(req)
+        def _capture(env: object, ids: list[str], *, force: bool) -> None:
+            captured_kwargs.append({"ids": ids, "force": force})
 
         with (
             patch(
                 "polylogue.cli.verb_cardinality.resolve_session_ids_for_verb",
                 return_value=["id1"],
             ),
-            patch("polylogue.cli.query_verbs._execute_query_verb", side_effect=_capture),
+            patch(
+                "polylogue.cli.archive_query.execute_delete_by_session_ids",
+                side_effect=_capture,
+            ),
         ):
             self._call_delete(child, yes_flag=True)
 
-        assert captured[0].params.get("force") is True, "--yes must set force on the delegated request"
+        assert captured_kwargs[0]["force"] is True, "--yes must propagate force=True to execute_delete_by_session_ids"
 
 
 # ---------------------------------------------------------------------------
@@ -470,3 +476,94 @@ class TestSharedCardinalityPath:
         analyze_src = inspect.getsource(query_verbs.analyze_verb.callback)  # type: ignore[arg-type]
         # analyze_verb deliberately has no cardinality restriction.
         assert "check_cardinality" not in analyze_src, "analyze_verb must not call check_cardinality"
+
+
+# ---------------------------------------------------------------------------
+# Bug 1 regression: delete truncation (#1873)
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteUsesPreResolvedIds:
+    """delete_verb must operate on all pre-resolved IDs, not re-query with limit=20."""
+
+    def _delete_callback(self) -> object:
+        cb = getattr(query_verbs.delete_verb.callback, "__wrapped__", None)
+        assert callable(cb)
+        return cb
+
+    def test_all_resolved_ids_are_deleted_not_truncated(self) -> None:
+        """Bug 1: execute_delete_by_session_ids is called with all resolved IDs.
+
+        Before the fix, _execute_query_verb re-ran the query with limit=20,
+        silently truncating large result sets.  After the fix, the pre-resolved
+        IDs are forwarded directly.
+        """
+        many_ids = [f"id{i}" for i in range(50)]  # more than the old default limit of 20
+        _, child = _context_pair()
+        child.obj = SimpleNamespace(config=MagicMock())
+
+        captured: list[list[str]] = []
+
+        def _capture(env: object, ids: list[str], *, force: bool) -> None:
+            captured.append(list(ids))
+
+        with (
+            patch(
+                "polylogue.cli.verb_cardinality.resolve_session_ids_for_verb",
+                return_value=many_ids,
+            ),
+            patch(
+                "polylogue.cli.archive_query.execute_delete_by_session_ids",
+                side_effect=_capture,
+            ),
+        ):
+            cb = self._delete_callback()
+            cb(child, False, True, True, False)  # type: ignore[operator]  # dry_run=F, yes=T, all=T, force=F
+
+        assert captured, "execute_delete_by_session_ids must be called"
+        assert len(captured[0]) == 50, (
+            f"Expected all 50 IDs to be deleted but got {len(captured[0])}. "
+            "delete_verb may be re-querying with a limit instead of using pre-resolved IDs."
+        )
+
+    def test_delete_does_not_call_execute_query_verb_for_non_dry_run(self) -> None:
+        """After the fix, the non-dry-run delete path must NOT call _execute_query_verb."""
+        _, child = _context_pair()
+        child.obj = SimpleNamespace(config=MagicMock())
+
+        with (
+            patch(
+                "polylogue.cli.verb_cardinality.resolve_session_ids_for_verb",
+                return_value=["id1"],
+            ),
+            patch("polylogue.cli.archive_query.execute_delete_by_session_ids"),
+            patch("polylogue.cli.query_verbs._execute_query_verb") as mock_exec,
+        ):
+            cb = self._delete_callback()
+            cb(child, False, True, False, False)  # type: ignore[operator]  # yes=T
+
+        mock_exec.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Bug 2 regression: _async_resolve_ids uses compiled spec (#1873)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveIdsUsesCompiledSpec:
+    """_async_resolve_ids must compile DSL expressions, not pass them as FTS text."""
+
+    def test_resolve_ids_calls_query_spec_not_raw_params(self) -> None:
+        """Bug 2: resolve path uses request.query_spec() (compiled DSL) not query_params()."""
+        import inspect
+
+        from polylogue.cli.verb_cardinality import _async_resolve_ids
+
+        src = inspect.getsource(_async_resolve_ids)
+        # After the fix the function must call query_spec() for DSL compilation.
+        assert "query_spec()" in src, "_async_resolve_ids must call request.query_spec()"
+        # The old broken path used build_query_execution_plan(request.query_params()).
+        assert "build_query_execution_plan" not in src, (
+            "_async_resolve_ids must not use build_query_execution_plan (passes raw text as FTS)"
+        )
+        assert "query_params()" not in src, "_async_resolve_ids must not call query_params() (bypasses DSL compiler)"
