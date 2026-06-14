@@ -1398,11 +1398,14 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         from polylogue.archive.query.spec import parse_query_date
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-        # Compile the free-text query string through the shared expression
-        # compiler so DSL clauses like ``origin:codex has:paste since:7d``
-        # map to the correct ArchiveStore filter arguments rather than being
-        # passed as literal FTS text (#1860).
-        query_str = self._get_param(params, "query") or self._get_param(params, "contains") or ""
+        # Compile only the ``query`` param through the shared expression compiler
+        # so DSL clauses like ``origin:codex has:paste since:7d`` map to the
+        # correct ArchiveStore filter arguments rather than being passed as
+        # literal FTS text (#1860).  The ``contains`` param is a legacy
+        # content-substring filter that must NOT be compiled — routing it through
+        # compile_expression() causes ExpressionCompileError when the value
+        # contains spaces or field-like tokens (#1873 Bug 7).
+        query_str = self._get_param(params, "query") or ""
         if query_str:
             spec = compile_expression(query_str)
             # Bare words / quoted phrases become the FTS query; field clauses
@@ -1454,6 +1457,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         min_messages = spec.min_messages if spec else None
         max_messages = spec.max_messages if spec else None
         min_words = spec.min_words if spec else None
+        max_words = spec.max_words if spec else None
+        # session_id is passed separately to list_summaries/search_summaries
+        # (count_sessions does not accept this param, so it cannot go in _filter_kw).
+        spec_session_id = spec.session_id if spec else None
 
         # Shared filter kwargs forwarded to every ArchiveStore call.
         _filter_kw: dict[str, object] = {
@@ -1479,6 +1486,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             "min_messages": min_messages,
             "max_messages": max_messages,
             "min_words": min_words,
+            "max_words": max_words,
             "since_ms": since_ms,
             "until_ms": until_ms,
         }
@@ -1489,6 +1497,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     fts_query,
                     limit=limit,
                     offset=offset,
+                    session_id=spec_session_id,
                     **_filter_kw,  # type: ignore[arg-type]
                 )
                 payload: dict[str, object] = {
@@ -1527,6 +1536,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             summaries = archive.list_summaries(
                 limit=limit,
                 offset=offset,
+                session_id=spec_session_id,
                 **_filter_kw,  # type: ignore[arg-type]
             )
             total = archive.count_sessions(**_filter_kw)  # type: ignore[arg-type]
