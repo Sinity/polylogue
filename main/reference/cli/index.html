@@ -539,7 +539,7 @@ Commands:
   embed              Enable, preflight, and backfill the embedding pipeline.
   facets
   feedback           Record learning corrections for derived insights.
-  ingest             Import sessions from configured sources.
+  import             Import sessions from configured sources.
   init               Detect chat sources and write a starter polylogue.toml.
   insights           Rebuild and inspect derived session insights.
   list               List matched sessions.
@@ -1170,7 +1170,7 @@ Options:
 </tr>
 </tbody>
 </table>
-<h3>Family: <code>ingest</code></h3>
+<h3>Family: <code>import</code></h3>
 <table>
 <thead>
 <tr>
@@ -1194,13 +1194,13 @@ Options:
 <td>Embedding pipeline status; --json emits structured progress.</td>
 </tr>
 <tr>
-<td><code>ingest</code></td>
+<td><code>import</code></td>
 <td>yes</td>
 <td>yes</td>
 <td>yes</td>
 <td>no</td>
 <td>—</td>
-<td>--machine emits success/error envelope per ingest run.</td>
+<td>--machine emits success/error envelope per import run.</td>
 </tr>
 </tbody>
 </table>
