@@ -521,15 +521,254 @@ def _deliver_content(env: AppEnv, content: str, *, destination: str, out_path: s
 
 
 @click.command("delete")
-@click.option("--dry-run", is_flag=True, help="Preview without deleting")
-@click.option("--force", is_flag=True, help="Skip confirmation")
+@click.option("--dry-run", is_flag=True, help="Preview what would be deleted without deleting")
+@click.option("--yes", "yes_flag", is_flag=True, help="Confirm the deletion (required for actual deletion)")
+@click.option("--all", "all_flag", is_flag=True, help="Delete all matched sessions (required when multiple match)")
+@click.option("--force", is_flag=True, hidden=True, help="(legacy alias for --yes) Skip confirmation prompt")
 @click.pass_context
-def delete_verb(ctx: click.Context, dry_run: bool, force: bool) -> None:
-    """Delete matched sessions."""
+def delete_verb(ctx: click.Context, dry_run: bool, yes_flag: bool, all_flag: bool, force: bool) -> None:
+    """Delete matched sessions.
+
+    \b
+    Cardinality rules:
+      --dry-run       Preview what would be deleted (no confirmation needed).
+      --yes           Confirm deletion for a single matched session.
+      --yes --all     Required when the query matches more than one session.
+
+    \b
+    Examples:
+        polylogue find id:abc then delete --dry-run
+        polylogue find id:abc then delete --yes
+        polylogue find 'repo:polylogue since:7d' then delete --dry-run
+        polylogue find 'repo:polylogue since:7d' then delete --yes --all
+    """
+    from polylogue.cli.verb_cardinality import CardinalityError, check_cardinality, resolve_session_ids_for_verb
+
+    env: AppEnv = ctx.obj
+    request = _parent_request(ctx)
+
+    # dry-run: skip cardinality guard and just show preview.
+    if dry_run:
+        _execute_query_verb(
+            ctx,
+            request.with_param_updates(delete_matched=True, dry_run=True, force=True),
+        )
+        return
+
+    # Enforce cardinality before any destructive action.
+    session_ids = resolve_session_ids_for_verb(env, request)
+    try:
+        check_cardinality(len(session_ids), allow_all=all_flag, first_only=False, operation="delete")
+    except CardinalityError as exc:
+        raise click.UsageError(str(exc)) from exc
+
+    # Delegate to existing delete path.  --yes / --force both skip the
+    # interactive confirmation prompt in delete_sessions().
     _execute_query_verb(
         ctx,
-        _parent_request(ctx).with_param_updates(delete_matched=True, dry_run=dry_run, force=force),
+        request.with_param_updates(
+            delete_matched=True,
+            dry_run=False,
+            force=yes_flag or force,
+        ),
     )
+
+
+@click.command("mark")
+@click.option("--tag-add", "tags_to_add", multiple=True, metavar="TAG", help="Add a tag to the matched session(s)")
+@click.option(
+    "--tag-remove", "tags_to_remove", multiple=True, metavar="TAG", help="Remove a tag from the matched session(s)"
+)
+@click.option("--star", "star", is_flag=True, help="Star the matched session")
+@click.option("--unstar", "unstar", is_flag=True, help="Remove star from the matched session")
+@click.option("--pin", "pin", is_flag=True, help="Pin the matched session")
+@click.option("--unpin", "unpin", is_flag=True, help="Remove pin from the matched session")
+@click.option("--archive", "do_archive", is_flag=True, help="Archive-mark the matched session")
+@click.option("--unarchive", "do_unarchive", is_flag=True, help="Remove archive-mark from the matched session")
+@click.option("--note", "note_text", default=None, metavar="TEXT", help="Add or update a note annotation")
+@click.option("--all", "apply_all", is_flag=True, help="Apply to all matched sessions (default: singleton only)")
+@click.option("--first", "first_only", is_flag=True, help="Apply to the first matched session only")
+@click.pass_context
+def mark_verb(
+    ctx: click.Context,
+    tags_to_add: tuple[str, ...],
+    tags_to_remove: tuple[str, ...],
+    star: bool,
+    unstar: bool,
+    pin: bool,
+    unpin: bool,
+    do_archive: bool,
+    do_unarchive: bool,
+    note_text: str | None,
+    apply_all: bool,
+    first_only: bool,
+) -> None:
+    """Mark matched sessions with tags, notes, or user-state marks.
+
+    \b
+    Requires exactly one matched session unless --all is present.
+    Use --first to act on the first match when the query is non-specific.
+
+    \b
+    Mark types: star, pin, archive (managed via --star/--unstar, --pin/--unpin,
+    --archive/--unarchive).  Tags are free-form strings.  Notes are stored as
+    durable annotations on the session.
+
+    \b
+    Examples:
+        polylogue find id:abc then mark --tag-add reviewed
+        polylogue find id:abc then mark --star --note "key insight"
+        polylogue find id:abc then mark --unstar --tag-remove reviewed
+        polylogue find id:abc then mark --pin
+        polylogue find 'repo:polylogue since:7d' then mark --tag-add sprint --all
+    """
+    import uuid
+
+    from polylogue.api.sync.bridge import run_coroutine_sync
+    from polylogue.cli.verb_cardinality import CardinalityError, check_cardinality, resolve_session_ids_for_verb
+
+    env: AppEnv = ctx.obj
+    request = _parent_request(ctx)
+
+    # Resolve matched sessions and enforce cardinality.
+    session_ids = resolve_session_ids_for_verb(env, request)
+    try:
+        check_cardinality(len(session_ids), allow_all=apply_all, first_only=first_only, operation="mark")
+    except CardinalityError as exc:
+        raise click.UsageError(str(exc)) from exc
+
+    # Honour --first: act only on the leading result when multiple matched.
+    target_ids = session_ids[:1] if first_only and len(session_ids) > 1 else session_ids
+
+    async def _apply_marks() -> None:
+        poly = env.polylogue
+        for sid in target_ids:
+            for tag in tags_to_add:
+                await poly.add_tag(sid, tag)
+            for tag in tags_to_remove:
+                await poly.remove_tag(sid, tag)
+            if star:
+                await poly.add_mark(sid, "star")
+            if unstar:
+                await poly.remove_mark(sid, "star")
+            if pin:
+                await poly.add_mark(sid, "pin")
+            if unpin:
+                await poly.remove_mark(sid, "pin")
+            if do_archive:
+                await poly.add_mark(sid, "archive")
+            if do_unarchive:
+                await poly.remove_mark(sid, "archive")
+            if note_text is not None:
+                annotation_id = f"note-{uuid.uuid4().hex[:16]}"
+                await poly.save_annotation(annotation_id, sid, note_text)
+
+    run_coroutine_sync(_apply_marks())
+
+    # Report.
+    count = len(target_ids)
+    ops: list[str] = []
+    if tags_to_add:
+        ops.append(f"added tags: {', '.join(tags_to_add)}")
+    if tags_to_remove:
+        ops.append(f"removed tags: {', '.join(tags_to_remove)}")
+    if star:
+        ops.append("starred")
+    if unstar:
+        ops.append("unstarred")
+    if pin:
+        ops.append("pinned")
+    if unpin:
+        ops.append("unpinned")
+    if do_archive:
+        ops.append("archive-marked")
+    if do_unarchive:
+        ops.append("archive-mark removed")
+    if note_text is not None:
+        ops.append("noted")
+    if ops:
+        click.echo(f"Marked {count} session(s): {'; '.join(ops)}")
+    else:
+        click.echo("No mark operations specified.")
+
+
+@click.command("analyze")
+@click.option(
+    "--by",
+    "stats_by",
+    type=click.Choice(["origin", "month", "year", "day", "action", "tool", "repo", "work-kind"]),
+    default=None,
+    help="Group statistics by dimension",
+)
+@click.option("--facets", "show_facets", is_flag=True, help="Show facet aggregates for the matched result set")
+@click.option(
+    "--format",
+    "-f",
+    "output_format",
+    type=click.Choice(["markdown", "json", "ndjson", "html", "plaintext", "csv"]),
+    default=None,
+    help="Output format",
+)
+@click.pass_context
+def analyze_verb(
+    ctx: click.Context,
+    stats_by: str | None,
+    show_facets: bool,
+    output_format: str | None,
+) -> None:
+    """Analyze matched sessions: statistics, facets, and aggregates.
+
+    \b
+    Applies to the full result set by default (no cardinality restriction).
+    Wraps the existing stats and facets surfaces over the matched session set.
+
+    \b
+    Examples:
+        polylogue find 'repo:polylogue since:7d' then analyze
+        polylogue find 'repo:polylogue since:7d' then analyze --by origin
+        polylogue find 'repo:polylogue since:7d' then analyze --by month
+        polylogue find 'repo:polylogue' then analyze --facets
+        polylogue find 'repo:polylogue' then analyze --by day --format json
+    """
+    import json as _json
+
+    from polylogue.api.sync.bridge import run_coroutine_sync
+
+    env: AppEnv = ctx.obj
+    request = _parent_request(ctx)
+
+    if show_facets:
+        # Delegate to the Polylogue facets API using the request's query spec.
+        spec = request.query_spec()
+        response = run_coroutine_sync(env.polylogue.facets(spec))
+        if output_format == "json":
+            click.echo(_json.dumps(response.model_dump(mode="json", by_alias=True), indent=2))
+            return
+        scope_label = "scoped" if response.scoped_to_query else "global"
+        click.echo(f"Facets ({scope_label}) — matched result set:")
+        click.echo(f"  sessions: {response.scoped.total_sessions}  messages: {response.scoped.total_messages}")
+        if response.scoped.origins:
+            click.echo("  Origins:")
+            for origin, cnt in sorted(response.scoped.origins.items(), key=lambda kv: -kv[1]):
+                click.echo(f"    {origin}: {cnt}")
+        if response.scoped.tags:
+            click.echo("  Tags:")
+            for tag, cnt in sorted(response.scoped.tags.items(), key=lambda kv: -kv[1]):
+                click.echo(f"    {tag}: {cnt}")
+        return
+
+    if stats_by:
+        updated = request.with_param_updates(stats_by=stats_by)
+        if output_format:
+            updated = updated.with_param_updates(output_format=output_format)
+        _execute_query_verb(ctx, updated)
+        return
+
+    # Default: overall stats for the result set.
+    updated = request.with_param_updates(stats_only=True)
+    if output_format:
+        updated = updated.with_param_updates(output_format=output_format)
+    _execute_query_verb(ctx, updated)
 
 
 def _parent_query_terms(ctx: click.Context) -> tuple[str, ...]:
@@ -576,15 +815,19 @@ QUERY_VERBS = (
     recent_verb,
     read_verb,
     delete_verb,
+    mark_verb,
+    analyze_verb,
 )
 
 
 __all__ = [
     "QUERY_VERBS",
     "VERB_NAMES",
+    "analyze_verb",
     "count_verb",
     "delete_verb",
     "list_verb",
+    "mark_verb",
     "read_verb",
     "recent_verb",
     "stats_verb",

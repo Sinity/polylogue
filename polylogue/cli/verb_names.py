@@ -4,12 +4,14 @@ from __future__ import annotations
 
 VERB_NAMES: frozenset[str] = frozenset(
     {
-        "list",
+        "analyze",
         "count",
-        "stats",
         "delete",
-        "recent",
+        "list",
+        "mark",
         "read",
+        "recent",
+        "stats",
     }
 )
 QUERY_VERB_NAMES = VERB_NAMES
