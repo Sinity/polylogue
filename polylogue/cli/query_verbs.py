@@ -698,6 +698,13 @@ def mark_verb(
 )
 @click.option("--facets", "show_facets", is_flag=True, help="Show facet aggregates for the matched result set")
 @click.option(
+    "--no-idf",
+    "no_idf",
+    is_flag=True,
+    default=False,
+    help="With --facets, skip inverse-document-frequency weighting",
+)
+@click.option(
     "--format",
     "-f",
     "output_format",
@@ -710,6 +717,7 @@ def analyze_verb(
     ctx: click.Context,
     stats_by: str | None,
     show_facets: bool,
+    no_idf: bool,
     output_format: str | None,
 ) -> None:
     """Analyze matched sessions: statistics, facets, and aggregates.
@@ -736,7 +744,7 @@ def analyze_verb(
     if show_facets:
         # Delegate to the Polylogue facets API using the request's query spec.
         spec = request.query_spec()
-        response = run_coroutine_sync(env.polylogue.facets(spec))
+        response = run_coroutine_sync(env.polylogue.facets(spec, include_idf=not no_idf))
         if output_format == "json":
             click.echo(_json.dumps(response.model_dump(mode="json", by_alias=True), indent=2))
             return
@@ -751,6 +759,12 @@ def analyze_verb(
             click.echo("  Tags:")
             for tag, cnt in sorted(response.scoped.tags.items(), key=lambda kv: -kv[1]):
                 click.echo(f"    {tag}: {cnt}")
+        if response.idf:
+            click.echo("  IDF (higher = rarer, partitions more strongly):")
+            for family, values in response.idf.items():
+                click.echo(f"    [{family}]")
+                for value, weight in sorted(values.items(), key=lambda kv: -kv[1]):
+                    click.echo(f"      {value}: {weight:.3f}")
         return
 
     if stats_by:

@@ -170,7 +170,6 @@
     diagnostics        Temporal session diagnostics
     doctor             Run archive health checks and repairs.
     embed              Enable, preflight, and backfill the embedding pipeline.
-    facets
     feedback           Record learning corrections for derived insights.
     import             Import sessions from configured sources.
     init               Detect chat sources and write a starter polylogue.toml.

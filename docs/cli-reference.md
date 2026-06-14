@@ -182,7 +182,6 @@ Commands:
   diagnostics        Temporal session diagnostics
   doctor             Run archive health checks and repairs.
   embed              Enable, preflight, and backfill the embedding pipeline.
-  facets
   feedback           Record learning corrections for derived insights.
   import             Import sessions from configured sources.
   init               Detect chat sources and write a starter polylogue.toml.
@@ -566,7 +565,6 @@ Published JSON Schemas live under [`docs/schemas/cli-output/`](./schemas/cli-out
 | `context-pack` | yes | no | yes | no | — | Provenance-rich JSON document; downstream agent surface. |
 | `count` | no | yes | yes | no | — | Single integer to stdout; no JSON envelope. |
 | `delete` | no | yes | yes | no | — | Side-effect command; --dry-run prints affected IDs. |
-| `facets` | yes | no | yes | no | — | Scoped vs global facet aggregates over the archive (#1269 / slice D of #873); ``--format json`` emits FacetsResponse. |
 | `feedback` | yes | yes | yes | no | — | record/list/clear subgroup; --machine wraps output in MachineSuccessPayload. |
 | `mark` | no | yes | yes | no | — | Mutates user metadata (tags, notes, user-state marks) on matched sessions; side-effect command. |
 | `neighbors` | yes | yes | yes | no | [`session-neighbor-candidate.schema.json`](./schemas/cli-output/session-neighbor-candidate.schema.json) |  |

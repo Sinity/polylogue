@@ -175,9 +175,17 @@ def test_json_facets_snapshot(
     seeded_db_env: Path,
     snapshot: object,
 ) -> None:
-    """``polylogue --plain facets --format json`` pins JSON facets envelope."""
-    output = _invoke_json(runner, ["facets", "--format", "json"])
+    """``polylogue --plain analyze --facets --format json`` pins JSON facets envelope (#1842)."""
+    output = _invoke_json(runner, ["analyze", "--facets", "--format", "json"])
     assert output == snapshot
+
+
+def test_analyze_facets_no_idf_omits_idf(runner: CliRunner, seeded_db_env: Path) -> None:
+    """`analyze --facets --no-idf` ports the old `facets --no-idf` capability (#1842)."""
+    import json as _json
+
+    payload = _json.loads(_invoke_json(runner, ["analyze", "--facets", "--no-idf", "--format", "json"]))
+    assert not payload.get("idf")  # no IDF weights when --no-idf is set
 
 
 def test_json_status_snapshot(
