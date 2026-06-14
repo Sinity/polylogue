@@ -132,6 +132,7 @@ def test_session_profile_infers_codex_topic_from_repo_and_first_user_turn(tmp_pa
     fake_repo = tmp_path / "polylogue"
     (fake_repo / ".git").mkdir(parents=True)
     fake_app_path = fake_repo / "polylogue" / "facade.py"
+    fake_app_path.parent.mkdir(parents=True, exist_ok=True)
 
     session = make_conv(
         id="conv-codex-topic",

@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import atexit
-import concurrent.futures
 import contextlib
 import faulthandler
 import fcntl
 import os
 import sqlite3
 import sys
+import threading
 from contextlib import redirect_stdout
 from datetime import UTC, datetime
 from http.server import ThreadingHTTPServer
@@ -827,30 +827,38 @@ async def _shutdown_server_if_serving(
     # the default executor (see ``server_task`` creation), so calling
     # ``server.shutdown()`` directly on the loop thread would block it and deadlock
     # when startup fails before the worker entered ``serve_forever``. Run shutdown
-    # off the loop — but in a DEDICATED single-worker executor, NOT
-    # ``asyncio.to_thread``: the default executor's workers can already be occupied
-    # (both ``serve_forever`` calls, an embedder configured ``max_workers=1``, or
-    # maintenance ``to_thread`` jobs), in which case a queued ``shutdown()`` would
-    # wait behind the very ``serve_forever`` it must stop. The 5s ``wait_for`` would
-    # then cancel the still-queued task without ever setting socketserver's flag, so
-    # ``serve_forever`` never returns and ``asyncio.run`` hangs tearing down the
-    # default executor (#1877 review). A dedicated executor guarantees ``shutdown()``
-    # runs immediately, sets the Event, and lets ``serve_forever`` return. The
-    # timeout is a last-resort guard; the caller's ``server_close()`` closes the
+    # off the loop in a DEDICATED DAEMON thread — NOT ``asyncio.to_thread`` / a
+    # ThreadPoolExecutor:
+    #   * The default executor's workers can already be occupied (both
+    #     ``serve_forever`` calls, an embedder configured ``max_workers=1``, or
+    #     maintenance ``to_thread`` jobs); a queued ``shutdown()`` would then wait
+    #     behind the very ``serve_forever`` it must stop, and the 5s ``wait_for``
+    #     would cancel the still-queued task without ever setting socketserver's
+    #     flag — re-deadlocking ``asyncio.run`` teardown (#1877 Codex review).
+    #   * A ThreadPoolExecutor would not help: ``shutdown(wait=False)`` does not
+    #     stop a running task and its worker threads are still joined at interpreter
+    #     exit, so a genuinely wedged ``server.shutdown()`` would still hang exit
+    #     (#1877 CodeRabbit review). A daemon thread is abandoned at exit instead.
+    # Completion is signalled back to the loop via ``call_soon_threadsafe``; the 5s
+    # timeout is a last-resort guard and the caller's ``server_close()`` closes the
     # socket regardless.
     loop = asyncio.get_running_loop()
-    shutdown_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"{label}-shutdown")
+    shutdown_done = asyncio.Event()
+
+    def _run_shutdown() -> None:
+        try:
+            server.shutdown()
+        finally:
+            loop.call_soon_threadsafe(shutdown_done.set)
+
+    threading.Thread(target=_run_shutdown, name=f"{label}-shutdown", daemon=True).start()
     try:
-        await asyncio.wait_for(loop.run_in_executor(shutdown_executor, server.shutdown), timeout=5.0)
+        await asyncio.wait_for(shutdown_done.wait(), timeout=5.0)
     except TimeoutError:
         logger.warning(
             "daemon: %s server shutdown did not complete within 5s; closing socket directly",
             label,
         )
-    finally:
-        # Never block on a stuck shutdown worker; the caller's server_close() is the
-        # real backstop.
-        shutdown_executor.shutdown(wait=False)
 
 
 @click.group(help="Run long-lived Polylogue local services.")
