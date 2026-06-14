@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WorkspaceManifest.v4",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "workspace_id",
+    "name",
+    "mode",
+    "open_targets"
+  ],
+  "properties": {
+    "workspace_id": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "mode": {
+      "enum": [
+        "single",
+        "tabs",
+        "stack",
+        "compare",
+        "timeline",
+        "cluster"
+      ]
+    },
+    "open_targets": {
+      "type": "array",
+      "items": {
+        "$ref": "archive-object-ref-v4.schema.json"
+      }
+    },
+    "active_target": {
+      "anyOf": [
+        {
+          "$ref": "archive-object-ref-v4.schema.json"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "layout": {
+      "type": "object"
+    },
+    "selection_set_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "availability": {
+      "enum": [
+        "ready",
+        "partial",
+        "unsupported",
+        "stale"
+      ]
+    },
+    "created_at": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "updated_at": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}
