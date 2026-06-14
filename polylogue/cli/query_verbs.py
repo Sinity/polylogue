@@ -562,16 +562,12 @@ def delete_verb(ctx: click.Context, dry_run: bool, yes_flag: bool, all_flag: boo
     except CardinalityError as exc:
         raise click.UsageError(str(exc)) from exc
 
-    # Delegate to existing delete path.  --yes / --force both skip the
-    # interactive confirmation prompt in delete_sessions().
-    _execute_query_verb(
-        ctx,
-        request.with_param_updates(
-            delete_matched=True,
-            dry_run=False,
-            force=yes_flag or force,
-        ),
-    )
+    # Delete using the pre-resolved IDs so all matched sessions are removed.
+    # Using _execute_query_verb here would re-run the query with a default
+    # limit of 20, silently truncating large result sets (#1873).
+    from polylogue.cli.archive_query import execute_delete_by_session_ids
+
+    execute_delete_by_session_ids(env, session_ids, force=yes_flag or force)
 
 
 @click.command("mark")
