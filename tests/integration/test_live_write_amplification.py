@@ -46,8 +46,10 @@ def _checkpoint_truncate(db: Path) -> None:
         return
     try:
         conn = sqlite3.connect(str(db))
-        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        conn.close()
+        try:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        finally:
+            conn.close()
     except sqlite3.Error:
         pass
 

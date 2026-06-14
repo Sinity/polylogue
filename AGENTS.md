@@ -1044,6 +1044,12 @@ storage in `storage/insights/session/`. Wire rebuild logic and register in
 Run `devtools render-all` to update the generated catalog in
 `docs/devtools.md`.
 
+**Adding any new module/file under `polylogue/`**: regenerate the topology
+projection or `verify-topology` and `render-all --check` will fail on the new
+path. Run `devtools build-topology-projection && devtools render-topology-status`
+and commit the updated `docs/plans/topology-target.yaml` and
+`docs/topology-status.md` alongside the code.
+
 ## Schema Versioning Model
 
 Polylogue has no in-place schema upgrade chain. The runtime knows exactly one
@@ -1676,7 +1682,7 @@ See also: `2026-05-27_Build_Plan.md` §D (Cloud agent enablement).
 | `uv run mypy polylogue`                       | yes       | Type check.                                                 |
 | `uv run devtools verify`                      | yes       | Slow. Prefer scoped invocations during iteration.           |
 | `uv run devtools render-all --check`          | yes       | Generated-file drift check (also runs in CI).               |
-| `polylogued run --no-api`                     | yes\*     | \*Only against synthetic fixtures in `/tmp/polylogue-archive`. |
+| `polylogued run --no-api --no-watch --no-browser-capture` | yes\*     | \*Only against synthetic fixtures in `/tmp/polylogue-archive`. `--no-api` alone is insufficient; you must also disable live watch and browser capture for a truly inert sandbox. |
 | Real archive imports (`~/.claude/projects/…`) | NO        | Never upload personal corpus into a managed sandbox.        |
 | Browser-capture flows                         | NO        | Needs interactive cookies; relocated to ethereal host.      |
 | Any `/realm/data/...` path                    | NO        | Not mounted in cloud sandboxes; would resolve to nothing.   |
