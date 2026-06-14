@@ -29,7 +29,7 @@ Clause forms:
 
 Cross-field OR (``(a origin:x OR origin:y)``) and nested parentheses across
 different fields are **rejected loudly** — they require a boolean-tree spec
-that is tracked in issue #1858.  Unknown fields also fail loudly.
+that is tracked in issue #1812.  Unknown fields also fail loudly.
 
 Field registry
 --------------
@@ -102,7 +102,7 @@ EXPRESSION_FIELD_REGISTRY: dict[str, dict[str, str]] = {
         "example": "repo:polylogue",
     },
     "origin": {
-        "description": "Filter by session origin (provider source)",
+        "description": "Filter by session origin",
         "spec_field": "origins",
         "negatable": "yes",
         "example": "origin:claude-code-session",
@@ -372,7 +372,7 @@ def _lex(expression: str) -> list[_LexToken]:
             raise ExpressionCompileError(
                 "cross-field OR parentheses are not supported; express as separate queries "
                 "or use field:(a|b|c) for in-field OR. "
-                "Boolean-tree queries are tracked in issue #1858.",
+                "Boolean-tree queries are tracked in issue #1812.",
                 field=None,
             )
 
@@ -739,7 +739,7 @@ def compile_expression(expression: str) -> SessionQuerySpec:
         raise ExpressionCompileError(
             "cross-field OR is not supported in this version; express as separate queries "
             "or use field:(a|b|c) for in-field OR. "
-            "Boolean-tree queries are tracked in issue #1858.",
+            "Boolean-tree queries are tracked in issue #1812.",
             field=None,
         )
 

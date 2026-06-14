@@ -1278,16 +1278,24 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         limit: int,
         offset: int,
     ) -> object:
+        from polylogue.archive.query.expression import compile_expression_into
         from polylogue.archive.query.spec import SessionQuerySpec
 
-        spec = SessionQuerySpec.from_params(
-            {**query_params, "limit": limit, "offset": offset},
-        )
-        query_text = query_params.get("query") or query_params.get("contains")
+        # Build the flag-derived base spec (all params except the free-text
+        # query string), then route the query string through the shared
+        # expression compiler so structured clauses like
+        # ``origin:codex has:paste since:7d`` resolve to the correct spec
+        # fields rather than being passed as literal FTS terms (#1860).
+        query_str = str(query_params.get("query") or "").strip()
+        base_params = {k: v for k, v in query_params.items() if k != "query"}
+        base = SessionQuerySpec.from_params({**base_params, "limit": limit, "offset": offset})
+        spec = compile_expression_into(query_str, base) if query_str else base
 
-        # When search terms are present, return ranked result envelope with
-        # per-hit match evidence instead of plain row dicts.
-        if query_text and not query_params.get("similar_text"):
+        # Route to the ranked search path when the compiled spec carries FTS
+        # or vector terms; use the plain list path otherwise (including for
+        # pure-DSL queries whose clauses only set structured fields with no
+        # FTS text, e.g. ``origin:codex has:paste``).
+        if spec.query_terms or spec.contains_terms:
             return await self._do_search_list(poly, spec, limit, offset)
 
         # A pure vector-only request (similar_text, no FTS term) must surface
@@ -1296,7 +1304,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         # vector provider (raising the typed readiness error when embeddings
         # are not ready), which daemon_safe_handler maps to its 409 status
         # instead of falling through to a generic ValueError (#1749).
-        if query_params.get("similar_text"):
+        if spec.similar_text:
             return await self._do_search_list(poly, spec, limit, offset)
 
         filter_obj = spec.build_filter(poly.config)
@@ -1385,33 +1393,106 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         limit: int,
         offset: int,
     ) -> object:
+        from polylogue.archive.query.expression import compile_expression
+        from polylogue.archive.query.search_hits import search_query_text
         from polylogue.archive.query.spec import parse_query_date
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-        query = self._get_param(params, "query") or self._get_param(params, "contains") or ""
-        origin, origins = _archive_origin_filter(params)
-        tags = _archive_tag_filter(params)
+        # Compile the free-text query string through the shared expression
+        # compiler so DSL clauses like ``origin:codex has:paste since:7d``
+        # map to the correct ArchiveStore filter arguments rather than being
+        # passed as literal FTS text (#1860).
+        query_str = self._get_param(params, "query") or self._get_param(params, "contains") or ""
+        if query_str:
+            spec = compile_expression(query_str)
+            # Bare words / quoted phrases become the FTS query; field clauses
+            # (origin:, tag:, since:, etc.) become structured filter args.
+            fts_query = search_query_text(spec.query_terms + spec.contains_terms)
+        else:
+            spec = None
+            fts_query = ""
+
+        # HTTP-param-based origin/tag filters — still honoured for backwards
+        # compatibility with callers passing ``?origin=...`` or ``?tag=...``
+        # as separate query-string parameters.
+        _, http_origins = _archive_origin_filter(params)
+        http_tags = _archive_tag_filter(params)
+
+        # Merge DSL-compiled spec filters with HTTP-param-based filters.
+        origins = tuple(dict.fromkeys((spec.origins if spec else ()) + http_origins))
+        excluded_origins = spec.excluded_origins if spec else ()
+        tags = tuple(dict.fromkeys((spec.tags if spec else ()) + http_tags))
+        excluded_tags = spec.excluded_tags if spec else ()
+        origin = origins[0] if len(origins) == 1 else None
+
+        # Date filters: DSL spec takes precedence over bare HTTP params.
+        since_str = (spec.since if spec else None) or self._get_param(params, "since")
+        until_str = (spec.until if spec else None) or self._get_param(params, "until")
         # parse_query_date raises QuerySpecError (a PolylogueError carrying
         # http_status_code=400) for unparseable dates; daemon_safe_handler maps
         # it to the QueryErrorPayload-shaped 400 the other surfaces return.
-        since_dt = parse_query_date("since", self._get_param(params, "since"))
-        until_dt = parse_query_date("until", self._get_param(params, "until"))
+        since_dt = parse_query_date("since", since_str)
+        until_dt = parse_query_date("until", until_str)
         since_ms = _archive_datetime_to_ms(since_dt)
         until_ms = _archive_datetime_to_ms(until_dt)
+
+        # Remaining structured filters come directly from the compiled spec.
+        has_paste = spec.filter_has_paste if spec else False
+        has_tool_use = spec.filter_has_tool_use if spec else False
+        has_thinking = spec.filter_has_thinking if spec else False
+        repo_names = spec.repo_names if spec else ()
+        has_types = spec.has_types if spec else ()
+        tool_terms = spec.tool_terms if spec else ()
+        excluded_tool_terms = spec.excluded_tool_terms if spec else ()
+        action_terms = spec.action_terms if spec else ()
+        excluded_action_terms = spec.excluded_action_terms if spec else ()
+        action_sequence = spec.action_sequence if spec else ()
+        action_text_terms = spec.action_text_terms if spec else ()
+        referenced_paths = spec.referenced_path if spec else ()
+        cwd_prefix = spec.cwd_prefix if spec else None
+        title = spec.title if spec else None
+        min_messages = spec.min_messages if spec else None
+        max_messages = spec.max_messages if spec else None
+        min_words = spec.min_words if spec else None
+
+        # Shared filter kwargs forwarded to every ArchiveStore call.
+        _filter_kw: dict[str, object] = {
+            "origin": origin,
+            "origins": origins,
+            "excluded_origins": excluded_origins,
+            "tags": tags,
+            "excluded_tags": excluded_tags,
+            "repo_names": repo_names,
+            "has_types": has_types,
+            "has_tool_use": has_tool_use,
+            "has_thinking": has_thinking,
+            "has_paste": has_paste,
+            "tool_terms": tool_terms,
+            "excluded_tool_terms": excluded_tool_terms,
+            "action_terms": action_terms,
+            "excluded_action_terms": excluded_action_terms,
+            "action_sequence": action_sequence,
+            "action_text_terms": action_text_terms,
+            "referenced_paths": referenced_paths,
+            "cwd_prefix": cwd_prefix,
+            "title": title,
+            "min_messages": min_messages,
+            "max_messages": max_messages,
+            "min_words": min_words,
+            "since_ms": since_ms,
+            "until_ms": until_ms,
+        }
+
         with ArchiveStore.open_existing(archive_root) as archive:
-            if query:
+            if fts_query:
                 hits = archive.search_summaries(
-                    query,
+                    fts_query,
                     limit=limit,
                     offset=offset,
-                    origin=origin,
-                    origins=origins,
-                    tags=tags,
-                    since_ms=since_ms,
-                    until_ms=until_ms,
+                    **_filter_kw,  # type: ignore[arg-type]
                 )
                 payload: dict[str, object] = {
-                    "query": query,
+                    "query": fts_query,
                     "retrieval_lane": "dialogue",
                     "ranking_policy": "mixed-bm25-rrf-vector",
                     "ranking_policy_version": "1",
@@ -1426,24 +1507,18 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     # miss instead of rendering a bare empty list.
                     from polylogue.surfaces.payloads import QueryMissDiagnosticsPayload
 
-                    archive_count = archive.count_sessions(
-                        origin=origin,
-                        origins=origins,
-                        tags=tags,
-                        since_ms=since_ms,
-                        until_ms=until_ms,
-                    )
+                    archive_count = archive.count_sessions(**_filter_kw)  # type: ignore[arg-type]
                     filters = tuple(
                         label
                         for label in (
-                            f"query={query!r}",
+                            f"query={fts_query!r}",
                             f"origin={origin}" if origin else None,
                             f"tags={list(tags)}" if tags else None,
                         )
                         if label is not None
                     )
                     payload["diagnostics"] = QueryMissDiagnosticsPayload(
-                        message=f"No sessions matched {query!r}.",
+                        message=f"No sessions matched {fts_query!r}.",
                         filters=filters,
                         reasons=(),
                         archive_session_count=archive_count,
@@ -1452,19 +1527,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             summaries = archive.list_summaries(
                 limit=limit,
                 offset=offset,
-                origin=origin,
-                origins=origins,
-                tags=tags,
-                since_ms=since_ms,
-                until_ms=until_ms,
+                **_filter_kw,  # type: ignore[arg-type]
             )
-            total = archive.count_sessions(
-                origin=origin,
-                origins=origins,
-                tags=tags,
-                since_ms=since_ms,
-                until_ms=until_ms,
-            )
+            total = archive.count_sessions(**_filter_kw)  # type: ignore[arg-type]
             return {
                 "items": [self._archive_summary_payload(summary) for summary in summaries],
                 "total": total,
