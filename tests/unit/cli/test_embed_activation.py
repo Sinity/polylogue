@@ -720,7 +720,7 @@ def _run_native_search(archive_root: Path, state_dir: Path, monkeypatch: pytest.
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
     from polylogue.cli import cli
 
-    result = CliRunner().invoke(cli, ["--plain", "Python", "-f", "json"])
+    result = CliRunner().invoke(cli, ["--plain", "find", "Python", "-f", "json"])
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert isinstance(payload, dict)
@@ -820,7 +820,7 @@ class TestHybridAutoElevation:
         fake_provider = MagicMock()
         fake_provider.query = MagicMock(return_value=[])
         with patch("polylogue.cli.archive_query.create_vector_provider", return_value=fake_provider):
-            result = CliRunner().invoke(cli, ["--plain", "--lexical", "Python", "-f", "json"])
+            result = CliRunner().invoke(cli, ["--plain", "--lexical", "find", "Python", "-f", "json"])
         assert result.exit_code == 0, result.output
         payload = json.loads(result.output)
         assert payload["retrieval_lane"] == "dialogue"

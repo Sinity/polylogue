@@ -251,16 +251,18 @@ class TestQueryFirstGroupParseArgs:
         from polylogue.cli.click_app import cli
 
         with patch("polylogue.cli.query.execute_query_request") as mock_execute:
-            cli_runner.invoke(cli, ["hello", "world", "--plain"], catch_exceptions=False)
+            cli_runner.invoke(cli, ["find", "hello", "world", "--plain"], catch_exceptions=False)
         request = mock_execute.call_args[0][1]
         assert set(request.query_params().get("query", ())) == {"hello", "world"}
 
-    def test_query_option_before_bare_word_stays_query_mode(self, cli_runner: CliRunner) -> None:
-        """Filter options followed by a bare word (not a subcommand name) stay in query mode."""
+    def test_query_option_before_find_query_stays_query_mode(self, cli_runner: CliRunner) -> None:
+        """Filter options followed by `find` + a term stay in query mode (#1842 strict floor)."""
         from polylogue.cli.click_app import cli
 
         with patch("polylogue.cli.query.execute_query_request") as mock_execute:
-            cli_runner.invoke(cli, ["--origin", "claude-ai-export", "my_search", "--plain"], catch_exceptions=False)
+            cli_runner.invoke(
+                cli, ["--origin", "claude-ai-export", "find", "my_search", "--plain"], catch_exceptions=False
+            )
         params = mock_execute.call_args[0][1].query_params()
         assert params.get("origin") == "claude-ai-export"
         assert params.get("query") == ("my_search",)
@@ -279,7 +281,9 @@ class TestQueryFirstGroupParseArgs:
         from polylogue.cli.click_app import cli
 
         with patch("polylogue.cli.query.execute_query_request") as mock_execute:
-            cli_runner.invoke(cli, ["--origin", "claude-ai-export", "search_term", "--plain"], catch_exceptions=False)
+            cli_runner.invoke(
+                cli, ["--origin", "claude-ai-export", "find", "search_term", "--plain"], catch_exceptions=False
+            )
         params = mock_execute.call_args[0][1].query_params()
         assert params.get("origin") == "claude-ai-export"
         assert "search_term" in params.get("query", ())
@@ -290,7 +294,7 @@ class TestQueryFirstGroupParseArgs:
         with patch("polylogue.cli.query.execute_query_request") as mock_execute:
             cli_runner.invoke(
                 cli,
-                ["error", "--origin", "claude-ai-export", "handling", "--latest", "--plain"],
+                ["find", "error", "--origin", "claude-ai-export", "handling", "--latest", "--plain"],
                 catch_exceptions=False,
             )
         params = mock_execute.call_args[0][1].query_params()
@@ -386,7 +390,66 @@ class TestQueryFirstGroupInvoke:
         from polylogue.cli.click_app import cli
 
         with patch("polylogue.cli.query.execute_query_request") as mock_exec:
-            cli_runner.invoke(cli, ["hello", "--plain"], catch_exceptions=False)
+            cli_runner.invoke(cli, ["find", "hello", "--plain"], catch_exceptions=False)
+        mock_exec.assert_called_once()
+
+
+class TestStrictCommandFloor:
+    """#1842: bare unquoted/unsignalled roots hint instead of silently searching."""
+
+    def test_find_keyword_is_stripped_from_query(self, cli_runner: CliRunner) -> None:
+        from polylogue.cli.click_app import cli
+
+        with patch("polylogue.cli.query.execute_query_request") as mock_exec:
+            cli_runner.invoke(cli, ["find", "hello", "world", "--plain"], catch_exceptions=False)
+        assert set(mock_exec.call_args[0][1].query_params().get("query", ())) == {"hello", "world"}
+
+    def test_find_then_read_dispatches_read_verb(self, cli_runner: CliRunner) -> None:
+        from polylogue.cli.click_app import cli
+
+        result = cli_runner.invoke(cli, ["find", "id:abc", "then", "read", "--help"], catch_exceptions=False)
+        assert result.exit_code == 0
+        assert "read" in result.output.lower()
+
+    def test_bare_multi_token_root_hints_and_does_not_search(self, cli_runner: CliRunner) -> None:
+        from polylogue.cli.click_app import cli
+
+        with patch("polylogue.cli.query.execute_query_request") as mock_exec:
+            result = cli_runner.invoke(cli, ["foo", "bar", "--plain"])
+        assert result.exit_code == 2
+        assert "polylogue find foo bar" in result.output
+        mock_exec.assert_not_called()
+
+    def test_bare_single_plain_word_hints(self, cli_runner: CliRunner) -> None:
+        from polylogue.cli.click_app import cli
+
+        with patch("polylogue.cli.query.execute_query_request") as mock_exec:
+            result = cli_runner.invoke(cli, ["foo", "--plain"])
+        assert result.exit_code == 2
+        assert "find" in result.output
+        mock_exec.assert_not_called()
+
+    def test_field_expression_root_still_searches(self, cli_runner: CliRunner) -> None:
+        """A bare token with field syntax (`repo:x`) is unambiguously a query."""
+        from polylogue.cli.click_app import cli
+
+        with patch("polylogue.cli.query.execute_query_request") as mock_exec:
+            cli_runner.invoke(cli, ["repo:polylogue", "--plain"], catch_exceptions=False)
+        mock_exec.assert_called_once()
+
+    def test_quoted_free_text_root_still_searches(self, cli_runner: CliRunner) -> None:
+        """A single argv token with internal whitespace can only have come from quoting."""
+        from polylogue.cli.click_app import cli
+
+        with patch("polylogue.cli.query.execute_query_request") as mock_exec:
+            cli_runner.invoke(cli, ["machine learning", "--plain"], catch_exceptions=False)
+        mock_exec.assert_called_once()
+
+    def test_double_dash_escape_forces_query(self, cli_runner: CliRunner) -> None:
+        from polylogue.cli.click_app import cli
+
+        with patch("polylogue.cli.query.execute_query_request") as mock_exec:
+            cli_runner.invoke(cli, ["--plain", "--", "foo", "bar"], catch_exceptions=False)
         mock_exec.assert_called_once()
 
 
