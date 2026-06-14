@@ -54,10 +54,19 @@ def _split_query_mode_args(group: click.Group, args: list[str]) -> tuple[list[st
             return args, (), True, explicit_query
         # Optional `then` connector: `find Q then read` → strip `then` and
         # treat the following token as the verb.
+        via_then = False
         if arg == "then" and index + 1 < len(args) and args[index + 1] in VERB_NAMES:
             index += 1
             arg = args[index]
+            via_then = True
         if arg in VERB_NAMES:
+            # After an explicit `find`, a verb word sitting in query position —
+            # no `then`, nothing collected yet — is the search term itself:
+            # `find read` searches for "read", it does not run the read action.
+            if explicit_query and not via_then and not query_terms:
+                query_terms.append(arg)
+                index += 1
+                continue
             misplaced = _find_root_option_after_verb(group, arg, list(args[index + 1 :]))
             if misplaced is not None:
                 raise click.UsageError(

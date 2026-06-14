@@ -452,6 +452,23 @@ class TestStrictCommandFloor:
             cli_runner.invoke(cli, ["--plain", "--", "foo", "bar"], catch_exceptions=False)
         mock_exec.assert_called_once()
 
+    def test_verb_word_after_find_is_a_query_term(self, cli_runner: CliRunner) -> None:
+        """`find read` searches for "read"; it does not dispatch the read action (Codex P2)."""
+        from polylogue.cli.click_app import cli
+
+        with patch("polylogue.cli.query.execute_query_request") as mock_exec:
+            cli_runner.invoke(cli, ["find", "read", "--plain"], catch_exceptions=False)
+        mock_exec.assert_called_once()
+        assert mock_exec.call_args[0][1].query_params().get("query") == ("read",)
+
+    def test_non_leading_find_stays_a_literal_query_term(self, cli_runner: CliRunner) -> None:
+        """Only the FIRST positional `find` is the keyword; a later `find` is searchable."""
+        from polylogue.cli.click_app import cli
+
+        with patch("polylogue.cli.query.execute_query_request") as mock_exec:
+            cli_runner.invoke(cli, ["find", "alpha", "find", "--plain"], catch_exceptions=False)
+        assert set(mock_exec.call_args[0][1].query_params().get("query", ())) == {"alpha", "find"}
+
 
 class TestCliSetup:
     def test_verbose_configures_debug_logging(self, cli_runner: CliRunner) -> None:
