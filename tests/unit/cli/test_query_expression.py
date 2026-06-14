@@ -624,3 +624,214 @@ class TestCrossSurfaceParity:
         assert cli_spec.query_terms == ()
         assert mcp_spec.query_terms == ()
         assert daemon_spec.query_terms == ()
+
+
+# ---------------------------------------------------------------------------
+# Bug 3 regression: words:<=N / words:=N (#1873)
+# ---------------------------------------------------------------------------
+
+
+class TestWordsCountRegressions:
+    """words:<=N and words:=N must set max_words, not silently map to min_words."""
+
+    def test_words_lte_sets_max_words(self) -> None:
+        """Bug 3a: words:<=N must set max_words (was incorrectly setting min_words)."""
+        spec = compile_expression("words:<=500")
+        assert spec.max_words == 500
+        assert spec.min_words is None
+
+    def test_words_eq_sets_both_bounds(self) -> None:
+        """Bug 3b: words:=N must set both min_words and max_words."""
+        spec = compile_expression("words:=100")
+        assert spec.min_words == 100
+        assert spec.max_words == 100
+
+    def test_words_gte_still_sets_min_words_only(self) -> None:
+        """words:>=N must still set min_words only (existing behavior preserved)."""
+        spec = compile_expression("words:>=200")
+        assert spec.min_words == 200
+        assert spec.max_words is None
+
+    def test_words_lte_and_gte_together(self) -> None:
+        """words:>=N words:<=M → both bounds set independently."""
+        spec = compile_expression("words:>=100 words:<=500")
+        assert spec.min_words == 100
+        assert spec.max_words == 500
+
+    def test_words_lte_did_not_set_wrong_field(self) -> None:
+        """Regression: words:<=500 must NOT set min_words (the pre-fix bug)."""
+        spec = compile_expression("words:<=500")
+        # Before the fix this would erroneously set min_words=500 and max_words=None.
+        assert spec.min_words is None, "words:<=500 set min_words instead of max_words — the Bug 3 regression is back"
+
+
+# ---------------------------------------------------------------------------
+# Bug 4 regression: negation on unsupported fields (#1873)
+# ---------------------------------------------------------------------------
+
+
+class TestNegationRejections:
+    """Fields without an exclude axis must raise ExpressionCompileError when negated."""
+
+    @pytest.mark.parametrize(
+        "expr",
+        [
+            "-repo:polylogue",
+            "-path:some/file",
+            "-cwd:/realm/project",
+            "-has:paste",
+            "-id:abc123",
+            "-title:refactor",
+            "-since:7d",
+            "-until:2024-01-15",
+            '-near:"semantic search"',
+            "-contains:foo",
+            "-lane:dialogue",
+        ],
+    )
+    def test_negated_unsupported_field_raises(self, expr: str) -> None:
+        """Bug 4: negating a field without an exclude axis must raise loudly."""
+        with pytest.raises(ExpressionCompileError, match="negation is not supported"):
+            compile_expression(expr)
+
+    def test_negated_origin_still_works(self) -> None:
+        """origin: supports negation via excluded_origins — must continue to work."""
+        spec = compile_expression("-origin:claude-code-session")
+        assert "claude-code-session" in spec.excluded_origins
+        assert "claude-code-session" not in spec.origins
+
+    def test_negated_tag_still_works(self) -> None:
+        """tag: supports negation — must continue to work."""
+        spec = compile_expression("-tag:review")
+        assert "review" in spec.excluded_tags
+        assert "review" not in spec.tags
+
+    def test_negated_tool_still_works(self) -> None:
+        """tool: supports negation — must continue to work."""
+        spec = compile_expression("-tool:bash")
+        assert "bash" in spec.excluded_tool_terms
+        assert "bash" not in spec.tool_terms
+
+    def test_negated_action_still_works(self) -> None:
+        """action: supports negation — must continue to work."""
+        spec = compile_expression("-action:file_edit")
+        assert "file_edit" in spec.excluded_action_terms
+        assert "file_edit" not in spec.action_terms
+
+
+# ---------------------------------------------------------------------------
+# Bug 5 regression: escaped quotes in phrase lexer (#1873)
+# ---------------------------------------------------------------------------
+
+
+class TestEscapedQuotePhrases:
+    """Quoted phrases containing \" escapes must be parsed correctly."""
+
+    def test_escaped_quote_inside_phrase(self) -> None:
+        """Bug 5: \\\" inside a quoted phrase must produce a literal quote in the term."""
+        # The expression: "say \"hello\""
+        # root_request.py wraps terms with spaces using \" escapes, so the phrase
+        # lexer must consume them without treating the \" as a close-quote.
+        spec = compile_expression(r'"say \"hello\""')
+        assert spec.query_terms == ('say "hello"',)
+
+    def test_escaped_quote_at_start_of_phrase(self) -> None:
+        """A phrase starting with \\\" must parse correctly."""
+        spec = compile_expression(r'"\"quoted word\""')
+        assert spec.query_terms == ('"quoted word"',)
+
+    def test_roundtrip_via_root_request(self) -> None:
+        """Terms with spaces are re-quoted by RootModeRequest.query_spec — must round-trip."""
+        from polylogue.cli.root_request import RootModeRequest
+
+        # A term with an embedded space is passed as one element (shell-quoted).
+        # RootModeRequest wraps it in "..." and escapes internal quotes.
+        request = RootModeRequest(params={}, query_terms=('say "hello"',))
+        spec = request.query_spec()
+        # The round-tripped phrase must be in query_terms (FTS), intact.
+        assert any('"hello"' in t for t in spec.query_terms), (
+            "Escaped-quote round-trip failed: term not found in spec.query_terms"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Bug 6 regression: JSON spec strict mode (#1873)
+# ---------------------------------------------------------------------------
+
+
+class TestJsonSpecStrictMode:
+    """JSON spec input must reject unknown keys (strict=True)."""
+
+    def test_unknown_key_in_json_spec_raises(self) -> None:
+        """Bug 6: unknown keys in a JSON spec must raise ExpressionCompileError."""
+        with pytest.raises(ExpressionCompileError, match="invalid spec fields"):
+            compile_expression('{"repo": "polylogue", "unknown_key": "value"}')
+
+    def test_known_keys_in_json_spec_succeed(self) -> None:
+        """Valid JSON spec must still compile correctly."""
+        spec = compile_expression('{"repo": "polylogue"}')
+        assert spec.repo_names == ("polylogue",)
+
+    def test_json_spec_strict_rejects_typo_key(self) -> None:
+        """A common typo like 'repos' (instead of 'repo') must be rejected."""
+        with pytest.raises(ExpressionCompileError, match="invalid spec fields"):
+            compile_expression('{"repos": ["polylogue"]}')
+
+
+# ---------------------------------------------------------------------------
+# Bug 7 regression: ?contains= not routed through DSL compiler (#1873)
+# ---------------------------------------------------------------------------
+
+
+class TestDaemonContainsParamNotCompiled:
+    """_do_archive_list_sessions must not route ?contains= through compile_expression."""
+
+    def test_contains_param_not_compiled_as_dsl(self) -> None:
+        """Bug 7: compile_expression must not be called when only ?contains= is provided.
+
+        Routing ?contains=foo through the DSL compiler causes ExpressionCompileError
+        when the value contains spaces or field-like tokens.  Only ?query= should
+        be compiled.
+        """
+        import inspect
+
+        from polylogue.daemon.http import DaemonAPIHandler
+
+        src = inspect.getsource(DaemonAPIHandler._do_archive_list_sessions)
+        # The fix: query_str must only read from "query" param.
+        # Verify that "contains" is not passed to compile_expression via query_str.
+        # The old code had: "query") or self._get_param(params, "contains")
+        assert "contains" not in src.split("query_str")[1].split("\n")[0], (
+            "Bug 7 regression: _do_archive_list_sessions concatenates 'contains' "
+            "param into the DSL expression string passed to compile_expression"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Bug 8 regression: id:xyz filter applied in /api/archive/sessions (#1873)
+# ---------------------------------------------------------------------------
+
+
+class TestDaemonSessionIdFilter:
+    """Compiled session_id from DSL must be forwarded to list_summaries."""
+
+    def test_id_clause_produces_session_id_in_spec(self) -> None:
+        """Bug 8 enabler: compile_expression('id:abc') must produce spec.session_id."""
+        spec = compile_expression("id:abc")
+        assert spec.session_id == "abc"
+
+    def test_daemon_handler_passes_session_id_to_list_summaries(self) -> None:
+        """Bug 8: session_id from compiled spec must reach list_summaries.
+
+        Verify the source of _do_archive_list_sessions includes session_id
+        as a named argument in the list_summaries call.
+        """
+        import inspect
+
+        from polylogue.daemon.http import DaemonAPIHandler
+
+        src = inspect.getsource(DaemonAPIHandler._do_archive_list_sessions)
+        assert "session_id=spec_session_id" in src, (
+            "Bug 8 regression: _do_archive_list_sessions does not pass session_id "
+            "to list_summaries — id:xyz queries return unfiltered results"
+        )
