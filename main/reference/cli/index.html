@@ -882,6 +882,15 @@ Options:
 </thead>
 <tbody>
 <tr>
+<td><code>analyze</code></td>
+<td>yes</td>
+<td>yes</td>
+<td>yes</td>
+<td>no</td>
+<td>—</td>
+<td>Analytics over the matched result set: wraps the stats and facets surfaces; <code>--by</code> groups by dimension and <code>--format json</code> emits structured aggregates.</td>
+</tr>
+<tr>
 <td><code>context-pack</code></td>
 <td>yes</td>
 <td>no</td>
@@ -925,6 +934,15 @@ Options:
 <td>no</td>
 <td>—</td>
 <td>record/list/clear subgroup; --machine wraps output in MachineSuccessPayload.</td>
+</tr>
+<tr>
+<td><code>mark</code></td>
+<td>no</td>
+<td>yes</td>
+<td>yes</td>
+<td>no</td>
+<td>—</td>
+<td>Mutates user metadata (tags, notes, user-state marks) on matched sessions; side-effect command.</td>
 </tr>
 <tr>
 <td><code>neighbors</code></td>
