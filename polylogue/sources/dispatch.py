@@ -5,13 +5,12 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable
 from dataclasses import dataclass
-from decimal import Decimal
 from io import BytesIO
 from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypeAlias
 
-from polylogue.core.json import JSONDocument, JSONValue, is_json_document, is_json_value
+from polylogue.core.json import JSONDocument, JSONValue, is_json_document, is_json_value, normalize_json_decimal
 from polylogue.core.payload_coercion import optional_string
 from polylogue.logging import get_logger
 from polylogue.types import Provider
@@ -55,7 +54,7 @@ class LoweredPayloadSpec:
 
 
 def _payload_record(value: object) -> PayloadRecord | None:
-    normalized = _normalize_json_decimal(value)
+    normalized = normalize_json_decimal(value)
     return normalized if is_json_document(normalized) else None
 
 
@@ -64,21 +63,11 @@ def _payload_sequence(value: object) -> PayloadSequence | None:
         return None
     payloads: list[JSONValue] = []
     for item in value:
-        normalized = _normalize_json_decimal(item)
+        normalized = normalize_json_decimal(item)
         if not is_json_value(normalized):
             return None
         payloads.append(normalized)
     return payloads
-
-
-def _normalize_json_decimal(value: object) -> object:
-    if isinstance(value, Decimal):
-        return int(value) if value == value.to_integral_value() else float(value)
-    if isinstance(value, list):
-        return [_normalize_json_decimal(item) for item in value]
-    if isinstance(value, dict):
-        return {key: _normalize_json_decimal(item) for key, item in value.items()}
-    return value
 
 
 def _record_messages(record: PayloadRecord) -> list[JSONValue] | None:

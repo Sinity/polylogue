@@ -6,13 +6,12 @@ import time
 import zipfile
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from decimal import Decimal
 from pathlib import Path
 from typing import IO, TypeAlias
 
 from polylogue.archive.artifact_taxonomy import classify_artifact
 from polylogue.config import Source
-from polylogue.core.json import JSONDocument, JSONValue, is_json_value
+from polylogue.core.json import JSONDocument, JSONValue, is_json_value, normalize_json_decimal
 from polylogue.core.json import dumps_bytes as json_dumps_bytes
 from polylogue.core.metrics import read_current_rss_mb, read_peak_rss_self_mb
 from polylogue.storage.blob_store import BlobStore
@@ -126,18 +125,8 @@ class SplitPayloadBuffer:
 
 
 def _artifact_payload(value: object) -> JSONValue:
-    normalized = _normalize_json_decimal(value)
+    normalized = normalize_json_decimal(value)
     return normalized if is_json_value(normalized) else {}
-
-
-def _normalize_json_decimal(value: object) -> object:
-    if isinstance(value, Decimal):
-        return int(value) if value == value.to_integral_value() else float(value)
-    if isinstance(value, list):
-        return [_normalize_json_decimal(item) for item in value]
-    if isinstance(value, dict):
-        return {key: _normalize_json_decimal(item) for key, item in value.items()}
-    return value
 
 
 def _heartbeat_label(source_path: str) -> str:
