@@ -56,6 +56,7 @@ def _build_session_filters(
     min_messages: int | None = None,
     max_messages: int | None = None,
     min_words: int | None = None,
+    max_words: int | None = None,
     message_type: str | None = None,
 ) -> tuple[str, list[str | int | float]]:
     """Build WHERE clause and params for session queries.
@@ -112,6 +113,9 @@ def _build_session_filters(
     if min_words is not None:
         where_clauses.append(f"{aggregate_column}.word_count >= ?")
         params.append(min_words)
+    if max_words is not None:
+        where_clauses.append(f"{aggregate_column}.word_count <= ?")
+        params.append(max_words)
 
     # Semantic filters via EXISTS subquery on the canonical actions view.
     # When using stats join, outer table is aliased as 'c'; otherwise use fully qualified
@@ -210,6 +214,7 @@ def _needs_stats_join(
     min_messages: int | None = None,
     max_messages: int | None = None,
     min_words: int | None = None,
+    max_words: int | None = None,
 ) -> bool:
     """Return True when the query should alias sessions as ``c``."""
     return storage_filters_require_stats_join(locals())

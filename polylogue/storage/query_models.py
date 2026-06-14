@@ -31,6 +31,7 @@ class SessionListQueryKwargs(TypedDict):
     min_messages: int | None
     max_messages: int | None
     min_words: int | None
+    max_words: int | None
     message_type: str | None
 
 
@@ -55,6 +56,7 @@ class SessionCountQueryKwargs(TypedDict):
     min_messages: int | None
     max_messages: int | None
     min_words: int | None
+    max_words: int | None
     message_type: str | None
 
 
@@ -85,6 +87,7 @@ class SessionRecordQuery:
     min_messages: int | None = None
     max_messages: int | None = None
     min_words: int | None = None
+    max_words: int | None = None
     since_session_id: str | None = None
     message_type: str | None = None
 
@@ -137,6 +140,7 @@ class SessionRecordQuery:
             "min_messages": self.min_messages,
             "max_messages": self.max_messages,
             "min_words": self.min_words,
+            "max_words": self.max_words,
             "message_type": self.message_type,
         }
 
@@ -162,6 +166,7 @@ class SessionRecordQuery:
             "min_messages": self.min_messages,
             "max_messages": self.max_messages,
             "min_words": self.min_words,
+            "max_words": self.max_words,
             "message_type": self.message_type,
         }
 
