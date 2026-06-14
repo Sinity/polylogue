@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import concurrent.futures
 import contextlib
 import faulthandler
 import fcntl
@@ -821,24 +822,35 @@ async def _shutdown_server_if_serving(
         else:
             logger.warning("daemon: %s server task failed before shutdown: %s", label, exc)
         return
-    # ``socketserver.BaseServer.shutdown()`` blocks until ``serve_forever()``
-    # sets its internal ``__is_shut_down`` Event. ``serve_forever`` runs in a
-    # worker thread via ``asyncio.to_thread`` (see ``server_task`` creation), so
-    # if we called ``server.shutdown()`` directly here it would block the event
-    # loop thread — and when startup fails early (before the worker thread has
-    # actually entered ``serve_forever``) the loop can never dispatch that task,
-    # so the Event is never set and shutdown deadlocks. Running the blocking call
-    # off the loop via ``to_thread`` keeps the loop free to start the
-    # ``serve_forever`` worker, which then observes the shutdown request and sets
-    # the Event. The timeout is a last-resort guard; the subsequent
-    # ``server_close()`` in the caller closes the socket regardless.
+    # ``socketserver.BaseServer.shutdown()`` blocks until ``serve_forever()`` sets
+    # its internal ``__is_shut_down`` Event. ``serve_forever`` runs off the loop in
+    # the default executor (see ``server_task`` creation), so calling
+    # ``server.shutdown()`` directly on the loop thread would block it and deadlock
+    # when startup fails before the worker entered ``serve_forever``. Run shutdown
+    # off the loop — but in a DEDICATED single-worker executor, NOT
+    # ``asyncio.to_thread``: the default executor's workers can already be occupied
+    # (both ``serve_forever`` calls, an embedder configured ``max_workers=1``, or
+    # maintenance ``to_thread`` jobs), in which case a queued ``shutdown()`` would
+    # wait behind the very ``serve_forever`` it must stop. The 5s ``wait_for`` would
+    # then cancel the still-queued task without ever setting socketserver's flag, so
+    # ``serve_forever`` never returns and ``asyncio.run`` hangs tearing down the
+    # default executor (#1877 review). A dedicated executor guarantees ``shutdown()``
+    # runs immediately, sets the Event, and lets ``serve_forever`` return. The
+    # timeout is a last-resort guard; the caller's ``server_close()`` closes the
+    # socket regardless.
+    loop = asyncio.get_running_loop()
+    shutdown_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"{label}-shutdown")
     try:
-        await asyncio.wait_for(asyncio.to_thread(server.shutdown), timeout=5.0)
+        await asyncio.wait_for(loop.run_in_executor(shutdown_executor, server.shutdown), timeout=5.0)
     except TimeoutError:
         logger.warning(
             "daemon: %s server shutdown did not complete within 5s; closing socket directly",
             label,
         )
+    finally:
+        # Never block on a stuck shutdown worker; the caller's server_close() is the
+        # real backstop.
+        shutdown_executor.shutdown(wait=False)
 
 
 @click.group(help="Run long-lived Polylogue local services.")
