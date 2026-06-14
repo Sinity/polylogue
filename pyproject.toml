@@ -70,6 +70,7 @@ dev = [
   "jsonschema>=4.0.0",  # Validate JSON against schemas
   "syrupy>=4.0",  # Snapshot testing — pytest plugin, .ambr files
   "pyte>=0.8.0",  # Terminal emulator for deterministic output snapshot tests
+  "pytest-timeout>=2.4.0",  # Per-test hang guard; fail fast with a stack instead of burning the CI job ceiling
   "mutmut>=3.0.0",  # Mutation testing for coverage verification
   "mypy>=1.17,<1.21",
   "types-dateparser>=1.2.0",  # dateparser library stubs for mypy

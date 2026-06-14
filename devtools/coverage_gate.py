@@ -39,6 +39,13 @@ def build_coverage_command(
         "pytest",
         "--cov=polylogue",
         "--cov-report=xml",
+        # Per-test hang guard (pytest-timeout). The full coverage gate runs
+        # single-process, so a deadlocked test would otherwise hang until the CI
+        # job's own ceiling (previously a 90-minute silent burn). A generous
+        # per-test cap converts a hang into a fast red failure with a thread
+        # dump. The thread method works without per-test signal support.
+        "--timeout=600",
+        "--timeout-method=thread",
     ]
     if term_missing:
         command.append("--cov-report=term-missing:skip-covered")

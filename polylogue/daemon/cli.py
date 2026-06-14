@@ -722,9 +722,9 @@ async def run_daemon_services(
         if converger is not None:
             await converger.stop()
         if server is not None:
-            _shutdown_server_if_serving(server, server_task, label="browser-capture")
+            await _shutdown_server_if_serving(server, server_task, label="browser-capture")
         if api_server is not None:
-            _shutdown_server_if_serving(api_server, api_server_task, label="api")
+            await _shutdown_server_if_serving(api_server, api_server_task, label="api")
 
         # Cancel all component tasks.
         for task in tasks:
@@ -802,7 +802,7 @@ def _log_completed_daemon_tasks(tasks: list[asyncio.Task[None]]) -> None:
             logger.warning("daemon: component task failed unexpectedly: %s", exc)
 
 
-def _shutdown_server_if_serving(
+async def _shutdown_server_if_serving(
     server: BrowserCaptureHTTPServer | ThreadingHTTPServer,
     task: asyncio.Task[None] | None,
     *,
@@ -821,7 +821,24 @@ def _shutdown_server_if_serving(
         else:
             logger.warning("daemon: %s server task failed before shutdown: %s", label, exc)
         return
-    server.shutdown()
+    # ``socketserver.BaseServer.shutdown()`` blocks until ``serve_forever()``
+    # sets its internal ``__is_shut_down`` Event. ``serve_forever`` runs in a
+    # worker thread via ``asyncio.to_thread`` (see ``server_task`` creation), so
+    # if we called ``server.shutdown()`` directly here it would block the event
+    # loop thread — and when startup fails early (before the worker thread has
+    # actually entered ``serve_forever``) the loop can never dispatch that task,
+    # so the Event is never set and shutdown deadlocks. Running the blocking call
+    # off the loop via ``to_thread`` keeps the loop free to start the
+    # ``serve_forever`` worker, which then observes the shutdown request and sets
+    # the Event. The timeout is a last-resort guard; the subsequent
+    # ``server_close()`` in the caller closes the socket regardless.
+    try:
+        await asyncio.wait_for(asyncio.to_thread(server.shutdown), timeout=5.0)
+    except TimeoutError:
+        logger.warning(
+            "daemon: %s server shutdown did not complete within 5s; closing socket directly",
+            label,
+        )
 
 
 @click.group(help="Run long-lived Polylogue local services.")
