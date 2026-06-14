@@ -6,6 +6,7 @@ import time
 import zipfile
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
+from decimal import Decimal
 from pathlib import Path
 from typing import IO, TypeAlias
 
@@ -125,7 +126,18 @@ class SplitPayloadBuffer:
 
 
 def _artifact_payload(value: object) -> JSONValue:
-    return value if is_json_value(value) else {}
+    normalized = _normalize_json_decimal(value)
+    return normalized if is_json_value(normalized) else {}
+
+
+def _normalize_json_decimal(value: object) -> object:
+    if isinstance(value, Decimal):
+        return int(value) if value == value.to_integral_value() else float(value)
+    if isinstance(value, list):
+        return [_normalize_json_decimal(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _normalize_json_decimal(item) for key, item in value.items()}
+    return value
 
 
 def _heartbeat_label(source_path: str) -> str:

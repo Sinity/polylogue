@@ -55,7 +55,8 @@ class LoweredPayloadSpec:
 
 
 def _payload_record(value: object) -> PayloadRecord | None:
-    return value if is_json_document(value) else None
+    normalized = _normalize_json_decimal(value)
+    return normalized if is_json_document(normalized) else None
 
 
 def _payload_sequence(value: object) -> PayloadSequence | None:

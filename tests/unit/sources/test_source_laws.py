@@ -7,6 +7,7 @@ import os
 import tempfile
 import zipfile
 from collections.abc import Iterable, Mapping
+from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
 from typing import IO
@@ -2161,6 +2162,57 @@ def test_iter_entry_payloads_locks_provider_after_first_detected_payload(
     assert items[1][2] >= 0.0
     assert items[2][2] == 0.0
     assert detect_calls == payloads[:2]
+
+
+def test_iter_entry_payloads_preserves_decimal_bearing_chatgpt_records() -> None:
+    payloads = [
+        {
+            "id": "chatgpt-1",
+            "title": "Decimal timestamp",
+            "create_time": Decimal("1704995846.046526"),
+            "mapping": {
+                "root": {
+                    "message": {
+                        "author": {"role": "user"},
+                        "content": {"content_type": "text", "parts": ["hello"]},
+                    }
+                }
+            },
+        },
+        {
+            "id": "chatgpt-2",
+            "title": "Integral timestamp",
+            "create_time": Decimal("1704995847"),
+            "mapping": {
+                "root": {
+                    "message": {
+                        "author": {"role": "assistant"},
+                        "content": {"content_type": "text", "parts": ["hi"]},
+                    }
+                }
+            },
+        },
+    ]
+
+    items = list(
+        _iter_entry_payloads(
+            BytesIO(json.dumps(payloads, default=float).encode("utf-8")),
+            stream_name="conversations-000.json",
+            provider_hint=Provider.UNKNOWN,
+        )
+    )
+
+    assert [provider for provider, _, _ in items] == [Provider.CHATGPT, Provider.CHATGPT]
+    observed_payloads = [payload for _, payload, _ in items]
+    dict_payloads: list[dict[str, JSONValue]] = []
+    for payload in observed_payloads:
+        assert isinstance(payload, dict)
+        dict_payloads.append(payload)
+    first_payload = dict_payloads[0]
+    second_payload = dict_payloads[1]
+    assert first_payload["create_time"] == 1704995846.046526
+    assert second_payload["create_time"] == 1704995847
+    assert all(isinstance(payload.get("mapping"), dict) and payload["mapping"] for payload in dict_payloads)
 
 
 def test_iter_source_raw_data_keeps_source_family_hints_for_mixed_zip_sources(tmp_path: Path) -> None:
