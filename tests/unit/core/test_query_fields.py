@@ -164,6 +164,7 @@ def test_query_field_catalog_marks_storage_stats_join_fields() -> None:
         "min_messages",
         "max_messages",
         "min_words",
+        "max_words",
     }
 
     assert storage_filters_require_stats_join({"has_tool_use": True}) is True

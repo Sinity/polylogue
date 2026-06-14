@@ -603,6 +603,7 @@ class TestDeleteCardinalityLargeNonMocked:
 
     TOKEN = "zzbulkdeletetoken"
     COUNT = 60
+    _capsys: pytest.CaptureFixture[str]
 
     def _seed(self, index_db: Path) -> None:
         from tests.infra.storage_records import SessionBuilder
@@ -635,11 +636,11 @@ class TestDeleteCardinalityLargeNonMocked:
     def _bind_capsys(self, capsys: pytest.CaptureFixture[str]) -> None:
         self._capsys = capsys
 
-    def test_guard_dry_run_and_deleted_sets_are_identical_and_unlimited(self, cli_workspace: dict[str, Path]) -> None:
+    def test_guard_dry_run_and_deleted_sets_are_identical_and_unlimited(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.cli.verb_cardinality import resolve_session_ids_for_verb
         from tests.infra.app_env import make_app_env
 
-        index_db = cli_workspace["archive_root"] / "index.db"
+        index_db = workspace_env["archive_root"] / "index.db"
         self._seed(index_db)
 
         env = make_app_env()

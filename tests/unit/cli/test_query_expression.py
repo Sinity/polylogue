@@ -787,25 +787,34 @@ class TestJsonSpecStrictMode:
 class TestDaemonContainsParamNotCompiled:
     """_do_archive_list_sessions must not route ?contains= through compile_expression."""
 
-    def test_contains_param_not_compiled_as_dsl(self) -> None:
-        """Bug 7: compile_expression must not be called when only ?contains= is provided.
+    def test_contains_param_not_compiled_as_dsl(self, workspace_env: dict[str, Path]) -> None:
+        """Bug 7: a ?contains= value that the DSL compiler would reject must still
+        be treated as a literal FTS filter, not compiled.
 
-        Routing ?contains=foo through the DSL compiler causes ExpressionCompileError
-        when the value contains spaces or field-like tokens.  Only ?query= should
-        be compiled.
+        ``action:badaction`` raises ExpressionCompileError("unknown action") if
+        routed through compile_expression; as a literal content filter it is
+        normalized to a MATCH-safe FTS query and simply returns no matches. The
+        old code did ``query or contains`` and compiled the contains value.
         """
-        import inspect
-
         from polylogue.daemon.http import DaemonAPIHandler
+        from tests.infra.storage_records import SessionBuilder
 
-        src = inspect.getsource(DaemonAPIHandler._do_archive_list_sessions)
-        # The fix: query_str must only read from "query" param.
-        # Verify that "contains" is not passed to compile_expression via query_str.
-        # The old code had: "query") or self._get_param(params, "contains")
-        assert "contains" not in src.split("query_str")[1].split("\n")[0], (
-            "Bug 7 regression: _do_archive_list_sessions concatenates 'contains' "
-            "param into the DSL expression string passed to compile_expression"
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "s1")
+            .provider("claude-code")
+            .title("s1")
+            .add_message("m1", role="user", text="ordinary content")
+            .save()
         )
+        handler = DaemonAPIHandler.__new__(DaemonAPIHandler)
+
+        # Would raise ExpressionCompileError if compiled; must not here.
+        payload = handler._do_archive_list_sessions(
+            workspace_env["archive_root"], {"contains": ["action:badaction"]}, 50, 0
+        )
+        assert isinstance(payload, dict)
+        assert payload["total"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -845,13 +854,13 @@ class TestDaemonSessionIdFilter:
         spec = compile_expression("id:abc")
         assert spec.session_id == "abc"
 
-    def test_id_query_scopes_results_and_total(self, cli_workspace: dict[str, Path]) -> None:
-        index_db = cli_workspace["archive_root"] / "index.db"
+    def test_id_query_scopes_results_and_total(self, workspace_env: dict[str, Path]) -> None:
+        index_db = workspace_env["archive_root"] / "index.db"
         ids = self._seed(index_db, [("alpha", "alpha body"), ("beta", "beta body")])
         assert len(ids) == 2
 
         payload = self._handler()._do_archive_list_sessions(
-            cli_workspace["archive_root"], {"query": [f"id:{ids[0]}"]}, 50, 0
+            workspace_env["archive_root"], {"query": [f"id:{ids[0]}"]}, 50, 0
         )
         assert isinstance(payload, dict)
         # total must be scoped to the id match, NOT the archive-wide count of 2.
@@ -859,37 +868,37 @@ class TestDaemonSessionIdFilter:
         items = payload["items"]
         assert isinstance(items, list) and len(items) == 1
 
-    def test_id_miss_returns_typed_empty_not_500(self, cli_workspace: dict[str, Path]) -> None:
-        index_db = cli_workspace["archive_root"] / "index.db"
+    def test_id_miss_returns_typed_empty_not_500(self, workspace_env: dict[str, Path]) -> None:
+        index_db = workspace_env["archive_root"] / "index.db"
         self._seed(index_db, [("alpha", "alpha body")])
 
         payload = self._handler()._do_archive_list_sessions(
-            cli_workspace["archive_root"], {"query": ["id:nonexistentnope"]}, 50, 0
+            workspace_env["archive_root"], {"query": ["id:nonexistentnope"]}, 50, 0
         )
         # A missing id is a typed-empty page, not a 500 propagated from resolve.
         assert payload == {"items": [], "total": 0, "limit": 50, "offset": 0}
 
-    def test_id_ambiguous_prefix_raises_query_spec_error(self, cli_workspace: dict[str, Path]) -> None:
+    def test_id_ambiguous_prefix_raises_query_spec_error(self, workspace_env: dict[str, Path]) -> None:
         import os
 
         from polylogue.archive.query.spec import QuerySpecError
 
-        index_db = cli_workspace["archive_root"] / "index.db"
+        index_db = workspace_env["archive_root"] / "index.db"
         ids = self._seed(index_db, [("aaa", "x body"), ("aab", "y body")])
         prefix = os.path.commonprefix(ids)
         assert prefix and prefix not in ids, "need a shared, non-exact prefix"
 
         with pytest.raises(QuerySpecError):
-            self._handler()._do_archive_list_sessions(cli_workspace["archive_root"], {"query": [f"id:{prefix}"]}, 50, 0)
+            self._handler()._do_archive_list_sessions(workspace_env["archive_root"], {"query": [f"id:{prefix}"]}, 50, 0)
 
-    def test_contains_filters_without_query(self, cli_workspace: dict[str, Path]) -> None:
-        index_db = cli_workspace["archive_root"] / "index.db"
+    def test_contains_filters_without_query(self, workspace_env: dict[str, Path]) -> None:
+        index_db = workspace_env["archive_root"] / "index.db"
         self._seed(index_db, [("one", "has findmetoken here"), ("two", "unrelated content")])
 
         # ?contains=foo with no ?query= must still filter (Bug 7): it routes to the
         # FTS branch as a literal term rather than returning the unfiltered page.
         payload = self._handler()._do_archive_list_sessions(
-            cli_workspace["archive_root"], {"contains": ["findmetoken"]}, 50, 0
+            workspace_env["archive_root"], {"contains": ["findmetoken"]}, 50, 0
         )
         assert isinstance(payload, dict)
         hits = payload.get("hits")

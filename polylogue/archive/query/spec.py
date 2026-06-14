@@ -180,7 +180,11 @@ def optional_message_type(value: object) -> str | None:
 
 
 def optional_int(value: object) -> int | None:
-    if not value:
+    # Preserve an explicit 0: ``if not value`` would drop it, broadening e.g.
+    # ``max_words=0`` (sessions with no words) into an unbounded filter.
+    if value is None:
+        return None
+    if isinstance(value, str) and value.strip() == "":
         return None
     return int(str(value))
 
