@@ -2255,6 +2255,7 @@ class ArchiveStore:
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
+        max_words: int | None = None,
         since_ms: int | None = None,
         until_ms: int | None = None,
         since_session_id: str | None = None,
@@ -2286,6 +2287,7 @@ class ArchiveStore:
             min_messages=min_messages,
             max_messages=max_messages,
             min_words=min_words,
+            max_words=max_words,
             since_ms=since_ms,
             until_ms=until_ms,
             tags_relation=self._tags_relation,
@@ -2826,6 +2828,8 @@ class ArchiveStore:
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
+        max_words: int | None = None,
+        session_id: str | None = None,
         since_ms: int | None = None,
         until_ms: int | None = None,
         since_session_id: str | None = None,
@@ -2860,11 +2864,16 @@ class ArchiveStore:
             min_messages=min_messages,
             max_messages=max_messages,
             min_words=min_words,
+            max_words=max_words,
             since_ms=since_ms,
             until_ms=until_ms,
             tags_relation=self._tags_relation,
         )
         where, params = _with_since_session_filter(self._conn, where, params, "s", since_session_id=since_session_id)
+        if session_id is not None:
+            resolved_id = self.resolve_session_id(session_id)
+            where = f"{where} AND s.session_id = ?" if where else "WHERE s.session_id = ?"
+            params.append(resolved_id)
         order_by = _summary_order_by(sample=sample, sort=sort, reverse=reverse)
         params.extend([limit, 0 if sample else offset])
         rows = self._conn.execute(
@@ -2930,6 +2939,7 @@ class ArchiveStore:
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
+        max_words: int | None = None,
         since_ms: int | None = None,
         until_ms: int | None = None,
         since_session_id: str | None = None,
@@ -2971,6 +2981,7 @@ class ArchiveStore:
             min_messages=min_messages,
             max_messages=max_messages,
             min_words=min_words,
+            max_words=max_words,
             since_ms=since_ms,
             until_ms=until_ms,
             tags_relation=self._tags_relation,
@@ -3053,6 +3064,7 @@ class ArchiveStore:
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
+        max_words: int | None = None,
         since_ms: int | None = None,
         until_ms: int | None = None,
         since_session_id: str | None = None,
@@ -3087,6 +3099,7 @@ class ArchiveStore:
             min_messages=min_messages,
             max_messages=max_messages,
             min_words=min_words,
+            max_words=max_words,
             since_ms=since_ms,
             until_ms=until_ms,
             tags_relation=self._tags_relation,
@@ -3147,6 +3160,7 @@ class ArchiveStore:
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
+        max_words: int | None = None,
         since_ms: int | None = None,
         until_ms: int | None = None,
         since_session_id: str | None = None,
@@ -3181,6 +3195,7 @@ class ArchiveStore:
             min_messages=min_messages,
             max_messages=max_messages,
             min_words=min_words,
+            max_words=max_words,
             since_ms=since_ms,
             until_ms=until_ms,
             tags_relation=self._tags_relation,
@@ -3264,6 +3279,7 @@ class ArchiveStore:
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
+        max_words: int | None = None,
         since_ms: int | None = None,
         until_ms: int | None = None,
         since_session_id: str | None = None,
@@ -3296,6 +3312,7 @@ class ArchiveStore:
             min_messages=min_messages,
             max_messages=max_messages,
             min_words=min_words,
+            max_words=max_words,
             since_ms=since_ms,
             until_ms=until_ms,
             tags_relation=self._tags_relation,
@@ -3366,6 +3383,7 @@ class ArchiveStore:
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
+        max_words: int | None = None,
         since_ms: int | None = None,
         until_ms: int | None = None,
         since_session_id: str | None = None,
@@ -3398,6 +3416,7 @@ class ArchiveStore:
             min_messages=min_messages,
             max_messages=max_messages,
             min_words=min_words,
+            max_words=max_words,
             since_ms=since_ms,
             until_ms=until_ms,
             tags_relation=self._tags_relation,
@@ -4186,6 +4205,7 @@ def _session_filter_clause(
     min_messages: int | None = None,
     max_messages: int | None = None,
     min_words: int | None = None,
+    max_words: int | None = None,
     since_ms: int | None = None,
     until_ms: int | None = None,
     tags_relation: str = "session_tags",
@@ -4429,6 +4449,9 @@ def _session_filter_clause(
     if min_words is not None:
         clauses.append(f"{table_alias}.word_count >= ?")
         params.append(min_words)
+    if max_words is not None:
+        clauses.append(f"{table_alias}.word_count <= ?")
+        params.append(max_words)
     if since_ms is not None:
         clauses.append(f"COALESCE({table_alias}.updated_at_ms, {table_alias}.created_at_ms) >= ?")
         params.append(since_ms)
