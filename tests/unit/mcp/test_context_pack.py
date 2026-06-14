@@ -95,7 +95,10 @@ class TestBuildContextPackRegistration:
 
         assert selection.sessions == [conv]
         assert selection.match_strategy == "term_recall"
-        assert ("supersedes_event_id event_replacements equivalence_key",) in seen_queries
+        # The strict pass runs the whole pasted query through the shared
+        # compiler, which splits bare words into one FTS term each, then the
+        # term_recall fallback probes single tokens after the strict miss.
+        assert ("supersedes_event_id", "event_replacements", "equivalence_key") in seen_queries
         assert ("event_replacements",) in seen_queries
 
     @pytest.mark.asyncio

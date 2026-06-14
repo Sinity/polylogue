@@ -562,11 +562,13 @@ Published JSON Schemas live under [`docs/schemas/cli-output/`](./schemas/cli-out
 
 | Command | JSON contract | Snapshot | `--plain` | NDJSON | Schema | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
+| `analyze` | yes | yes | yes | no | — | Analytics over the matched result set: wraps the stats and facets surfaces; ``--by`` groups by dimension and ``--format json`` emits structured aggregates. |
 | `context-pack` | yes | no | yes | no | — | Provenance-rich JSON document; downstream agent surface. |
 | `count` | no | yes | yes | no | — | Single integer to stdout; no JSON envelope. |
 | `delete` | no | yes | yes | no | — | Side-effect command; --dry-run prints affected IDs. |
 | `facets` | yes | no | yes | no | — | Scoped vs global facet aggregates over the archive (#1269 / slice D of #873); ``--format json`` emits FacetsResponse. |
 | `feedback` | yes | yes | yes | no | — | record/list/clear subgroup; --machine wraps output in MachineSuccessPayload. |
+| `mark` | no | yes | yes | no | — | Mutates user metadata (tags, notes, user-state marks) on matched sessions; side-effect command. |
 | `neighbors` | yes | yes | yes | no | [`session-neighbor-candidate.schema.json`](./schemas/cli-output/session-neighbor-candidate.schema.json) |  |
 | `read` | yes | yes | yes | yes | — | Router verb: --view selects renderer; --to selects destination. --view messages --format json emits a messages JSON envelope; --all --format ndjson streams one session JSON per line. |
 | `resume` | no | yes | yes | no | — |  |

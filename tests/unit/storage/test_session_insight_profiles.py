@@ -123,7 +123,17 @@ def test_session_profile_infers_topic_from_first_substantive_user_turn() -> None
     assert "Fix the FTS freshness repair path." in profile_inference_search_text(profile)
 
 
-def test_session_profile_infers_codex_topic_from_repo_and_first_user_turn() -> None:
+def test_session_profile_infers_codex_topic_from_repo_and_first_user_turn(tmp_path: Path) -> None:
+    # Seed a deterministic fake repo so repo-name inference (which probes the real
+    # filesystem for a `.git` root, see archive/session/repo_identity._find_git_root)
+    # resolves to "polylogue" regardless of the checkout directory name. Using the
+    # ambient REPO_ROOT couples the assertion to the worktree basename, which is
+    # "polylogue" in CI but differs in agent worktrees.
+    fake_repo = tmp_path / "polylogue"
+    (fake_repo / ".git").mkdir(parents=True)
+    fake_app_path = fake_repo / "polylogue" / "facade.py"
+    fake_app_path.parent.mkdir(parents=True, exist_ok=True)
+
     session = make_conv(
         id="conv-codex-topic",
         provider=Provider.CODEX,
@@ -138,7 +148,7 @@ def test_session_profile_infers_codex_topic_from_repo_and_first_user_turn() -> N
                     {
                         "type": "tool_use",
                         "tool_name": "Read",
-                        "tool_input": {"file_path": str(APP_PATH)},
+                        "tool_input": {"file_path": str(fake_app_path)},
                     }
                 ],
             ),

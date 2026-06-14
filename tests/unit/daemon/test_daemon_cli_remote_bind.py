@@ -116,6 +116,7 @@ def test_non_loopback_bind_with_allow_remote_and_empty_token_refuses(
         )
 
 
+@pytest.mark.timeout(30)
 def test_loopback_bind_passes_remote_check() -> None:
     """Loopback bind does not trip the remote-bind refusal.
 
@@ -152,6 +153,7 @@ def test_loopback_bind_passes_remote_check() -> None:
             )
 
 
+@pytest.mark.timeout(30)
 def test_api_disabled_skips_remote_check() -> None:
     """If the API is not enabled at all, the remote-bind check should
     not fire — the operator hasn't asked for an API server, so even a

@@ -301,15 +301,21 @@ def _archive_readiness_payload(conn: sqlite3.Connection, *, exact: bool) -> dict
         return None
     blocks = _archive_exact_blocks_surface(conn) if exact else _archive_blocks_surface(conn)
     effective_exact = exact
-    if not exact and blocks.get("freshness_state") == UNKNOWN:
-        # The durable freshness cache is untrusted: the recorded state is
-        # "ready" but the counts are the poisoned 0/0 shape while the source
-        # actually has rows. This happens after a fresh-archive bootstrap, where
-        # daemon startup legitimately recorded ready|0|0 over an empty archive
-        # and trigger-maintained ingest then populated the index without ever
-        # triggering a rebuild that refreshes the counts. Recompute exact counts
-        # so coverage reflects the populated index instead of reporting 0%.
-        blocks = _archive_exact_blocks_surface(conn)
+    if not exact and blocks.get("freshness_state") == UNKNOWN and _source_has_rows(conn, "messages_fts_docsize"):
+        # The durable freshness cache is poisoned: the recorded state is "ready"
+        # but the counts are the 0/0 shape while the source actually has rows
+        # (a fresh-archive bootstrap recorded ready|0|0 over an empty archive and
+        # trigger-maintained ingest then populated the index without a rebuild to
+        # refresh the counts). Recompute exact counts ONLY when the FTS index is
+        # verifiably populated (``messages_fts_docsize`` has rows) so coverage
+        # reflects the populated index instead of reporting 0%. Merge the exact
+        # counts over the cheap surface so the freshness_* diagnostics survive.
+        #
+        # When the index is empty or unverifiable, the source genuinely has
+        # unindexed rows: leave the surface at freshness_state=UNKNOWN and do NOT
+        # scan source/FTS shadow tables (the #1003 request-safe contract, asserted
+        # by test_fts_readiness_rejects_zero_count_ready_freshness_when_source_has_rows).
+        blocks = {**blocks, **_archive_exact_blocks_surface(conn)}
         effective_exact = True
     block_source_rows = _payload_int(blocks, "source_rows")
     block_indexed_rows = _payload_int(blocks, "indexed_rows")
