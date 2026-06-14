@@ -101,10 +101,14 @@ async def _async_resolve_ids(env: AppEnv, request: RootModeRequest) -> list[str]
     )
     vector_provider = _create_query_vector_provider(config, db_path=archive_root / "embeddings.db")
     filter_chain = spec.build_filter(config, vector_provider=vector_provider)
+    # Resolve the COMPLETE matched set, not a single page: this list drives the
+    # cardinality guard and the actual delete/mark, so a paged list_summaries()
+    # (default limit 50) would let ``delete --yes --all`` silently skip every
+    # match beyond the first page (#1873).
     if filter_chain.can_use_summaries():
-        summaries = await filter_chain.list_summaries()
+        summaries = await filter_chain.list_all_summaries()
         return [str(s.id) for s in summaries]
-    sessions = await filter_chain.list()
+    sessions = await filter_chain.list_all()
     return [str(s.id) for s in sessions]
 
 

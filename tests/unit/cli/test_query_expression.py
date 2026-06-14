@@ -19,6 +19,7 @@ Covers:
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -813,25 +814,83 @@ class TestDaemonContainsParamNotCompiled:
 
 
 class TestDaemonSessionIdFilter:
-    """Compiled session_id from DSL must be forwarded to list_summaries."""
+    """Behavioral coverage of /api/sessions id: scoping and contains filtering.
+
+    Replaces the earlier source-grep regression (#1873 Bug 7/8) with real calls
+    into ``_do_archive_list_sessions`` over a seeded archive.
+    """
+
+    def _handler(self) -> Any:
+        from polylogue.daemon.http import DaemonAPIHandler
+
+        return DaemonAPIHandler.__new__(DaemonAPIHandler)
+
+    def _seed(self, index_db: Path, specs: list[tuple[str, str]]) -> list[str]:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from tests.infra.storage_records import SessionBuilder
+
+        for i, (sid, text) in enumerate(specs):
+            (
+                SessionBuilder(index_db, sid)
+                .provider("claude-code")
+                .title(sid)
+                .add_message(f"m{i}", role="user", text=text)
+                .save()
+            )
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            return [str(s.session_id) for s in archive.list_summaries(limit=1000)]
 
     def test_id_clause_produces_session_id_in_spec(self) -> None:
-        """Bug 8 enabler: compile_expression('id:abc') must produce spec.session_id."""
+        """compile_expression('id:abc') must produce spec.session_id."""
         spec = compile_expression("id:abc")
         assert spec.session_id == "abc"
 
-    def test_daemon_handler_passes_session_id_to_list_summaries(self) -> None:
-        """Bug 8: session_id from compiled spec must reach list_summaries.
+    def test_id_query_scopes_results_and_total(self, cli_workspace: dict[str, Path]) -> None:
+        index_db = cli_workspace["archive_root"] / "index.db"
+        ids = self._seed(index_db, [("alpha", "alpha body"), ("beta", "beta body")])
+        assert len(ids) == 2
 
-        Verify the source of _do_archive_list_sessions includes session_id
-        as a named argument in the list_summaries call.
-        """
-        import inspect
-
-        from polylogue.daemon.http import DaemonAPIHandler
-
-        src = inspect.getsource(DaemonAPIHandler._do_archive_list_sessions)
-        assert "session_id=spec_session_id" in src, (
-            "Bug 8 regression: _do_archive_list_sessions does not pass session_id "
-            "to list_summaries — id:xyz queries return unfiltered results"
+        payload = self._handler()._do_archive_list_sessions(
+            cli_workspace["archive_root"], {"query": [f"id:{ids[0]}"]}, 50, 0
         )
+        assert isinstance(payload, dict)
+        # total must be scoped to the id match, NOT the archive-wide count of 2.
+        assert payload["total"] == 1
+        items = payload["items"]
+        assert isinstance(items, list) and len(items) == 1
+
+    def test_id_miss_returns_typed_empty_not_500(self, cli_workspace: dict[str, Path]) -> None:
+        index_db = cli_workspace["archive_root"] / "index.db"
+        self._seed(index_db, [("alpha", "alpha body")])
+
+        payload = self._handler()._do_archive_list_sessions(
+            cli_workspace["archive_root"], {"query": ["id:nonexistentnope"]}, 50, 0
+        )
+        # A missing id is a typed-empty page, not a 500 propagated from resolve.
+        assert payload == {"items": [], "total": 0, "limit": 50, "offset": 0}
+
+    def test_id_ambiguous_prefix_raises_query_spec_error(self, cli_workspace: dict[str, Path]) -> None:
+        import os
+
+        from polylogue.archive.query.spec import QuerySpecError
+
+        index_db = cli_workspace["archive_root"] / "index.db"
+        ids = self._seed(index_db, [("aaa", "x body"), ("aab", "y body")])
+        prefix = os.path.commonprefix(ids)
+        assert prefix and prefix not in ids, "need a shared, non-exact prefix"
+
+        with pytest.raises(QuerySpecError):
+            self._handler()._do_archive_list_sessions(cli_workspace["archive_root"], {"query": [f"id:{prefix}"]}, 50, 0)
+
+    def test_contains_filters_without_query(self, cli_workspace: dict[str, Path]) -> None:
+        index_db = cli_workspace["archive_root"] / "index.db"
+        self._seed(index_db, [("one", "has findmetoken here"), ("two", "unrelated content")])
+
+        # ?contains=foo with no ?query= must still filter (Bug 7): it routes to the
+        # FTS branch as a literal term rather than returning the unfiltered page.
+        payload = self._handler()._do_archive_list_sessions(
+            cli_workspace["archive_root"], {"contains": ["findmetoken"]}, 50, 0
+        )
+        assert isinstance(payload, dict)
+        hits = payload.get("hits")
+        assert isinstance(hits, list) and len(hits) == 1

@@ -547,12 +547,16 @@ def delete_verb(ctx: click.Context, dry_run: bool, yes_flag: bool, all_flag: boo
     env: AppEnv = ctx.obj
     request = _parent_request(ctx)
 
-    # dry-run: skip cardinality guard and just show preview.
+    from polylogue.cli.archive_query import execute_delete_by_session_ids
+
+    # dry-run: skip the cardinality guard and just show a preview. Resolve the
+    # SAME full ID set the real delete uses (via resolve_session_ids_for_verb)
+    # rather than re-running the query through _execute_query_verb, which caps at
+    # the default limit of 20 and would preview fewer sessions than --yes --all
+    # actually deletes (#1873). The previewed set must equal the deleted set.
     if dry_run:
-        _execute_query_verb(
-            ctx,
-            request.with_param_updates(delete_matched=True, dry_run=True, force=True),
-        )
+        session_ids = resolve_session_ids_for_verb(env, request)
+        execute_delete_by_session_ids(env, session_ids, force=True, dry_run=True)
         return
 
     # Enforce cardinality before any destructive action.
@@ -563,10 +567,6 @@ def delete_verb(ctx: click.Context, dry_run: bool, yes_flag: bool, all_flag: boo
         raise click.UsageError(str(exc)) from exc
 
     # Delete using the pre-resolved IDs so all matched sessions are removed.
-    # Using _execute_query_verb here would re-run the query with a default
-    # limit of 20, silently truncating large result sets (#1873).
-    from polylogue.cli.archive_query import execute_delete_by_session_ids
-
     execute_delete_by_session_ids(env, session_ids, force=yes_flag or force)
 
 

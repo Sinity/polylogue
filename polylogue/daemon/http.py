@@ -1395,7 +1395,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     ) -> object:
         from polylogue.archive.query.expression import compile_expression
         from polylogue.archive.query.search_hits import search_query_text
-        from polylogue.archive.query.spec import parse_query_date
+        from polylogue.archive.query.spec import QuerySpecError, parse_query_date
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         # Compile only the ``query`` param through the shared expression compiler
@@ -1406,14 +1406,24 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         # compile_expression() causes ExpressionCompileError when the value
         # contains spaces or field-like tokens (#1873 Bug 7).
         query_str = self._get_param(params, "query") or ""
+        contains_param = self._get_param(params, "contains")
+        fts_terms: tuple[str, ...]
         if query_str:
             spec = compile_expression(query_str)
             # Bare words / quoted phrases become the FTS query; field clauses
             # (origin:, tag:, since:, etc.) become structured filter args.
-            fts_query = search_query_text(spec.query_terms + spec.contains_terms)
+            fts_terms = spec.query_terms + spec.contains_terms
         else:
             spec = None
-            fts_query = ""
+            fts_terms = ()
+        # ``?contains=`` is the legacy literal content filter. It must still
+        # filter results, but must NOT be compiled as DSL (a value with spaces or
+        # field-like tokens would raise ExpressionCompileError, #1873 Bug 7). Wire
+        # it as a literal FTS term so ``GET /api/sessions?contains=foo`` with no
+        # ``query`` filters instead of returning the unfiltered first page.
+        if contains_param:
+            fts_terms = fts_terms + (contains_param,)
+        fts_query = search_query_text(fts_terms)
 
         # HTTP-param-based origin/tag filters — still honoured for backwards
         # compatibility with callers passing ``?origin=...`` or ``?tag=...``
@@ -1492,12 +1502,37 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         }
 
         with ArchiveStore.open_existing(archive_root) as archive:
+            # Resolve an ``id:`` clause once, up front, so both branches share one
+            # miss/ambiguous policy. list_summaries/search_summaries resolve the
+            # token internally and raise KeyError (miss) / ValueError (ambiguous);
+            # left unhandled those reach the safe handler as a 500. A miss is a
+            # typed-empty page and an ambiguous prefix is a 400 query-spec error,
+            # matching the other query surfaces.
+            resolved_session_id = spec_session_id
+            if spec_session_id is not None:
+                try:
+                    resolved_session_id = archive.resolve_session_id(spec_session_id)
+                except KeyError:
+                    if fts_query:
+                        return {
+                            "query": fts_query,
+                            "retrieval_lane": "dialogue",
+                            "ranking_policy": "mixed-bm25-rrf-vector",
+                            "ranking_policy_version": "1",
+                            "hits": [],
+                            "total": 0,
+                            "limit": limit,
+                            "offset": offset,
+                        }
+                    return {"items": [], "total": 0, "limit": limit, "offset": offset}
+                except ValueError as exc:
+                    raise QuerySpecError("id", spec_session_id) from exc
             if fts_query:
                 hits = archive.search_summaries(
                     fts_query,
                     limit=limit,
                     offset=offset,
-                    session_id=spec_session_id,
+                    session_id=resolved_session_id,
                     **_filter_kw,  # type: ignore[arg-type]
                 )
                 payload: dict[str, object] = {
@@ -1536,10 +1571,16 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             summaries = archive.list_summaries(
                 limit=limit,
                 offset=offset,
-                session_id=spec_session_id,
+                session_id=resolved_session_id,
                 **_filter_kw,  # type: ignore[arg-type]
             )
-            total = archive.count_sessions(**_filter_kw)  # type: ignore[arg-type]
+            # count_sessions has no session_id param, so when the page is scoped to
+            # a single resolved id an archive-wide total would be reported for a
+            # one-session match. An id matches at most one session, so the scoped
+            # total is the page length.
+            total = (
+                len(summaries) if resolved_session_id is not None else archive.count_sessions(**_filter_kw)  # type: ignore[arg-type]
+            )
             return {
                 "items": [self._archive_summary_payload(summary) for summary in summaries],
                 "total": total,

@@ -101,6 +101,29 @@ class SessionFilter(SessionFilterBuilderMixin):
     async def list_summaries(self) -> builtins.list[SessionSummary]:
         return await list_summaries_archive(self._plan, archive_root=self._archive_root, config=self._config)
 
+    async def list_all_summaries(self) -> builtins.list[SessionSummary]:
+        """Resolve every matching summary (unbounded), not a single page.
+
+        ``list_summaries`` caps at the default page limit (50). Mutation and
+        cardinality paths (delete/mark) must act on the complete matched set, so
+        they resolve unbounded — mirroring ``count_archive`` (#1873).
+        """
+        return await list_summaries_archive(
+            self._plan.with_limit(None),
+            archive_root=self._archive_root,
+            config=self._config,
+            default_limit=1_000_000,
+        )
+
+    async def list_all(self) -> builtins.list[Session]:
+        """Resolve every matching session (unbounded); see :meth:`list_all_summaries`."""
+        return await list_archive(
+            self._plan.with_limit(None),
+            archive_root=self._archive_root,
+            config=self._config,
+            default_limit=1_000_000,
+        )
+
     async def first(self) -> Session | None:
         return await first_archive(self._plan, archive_root=self._archive_root, config=self._config)
 

@@ -207,14 +207,24 @@ def test_delete_verb_updates_force_and_dry_run_flags() -> None:
     assert callable(wrapped)
 
     # Signature is delete_verb(ctx, dry_run, yes_flag, all_flag, force).
-    with patch("polylogue.cli.query_verbs._execute_query_verb") as execute:
+    # Dry-run previews the SAME full pre-resolved id set the real delete acts on
+    # via execute_delete_by_session_ids(dry_run=True). It must NOT route through
+    # _execute_query_verb, which re-runs the query at the default limit of 20 and
+    # would preview fewer sessions than --yes --all deletes (#1873). force is True
+    # so the preview never triggers the interactive confirmation prompt.
+    with (
+        patch(
+            "polylogue.cli.verb_cardinality.resolve_session_ids_for_verb",
+            return_value=["alpha-id"],
+        ) as resolve,
+        patch("polylogue.cli.archive_query.execute_delete_by_session_ids") as execute,
+        patch("polylogue.cli.query_verbs._execute_query_verb") as legacy,
+    ):
         wrapped(child, True, False, False, False)
 
-    request = execute.call_args.args[1]
-    assert isinstance(request, RootModeRequest)
-    assert request.query_params()["delete_matched"] is True
-    assert request.query_params()["dry_run"] is True
-    # The dry-run preview path runs with force=True so the preview never
-    # triggers the interactive confirmation prompt.
-    assert request.query_params()["force"] is True
-    assert request.query_params()["query"] == ("alpha",)
+    legacy.assert_not_called()
+    resolve.assert_called_once()
+    args, kwargs = execute.call_args
+    assert list(args[1]) == ["alpha-id"]
+    assert kwargs.get("dry_run") is True
+    assert kwargs.get("force") is True
