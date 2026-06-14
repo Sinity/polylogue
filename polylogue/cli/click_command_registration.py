@@ -98,7 +98,7 @@ _SHORT_HELP: dict[str, str] = {
     "diagnostics": "Temporal session diagnostics",
     "embed": "Enable, preflight, and backfill the embedding pipeline.",
     "feedback": "Record learning corrections for derived insights.",
-    "ingest": "Import sessions from configured sources.",
+    "import_command": "Import sessions from configured sources.",
     "init": "Detect chat sources and write a starter polylogue.toml.",
     "insights": "Rebuild and inspect derived session insights.",
     "maintenance": "Preview and run maintenance backfill operations.",
@@ -116,6 +116,7 @@ _SHORT_HELP: dict[str, str] = {
 
 _COMMAND_NAMES: dict[str, str] = {
     "check": "doctor",
+    "import_command": "import",
 }
 
 _GROUP_ATTRS: dict[str, str] = {
@@ -131,6 +132,7 @@ _GROUP_ATTRS: dict[str, str] = {
 }
 
 _COMMAND_ATTRS: dict[str, str] = {
+    "import_command": "import_command",
     "resume_candidates": "resume_candidates_command",
 }
 
@@ -156,7 +158,7 @@ ROOT_COMMANDS: tuple[click.Command, ...] = (
     _L("cost"),
     _L("reset"),
     _L("status"),
-    _L("ingest"),
+    _L("import_command"),
     _L("init"),
     _L("auth"),
     _L("completions"),

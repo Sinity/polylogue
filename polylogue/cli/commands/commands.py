@@ -8,7 +8,7 @@ from polylogue.cli.shared.types import AppEnv
 
 _COMMAND_CATEGORIES: dict[str, tuple[str, ...]] = {
     "Query & Search": ("list", "count", "stats", "read", "recent"),
-    "Archive Management": ("ingest", "check", "reset", "backup", "maintenance"),
+    "Archive Management": ("import", "check", "reset", "backup", "maintenance"),
     "Insights & Analytics": ("insights", "facets", "correlate", "neighbors", "resume"),
     "User-State Objects": ("user-state", "blackboard", "tags", "feedback"),
     "Context & Sessions": ("context", "context-pack"),

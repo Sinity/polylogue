@@ -523,7 +523,7 @@ class TestCliMetadata:
 
         result = cli_runner.invoke(cli, ["--help"])
         assert result.exit_code == 0
-        for command in ("doctor", "ingest", "tags", "list", "count", "stats"):
+        for command in ("doctor", "import", "tags", "list", "count", "stats"):
             assert command in result.output
         assert result.output.count("Commands:") == 1
 
@@ -534,7 +534,7 @@ class TestCliMetadata:
             "doctor",
             "reset",
             "status",
-            "ingest",
+            "import",
             "init",
             "auth",
             "backup",

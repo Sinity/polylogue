@@ -33,7 +33,7 @@ A maintenance operation is distinguished from three adjacent things:
 
 | Surface | What it does | When you reach for it |
 | --- | --- | --- |
-| **Ingest** (`polylogued`, `polylogue ingest PATH`) | Daemon acquires source payloads, parses provider records, writes archive rows, and advances derived models *for the new rows*. `polylogue ingest PATH` asks the running daemon to schedule an explicit file or directory. | You have new exports/sessions to import. |
+| **Import** (`polylogued`, `polylogue import PATH`) | Daemon acquires source payloads, parses provider records, writes archive rows, and advances derived models *for the new rows*. `polylogue import PATH` asks the running daemon to schedule an explicit file or directory. | You have new exports/sessions to import. |
 | **Daemon convergence** (`polylogued` inline loops) | Performs the same operations as ingest plus the lightweight maintenance loop (WAL checkpoint every 5 min, FTS convergence every 10 min, heartbeat, health checks). | The daemon is running. You do nothing. |
 | **Maintenance** (`polylogue maintenance ...`) | Rebuilds derived state and prunes archive debt over already-ingested rows. Read-only by default; mutations are explicit. | A derived model is stale or missing for old rows that the daemon's small inline windows will not pick up. |
 | **Reset** (`polylogue reset`) | Deletes data: the SQLite database, the blob store, attachments, cache, OAuth tokens, or named sessions (soft-delete via tombstones). | The data itself is wrong or unwanted, not just a derived projection of it. |
@@ -448,8 +448,8 @@ curl -sf "http://127.0.0.1:8765/api/raw_artifacts/<artifact_id>" | jq .
 
 # 4. If the artifact is malformed at the source layer (truncated
 #    JSONL, missing required field), the fix is upstream — fix the
-#    source file, then ask the running daemon to re-ingest it:
-polylogue ingest <path-to-source>
+#    source file, then ask the running daemon to import it:
+polylogue import <path-to-source>
 
 # 5. If the artifact is fine but the parser rejects it, the fix is
 #    in the parser. File an issue with the provider and artifact details.
@@ -497,9 +497,9 @@ restic restore latest --target / --include /path/to/archive_root/blob
 
 # 5. If the blob is gone for good, the session referencing it
 #    cannot be exported. Tombstone it so it stops blocking exports
-#    and re-ingest from the original source if available:
+#    and import from the original source if available:
 polylogue reset --session <conv_id>
-polylogue ingest <path-to-source>
+polylogue import <path-to-source>
 
 # 6. After recovery, GC the orphan references that point at the
 #    now-missing blobs.

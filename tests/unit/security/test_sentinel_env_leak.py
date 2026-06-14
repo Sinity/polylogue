@@ -56,7 +56,7 @@ _COMMANDS_TO_PROBE: tuple[tuple[str, ...], ...] = (
     ("count", "--definitely-not-a-flag"),
     ("auth", "--help"),
     ("schema", "--help"),
-    ("ingest", "--help"),
+    ("import", "--help"),
     ("tags", "--help"),
 )
 

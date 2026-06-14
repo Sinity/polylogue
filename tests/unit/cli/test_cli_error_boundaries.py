@@ -32,7 +32,7 @@ SUBCOMMANDS = [
     "auth",
     "completions",
     "dashboard",
-    "ingest",
+    "import",
     "schema",
     "tags",
     "list",
@@ -132,8 +132,8 @@ class TestInvalidDates:
 
 class TestNonexistentPaths:
     def test_nonexistent_source_path(self, runner: CliRunner) -> None:
-        """Non-existent ingest path should not produce traceback."""
-        result = runner.invoke(cli, ["ingest", "/nonexistent/path"])
+        """Non-existent import path should not produce traceback."""
+        result = runner.invoke(cli, ["import", "/nonexistent/path"])
         assert TRACEBACK_SENTINEL not in result.output
 
     def test_nonexistent_output_path(self, runner: CliRunner, workspace_env: Mapping[str, Path]) -> None:

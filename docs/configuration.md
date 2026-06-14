@@ -79,7 +79,7 @@ same directory tree.
 ## Input Conventions
 
 - `polylogued run` watches configured source roots and owns ingestion.
-- Use `polylogue ingest PATH` to ask the running daemon to ingest an explicit
+- Use `polylogue import PATH` to ask the running daemon to import an explicit
   file or directory.
 - Directory names are for organization only; providers are detected from content.
 - Supported source formats include `.json`, `.jsonl`, and `.zip`.

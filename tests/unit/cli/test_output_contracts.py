@@ -39,7 +39,7 @@ def test_config_show_toml_output() -> None:
     assert "[" in output  # TOML section headers
 
 
-def test_ingest_missing_path_error() -> None:
-    """ingest with nonexistent path returns non-zero and error message."""
-    exit_code, output = _invoke("ingest", "/nonexistent/path/12345")
+def test_import_missing_path_error() -> None:
+    """import with nonexistent path returns non-zero and error message."""
+    exit_code, output = _invoke("import", "/nonexistent/path/12345")
     assert exit_code != 0

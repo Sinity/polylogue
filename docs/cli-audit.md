@@ -35,7 +35,7 @@ Registered in `polylogue/cli/click_command_registration.py`.
 | `commands` | Meta | **Keep** | Discoverability tool. Delivered in #1717. |
 | `status` | Diagnostics | **Keep** | Daemon and archive status. One of the most-used commands. |
 | `doctor` | Archive Mgmt | **Keep (rename)** | Currently registered as `doctor` (internal name `check`). Align on `doctor` everywhere — `check` is a Polylogue legacy artifact. Update `commands` listing to say `doctor`. |
-| `ingest` | Archive Mgmt | **Keep** | Import from configured sources. Clear intent. |
+| `import` | Archive Mgmt | **Keep** | Import from configured sources. Clear intent. |
 | `backup` | Archive Mgmt | **Keep** | Timestamped archive backup. Clear intent. |
 | `reset` | Archive Mgmt | **Keep** | Reset archive state. Destructive but clearly named. |
 | `maintenance` | Archive Mgmt | **Keep** | Preview and run maintenance backfill. Subcommands: `gc-history`, `plan`, `preview`, `run`, `status`. `maintenance run` overlaps with `doctor` conceptually — `doctor` is health check, `maintenance run` is repair/recompute. Distinction is subtle but real. |
@@ -176,7 +176,7 @@ Every intent maps to exactly one verb. This table is the decision record.
 | Open in external viewer | `open` | `open` | Already standard. |
 | View raw/debug data | `raw` | `raw`, `insights audit` | `audit` could become `raw` but its report shape is distinct. |
 | Check health/status | `status` | `status`, `doctor`, `insights status`, `maintenance status`, `embed status` | `status` = read-only snapshot. `doctor` = active health check + repair (distinct). Keep both. |
-| Ingest/import data | `ingest` | `ingest` | Already standard. |
+| Ingest/import data | `import` | `import` | Already standard. |
 | Export data | `export` | `export`, `bulk-export`, `insights export` | Merge `bulk-export` into `export bulk`. Keep `insights export` as distinct surface. |
 | Create/initialize | `init` | `init` | Already standard. |
 | Configure | `config` | `config`, `auth`, `completions` | These are distinct enough to stay separate. |
@@ -353,7 +353,7 @@ broken JSON output. 78 commands are covered as of 2026-05-28.
 | `recent` hardcodes invalid sort field | `recent_verb` passes `sort="updated_at"` which is rejected by `SessionQuerySpec`. The `--json` test excludes `recent` until this is fixed. | Pre-existing |
 | `count` has no `--format` flag | The `count` verb always emits a bare integer; there is no way to request a JSON envelope. | #1689 |
 | Deeply-nested groups (`user-state`, `blackboard`) don't dispatch through lazy wrappers | Commands registered as `_LazyCommand` but implemented as Click groups don't dispatch subcommands through the lazy wrapper. | #1725 |
-| No `--json` test for mutation commands | `delete`, `reset`, `ingest`, `backup` are excluded from the parametrized test because they modify state. They should still accept `--json`/`--machine` without crashing. | #1689 |
+| No `--json` test for mutation commands | `delete`, `reset`, `import`, `backup` are excluded from the parametrized test because they modify state. They should still accept `--json`/`--machine` without crashing. | #1689 |
 
 ### Commands Without JSON Support
 
@@ -385,6 +385,6 @@ regenerate after changing a Pydantic model that feeds a CLI output surface.
 ## Related Issues
 
 - [#1625](https://github.com/Sinity/polylogue/issues/1625) — `insights coverage|debt|...` hang with no output
-- [#1679](https://github.com/Sinity/polylogue/issues/1679) — `ingest` suggests `status` which shows wrong info
+- [#1679](https://github.com/Sinity/polylogue/issues/1679) — `import` suggests `status` which shows wrong info
 - [#1689](https://github.com/Sinity/polylogue/issues/1689) — generalized `--json` output
 - [#1680](https://github.com/Sinity/polylogue/issues/1680) — `recent`/`resume` commands (landed)

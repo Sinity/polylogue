@@ -52,7 +52,7 @@ class TestSuccessExitCode:
         "cmd",
         [
             "doctor",
-            "ingest",
+            "import",
             "schema",
             "tags",
             "list",

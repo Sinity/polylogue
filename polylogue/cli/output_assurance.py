@@ -52,7 +52,7 @@ DAEMON_FAMILY = "daemon"
 CONFIG_FAMILY = "config"
 MAINTENANCE_FAMILY = "maintenance"
 SHELL_FAMILY = "shell"
-INGEST_FAMILY = "ingest"
+INGEST_FAMILY = "import"
 
 
 # Every primary subcommand of `polylogue` declares its assurance posture
@@ -259,13 +259,13 @@ ASSURANCE_REGISTRY: tuple[OutputAssurance, ...] = (
         notes="Side-effect command; opens local dashboard.",
     ),
     OutputAssurance(
-        command="ingest",
+        command="import",
         family=INGEST_FAMILY,
         json_contract=True,
         snapshot=True,
         plain=True,
         streaming=False,
-        notes="--machine emits success/error envelope per ingest run.",
+        notes="--machine emits success/error envelope per import run.",
     ),
     OutputAssurance(
         command="embed",
