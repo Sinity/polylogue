@@ -184,7 +184,7 @@ Commands:
   embed              Enable, preflight, and backfill the embedding pipeline.
   facets
   feedback           Record learning corrections for derived insights.
-  ingest             Import sessions from configured sources.
+  import             Import sessions from configured sources.
   init               Detect chat sources and write a starter polylogue.toml.
   insights           Rebuild and inspect derived session insights.
   list               List matched sessions.
@@ -611,12 +611,12 @@ Published JSON Schemas live under [`docs/schemas/cli-output/`](./schemas/cli-out
 | `dashboard` | no | yes | yes | no | — | Side-effect command; opens local dashboard. |
 | `status` | yes | yes | yes | no | — | Daemon and archive status; --json flag emits structured payload. |
 
-### Family: `ingest`
+### Family: `import`
 
 | Command | JSON contract | Snapshot | `--plain` | NDJSON | Schema | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
 | `embed` | yes | yes | yes | no | — | Embedding pipeline status; --json emits structured progress. |
-| `ingest` | yes | yes | yes | no | — | --machine emits success/error envelope per ingest run. |
+| `import` | yes | yes | yes | no | — | --machine emits success/error envelope per import run. |
 
 ### Family: `config`
 

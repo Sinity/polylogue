@@ -173,7 +173,7 @@ Commands:
   embed              Enable, preflight, and backfill the embedding pipeline.
   facets
   feedback           Record learning corrections for derived insights.
-  ingest             Import sessions from configured sources.
+  import             Import sessions from configured sources.
   init               Detect chat sources and write a starter polylogue.toml.
   insights           Rebuild and inspect derived session insights.
   list               List matched sessions.
