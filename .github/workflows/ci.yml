@@ -43,6 +43,14 @@ jobs:
     # legs were being cut mid-run (reported as "cancelled"), so the test gate
     # could never go green. 90 min gives headroom; passing runs cost their
     # actual ~45-50 min regardless of the ceiling.
+    #
+    # This heavy gate is intentionally OFF the per-PR path (operator decision):
+    # the ~18 min wait on every PR was not worth it. It still runs post-merge on
+    # master (regression net) and on demand via workflow_dispatch, but no longer
+    # gates PRs. PRs keep the fast signal — lint, typecheck (mypy --strict), nix,
+    # showcase-verify, distribution — plus the local pre-push
+    # `devtools verify --quick` hook. Re-enable PR gating by deleting this `if:`.
+    if: github.event_name != 'pull_request'
     timeout-minutes: 90
     runs-on: ubuntu-latest
     strategy:
