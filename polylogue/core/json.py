@@ -62,6 +62,17 @@ def json_document_list(value: object) -> JSONDocumentList:
     return documents
 
 
+def normalize_json_decimal(value: object) -> object:
+    """Recursively lower JSON parser Decimal values to JSON numbers."""
+    if isinstance(value, Decimal):
+        return int(value) if value == value.to_integral_value() else float(value)
+    if isinstance(value, list):
+        return [normalize_json_decimal(item) for item in value]
+    if isinstance(value, dict):
+        return {key: normalize_json_decimal(item) for key, item in value.items()}
+    return value
+
+
 def _reject_non_finite_token(token: str) -> JSONValue:
     raise ValueError(f"invalid non-finite JSON token: {token}")
 
@@ -135,6 +146,7 @@ __all__ = [
     "json_document",
     "json_document_list",
     "loads",
+    "normalize_json_decimal",
     "require_json_document",
     "require_json_value",
 ]

@@ -11,7 +11,7 @@ from typing import IO, TypeAlias
 
 from polylogue.archive.artifact_taxonomy import classify_artifact
 from polylogue.config import Source
-from polylogue.core.json import JSONDocument, JSONValue, is_json_value
+from polylogue.core.json import JSONDocument, JSONValue, is_json_value, normalize_json_decimal
 from polylogue.core.json import dumps_bytes as json_dumps_bytes
 from polylogue.core.metrics import read_current_rss_mb, read_peak_rss_self_mb
 from polylogue.storage.blob_store import BlobStore
@@ -125,7 +125,8 @@ class SplitPayloadBuffer:
 
 
 def _artifact_payload(value: object) -> JSONValue:
-    return value if is_json_value(value) else {}
+    normalized = normalize_json_decimal(value)
+    return normalized if is_json_value(normalized) else {}
 
 
 def _heartbeat_label(source_path: str) -> str:

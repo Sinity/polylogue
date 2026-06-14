@@ -761,19 +761,19 @@ def _fts_invariant_snapshot_sync(conn: sqlite3.Connection) -> FtsInvariantSnapsh
             name="messages_fts",
             source_table_name="blocks",
             table_name="messages_fts",
-            source_sql="SELECT COUNT(*) FROM blocks WHERE NULLIF(text, '') IS NOT NULL",
+            source_sql="SELECT COUNT(*) FROM blocks WHERE search_text != ''",
             indexed_sql="SELECT COUNT(*) FROM messages_fts_docsize",
             trigger_names=_BLOCKS_FTS_TRIGGER_NAMES,
             missing_sql="""
                 SELECT COUNT(*)
                 FROM blocks AS b
                 LEFT JOIN messages_fts_docsize AS d ON d.id = b.rowid
-                WHERE NULLIF(b.text, '') IS NOT NULL AND d.id IS NULL
+                WHERE b.search_text != '' AND d.id IS NULL
             """,
             excess_sql="""
                 SELECT COUNT(*)
                 FROM messages_fts_docsize AS d
-                LEFT JOIN blocks AS b ON b.rowid = d.id AND NULLIF(b.text, '') IS NOT NULL
+                LEFT JOIN blocks AS b ON b.rowid = d.id AND b.search_text != ''
                 WHERE b.rowid IS NULL
             """,
         )
