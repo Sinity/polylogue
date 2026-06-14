@@ -1,6 +1,6 @@
-Usage: polylogue ingest [OPTIONS] PATH
+Usage: polylogue import [OPTIONS] PATH
 
-  Schedule a file or directory for ingestion by the running daemon.
+  Schedule a file or directory for import by the running daemon.
 
   Stages PATH into the archive inbox and asks the running polylogued daemon to
   schedule it for processing. The command is truthful: it either confirms the

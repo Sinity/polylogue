@@ -1,8 +1,8 @@
-"""Ingest command — schedule source files for ingestion via the daemon.
+"""import command — schedule source files for import via the daemon.
 
 Truthfulness contract (#1264 / #869 slice C):
 
-* ``polylogue ingest PATH`` either really stages the file into the daemon
+* ``polylogue import PATH`` either really stages the file into the daemon
   inbox **and** confirms the daemon accepted scheduling, or it fails with
   an actionable message. There is no silent success path.
 
@@ -49,10 +49,10 @@ def _daemon_url(env: AppEnv) -> str:
 
 
 def _stage_for_daemon(path: Path) -> Path:
-    """Copy a local ingest target into the archive inbox for daemon pickup."""
+    """Copy a local import target into the archive inbox for daemon pickup."""
     resolved = path.expanduser().resolve()
     if not resolved.exists():
-        fail("ingest", f"Path does not exist: {resolved}")
+        fail("import", f"Path does not exist: {resolved}")
 
     inbox = archive_root() / "inbox"
     inbox.mkdir(parents=True, exist_ok=True)
@@ -67,7 +67,7 @@ def _stage_for_daemon(path: Path) -> Path:
         else:
             shutil.copy2(resolved, dest)
     except OSError as exc:
-        fail("ingest", f"Could not stage {resolved} in daemon inbox: {exc}")
+        fail("import", f"Could not stage {resolved} in daemon inbox: {exc}")
 
     return dest
 
@@ -81,7 +81,7 @@ def _daemon_unreachable_message(daemon_url: str, reason: str) -> str:
     )
 
 
-@click.command("ingest")
+@click.command("import")
 @click.argument("path", type=click.Path(exists=True, path_type=Path))
 @click.option(
     "--daemon-url",
@@ -90,12 +90,12 @@ def _daemon_unreachable_message(daemon_url: str, reason: str) -> str:
     help="Daemon API URL.",
 )
 @click.pass_obj
-def ingest_command(
+def import_command(
     env: AppEnv,
     path: Path,
     daemon_url: str,
 ) -> None:
-    """Schedule a file or directory for ingestion by the running daemon.
+    """Schedule a file or directory for import by the running daemon.
 
     Stages PATH into the archive inbox and asks the running polylogued
     daemon to schedule it for processing. The command is truthful: it
@@ -122,26 +122,26 @@ def ingest_command(
         # code so the operator knows it's a contract problem, not a
         # transport problem.
         fail(
-            "ingest",
+            "import",
             f"Daemon at {daemon_url} rejected /api/ingest with HTTP {exc.code}: {exc.reason}.\n"
             "  Check the daemon log for the cause; the staged inbox file was "
             f"left in place at {staged}.",
         )
     except URLError as exc:
-        fail("ingest", _daemon_unreachable_message(daemon_url, str(exc.reason)))
+        fail("import", _daemon_unreachable_message(daemon_url, str(exc.reason)))
     except OSError as exc:
-        fail("ingest", _daemon_unreachable_message(daemon_url, str(exc)))
+        fail("import", _daemon_unreachable_message(daemon_url, str(exc)))
 
     operation = ImportOperation.from_dict(raw)
 
     if operation.status in ("failed", "error"):
-        fail("ingest", operation.error or operation.message or "Unknown error")
+        fail("import", operation.error or operation.message or "Unknown error")
 
     if operation.status not in _ACCEPTED_STATUSES:
         # The daemon returned something we don't recognize as accepted
         # *or* failed. Refuse to fabricate success.
         fail(
-            "ingest",
+            "import",
             f"Daemon returned unexpected status {operation.status!r}; refusing to claim success.",
         )
 
@@ -156,4 +156,4 @@ def ingest_command(
     )
 
 
-__all__ = ["ingest_command"]
+__all__ = ["import_command"]

@@ -660,7 +660,7 @@ files:
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
-    loc: 189
+    loc: 191
     target: polylogue/cli/click_command_registration.py
     owner: stable
   - path: polylogue/cli/click_option_groups.py
@@ -743,9 +743,9 @@ files:
     loc: 182
     target: polylogue/cli/commands/feedback.py
     owner: stable
-  - path: polylogue/cli/commands/ingest.py
+  - path: polylogue/cli/commands/import_command.py
     loc: 159
-    target: polylogue/cli/commands/ingest.py
+    target: polylogue/cli/commands/import_command.py
     owner: stable
   - path: polylogue/cli/commands/init.py
     loc: 233
@@ -1038,7 +1038,7 @@ files:
     owner: core-primitive
     reason: core primitive
   - path: polylogue/core/json.py
-    loc: 140
+    loc: 152
     target: polylogue/core/json.py
     owner: core-primitive
     reason: core primitive
@@ -1205,7 +1205,7 @@ files:
     target: polylogue/daemon/healthz.py
     owner: stable
   - path: polylogue/daemon/http.py
-    loc: 2571
+    loc: 2636
     target: polylogue/daemon/http.py
     owner: stable
   - path: polylogue/daemon/live_ingest_attempt_models.py
@@ -1517,7 +1517,7 @@ files:
     target: polylogue/mcp/payloads.py
     owner: stable
   - path: polylogue/mcp/query_contracts.py
-    loc: 227
+    loc: 245
     target: polylogue/mcp/query_contracts.py
     owner: stable
   - path: polylogue/mcp/server.py
@@ -2423,7 +2423,7 @@ files:
     target: polylogue/sources/decoders.py
     owner: stable
   - path: polylogue/sources/dispatch.py
-    loc: 684
+    loc: 674
     target: polylogue/sources/dispatch.py
     owner: stable
   - path: polylogue/sources/drive/__init__.py
@@ -2672,7 +2672,7 @@ files:
     target: polylogue/sources/source_acquisition.py
     owner: stable
   - path: polylogue/sources/source_acquisition_components.py
-    loc: 436
+    loc: 437
     target: polylogue/sources/source_acquisition_components.py
     owner: stable
   - path: polylogue/sources/source_parsing.py

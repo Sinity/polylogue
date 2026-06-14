@@ -1,4 +1,4 @@
-"""Tests for polylogue ingest truthfulness (#869 / #1264)."""
+"""Tests for polylogue import truthfulness (#869 / #1264)."""
 
 from __future__ import annotations
 
@@ -10,25 +10,25 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request
 
 
-def test_ingest_command_registered() -> None:
-    """ingest command must be available in the CLI group."""
+def test_import_command_registered() -> None:
+    """import command must be available in the CLI group."""
     from polylogue.cli.click_app import cli
 
     commands = {name for name in cli.commands if not name.startswith("_")}
-    assert "ingest" in commands, "ingest command not registered"
+    assert "import" in commands, "import command not registered"
 
 
-def test_ingest_help_includes_inbox_info() -> None:
-    """ingest --help should document that files are staged for daemon processing."""
+def test_import_help_includes_inbox_info() -> None:
+    """import --help should document that files are staged for daemon processing."""
     from click.testing import CliRunner
 
     from polylogue.cli.click_app import cli
 
     runner = CliRunner()
-    result = runner.invoke(cli, ["ingest", "--help"])
+    result = runner.invoke(cli, ["import", "--help"])
     assert result.exit_code == 0
     assert "daemon" in result.output.lower() or "polylogued" in result.output.lower(), (
-        "ingest help should reference the daemon"
+        "import help should reference the daemon"
     )
 
 
@@ -46,7 +46,7 @@ class _FakeDaemonResponse:
         return json.dumps(self._payload).encode("utf-8")
 
 
-def test_ingest_command_stages_local_path_before_daemon_request(
+def test_import_command_stages_local_path_before_daemon_request(
     workspace_env: dict[str, Path],
     tmp_path: Path,
 ) -> None:
@@ -69,7 +69,7 @@ def test_ingest_command_stages_local_path_before_daemon_request(
         return _FakeDaemonResponse(
             {
                 "ok": True,
-                "operation_id": "ingest-source.jsonl",
+                "operation_id": "import-source.jsonl",
                 "kind": "import",
                 "status": "pending",
                 "path": staged_path,
@@ -78,10 +78,10 @@ def test_ingest_command_stages_local_path_before_daemon_request(
         )
 
     runner = CliRunner()
-    with patch("polylogue.cli.commands.ingest.urlopen", side_effect=fake_urlopen):
+    with patch("polylogue.cli.commands.import_command.urlopen", side_effect=fake_urlopen):
         result = runner.invoke(
             cli,
-            ["ingest", str(source), "--daemon-url", "http://127.0.0.1:8766"],
+            ["import", str(source), "--daemon-url", "http://127.0.0.1:8766"],
         )
 
     assert result.exit_code == 0, result.output
@@ -105,7 +105,7 @@ def test_ingest_command_stages_local_path_before_daemon_request(
     assert "polylogue stats" in result.output
 
 
-def test_ingest_rejects_missing_path(tmp_path: Path) -> None:
+def test_import_rejects_missing_path(tmp_path: Path) -> None:
     """A path that does not exist is rejected by Click before any daemon call."""
     from click.testing import CliRunner
 
@@ -113,14 +113,14 @@ def test_ingest_rejects_missing_path(tmp_path: Path) -> None:
 
     missing = tmp_path / "does-not-exist.jsonl"
     runner = CliRunner()
-    result = runner.invoke(cli, ["ingest", str(missing)])
+    result = runner.invoke(cli, ["import", str(missing)])
 
     assert result.exit_code != 0
     # Click's standard "Path 'X' does not exist" or equivalent.
     assert "does not exist" in result.output.lower() or "no such" in result.output.lower()
 
 
-def test_ingest_rejects_when_daemon_unreachable(
+def test_import_rejects_when_daemon_unreachable(
     workspace_env: dict[str, Path],
     tmp_path: Path,
 ) -> None:
@@ -136,10 +136,10 @@ def test_ingest_rejects_when_daemon_unreachable(
         raise URLError("Connection refused")
 
     runner = CliRunner()
-    with patch("polylogue.cli.commands.ingest.urlopen", side_effect=fake_urlopen):
+    with patch("polylogue.cli.commands.import_command.urlopen", side_effect=fake_urlopen):
         result = runner.invoke(
             cli,
-            ["ingest", str(source), "--daemon-url", "http://127.0.0.1:65535"],
+            ["import", str(source), "--daemon-url", "http://127.0.0.1:65535"],
         )
 
     assert result.exit_code != 0
@@ -149,7 +149,7 @@ def test_ingest_rejects_when_daemon_unreachable(
     assert "127.0.0.1:65535" in combined
 
 
-def test_ingest_surfaces_http_error_with_staged_path(
+def test_import_surfaces_http_error_with_staged_path(
     workspace_env: dict[str, Path],
     tmp_path: Path,
 ) -> None:
@@ -171,8 +171,8 @@ def test_ingest_surfaces_http_error_with_staged_path(
         )
 
     runner = CliRunner()
-    with patch("polylogue.cli.commands.ingest.urlopen", side_effect=fake_urlopen):
-        result = runner.invoke(cli, ["ingest", str(source)])
+    with patch("polylogue.cli.commands.import_command.urlopen", side_effect=fake_urlopen):
+        result = runner.invoke(cli, ["import", str(source)])
 
     assert result.exit_code != 0
     staged = workspace_env["archive_root"] / "inbox" / source.name
@@ -181,7 +181,7 @@ def test_ingest_surfaces_http_error_with_staged_path(
     assert str(staged).lower() in combined
 
 
-def test_ingest_refuses_unrecognized_daemon_status(
+def test_import_refuses_unrecognized_daemon_status(
     workspace_env: dict[str, Path],
     tmp_path: Path,
 ) -> None:
@@ -197,7 +197,7 @@ def test_ingest_refuses_unrecognized_daemon_status(
         return _FakeDaemonResponse(
             {
                 "ok": True,
-                "operation_id": "ingest-source.jsonl",
+                "operation_id": "import-source.jsonl",
                 "kind": "import",
                 "status": "mystery_status",
                 "path": "/somewhere",
@@ -206,15 +206,15 @@ def test_ingest_refuses_unrecognized_daemon_status(
         )
 
     runner = CliRunner()
-    with patch("polylogue.cli.commands.ingest.urlopen", side_effect=fake_urlopen):
-        result = runner.invoke(cli, ["ingest", str(source)])
+    with patch("polylogue.cli.commands.import_command.urlopen", side_effect=fake_urlopen):
+        result = runner.invoke(cli, ["import", str(source)])
 
     assert result.exit_code != 0
     combined = (result.output + (result.stderr if result.stderr_bytes else "")).lower()
     assert "mystery_status" in combined
 
 
-def test_ingest_surfaces_daemon_failure_status(
+def test_import_surfaces_daemon_failure_status(
     workspace_env: dict[str, Path],
     tmp_path: Path,
 ) -> None:
@@ -230,7 +230,7 @@ def test_ingest_surfaces_daemon_failure_status(
         return _FakeDaemonResponse(
             {
                 "ok": False,
-                "operation_id": "ingest-source.jsonl",
+                "operation_id": "import-source.jsonl",
                 "kind": "import",
                 "status": "failed",
                 "error": "inbox locked by another operation",
@@ -238,8 +238,8 @@ def test_ingest_surfaces_daemon_failure_status(
         )
 
     runner = CliRunner()
-    with patch("polylogue.cli.commands.ingest.urlopen", side_effect=fake_urlopen):
-        result = runner.invoke(cli, ["ingest", str(source)])
+    with patch("polylogue.cli.commands.import_command.urlopen", side_effect=fake_urlopen):
+        result = runner.invoke(cli, ["import", str(source)])
 
     assert result.exit_code != 0
     combined = (result.output + (result.stderr if result.stderr_bytes else "")).lower()

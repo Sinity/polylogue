@@ -220,7 +220,7 @@ _PLAIN_COMMANDS: tuple[tuple[str, ...], ...] = (
     ("diagnostics", "tools"),
     ("diagnostics", "turns"),
     ("doctor",),
-    ("ingest",),
+    ("import",),
     ("insights",),
     ("insights", "analytics"),
     ("insights", "cost-rollups"),

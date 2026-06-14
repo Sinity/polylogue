@@ -102,10 +102,10 @@ Polylogue auto-discovers these directories:
 ```
 
 Custom watch roots can be given to the daemon with `--root`. For an explicit
-one-time ingest request, keep the daemon running and use:
+one-time import request, keep the daemon running and use:
 
 ```bash
-polylogue ingest /path/to/exports
+polylogue import /path/to/exports
 ```
 
 ## Next steps
