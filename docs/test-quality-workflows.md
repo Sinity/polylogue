@@ -14,10 +14,10 @@ Current registry snapshot:
 - mutation campaigns: `19`
 - benchmark campaigns: `5`
 - synthetic benchmark campaigns: `6`
-- scenario projections: `268`
+- scenario projections: `270`
 - inferred corpus scenarios: `8`
   - benchmark-campaign: `5`
-  - exercise: `163`
+  - exercise: `165`
   - inferred-corpus-scenario: `8`
   - mutation-campaign: `19`
   - synthetic-benchmark: `6`
@@ -341,6 +341,7 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `gen-schema-explain-gemini-cli` | `schema-explain-query-loop` | `schema_packages`<br>`schema_explanation_results` | `query-schema-explanations` | — | `generated`<br>`schema`<br>`gemini-cli` | Generated: schema explain --provider gemini-cli |
 | `exercise` | `gen-schema-explain-hermes` | `schema-explain-query-loop` | `schema_packages`<br>`schema_explanation_results` | `query-schema-explanations` | — | `generated`<br>`schema`<br>`hermes` | Generated: schema explain --provider hermes |
 | `exercise` | `gen-schema-list` | `schema-list-query-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios`<br>`schema_list_results` | `query-schema-catalog` | — | `generated`<br>`schema`<br>`list` | Generated: schema list --format json returns valid JSON |
+| `exercise` | `help-analyze` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | analyze help |
 | `exercise` | `help-auth` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | auth help |
 | `exercise` | `help-backup` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | backup help |
 | `exercise` | `help-blackboard` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | blackboard help |
@@ -404,6 +405,7 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-maintenance-preview` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | maintenance preview help |
 | `exercise` | `help-maintenance-run` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | maintenance run help |
 | `exercise` | `help-maintenance-status` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | maintenance status help |
+| `exercise` | `help-mark` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | mark help |
 | `exercise` | `help-neighbors` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | neighbors help |
 | `exercise` | `help-paths` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | paths help |
 | `exercise` | `help-read` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | read help |

@@ -816,7 +816,7 @@ files:
     target: polylogue/cli/messages.py
     owner: stable
   - path: polylogue/cli/output_assurance.py
-    loc: 517
+    loc: 509
     target: polylogue/cli/output_assurance.py
     owner: stable
   - path: polylogue/cli/parser_diagnostics.py
@@ -860,7 +860,7 @@ files:
     target: polylogue/cli/query_stats.py
     owner: stable
   - path: polylogue/cli/query_verbs.py
-    loc: 581
+    loc: 834
     target: polylogue/cli/query_verbs.py
     owner: stable
   - path: polylogue/cli/root_request.py
@@ -989,8 +989,12 @@ files:
     loc: 311
     target: polylogue/cli/shell_completion_values.py
     owner: stable
+  - path: polylogue/cli/verb_cardinality.py
+    loc: 111
+    target: polylogue/cli/verb_cardinality.py
+    owner: stable
   - path: polylogue/cli/verb_names.py
-    loc: 18
+    loc: 20
     target: polylogue/cli/verb_names.py
     owner: stable
   - path: polylogue/config.py
