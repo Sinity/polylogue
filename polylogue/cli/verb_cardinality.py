@@ -84,23 +84,31 @@ def resolve_session_ids_for_verb(env: AppEnv, request: RootModeRequest) -> list[
 
 
 async def _async_resolve_ids(env: AppEnv, request: RootModeRequest) -> list[str]:
-    """Async implementation of session-ID resolution for verb cardinality."""
+    """Async implementation of session-ID resolution for verb cardinality.
+
+    Uses the compiled DSL spec (``request.query_spec()``) so that field clauses
+    such as ``repo:polylogue`` or ``since:7d`` are resolved to structured filters
+    rather than being passed as literal FTS text.
+    """
     from polylogue.cli.query import _create_query_vector_provider
-    from polylogue.cli.query_contracts import build_query_execution_plan
     from polylogue.paths._roots import archive_file_set_root_for_paths
 
     config = env.config
-    plan = build_query_execution_plan(request.query_params())
+    spec = request.query_spec()
     archive_root = archive_file_set_root_for_paths(
         archive_root_path=config.archive_root,
         db_anchor=config.db_path,
     )
     vector_provider = _create_query_vector_provider(config, db_path=archive_root / "embeddings.db")
-    filter_chain = plan.selection.build_filter(config, vector_provider=vector_provider)
+    filter_chain = spec.build_filter(config, vector_provider=vector_provider)
+    # Resolve the COMPLETE matched set, not a single page: this list drives the
+    # cardinality guard and the actual delete/mark, so a paged list_summaries()
+    # (default limit 50) would let ``delete --yes --all`` silently skip every
+    # match beyond the first page (#1873).
     if filter_chain.can_use_summaries():
-        summaries = await filter_chain.list_summaries()
+        summaries = await filter_chain.list_all_summaries()
         return [str(s.id) for s in summaries]
-    sessions = await filter_chain.list()
+    sessions = await filter_chain.list_all()
     return [str(s.id) for s in sessions]
 
 

@@ -95,9 +95,33 @@ class _ArchiveFilterKwargs(TypedDict):
     min_messages: int | None
     max_messages: int | None
     min_words: int | None
+    max_words: int | None
     since_ms: int | None
     until_ms: int | None
     since_session_id: str | None
+
+
+def execute_delete_by_session_ids(
+    env: AppEnv,
+    session_ids: list[str],
+    *,
+    force: bool,
+    dry_run: bool = False,
+) -> None:
+    """Delete (or preview) a known set of session IDs, bypassing the query phase.
+
+    Used by the delete verb after cardinality resolution — the IDs are already
+    known so we skip the re-query (which would be capped at the default limit
+    of 20, causing ``delete --yes --all`` to truncate silently). The dry-run
+    preview routes through here too so the previewed set is the *same* full
+    resolved set the real delete acts on (the guard, preview, and deleted sets
+    must be identical, #1873).
+    """
+    config = load_effective_config(env)
+    archive_root = archive_file_set_root_for_paths(archive_root_path=config.archive_root, db_anchor=config.db_path)
+    params: dict[str, object] = {"force": force, "delete_matched": True, "dry_run": dry_run}
+    with ArchiveStore.open_existing(archive_root) as archive:
+        _emit_delete(env, archive, tuple(session_ids), params=params)
 
 
 def execute_archive_query(env: AppEnv, request: RootModeRequest) -> None:
@@ -170,6 +194,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     min_messages = _optional_int(params.get("min_messages"))
     max_messages = _optional_int(params.get("max_messages"))
     min_words = _optional_int(params.get("min_words"))
+    max_words = _optional_int(params.get("max_words"))
     since_ms = _optional_date_ms("since", params.get("since"))
     until_ms = _optional_date_ms("until", params.get("until"))
     since_session_id = _optional_str(params.get("since_session_id"))
@@ -221,6 +246,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
         "min_messages": min_messages,
         "max_messages": max_messages,
         "min_words": min_words,
+        "max_words": max_words,
         "since_ms": since_ms,
         "until_ms": until_ms,
         "since_session_id": since_session_id,
@@ -310,6 +336,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                     min_messages=min_messages,
                     max_messages=max_messages,
                     min_words=min_words,
+                    max_words=max_words,
                     since_ms=since_ms,
                     until_ms=until_ms,
                     since_session_id=since_session_id,
@@ -547,6 +574,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
             min_messages=min_messages,
             max_messages=max_messages,
             min_words=min_words,
+            max_words=max_words,
             since_ms=since_ms,
             until_ms=until_ms,
             since_session_id=since_session_id,
@@ -1668,4 +1696,4 @@ def _fail(message: str) -> NoReturn:
     raise SystemExit(1)
 
 
-__all__ = ["execute_archive_query"]
+__all__ = ["execute_archive_query", "execute_delete_by_session_ids"]

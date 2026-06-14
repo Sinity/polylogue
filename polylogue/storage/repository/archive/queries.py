@@ -49,6 +49,7 @@ class RepositoryArchiveQueryMixin:
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
+        max_words: int | None = None,
         message_type: str | None = None,
     ) -> list[SessionSummary]:
         return await self.list_summaries_by_query(
@@ -72,6 +73,7 @@ class RepositoryArchiveQueryMixin:
                 min_messages=min_messages,
                 max_messages=max_messages,
                 min_words=min_words,
+                max_words=max_words,
                 message_type=message_type,
             )
         )
@@ -97,6 +99,7 @@ class RepositoryArchiveQueryMixin:
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
+        max_words: int | None = None,
         message_type: str | None = None,
     ) -> AsyncIterator[list[SessionSummary]]:
         offset = 0
@@ -121,6 +124,7 @@ class RepositoryArchiveQueryMixin:
                 min_messages=min_messages,
                 max_messages=max_messages,
                 min_words=min_words,
+                max_words=max_words,
                 message_type=message_type,
             )
             if not page:
@@ -150,6 +154,7 @@ class RepositoryArchiveQueryMixin:
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
+        max_words: int | None = None,
         message_type: str | None = None,
     ) -> list[Session]:
         return await self.list_by_query(
@@ -172,6 +177,7 @@ class RepositoryArchiveQueryMixin:
                 min_messages=min_messages,
                 max_messages=max_messages,
                 min_words=min_words,
+                max_words=max_words,
                 message_type=message_type,
             )
         )
@@ -212,6 +218,7 @@ class RepositoryArchiveQueryMixin:
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
+        max_words: int | None = None,
         message_type: str | None = None,
     ) -> int:
         return await self.count_by_query(
@@ -232,6 +239,7 @@ class RepositoryArchiveQueryMixin:
                 min_messages=min_messages,
                 max_messages=max_messages,
                 min_words=min_words,
+                max_words=max_words,
                 message_type=message_type,
             )
         )

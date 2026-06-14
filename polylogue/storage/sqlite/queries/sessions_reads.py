@@ -147,6 +147,7 @@ async def list_sessions(
     min_messages: int | None = None,
     max_messages: int | None = None,
     min_words: int | None = None,
+    max_words: int | None = None,
     message_type: str | None = None,
 ) -> list[SessionRecord]:
     use_stats_join = _needs_stats_join(
@@ -157,6 +158,7 @@ async def list_sessions(
         min_messages=min_messages,
         max_messages=max_messages,
         min_words=min_words,
+        max_words=max_words,
     )
     where_sql, params = _build_session_filters(
         source=source,
@@ -180,6 +182,7 @@ async def list_sessions(
         min_messages=min_messages,
         max_messages=max_messages,
         min_words=min_words,
+        max_words=max_words,
         message_type=message_type,
     )
 
@@ -238,6 +241,7 @@ async def list_session_summaries(
     min_messages: int | None = None,
     max_messages: int | None = None,
     min_words: int | None = None,
+    max_words: int | None = None,
     message_type: str | None = None,
 ) -> list[SessionRecord]:
     use_stats_join = _needs_stats_join(
@@ -248,6 +252,7 @@ async def list_session_summaries(
         min_messages=min_messages,
         max_messages=max_messages,
         min_words=min_words,
+        max_words=max_words,
     )
     where_sql, params = _build_session_filters(
         source=source,
@@ -271,6 +276,7 @@ async def list_session_summaries(
         min_messages=min_messages,
         max_messages=max_messages,
         min_words=min_words,
+        max_words=max_words,
         message_type=message_type,
     )
 
@@ -326,6 +332,7 @@ async def count_sessions(
     min_messages: int | None = None,
     max_messages: int | None = None,
     min_words: int | None = None,
+    max_words: int | None = None,
     message_type: str | None = None,
 ) -> int:
     use_stats_join = _needs_stats_join(
@@ -336,6 +343,7 @@ async def count_sessions(
         min_messages=min_messages,
         max_messages=max_messages,
         min_words=min_words,
+        max_words=max_words,
     )
     where_sql, params = _build_session_filters(
         source=source,
@@ -358,6 +366,7 @@ async def count_sessions(
         min_messages=min_messages,
         max_messages=max_messages,
         min_words=min_words,
+        max_words=max_words,
         message_type=message_type,
     )
     if use_stats_join:

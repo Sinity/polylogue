@@ -388,6 +388,7 @@ def test_async_execute_query_archive_lists_archive(
             min_messages: int | None,
             max_messages: int | None,
             min_words: int | None,
+            max_words: int | None,
             since_ms: int | None,
             until_ms: int | None,
             since_session_id: str | None,
@@ -422,6 +423,7 @@ def test_async_execute_query_archive_lists_archive(
             assert min_messages is None
             assert max_messages is None
             assert min_words is None
+            assert max_words is None
             assert since_ms is None
             assert until_ms is None
             assert since_session_id is None
@@ -834,6 +836,7 @@ def test_async_execute_query_archive_search_maps_provider_to_origin(
             min_messages: int | None,
             max_messages: int | None,
             min_words: int | None,
+            max_words: int | None,
             since_ms: int | None,
             until_ms: int | None,
             since_session_id: str | None,
@@ -868,6 +871,7 @@ def test_async_execute_query_archive_search_maps_provider_to_origin(
             assert min_messages == 1
             assert max_messages is None
             assert min_words == 3
+            assert max_words is None
             assert since_ms == 1767312000000
             assert until_ms is None
             assert since_session_id is None

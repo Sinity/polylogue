@@ -19,6 +19,7 @@ Covers:
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -624,3 +625,281 @@ class TestCrossSurfaceParity:
         assert cli_spec.query_terms == ()
         assert mcp_spec.query_terms == ()
         assert daemon_spec.query_terms == ()
+
+
+# ---------------------------------------------------------------------------
+# Bug 3 regression: words:<=N / words:=N (#1873)
+# ---------------------------------------------------------------------------
+
+
+class TestWordsCountRegressions:
+    """words:<=N and words:=N must set max_words, not silently map to min_words."""
+
+    def test_words_lte_sets_max_words(self) -> None:
+        """Bug 3a: words:<=N must set max_words (was incorrectly setting min_words)."""
+        spec = compile_expression("words:<=500")
+        assert spec.max_words == 500
+        assert spec.min_words is None
+
+    def test_words_eq_sets_both_bounds(self) -> None:
+        """Bug 3b: words:=N must set both min_words and max_words."""
+        spec = compile_expression("words:=100")
+        assert spec.min_words == 100
+        assert spec.max_words == 100
+
+    def test_words_gte_still_sets_min_words_only(self) -> None:
+        """words:>=N must still set min_words only (existing behavior preserved)."""
+        spec = compile_expression("words:>=200")
+        assert spec.min_words == 200
+        assert spec.max_words is None
+
+    def test_words_lte_and_gte_together(self) -> None:
+        """words:>=N words:<=M → both bounds set independently."""
+        spec = compile_expression("words:>=100 words:<=500")
+        assert spec.min_words == 100
+        assert spec.max_words == 500
+
+    def test_words_lte_did_not_set_wrong_field(self) -> None:
+        """Regression: words:<=500 must NOT set min_words (the pre-fix bug)."""
+        spec = compile_expression("words:<=500")
+        # Before the fix this would erroneously set min_words=500 and max_words=None.
+        assert spec.min_words is None, "words:<=500 set min_words instead of max_words — the Bug 3 regression is back"
+
+
+# ---------------------------------------------------------------------------
+# Bug 4 regression: negation on unsupported fields (#1873)
+# ---------------------------------------------------------------------------
+
+
+class TestNegationRejections:
+    """Fields without an exclude axis must raise ExpressionCompileError when negated."""
+
+    @pytest.mark.parametrize(
+        "expr",
+        [
+            "-repo:polylogue",
+            "-path:some/file",
+            "-cwd:/realm/project",
+            "-has:paste",
+            "-id:abc123",
+            "-title:refactor",
+            "-since:7d",
+            "-until:2024-01-15",
+            '-near:"semantic search"',
+            "-contains:foo",
+            "-lane:dialogue",
+        ],
+    )
+    def test_negated_unsupported_field_raises(self, expr: str) -> None:
+        """Bug 4: negating a field without an exclude axis must raise loudly."""
+        with pytest.raises(ExpressionCompileError, match="negation is not supported"):
+            compile_expression(expr)
+
+    def test_negated_origin_still_works(self) -> None:
+        """origin: supports negation via excluded_origins — must continue to work."""
+        spec = compile_expression("-origin:claude-code-session")
+        assert "claude-code-session" in spec.excluded_origins
+        assert "claude-code-session" not in spec.origins
+
+    def test_negated_tag_still_works(self) -> None:
+        """tag: supports negation — must continue to work."""
+        spec = compile_expression("-tag:review")
+        assert "review" in spec.excluded_tags
+        assert "review" not in spec.tags
+
+    def test_negated_tool_still_works(self) -> None:
+        """tool: supports negation — must continue to work."""
+        spec = compile_expression("-tool:bash")
+        assert "bash" in spec.excluded_tool_terms
+        assert "bash" not in spec.tool_terms
+
+    def test_negated_action_still_works(self) -> None:
+        """action: supports negation — must continue to work."""
+        spec = compile_expression("-action:file_edit")
+        assert "file_edit" in spec.excluded_action_terms
+        assert "file_edit" not in spec.action_terms
+
+
+# ---------------------------------------------------------------------------
+# Bug 5 regression: escaped quotes in phrase lexer (#1873)
+# ---------------------------------------------------------------------------
+
+
+class TestEscapedQuotePhrases:
+    """Quoted phrases containing \" escapes must be parsed correctly."""
+
+    def test_escaped_quote_inside_phrase(self) -> None:
+        """Bug 5: \\\" inside a quoted phrase must produce a literal quote in the term."""
+        # The expression: "say \"hello\""
+        # root_request.py wraps terms with spaces using \" escapes, so the phrase
+        # lexer must consume them without treating the \" as a close-quote.
+        spec = compile_expression(r'"say \"hello\""')
+        assert spec.query_terms == ('say "hello"',)
+
+    def test_escaped_quote_at_start_of_phrase(self) -> None:
+        """A phrase starting with \\\" must parse correctly."""
+        spec = compile_expression(r'"\"quoted word\""')
+        assert spec.query_terms == ('"quoted word"',)
+
+    def test_roundtrip_via_root_request(self) -> None:
+        """Terms with spaces are re-quoted by RootModeRequest.query_spec — must round-trip."""
+        from polylogue.cli.root_request import RootModeRequest
+
+        # A term with an embedded space is passed as one element (shell-quoted).
+        # RootModeRequest wraps it in "..." and escapes internal quotes.
+        request = RootModeRequest(params={}, query_terms=('say "hello"',))
+        spec = request.query_spec()
+        # The round-tripped phrase must be in query_terms (FTS), intact.
+        assert any('"hello"' in t for t in spec.query_terms), (
+            "Escaped-quote round-trip failed: term not found in spec.query_terms"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Bug 6 regression: JSON spec strict mode (#1873)
+# ---------------------------------------------------------------------------
+
+
+class TestJsonSpecStrictMode:
+    """JSON spec input must reject unknown keys (strict=True)."""
+
+    def test_unknown_key_in_json_spec_raises(self) -> None:
+        """Bug 6: unknown keys in a JSON spec must raise ExpressionCompileError."""
+        with pytest.raises(ExpressionCompileError, match="invalid spec fields"):
+            compile_expression('{"repo": "polylogue", "unknown_key": "value"}')
+
+    def test_known_keys_in_json_spec_succeed(self) -> None:
+        """Valid JSON spec must still compile correctly."""
+        spec = compile_expression('{"repo": "polylogue"}')
+        assert spec.repo_names == ("polylogue",)
+
+    def test_json_spec_strict_rejects_typo_key(self) -> None:
+        """A common typo like 'repos' (instead of 'repo') must be rejected."""
+        with pytest.raises(ExpressionCompileError, match="invalid spec fields"):
+            compile_expression('{"repos": ["polylogue"]}')
+
+
+# ---------------------------------------------------------------------------
+# Bug 7 regression: ?contains= not routed through DSL compiler (#1873)
+# ---------------------------------------------------------------------------
+
+
+class TestDaemonContainsParamNotCompiled:
+    """_do_archive_list_sessions must not route ?contains= through compile_expression."""
+
+    def test_contains_param_not_compiled_as_dsl(self, workspace_env: dict[str, Path]) -> None:
+        """Bug 7: a ?contains= value that the DSL compiler would reject must still
+        be treated as a literal FTS filter, not compiled.
+
+        ``action:badaction`` raises ExpressionCompileError("unknown action") if
+        routed through compile_expression; as a literal content filter it is
+        normalized to a MATCH-safe FTS query and simply returns no matches. The
+        old code did ``query or contains`` and compiled the contains value.
+        """
+        from polylogue.daemon.http import DaemonAPIHandler
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "s1")
+            .provider("claude-code")
+            .title("s1")
+            .add_message("m1", role="user", text="ordinary content")
+            .save()
+        )
+        handler = DaemonAPIHandler.__new__(DaemonAPIHandler)
+
+        # Would raise ExpressionCompileError if compiled; must not here.
+        payload = handler._do_archive_list_sessions(
+            workspace_env["archive_root"], {"contains": ["action:badaction"]}, 50, 0
+        )
+        assert isinstance(payload, dict)
+        assert payload["total"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Bug 8 regression: id:xyz filter applied in /api/archive/sessions (#1873)
+# ---------------------------------------------------------------------------
+
+
+class TestDaemonSessionIdFilter:
+    """Behavioral coverage of /api/sessions id: scoping and contains filtering.
+
+    Replaces the earlier source-grep regression (#1873 Bug 7/8) with real calls
+    into ``_do_archive_list_sessions`` over a seeded archive.
+    """
+
+    def _handler(self) -> Any:
+        from polylogue.daemon.http import DaemonAPIHandler
+
+        return DaemonAPIHandler.__new__(DaemonAPIHandler)
+
+    def _seed(self, index_db: Path, specs: list[tuple[str, str]]) -> list[str]:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from tests.infra.storage_records import SessionBuilder
+
+        for i, (sid, text) in enumerate(specs):
+            (
+                SessionBuilder(index_db, sid)
+                .provider("claude-code")
+                .title(sid)
+                .add_message(f"m{i}", role="user", text=text)
+                .save()
+            )
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            return [str(s.session_id) for s in archive.list_summaries(limit=1000)]
+
+    def test_id_clause_produces_session_id_in_spec(self) -> None:
+        """compile_expression('id:abc') must produce spec.session_id."""
+        spec = compile_expression("id:abc")
+        assert spec.session_id == "abc"
+
+    def test_id_query_scopes_results_and_total(self, workspace_env: dict[str, Path]) -> None:
+        index_db = workspace_env["archive_root"] / "index.db"
+        ids = self._seed(index_db, [("alpha", "alpha body"), ("beta", "beta body")])
+        assert len(ids) == 2
+
+        payload = self._handler()._do_archive_list_sessions(
+            workspace_env["archive_root"], {"query": [f"id:{ids[0]}"]}, 50, 0
+        )
+        assert isinstance(payload, dict)
+        # total must be scoped to the id match, NOT the archive-wide count of 2.
+        assert payload["total"] == 1
+        items = payload["items"]
+        assert isinstance(items, list) and len(items) == 1
+
+    def test_id_miss_returns_typed_empty_not_500(self, workspace_env: dict[str, Path]) -> None:
+        index_db = workspace_env["archive_root"] / "index.db"
+        self._seed(index_db, [("alpha", "alpha body")])
+
+        payload = self._handler()._do_archive_list_sessions(
+            workspace_env["archive_root"], {"query": ["id:nonexistentnope"]}, 50, 0
+        )
+        # A missing id is a typed-empty page, not a 500 propagated from resolve.
+        assert payload == {"items": [], "total": 0, "limit": 50, "offset": 0}
+
+    def test_id_ambiguous_prefix_raises_query_spec_error(self, workspace_env: dict[str, Path]) -> None:
+        import os
+
+        from polylogue.archive.query.spec import QuerySpecError
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        ids = self._seed(index_db, [("aaa", "x body"), ("aab", "y body")])
+        prefix = os.path.commonprefix(ids)
+        assert prefix and prefix not in ids, "need a shared, non-exact prefix"
+
+        with pytest.raises(QuerySpecError):
+            self._handler()._do_archive_list_sessions(workspace_env["archive_root"], {"query": [f"id:{prefix}"]}, 50, 0)
+
+    def test_contains_filters_without_query(self, workspace_env: dict[str, Path]) -> None:
+        index_db = workspace_env["archive_root"] / "index.db"
+        self._seed(index_db, [("one", "has findmetoken here"), ("two", "unrelated content")])
+
+        # ?contains=foo with no ?query= must still filter (Bug 7): it routes to the
+        # FTS branch as a literal term rather than returning the unfiltered page.
+        payload = self._handler()._do_archive_list_sessions(
+            workspace_env["archive_root"], {"contains": ["findmetoken"]}, 50, 0
+        )
+        assert isinstance(payload, dict)
+        hits = payload.get("hits")
+        assert isinstance(hits, list) and len(hits) == 1

@@ -11,7 +11,9 @@ All three verbs share the single :func:`check_cardinality` path from
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import MagicMock, patch
 
 import click
@@ -269,34 +271,46 @@ class TestDeleteVerbCardinality:
         with (
             patch(
                 "polylogue.cli.verb_cardinality.resolve_session_ids_for_verb",
-            ) as mock_resolve,
-            patch(
-                "polylogue.cli.query_verbs._execute_query_verb",
-            ) as mock_exec,
+                return_value=["id1", "id2", "id3"],
+            ),
+            patch("polylogue.cli.verb_cardinality.check_cardinality") as mock_card,
+            patch("polylogue.cli.archive_query.execute_delete_by_session_ids") as mock_exec,
         ):
             self._call_delete(child, dry_run=True)
 
-        # resolve must NOT be called — dry-run skips the cardinality check.
-        mock_resolve.assert_not_called()
+        # The cardinality guard must NOT run for a dry-run (it is a preview, not a
+        # destructive action), but the preview must still go through the real
+        # full-set delete path.
+        mock_card.assert_not_called()
         mock_exec.assert_called_once()
 
-    def test_dry_run_delegates_with_dry_run_true(self) -> None:
+    def test_dry_run_previews_full_resolved_set_not_truncated_query(self) -> None:
+        """Dry-run previews the full pre-resolved ID set.
+
+        Regression for the #1873 truncation: dry-run must NOT re-run the query
+        through ``_execute_query_verb`` (which caps at the default limit of 20 and
+        would preview fewer sessions than ``--yes --all`` actually deletes). It
+        must use the same resolution + delete path the real delete uses, with
+        ``dry_run=True``, so the previewed set equals the deleted set.
+        """
         _, child = _context_pair()
         child.obj = SimpleNamespace(config=MagicMock())
 
-        captured_request: list[RootModeRequest] = []
-
-        def _capture(ctx: click.Context, req: RootModeRequest) -> None:
-            captured_request.append(req)
-
+        resolved = [f"id{i}" for i in range(60)]
         with (
-            patch("polylogue.cli.verb_cardinality.resolve_session_ids_for_verb"),
-            patch("polylogue.cli.query_verbs._execute_query_verb", side_effect=_capture),
+            patch(
+                "polylogue.cli.verb_cardinality.resolve_session_ids_for_verb",
+                return_value=resolved,
+            ),
+            patch("polylogue.cli.query_verbs._execute_query_verb") as mock_query,
+            patch("polylogue.cli.archive_query.execute_delete_by_session_ids") as mock_exec,
         ):
             self._call_delete(child, dry_run=True)
 
-        assert captured_request, "delete_verb must call _execute_query_verb for dry-run"
-        assert captured_request[0].params.get("dry_run") is True
+        mock_query.assert_not_called()
+        args, kwargs = mock_exec.call_args
+        assert list(args[1]) == resolved, "dry-run must preview every resolved id, not a page"
+        assert kwargs.get("dry_run") is True
 
     def test_multi_match_without_all_raises(self) -> None:
         _, child = _context_pair()
@@ -312,6 +326,8 @@ class TestDeleteVerbCardinality:
                 self._call_delete(child, yes_flag=True, all_flag=False)
 
     def test_multi_match_with_yes_and_all_delegates(self) -> None:
+        # Bug 1 fix: delete uses execute_delete_by_session_ids (not _execute_query_verb)
+        # so all resolved IDs are deleted rather than only the first limit=20.
         _, child = _context_pair()
         child.obj = SimpleNamespace(config=MagicMock())
 
@@ -320,7 +336,7 @@ class TestDeleteVerbCardinality:
                 "polylogue.cli.verb_cardinality.resolve_session_ids_for_verb",
                 return_value=["id1", "id2"],
             ),
-            patch("polylogue.cli.query_verbs._execute_query_verb") as mock_exec,
+            patch("polylogue.cli.archive_query.execute_delete_by_session_ids") as mock_exec,
         ):
             self._call_delete(child, yes_flag=True, all_flag=True)
 
@@ -365,24 +381,28 @@ class TestDeleteVerbCardinality:
         )
 
     def test_yes_flag_sets_force_on_delegated_request(self) -> None:
+        # Bug 1 fix: delete passes force=True to execute_delete_by_session_ids.
         _, child = _context_pair()
         child.obj = SimpleNamespace(config=MagicMock())
 
-        captured: list[RootModeRequest] = []
+        captured_kwargs: list[dict[str, object]] = []
 
-        def _capture(ctx: click.Context, req: RootModeRequest) -> None:
-            captured.append(req)
+        def _capture(env: object, ids: list[str], *, force: bool) -> None:
+            captured_kwargs.append({"ids": ids, "force": force})
 
         with (
             patch(
                 "polylogue.cli.verb_cardinality.resolve_session_ids_for_verb",
                 return_value=["id1"],
             ),
-            patch("polylogue.cli.query_verbs._execute_query_verb", side_effect=_capture),
+            patch(
+                "polylogue.cli.archive_query.execute_delete_by_session_ids",
+                side_effect=_capture,
+            ),
         ):
             self._call_delete(child, yes_flag=True)
 
-        assert captured[0].params.get("force") is True, "--yes must set force on the delegated request"
+        assert captured_kwargs[0]["force"] is True, "--yes must propagate force=True to execute_delete_by_session_ids"
 
 
 # ---------------------------------------------------------------------------
@@ -470,3 +490,184 @@ class TestSharedCardinalityPath:
         analyze_src = inspect.getsource(query_verbs.analyze_verb.callback)  # type: ignore[arg-type]
         # analyze_verb deliberately has no cardinality restriction.
         assert "check_cardinality" not in analyze_src, "analyze_verb must not call check_cardinality"
+
+
+# ---------------------------------------------------------------------------
+# Bug 1 regression: delete truncation (#1873)
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteUsesPreResolvedIds:
+    """delete_verb must operate on all pre-resolved IDs, not re-query with limit=20."""
+
+    def _delete_callback(self) -> object:
+        cb = getattr(query_verbs.delete_verb.callback, "__wrapped__", None)
+        assert callable(cb)
+        return cb
+
+    def test_all_resolved_ids_are_deleted_not_truncated(self) -> None:
+        """Bug 1: execute_delete_by_session_ids is called with all resolved IDs.
+
+        Before the fix, _execute_query_verb re-ran the query with limit=20,
+        silently truncating large result sets.  After the fix, the pre-resolved
+        IDs are forwarded directly.
+        """
+        many_ids = [f"id{i}" for i in range(50)]  # more than the old default limit of 20
+        _, child = _context_pair()
+        child.obj = SimpleNamespace(config=MagicMock())
+
+        captured: list[list[str]] = []
+
+        def _capture(env: object, ids: list[str], *, force: bool) -> None:
+            captured.append(list(ids))
+
+        with (
+            patch(
+                "polylogue.cli.verb_cardinality.resolve_session_ids_for_verb",
+                return_value=many_ids,
+            ),
+            patch(
+                "polylogue.cli.archive_query.execute_delete_by_session_ids",
+                side_effect=_capture,
+            ),
+        ):
+            cb = self._delete_callback()
+            cb(child, False, True, True, False)  # type: ignore[operator]  # dry_run=F, yes=T, all=T, force=F
+
+        assert captured, "execute_delete_by_session_ids must be called"
+        assert len(captured[0]) == 50, (
+            f"Expected all 50 IDs to be deleted but got {len(captured[0])}. "
+            "delete_verb may be re-querying with a limit instead of using pre-resolved IDs."
+        )
+
+    def test_delete_does_not_call_execute_query_verb_for_non_dry_run(self) -> None:
+        """After the fix, the non-dry-run delete path must NOT call _execute_query_verb."""
+        _, child = _context_pair()
+        child.obj = SimpleNamespace(config=MagicMock())
+
+        with (
+            patch(
+                "polylogue.cli.verb_cardinality.resolve_session_ids_for_verb",
+                return_value=["id1"],
+            ),
+            patch("polylogue.cli.archive_query.execute_delete_by_session_ids"),
+            patch("polylogue.cli.query_verbs._execute_query_verb") as mock_exec,
+        ):
+            cb = self._delete_callback()
+            cb(child, False, True, False, False)  # type: ignore[operator]  # yes=T
+
+        mock_exec.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Bug 2 regression: _async_resolve_ids uses compiled spec (#1873)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveIdsUsesCompiledSpec:
+    """_async_resolve_ids must compile DSL expressions, not pass them as FTS text."""
+
+    def test_resolve_ids_calls_query_spec_not_raw_params(self) -> None:
+        """Bug 2: resolve path uses request.query_spec() (compiled DSL) not query_params()."""
+        import inspect
+
+        from polylogue.cli.verb_cardinality import _async_resolve_ids
+
+        src = inspect.getsource(_async_resolve_ids)
+        # After the fix the function must call query_spec() for DSL compilation.
+        assert "query_spec()" in src, "_async_resolve_ids must call request.query_spec()"
+        # The old broken path used build_query_execution_plan(request.query_params()).
+        assert "build_query_execution_plan" not in src, (
+            "_async_resolve_ids must not use build_query_execution_plan (passes raw text as FTS)"
+        )
+        assert "query_params()" not in src, "_async_resolve_ids must not call query_params() (bypasses DSL compiler)"
+
+
+# ---------------------------------------------------------------------------
+# Non-mocked >50-session delete cardinality proof (#1873 recovery pack)
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteCardinalityLargeNonMocked:
+    """End-to-end proof over a real seeded archive (no mocks on resolution/delete).
+
+    The invariant that makes ``delete --yes --all`` safe is that three sets are
+    identical and none is silently page-limited:
+
+        guard set (cardinality)  ==  dry-run preview set  ==  deleted set
+
+    The default query page limit is 20 (50 in some paths); seeding 60 matching
+    sessions makes any truncation observable. This exercises the real
+    ``resolve_session_ids_for_verb`` + ``delete_verb`` + ``ArchiveStore`` path.
+    """
+
+    TOKEN = "zzbulkdeletetoken"
+    COUNT = 60
+    _capsys: pytest.CaptureFixture[str]
+
+    def _seed(self, index_db: Path) -> None:
+        from tests.infra.storage_records import SessionBuilder
+
+        for i in range(self.COUNT):
+            (
+                SessionBuilder(index_db, f"bulk-{i:03d}")
+                .provider("claude-code")
+                .title(f"{self.TOKEN} session {i}")
+                .add_message(f"m{i}", role="user", text=f"{self.TOKEN} body line {i}")
+                .save()
+            )
+
+    def _delete_callback(self) -> object:
+        cb = getattr(query_verbs.delete_verb.callback, "__wrapped__", None)
+        assert callable(cb), "delete_verb.callback must be a context-decorated function"
+        return cb
+
+    def _invoke_delete(self, env: object, *, dry_run: bool, yes_flag: bool, all_flag: bool) -> dict[str, object]:
+        import json
+
+        _, child = _context_pair(query_terms=(self.TOKEN,))
+        child.obj = env
+        self._delete_callback()(child, dry_run, yes_flag, all_flag, False)  # type: ignore[operator]
+        # _emit_delete prints exactly one JSON document to stdout.
+        captured = self._capsys.readouterr().out.strip()
+        return cast(dict[str, object], json.loads(captured))
+
+    @pytest.fixture(autouse=True)
+    def _bind_capsys(self, capsys: pytest.CaptureFixture[str]) -> None:
+        self._capsys = capsys
+
+    def test_guard_dry_run_and_deleted_sets_are_identical_and_unlimited(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.cli.verb_cardinality import resolve_session_ids_for_verb
+        from tests.infra.app_env import make_app_env
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        self._seed(index_db)
+
+        env = make_app_env()
+        request = RootModeRequest.from_params({"query": (self.TOKEN,)})
+
+        # 1. Guard set: the full matched set, not a default page.
+        guard = resolve_session_ids_for_verb(env, request)
+        assert len(guard) == self.COUNT, f"cardinality guard truncated to {len(guard)} (expected {self.COUNT})"
+        assert len(set(guard)) == self.COUNT, "guard set has duplicates"
+
+        # 2. Dry-run preview set: must equal the guard set (the #1873 bug previewed
+        #    only the first page while --yes --all deleted everything).
+        preview = self._invoke_delete(env, dry_run=True, yes_flag=False, all_flag=False)
+        assert preview["dry_run"] is True
+        assert preview["matched"] == self.COUNT
+        assert preview["deleted"] == 0
+        preview_ids = preview["session_ids"]
+        assert isinstance(preview_ids, list)
+        assert set(preview_ids) == set(guard), "dry-run preview set diverges from the guard set"
+
+        # Dry-run mutates nothing.
+        assert len(resolve_session_ids_for_verb(env, request)) == self.COUNT
+
+        # 3. Deleted set: --yes --all removes the entire matched set.
+        result = self._invoke_delete(env, dry_run=False, yes_flag=True, all_flag=True)
+        assert result["matched"] == self.COUNT
+        assert result["deleted"] == self.COUNT, f"delete truncated to {result['deleted']} (expected {self.COUNT})"
+
+        # The archive no longer matches the query: deleted set == guard set.
+        assert resolve_session_ids_for_verb(env, request) == []
