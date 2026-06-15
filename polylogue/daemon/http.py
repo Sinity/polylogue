@@ -694,8 +694,20 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
-    def _send_error(self, status: HTTPStatus, code: str) -> None:
-        self._send_json(status, {"ok": False, "error": code})
+    def _send_error(self, status: HTTPStatus, code: str, detail: str | None = None) -> None:
+        """Emit the canonical daemon error envelope.
+
+        Every daemon error response shares one machine-output contract
+        (#1818): ``{"ok": false, "error": <code>, "detail": <str|null>,
+        "field": <str|null>}``, produced by ``QueryErrorPayload`` so the
+        decorator path, the cursor-rejection path, and ad-hoc 4xx sites all
+        serialize identically. Health/status payloads use a different,
+        deliberately separate shape and do not route through here.
+        """
+        self._send_json(
+            status,
+            QueryErrorPayload(error=code, detail=detail).model_dump(mode="json"),
+        )
 
     def _parse_path(self) -> tuple[list[str], dict[str, list[str]]]:
         parsed = urlparse(self.path)
@@ -1374,7 +1386,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 offset=offset,
             )
         except InvalidSearchCursorError as exc:
-            return {"ok": False, "error": "invalid_cursor", "detail": str(exc)}
+            return QueryErrorPayload(error="invalid_cursor", detail=str(exc)).model_dump(mode="json")
         return envelope.model_dump(mode="json")
 
     def _do_archive_list_sessions(
