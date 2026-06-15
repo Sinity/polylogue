@@ -54,15 +54,20 @@ BENCHMARK_SCENARIOS: tuple[BenchmarkCampaignEntry, ...] = (
     ),
     BenchmarkCampaignEntry(
         name="recovery-digest",
-        description="Deterministic recovery digest transform benchmark domain",
+        description="Deterministic recovery digest transform/render benchmark domain",
         execution=pytest_execution("tests/benchmarks/test_recovery_digest.py"),
         notes=(
-            "Covers recovery/digest transform compilation over tool-heavy sessions.",
+            "Covers recovery/digest transform compilation and report rendering over tool-heavy sessions.",
             "Keeps #1880 recovery artifact shape in the generated benchmark inventory.",
         ),
         origin="authored.benchmark-domain",
         artifact_targets=("recovery_digest", "forensic_index", "resume_bundle"),
-        operation_targets=("compile-recovery-digest", "benchmark.transform.recovery-digest"),
+        operation_targets=(
+            "compile-recovery-digest",
+            "render-recovery-report",
+            "benchmark.transform.recovery-digest",
+            "benchmark.transform.recovery-report",
+        ),
         tags=("benchmark", "transform", "recovery"),
     ),
     BenchmarkCampaignEntry(

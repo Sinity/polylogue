@@ -13,7 +13,7 @@ from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.domain_models import Session
 from polylogue.core.enums import Origin
-from polylogue.insights.transforms import compile_recovery_digest
+from polylogue.insights.transforms import RecoveryReportPreset, compile_recovery_digest, render_recovery_report
 from polylogue.types import SessionId
 from tests.benchmarks.helpers import BenchmarkFixture
 
@@ -87,3 +87,15 @@ def test_bench_compile_recovery_digest(benchmark: BenchmarkFixture, message_coun
     assert digest.size_metrics.tool_summary_count == message_count
     assert digest.size_metrics.subagent_report_count == message_count
     assert digest.transform.transform_id == "recovery_digest_v0"
+
+
+@pytest.mark.benchmark
+@pytest.mark.parametrize("preset", ["continue", "blame"])
+def test_bench_render_recovery_report(benchmark: BenchmarkFixture, preset: RecoveryReportPreset) -> None:
+    """render_recovery_report() for deterministic recovery report presets."""
+    digest = compile_recovery_digest(_session(120))
+
+    report = benchmark(lambda: render_recovery_report(digest, preset=preset))
+
+    assert report.startswith(f"# {preset.title()}: Recovery digest benchmark")
+    assert "[evidence:" in report

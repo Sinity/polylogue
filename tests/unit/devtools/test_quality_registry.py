@@ -73,7 +73,9 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     assert recovery_digest.artifact_targets == ("recovery_digest", "forensic_index", "resume_bundle")
     assert recovery_digest.operation_targets == (
         "compile-recovery-digest",
+        "render-recovery-report",
         "benchmark.transform.recovery-digest",
+        "benchmark.transform.recovery-report",
     )
     assert recovery_digest.tags == ("benchmark", "transform", "recovery")
     startup_health = next(

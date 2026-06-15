@@ -33,6 +33,7 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
         "query-session-insight-status",
         "query-archive-debt",
         "compile-recovery-digest",
+        "render-recovery-report",
         "compile-inferred-corpus-specs",
         "compile-inferred-corpus-scenarios",
         "query-schema-catalog",
@@ -81,6 +82,8 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
     assert specs["query-archive-coverage"].path_targets == ("archive-coverage-query-loop",)
     assert specs["compile-recovery-digest"].path_targets == ("recovery-digest-transform-loop",)
     assert specs["compile-recovery-digest"].produces == ("recovery_digest", "forensic_index", "resume_bundle")
+    assert specs["render-recovery-report"].path_targets == ("recovery-digest-transform-loop",)
+    assert specs["render-recovery-report"].produces == ("recovery_report_markdown",)
     assert specs["compile-inferred-corpus-specs"].path_targets == ("inferred-corpus-compilation-loop",)
     assert specs["compile-inferred-corpus-scenarios"].path_targets == ("inferred-corpus-compilation-loop",)
     assert specs["query-schema-catalog"].path_targets == ("schema-list-query-loop",)
@@ -102,7 +105,9 @@ def test_declared_operation_catalog_contains_runtime_and_control_plane_operation
 
     assert "project-session-insight-readiness" in catalog.names()
     assert "compile-recovery-digest" in catalog.names()
+    assert "render-recovery-report" in catalog.names()
     assert "benchmark.transform.recovery-digest" in catalog.names()
+    assert "benchmark.transform.recovery-report" in catalog.names()
     assert "benchmark.storage.crud" in catalog.names()
     assert "cli.json-contract" in catalog.names()
 
