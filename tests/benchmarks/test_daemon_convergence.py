@@ -311,6 +311,7 @@ def test_convergence_large_session_memory(
     records = _make_claude_code_session("large-session-memory", n_messages)
     _write_jsonl(root / "large.jsonl", records)
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+    monkeypatch.setenv("POLYLOGUE_CONFIG", str(tmp_path / "polylogue.toml"))
 
     result = benchmark(lambda: _run_convergence_memory_probe(root.parent, tmp_path))
 
@@ -357,6 +358,7 @@ def test_convergence_huge_session_memory_bounded(
     target = root / "huge.jsonl"
     _write_jsonl(target, records)
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+    monkeypatch.setenv("POLYLOGUE_CONFIG", str(tmp_path / "polylogue.toml"))
 
     file_bytes = target.stat().st_size
 
