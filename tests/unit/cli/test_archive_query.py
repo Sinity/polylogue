@@ -77,23 +77,13 @@ class TestResolveOrigins:
         result = _resolve_origins({})
         assert result == ()
 
-    def test_provider_to_origin_mapping(self) -> None:
-        """Provider is mapped to origin."""
-        params: dict[str, object] = {"provider": "claude-code"}
-        result = _resolve_origins(params)
-        assert result == ("claude-code-session",)
+    def test_provider_param_is_ignored(self) -> None:
+        """The public root query surface speaks origin only (#1810).
 
-    def test_provider_csv(self) -> None:
-        """Multiple providers are mapped."""
-        params: dict[str, object] = {"provider": "claude-code,chatgpt"}
-        result = _resolve_origins(params)
-        assert result == ("claude-code-session", "chatgpt-export")
-
-    def test_invalid_provider(self) -> None:
-        """Invalid provider raises UsageError."""
-        params: dict[str, object] = {"provider": "bogus-provider"}
-        with pytest.raises(click.UsageError, match="cannot map provider"):
-            _resolve_origins(params)
+        The legacy ``provider`` -> origin fallback was removed; a provider
+        token on the root query no longer resolves to any origin.
+        """
+        assert _resolve_origins({"provider": "claude-code"}) == ()
 
 
 # Tests for _resolve_excluded_origins
@@ -106,23 +96,9 @@ class TestResolveExcludedOrigins:
         result = _resolve_excluded_origins(params)
         assert result == ("claude-code-session", "chatgpt-export")
 
-    def test_exclude_provider(self) -> None:
-        """Excluded provider is mapped."""
-        params: dict[str, object] = {"exclude_provider": "claude-code"}
-        result = _resolve_excluded_origins(params)
-        assert result == ("claude-code-session",)
-
-    def test_exclude_provider_csv(self) -> None:
-        """Multiple excluded providers are mapped."""
-        params: dict[str, object] = {"exclude_provider": "claude-code,chatgpt"}
-        result = _resolve_excluded_origins(params)
-        assert result == ("claude-code-session", "chatgpt-export")
-
-    def test_invalid_exclude_provider(self) -> None:
-        """Invalid exclude provider raises UsageError."""
-        params: dict[str, object] = {"exclude_provider": "bogus-provider"}
-        with pytest.raises(click.UsageError, match="cannot map excluded provider"):
-            _resolve_excluded_origins(params)
+    def test_exclude_provider_param_is_ignored(self) -> None:
+        """Excluded-provider fallback removed: origin vocabulary only (#1810)."""
+        assert _resolve_excluded_origins({"exclude_provider": "claude-code"}) == ()
 
     def test_empty_params(self) -> None:
         """Empty params returns empty tuple."""
