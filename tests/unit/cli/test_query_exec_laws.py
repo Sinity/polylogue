@@ -2384,7 +2384,7 @@ class TestSearchQueryContracts:
 
             resolved_args[idx] = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d")
 
-        result = runner.invoke(cli, ["--plain", *resolved_args])
+        result = runner.invoke(cli, ["--plain", "find", *resolved_args])
         assert result.exit_code == expected_exit, case_id
         if error_hint:
             assert error_hint in result.output.lower(), case_id
@@ -2402,7 +2402,7 @@ class TestSearchQueryContracts:
         del search_workspace
 
         runner = CliRunner()
-        result = runner.invoke(cli, ["--plain", *args])
+        result = runner.invoke(cli, ["--plain", "find", *args])
         assert result.exit_code == 0, case_id
 
         if expectation == "json_list":
@@ -2431,7 +2431,7 @@ class TestSearchEdgeCases:
 
         runner = CliRunner()
         # Query mode with non-matching term
-        result = runner.invoke(cli, ["--plain", "nonexistent_term_xyz"])
+        result = runner.invoke(cli, ["--plain", "find", "nonexistent_term_xyz"])
         # exit_code 2 = no results (valid outcome)
         assert result.exit_code == 2
         assert "no session" in result.output.lower() or "matched" in result.output.lower()
@@ -2520,7 +2520,7 @@ class TestSearchIndexRebuild:
 
         runner = CliRunner()
         # Query mode
-        result = runner.invoke(cli, ["--plain", "searchable"])
+        result = runner.invoke(cli, ["--plain", "find", "searchable"])
         # Should either succeed (rebuild worked) or report no results.
         assert result.exit_code in (0, 2)
         if result.exit_code == 0:

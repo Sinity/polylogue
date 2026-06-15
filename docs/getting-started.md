@@ -84,8 +84,8 @@ polylogued status
 | `polylogue -p <provider> count` | Count matched sessions |
 | `polylogue stats --by provider` | Grouped statistics |
 | `polylogue cost --this-month` | Cost estimates |
-| `polylogue export <id>` | Export one session |
-| `polylogue --since yesterday bulk-export` | Batch export |
+| `polylogue --id <id> read` | Export one session |
+| `polylogue --since yesterday read --all` | Batch export |
 | `polylogued run` | Start the daemon |
 | `polylogued status` | Daemon health check |
 | `polylogue <id> show` | Display full session |

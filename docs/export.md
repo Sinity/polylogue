@@ -2,62 +2,65 @@
 
 # Export
 
-Polylogue exports sessions in multiple formats, both singly and in bulk.
+Polylogue exports sessions in multiple formats, both singly and in bulk. Export
+is delivered through the `read` verb of the query-first CLI.
 
 ## Single Export
 
-Export one session by ID:
+Export one session by ID with a root filter that narrows the archive to a
+single match:
 
 ```bash
-polylogue export claude-ai:abc123
+polylogue --id claude-ai:abc123 read
 ```
 
 Specify format:
 
 ```bash
-polylogue export claude-ai:abc123 --format json
-polylogue export claude-ai:abc123 --format html
-polylogue export claude-ai:abc123 --format obsidian
+polylogue --id claude-ai:abc123 read --format json
+polylogue --id claude-ai:abc123 read --format html
+polylogue --id claude-ai:abc123 read --format obsidian
 ```
 
 ## Bulk Export
 
-Export every session matching a filter chain:
+Export every session matching a filter chain with `read --all`:
 
 ```bash
-polylogue --provider claude-code --since 2026-01 bulk-export
-polylogue --tag important bulk-export --format markdown
-polylogue "refactor" --has-tool-use bulk-export --format jsonl
+polylogue --provider claude-code --since 2026-01 read --all
+polylogue --tag important read --all --format markdown
+polylogue "refactor" --has-tool-use read --all --format ndjson
 ```
 
 ### Piping
 
-`bulk-export --format jsonl` emits one JSON line per session, suitable for
+`read --all --format ndjson` emits one JSON line per session, suitable for
 piping:
 
 ```bash
-polylogue -p claude-code bulk-export --format jsonl | jq '.title'
-polylogue --since "last month" bulk-export --format jsonl | wc -l
+polylogue -p claude-code read --all --format ndjson | jq '.title'
+polylogue --since "last month" read --all --format ndjson | wc -l
 ```
 
 ## Export Formats
 
 | Format | Description |
 |--------|-------------|
+| `text` | Plain text -- message content only, no formatting |
 | `markdown` | Default -- formatted markdown with message roles, timestamps, and code blocks |
 | `json` | Full session as structured JSON |
-| `jsonl` | One JSON object per line (bulk-export default) |
+| `ndjson` | One JSON object per line (bulk default) |
 | `yaml` | YAML representation |
-| `plaintext` | Plain text -- message content only, no formatting |
 | `html` | HTML with Pygments syntax highlighting on code blocks |
 | `obsidian` | YAML frontmatter + markdown body, compatible with Obsidian vaults |
 | `org` | Org-mode format for Emacs users |
+| `csv` | Comma-separated rows |
 
 Set format with `--format` / `-f`:
 
 ```bash
-polylogue export <id> --format json
-polylogue --since yesterday bulk-export --format html
+polylogue --id <id> read --format json
+polylogue --since yesterday read --all --format html
 ```
 
 ## Content Blocks
@@ -67,12 +70,12 @@ results, images, code blocks, and document references. Use output modifiers to
 filter:
 
 ```bash
-polylogue export <id> --prose-only        # Only authored prose
-polylogue export <id> --no-tool-calls     # Strip tool call blocks
-polylogue export <id> --no-tool-outputs   # Strip tool result blocks
-polylogue export <id> --no-code-blocks    # Strip code blocks
-polylogue export <id> --no-file-reads     # Strip file read blocks
-polylogue export <id> --dialogue-only     # User/assistant messages only
+polylogue --id <id> read --prose-only        # Only authored prose
+polylogue --id <id> read --no-tool-calls     # Strip tool call blocks
+polylogue --id <id> read --no-tool-outputs   # Strip tool result blocks
+polylogue --id <id> read --no-code-blocks    # Strip code blocks
+polylogue --id <id> read --no-file-reads     # Strip file read blocks
+polylogue --dialogue-only --id <id> read     # User/assistant messages only
 ```
 
 ## Sharing Considerations
