@@ -526,8 +526,6 @@ Commands:
   commands
   completions        Emit shell completion setup for polylogue.
   config             Show configuration paths and resolved settings.
-  context            Compose context preamble from archive objects.
-  context-pack       Build a provenance-rich context pack for agent analysis.
   cost               Summarize session cost telemetry.
   count              Print count of matched sessions.
   dashboard          Open the local dashboard.
@@ -605,7 +603,9 @@ Options:
       polylogue find id:abc then read --view raw --format json
       polylogue find id:abc then read --to browser
       polylogue find 'repo:polylogue has:paste' then read --all --format ndjson
-      polylogue find 'archive runtime' then read --view context
+      polylogue find id:abc then read --view context --related-limit 5
+      polylogue find 'cost tracking' then read --view context-pack --max-sessions 5
+      polylogue read --view context-pack --project-repo github.com/Sinity/polylogue --since 2026-01-01
       polylogue find id:abc then read --view neighbors --window-hours 48
       polylogue --latest read --view neighbors --format json
       polylogue find id:abc then read --view correlation --since-hours 4
@@ -615,10 +615,10 @@ Options:
       timeline, tools, files, metadata, continuation
 
 Options:
-  -v, --view [summary|transcript|messages|raw|context|neighbors|correlation]
+  -v, --view [summary|transcript|messages|raw|context|context-pack|neighbors|correlation]
                                   What to render (summary, transcript,
-                                  messages, raw, context, neighbors,
-                                  correlation).  [default: summary]
+                                  messages, raw, context, context-pack,
+                                  neighbors, correlation).  [default: summary]
   --to [terminal|stdout|browser|clipboard|file]
                                   Output destination.  [default: terminal]
   -f, --format [text|markdown|json|ndjson|yaml|html|obsidian|org|csv]
@@ -644,6 +644,22 @@ Options:
                                   GitHub API via gh CLI (--view correlation).
   --otlp                          Add OTLP span evidence to correlation output
                                   (--view correlation).
+  --related-limit INTEGER         Number of related sessions to include
+                                  (--view context).  [default: 5]
+  --project-path TEXT             Filter by cwd prefix pattern (--view
+                                  context-pack).
+  --project-repo TEXT             Filter by git repo URL or name (--view
+                                  context-pack).
+  --since TEXT                    Start date, ISO 8601 (--view context-pack).
+  --until TEXT                    End date, ISO 8601 (--view context-pack).
+  --pack-origin TEXT              Source-origin filter (--view context-pack).
+  --query TEXT                    Free-text query (--view context-pack).
+  --max-sessions INTEGER          Max sessions, 1-20 (--view context-pack).
+                                  [default: 5]
+  --max-messages INTEGER          Max messages per session, 1-100 (--view
+                                  context-pack).  [default: 20]
+  --no-redact                     Do not redact filesystem paths (--view
+                                  context-pack).
   --no-code-blocks                Exclude code blocks (--view messages).
   --no-tool-calls                 Exclude tool calls (--view messages).
   --no-tool-outputs               Exclude tool outputs (--view messages).
@@ -908,15 +924,6 @@ Options:
 <td>Analytics over the matched result set: wraps the stats and facets surfaces; <code>--by</code> groups by dimension and <code>--format json</code> emits structured aggregates.</td>
 </tr>
 <tr>
-<td><code>context-pack</code></td>
-<td>yes</td>
-<td>no</td>
-<td>yes</td>
-<td>no</td>
-<td>—</td>
-<td>Provenance-rich JSON document; downstream agent surface.</td>
-</tr>
-<tr>
 <td><code>count</code></td>
 <td>no</td>
 <td>yes</td>
@@ -1097,15 +1104,6 @@ Options:
 </tr>
 </thead>
 <tbody>
-<tr>
-<td><code>context</code></td>
-<td>yes</td>
-<td>no</td>
-<td>yes</td>
-<td>no</td>
-<td>—</td>
-<td>Composes a context preamble from archive objects; compose emits JSON.</td>
-</tr>
 <tr>
 <td><code>cost</code></td>
 <td>yes</td>
