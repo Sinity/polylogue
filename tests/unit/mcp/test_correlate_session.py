@@ -64,7 +64,7 @@ async def test_correlate_session_not_found(mcp_server: MCPServerUnderTest) -> No
         )
 
     payload = json.loads(raw)
-    assert "error" in payload or "code" in payload
+    assert "message" in payload or "code" in payload
 
 
 @pytest.mark.asyncio

@@ -93,7 +93,7 @@ async def test_session_tool_timing_not_found(
         )
 
     payload = json.loads(raw)
-    assert "error" in payload or "code" in payload
+    assert "message" in payload or "code" in payload
 
 
 @pytest.mark.asyncio

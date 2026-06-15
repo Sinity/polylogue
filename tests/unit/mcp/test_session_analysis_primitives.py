@@ -120,7 +120,7 @@ async def test_compare_sessions_rejects_single_id(mcp_server: MCPServerUnderTest
         )
 
     payload = json.loads(raw)
-    assert "error" in payload or "not_found" in payload
+    assert "message" in payload or "not_found" in payload
     assert payload.get("total_found", 1) <= 1
 
 
@@ -136,7 +136,7 @@ async def test_compare_sessions_rejects_empty_input(mcp_server: MCPServerUnderTe
         )
 
     payload = json.loads(raw)
-    assert "error" in payload or "code" in payload
+    assert "message" in payload or "code" in payload
 
 
 @pytest.mark.asyncio
@@ -152,7 +152,7 @@ async def test_compare_sessions_rejects_too_many_ids(mcp_server: MCPServerUnderT
         )
 
     payload = json.loads(raw)
-    assert "error" in payload or "code" in payload
+    assert "message" in payload or "code" in payload
     assert "Too many" in str(payload)
 
 
@@ -279,7 +279,7 @@ async def test_find_similar_sessions_handles_not_found(
         )
 
     payload = json.loads(raw)
-    assert "error" in payload or "code" in payload
+    assert "message" in payload or "code" in payload
 
 
 @pytest.mark.asyncio
@@ -298,7 +298,7 @@ async def test_find_similar_sessions_rejects_invalid_dimension(
         )
 
     payload = json.loads(raw)
-    assert "error" in payload or "code" in payload
+    assert "message" in payload or "code" in payload
 
 
 @pytest.mark.asyncio

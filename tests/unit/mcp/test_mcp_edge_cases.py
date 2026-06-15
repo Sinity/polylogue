@@ -74,8 +74,8 @@ class TestSafeCall:
         assert body["code"] == "internal_error"
         assert body["tool"] == "test_tool"
         assert body["detail"] == "RuntimeError"
-        assert "internal error" in body["error"]
-        assert "RuntimeError" in body["error"]
+        assert "internal error" in body["message"]
+        assert "RuntimeError" in body["message"]
 
     def test_traceback_not_in_output(self) -> None:
         def failing() -> str:

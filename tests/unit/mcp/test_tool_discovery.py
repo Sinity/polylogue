@@ -131,7 +131,7 @@ def test_tool_returns_valid_response_envelope(tool_name: str, kwargs: dict[str, 
     # the stdio loop). We only fail when the response is not valid JSON.
     if body.get("is_error") is True:
         # Must have at least an error message.
-        assert body.get("error") is not None, f"{tool_name}: error response missing error string"
+        assert body.get("message") is not None, f"{tool_name}: error response missing error string"
         # internal_error (with or without explicit code) is acceptable —
         # it means the safety net caught a tool-body exception.
         # Other structured errors (schema_version_mismatch, not_found) are also fine.

@@ -464,7 +464,7 @@ class TestQueryTools:
         assert body["is_error"] is True
         assert body["tool"] == "search"
         assert body["code"] == "internal_error"
-        assert "internal error" in body["error"]
+        assert "internal error" in body["message"]
         mock_poly.search_session_hits.assert_not_called()
         mock_poly.query_sessions.assert_not_called()
 
@@ -748,8 +748,8 @@ class TestGetSessionTool:
             result = invoke_surface(mcp_server._tool_manager._tools["get_session"].fn, id="nonexistent")
 
         parsed = json.loads(result)
-        assert "error" in parsed
-        assert "not found" in parsed["error"].lower()
+        assert "message" in parsed
+        assert "not found" in parsed["message"].lower()
 
     def test_get_messages_returns_full_messages(self, tmp_path: Path, mcp_server: MCPServerUnderTest) -> None:
         long_text = "A" * 2000
@@ -1268,7 +1268,7 @@ class TestMutationTools:
             tags=["review"],
         )
 
-        assert "requires at least one session_id" in json.loads(result)["error"]
+        assert "requires at least one session_id" in json.loads(result)["message"]
 
     def test_list_tags_returns_counts(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
@@ -1351,7 +1351,7 @@ class TestMutationTools:
         )
         parsed = json.loads(result)
         assert parsed["is_error"] is True
-        assert "empty" in parsed["error"].lower()
+        assert "empty" in parsed["message"].lower()
 
     def test_set_metadata_rejects_whitespace_key(self, mcp_server: MCPServerUnderTest) -> None:
         """Whitespace-only metadata key returns structured error."""
@@ -1363,7 +1363,7 @@ class TestMutationTools:
         )
         parsed = json.loads(result)
         assert parsed["is_error"] is True
-        assert "empty" in parsed["error"].lower()
+        assert "empty" in parsed["message"].lower()
 
     def test_set_metadata_rejects_overlong_key(self, mcp_server: MCPServerUnderTest) -> None:
         """Metadata key exceeding 200 characters returns structured error."""
@@ -1375,7 +1375,7 @@ class TestMutationTools:
         )
         parsed = json.loads(result)
         assert parsed["is_error"] is True
-        assert "200" in parsed["error"]
+        assert "200" in parsed["message"]
 
     def test_delete_metadata_success(self, mcp_server: MCPServerUnderTest) -> None:
         from polylogue.surfaces.payloads import MetadataMutationResult
@@ -1410,7 +1410,7 @@ class TestMutationTools:
             )
 
         parsed = json.loads(result)
-        assert "confirm=true" in parsed["error"]
+        assert "confirm=true" in parsed["message"]
         mock_poly.delete_session.assert_not_called()
 
     def test_delete_with_confirm(self, mcp_server: MCPServerUnderTest) -> None:
@@ -1484,7 +1484,7 @@ class TestMutationTools:
 
             result = invoke_surface(mcp_server._tool_manager._tools["get_session_summary"].fn, id="nonexistent")
 
-        assert "not found" in json.loads(result)["error"].lower()
+        assert "not found" in json.loads(result)["message"].lower()
 
     def test_session_tree_returns_envelope(self, simple_session: Session, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:

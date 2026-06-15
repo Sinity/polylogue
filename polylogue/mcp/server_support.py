@@ -120,7 +120,7 @@ def _exception_to_error_json(fn_name: str, exc: BaseException) -> str:
     """
     if isinstance(exc, SchemaVersionMismatchError):
         payload = MCPErrorPayload(
-            error=str(exc),
+            message=str(exc),
             code="schema_version_mismatch",
             detail=type(exc).__name__,
             tool=fn_name,
@@ -132,7 +132,7 @@ def _exception_to_error_json(fn_name: str, exc: BaseException) -> str:
         # vocabulary status enum + fixed command names — so forward it
         # verbatim instead of redacting to the class name (#1503 AC4).
         payload = MCPErrorPayload(
-            error=str(exc),
+            message=str(exc),
             code="embedding_retrieval_not_ready",
             detail=type(exc).__name__,
             tool=fn_name,
@@ -140,14 +140,14 @@ def _exception_to_error_json(fn_name: str, exc: BaseException) -> str:
         )
     elif isinstance(exc, PolylogueError):
         payload = MCPErrorPayload(
-            error=f"{fn_name}: {type(exc).__name__}",
+            message=f"{fn_name}: {type(exc).__name__}",
             code="polylogue_error",
             detail=type(exc).__name__,
             tool=fn_name,
         )
     else:
         payload = MCPErrorPayload(
-            error=f"{fn_name}: internal error ({type(exc).__name__})",
+            message=f"{fn_name}: internal error ({type(exc).__name__})",
             code="internal_error",
             detail=type(exc).__name__,
             tool=fn_name,
@@ -208,7 +208,7 @@ async def _async_safe_call(fn_name: str, fn: Callable[[], Awaitable[TResult]]) -
 def _error_json(message: str, **extra: object) -> str:
     """Return a JSON-encoded error dict."""
     code = extra.pop("code", None)
-    return _json_payload(MCPErrorPayload(error=message, code=code, **extra), exclude_none=True)  # type: ignore[arg-type]
+    return _json_payload(MCPErrorPayload(message=message, code=code, **extra), exclude_none=True)  # type: ignore[arg-type]
 
 
 def _set_runtime_services(services: RuntimeServices | None) -> None:

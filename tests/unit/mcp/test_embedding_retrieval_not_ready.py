@@ -53,8 +53,8 @@ def test_mcp_error_json_carries_actionable_message_verbatim() -> None:
     assert payload["detail"] == "EmbeddingRetrievalNotReadyError"
     assert payload["tool"] == "search"
     assert payload["readiness_status"] == "none"
-    assert "polylogue embed status" in payload["error"]
-    assert "polylogue embed backfill" in payload["error"]
+    assert "polylogue embed status" in payload["message"]
+    assert "polylogue embed backfill" in payload["message"]
 
 
 def test_mcp_error_json_distinct_from_generic_polylogue_error() -> None:
@@ -63,9 +63,9 @@ def test_mcp_error_json_distinct_from_generic_polylogue_error() -> None:
     generic = DatabaseError("opaque internal SQL error mentioning a path")
     payload = json.loads(_exception_to_error_json("search", generic))
     assert payload["code"] == "polylogue_error"
-    assert payload["error"] == "search: DatabaseError"
+    assert payload["message"] == "search: DatabaseError"
     # The raw message is intentionally not echoed.
-    assert "opaque internal SQL error" not in payload["error"]
+    assert "opaque internal SQL error" not in payload["message"]
 
 
 def test_mcp_error_json_includes_readiness_status_for_other_states() -> None:

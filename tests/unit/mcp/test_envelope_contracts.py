@@ -342,9 +342,11 @@ def read_server() -> MCPServerUnderTest:
 
 
 def _assert_structured_error(payload: str, *, expected_code: str | None = None) -> None:
-    """Assert payload is a structured MCPErrorPayload with is_error and code."""
+    """Assert payload is a structured MCPErrorPayload with the canonical
+    ``status``/``message`` core (#1818) plus the MCP ``is_error`` flag and code."""
     body = json.loads(payload)
-    assert "error" in body, f"missing 'error' field: {body}"
+    assert body.get("status") == "error", f"missing/wrong 'status': {body}"
+    assert "message" in body, f"missing 'message' field: {body}"
     assert body.get("is_error") is True, f"missing or false 'is_error': {body}"
     if expected_code is not None:
         assert body.get("code") == expected_code, f"expected code={expected_code}, got {body.get('code')}"

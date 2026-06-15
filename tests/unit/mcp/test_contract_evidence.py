@@ -55,8 +55,9 @@ pytestmark = pytest.mark.contract
 def _structured_error(payload: str) -> dict[str, Any]:
     body = json.loads(payload)
     assert isinstance(body, dict), f"error payload is not a JSON object: {payload!r}"
+    assert body.get("status") == "error", f"missing/wrong 'status': {body}"
     assert body.get("is_error") is True, f"missing or false 'is_error': {body}"
-    assert isinstance(body.get("error"), str) and body["error"], f"missing/empty 'error': {body}"
+    assert isinstance(body.get("message"), str) and body["message"], f"missing/empty 'message': {body}"
     return body
 
 
@@ -137,7 +138,7 @@ class TestToolErrorEnvelopes:
     ) -> None:
         result = invoke_surface(mcp_server._tool_manager._tools["neighbor_candidates"].fn)
         body = _structured_error(result)
-        assert "requires id or query" in body["error"], f"unexpected error message: {body}"
+        assert "requires id or query" in body["message"], f"unexpected error message: {body}"
 
     def test_get_session_missing_returns_not_found_envelope(
         self,
@@ -343,7 +344,7 @@ class TestToolErrorEnvelopes:
             tags=["x"],
         )
         body = _structured_error(result)
-        assert "at least one session_id" in body["error"], body
+        assert "at least one session_id" in body["message"], body
 
     def test_safe_call_sanitises_exception_into_typed_payload(
         self,
