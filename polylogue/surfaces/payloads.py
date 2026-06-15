@@ -1271,7 +1271,9 @@ class MutationResultPayload(SurfacePayloadModel):
     """
 
     status: str
-    """``ok``, ``deleted``, ``not_found``, ``unchanged``, or ``partial``."""
+    """``ok``, ``deleted``, ``not_found``, ``unchanged``, or ``partial``. The CLI
+    bulk-delete surface additionally emits ``preview`` (dry-run) and ``aborted``
+    (operator declined the confirmation prompt)."""
 
     session_id: str | None = None
     detail: str | None = None
@@ -1288,6 +1290,14 @@ class MutationResultPayload(SurfacePayloadModel):
     session_count: int | None = None
     tag_count: int | None = None
     applied_count: int | None = None
+    operation: str | None = None
+    """CLI bulk-mutation discriminator: ``add_tag``, ``set_meta``, ``mutate``, or
+    ``delete``. ``None`` for the single-session MCP/daemon surfaces, whose
+    operation is implied by the calling tool/endpoint."""
+    session_ids: tuple[str, ...] | None = None
+    """Session ids enumerated by a CLI bulk operation (e.g. the delete dry-run
+    preview lists the sessions that *would* be deleted). ``None`` for
+    single-session surfaces, which carry the lone id in ``session_id``."""
 
 
 # ---------------------------------------------------------------------------

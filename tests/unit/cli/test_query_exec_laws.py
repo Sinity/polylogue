@@ -707,7 +707,7 @@ def test_async_execute_query_archive_outputs_stats(
             {
                 "archive": True,
                 "stats_only": True,
-                "provider": "codex",
+                "origin": "codex-session",
                 "tag": "archive",
                 "output_format": "json",
             },
@@ -899,8 +899,8 @@ def test_async_execute_query_archive_search_maps_provider_to_origin(
             {
                 "archive": True,
                 "query": ("needle",),
-                "provider": "codex",
-                "exclude_provider": "chatgpt",
+                "origin": "codex-session",
+                "exclude_origin": "chatgpt-export",
                 "tag": "review,archive",
                 "exclude_tag": "archived",
                 "repo": "polylogue",
@@ -970,7 +970,7 @@ def test_async_execute_query_archive_filters_multiple_providers(
             env,
             {
                 "archive": True,
-                "provider": "codex,chatgpt",
+                "origin": "codex-session,chatgpt-export",
                 "output_format": "json",
             },
         )
@@ -1741,9 +1741,9 @@ def test_async_execute_query_archive_adds_tags_to_session(
     )
 
     assert json.loads(capsys.readouterr().out) == {
-        "mode": "mutation",
+        "status": "ok",
         "operation": "add_tag",
-        "changed": 2,
+        "affected_count": 2,
     }
 
 
@@ -1792,10 +1792,10 @@ def test_async_execute_query_archive_deletes_session_by_id(
     )
 
     assert json.loads(capsys.readouterr().out) == {
-        "mode": "mutation",
+        "status": "deleted",
         "operation": "delete",
-        "matched": 1,
-        "deleted": 1,
+        "session_count": 1,
+        "affected_count": 1,
     }
 
 
@@ -1844,9 +1844,9 @@ def test_async_execute_query_archive_sets_session_metadata(
     )
 
     assert json.loads(capsys.readouterr().out) == {
-        "mode": "mutation",
+        "status": "ok",
         "operation": "set_meta",
-        "changed": 1,
+        "affected_count": 1,
     }
 
 
@@ -1894,9 +1894,9 @@ def test_async_execute_query_archive_delete_dry_run_does_not_delete(
     )
 
     payload = json.loads(capsys.readouterr().out)
-    assert payload["dry_run"] is True
-    assert payload["matched"] == 1
-    assert payload["deleted"] == 0
+    assert payload["status"] == "preview"
+    assert payload["session_count"] == 1
+    assert payload["affected_count"] == 0
     assert payload["session_ids"] == ["codex-session:native-1"]
 
 
