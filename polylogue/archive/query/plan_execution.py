@@ -29,6 +29,9 @@ async def list_for_plan(
     plan: SessionQueryPlan,
     repository: SessionQueryRuntimeStore,
 ) -> list[Session]:
+    from polylogue.archive.query.archive_execution import _reject_unexecutable_session_seed
+
+    _reject_unexecutable_session_seed(plan)
     if plan.similar_text:
         candidates = await repository.search_similar(
             plan.similar_text,
@@ -52,6 +55,9 @@ async def list_summaries_for_plan(
     plan: SessionQueryPlan,
     repository: SessionQueryRuntimeStore,
 ) -> list[SessionSummary]:
+    from polylogue.archive.query.archive_execution import _reject_unexecutable_session_seed
+
+    _reject_unexecutable_session_seed(plan)
     can_use_action_stats = await plan.can_use_action_stats_with(repository)
     uses_action_read_model = plan._uses_action_read_model()
     if not plan.can_use_summaries() and not uses_action_read_model:

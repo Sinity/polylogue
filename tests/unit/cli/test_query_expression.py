@@ -184,6 +184,35 @@ class TestCompilerFieldMapping:
     def test_near_quoted(self) -> None:
         spec = compile_expression('near:"semantic search test"')
         assert spec.similar_text == "semantic search test"
+        # Free text must NOT bleed into the session-seed leg.
+        assert spec.similar_session_id is None
+
+    def test_near_bare_word_is_text_not_session(self) -> None:
+        # Conservative rule: a bare word stays free-text similarity, never a
+        # session reference.
+        spec = compile_expression("near:refactor")
+        assert spec.similar_text == "refactor"
+        assert spec.similar_session_id is None
+
+    def test_near_id_sets_similar_session_id(self) -> None:
+        spec = compile_expression("near:id:abc123")
+        assert spec.similar_session_id == "abc123"
+        # The session-seed leg is distinct from free text.
+        assert spec.similar_text is None
+
+    def test_near_id_threads_into_plan(self) -> None:
+        plan = compile_expression("near:id:abc123").to_plan()
+        assert plan.similar_session_id == "abc123"
+        assert plan.similar_text is None
+
+    def test_near_id_empty_ref_raises(self) -> None:
+        with pytest.raises(ExpressionCompileError, match="requires a session reference"):
+            compile_expression("near:id:")
+
+    def test_near_id_merge_into_base(self) -> None:
+        base = SessionQuerySpec()
+        merged = compile_expression_into("near:id:abc123", base)
+        assert merged.similar_session_id == "abc123"
 
     def test_contains(self) -> None:
         spec = compile_expression("contains:foo")

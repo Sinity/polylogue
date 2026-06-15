@@ -113,6 +113,7 @@ class SessionQueryPlan:
     limit: int | None = None
     sample: int | None = None
     similar_text: str | None = None
+    similar_session_id: str | None = None
     predicates: tuple[Callable[[Session], bool], ...] = ()
     continuation: bool | None = None
     sidechain: bool | None = None

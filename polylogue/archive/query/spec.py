@@ -228,6 +228,7 @@ _RECOGNIZED_PARAMS: frozenset[str] = frozenset(
         "min_words",
         "max_words",
         "similar_text",
+        "similar_session_id",
         "since_session_id",
         "message_type",
         "offset",
@@ -344,6 +345,7 @@ def build_query_spec_from_params(
         min_words=optional_non_negative_int("min_words", params.get("min_words")),
         max_words=optional_non_negative_int("max_words", params.get("max_words")),
         similar_text=optional_text(params.get("similar_text")),
+        similar_session_id=optional_text(params.get("similar_session_id")),
         since_session_id=since_session_id,
         message_type=optional_message_type(params.get("message_type")),
         offset=optional_int(params.get("offset")) or 0,
@@ -392,6 +394,7 @@ def query_spec_to_plan(
         min_words=spec.min_words,
         max_words=spec.max_words,
         similar_text=spec.similar_text,
+        similar_session_id=spec.similar_session_id,
         since_session_id=spec.since_session_id,
         message_type=spec.message_type,
         offset=spec.offset,
@@ -449,6 +452,7 @@ class SessionQuerySpec:
     min_words: int | None = None
     max_words: int | None = None
     similar_text: str | None = None
+    similar_session_id: str | None = None
     since_session_id: str | None = None
     message_type: str | None = None
     offset: int = 0
