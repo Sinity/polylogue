@@ -45,6 +45,9 @@ class CorpusSourceKind(str, Enum):
     INFERRED = "inferred"
 
 
+DEMO_CORPUS_SEED = 1843
+
+
 @dataclass(frozen=True, kw_only=True)
 class CorpusProfile:
     """Observed or inferred corpus-profile metadata separate from generation controls."""
@@ -508,6 +511,53 @@ def build_default_corpus_specs(
             tags=tags,
         )
         for provider in providers
+    )
+
+
+def build_demo_corpus_specs(
+    *,
+    seed: int = DEMO_CORPUS_SEED,
+    origin: str = "generated.demo-fixture-world",
+    tags: tuple[str, ...] = ("synthetic", "demo", "release-gate"),
+) -> tuple[CorpusSpec, ...]:
+    """Return the deterministic approved demo fixture-world corpus contract (#1843).
+
+    This is the named spec layer that future ``import --demo`` can materialize.
+    It intentionally reuses the synthetic corpus machinery instead of inventing
+    a separate demo-data path.
+    """
+
+    return (
+        CorpusSpec.for_provider(
+            "chatgpt",
+            count=1,
+            messages_min=2,
+            messages_max=3,
+            seed=seed,
+            style="demo-normal-chat",
+            origin=origin,
+            tags=tags,
+        ),
+        CorpusSpec.for_provider(
+            "claude-code",
+            count=1,
+            messages_min=6,
+            messages_max=10,
+            seed=seed + 1,
+            style="demo-agent-tools",
+            origin=origin,
+            tags=tags,
+        ),
+        CorpusSpec.for_provider(
+            "codex",
+            count=1,
+            messages_min=6,
+            messages_max=10,
+            seed=seed + 2,
+            style="demo-agent-recovery",
+            origin=origin,
+            tags=tags,
+        ),
     )
 
 
