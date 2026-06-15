@@ -17,7 +17,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/archive.py
-    loc: 3060
+    loc: 3082
     target: polylogue/api/archive.py
     owner: stable
     cross_cut: { api: async }
@@ -647,6 +647,10 @@ files:
     loc: 6
     target: polylogue/cli/__main__.py
     owner: stable
+  - path: polylogue/cli/action_contracts.py
+    loc: 213
+    target: polylogue/cli/action_contracts.py
+    owner: stable
   - path: polylogue/cli/archive_query.py
     loc: 1690
     target: polylogue/cli/archive_query.py
@@ -736,7 +740,7 @@ files:
     target: polylogue/cli/commands/feedback.py
     owner: stable
   - path: polylogue/cli/commands/import_command.py
-    loc: 159
+    loc: 190
     target: polylogue/cli/commands/import_command.py
     owner: stable
   - path: polylogue/cli/commands/init.py
@@ -848,7 +852,7 @@ files:
     target: polylogue/cli/query_stats.py
     owner: stable
   - path: polylogue/cli/query_verbs.py
-    loc: 1072
+    loc: 1124
     target: polylogue/cli/query_verbs.py
     owner: stable
   - path: polylogue/cli/root_request.py
@@ -1424,7 +1428,7 @@ files:
     target: polylogue/insights/topology.py
     owner: stable
   - path: polylogue/insights/transforms.py
-    loc: 496
+    loc: 864
     target: polylogue/insights/transforms.py
     owner: stable
   - path: polylogue/logging.py
@@ -1529,7 +1533,7 @@ files:
     target: polylogue/mcp/server_maintenance_tools.py
     owner: stable
   - path: polylogue/mcp/server_mutation_tools.py
-    loc: 860
+    loc: 871
     target: polylogue/mcp/server_mutation_tools.py
     owner: stable
   - path: polylogue/mcp/server_prompts.py
@@ -1797,7 +1801,7 @@ files:
     target: polylogue/rendering/renderers/html_template.py
     owner: stable
   - path: polylogue/scenarios/__init__.py
-    loc: 137
+    loc: 139
     target: polylogue/scenarios/__init__.py
     owner: stable
   - path: polylogue/scenarios/assertions.py
@@ -1809,7 +1813,7 @@ files:
     target: polylogue/scenarios/cli_surfaces.py
     owner: stable
   - path: polylogue/scenarios/corpus.py
-    loc: 783
+    loc: 833
     target: polylogue/scenarios/corpus.py
     owner: stable
   - path: polylogue/scenarios/executable.py
@@ -3149,7 +3153,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/__init__.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive.py
-    loc: 5198
+    loc: 5233
     target: polylogue/storage/sqlite/archive_tiers/archive.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive_init.py
@@ -3217,7 +3221,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/user_overlay.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/user_write.py
-    loc: 887
+    loc: 980
     target: polylogue/storage/sqlite/archive_tiers/user_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/write.py
