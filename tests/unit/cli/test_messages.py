@@ -6,6 +6,8 @@ from types import TracebackType
 from typing import cast
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.cli.messages import run_messages, run_raw
 from polylogue.cli.root_request import RootModeRequest
@@ -93,7 +95,7 @@ def _request(tmp_path: Path) -> RootModeRequest:
     )
 
 
-def test_run_messages_emits_json_and_passes_projection(tmp_path: Path) -> None:
+def test_run_messages_emits_json_and_passes_projection(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     env = _env()
     api = _FakeApi(
         messages_result=(
@@ -123,7 +125,7 @@ def test_run_messages_emits_json_and_passes_projection(tmp_path: Path) -> None:
             output_format="json",
         )
 
-    payload = json.loads(_ui_print(env).call_args.args[0])
+    payload = json.loads(capsys.readouterr().out)
     assert payload["messages"][0]["text"] == "hello"
     assert api.messages_kwargs["session_id"] == "conv-1"
     assert api.messages_kwargs["message_role"] == ("user",)
@@ -133,6 +135,57 @@ def test_run_messages_emits_json_and_passes_projection(tmp_path: Path) -> None:
     projection = cast(ContentProjectionSpec, api.messages_kwargs["content_projection"])
     assert projection.include_code is False
     assert projection.include_tool_calls is False
+
+
+def test_run_messages_json_is_single_finite_document(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """`read --view messages --format json` emits one finite JSON value (#1818)."""
+    env = _env()
+    api = _FakeApi(
+        messages_result=(
+            [
+                # Rich-markup-like text must survive byte-for-byte: machine output
+                # goes through raw click.echo, not the markup-interpreting console.
+                {"id": "m1", "role": "user", "message_type": "message", "text": "[bold]first[/bold]"},
+                {"id": "m2", "role": "assistant", "message_type": "message", "text": "second"},
+            ],
+            2,
+        )
+    )
+
+    with patch("polylogue.api.Polylogue.open", return_value=api):
+        run_messages(env, _request(tmp_path), session_id="conv-1", output_format="json")
+
+    # Output is a single finite JSON value on stdout (one json.loads succeeds).
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["session_id"] == "conv-1"
+    assert [m["text"] for m in payload["messages"]] == ["[bold]first[/bold]", "second"]
+    assert payload["total"] == 2
+
+
+def test_run_messages_ndjson_emits_one_json_document_per_line(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`--format ndjson` streams one parseable JSON document per message (#1818)."""
+    env = _env()
+    api = _FakeApi(
+        messages_result=(
+            [
+                {"id": "m1", "role": "user", "message_type": "message", "text": "[bold]first[/bold]"},
+                {"id": "m2", "role": "assistant", "message_type": "message", "text": "second"},
+            ],
+            2,
+        )
+    )
+
+    with patch("polylogue.api.Polylogue.open", return_value=api):
+        run_messages(env, _request(tmp_path), session_id="conv-1", output_format="ndjson")
+
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
+    assert len(lines) == 2
+    docs = [json.loads(line) for line in lines]  # each line parses independently
+    # Rich markup in text survives byte-for-byte (raw click.echo, no console markup).
+    assert [d["text"] for d in docs] == ["[bold]first[/bold]", "second"]
+    assert all(d["session_id"] == "conv-1" for d in docs)
 
 
 def test_run_messages_markdown_and_not_found_paths(tmp_path: Path) -> None:

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import cast
 
+import click
+
 from polylogue.api.archive import SessionNotFoundError
 from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.archive.message.roles import MessageRoleFilter, normalize_message_roles
@@ -61,25 +63,41 @@ def run_messages(
 
             fmt = output_format or "markdown"
 
+            def _message_document(m: object) -> dict[str, object]:
+                return {
+                    "id": str(m.id),  # type: ignore[attr-defined]
+                    "role": str(m.role),  # type: ignore[attr-defined]
+                    "message_type": str(m.message_type.value),  # type: ignore[attr-defined]
+                    "text": m.text or "",  # type: ignore[attr-defined]
+                }
+
             if fmt == "json":
                 import json as _json
 
+                # Finite machine-output contract (#1818): one JSON value.
                 payload = {
                     "session_id": session_id,
-                    "messages": [
-                        {
-                            "id": str(m.id),
-                            "role": str(m.role),
-                            "message_type": str(m.message_type.value),
-                            "text": m.text or "",
-                        }
-                        for m in messages
-                    ],
+                    "messages": [_message_document(m) for m in messages],
                     "total": total,
                     "limit": limit,
                     "offset": offset,
                 }
-                env.ui.print(_json.dumps(payload, indent=2))
+                # Machine output goes through click.echo (raw stdout), NOT
+                # env.ui.print: the Rich console defaults markup=True and would
+                # interpret/strip bracket sequences like "[bold]" inside message
+                # text, corrupting the exact bytes json.dumps produced (#1818).
+                click.echo(_json.dumps(payload, indent=2))
+            elif fmt == "ndjson":
+                import json as _json
+
+                # Streaming machine-output contract (#1818): one JSON document
+                # per line. Each line is self-contained, carrying session_id so
+                # downstream consumers do not need an out-of-band envelope.
+                # Raw click.echo (not env.ui.print) so Rich markup never mangles
+                # message text inside the JSON document.
+                for m in messages:
+                    line = {"session_id": session_id, **_message_document(m)}
+                    click.echo(_json.dumps(line))
             else:
                 for msg in messages:
                     role = str(msg.role)
