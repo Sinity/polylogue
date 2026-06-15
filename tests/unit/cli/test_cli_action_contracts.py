@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+from io import StringIO
 from pathlib import Path
+from typing import cast
 from unittest.mock import patch
 
 import click
 from click.testing import CliRunner
+from rich.console import Console
 
 from polylogue.cli.action_contracts import (
     ACTION_CONTRACT_BY_PATH,
@@ -18,7 +21,20 @@ from polylogue.cli.action_contracts import (
 )
 from polylogue.cli.click_app import cli
 from polylogue.cli.command_inventory import CommandPath, iter_command_paths
+from polylogue.cli.commands.config import config_command
 from polylogue.cli.query_group import _split_query_mode_args
+from tests.infra.app_env import make_app_env
+
+GUARD_BEHAVIOR_COVERAGE: dict[str, str] = {
+    "daemon_accepts_schedule": "test_import_contract_guard_requires_daemon_acceptance",
+    "dry_run_or_yes_required": "test_delete_contract_guard_refuses_plain_forceless_delete",
+    "explicit_query_intent": "test_virtual_find_counterpart_is_query_parser_keyword",
+    "file_destination_requires_out": "test_read_contract_guard_requires_out_for_file_destination",
+    "path_exists_or_demo": "test_import_contract_guard_rejects_missing_source_path",
+    "secret_values_redacted": "test_config_contract_guard_redacts_secret_values",
+    "single_match_unless_all": "test_delete_contract_guard_requires_all_for_multi_match",
+    "single_match_unless_all_or_first": "test_mark_contract_guard_requires_all_or_first_for_multi_match",
+}
 
 
 def _command_paths() -> dict[tuple[str, ...], click.Command]:
@@ -81,6 +97,17 @@ def test_virtual_find_counterpart_is_query_parser_keyword() -> None:
     assert query_terms == ("needle",)
     assert not has_subcommand
     assert explicit_query
+
+
+def test_every_declared_guard_has_behavior_coverage() -> None:
+    """Guard metadata must be bound to executable behavior coverage."""
+    declared = {guard for contract in ACTION_CONTRACTS for guard in contract.guards}
+    covered = set(GUARD_BEHAVIOR_COVERAGE)
+    assert declared == covered, (
+        "#1816 guards should not be documentation-only metadata.\n"
+        f"Missing behavior coverage: {sorted(declared - covered)}\n"
+        f"Stale behavior coverage: {sorted(covered - declared)}"
+    )
 
 
 def test_floor_click_paths_without_contract_are_reported() -> None:
@@ -160,6 +187,54 @@ def test_delete_contract_guard_requires_all_for_multi_match(workspace_env: dict[
     execute_delete.assert_not_called()
 
 
+def test_read_contract_guard_requires_out_for_file_destination(workspace_env: dict[str, Path]) -> None:
+    """`file_destination_requires_out` is enforced by the public read verb."""
+    _assert_contract_declares_guard(("read",), "file_destination_requires_out")
+
+    result = CliRunner().invoke(cli, ["find", "needle", "then", "read", "--to", "file"])
+
+    assert result.exit_code != 0
+    assert "--out" in result.output
+
+
+def test_mark_contract_guard_requires_all_or_first_for_multi_match(workspace_env: dict[str, Path]) -> None:
+    """`single_match_unless_all_or_first` is enforced before mark mutation."""
+    _assert_contract_declares_guard(("mark",), "single_match_unless_all_or_first")
+
+    runner = CliRunner()
+    with (
+        patch("polylogue.cli.verb_cardinality.resolve_session_ids_for_verb", return_value=["session-1", "session-2"]),
+        patch("polylogue.api.sync.bridge.run_coroutine_sync") as run_coroutine_sync,
+    ):
+        result = runner.invoke(cli, ["find", "needle", "then", "mark", "--tag-add", "reviewed"])
+
+    assert result.exit_code != 0
+    assert "--all" in result.output
+    assert "--first" in result.output
+    run_coroutine_sync.assert_not_called()
+
+
+def test_mark_contract_guard_allows_first_for_multi_match(workspace_env: dict[str, Path]) -> None:
+    """The mark guard permits the explicitly first-only multi-match path."""
+    _assert_contract_declares_guard(("mark",), "single_match_unless_all_or_first")
+
+    def _close_coroutine(coro: object) -> None:
+        close = getattr(coro, "close", None)
+        if callable(close):
+            close()
+
+    runner = CliRunner()
+    with (
+        patch("polylogue.cli.verb_cardinality.resolve_session_ids_for_verb", return_value=["session-1", "session-2"]),
+        patch("polylogue.api.sync.bridge.run_coroutine_sync", side_effect=_close_coroutine) as run_coroutine_sync,
+    ):
+        result = runner.invoke(cli, ["find", "needle", "then", "mark", "--tag-add", "reviewed", "--first"])
+
+    assert result.exit_code == 0, result.output
+    assert "Marked 1 session" in result.output
+    run_coroutine_sync.assert_called_once()
+
+
 def test_import_contract_guard_rejects_missing_source_path(tmp_path: Path) -> None:
     """`path_exists_or_demo` is enforced by the public import CLI."""
     _assert_contract_declares_guard(("import",), "path_exists_or_demo")
@@ -169,3 +244,41 @@ def test_import_contract_guard_rejects_missing_source_path(tmp_path: Path) -> No
 
     assert result.exit_code != 0
     assert "does not exist" in result.output.lower() or "no such" in result.output.lower()
+
+
+def test_import_contract_guard_requires_daemon_acceptance(tmp_path: Path, workspace_env: dict[str, Path]) -> None:
+    """`daemon_accepts_schedule` refuses to claim success on unreachable daemon."""
+    _assert_contract_declares_guard(("import",), "daemon_accepts_schedule")
+
+    source = tmp_path / "session.json"
+    source.write_text("{}", encoding="utf-8")
+
+    result = CliRunner().invoke(cli, ["import", str(source), "--daemon-url", "http://127.0.0.1:9"])
+
+    assert result.exit_code != 0
+    assert "Could not reach daemon" in result.output
+    assert "polylogued run" in result.output
+
+
+def test_config_contract_guard_redacts_secret_values(tmp_path: Path, monkeypatch: object) -> None:
+    """`secret_values_redacted` is enforced by the public config command."""
+    _assert_contract_declares_guard(("config",), "secret_values_redacted")
+
+    from pytest import MonkeyPatch
+
+    assert isinstance(monkeypatch, MonkeyPatch)
+    secret = "sk-voyage-CONTRACT-LEAKME"
+    cfg = tmp_path / "polylogue.toml"
+    cfg.write_text("[embedding]\nenabled = true\n", encoding="utf-8")
+    monkeypatch.setenv("POLYLOGUE_CONFIG", str(cfg))
+    monkeypatch.setenv("POLYLOGUE_SITE_CONFIG", str(tmp_path / "absent-site.toml"))
+    monkeypatch.setenv("VOYAGE_API_KEY", secret)
+
+    env = make_app_env()
+    result = CliRunner().invoke(config_command, obj=env, args=["-f", "json"])
+    output = cast(StringIO, cast(Console, env.ui.console).file).getvalue()
+
+    assert result.exit_code == 0, result.output
+    assert secret not in output
+    payload = json.loads(output)
+    assert payload["voyage_api_key"] == "<set>"
