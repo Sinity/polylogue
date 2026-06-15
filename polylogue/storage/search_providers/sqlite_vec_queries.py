@@ -157,6 +157,7 @@ class SqliteVecQueryMixin:
 
         conn = self._get_connection()
         try:
+            seed_rows: list[sqlite3.Row] = []
             try:
                 seed_rows = conn.execute(
                     "SELECT message_id, embedding FROM message_embeddings WHERE session_id = ?",
