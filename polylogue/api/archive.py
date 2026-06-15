@@ -62,7 +62,7 @@ if TYPE_CHECKING:
     from polylogue.insights.export_bundles import InsightExportBundleRequest, InsightExportBundleResult
     from polylogue.insights.readiness import InsightReadinessQuery, InsightReadinessReport
     from polylogue.insights.resume import ResumeBrief, ResumeCandidate
-    from polylogue.insights.transforms import RecoveryDigest
+    from polylogue.insights.transforms import RecoveryDigest, RecoveryReportPreset
     from polylogue.operations import ArchiveStats
     from polylogue.protocols import ProgressCallback, SessionQueryRuntimeStore
     from polylogue.readiness import ReadinessReport
@@ -1084,6 +1084,13 @@ class PolylogueArchiveMixin:
         if session is None:
             return None
         return compile_recovery_digest(session)
+
+    async def recovery_report(self, session_id: str, preset: RecoveryReportPreset) -> str | None:
+        """Render one deterministic recovery report preset for a session."""
+        digest = await self.recovery_digest(session_id)
+        if digest is None:
+            return None
+        return digest.report_markdown(preset)
 
     async def get_sessions(
         self,

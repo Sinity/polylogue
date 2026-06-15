@@ -197,6 +197,7 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "delete_annotation",
         "list_annotations",
         "neighbor_candidates",
+        "recovery_report",
         "find_resume_candidates",
         "export_insight_bundle",
         "parse_file",
@@ -645,6 +646,27 @@ async def test_recovery_digest_compiles_seeded_session(tmp_path: Path) -> None:
         await archive.close()
 
 
+async def test_recovery_report_renders_seeded_session_presets(tmp_path: Path) -> None:
+    """``recovery_report`` exposes deterministic preset markdown with evidence refs."""
+    archive = _archive(tmp_path)
+    db_path = archive.config.archive_root / "index.db"
+    await _seed_two_sessions(db_path)
+    try:
+        continue_report = await archive.recovery_report("claude-ai-export:conv-alpha", "continue")
+        blame_report = await archive.recovery_report("claude-ai-export:conv-alpha", "blame")
+
+        assert continue_report is not None
+        assert blame_report is not None
+        assert continue_report.startswith("# Continue: Alpha")
+        assert blame_report.startswith("# Blame: Alpha")
+        assert continue_report != blame_report
+        assert "[evidence:" in continue_report
+        assert "[evidence:" in blame_report
+        assert await archive.recovery_report("nonexistent", "continue") is None
+    finally:
+        await archive.close()
+
+
 async def test_get_actions_derives_from_archive_blocks(tmp_path: Path) -> None:
     """``get_actions`` derives tool invocations from content blocks.
 
@@ -769,6 +791,7 @@ async def test_get_session_returns_none_for_unknown_id(tmp_path: Path) -> None:
         assert await archive.get_session("nonexistent") is None
         assert await archive.get_session_summary("nonexistent") is None
         assert await archive.get_session_profile_insight("nonexistent") is None
+        assert await archive.recovery_report("nonexistent", "continue") is None
     finally:
         await archive.close()
 

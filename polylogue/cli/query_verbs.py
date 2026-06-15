@@ -7,7 +7,7 @@ a specific action on the matched sessions.
 from __future__ import annotations
 
 import io
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import click
 
@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from polylogue.archive.session.domain_models import Session, SessionSummary
     from polylogue.archive.session.neighbor_candidates import SessionNeighborCandidate
     from polylogue.cli.root_request import RootModeRequest
+    from polylogue.insights.transforms import RecoveryReportPreset
 
 from polylogue.cli.click_option_groups import _LazyChoice
 from polylogue.cli.shared.types import AppEnv
@@ -66,6 +67,7 @@ _READ_VIEWS = (
 )
 _READ_DESTINATIONS = ("terminal", "stdout", "browser", "clipboard", "file")
 _READ_FORMATS = ("text", "markdown", "json", "ndjson", "yaml", "html", "obsidian", "org", "csv")
+_RECOVERY_REPORT_PRESETS = ("continue", "blame")
 
 
 @click.command("list")
@@ -235,6 +237,13 @@ def recent_verb(
     show_default=True,
     help="Number of related sessions to include (--view context).",
 )
+@click.option(
+    "--report",
+    "recovery_report",
+    type=click.Choice(_RECOVERY_REPORT_PRESETS),
+    default=None,
+    help="Render a recovery report preset (--view recovery): continue or blame.",
+)
 @click.option("--project-path", default=None, help="Filter by cwd prefix pattern (--view context-pack).")
 @click.option("--project-repo", default=None, help="Filter by git repo URL or name (--view context-pack).")
 @click.option("--since", default=None, help="Start date, ISO 8601 (--view context-pack).")
@@ -277,6 +286,7 @@ def read_verb(
     github_api: bool,
     otlp: bool,
     related_limit: int,
+    recovery_report: str | None,
     project_path: str | None,
     project_repo: str | None,
     since: str | None,
@@ -398,6 +408,7 @@ def read_verb(
             env,
             session_id=session_id,
             output_format=effective_format if isinstance(effective_format, str) else None,
+            report=recovery_report,
             destination=destination,
             out_path=out_path,
         )
@@ -633,6 +644,7 @@ def _run_read_recovery(
     *,
     session_id: str | None,
     output_format: str | None,
+    report: str | None = None,
     destination: str,
     out_path: str | None,
 ) -> None:
@@ -649,6 +661,14 @@ def _run_read_recovery(
     if session is None:
         fail("read", f"Session not found: {session_id}")
     digest = compile_recovery_digest(session)
+    if report is not None:
+        _deliver_content(
+            env,
+            digest.report_markdown(cast("RecoveryReportPreset", report)),
+            destination=destination,
+            out_path=out_path,
+        )
+        return
     if output_format == "json":
         payload = success({"recovery": model_json_document(digest, exclude_none=True)}).to_json()
         _deliver_content(env, payload + "\n", destination=destination, out_path=out_path)

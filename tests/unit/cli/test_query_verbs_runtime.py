@@ -119,6 +119,7 @@ def _read_verb_kwargs(**overrides: object) -> dict[str, object]:
         "github_api": True,
         "otlp": False,
         "related_limit": 5,
+        "recovery_report": None,
         "project_path": None,
         "project_repo": None,
         "since": None,
@@ -225,6 +226,74 @@ def test_read_verb_recovery_compiles_digest() -> None:
     deliver.assert_called_once_with(child.obj, "# Resume: demo\n", destination="terminal", out_path=None)
 
 
+def test_read_verb_recovery_default_ignores_report_renderer() -> None:
+    """Default recovery view stays the existing resume bundle, not a preset report."""
+    _, child = _context_pair(params={"conv_id": "codex-session:abc123"}, query_terms=())
+    child.obj.polylogue = SimpleNamespace()
+    wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
+    assert callable(wrapped)
+
+    async def get_session(session_id: str) -> SimpleNamespace:
+        return SimpleNamespace(id=session_id)
+
+    child.obj.polylogue.get_session = get_session
+    digest = SimpleNamespace(
+        resume_markdown="# Resume: demo\n",
+        report_markdown=lambda preset: f"# {preset.title()}: demo [evidence: E1]\n",
+    )
+
+    with (
+        patch("polylogue.insights.transforms.compile_recovery_digest", return_value=digest),
+        patch("polylogue.cli.query_verbs._deliver_content") as deliver,
+    ):
+        wrapped(child, **_read_verb_kwargs(view="recovery"))
+
+    deliver.assert_called_once_with(child.obj, "# Resume: demo\n", destination="terminal", out_path=None)
+
+
+def test_read_verb_recovery_report_selector_renders_presets() -> None:
+    """read --view recovery --report exposes distinct continue/blame reports."""
+    _, child = _context_pair(params={"conv_id": "codex-session:abc123"}, query_terms=())
+    child.obj.polylogue = SimpleNamespace()
+    wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
+    assert callable(wrapped)
+
+    async def get_session(session_id: str) -> SimpleNamespace:
+        return SimpleNamespace(id=session_id)
+
+    child.obj.polylogue.get_session = get_session
+    reports = {
+        "continue": "# Continue: demo [evidence: E1]\n",
+        "blame": "# Blame: demo [evidence: E2]\n",
+    }
+    digest = SimpleNamespace(
+        resume_markdown="# Resume: demo\n",
+        report_markdown=lambda preset: reports[preset],
+    )
+
+    with (
+        patch("polylogue.insights.transforms.compile_recovery_digest", return_value=digest),
+        patch("polylogue.cli.query_verbs._deliver_content") as deliver,
+    ):
+        wrapped(child, **_read_verb_kwargs(view="recovery", recovery_report="continue"))
+        wrapped(child, **_read_verb_kwargs(view="recovery", recovery_report="blame"))
+
+    continue_report = deliver.call_args_list[0].args[1]
+    blame_report = deliver.call_args_list[1].args[1]
+    assert continue_report.startswith("# Continue:")
+    assert blame_report.startswith("# Blame:")
+    assert continue_report != blame_report
+    assert "[evidence: E1]" in continue_report
+    assert "[evidence: E2]" in blame_report
+
+
+def test_read_verb_recovery_report_selector_rejects_unknown() -> None:
+    option = next(param for param in query_verbs.read_verb.params if param.name == "recovery_report")
+
+    with pytest.raises(click.BadParameter, match="'incident' is not one of 'continue', 'blame'"):
+        option.type.convert("incident", option, click.Context(query_verbs.read_verb))
+
+
 def test_read_view_recovery_json_uses_success_envelope(capsys: pytest.CaptureFixture[str]) -> None:
     """The recovery read view exposes the typed digest under the machine envelope."""
 
@@ -243,6 +312,7 @@ def test_read_view_recovery_json_uses_success_envelope(capsys: pytest.CaptureFix
             cast(AppEnv, env),
             session_id="s1",
             output_format="json",
+            report=None,
             destination="terminal",
             out_path=None,
         )
@@ -285,6 +355,7 @@ def test_read_view_recovery_requires_session_id() -> None:
             cast(AppEnv, env),
             session_id=None,
             output_format=None,
+            report=None,
             destination="terminal",
             out_path=None,
         )
