@@ -61,6 +61,7 @@ def test_embedding_status_detail_requests_exact_readiness_bands(mcp_server: MCPS
     assert parsed["retrieval_bands"] == {"message_embeddings": {"ready": True}}
     assert parsed["component_readiness"]["embeddings"]["state"] == "ready"
     assert parsed["component_readiness"]["embeddings"]["counts"]["retrieval_ready"] is True
+    assert parsed["component_readiness"]["embeddings"]["repair_hint"] is None
     mock_status.assert_called_once()
     assert mock_status.call_args.kwargs == {
         "include_retrieval_bands": True,

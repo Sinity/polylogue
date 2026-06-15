@@ -293,6 +293,8 @@ def component_from_catchup_status(status: Any, *, component: str = "daemon_catch
 def _embedding_repair_hint(next_action: object) -> str | None:
     if not isinstance(next_action, Mapping):
         return None
+    if str(next_action.get("code") or "") == "ready":
+        return None
     command = next_action.get("command")
     return str(command) if command else None
 
