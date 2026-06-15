@@ -27,6 +27,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 
+from polylogue.cli.action_contracts import ACTION_CONTRACTS, CliActionContract
+
 
 @dataclass(frozen=True, slots=True)
 class OutputAssurance:
@@ -40,6 +42,15 @@ class OutputAssurance:
     streaming: bool
     schema: str | None = None
     notes: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ActionContractCoverage:
+    """Contract-derived row included in the output assurance report."""
+
+    contract: CliActionContract
+    assurance_command: str | None
+    assurance: OutputAssurance | None
 
 
 # Command families — keep aligned with `polylogue --help`.
@@ -391,6 +402,13 @@ ASSURANCE_REGISTRY: tuple[OutputAssurance, ...] = (
 ASSURANCE_BY_COMMAND: dict[str, OutputAssurance] = {entry.command: entry for entry in ASSURANCE_REGISTRY}
 
 
+CONTRACT_ASSURANCE_COMMAND_ALIASES: dict[tuple[str, ...], str] = {
+    # `find` is public query grammar backed by the default search assurance row,
+    # not a standalone Click command.
+    ("find",): "search",
+}
+
+
 FAMILY_ORDER: tuple[str, ...] = (
     QUERY_FAMILY,
     LIST_FAMILY,
@@ -413,8 +431,71 @@ def entries_by_family() -> dict[str, tuple[OutputAssurance, ...]]:
     return {family: tuple(sorted(rows, key=lambda r: r.command)) for family, rows in grouped.items() if rows}
 
 
+def _assurance_command_for_contract(contract: CliActionContract) -> str:
+    return CONTRACT_ASSURANCE_COMMAND_ALIASES.get(contract.path, contract.path[0])
+
+
+def action_contract_coverage() -> tuple[ActionContractCoverage, ...]:
+    """Return output-assurance coverage rows derived from ACTION_CONTRACTS."""
+    rows: list[ActionContractCoverage] = []
+    for contract in ACTION_CONTRACTS:
+        assurance_command = _assurance_command_for_contract(contract)
+        rows.append(
+            ActionContractCoverage(
+                contract=contract,
+                assurance_command=assurance_command,
+                assurance=ASSURANCE_BY_COMMAND.get(assurance_command),
+            )
+        )
+    return tuple(rows)
+
+
 def _bool_cell(value: bool) -> str:
     return "yes" if value else "no"
+
+
+def _formats_cell(contract: CliActionContract) -> str:
+    return ", ".join(f"`{name}`" for name in sorted(contract.formats))
+
+
+def _guards_cell(contract: CliActionContract) -> str:
+    if not contract.guards:
+        return "—"
+    return ", ".join(f"`{name}`" for name in contract.guards)
+
+
+def _render_action_contract_coverage() -> list[str]:
+    lines = [
+        "### Public Action Contract Coverage",
+        "",
+        (
+            "Rows in this section are derived from "
+            "`polylogue.cli.action_contracts.ACTION_CONTRACTS` (#1816), so "
+            "the assurance report exposes the public action floor without "
+            "duplicating its effect, format, machine-envelope, or guard metadata."
+        ),
+        "",
+        "| Action path | Assurance row | Effect | Formats | Machine envelope | Guards |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    for row in action_contract_coverage():
+        assurance_cell = f"`{row.assurance_command}`" if row.assurance is not None else "missing"
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    "`" + " ".join(row.contract.path) + "`",
+                    assurance_cell,
+                    f"`{row.contract.effect}`",
+                    _formats_cell(row.contract),
+                    f"`{row.contract.machine_envelope}`",
+                    _guards_cell(row.contract),
+                ]
+            )
+            + " |"
+        )
+    lines.append("")
+    return lines
 
 
 def render_matrix_markdown() -> str:
@@ -437,6 +518,7 @@ def render_matrix_markdown() -> str:
         ),
         "",
     ]
+    lines.extend(_render_action_contract_coverage())
     for family, rows in entries_by_family().items():
         lines.extend([f"### Family: `{family}`", ""])
         lines.extend(
@@ -475,8 +557,10 @@ def primary_commands() -> Iterable[str]:
 __all__ = [
     "ASSURANCE_BY_COMMAND",
     "ASSURANCE_REGISTRY",
+    "ActionContractCoverage",
     "FAMILY_ORDER",
     "OutputAssurance",
+    "action_contract_coverage",
     "entries_by_family",
     "primary_commands",
     "render_matrix_markdown",
