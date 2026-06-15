@@ -20,6 +20,7 @@ from pydantic import Field, field_validator, model_validator
 
 from polylogue.archive.message.models import Message
 from polylogue.archive.session.domain_models import Session
+from polylogue.core.refs import EvidenceRef
 from polylogue.insights.archive_models import ArchiveInsightModel
 
 RECOVERY_TRANSFORM_ID = "recovery_digest_v0"
@@ -35,6 +36,7 @@ ForensicClaimKind = Literal[
     "decision_candidate",
 ]
 RecoveryReportPreset = Literal["continue", "blame"]
+WorkPacketSection = Literal["events", "subagents", "run_state", "tools", "decisions"]
 
 _ISSUE_RE = re.compile(r"(?:issues/|issue\s+|closed\s+|#)(?P<number>\d{3,6})", re.IGNORECASE)
 _PR_RE = re.compile(r"(?:pull/|PR\s+|#)(?P<number>\d{3,6})", re.IGNORECASE)
@@ -74,6 +76,15 @@ class TransformRawRef(ArchiveInsightModel):
         if not value or not value.strip():
             raise ValueError("session_id cannot be empty")
         return value
+
+    def to_evidence_ref(self) -> EvidenceRef:
+        """Return the shared DTO used to parse/format recovery evidence ids."""
+
+        return EvidenceRef(
+            session_id=self.session_id,
+            message_id=self.message_id,
+            block_index=self.block_index,
+        )
 
 
 class ForensicIndexEntry(ArchiveInsightModel):
@@ -215,6 +226,46 @@ class DecisionCandidate(ArchiveInsightModel):
         return self
 
 
+class RecoveryWorkPacketEntry(ArchiveInsightModel):
+    """One storage-free successor-session packet item with typed evidence refs."""
+
+    section: WorkPacketSection
+    label: str
+    text: str
+    evidence_refs: tuple[EvidenceRef, ...]
+    metadata: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _requires_evidence_refs(self) -> RecoveryWorkPacketEntry:
+        if not self.evidence_refs:
+            raise ValueError("RecoveryWorkPacketEntry requires at least one evidence ref")
+        return self
+
+
+class RecoveryWorkPacket(ArchiveInsightModel):
+    """Storage-free DTO for the compact continuation bundle."""
+
+    session_id: str
+    title: str
+    source_origin: str
+    message_count: int
+    git_branch: str | None = None
+    working_directories: tuple[str, ...] = ()
+    entries: tuple[RecoveryWorkPacketEntry, ...] = ()
+    evidence_refs: tuple[EvidenceRef, ...]
+
+    @model_validator(mode="after")
+    def _requires_evidence_refs(self) -> RecoveryWorkPacket:
+        if not self.evidence_refs:
+            raise ValueError("RecoveryWorkPacket requires at least one evidence ref")
+        return self
+
+    def render_markdown(self) -> str:
+        """Render the operator-facing continuation bundle."""
+
+        return render_work_packet(self)
+
+
 class RecoveryDigest(ArchiveInsightModel):
     """Typed v0 output for transform-first successor-session recovery."""
 
@@ -242,6 +293,16 @@ class RecoveryDigest(ArchiveInsightModel):
         """Render a deterministic evidence-linked recovery report preset."""
 
         return render_recovery_report(self, preset=preset)
+
+    def work_packet(self) -> RecoveryWorkPacket:
+        """Return the storage-free continuation packet DTO for this digest."""
+
+        return build_recovery_work_packet(self)
+
+    def work_packet_markdown(self) -> str:
+        """Render the storage-free continuation packet DTO."""
+
+        return self.work_packet().render_markdown()
 
 
 class TransformDescriptor(ArchiveInsightModel):
@@ -343,52 +404,169 @@ def render_resume_bundle(
 ) -> str:
     """Render the small successor-session boot packet for a digest."""
 
+    packet = RecoveryWorkPacket(
+        session_id=str(session.id),
+        title=session.display_title,
+        source_origin=str(session.origin),
+        message_count=len(session.messages),
+        git_branch=session.git_branch,
+        working_directories=tuple(session.working_directories),
+        entries=tuple(
+            _work_packet_entries(
+                events=events,
+                subagent_reports=subagent_reports,
+                run_state=run_state,
+                tool_summaries=tool_summaries,
+                decisions=decisions,
+            )
+        ),
+        evidence_refs=(EvidenceRef(session_id=str(session.id)),),
+    )
+    return packet.render_markdown()
+
+
+def render_work_packet(packet: RecoveryWorkPacket) -> str:
+    """Render a storage-free recovery work packet."""
+
     lines = [
-        f"# Resume: {session.display_title}",
+        f"# Resume: {packet.title}",
         "",
-        f"- session_id: {session.id}",
-        f"- origin: {session.origin}",
-        f"- messages: {len(session.messages)}",
+        f"- session_id: {packet.session_id}",
+        f"- origin: {packet.source_origin}",
+        f"- messages: {packet.message_count}",
     ]
-    if session.git_branch:
-        lines.append(f"- branch: {session.git_branch}")
-    if session.working_directories:
-        lines.append(f"- workdirs: {', '.join(session.working_directories)}")
+    if packet.git_branch:
+        lines.append(f"- branch: {packet.git_branch}")
+    if packet.working_directories:
+        lines.append(f"- workdirs: {', '.join(packet.working_directories)}")
     lines.extend(["", "## Events"])
-    lines.extend(f"- {event.kind}: {event.summary}" for event in events[:8])
-    if not events:
+    event_entries = _packet_section(packet, "events")
+    lines.extend(f"- {entry.label}: {entry.text}" for entry in event_entries[:8])
+    if not event_entries:
         lines.append("- none extracted")
     lines.extend(["", "## Subagents"])
-    for report in subagent_reports[:8]:
-        prompt = f" — {report.prompt}" if report.prompt else ""
-        lines.append(f"- {report.subagent_type}{prompt}")
-        if report.final_report_preview:
-            lines.append(f"  - report: {report.final_report_preview}")
-    if not subagent_reports:
+    subagent_entries = _packet_section(packet, "subagents")
+    for entry in subagent_entries[:8]:
+        prompt = f" — {entry.text}" if entry.text else ""
+        lines.append(f"- {entry.label}{prompt}")
+        report = entry.metadata.get("report", "")
+        if report:
+            lines.append(f"  - report: {report}")
+    if not subagent_entries:
         lines.append("- none extracted")
     lines.extend(["", "## Run State"])
-    if run_state is None:
+    run_state_entries = _packet_section(packet, "run_state")
+    if not run_state_entries:
         lines.append("- none extracted")
     else:
-        if run_state.goal:
-            lines.append(f"- goal: {run_state.goal}")
-        lines.extend(f"- done: {item}" for item in run_state.done[:8])
-        lines.extend(f"- in_flight: {item}" for item in run_state.in_flight[:8])
-        lines.extend(f"- blocker: {item}" for item in run_state.blockers[:8])
-        lines.extend(f"- next: {item}" for item in run_state.next_actions[:8])
+        lines.extend(f"- {entry.label}: {entry.text}" for entry in run_state_entries[:33])
     lines.extend(["", "## Tools"])
-    for tool in tool_summaries[:8]:
-        command = f" — {tool.command}" if tool.command else ""
-        lines.append(f"- {tool.tool_name} [{tool.handler_kind}] ({tool.status}){command}")
-    if not tool_summaries:
+    tool_entries = _packet_section(packet, "tools")
+    for entry in tool_entries[:8]:
+        command = f" — {entry.text}" if entry.text else ""
+        handler = entry.metadata.get("handler_kind", "generic")
+        status = entry.metadata.get("status", "unknown")
+        lines.append(f"- {entry.label} [{handler}] ({status}){command}")
+    if not tool_entries:
         lines.append("- none extracted")
     lines.extend(["", "## Candidate Decisions / Run State"])
-    lines.extend(f"- {item.kind}: {item.text}" for item in decisions[:8])
-    if not decisions:
+    decision_entries = _packet_section(packet, "decisions")
+    lines.extend(f"- {entry.label}: {entry.text}" for entry in decision_entries[:8])
+    if not decision_entries:
         lines.append("- none extracted")
     lines.extend(["", "## Evidence"])
     lines.append("Raw refs are available on every extracted event/tool/decision record.")
     return "\n".join(lines).strip() + "\n"
+
+
+def build_recovery_work_packet(digest: RecoveryDigest) -> RecoveryWorkPacket:
+    """Build the storage-free continuation packet DTO from a recovery digest."""
+
+    return RecoveryWorkPacket(
+        session_id=digest.session_id,
+        title=digest.title or digest.session_id,
+        source_origin=digest.transform.source_origin,
+        message_count=digest.size_metrics.message_count,
+        entries=tuple(
+            _work_packet_entries(
+                events=digest.events,
+                subagent_reports=digest.subagent_reports,
+                run_state=digest.run_state,
+                tool_summaries=digest.tool_summaries,
+                decisions=digest.decision_candidates,
+            )
+        ),
+        evidence_refs=tuple(ref.to_evidence_ref() for ref in digest.raw_refs),
+    )
+
+
+def _packet_section(packet: RecoveryWorkPacket, section: WorkPacketSection) -> tuple[RecoveryWorkPacketEntry, ...]:
+    return tuple(entry for entry in packet.entries if entry.section == section)
+
+
+def _work_packet_entries(
+    *,
+    events: Sequence[RecoveryEvent],
+    subagent_reports: Sequence[SubagentReport],
+    run_state: RunStateSummary | None,
+    tool_summaries: Sequence[ToolSummary],
+    decisions: Sequence[DecisionCandidate],
+) -> Iterable[RecoveryWorkPacketEntry]:
+    for event in events:
+        yield RecoveryWorkPacketEntry(
+            section="events",
+            label=event.kind,
+            text=event.summary,
+            evidence_refs=_to_evidence_refs(event.raw_refs),
+        )
+    for report in subagent_reports:
+        yield RecoveryWorkPacketEntry(
+            section="subagents",
+            label=report.subagent_type,
+            text=report.prompt,
+            metadata={"report": report.final_report_preview},
+            evidence_refs=_to_evidence_refs(report.raw_refs),
+        )
+    if run_state is not None:
+        if run_state.goal:
+            yield RecoveryWorkPacketEntry(
+                section="run_state",
+                label="goal",
+                text=run_state.goal,
+                evidence_refs=_to_evidence_refs(run_state.raw_refs),
+            )
+        for label, items in (
+            ("done", run_state.done),
+            ("in_flight", run_state.in_flight),
+            ("blocker", run_state.blockers),
+            ("next", run_state.next_actions),
+        ):
+            for item in items[:8]:
+                yield RecoveryWorkPacketEntry(
+                    section="run_state",
+                    label=label,
+                    text=item,
+                    evidence_refs=_to_evidence_refs(run_state.raw_refs),
+                )
+    for tool in tool_summaries:
+        yield RecoveryWorkPacketEntry(
+            section="tools",
+            label=tool.tool_name,
+            text=tool.command or "",
+            metadata={"handler_kind": tool.handler_kind, "status": tool.status},
+            evidence_refs=_to_evidence_refs(tool.raw_refs),
+        )
+    for decision in decisions:
+        yield RecoveryWorkPacketEntry(
+            section="decisions",
+            label=decision.kind,
+            text=decision.text,
+            evidence_refs=_to_evidence_refs(decision.raw_refs),
+        )
+
+
+def _to_evidence_refs(refs: Sequence[TransformRawRef]) -> tuple[EvidenceRef, ...]:
+    return tuple(ref.to_evidence_ref() for ref in refs)
 
 
 def render_recovery_report(digest: RecoveryDigest, *, preset: RecoveryReportPreset) -> str:
@@ -645,12 +823,7 @@ def _raw_ref_sort_key(ref: TransformRawRef) -> tuple[str, str, int, str]:
 
 
 def _evidence_id(ref: TransformRawRef) -> str:
-    parts = [ref.session_id]
-    if ref.message_id is not None:
-        parts.append(ref.message_id)
-    if ref.block_index is not None:
-        parts.append(str(ref.block_index))
-    return "::".join(parts)
+    return ref.to_evidence_ref().format()
 
 
 def _append_unique(target: list[T], value: T) -> None:

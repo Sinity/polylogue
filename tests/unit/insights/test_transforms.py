@@ -8,6 +8,7 @@ from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.domain_models import Session
 from polylogue.core.enums import Origin
+from polylogue.core.refs import EvidenceRef
 from polylogue.insights.transforms import (
     RECOVERY_TRANSFORM,
     TRANSFORM_REGISTRY,
@@ -236,6 +237,39 @@ def test_forensic_index_groups_claims_by_raw_ref() -> None:
     assert any(label.startswith("event:issue_closed:") for label in merged_event_entry.claim_labels)
 
     assert digest.forensic_index.claim_count > len(digest.forensic_index.entries)
+
+
+def test_forensic_index_evidence_ids_round_trip_through_typed_refs() -> None:
+    digest = compile_recovery_digest(_session())
+
+    for entry in digest.forensic_index.entries:
+        parsed = EvidenceRef.parse(entry.evidence_id)
+        assert parsed.format() == entry.evidence_id
+        assert parsed.ref_kind == entry.raw_ref.ref_kind
+        assert parsed == entry.raw_ref.to_evidence_ref()
+
+
+def test_work_packet_exposes_storage_free_continuation_bundle() -> None:
+    digest = compile_recovery_digest(_session())
+
+    packet = digest.work_packet()
+    rendered = packet.render_markdown()
+
+    assert packet.session_id == "codex-session:demo"
+    assert packet.source_origin == "codex-session"
+    assert packet.message_count == 3
+    assert {entry.section for entry in packet.entries} == {
+        "events",
+        "subagents",
+        "run_state",
+        "tools",
+        "decisions",
+    }
+    assert all(entry.evidence_refs for entry in packet.entries)
+    assert any(ref.format() == "codex-session:demo::m2::0" for entry in packet.entries for ref in entry.evidence_refs)
+    assert "# Resume: Ship the backlog" in rendered
+    assert "- pr_opened: PR #1911 opened" in rendered
+    assert "- Bash [test] (ok) — devtools verify --quick" in rendered
 
 
 def test_continue_report_renders_successor_boot_packet_with_evidence_refs() -> None:
