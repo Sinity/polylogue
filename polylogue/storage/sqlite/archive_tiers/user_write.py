@@ -630,7 +630,11 @@ def read_archive_suppression_envelope(conn: sqlite3.Connection, session_id: str)
     assertion_value = assertion.value if assertion is not None and isinstance(assertion.value, dict) else None
     return ArchiveSuppressionEnvelope(
         session_id=str(row[0]),
-        reason=assertion.body_text if assertion is not None else str(row[1]) if row[1] is not None else None,
+        reason=assertion.body_text
+        if assertion is not None and assertion.body_text is not None
+        else str(row[1])
+        if row[1] is not None
+        else None,
         mode=str(assertion_value.get("mode"))
         if assertion_value is not None and "mode" in assertion_value
         else str(row[2]),

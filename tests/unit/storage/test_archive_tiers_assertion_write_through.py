@@ -339,6 +339,26 @@ def test_user_overlay_reads_prefer_assertion_mirrors(tmp_path: Path) -> None:
     assert workspace_read.updated_at_ms == 1_700_000_035_000
 
 
+def test_suppression_read_preserves_legacy_reason_when_assertion_body_is_absent(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "user.db")
+
+    suppression = upsert_suppression(conn, "session-2", "legacy reason", mode="hide", now_ms=1_700_000_034_000)
+    upsert_assertion(
+        conn,
+        assertion_id=assertion_id_for_suppression(suppression.session_id),
+        target_ref=suppression.session_id,
+        kind=AssertionKind.SUPPRESSION,
+        value={"mode": "freeze"},
+        body_text=None,
+        now_ms=1_700_000_035_000,
+    )
+
+    suppression_read = read_archive_suppression_envelope(conn, suppression.session_id)
+
+    assert suppression_read.reason == "legacy reason"
+    assert suppression_read.mode == "freeze"
+
+
 def test_blackboard_note_read_prefers_assertion_mirror(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "user.db")
 
