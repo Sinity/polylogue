@@ -65,6 +65,11 @@ def test_blackboard_post_passes_fields_and_returns_note(mcp_server: MCPServerUnd
             content="MCP tools remain",
             scope_repo="polylogue",
             related_sessions=["claude-code:abc"],
+            author_ref="agent:codex-session:abc",
+            author_kind="agent",
+            evidence_refs=["message:m1", "block:m1:2"],
+            staleness={"expires_after_days": 7},
+            context_policy={"inject": False},
         )
 
     parsed = json.loads(result)
@@ -79,6 +84,11 @@ def test_blackboard_post_passes_fields_and_returns_note(mcp_server: MCPServerUnd
         scope_issue=None,
         scope_path=None,
         related_sessions=("claude-code:abc",),
+        author_ref="agent:codex-session:abc",
+        author_kind="agent",
+        evidence_refs=("message:m1", "block:m1:2"),
+        staleness={"expires_after_days": 7},
+        context_policy={"inject": False},
     )
 
 
