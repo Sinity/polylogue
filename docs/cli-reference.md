@@ -189,7 +189,6 @@ Commands:
   list               List matched sessions.
   maintenance        Preview and run maintenance backfill operations.
   mark
-  neighbors          Show semantic neighbors for a session.
   paths              Print canonical archive paths and bind-mount detection.
   read               Read matched sessions (route to view/destination).
   recent             List the most recently updated sessions.
@@ -266,14 +265,17 @@ Usage: polylogue read [OPTIONS]
       polylogue find id:abc then read --to browser
       polylogue find 'repo:polylogue has:paste' then read --all --format ndjson
       polylogue find 'archive runtime' then read --view context
+      polylogue find id:abc then read --view neighbors --window-hours 48
+      polylogue --latest read --view neighbors --format json
 
   Deferred views (not yet implemented; note in PR body):
       timeline, tools, files, metadata, continuation
 
 Options:
-  -v, --view [summary|transcript|messages|raw|context]
+  -v, --view [summary|transcript|messages|raw|context|neighbors]
                                   What to render (summary, transcript,
-                                  messages, raw, context).  [default: summary]
+                                  messages, raw, context, neighbors).
+                                  [default: summary]
   --to [terminal|stdout|browser|clipboard|file]
                                   Output destination.  [default: terminal]
   -f, --format [text|markdown|json|ndjson|yaml|html|obsidian|org|csv]
@@ -285,6 +287,8 @@ Options:
                                   messages).
   -l, -n, --limit INTEGER         Max items to return.
   --offset INTEGER                Pagination offset.
+  --window-hours INTEGER          Neighboring time window around the seed
+                                  session (--view neighbors).  [default: 24]
   --no-code-blocks                Exclude code blocks (--view messages).
   --no-tool-calls                 Exclude tool calls (--view messages).
   --no-tool-outputs               Exclude tool outputs (--view messages).
@@ -567,7 +571,6 @@ Published JSON Schemas live under [`docs/schemas/cli-output/`](./schemas/cli-out
 | `delete` | no | yes | yes | no | — | Side-effect command; --dry-run prints affected IDs. |
 | `feedback` | yes | yes | yes | no | — | record/list/clear subgroup; --machine wraps output in MachineSuccessPayload. |
 | `mark` | no | yes | yes | no | — | Mutates user metadata (tags, notes, user-state marks) on matched sessions; side-effect command. |
-| `neighbors` | yes | yes | yes | no | [`session-neighbor-candidate.schema.json`](./schemas/cli-output/session-neighbor-candidate.schema.json) |  |
 | `read` | yes | yes | yes | yes | — | Router verb: --view selects renderer; --to selects destination. --view messages --format json emits a messages JSON envelope; --all --format ndjson streams one session JSON per line. |
 | `resume` | no | yes | yes | no | — |  |
 | `resume-candidates` | yes | yes | yes | no | — | Ranks read-pull resume candidates; --format json emits a typed success envelope. |

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -9,49 +8,12 @@ import pytest
 from click.shell_completion import CompletionItem
 from click.testing import CliRunner
 
-from polylogue.archive.models import SessionSummary
-from polylogue.archive.session.neighbor_candidates import (
-    NeighborDiscoveryError,
-    NeighborReason,
-    SessionNeighborCandidate,
-)
 from polylogue.cli import shell_completion_values
-from polylogue.cli.commands.neighbors import (
-    _candidate_heading,
-    _render_plain,
-    _score_label,
-    neighbors_command,
-)
 from polylogue.cli.commands.tags import tags_command
-from polylogue.core.enums import Origin
-from polylogue.types import SessionId
 
 
 def _ctx_param() -> tuple[click.Context, click.Parameter]:
     return click.Context(click.Command("polylogue")), click.Option(["--value"])
-
-
-def _candidate(*, message_id: str | None = "message-1") -> SessionNeighborCandidate:
-    return SessionNeighborCandidate(
-        summary=SessionSummary(
-            id=SessionId("candidate"),
-            origin=Origin.CODEX_SESSION,
-            title="Archive Lock Retries",
-            updated_at=datetime(2026, 4, 23, 8, 30, tzinfo=timezone.utc),
-            message_count=2,
-        ),
-        rank=1,
-        score=3.20,
-        reasons=(
-            NeighborReason(
-                kind="same_title",
-                detail="same normalized title",
-                weight=3.0,
-                evidence=message_id,
-            ),
-        ),
-        source_session_id="target",
-    )
 
 
 def test_shell_completion_helpers_cover_csv_prefix_rows_and_trimming(tmp_path: Path) -> None:
@@ -186,43 +148,3 @@ def test_tags_command_plain_paths_cover_empty_hint_and_tabular_counts(cli_runner
     assert generic_empty.exit_code == 0
     assert "No tags found." in generic_empty.output
     assert "Hint: use --add-tag" in generic_empty.output
-
-
-def test_neighbor_helpers_and_command_cover_plain_rendering_and_errors(cli_runner: CliRunner) -> None:
-    assert _score_label(3.20) == "3.2"
-    assert "candidate" in _candidate_heading(_candidate(message_id=None))
-
-    with patch("click.echo") as echo:
-        _render_plain([])
-        _render_plain([_candidate()])
-
-    echoed = [call.args[0] for call in echo.call_args_list if call.args]
-    assert "No neighboring candidates found." in echoed
-    assert any("Neighbor candidates (1):" in line for line in echoed)
-    assert any("same_title: same normalized title (message-1)" in line for line in echoed)
-
-    env = MagicMock()
-    env.polylogue = MagicMock()
-    env.polylogue.neighbor_candidates = AsyncMock(return_value=[_candidate()])
-    plain = cli_runner.invoke(
-        neighbors_command,
-        ["--query", "lock retries", "--origin", "codex-session", "--limit", "0", "--window-hours", "0"],
-        obj=env,
-        catch_exceptions=False,
-    )
-    assert plain.exit_code == 0
-    assert "Neighbor candidates (1):" in plain.output
-    env.polylogue.neighbor_candidates.assert_called_once_with(
-        session_id=None,
-        query="lock retries",
-        provider="codex",
-        limit=1,
-        window_hours=1,
-    )
-
-    error_env = MagicMock()
-    error_env.polylogue = MagicMock()
-    error_env.polylogue.neighbor_candidates = AsyncMock(side_effect=NeighborDiscoveryError("no candidates"))
-    error = cli_runner.invoke(neighbors_command, ["--query", "lock retries"], obj=error_env)
-    assert error.exit_code != 0
-    assert "no candidates" in str(error.exception)
