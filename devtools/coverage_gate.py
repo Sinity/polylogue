@@ -46,13 +46,18 @@ def build_coverage_command(
         # dump. The thread method works without per-test signal support.
         "--timeout=600",
         "--timeout-method=thread",
-        # Benchmarks are performance measurements with their own runner
-        # (`devtools run-benchmark-campaigns`, `--benchmark-enable`). Their
-        # correctness assertions pass standalone and as a whole file, but are
-        # flaky under the random-ordered, coverage-instrumented correctness gate
-        # because of cross-test global-state pollution (tracked separately). The
-        # gate measures correctness + coverage; benchmarks add no unique
-        # coverage over the integration convergence/ingest tests.
+        # Benchmarks stay excluded from the coverage gate as a deliberate scope
+        # decision, not a flake workaround. They are performance measurements
+        # with their own runner (`devtools run-benchmark-campaigns`,
+        # `--benchmark-enable`) and add no unique coverage over the integration
+        # convergence/ingest tests; several tiers (the xxl 100k-message and
+        # huge-session memory probes) are heavy enough to bloat the gate. The
+        # cross-test global-state pollution and the round(elapsed, 2) zero-
+        # elapsed false failure that previously made them order-dependent are
+        # fixed (#1878): the convergence probes now scope POLYLOGUE_ARCHIVE_ROOT
+        # / POLYLOGUE_CONFIG via monkeypatch instead of mutating os.environ, and
+        # guard on unrounded elapsed. They pass standalone and across random
+        # seeds; the exclusion here is about gate scope, not stability.
         "--ignore=tests/benchmarks",
     ]
     if term_missing:
