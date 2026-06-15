@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import types
 from typing import cast
+from unittest.mock import MagicMock
 
 import click
 import pytest
@@ -17,6 +19,7 @@ from polylogue.cli.archive_query import (
     _csv_tokens,
     _decode_cursor,
     _ellipsize,
+    _emit_delete,
     _has_value,
     _hit_line,
     _limit,
@@ -891,3 +894,67 @@ class TestPaginateRows:
         decoded = _decode_cursor(next_cursor)
         assert decoded is not None
         assert decoded.r == 15  # offset + len(page) = 5 + 10
+
+
+class TestEmitDeleteMachineModeNoPrompt:
+    """`_emit_delete` must never block on an interactive prompt in machine mode (#1818 P6).
+
+    The delete verb always emits a JSON MutationResultPayload. In plain mode
+    (machine output, non-TTY pipe, or POLYLOGUE_FORCE_PLAIN) it must refuse a
+    forceless delete with a parseable ``aborted`` envelope rather than calling
+    ``env.ui.confirm`` (which would prompt on a TTY or SystemExit on a pipe).
+    """
+
+    @staticmethod
+    def _env(*, plain: bool) -> MagicMock:
+        env = MagicMock()
+        env.ui.plain = plain
+        env.ui.confirm = MagicMock()
+        return env
+
+    @staticmethod
+    def _archive() -> MagicMock:
+        archive = MagicMock()
+        archive.delete_sessions = MagicMock(return_value=0)
+        return archive
+
+    def test_plain_forceless_delete_aborts_without_prompt(self, capsys: pytest.CaptureFixture[str]) -> None:
+        env = self._env(plain=True)
+        archive = self._archive()
+
+        _emit_delete(env, archive, ("s1", "s2"), params={"force": False, "dry_run": False})
+
+        env.ui.confirm.assert_not_called()
+        archive.delete_sessions.assert_not_called()
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["status"] == "aborted"
+        assert payload["operation"] == "delete"
+        assert payload["detail"] == "confirmation_required"
+        assert payload["session_count"] == 2
+        assert payload["affected_count"] == 0
+
+    def test_plain_forced_delete_proceeds_without_prompt(self, capsys: pytest.CaptureFixture[str]) -> None:
+        env = self._env(plain=True)
+        archive = self._archive()
+        archive.delete_sessions.return_value = 2
+
+        _emit_delete(env, archive, ("s1", "s2"), params={"force": True, "dry_run": False})
+
+        env.ui.confirm.assert_not_called()
+        archive.delete_sessions.assert_called_once_with(("s1", "s2"))
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["status"] == "deleted"
+        assert payload["affected_count"] == 2
+
+    def test_interactive_forceless_delete_still_prompts(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # Human interactive use (non-plain) must keep the confirmation prompt.
+        env = self._env(plain=False)
+        env.ui.confirm.return_value = False
+        archive = self._archive()
+
+        _emit_delete(env, archive, ("s1", "s2"), params={"force": False, "dry_run": False})
+
+        env.ui.confirm.assert_called_once()
+        archive.delete_sessions.assert_not_called()
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["status"] == "aborted"

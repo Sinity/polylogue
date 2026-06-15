@@ -1208,6 +1208,24 @@ def _emit_delete(
         )
         return
     if not force:
+        # Machine/non-interactive surfaces must never block on an interactive
+        # confirmation prompt (#1818 P6). The delete verb always emits a JSON
+        # MutationResultPayload, so in plain mode (``--format`` machine output,
+        # a non-TTY pipe, or ``POLYLOGUE_FORCE_PLAIN``) we refuse without
+        # prompting and emit a parseable ``aborted`` envelope that names the
+        # required flag, mirroring the reset command's plain-mode guard rather
+        # than relying on the generic plain-prompt SystemExit.
+        if env.ui.plain:
+            click.echo(
+                MutationResultPayload(
+                    status="aborted",
+                    operation="delete",
+                    session_count=count,
+                    affected_count=0,
+                    detail="confirmation_required",
+                ).to_json(exclude_none=True)
+            )
+            return
         click.echo(f"About to delete {count} session(s):", err=True)
         for session_id in session_ids[:5]:
             click.echo(f"  - {session_id}", err=True)
