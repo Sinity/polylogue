@@ -30,6 +30,7 @@ def test_import_help_includes_inbox_info() -> None:
     assert "daemon" in result.output.lower() or "polylogued" in result.output.lower(), (
         "import help should reference the daemon"
     )
+    assert "--demo" in result.output
 
 
 class _FakeDaemonResponse:
@@ -103,6 +104,85 @@ def test_import_command_stages_local_path_before_daemon_request(
     # for live progress and polylogue stats to verify the import landed.
     assert str(staged) in result.output
     assert "polylogue stats" in result.output
+
+
+def test_import_demo_materializes_fixture_world_before_daemon_request(
+    workspace_env: dict[str, Path],
+) -> None:
+    """--demo writes approved fixture sources and still requires daemon acceptance."""
+    from click.testing import CliRunner
+
+    from polylogue.cli.click_app import cli
+
+    captured: dict[str, Any] = {}
+
+    def fake_urlopen(req: Request, timeout: int) -> _FakeDaemonResponse:
+        captured["request"] = req
+        captured["timeout"] = timeout
+        assert req.data is not None
+        request_data = cast("bytes", req.data)
+        staged_path = json.loads(request_data.decode("utf-8"))["path"]
+        return _FakeDaemonResponse(
+            {
+                "ok": True,
+                "operation_id": "import-demo-fixture-world",
+                "kind": "import",
+                "status": "pending",
+                "path": staged_path,
+                "message": "scheduled",
+            }
+        )
+
+    runner = CliRunner()
+    with patch("polylogue.cli.commands.import_command.urlopen", side_effect=fake_urlopen):
+        result = runner.invoke(cli, ["import", "--demo"])
+
+    assert result.exit_code == 0, result.output
+    source_root = workspace_env["archive_root"] / "demo-fixture-world-source"
+    staged = workspace_env["archive_root"] / "inbox" / "demo-fixture-world-source"
+    assert sorted(path.name for path in source_root.iterdir()) == ["chatgpt", "claude-code", "codex"]
+    assert sorted(path.name for path in staged.iterdir()) == ["chatgpt", "claude-code", "codex"]
+    assert len(tuple(staged.rglob("demo-*.json*"))) == 3
+
+    request = cast("Request", captured["request"])
+    assert request.data is not None
+    body = json.loads(cast("bytes", request.data).decode("utf-8"))
+    assert body == {"path": str(staged)}
+    assert captured["timeout"] == 5
+    assert str(staged) in result.output
+    assert "polylogue stats" in result.output
+
+
+def test_import_requires_path_or_demo() -> None:
+    """Bare import refuses to claim success without a source selector."""
+    from click.testing import CliRunner
+
+    from polylogue.cli.click_app import cli
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["import"])
+
+    assert result.exit_code != 0
+    combined = (result.output + (result.stderr if result.stderr_bytes else "")).lower()
+    assert "path" in combined
+    assert "--demo" in combined
+
+
+def test_import_rejects_path_with_demo(tmp_path: Path) -> None:
+    """PATH and --demo are mutually exclusive source selectors."""
+    from click.testing import CliRunner
+
+    from polylogue.cli.click_app import cli
+
+    source = tmp_path / "source.jsonl"
+    source.write_text('{"type":"session"}\n')
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["import", str(source), "--demo"])
+
+    assert result.exit_code != 0
+    combined = (result.output + (result.stderr if result.stderr_bytes else "")).lower()
+    assert "either path or --demo" in combined
 
 
 def test_import_rejects_missing_path(tmp_path: Path) -> None:

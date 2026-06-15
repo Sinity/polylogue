@@ -48,7 +48,7 @@ def _daemon_url(env: AppEnv) -> str:
     return getattr(env, "daemon_url", None) or _DEFAULT_DAEMON_URL
 
 
-def _stage_for_daemon(path: Path) -> Path:
+def _stage_for_daemon(path: Path, *, replace_existing: bool = False) -> Path:
     """Copy a local import target into the archive inbox for daemon pickup."""
     resolved = path.expanduser().resolve()
     if not resolved.exists():
@@ -62,6 +62,11 @@ def _stage_for_daemon(path: Path) -> Path:
         return dest
 
     try:
+        if replace_existing and dest.exists():
+            if dest.is_dir():
+                shutil.rmtree(dest)
+            else:
+                dest.unlink()
         if resolved.is_dir():
             shutil.copytree(resolved, dest, dirs_exist_ok=True)
         else:
@@ -70,6 +75,18 @@ def _stage_for_daemon(path: Path) -> Path:
         fail("import", f"Could not stage {resolved} in daemon inbox: {exc}")
 
     return dest
+
+
+def _materialize_demo_source() -> Path:
+    """Write the approved deterministic demo fixture world to a local source dir."""
+    from polylogue.scenarios import build_demo_corpus_specs
+    from polylogue.schemas.synthetic import SyntheticCorpus
+
+    source_root = archive_root() / "demo-fixture-world-source"
+    if source_root.exists():
+        shutil.rmtree(source_root)
+    SyntheticCorpus.write_specs_artifacts(build_demo_corpus_specs(), source_root, prefix="demo", index_width=2)
+    return source_root
 
 
 def _daemon_unreachable_message(daemon_url: str, reason: str) -> str:
@@ -82,7 +99,12 @@ def _daemon_unreachable_message(daemon_url: str, reason: str) -> str:
 
 
 @click.command("import")
-@click.argument("path", type=click.Path(exists=True, path_type=Path))
+@click.argument("path", required=False, type=click.Path(exists=True, path_type=Path))
+@click.option(
+    "--demo",
+    is_flag=True,
+    help="Generate and schedule the approved deterministic demo fixture world.",
+)
 @click.option(
     "--daemon-url",
     default=_DEFAULT_DAEMON_URL,
@@ -92,7 +114,8 @@ def _daemon_unreachable_message(daemon_url: str, reason: str) -> str:
 @click.pass_obj
 def import_command(
     env: AppEnv,
-    path: Path,
+    path: Path | None,
+    demo: bool,
     daemon_url: str,
 ) -> None:
     """Schedule a file or directory for import by the running daemon.
@@ -104,7 +127,15 @@ def import_command(
     actionable error. It never reports success without observable
     processing.
     """
-    staged = _stage_for_daemon(path)
+    if demo:
+        if path is not None:
+            fail("import", "Use either PATH or --demo, not both.")
+        source_path = _materialize_demo_source()
+        staged = _stage_for_daemon(source_path, replace_existing=True)
+    else:
+        if path is None:
+            fail("import", "Provide a source PATH or pass --demo.")
+        staged = _stage_for_daemon(path)
 
     body = json.dumps({"path": str(staged)}).encode("utf-8")
     req = Request(
