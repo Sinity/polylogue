@@ -9,8 +9,40 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
+
+
+class AssertionKind(StrEnum):
+    """Closed v0 vocabulary for ``assertions.kind`` (#1883).
+
+    The unified assertions table collapses the legacy user-tier overlays; each
+    kind below corresponds to a meaning carried by one of those mini-systems or
+    by the agent-blackboard surface. The DDL stores ``kind`` as plain ``TEXT``
+    (no CHECK) so the vocabulary can grow without a schema bump; this enum is
+    the authoritative documentation and typing aid.
+    """
+
+    MARK = "mark"
+    HIGHLIGHT = "highlight"
+    ANNOTATION = "annotation"
+    CORRECTION = "correction"
+    SUPPRESSION = "suppression"
+    TAG = "tag"
+    METADATA = "metadata"
+    SAVED_QUERY = "saved_query"
+    RECALL_PACK = "recall_pack"
+    WORKSPACE_NOTE = "workspace_note"
+    NOTE = "note"
+    DECISION = "decision"
+    LESSON = "lesson"
+    BLOCKER = "blocker"
+    HANDOFF = "handoff"
+    RUN_STATE = "run_state"
+    PROMPT_EVAL = "prompt_eval"
+    TRANSFORM_CANDIDATE = "transform_candidate"
 
 
 def _now_ms() -> int:
@@ -33,6 +65,38 @@ def _json_dumps(payload: dict[str, object] | None) -> str:
     if payload is None:
         return "{}"
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _dumps_optional(value: object | None) -> str | None:
+    """Serialize an arbitrary JSON-able value, or ``None`` when value is ``None``."""
+    if value is None:
+        return None
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _loads_optional(value: object | None) -> object | None:
+    """Parse a stored JSON column back to a Python value, tolerating malformed text."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed: object = json.loads(value)
+    except json.JSONDecodeError:
+        return None
+    return parsed
+
+
+def _loads_str_list(value: object | None) -> list[str]:
+    parsed = _loads_optional(value)
+    if isinstance(parsed, list):
+        return [str(item) for item in parsed]
+    return []
+
+
+def _loads_dict_optional(value: object | None) -> dict[str, object] | None:
+    parsed = _loads_optional(value)
+    if isinstance(parsed, dict):
+        return dict(parsed)
+    return None
 
 
 def _deterministic_id(prefix: str, *parts: str) -> str:
@@ -118,6 +182,28 @@ class ArchiveBlackboardNoteEnvelope:
     target_type: str | None
     target_id: str | None
     body: str
+    created_at_ms: int
+    updated_at_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveAssertionEnvelope:
+    assertion_id: str
+    scope_ref: str | None
+    target_ref: str
+    key: str | None
+    kind: str
+    value: object | None
+    body_text: str | None
+    author_ref: str | None
+    author_kind: str | None
+    evidence_refs: list[str]
+    status: str | None
+    visibility: str | None
+    confidence: float | None
+    staleness: dict[str, object] | None
+    context_policy: dict[str, object] | None
+    supersedes: list[str]
     created_at_ms: int
     updated_at_ms: int
 
@@ -551,8 +637,155 @@ def read_archive_blackboard_note_envelope(conn: sqlite3.Connection, note_id: str
     )
 
 
+def upsert_assertion(
+    conn: sqlite3.Connection,
+    *,
+    assertion_id: str,
+    target_ref: str,
+    kind: str,
+    scope_ref: str | None = None,
+    key: str | None = None,
+    value: object | None = None,
+    body_text: str | None = None,
+    author_ref: str | None = None,
+    author_kind: str | None = None,
+    evidence_refs: Sequence[str] | None = None,
+    status: str | None = None,
+    visibility: str | None = None,
+    confidence: float | None = None,
+    staleness: dict[str, object] | None = None,
+    context_policy: dict[str, object] | None = None,
+    supersedes: Sequence[str] | None = None,
+    now_ms: int | None = None,
+) -> ArchiveAssertionEnvelope:
+    """Insert-or-update one assertion row keyed by caller-supplied ``assertion_id``."""
+    conn.execute("PRAGMA foreign_keys = ON")
+    timestamp = now_ms if now_ms is not None else _now_ms()
+    existing = conn.execute(
+        "SELECT created_at_ms FROM assertions WHERE assertion_id = ?",
+        (assertion_id,),
+    ).fetchone()
+    created_at_ms = int(existing[0]) if existing is not None else timestamp
+
+    evidence_refs_json = _dumps_optional(list(evidence_refs)) if evidence_refs is not None else None
+    supersedes_json = _dumps_optional(list(supersedes)) if supersedes is not None else None
+
+    conn.execute(
+        """
+        INSERT INTO assertions (
+            assertion_id, scope_ref, target_ref, key, kind, value_json, body_text,
+            author_ref, author_kind, evidence_refs_json, status, visibility, confidence,
+            staleness_json, context_policy_json, supersedes_json, created_at_ms, updated_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(assertion_id) DO UPDATE SET
+            scope_ref = excluded.scope_ref,
+            target_ref = excluded.target_ref,
+            key = excluded.key,
+            kind = excluded.kind,
+            value_json = excluded.value_json,
+            body_text = excluded.body_text,
+            author_ref = excluded.author_ref,
+            author_kind = excluded.author_kind,
+            evidence_refs_json = excluded.evidence_refs_json,
+            status = excluded.status,
+            visibility = excluded.visibility,
+            confidence = excluded.confidence,
+            staleness_json = excluded.staleness_json,
+            context_policy_json = excluded.context_policy_json,
+            supersedes_json = excluded.supersedes_json,
+            updated_at_ms = excluded.updated_at_ms
+        """,
+        (
+            assertion_id,
+            scope_ref,
+            target_ref,
+            key,
+            kind,
+            _dumps_optional(value),
+            body_text,
+            author_ref,
+            author_kind,
+            evidence_refs_json,
+            status,
+            visibility,
+            confidence,
+            _dumps_optional(staleness),
+            _dumps_optional(context_policy),
+            supersedes_json,
+            created_at_ms,
+            timestamp,
+        ),
+    )
+    envelope = read_assertion_envelope(conn, assertion_id)
+    assert envelope is not None
+    return envelope
+
+
+def _assertion_row_to_envelope(row: sqlite3.Row) -> ArchiveAssertionEnvelope:
+    return ArchiveAssertionEnvelope(
+        assertion_id=str(row[0]),
+        scope_ref=str(row[1]) if row[1] is not None else None,
+        target_ref=str(row[2]),
+        key=str(row[3]) if row[3] is not None else None,
+        kind=str(row[4]),
+        value=_loads_optional(row[5]),
+        body_text=str(row[6]) if row[6] is not None else None,
+        author_ref=str(row[7]) if row[7] is not None else None,
+        author_kind=str(row[8]) if row[8] is not None else None,
+        evidence_refs=_loads_str_list(row[9]),
+        status=str(row[10]) if row[10] is not None else None,
+        visibility=str(row[11]) if row[11] is not None else None,
+        confidence=float(row[12]) if row[12] is not None else None,
+        staleness=_loads_dict_optional(row[13]),
+        context_policy=_loads_dict_optional(row[14]),
+        supersedes=_loads_str_list(row[15]),
+        created_at_ms=int(row[16]),
+        updated_at_ms=int(row[17]),
+    )
+
+
+_ASSERTION_COLUMNS = (
+    "assertion_id, scope_ref, target_ref, key, kind, value_json, body_text, "
+    "author_ref, author_kind, evidence_refs_json, status, visibility, confidence, "
+    "staleness_json, context_policy_json, supersedes_json, created_at_ms, updated_at_ms"
+)
+
+
+def read_assertion_envelope(conn: sqlite3.Connection, assertion_id: str) -> ArchiveAssertionEnvelope | None:
+    """Read one assertion by id, or ``None`` when absent."""
+    row = conn.execute(
+        f"SELECT {_ASSERTION_COLUMNS} FROM assertions WHERE assertion_id = ?",
+        (assertion_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return _assertion_row_to_envelope(row)
+
+
+def list_assertions_for_target(
+    conn: sqlite3.Connection,
+    target_ref: str,
+    *,
+    kind: str | None = None,
+) -> list[ArchiveAssertionEnvelope]:
+    """List assertions for one ``target_ref``, optionally filtered by ``kind``."""
+    if kind is None:
+        rows = conn.execute(
+            f"SELECT {_ASSERTION_COLUMNS} FROM assertions WHERE target_ref = ? ORDER BY created_at_ms, assertion_id",
+            (target_ref,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            f"SELECT {_ASSERTION_COLUMNS} FROM assertions "
+            "WHERE target_ref = ? AND kind = ? ORDER BY created_at_ms, assertion_id",
+            (target_ref, kind),
+        ).fetchall()
+    return [_assertion_row_to_envelope(row) for row in rows]
+
+
 __all__ = [
     "ArchiveAnnotationEnvelope",
+    "ArchiveAssertionEnvelope",
     "ArchiveBlackboardNoteEnvelope",
     "ArchiveSuppressionEnvelope",
     "ArchiveMarkEnvelope",
@@ -560,6 +793,8 @@ __all__ = [
     "ArchiveRecallPackEnvelope",
     "ArchiveSavedViewEnvelope",
     "ArchiveWorkspaceEnvelope",
+    "AssertionKind",
+    "list_assertions_for_target",
     "read_archive_annotation_envelope",
     "read_archive_blackboard_note_envelope",
     "read_archive_correction_envelope",
@@ -568,7 +803,9 @@ __all__ = [
     "read_archive_saved_view_envelope",
     "read_archive_suppression_envelope",
     "read_archive_workspace_envelope",
+    "read_assertion_envelope",
     "upsert_annotation",
+    "upsert_assertion",
     "upsert_blackboard_note",
     "upsert_correction",
     "upsert_mark",
