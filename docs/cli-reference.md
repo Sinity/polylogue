@@ -263,6 +263,7 @@ Usage: polylogue read [OPTIONS]
       polylogue find id:abc then read --view context --related-limit 5
       polylogue find 'cost tracking' then read --view context-pack --max-sessions 5
       polylogue read --view context-pack --project-repo github.com/Sinity/polylogue --since 2026-01-01
+      polylogue find id:abc then read --view recovery
       polylogue find id:abc then read --view neighbors --window-hours 48
       polylogue --latest read --view neighbors --format json
       polylogue find id:abc then read --view correlation --since-hours 4
@@ -272,10 +273,11 @@ Usage: polylogue read [OPTIONS]
       timeline, tools, files, metadata, continuation
 
 Options:
-  -v, --view [summary|transcript|messages|raw|context|context-pack|neighbors|correlation]
+  -v, --view [summary|transcript|messages|raw|context|context-pack|recovery|neighbors|correlation]
                                   What to render (summary, transcript,
                                   messages, raw, context, context-pack,
-                                  neighbors, correlation).  [default: summary]
+                                  recovery, neighbors, correlation).
+                                  [default: summary]
   --to [terminal|stdout|browser|clipboard|file]
                                   Output destination.  [default: terminal]
   -f, --format [text|markdown|json|ndjson|yaml|html|obsidian|org|csv]
