@@ -10,6 +10,7 @@ from polylogue.readiness import (
     CapabilityReadinessState,
     ComponentReadiness,
     component_from_archive_debt,
+    component_from_archive_surface,
     component_from_catchup_status,
     component_from_derived_model,
     component_from_embedding_payload,
@@ -144,6 +145,25 @@ def test_embedding_payload_maps_missing_blocked_stale_and_ready() -> None:
     )
     assert component_from_embedding_payload({**base, "stale_messages": 1}).state is CapabilityReadinessState.STALE
     assert component_from_embedding_payload(base).state is CapabilityReadinessState.READY
+
+
+def test_archive_surface_maps_search_mismatch_to_stale_component() -> None:
+    component = component_from_archive_surface(
+        "search",
+        {
+            "ready": False,
+            "blockers": ["messages_fts_row_mismatch"],
+            "evidence": {"text_block_count": 10, "messages_fts_count": 8},
+        },
+        scope="lexical",
+        repair_hint="polylogue maintenance run --target dangling_fts",
+    )
+
+    assert component.state is CapabilityReadinessState.STALE
+    assert component.scope == "lexical"
+    assert component.counts == {"text_block_count": 10, "messages_fts_count": 8}
+    assert component.caveats == ("messages_fts_row_mismatch",)
+    assert component.repair_hint == "polylogue maintenance run --target dangling_fts"
 
 
 def test_insight_entry_operation_and_catchup_adapters() -> None:

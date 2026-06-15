@@ -888,6 +888,7 @@ def _show_direct_json(env: AppEnv) -> None:
     diag = diagnose_first_run(daemon_alive=False)
     active_db = _active_status_db(db)
     active_root = active_db.parent if active_db is not None and active_db.name == "index.db" else root
+    archive_readiness = _archive_readiness_status(active_root)
     payload: dict[str, Any] = {
         "daemon_liveness": False,
         "archive_root": str(root),
@@ -898,11 +899,11 @@ def _show_direct_json(env: AppEnv) -> None:
         "config_exists": config_path.exists(),
         "config_path": str(config_path),
         "archive_tiers": _archive_tier_status(active_root),
-        "archive_readiness": _archive_readiness_status(active_root),
+        "archive_readiness": archive_readiness,
         "archive_facade_routes": _archive_facade_route_status(),
         "archive_cli_routes": _archive_cli_route_status(),
         "archive_runtime_paths": _archive_runtime_path_status(),
-        "component_readiness": _direct_component_readiness(env),
+        "component_readiness": _direct_component_readiness(env, archive_readiness=archive_readiness),
         "next_action": diag.next_action,
         "diagnostic": diagnostic_payload(diag),
     }
@@ -922,9 +923,25 @@ def _show_direct_json(env: AppEnv) -> None:
     env.ui.console.print(json.dumps(payload, indent=2, default=str))
 
 
-def _direct_component_readiness(env: AppEnv) -> dict[str, Any]:
+def _direct_component_readiness(env: AppEnv, *, archive_readiness: dict[str, Any] | None = None) -> dict[str, Any]:
     """Return additive component readiness for direct status JSON."""
     components: dict[str, Any] = {}
+    if archive_readiness is not None:
+        try:
+            from polylogue.readiness.capability import component_from_archive_surface
+
+            surfaces = archive_readiness.get("surfaces") or {}
+            search_surface = surfaces.get("search") if isinstance(surfaces, dict) else None
+            if isinstance(search_surface, dict):
+                search = component_from_archive_surface(
+                    "search",
+                    search_surface,
+                    scope="lexical",
+                    repair_hint="polylogue maintenance run --target dangling_fts",
+                )
+                components[search.component] = search.to_dict()
+        except Exception:
+            pass
     try:
         from polylogue.readiness.capability import component_from_embedding_payload
         from polylogue.storage.embeddings.status_payload import embedding_status_payload
