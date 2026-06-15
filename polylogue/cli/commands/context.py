@@ -1,26 +1,24 @@
-"""Context Composer CLI — assemble context packs from archive objects (#1494)."""
+"""Context preamble composition for the ``read --view context`` surface.
+
+The capability behind ``read --view context`` (#1842): it absorbed the former
+standalone ``context compose`` command (#1494). The MCP
+``compose_context_preamble`` tool exposes the same capability programmatically.
+"""
 
 from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
 
-import click
-
 from polylogue.cli.shared.types import AppEnv
 
 
-@click.group("context")
-def context_command() -> None:
-    """Context Composer — assemble context packs from archive objects."""
+def run_context_compose(env: AppEnv, *, session_id: str, related_limit: int = 5) -> str:
+    """Compose a context preamble JSON document for a seed session (#1494).
 
-
-@context_command.command("compose")
-@click.argument("session_id")
-@click.option("--related-limit", "-n", type=int, default=5, help="Number of related sessions to include.")
-@click.pass_obj
-def compose_command(env: AppEnv, session_id: str, related_limit: int) -> None:
-    """Compose a context preamble for a session (#1494)."""
+    Resolves the session's lineage (from topology), recent related sessions,
+    and project state into a single preamble and returns it as a JSON string.
+    """
     from polylogue.api.sync.bridge import run_coroutine_sync
 
     conv = run_coroutine_sync(env.polylogue.get_session(session_id))
@@ -80,4 +78,4 @@ def compose_command(env: AppEnv, session_id: str, related_limit: int) -> None:
         "project_state": project or None,
         "guidance": None,
     }
-    env.ui.console.print(json.dumps(preamble, indent=2, default=str))
+    return json.dumps(preamble, indent=2, default=str)

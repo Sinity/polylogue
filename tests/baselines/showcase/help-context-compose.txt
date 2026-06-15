@@ -1,7 +1,0 @@
-Usage: polylogue context compose [OPTIONS] SESSION_ID
-
-  Compose a context preamble for a session (#1494).
-
-Options:
-  -n, --related-limit INTEGER  Number of related sessions to include.
-  -h, --help                   Show this message and exit.

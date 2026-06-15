@@ -171,8 +171,6 @@ Commands:
   commands
   completions        Emit shell completion setup for polylogue.
   config             Show configuration paths and resolved settings.
-  context            Compose context preamble from archive objects.
-  context-pack       Build a provenance-rich context pack for agent analysis.
   cost               Summarize session cost telemetry.
   count              Print count of matched sessions.
   dashboard          Open the local dashboard.
@@ -262,7 +260,9 @@ Usage: polylogue read [OPTIONS]
       polylogue find id:abc then read --view raw --format json
       polylogue find id:abc then read --to browser
       polylogue find 'repo:polylogue has:paste' then read --all --format ndjson
-      polylogue find 'archive runtime' then read --view context
+      polylogue find id:abc then read --view context --related-limit 5
+      polylogue find 'cost tracking' then read --view context-pack --max-sessions 5
+      polylogue read --view context-pack --project-repo github.com/Sinity/polylogue --since 2026-01-01
       polylogue find id:abc then read --view neighbors --window-hours 48
       polylogue --latest read --view neighbors --format json
       polylogue find id:abc then read --view correlation --since-hours 4
@@ -272,10 +272,10 @@ Usage: polylogue read [OPTIONS]
       timeline, tools, files, metadata, continuation
 
 Options:
-  -v, --view [summary|transcript|messages|raw|context|neighbors|correlation]
+  -v, --view [summary|transcript|messages|raw|context|context-pack|neighbors|correlation]
                                   What to render (summary, transcript,
-                                  messages, raw, context, neighbors,
-                                  correlation).  [default: summary]
+                                  messages, raw, context, context-pack,
+                                  neighbors, correlation).  [default: summary]
   --to [terminal|stdout|browser|clipboard|file]
                                   Output destination.  [default: terminal]
   -f, --format [text|markdown|json|ndjson|yaml|html|obsidian|org|csv]
@@ -301,6 +301,22 @@ Options:
                                   GitHub API via gh CLI (--view correlation).
   --otlp                          Add OTLP span evidence to correlation output
                                   (--view correlation).
+  --related-limit INTEGER         Number of related sessions to include
+                                  (--view context).  [default: 5]
+  --project-path TEXT             Filter by cwd prefix pattern (--view
+                                  context-pack).
+  --project-repo TEXT             Filter by git repo URL or name (--view
+                                  context-pack).
+  --since TEXT                    Start date, ISO 8601 (--view context-pack).
+  --until TEXT                    End date, ISO 8601 (--view context-pack).
+  --pack-origin TEXT              Source-origin filter (--view context-pack).
+  --query TEXT                    Free-text query (--view context-pack).
+  --max-sessions INTEGER          Max sessions, 1-20 (--view context-pack).
+                                  [default: 5]
+  --max-messages INTEGER          Max messages per session, 1-100 (--view
+                                  context-pack).  [default: 20]
+  --no-redact                     Do not redact filesystem paths (--view
+                                  context-pack).
   --no-code-blocks                Exclude code blocks (--view messages).
   --no-tool-calls                 Exclude tool calls (--view messages).
   --no-tool-outputs               Exclude tool outputs (--view messages).
@@ -580,7 +596,6 @@ Published JSON Schemas live under [`docs/schemas/cli-output/`](./schemas/cli-out
 | Command | JSON contract | Snapshot | `--plain` | NDJSON | Schema | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
 | `analyze` | yes | yes | yes | no | — | Analytics over the matched result set: wraps the stats and facets surfaces; ``--by`` groups by dimension and ``--format json`` emits structured aggregates. |
-| `context-pack` | yes | no | yes | no | — | Provenance-rich JSON document; downstream agent surface. |
 | `count` | no | yes | yes | no | — | Single integer to stdout; no JSON envelope. |
 | `delete` | no | yes | yes | no | — | Side-effect command; --dry-run prints affected IDs. |
 | `feedback` | yes | yes | yes | no | — | record/list/clear subgroup; --machine wraps output in MachineSuccessPayload. |
@@ -614,7 +629,6 @@ Published JSON Schemas live under [`docs/schemas/cli-output/`](./schemas/cli-out
 
 | Command | JSON contract | Snapshot | `--plain` | NDJSON | Schema | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
-| `context` | yes | no | yes | no | — | Composes a context preamble from archive objects; compose emits JSON. |
 | `cost` | yes | yes | yes | no | — |  |
 | `diagnostics` | yes | yes | yes | no | — | Temporal session diagnostics; JSON output for downstream analytics. |
 | `insights` | yes | yes | yes | no | — | Rebuild/inspect derived insights; subcommands emit insight-specific JSON. |

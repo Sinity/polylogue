@@ -210,7 +210,6 @@ _PLAIN_COMMANDS: tuple[tuple[str, ...], ...] = (
     ("backup",),
     ("completions",),
     ("config",),
-    ("context-pack",),
     ("cost",),
     ("count",),
     ("dashboard",),

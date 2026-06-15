@@ -196,15 +196,6 @@ ASSURANCE_REGISTRY: tuple[OutputAssurance, ...] = (
         streaming=False,
         notes="record/list/clear subgroup; --machine wraps output in MachineSuccessPayload.",
     ),
-    OutputAssurance(
-        command="context-pack",
-        family=QUERY_FAMILY,
-        json_contract=True,
-        snapshot=False,
-        plain=True,
-        streaming=False,
-        notes="Provenance-rich JSON document; downstream agent surface.",
-    ),
     # --- Insights ----------------------------------------------------------
     OutputAssurance(
         command="insights",
@@ -375,15 +366,6 @@ ASSURANCE_REGISTRY: tuple[OutputAssurance, ...] = (
         plain=True,
         streaming=False,
         notes="Prints canonical archive paths; --format json emits a structured path map.",
-    ),
-    OutputAssurance(
-        command="context",
-        family=INSIGHTS_FAMILY,
-        json_contract=True,
-        snapshot=False,
-        plain=True,
-        streaming=False,
-        notes="Composes a context preamble from archive objects; compose emits JSON.",
     ),
     OutputAssurance(
         command="commands",

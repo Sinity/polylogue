@@ -623,8 +623,6 @@ class TestCliMetadata:
             "cost",
             "blackboard",
             "commands",
-            "context",
-            "context-pack",
             "paths",
             "recent",
             "dashboard",

@@ -98,6 +98,45 @@ def test_stats_verb_toggles_stats_only_and_updates_grouping() -> None:
     assert grouped_request.query_params()["limit"] == 3
 
 
+def _read_verb_kwargs(**overrides: object) -> dict[str, object]:
+    """Full default kwargs for the read_verb callback (keyword-robust to signature growth)."""
+    defaults: dict[str, object] = {
+        "view": "summary",
+        "destination": "terminal",
+        "output_format": None,
+        "out_path": None,
+        "export_all": False,
+        "message_role": (),
+        "message_type": None,
+        "limit": None,
+        "offset": 0,
+        "window_hours": 24,
+        "repo_path": None,
+        "since_hours": 2,
+        "confidence_threshold": 0.3,
+        "github_api": True,
+        "otlp": False,
+        "related_limit": 5,
+        "project_path": None,
+        "project_repo": None,
+        "since": None,
+        "until": None,
+        "pack_origin": None,
+        "pack_query": None,
+        "max_sessions": 5,
+        "max_messages": 20,
+        "no_redact": False,
+        "no_code_blocks": False,
+        "no_tool_calls": False,
+        "no_tool_outputs": False,
+        "no_file_reads": False,
+        "prose_only": False,
+        "fields": None,
+    }
+    defaults.update(overrides)
+    return defaults
+
+
 def test_read_verb_summary_dispatches_to_execute_query_verb() -> None:
     """read --view summary (default) routes to _execute_query_verb."""
     _, child = _context_pair(params={"origin": "chatgpt-export"}, query_terms=("alpha",))
@@ -105,24 +144,7 @@ def test_read_verb_summary_dispatches_to_execute_query_verb() -> None:
     assert callable(wrapped)
 
     with patch("polylogue.cli.query_verbs._execute_query_verb") as execute:
-        wrapped(
-            child,
-            "summary",  # view
-            "terminal",  # destination
-            None,  # output_format
-            None,  # out_path
-            False,  # export_all
-            (),  # message_role
-            None,  # message_type
-            None,  # limit
-            0,  # offset
-            False,  # no_code_blocks
-            False,  # no_tool_calls
-            False,  # no_tool_outputs
-            False,  # no_file_reads
-            False,  # prose_only
-            None,  # fields
-        )
+        wrapped(child, **_read_verb_kwargs(view="summary"))
 
     execute.assert_called_once()
     request = execute.call_args.args[1]
@@ -137,27 +159,44 @@ def test_read_verb_all_invokes_run_bulk_export() -> None:
     assert callable(wrapped)
 
     with patch("polylogue.cli.bulk_export.run_bulk_export") as run_export:
-        wrapped(
-            child,
-            "summary",  # view
-            "terminal",  # destination
-            "json",  # output_format
-            None,  # out_path
-            True,  # export_all
-            (),  # message_role
-            None,  # message_type
-            None,  # limit
-            0,  # offset
-            False,  # no_code_blocks
-            False,  # no_tool_calls
-            False,  # no_tool_outputs
-            False,  # no_file_reads
-            False,  # prose_only
-            None,  # fields
-        )
+        wrapped(child, **_read_verb_kwargs(output_format="json", export_all=True))
 
     run_export.assert_called_once()
     assert run_export.call_args.kwargs["output_format"] == "json"
+
+
+def test_read_verb_context_composes_preamble_not_passthrough() -> None:
+    """read --view context routes to run_context_compose, NOT a markdown passthrough (#1842 bug)."""
+    _, child = _context_pair(params={"conv_id": "claude-code:abc123"}, query_terms=())
+    wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
+    assert callable(wrapped)
+
+    with (
+        patch("polylogue.cli.commands.context.run_context_compose", return_value="{}") as compose,
+        patch("polylogue.cli.query_verbs._execute_query_verb") as execute,
+        patch("polylogue.cli.query_verbs._deliver_content") as deliver,
+    ):
+        wrapped(child, **_read_verb_kwargs(view="context", related_limit=3))
+
+    execute.assert_not_called()
+    compose.assert_called_once()
+    assert compose.call_args.kwargs["session_id"] == "claude-code:abc123"
+    assert compose.call_args.kwargs["related_limit"] == 3
+    deliver.assert_called_once()
+
+
+def test_read_verb_context_pack_invokes_pack_view() -> None:
+    """read --view context-pack routes to run_context_pack_view with pack options."""
+    _, child = _context_pair(query_terms=())
+    wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
+    assert callable(wrapped)
+
+    with patch("polylogue.cli.commands.context_pack.run_context_pack_view") as pack:
+        wrapped(child, **_read_verb_kwargs(view="context-pack", pack_query="cost", max_sessions=3))
+
+    pack.assert_called_once()
+    assert pack.call_args.kwargs["query"] == "cost"
+    assert pack.call_args.kwargs["max_sessions"] == 3
 
 
 def test_resolve_target_session_id_uses_explicit_conv_id() -> None:

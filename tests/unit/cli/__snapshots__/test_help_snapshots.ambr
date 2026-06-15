@@ -160,8 +160,6 @@
     commands
     completions        Emit shell completion setup for polylogue.
     config             Show configuration paths and resolved settings.
-    context            Compose context preamble from archive objects.
-    context-pack       Build a provenance-rich context pack for agent analysis.
     cost               Summarize session cost telemetry.
     count              Print count of matched sessions.
     dashboard          Open the local dashboard.

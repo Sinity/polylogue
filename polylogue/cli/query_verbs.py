@@ -53,7 +53,7 @@ def _lazy_shell_complete(source: str):  # type: ignore[no-untyped-def]
 _complete_session_id = _lazy_shell_complete("session_id")
 _complete_message_type = _lazy_shell_complete("message_type")
 
-_READ_VIEWS = ("summary", "transcript", "messages", "raw", "context", "neighbors", "correlation")
+_READ_VIEWS = ("summary", "transcript", "messages", "raw", "context", "context-pack", "neighbors", "correlation")
 _READ_DESTINATIONS = ("terminal", "stdout", "browser", "clipboard", "file")
 _READ_FORMATS = ("text", "markdown", "json", "ndjson", "yaml", "html", "obsidian", "org", "csv")
 
@@ -148,7 +148,7 @@ def recent_verb(
     type=click.Choice(_READ_VIEWS),
     default="summary",
     show_default=True,
-    help="What to render (summary, transcript, messages, raw, context, neighbors, correlation).",
+    help="What to render (summary, transcript, messages, raw, context, context-pack, neighbors, correlation).",
 )
 @click.option(
     "--to",
@@ -216,6 +216,30 @@ def recent_verb(
     default=False,
     help="Add OTLP span evidence to correlation output (--view correlation).",
 )
+@click.option(
+    "--related-limit",
+    type=int,
+    default=5,
+    show_default=True,
+    help="Number of related sessions to include (--view context).",
+)
+@click.option("--project-path", default=None, help="Filter by cwd prefix pattern (--view context-pack).")
+@click.option("--project-repo", default=None, help="Filter by git repo URL or name (--view context-pack).")
+@click.option("--since", default=None, help="Start date, ISO 8601 (--view context-pack).")
+@click.option("--until", default=None, help="End date, ISO 8601 (--view context-pack).")
+@click.option("--pack-origin", "pack_origin", default=None, help="Source-origin filter (--view context-pack).")
+@click.option("--query", "pack_query", default=None, help="Free-text query (--view context-pack).")
+@click.option(
+    "--max-sessions", type=int, default=5, show_default=True, help="Max sessions, 1-20 (--view context-pack)."
+)
+@click.option(
+    "--max-messages",
+    type=int,
+    default=20,
+    show_default=True,
+    help="Max messages per session, 1-100 (--view context-pack).",
+)
+@click.option("--no-redact", is_flag=True, default=False, help="Do not redact filesystem paths (--view context-pack).")
 @click.option("--no-code-blocks", is_flag=True, help="Exclude code blocks (--view messages).")
 @click.option("--no-tool-calls", is_flag=True, help="Exclude tool calls (--view messages).")
 @click.option("--no-tool-outputs", is_flag=True, help="Exclude tool outputs (--view messages).")
@@ -240,6 +264,16 @@ def read_verb(
     confidence_threshold: float,
     github_api: bool,
     otlp: bool,
+    related_limit: int,
+    project_path: str | None,
+    project_repo: str | None,
+    since: str | None,
+    until: str | None,
+    pack_origin: str | None,
+    pack_query: str | None,
+    max_sessions: int,
+    max_messages: int,
+    no_redact: bool,
     no_code_blocks: bool,
     no_tool_calls: bool,
     no_tool_outputs: bool,
@@ -260,7 +294,9 @@ def read_verb(
         polylogue find id:abc then read --view raw --format json
         polylogue find id:abc then read --to browser
         polylogue find 'repo:polylogue has:paste' then read --all --format ndjson
-        polylogue find 'archive runtime' then read --view context
+        polylogue find id:abc then read --view context --related-limit 5
+        polylogue find 'cost tracking' then read --view context-pack --max-sessions 5
+        polylogue read --view context-pack --project-repo github.com/Sinity/polylogue --since 2026-01-01
         polylogue find id:abc then read --view neighbors --window-hours 48
         polylogue --latest read --view neighbors --format json
         polylogue find id:abc then read --view correlation --since-hours 4
@@ -321,7 +357,26 @@ def read_verb(
         return
 
     if view == "context":
-        _run_read_context(env, request, destination=destination, out_path=out_path)
+        _run_read_context(
+            env, request, session_id=session_id, related_limit=related_limit, destination=destination, out_path=out_path
+        )
+        return
+
+    if view == "context-pack":
+        from polylogue.cli.commands.context_pack import run_context_pack_view
+
+        run_context_pack_view(
+            env,
+            project_path=project_path,
+            project_repo=project_repo,
+            since=since,
+            until=until,
+            origin=pack_origin,
+            query=pack_query,
+            max_sessions=max_sessions,
+            max_messages=max_messages,
+            no_redact=no_redact,
+        )
         return
 
     if view == "neighbors":
@@ -525,22 +580,28 @@ def _run_read_raw(
     run_raw(env, request, session_id=session_id, limit=limit, offset=offset, output_format=output_format)
 
 
-def _run_read_context(env: AppEnv, request: RootModeRequest, *, destination: str, out_path: str | None) -> None:
-    """Route context view to the context command logic."""
-    # The context command lives at polylogue/cli/commands/context.py; it is a
-    # standalone command with its own option set, not a query verb. We delegate
-    # to its compose_context_preamble helper for the archive-backed render.
-    from polylogue.cli.query import execute_query_request
+def _run_read_context(
+    env: AppEnv,
+    request: RootModeRequest,
+    *,
+    session_id: str | None,
+    related_limit: int,
+    destination: str,
+    out_path: str | None,
+) -> None:
+    """Compose the context preamble for the seed session (--view context).
 
-    updated = request.with_param_updates(output_format="markdown")
-    if destination == "file":
-        if not out_path:
-            raise click.UsageError("--to file requires --out <path>.")
-        execute_query_request(env, updated.with_param_updates(output=out_path))
-    elif destination == "clipboard":
-        execute_query_request(env, updated.with_param_updates(output="clipboard"))
-    else:
-        execute_query_request(env, updated)
+    Absorbs the former ``context compose`` command (#1842): resolves the seed
+    from the query (``--id``/``id:``/``--latest``) and emits a context-compose
+    preamble JSON document. The MCP ``compose_context_preamble`` tool exposes
+    the same capability programmatically.
+    """
+    from polylogue.cli.commands.context import run_context_compose
+
+    if session_id is None:
+        raise click.UsageError("read --view context requires a session ID (use --id, id:prefix, or --latest).")
+    preamble = run_context_compose(env, session_id=session_id, related_limit=max(1, related_limit))
+    _deliver_content(env, preamble + "\n", destination=destination, out_path=out_path)
 
 
 def _neighbor_score_label(score: float) -> str:
