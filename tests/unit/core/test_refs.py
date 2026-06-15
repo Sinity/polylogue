@@ -9,8 +9,11 @@ from polylogue.core.refs import EvidenceRef, ObjectRef
     ("raw", "kind", "object_id", "qualifiers"),
     [
         ("session:session-1", "session", "session-1", ()),
+        ("session:codex-session:demo", "session", "codex-session:demo", ()),
         ("message:m-7", "message", "m-7", ()),
+        ("message:codex-session:demo:message-1", "message", "codex-session:demo:message-1", ()),
         ("block:m1:2", "block", "m1", ("2",)),
+        ("block:codex-session:demo:message-1:2", "block", "codex-session:demo:message-1", ("2",)),
         ("github-issue:Sinity/polylogue#1883", "github-issue", "Sinity/polylogue#1883", ()),
     ],
 )
@@ -28,7 +31,7 @@ def test_object_ref_parses_and_formats_existing_assertion_ref_shapes(
     assert ref.format() == raw
 
 
-@pytest.mark.parametrize("raw", ["session", "session:", "message:m1:", "unknown:x"])
+@pytest.mark.parametrize("raw", ["session", "session:", "message:m1:", "block:m1:", "unknown:x"])
 def test_object_ref_rejects_unsupported_or_lossy_shapes(raw: str) -> None:
     with pytest.raises(ValueError):
         ObjectRef.parse(raw)

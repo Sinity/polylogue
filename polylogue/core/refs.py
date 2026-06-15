@@ -32,10 +32,10 @@ _OBJECT_REF_KINDS: Final[dict[str, ObjectRefKind]] = {
 class ObjectRef:
     """Colon-formatted public object reference.
 
-    The DTO intentionally keeps trailing segments opaque. Existing assertion
-    refs include both simple shapes (``session:s1``) and richer shapes such as
-    ``github-issue:Sinity/polylogue#1883``; callers can type the head without
-    reinterpreting domain-specific suffixes.
+    The DTO intentionally keeps the object id opaque. Existing ids may contain
+    colons (``codex-session:demo`` or stored message/block ids), so only the
+    kind delimiter is globally significant. The block form may carry one
+    explicit trailing qualifier for the block index.
     """
 
     kind: ObjectRefKind
@@ -46,15 +46,19 @@ class ObjectRef:
     def parse(cls, value: str) -> ObjectRef:
         """Parse ``kind:id[:qualifier...]`` into an ``ObjectRef``."""
 
-        parts = value.split(":")
-        if len(parts) < 2:
+        kind_value, separator, tail = value.partition(":")
+        if not separator:
             raise ValueError("object ref must use 'kind:id' form")
-        kind = _parse_object_ref_kind(parts[0])
-        object_id = parts[1]
-        qualifiers = tuple(parts[2:])
+        kind = _parse_object_ref_kind(kind_value)
+        if kind == "block" and ":" in tail:
+            object_id, qualifier = tail.rsplit(":", 1)
+            qualifiers: tuple[str, ...] = (qualifier,)
+        else:
+            object_id = tail
+            qualifiers = ()
         if not object_id:
             raise ValueError("object ref id cannot be empty")
-        if any(part == "" for part in qualifiers):
+        if object_id.endswith(":") or any(part == "" for part in qualifiers):
             raise ValueError("object ref qualifiers cannot be empty")
         return cls(kind=kind, object_id=object_id, qualifiers=qualifiers)
 
