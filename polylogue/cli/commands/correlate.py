@@ -6,48 +6,29 @@ import json
 import subprocess
 from typing import TYPE_CHECKING
 
-import click
-
 from polylogue.cli.shared.types import AppEnv
 
 if TYPE_CHECKING:
     from polylogue.insights.session_commit import SessionCorrelationResult
 
 
-@click.command("correlate")
-@click.argument("session_id")
-@click.option("--repo-path", "-r", default=None, help="Path to git repository. Defaults to current directory.")
-@click.option("--since-hours", "-w", type=int, default=2, help="Hours before/after session to scan for commits.")
-@click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
-@click.option(
-    "--confidence-threshold",
-    type=float,
-    default=0.3,
-    help="Minimum confidence for file-overlap commit detection.",
-)
-@click.option(
-    "--github-api/--no-github-api",
-    default=True,
-    help="Cross-reference issue/PR references with GitHub API if gh CLI is available.",
-)
-@click.option(
-    "--otlp",
-    is_flag=True,
-    default=False,
-    help="Add OTLP span evidence to the correlation output.",
-)
-@click.pass_obj
-def correlate_command(
+def run_correlation_view(
     env: AppEnv,
+    *,
     session_id: str,
-    repo_path: str | None,
-    since_hours: int,
-    output_format: str | None,
-    confidence_threshold: float,
-    github_api: bool,
-    otlp: bool,
+    repo_path: str | None = None,
+    since_hours: int = 2,
+    output_format: str | None = None,
+    confidence_threshold: float = 0.3,
+    github_api: bool = True,
+    otlp: bool = False,
 ) -> None:
-    """Show git commits and GitHub refs within the session's time window (#1690)."""
+    """Show git commits and GitHub refs within the session's time window (#1690).
+
+    The capability behind ``read --view correlation`` (#1842): it absorbed the
+    former standalone ``correlate`` command. The MCP ``correlate_session(s)``
+    tools expose the same correlation programmatically.
+    """
     from polylogue.api.sync.bridge import run_coroutine_sync
     from polylogue.insights.session_commit import build_correlation_result
 
@@ -270,29 +251,3 @@ def _print_correlation_result(env: AppEnv, result: SessionCorrelationResult) -> 
         for ref in pr_refs:
             label = f"{ref.owner}/{ref.repo}#{ref.number}" if ref.owner else f"#{ref.number}"
             env.ui.console.print(f"  - {label} [dim]{ref.raw_match}[/dim]")
-
-
-def _parse_git_log(output: str, session_files: set[str]) -> list[dict[str, object]]:
-    """Parse git log output into commit dicts with file-overlap detection."""
-    commits: list[dict[str, object]] = []
-    blocks = output.split("\n---\n")
-    for block in blocks:
-        lines = block.strip().split("\n")
-        if len(lines) < 3:
-            continue
-        commit_hash = lines[0].strip()
-        date_str = lines[1].strip()
-        subject = lines[2].strip()
-        changed_files = {f.strip() for f in lines[3:] if f.strip()}
-        overlaps = bool(session_files & changed_files) if session_files else False
-        commits.append(
-            {
-                "hash": commit_hash,
-                "short_hash": commit_hash[:8],
-                "date": date_str,
-                "subject": subject,
-                "changed_files": sorted(changed_files)[:20],
-                "overlaps_files": overlaps,
-            }
-        )
-    return commits

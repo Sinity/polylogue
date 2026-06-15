@@ -377,15 +377,6 @@ ASSURANCE_REGISTRY: tuple[OutputAssurance, ...] = (
         notes="Prints canonical archive paths; --format json emits a structured path map.",
     ),
     OutputAssurance(
-        command="correlate",
-        family=INSIGHTS_FAMILY,
-        json_contract=True,
-        snapshot=False,
-        plain=True,
-        streaming=False,
-        notes="Cross-references sessions with git commits/issues/PRs; --format json structured output.",
-    ),
-    OutputAssurance(
         command="context",
         family=INSIGHTS_FAMILY,
         json_contract=True,

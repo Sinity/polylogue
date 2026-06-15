@@ -53,7 +53,7 @@ def _lazy_shell_complete(source: str):  # type: ignore[no-untyped-def]
 _complete_session_id = _lazy_shell_complete("session_id")
 _complete_message_type = _lazy_shell_complete("message_type")
 
-_READ_VIEWS = ("summary", "transcript", "messages", "raw", "context", "neighbors")
+_READ_VIEWS = ("summary", "transcript", "messages", "raw", "context", "neighbors", "correlation")
 _READ_DESTINATIONS = ("terminal", "stdout", "browser", "clipboard", "file")
 _READ_FORMATS = ("text", "markdown", "json", "ndjson", "yaml", "html", "obsidian", "org", "csv")
 
@@ -148,7 +148,7 @@ def recent_verb(
     type=click.Choice(_READ_VIEWS),
     default="summary",
     show_default=True,
-    help="What to render (summary, transcript, messages, raw, context, neighbors).",
+    help="What to render (summary, transcript, messages, raw, context, neighbors, correlation).",
 )
 @click.option(
     "--to",
@@ -186,6 +186,36 @@ def recent_verb(
     show_default=True,
     help="Neighboring time window around the seed session (--view neighbors).",
 )
+@click.option(
+    "--repo-path",
+    default=None,
+    help="Git repository path for correlation (--view correlation). Defaults to the session's repo/cwd.",
+)
+@click.option(
+    "--since-hours",
+    type=int,
+    default=2,
+    show_default=True,
+    help="Hours before/after the session to scan for commits (--view correlation).",
+)
+@click.option(
+    "--confidence-threshold",
+    type=float,
+    default=0.3,
+    show_default=True,
+    help="Minimum confidence for file-overlap commit detection (--view correlation).",
+)
+@click.option(
+    "--github-api/--no-github-api",
+    default=True,
+    help="Cross-reference issue/PR refs with the GitHub API via gh CLI (--view correlation).",
+)
+@click.option(
+    "--otlp",
+    is_flag=True,
+    default=False,
+    help="Add OTLP span evidence to correlation output (--view correlation).",
+)
 @click.option("--no-code-blocks", is_flag=True, help="Exclude code blocks (--view messages).")
 @click.option("--no-tool-calls", is_flag=True, help="Exclude tool calls (--view messages).")
 @click.option("--no-tool-outputs", is_flag=True, help="Exclude tool outputs (--view messages).")
@@ -205,6 +235,11 @@ def read_verb(
     limit: int | None,
     offset: int,
     window_hours: int,
+    repo_path: str | None,
+    since_hours: int,
+    confidence_threshold: float,
+    github_api: bool,
+    otlp: bool,
     no_code_blocks: bool,
     no_tool_calls: bool,
     no_tool_outputs: bool,
@@ -228,6 +263,8 @@ def read_verb(
         polylogue find 'archive runtime' then read --view context
         polylogue find id:abc then read --view neighbors --window-hours 48
         polylogue --latest read --view neighbors --format json
+        polylogue find id:abc then read --view correlation --since-hours 4
+        polylogue --latest read --view correlation --otlp --format json
 
     \b
     Deferred views (not yet implemented; note in PR body):
@@ -297,6 +334,23 @@ def read_verb(
             output_format=output_format,
             destination=destination,
             out_path=out_path,
+        )
+        return
+
+    if view == "correlation":
+        if session_id is None:
+            raise click.UsageError("read --view correlation requires a session ID (use --id, id:prefix, or --latest).")
+        from polylogue.cli.commands.correlate import run_correlation_view
+
+        run_correlation_view(
+            env,
+            session_id=session_id,
+            repo_path=repo_path,
+            since_hours=since_hours,
+            output_format=output_format,
+            confidence_threshold=confidence_threshold,
+            github_api=github_api,
+            otlp=otlp,
         )
         return
 

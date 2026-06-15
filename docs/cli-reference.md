@@ -173,8 +173,6 @@ Commands:
   config             Show configuration paths and resolved settings.
   context            Compose context preamble from archive objects.
   context-pack       Build a provenance-rich context pack for agent analysis.
-  correlate          Cross-reference sessions with git commits, issues, and
-                     PRs.
   cost               Summarize session cost telemetry.
   count              Print count of matched sessions.
   dashboard          Open the local dashboard.
@@ -267,15 +265,17 @@ Usage: polylogue read [OPTIONS]
       polylogue find 'archive runtime' then read --view context
       polylogue find id:abc then read --view neighbors --window-hours 48
       polylogue --latest read --view neighbors --format json
+      polylogue find id:abc then read --view correlation --since-hours 4
+      polylogue --latest read --view correlation --otlp --format json
 
   Deferred views (not yet implemented; note in PR body):
       timeline, tools, files, metadata, continuation
 
 Options:
-  -v, --view [summary|transcript|messages|raw|context|neighbors]
+  -v, --view [summary|transcript|messages|raw|context|neighbors|correlation]
                                   What to render (summary, transcript,
-                                  messages, raw, context, neighbors).
-                                  [default: summary]
+                                  messages, raw, context, neighbors,
+                                  correlation).  [default: summary]
   --to [terminal|stdout|browser|clipboard|file]
                                   Output destination.  [default: terminal]
   -f, --format [text|markdown|json|ndjson|yaml|html|obsidian|org|csv]
@@ -289,6 +289,18 @@ Options:
   --offset INTEGER                Pagination offset.
   --window-hours INTEGER          Neighboring time window around the seed
                                   session (--view neighbors).  [default: 24]
+  --repo-path TEXT                Git repository path for correlation (--view
+                                  correlation). Defaults to the session's
+                                  repo/cwd.
+  --since-hours INTEGER           Hours before/after the session to scan for
+                                  commits (--view correlation).  [default: 2]
+  --confidence-threshold FLOAT    Minimum confidence for file-overlap commit
+                                  detection (--view correlation).  [default:
+                                  0.3]
+  --github-api / --no-github-api  Cross-reference issue/PR refs with the
+                                  GitHub API via gh CLI (--view correlation).
+  --otlp                          Add OTLP span evidence to correlation output
+                                  (--view correlation).
   --no-code-blocks                Exclude code blocks (--view messages).
   --no-tool-calls                 Exclude tool calls (--view messages).
   --no-tool-outputs               Exclude tool outputs (--view messages).
@@ -601,7 +613,6 @@ Published JSON Schemas live under [`docs/schemas/cli-output/`](./schemas/cli-out
 | Command | JSON contract | Snapshot | `--plain` | NDJSON | Schema | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
 | `context` | yes | no | yes | no | — | Composes a context preamble from archive objects; compose emits JSON. |
-| `correlate` | yes | no | yes | no | — | Cross-references sessions with git commits/issues/PRs; --format json structured output. |
 | `cost` | yes | yes | yes | no | — |  |
 | `diagnostics` | yes | yes | yes | no | — | Temporal session diagnostics; JSON output for downstream analytics. |
 | `insights` | yes | yes | yes | no | — | Rebuild/inspect derived insights; subcommands emit insight-specific JSON. |

@@ -92,7 +92,6 @@ _SHORT_HELP: dict[str, str] = {
     "config": "Show configuration paths and resolved settings.",
     "context": "Compose context preamble from archive objects.",
     "context_pack": "Build a provenance-rich context pack for agent analysis.",
-    "correlate": "Cross-reference sessions with git commits, issues, and PRs.",
     "cost": "Summarize session cost telemetry.",
     "dashboard": "Open the local dashboard.",
     "diagnostics": "Temporal session diagnostics",
@@ -174,7 +173,6 @@ ROOT_COMMANDS: tuple[click.Command, ...] = (
     _L("embed"),
     _L("maintenance"),
     _L("tutorial"),
-    _L("correlate"),
     _L("blackboard"),
 )
 
