@@ -122,6 +122,7 @@ def test_backup_plan_cli_reports_backup_profiles_and_tier_boundaries(
         "rebuildable_cache_exclude",
         "diagnostics_bundle",
     }
+    assert payload["blob_store"]["path"] == str(cli_workspace["data_root"] / "polylogue" / "blob")
     assert payload["blob_store"]["backup_policy"] == "back_up_referenced_blobs_with_source_and_user_tiers"
 
 

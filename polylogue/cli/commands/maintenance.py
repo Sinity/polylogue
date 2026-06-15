@@ -22,7 +22,7 @@ from polylogue.maintenance.registry import MaintenanceOperationRegistry, Operati
 from polylogue.maintenance.replay import ReplayProgress, execute_replay
 from polylogue.maintenance.scope import MaintenanceScopeFilter
 from polylogue.maintenance.targets import MAINTENANCE_TARGET_NAMES, build_maintenance_target_catalog
-from polylogue.paths import archive_file_set_root_for_paths, archive_root, db_path, render_root
+from polylogue.paths import archive_file_set_root_for_paths, archive_root, blob_store_root, db_path, render_root
 from polylogue.storage.blob_gc import read_gc_history
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.archive_init import (
@@ -386,7 +386,7 @@ def _backup_plan_payload(root: Path) -> dict[str, Any]:
             }
         )
 
-    blob_root = root / "blob"
+    blob_root = blob_store_root()
     return {
         "ok": True,
         "mode": "backup_plan",
