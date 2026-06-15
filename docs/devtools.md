@@ -100,6 +100,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools coverage-gate` | Run pytest with the repository coverage floor from pyproject.toml. |
 | `devtools daemon-workload-probe` | Inspect daemon ingest workload, convergence debt, and hot query plans. |
 | `devtools evidence-dashboard` | Render the pytest-first evidence dashboard or a changed-path trace. |
+| `devtools ingest-amplification-probe` | Measure deterministic per-tier ingest write amplification on a synthetic fixture (#1851). |
 | `devtools lab-scenario` | Run verification-lab showcase scenario sets and baseline checks. |
 | `devtools pipeline-probe` | Run typed pipeline probes against synthetic, staged, or archive-subset inputs. |
 | `devtools query-memory-budget` | Measure query-memory envelopes on generated fixtures. |
