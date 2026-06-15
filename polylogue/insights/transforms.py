@@ -33,6 +33,10 @@ _TEST_FAIL_RE = re.compile(r"\b(?P<count>\d+)\s+failed\b", re.IGNORECASE)
 _CHECK_PASS_RE = re.compile(r"\b(?P<name>[A-Za-z0-9_. -]+)\s+\.\.\.\s+ok\b")
 _DECISION_RE = re.compile(r"\b(decision|decided|choose|chosen):?\s+(?P<text>.+)", re.IGNORECASE)
 _STATUS_HEADING_RE = re.compile(r"^\s*(goal|done|in flight|blockers?|next):\s*(?P<text>.+)$", re.IGNORECASE)
+_RUNSTATE_SECTION_RE = re.compile(
+    r"^\s*(goal|done|in flight|blockers?|next(?: action)?s?):\s*(?P<text>.*)$",
+    re.IGNORECASE,
+)
 
 
 def _utc_now_iso() -> str:
@@ -72,6 +76,7 @@ class RecoverySizeMetrics(ArchiveInsightModel):
     message_count: int
     tool_summary_count: int
     subagent_report_count: int
+    run_state_count: int
     event_count: int
     decision_candidate_count: int
 
@@ -114,6 +119,23 @@ class SubagentReport(ArchiveInsightModel):
         return self
 
 
+class RunStateSummary(ArchiveInsightModel):
+    goal: str | None = None
+    done: tuple[str, ...] = ()
+    in_flight: tuple[str, ...] = ()
+    blockers: tuple[str, ...] = ()
+    next_actions: tuple[str, ...] = ()
+    raw_refs: tuple[TransformRawRef, ...]
+
+    @model_validator(mode="after")
+    def _requires_content_and_raw_refs(self) -> RunStateSummary:
+        if not self.raw_refs:
+            raise ValueError("RunStateSummary requires at least one raw ref")
+        if not any((self.goal, self.done, self.in_flight, self.blockers, self.next_actions)):
+            raise ValueError("RunStateSummary requires at least one parsed field")
+        return self
+
+
 class RecoveryEvent(ArchiveInsightModel):
     kind: Literal["pr_opened", "pr_merged", "issue_closed", "check_passed", "test_passed", "test_failed"]
     summary: str
@@ -148,6 +170,7 @@ class RecoveryDigest(ArchiveInsightModel):
     role_counts: dict[str, int] = Field(default_factory=dict)
     tool_summaries: tuple[ToolSummary, ...] = ()
     subagent_reports: tuple[SubagentReport, ...] = ()
+    run_state: RunStateSummary | None = None
     events: tuple[RecoveryEvent, ...] = ()
     decision_candidates: tuple[DecisionCandidate, ...] = ()
     resume_markdown: str
@@ -192,6 +215,7 @@ def compile_recovery_digest(session: Session) -> RecoveryDigest:
     )
     tool_summaries = tuple(_extract_tool_summaries(session, messages))
     subagent_reports = tuple(_extract_subagent_reports(session, messages))
+    run_state = _extract_run_state(session, messages)
     events = tuple(_extract_events(session, messages))
     decisions = tuple(_extract_decision_candidates(session, messages))
     role_counts = dict(Counter(_role_value(message) for message in messages))
@@ -201,6 +225,7 @@ def compile_recovery_digest(session: Session) -> RecoveryDigest:
         session=session,
         tool_summaries=tool_summaries,
         subagent_reports=subagent_reports,
+        run_state=run_state,
         events=events,
         decisions=decisions,
     )
@@ -221,12 +246,14 @@ def compile_recovery_digest(session: Session) -> RecoveryDigest:
             message_count=len(messages),
             tool_summary_count=len(tool_summaries),
             subagent_report_count=len(subagent_reports),
+            run_state_count=1 if run_state is not None else 0,
             event_count=len(events),
             decision_candidate_count=len(decisions),
         ),
         role_counts=role_counts,
         tool_summaries=tool_summaries,
         subagent_reports=subagent_reports,
+        run_state=run_state,
         events=events,
         decision_candidates=decisions,
         resume_markdown=resume_markdown,
@@ -239,6 +266,7 @@ def render_resume_bundle(
     session: Session,
     tool_summaries: Sequence[ToolSummary],
     subagent_reports: Sequence[SubagentReport],
+    run_state: RunStateSummary | None,
     events: Sequence[RecoveryEvent],
     decisions: Sequence[DecisionCandidate],
 ) -> str:
@@ -267,6 +295,16 @@ def render_resume_bundle(
             lines.append(f"  - report: {report.final_report_preview}")
     if not subagent_reports:
         lines.append("- none extracted")
+    lines.extend(["", "## Run State"])
+    if run_state is None:
+        lines.append("- none extracted")
+    else:
+        if run_state.goal:
+            lines.append(f"- goal: {run_state.goal}")
+        lines.extend(f"- done: {item}" for item in run_state.done[:8])
+        lines.extend(f"- in_flight: {item}" for item in run_state.in_flight[:8])
+        lines.extend(f"- blocker: {item}" for item in run_state.blockers[:8])
+        lines.extend(f"- next: {item}" for item in run_state.next_actions[:8])
     lines.extend(["", "## Tools"])
     for tool in tool_summaries[:8]:
         command = f" — {tool.command}" if tool.command else ""
@@ -365,6 +403,117 @@ def _extract_events(session: Session, messages: Sequence[Message]) -> Iterable[R
                     continue
                 seen.add(key)
                 yield event
+
+
+def _extract_run_state(session: Session, messages: Sequence[Message]) -> RunStateSummary | None:
+    goal: str | None = None
+    done: list[str] = []
+    in_flight: list[str] = []
+    blockers: list[str] = []
+    next_actions: list[str] = []
+    refs: list[TransformRawRef] = []
+
+    for message in messages:
+        parsed = _parse_run_state_text(message.text or "")
+        if parsed is None:
+            continue
+        parsed_goal, parsed_done, parsed_in_flight, parsed_blockers, parsed_next = parsed
+        if parsed_goal:
+            goal = parsed_goal
+        _extend_unique(done, parsed_done)
+        _extend_unique(in_flight, parsed_in_flight)
+        _extend_unique(blockers, parsed_blockers)
+        _extend_unique(next_actions, parsed_next)
+        refs.append(_message_ref(session, message))
+
+    if not refs:
+        return None
+    return RunStateSummary(
+        goal=goal,
+        done=tuple(done),
+        in_flight=tuple(in_flight),
+        blockers=tuple(blockers),
+        next_actions=tuple(next_actions),
+        raw_refs=tuple(refs),
+    )
+
+
+def _parse_run_state_text(
+    text: str,
+) -> tuple[str | None, list[str], list[str], list[str], list[str]] | None:
+    goal: str | None = None
+    done: list[str] = []
+    in_flight: list[str] = []
+    blockers: list[str] = []
+    next_actions: list[str] = []
+    current_section: str | None = None
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            current_section = None
+            continue
+        heading = _RUNSTATE_SECTION_RE.match(line)
+        if heading is not None:
+            current_section = _run_state_section_key(heading.group(1))
+            value = _clean_run_state_item(heading.group("text"))
+            if value:
+                if current_section == "goal":
+                    goal = value
+                elif current_section == "done":
+                    done.append(value)
+                elif current_section == "in_flight":
+                    in_flight.append(value)
+                elif current_section == "blockers":
+                    blockers.append(value)
+                elif current_section == "next":
+                    next_actions.append(value)
+            continue
+        if current_section is None:
+            continue
+        value = _clean_run_state_item(line)
+        if not value:
+            continue
+        if current_section == "goal":
+            goal = value if goal is None else f"{goal}; {value}"
+        elif current_section == "done":
+            done.append(value)
+        elif current_section == "in_flight":
+            in_flight.append(value)
+        elif current_section == "blockers":
+            blockers.append(value)
+        elif current_section == "next":
+            next_actions.append(value)
+
+    if not any((goal, done, in_flight, blockers, next_actions)):
+        return None
+    return goal, done, in_flight, blockers, next_actions
+
+
+def _run_state_section_key(value: str) -> Literal["goal", "done", "in_flight", "blockers", "next"]:
+    normalized = value.lower().strip()
+    if normalized == "goal":
+        return "goal"
+    if normalized == "done":
+        return "done"
+    if normalized == "in flight":
+        return "in_flight"
+    if normalized.startswith("blocker"):
+        return "blockers"
+    return "next"
+
+
+def _clean_run_state_item(value: str) -> str:
+    return _preview(value.strip().lstrip("-*").strip(), limit=240)
+
+
+def _extend_unique(target: list[str], values: Iterable[str]) -> None:
+    seen = set(target)
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        target.append(value)
 
 
 def _events_from_text(text: str, ref: TransformRawRef) -> Iterable[RecoveryEvent]:
@@ -611,6 +760,7 @@ __all__ = [
     "RecoveryDigest",
     "RecoveryEvent",
     "RecoverySizeMetrics",
+    "RunStateSummary",
     "SubagentReport",
     "ToolSummary",
     "TransformDescriptor",
