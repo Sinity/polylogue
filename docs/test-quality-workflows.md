@@ -26,12 +26,12 @@ Current registry snapshot:
 ## Runtime Coverage
 
 - covered runtime paths: `22`
-- covered runtime artifacts: `43`
+- covered runtime artifacts: `46`
 - covered runtime operations: `27`
 - covered maintenance targets: `2`
 - covered declared operation targets: `42`
-- uncovered runtime paths: —
-- uncovered runtime artifacts: —
+- uncovered runtime paths: `recovery-digest-transform-loop`
+- uncovered runtime artifacts: `recovery_report_markdown`
 - uncovered runtime operations: `mutate-add-tag`, `mutate-bulk-tag-sessions`, `mutate-delete-metadata`, `mutate-delete-session`, `mutate-remove-tag`, `mutate-set-metadata`
 - uncovered maintenance targets: `empty_sessions`, `message_embeddings`, `message_type_backfill`, `orphaned_attachments`, `orphaned_blobs`, `orphaned_messages`, `superseded_raw_snapshots`, `wal_checkpoint`
 - uncovered declared operation targets: `mutate-add-tag`, `mutate-bulk-tag-sessions`, `mutate-delete-metadata`, `mutate-delete-session`, `mutate-remove-tag`, `mutate-set-metadata`

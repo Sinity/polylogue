@@ -431,6 +431,52 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         readiness_surfaces=("query", "mcp", "facade"),
     ),
     ArtifactNode(
+        name="recovery_digest",
+        layer=ArtifactLayer.PROJECTION,
+        description="Deterministic digest envelope compiled from one archived session for recovery/read views.",
+        depends_on=("archive_session_rows", "message_source_rows"),
+        code_refs=(
+            "polylogue.insights.transforms.compile_recovery_digest",
+            "polylogue.api.archive.PolylogueArchive.recovery_digest",
+            "polylogue.cli.query_verbs._render_recovery_read_view",
+        ),
+        readiness_surfaces=("read-view", "api", "cli"),
+    ),
+    ArtifactNode(
+        name="forensic_index",
+        layer=ArtifactLayer.PROJECTION,
+        description="Evidence index attached to a recovery digest for command/tool/file/action reconstruction.",
+        depends_on=("recovery_digest",),
+        code_refs=(
+            "polylogue.insights.transforms.compile_recovery_digest",
+            "polylogue.insights.transforms.RecoveryDigest.forensic_index",
+        ),
+        readiness_surfaces=("read-view", "api", "cli"),
+    ),
+    ArtifactNode(
+        name="resume_bundle",
+        layer=ArtifactLayer.PROJECTION,
+        description="Compact continuation bundle produced with the recovery digest for session handoff.",
+        depends_on=("recovery_digest",),
+        code_refs=(
+            "polylogue.insights.transforms.compile_recovery_digest",
+            "polylogue.insights.transforms.RecoveryDigest.resume_bundle",
+        ),
+        readiness_surfaces=("read-view", "api", "cli"),
+    ),
+    ArtifactNode(
+        name="recovery_report_markdown",
+        layer=ArtifactLayer.PROJECTION,
+        description="Rendered recovery report preset output derived from a compiled recovery digest.",
+        depends_on=("recovery_digest", "forensic_index"),
+        code_refs=(
+            "polylogue.insights.transforms.render_recovery_report",
+            "polylogue.insights.transforms.RecoveryDigest.report_markdown",
+            "polylogue.cli.query_verbs._render_recovery_read_view",
+        ),
+        readiness_surfaces=("read-view", "cli"),
+    ),
+    ArtifactNode(
         name="schema_packages",
         layer=ArtifactLayer.DURABLE,
         description="Versioned provider schema packages stored in the schema registry.",
@@ -715,6 +761,18 @@ RUNTIME_ARTIFACT_PATHS: tuple[ArtifactPath, ...] = (
         nodes=(
             "message_fts",
             "session_query_results",
+        ),
+    ),
+    ArtifactPath(
+        name="recovery-digest-transform-loop",
+        description="Archived session/message rows through deterministic recovery digest and report projections.",
+        nodes=(
+            "archive_session_rows",
+            "message_source_rows",
+            "recovery_digest",
+            "forensic_index",
+            "resume_bundle",
+            "recovery_report_markdown",
         ),
     ),
     ArtifactPath(
