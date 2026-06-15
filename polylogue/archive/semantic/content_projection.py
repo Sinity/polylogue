@@ -237,16 +237,7 @@ def _segments_from_text(message: Message) -> list[_Segment]:
     if message.is_context_dump or message.is_protocol_artifact or message.is_system:
         return [_Segment(ContentKind.SYSTEM_NOISE, text)]
 
-    segments: list[_Segment] = []
-    cursor = 0
-    for match in _CODE_FENCE_PATTERN.finditer(text):
-        segments.extend(_segments_from_noncode_text(text[cursor : match.start()]))
-        code = (match.group("code") or "").strip()
-        if code:
-            segments.append(_Segment(ContentKind.CODE, code))
-        cursor = match.end()
-    segments.extend(_segments_from_noncode_text(text[cursor:]))
-
+    segments = _segments_from_inline_text(text)
     if segments:
         return segments
 
@@ -262,6 +253,8 @@ def _text_block_segments(block: Mapping[str, object]) -> list[_Segment]:
     if text is None:
         return [_Segment(ContentKind.PROSE, None, block=dict(block))]
     if not text.lstrip().startswith("<system-reminder>"):
+        if "```" in text or "<thinking>" in text or "<antml:thinking>" in text:
+            return _segments_from_inline_text(text)
         return [_Segment(ContentKind.PROSE, text, block=dict(block))]
     cleaned = strip_leading_system_reminders(text)
     if not cleaned:
@@ -297,6 +290,19 @@ def _segments_from_noncode_text(text: str) -> list[_Segment]:
     tail = text[cursor:].strip()
     if tail:
         segments.append(_Segment(ContentKind.PROSE, tail))
+    return segments
+
+
+def _segments_from_inline_text(text: str) -> list[_Segment]:
+    segments: list[_Segment] = []
+    cursor = 0
+    for match in _CODE_FENCE_PATTERN.finditer(text):
+        segments.extend(_segments_from_noncode_text(text[cursor : match.start()]))
+        code = (match.group("code") or "").strip()
+        if code:
+            segments.append(_Segment(ContentKind.CODE, code))
+        cursor = match.end()
+    segments.extend(_segments_from_noncode_text(text[cursor:]))
     return segments
 
 

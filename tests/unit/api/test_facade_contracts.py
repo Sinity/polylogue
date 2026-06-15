@@ -806,6 +806,40 @@ async def test_get_messages_paginated_raises_for_unknown_id(tmp_path: Path) -> N
         await archive.close()
 
 
+async def test_get_messages_paginated_applies_content_projection(tmp_path: Path) -> None:
+    """Message reads honor the same content projection as session reads."""
+    from polylogue.archive.semantic.content_projection import ContentProjectionSpec
+
+    archive = _archive(tmp_path)
+    body = "Alpha\n\n```python\nprint('x')\n```\n\nOmega"
+    with ArchiveStore(tmp_path) as archive_db:
+        session_id = archive_db.write_parsed(
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="projected-messages",
+                title="Projected messages",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="projected-m1",
+                        role=Role.ASSISTANT,
+                        text=body,
+                        blocks=[],
+                    )
+                ],
+            )
+        )
+    try:
+        messages, total = await archive.get_messages_paginated(
+            session_id,
+            content_projection=ContentProjectionSpec.prose_only(),
+        )
+    finally:
+        await archive.close()
+
+    assert total == 1
+    assert messages[0].text == "Alpha\n\nOmega"
+
+
 # ---------------------------------------------------------------------------
 # 7. Required-arg validation
 # ---------------------------------------------------------------------------

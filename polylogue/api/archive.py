@@ -1066,7 +1066,6 @@ class PolylogueArchiveMixin:
         *,
         content_projection: ContentProjectionSpec | None = None,
     ) -> Session | None:
-        del content_projection
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
@@ -1074,7 +1073,10 @@ class PolylogueArchiveMixin:
                 resolved_id = archive.resolve_session_id(session_id)
             except KeyError:
                 return None
-            return _archive_session_to_session(archive.read_session(resolved_id))
+            session = _archive_session_to_session(archive.read_session(resolved_id))
+            if content_projection is None or not content_projection.filters_content():
+                return session
+            return session.with_content_projection(content_projection)
 
     async def recovery_digest(self, session_id: str) -> RecoveryDigest | None:
         """Compile one session into the deterministic recovery digest transform."""
@@ -1136,7 +1138,6 @@ class PolylogueArchiveMixin:
         limit: int | None = None,
         content_projection: ContentProjectionSpec | None = None,
     ) -> list[Session]:
-        del content_projection
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
@@ -1144,7 +1145,10 @@ class PolylogueArchiveMixin:
                 origin=origin,
                 limit=50 if limit is None else limit,
             )
-            return [_archive_session_to_session(archive.read_session(summary.session_id)) for summary in summaries]
+            sessions = [_archive_session_to_session(archive.read_session(summary.session_id)) for summary in summaries]
+            if content_projection is None or not content_projection.filters_content():
+                return sessions
+            return [session.with_content_projection(content_projection) for session in sessions]
 
     async def list_summaries(
         self,
@@ -1796,8 +1800,7 @@ class PolylogueArchiveMixin:
 
         Raises ``SessionNotFoundError`` if the session does not exist.
         """
-        del content_projection
-        session = await self.get_session(session_id)
+        session = await self.get_session(session_id, content_projection=content_projection)
         if session is None:
             raise SessionNotFoundError(session_id)
         messages = [
@@ -1817,12 +1820,11 @@ class PolylogueArchiveMixin:
         content_projection: ContentProjectionSpec | None = None,
     ) -> dict[str, list[Message]]:
         """Return messages for many sessions using one archive batch read."""
-        del content_projection
         since_ms = _archive_query_date_ms("since", since)
         until_ms = _archive_query_date_ms("until", until)
         rows: dict[str, list[Message]] = {}
         for session_id in session_ids:
-            session = await self.get_session(session_id)
+            session = await self.get_session(session_id, content_projection=content_projection)
             if session is None:
                 continue
             rows[str(session.id)] = [

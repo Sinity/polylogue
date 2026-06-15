@@ -891,19 +891,12 @@ class TestPromptSurfaces:
 
 
 class TestExportSessionTool:
-    def test_get_messages_tool_native_content_projection_is_not_applied(
+    def test_get_messages_tool_applies_native_content_projection(
         self: object,
         mcp_server: MCPServerUnderTest,
         tmp_path: Path,
     ) -> None:
-        """PROD GAP: the archive ``get_messages`` path builds the content
-        projection request but never applies it — ``archive_messages_payload``
-        joins all block text verbatim. So ``no_code_blocks=True`` does NOT strip
-        fenced code on the archive store. This test pins the *current* archive
-        contract (text returned verbatim) so the divergence is visible and the
-        gap is tracked; the previous behavior stripped code via
-        ``content_projection``.
-        """
+        """Archive-backed MCP messages honor the shared projection flags."""
         body = "Alpha\n\n```python\nprint('x')\n```\n\nOmega"
         archive_root = tmp_path / "archive"
         with ArchiveStore(archive_root) as archive:
@@ -935,8 +928,8 @@ class TestExportSessionTool:
             )
 
         payload = json.loads(result)
-        # Native path returns the code fence intact (projection not applied).
-        assert payload["messages"][0]["text"] == body
+        assert payload["messages"][0]["text"] == "Alpha\n\nOmega"
+        assert "```" not in payload["messages"][0]["content_blocks"][0]["text"]
 
     def test_export_markdown(self: object, simple_session: Session, mcp_server: MCPServerUnderTest) -> None:
         with (

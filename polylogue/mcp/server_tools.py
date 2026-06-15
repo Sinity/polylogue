@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
 
+from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.core.enums import Origin
 from polylogue.core.sources import provider_from_origin
 from polylogue.mcp.archive_support import (
@@ -593,6 +594,15 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             normalized_message_type = (
                 validate_message_type_filter(message_type).value if message_type is not None else None
             )
+            projection = ContentProjectionSpec.from_params(
+                {
+                    "no_code_blocks": no_code_blocks,
+                    "no_tool_calls": no_tool_calls,
+                    "no_tool_outputs": no_tool_outputs,
+                    "no_file_reads": no_file_reads,
+                    "prose_only": prose_only,
+                }
+            )
             config = hooks.get_config()
             with ArchiveStore.open_existing(active_archive_root(config) or config.archive_root) as archive:
                 try:
@@ -605,6 +615,7 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                         session,
                         roles=tuple(str(role) for role in roles),
                         message_type=normalized_message_type,
+                        content_projection=projection,
                         limit=hooks.clamp_limit(limit),
                         offset=max(0, offset),
                     )
