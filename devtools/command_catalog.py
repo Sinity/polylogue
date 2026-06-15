@@ -215,6 +215,23 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "ingest-amplification-probe",
+        "verification",
+        "Measure deterministic per-tier ingest write amplification on a synthetic fixture (#1851).",
+        "devtools.ingest_amplification_probe",
+        use_when=(
+            "Establish or compare the post-fix baseline for daemon live-ingest write amplification. "
+            "Drives the public batch-ingest path over a deterministic synthetic corpus in a temp dir "
+            "and attributes bytes written per archive tier (source/index/embeddings/user/ops) "
+            "per append batch. Additive measurement only — does not touch production ingest logic."
+        ),
+        examples=(
+            "devtools ingest-amplification-probe",
+            "devtools ingest-amplification-probe --json",
+            "devtools ingest-amplification-probe --batches 8 --seed 1851",
+        ),
+    ),
+    CommandSpec(
         "self-verify",
         "verification",
         "Capture and compare archive golden-master envelopes for schema rewrites.",
