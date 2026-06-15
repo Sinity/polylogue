@@ -675,3 +675,69 @@ class TestOperationSpecContract:
             seen[name] = seen.get(name, 0) + 1
         duplicates = {name: count for name, count in seen.items() if count > 1}
         assert not duplicates, f"duplicate operation names in catalog: {duplicates}"
+
+
+# ---------------------------------------------------------------------------
+# Error-envelope convergence (#1818)
+# ---------------------------------------------------------------------------
+
+
+class TestErrorEnvelopeContract:
+    """Every genuine daemon error response shares one machine-output shape.
+
+    ``_send_error`` is the single helper for daemon error responses; it emits
+    ``{"ok": False, "error": <code>, "detail": <str|null>, "field": <str|null>}``
+    through the shared ``QueryErrorPayload``, identical to the
+    ``daemon_safe_handler`` decorator and the cursor-rejection path. Health and
+    status payloads use a deliberately separate shape (``status`` / ``alerts`` /
+    ``quick_check`` keys) and must NOT be routed through this helper.
+    """
+
+    def test_send_error_emits_canonical_envelope(self) -> None:
+        handler = _make_handler("GET", "/api/status")
+        send_json = MagicMock()
+        handler._send_json = send_json  # type: ignore[method-assign]
+        handler._send_error(HTTPStatus.NOT_FOUND, "not_found")
+        status, payload = send_json.call_args.args
+        assert status == HTTPStatus.NOT_FOUND
+        assert payload == {"ok": False, "error": "not_found", "detail": None, "field": None}
+
+    def test_send_error_includes_detail_when_provided(self) -> None:
+        handler = _make_handler("GET", "/api/status")
+        send_json = MagicMock()
+        handler._send_json = send_json  # type: ignore[method-assign]
+        handler._send_error(HTTPStatus.BAD_REQUEST, "invalid_cursor", "bad anchor")
+        _, payload = send_json.call_args.args
+        assert payload == {
+            "ok": False,
+            "error": "invalid_cursor",
+            "detail": "bad anchor",
+            "field": None,
+        }
+
+    def test_do_options_error_routes_through_canonical_envelope(self) -> None:
+        """A representative real error site (405 on OPTIONS) carries the shape."""
+        handler = _make_handler("OPTIONS", "/api/status")
+        send_json = MagicMock()
+        handler._send_json = send_json  # type: ignore[method-assign]
+        handler.do_OPTIONS()
+        status, payload = send_json.call_args.args
+        assert status == HTTPStatus.METHOD_NOT_ALLOWED
+        assert payload["ok"] is False
+        assert payload["error"] == "method_not_allowed"
+        assert payload["detail"] is None
+
+    def test_health_payload_is_not_an_error_envelope(self) -> None:
+        """Health/status sites keep their own shape and never go through _send_error.
+
+        The healthz unhealthy/error bodies carry ``status``/``alerts`` keys, not
+        an ``error`` code — that separation is intentional (#1818) and must hold.
+        """
+        from polylogue.surfaces.payloads import QueryErrorPayload
+
+        # The canonical error envelope never carries health-status keys.
+        error_keys = set(QueryErrorPayload(error="x").model_dump(mode="json"))
+        assert error_keys == {"ok", "error", "detail", "field"}
+        assert "status" not in error_keys
+        assert "alerts" not in error_keys
+        assert "quick_check" not in error_keys
