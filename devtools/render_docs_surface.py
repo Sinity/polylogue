@@ -107,7 +107,7 @@ def build_docs_readme(
             "",
             _render_named_table(
                 docs_by_title,
-                ("Developer Tools", "Test Quality Workflows"),
+                ("Developer Tools", "Test Quality Workflows", "Release Readiness Gate"),
                 from_dir="docs",
             ),
             "",
