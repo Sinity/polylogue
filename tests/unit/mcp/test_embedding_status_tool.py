@@ -29,7 +29,12 @@ def test_embedding_status_returns_canonical_payload(mcp_server: MCPServerUnderTe
         raw = invoke_surface(mcp_server._tool_manager._tools["embedding_status"].fn)
 
     parsed = json.loads(raw)
+    component_readiness = parsed.pop("component_readiness")
     assert parsed == payload
+    assert component_readiness["embeddings"]["component"] == "embeddings"
+    assert component_readiness["embeddings"]["scope"] == "semantic"
+    assert component_readiness["embeddings"]["state"] == "missing"
+    assert component_readiness["embeddings"]["repair_hint"] == "polylogue embed enable --yes"
     mock_get_config.assert_called_once()
     mock_status.assert_called_once()
     assert mock_status.call_args.kwargs == {
@@ -54,6 +59,8 @@ def test_embedding_status_detail_requests_exact_readiness_bands(mcp_server: MCPS
 
     parsed = json.loads(raw)
     assert parsed["retrieval_bands"] == {"message_embeddings": {"ready": True}}
+    assert parsed["component_readiness"]["embeddings"]["state"] == "ready"
+    assert parsed["component_readiness"]["embeddings"]["counts"]["retrieval_ready"] is True
     mock_status.assert_called_once()
     assert mock_status.call_args.kwargs == {
         "include_retrieval_bands": True,

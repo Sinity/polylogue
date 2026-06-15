@@ -408,6 +408,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     def embedding_status(detail: bool = False) -> str:
         def run() -> str:
+            from polylogue.readiness.capability import component_from_embedding_payload
             from polylogue.storage.embeddings.status_payload import embedding_status_payload
 
             payload = embedding_status_payload(
@@ -415,7 +416,10 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 include_retrieval_bands=detail,
                 include_detail=detail,
             )
-            return hooks.json_payload(MCPEmbeddingStatusPayload.from_payload(dict(payload)))
+            result = dict(payload)
+            embedding = component_from_embedding_payload(result)
+            result["component_readiness"] = {embedding.component: embedding.to_dict()}
+            return hooks.json_payload(MCPEmbeddingStatusPayload.from_payload(result))
 
         return hooks.safe_call("embedding_status", run)
 
