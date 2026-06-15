@@ -246,6 +246,7 @@ _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
     "rebuild_index": ("archive_routed", "index", "rebuilds messages_fts from index.db"),
     "rebuild_insights": ("archive_routed", "index", "rebuilds insight tables"),
     "record_correction": ("archive_routed", "user", "writes corrections through user.db"),
+    "recovery_digest": ("archive_routed", "index", "builds recovery digests from archive-routed session reads"),
     "remove_mark": ("archive_routed", "user", "writes user marks through user.db"),
     "remove_tag": ("archive_routed", "user", "writes user tags through user.db"),
     "resume_brief": ("archive_routed", "index", "builds resume briefs from archive-routed reads"),
@@ -901,6 +902,7 @@ def _show_direct_json(env: AppEnv) -> None:
         "archive_facade_routes": _archive_facade_route_status(),
         "archive_cli_routes": _archive_cli_route_status(),
         "archive_runtime_paths": _archive_runtime_path_status(),
+        "component_readiness": _direct_component_readiness(env),
         "next_action": diag.next_action,
         "diagnostic": diagnostic_payload(diag),
     }
@@ -918,6 +920,21 @@ def _show_direct_json(env: AppEnv) -> None:
         except Exception as exc:
             payload["error"] = str(exc)
     env.ui.console.print(json.dumps(payload, indent=2, default=str))
+
+
+def _direct_component_readiness(env: AppEnv) -> dict[str, Any]:
+    """Return additive component readiness for direct status JSON."""
+    components: dict[str, Any] = {}
+    try:
+        from polylogue.readiness.capability import component_from_embedding_payload
+        from polylogue.storage.embeddings.status_payload import embedding_status_payload
+
+        embedding_payload = embedding_status_payload(env, include_retrieval_bands=False)
+        embedding = component_from_embedding_payload(embedding_payload)
+        components[embedding.component] = embedding.to_dict()
+    except Exception:
+        pass
+    return components
 
 
 def _render_diagnostic(env: AppEnv, diag: Any) -> None:
