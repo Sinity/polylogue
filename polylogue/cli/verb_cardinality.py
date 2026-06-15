@@ -80,6 +80,20 @@ def resolve_session_ids_for_verb(env: AppEnv, request: RootModeRequest) -> list[
     """
     from polylogue.api.sync.bridge import run_coroutine_sync
 
+    # ``--sample`` is a display-window operation (random subset applied during
+    # result windowing); the verb resolution path deliberately resolves the
+    # COMPLETE matched set so the cardinality guard and the mutation act on the
+    # same rows. Honoring ``--sample`` here would mean a destructive verb
+    # silently operated on the full match while the operator believed the blast
+    # radius was capped at N — so reject the combination instead of ignoring it.
+    if request.query_spec().sample is not None:
+        raise click.UsageError(
+            "Root query does not combine --sample with a mutating verb "
+            "(delete/mark): these operate on the complete matched set, so "
+            "--sample would be silently ignored. Narrow the query (e.g. an "
+            "id:/since: filter) to scope the blast radius explicitly."
+        )
+
     return run_coroutine_sync(_async_resolve_ids(env, request))
 
 
