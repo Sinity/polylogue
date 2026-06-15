@@ -315,6 +315,14 @@ def source_name_to_origin(source_name: object) -> str:
         return "unknown"
     if value in _CANONICAL_ORIGIN_VALUES:
         return value
+    # Source-family tokens (e.g. ``gemini-export``, ``drive-takeout``) are
+    # canonical families, NOT provider-wire values — ``Provider.from_string``
+    # would normalize them to ``unknown`` and mis-group those sessions under
+    # ``unknown-export``. Map families first via the family table, then fall
+    # back to provider-wire parsing (#1810).
+    family_provider = _FAMILY_TO_PROVIDER.get(value)
+    if family_provider is not None:
+        return origin_from_provider(family_provider).value
     try:
         return origin_from_provider(Provider.from_string(value)).value
     except ValueError:
