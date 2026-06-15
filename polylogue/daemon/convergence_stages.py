@@ -969,6 +969,29 @@ def _archive_rebuild_messages_fts(conn: sqlite3.Connection) -> None:
     rebuild_fts_index_sync(conn)
 
 
+def _archive_repair_sessions_fts(conn: sqlite3.Connection, session_ids: Sequence[str]) -> None:
+    """Repair ``messages_fts`` for just the changed sessions (#1851).
+
+    The archive FTS convergence paths previously called the full
+    ``_archive_rebuild_messages_fts`` (delete-all + re-insert every message row)
+    on every batch, so a single small append re-indexed the entire corpus —
+    ~14 MiB of writes regardless of payload size. When the source path resolves
+    to known session ids we instead delete+reinsert only those sessions' FTS
+    rows (the same targeted primitive the legacy monolith path used), and mark
+    the surface ready. Full rebuild remains the fallback when scope is unknown.
+    """
+    ids = tuple(dict.fromkeys(str(session_id) for session_id in session_ids if session_id))
+    if not ids:
+        _archive_rebuild_messages_fts(conn)
+        return
+    if not _table_exists(conn, "messages_fts"):
+        return
+    from polylogue.storage.fts.fts_lifecycle import repair_message_fts_index_sync
+
+    repair_message_fts_index_sync(conn, ids)
+    _mark_message_fts_ready_after_targeted_repair(conn)
+
+
 def _archive_fts_check(db_path: Path, path: Path) -> bool:
     try:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
@@ -986,9 +1009,9 @@ def _archive_fts_execute(db_path: Path, path: Path) -> bool:
         conn = sqlite3.connect(db_path, timeout=30.0)
         try:
             session_ids = _schema_archive_session_ids_for_source_path(conn, path)
-            _archive_rebuild_messages_fts(conn)
+            _archive_repair_sessions_fts(conn, session_ids)
             conn.commit()
-            logger.info("fts: archive rebuilt messages_fts sessions=%d", len(session_ids))
+            logger.info("fts: archive repaired messages_fts sessions=%d", len(session_ids))
             return not _archive_fts_needs_repair(conn, session_ids or None)
         finally:
             conn.close()
@@ -1021,9 +1044,9 @@ def _archive_fts_execute_many(db_path: Path, paths: Sequence[Path]) -> bool:
         try:
             by_path = _schema_archive_session_ids_for_source_paths(conn, paths)
             session_ids = list(dict.fromkeys(session_id for ids in by_path.values() for session_id in ids))
-            _archive_rebuild_messages_fts(conn)
+            _archive_repair_sessions_fts(conn, session_ids)
             conn.commit()
-            logger.info("fts: archive batch rebuilt messages_fts paths=%d sessions=%d", len(paths), len(session_ids))
+            logger.info("fts: archive batch repaired messages_fts paths=%d sessions=%d", len(paths), len(session_ids))
             return not _archive_fts_needs_repair(conn, session_ids or None)
         finally:
             conn.close()
@@ -1051,9 +1074,9 @@ def _archive_fts_execute_sessions(db_path: Path, session_ids: Sequence[str]) -> 
             ids = _archive_existing_session_ids(conn, session_ids)
             if not ids:
                 return True
-            _archive_rebuild_messages_fts(conn)
+            _archive_repair_sessions_fts(conn, ids)
             conn.commit()
-            logger.info("fts: archive rebuilt messages_fts session debt sessions=%d", len(ids))
+            logger.info("fts: archive repaired messages_fts session debt sessions=%d", len(ids))
             return not _archive_fts_needs_repair(conn, ids)
         finally:
             conn.close()
