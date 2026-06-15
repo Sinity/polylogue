@@ -361,27 +361,29 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             
 <p><a href="README.md">← Back to Docs</a></p>
 <h1>Export</h1>
-<p>Polylogue exports sessions in multiple formats, both singly and in bulk.</p>
+<p>Polylogue exports sessions in multiple formats, both singly and in bulk. Export
+is delivered through the <code>read</code> verb of the query-first CLI.</p>
 <h2>Single Export</h2>
-<p>Export one session by ID:</p>
-<pre><code class="language-bash">polylogue export claude-ai:abc123
+<p>Export one session by ID with a root filter that narrows the archive to a
+single match:</p>
+<pre><code class="language-bash">polylogue --id claude-ai:abc123 read
 </code></pre>
 <p>Specify format:</p>
-<pre><code class="language-bash">polylogue export claude-ai:abc123 --format json
-polylogue export claude-ai:abc123 --format html
-polylogue export claude-ai:abc123 --format obsidian
+<pre><code class="language-bash">polylogue --id claude-ai:abc123 read --format json
+polylogue --id claude-ai:abc123 read --format html
+polylogue --id claude-ai:abc123 read --format obsidian
 </code></pre>
 <h2>Bulk Export</h2>
-<p>Export every session matching a filter chain:</p>
-<pre><code class="language-bash">polylogue --provider claude-code --since 2026-01 bulk-export
-polylogue --tag important bulk-export --format markdown
-polylogue &quot;refactor&quot; --has-tool-use bulk-export --format jsonl
+<p>Export every session matching a filter chain with <code>read --all</code>:</p>
+<pre><code class="language-bash">polylogue --provider claude-code --since 2026-01 read --all
+polylogue --tag important read --all --format markdown
+polylogue &quot;refactor&quot; --has-tool-use read --all --format ndjson
 </code></pre>
 <h3>Piping</h3>
-<p><code>bulk-export --format jsonl</code> emits one JSON line per session, suitable for
+<p><code>read --all --format ndjson</code> emits one JSON line per session, suitable for
 piping:</p>
-<pre><code class="language-bash">polylogue -p claude-code bulk-export --format jsonl | jq '.title'
-polylogue --since &quot;last month&quot; bulk-export --format jsonl | wc -l
+<pre><code class="language-bash">polylogue -p claude-code read --all --format ndjson | jq '.title'
+polylogue --since &quot;last month&quot; read --all --format ndjson | wc -l
 </code></pre>
 <h2>Export Formats</h2>
 <table>
@@ -393,6 +395,10 @@ polylogue --since &quot;last month&quot; bulk-export --format jsonl | wc -l
 </thead>
 <tbody>
 <tr>
+<td><code>text</code></td>
+<td>Plain text -- message content only, no formatting</td>
+</tr>
+<tr>
 <td><code>markdown</code></td>
 <td>Default -- formatted markdown with message roles, timestamps, and code blocks</td>
 </tr>
@@ -401,16 +407,12 @@ polylogue --since &quot;last month&quot; bulk-export --format jsonl | wc -l
 <td>Full session as structured JSON</td>
 </tr>
 <tr>
-<td><code>jsonl</code></td>
-<td>One JSON object per line (bulk-export default)</td>
+<td><code>ndjson</code></td>
+<td>One JSON object per line (bulk default)</td>
 </tr>
 <tr>
 <td><code>yaml</code></td>
 <td>YAML representation</td>
-</tr>
-<tr>
-<td><code>plaintext</code></td>
-<td>Plain text -- message content only, no formatting</td>
 </tr>
 <tr>
 <td><code>html</code></td>
@@ -424,22 +426,26 @@ polylogue --since &quot;last month&quot; bulk-export --format jsonl | wc -l
 <td><code>org</code></td>
 <td>Org-mode format for Emacs users</td>
 </tr>
+<tr>
+<td><code>csv</code></td>
+<td>Comma-separated rows</td>
+</tr>
 </tbody>
 </table>
 <p>Set format with <code>--format</code> / <code>-f</code>:</p>
-<pre><code class="language-bash">polylogue export &lt;id&gt; --format json
-polylogue --since yesterday bulk-export --format html
+<pre><code class="language-bash">polylogue --id &lt;id&gt; read --format json
+polylogue --since yesterday read --all --format html
 </code></pre>
 <h2>Content Blocks</h2>
 <p>Exports include all content blocks: text, thinking blocks, tool use, tool
 results, images, code blocks, and document references. Use output modifiers to
 filter:</p>
-<pre><code class="language-bash">polylogue export &lt;id&gt; --prose-only        # Only authored prose
-polylogue export &lt;id&gt; --no-tool-calls     # Strip tool call blocks
-polylogue export &lt;id&gt; --no-tool-outputs   # Strip tool result blocks
-polylogue export &lt;id&gt; --no-code-blocks    # Strip code blocks
-polylogue export &lt;id&gt; --no-file-reads     # Strip file read blocks
-polylogue export &lt;id&gt; --dialogue-only     # User/assistant messages only
+<pre><code class="language-bash">polylogue --id &lt;id&gt; read --prose-only        # Only authored prose
+polylogue --id &lt;id&gt; read --no-tool-calls     # Strip tool call blocks
+polylogue --id &lt;id&gt; read --no-tool-outputs   # Strip tool result blocks
+polylogue --id &lt;id&gt; read --no-code-blocks    # Strip code blocks
+polylogue --id &lt;id&gt; read --no-file-reads     # Strip file read blocks
+polylogue --dialogue-only --id &lt;id&gt; read     # User/assistant messages only
 </code></pre>
 <h2>Sharing Considerations</h2>
 <ul>
