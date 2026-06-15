@@ -80,6 +80,7 @@ def build_docs_readme(
                     "Execution Plan",
                     "Design Direction",
                     "Data Model",
+                    "Archive Backup",
                     "Internals",
                     "Configuration",
                 ),

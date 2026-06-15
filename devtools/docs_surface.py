@@ -28,6 +28,11 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
     ),
     DocsEntry("Library API", "docs/library-api.md", "Async archive API, filters, and query patterns."),
     DocsEntry("Data Model", "docs/data-model.md", "Archive entities, storage shape, and metadata rules."),
+    DocsEntry(
+        "Archive Backup",
+        "docs/archive-backup.md",
+        "Archive-tier backup profiles, restore boundaries, and blob-GC safety rules.",
+    ),
     DocsEntry("Configuration", "docs/configuration.md", "XDG paths, environment variables, and runtime configuration."),
     DocsEntry(
         "Daemon Threat Model",
@@ -98,6 +103,7 @@ README_DOC_TITLES: tuple[str, ...] = (
     "Library API",
     "MCP Integration",
     "Configuration",
+    "Archive Backup",
     "Developer Tools",
     "Providers",
 )

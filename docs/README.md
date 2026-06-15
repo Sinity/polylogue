@@ -13,6 +13,7 @@ Use this map when you need the complete repository documentation surface. The to
 | [Execution Plan](execution-plan.md) | Living sequencing plan — landed, in flight, queued, and frozen subsystems. |
 | [Design Direction](design/README.md) | Canonical MK3 archive-workbench design pack and historical design handoffs. |
 | [Data Model](data-model.md) | Archive entities, storage shape, and metadata rules. |
+| [Archive Backup](archive-backup.md) | Archive-tier backup profiles, restore boundaries, and blob-GC safety rules. |
 | [Internals](internals.md) | Working implementation reference and debugging landmarks. |
 | [Configuration](configuration.md) | XDG paths, environment variables, and runtime configuration. |
 
