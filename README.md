@@ -153,7 +153,7 @@ Pipeline and maintenance verbs are explicit:
 
 ```bash
 polylogue init                       # first-run setup (writes polylogue.toml)
-polylogue import                     # ingest from configured sources
+polylogue import ~/.claude/projects  # ingest sessions from a source path
 polylogue doctor                     # FTS coverage, blob store, daemon liveness
 polylogue status                     # daemon + archive status
 polylogue paths                      # canonical archive paths
@@ -191,7 +191,8 @@ context packs from their own sessions. See
 ### Browser capture
 
 For ChatGPT and Claude.ai web sessions that have no on-disk export,
-`polylogued browser-capture` runs a local receiver. The unpacked extension
+`polylogued browser-capture serve` runs a local receiver (`browser-capture
+status` reports its state). The unpacked extension
 lives in [`browser-extension/`](browser-extension/) and POSTs captured
 sessions to the receiver as you browse. See
 [docs/browser-capture.md](docs/browser-capture.md).
@@ -199,25 +200,23 @@ sessions to the receiver as you browse. See
 ### Python API
 
 Polylogue is library-first; the CLI wraps the Python API. The `Polylogue`
-context manager owns the archive connection and exposes its repository, which
-the fluent `SessionFilter` queries:
+context manager owns the archive connection and exposes its repository's
+async query methods:
 
 ```python
 from polylogue import Polylogue
-from polylogue.archive.filter.filters import SessionFilter
 
 async with Polylogue.open() as archive:
-    results = await (
-        SessionFilter(archive.repository)
-        .contains("error handling")
-        .limit(10)
-        .list()
+    summaries = await archive.repository.list_summaries(
+        title_contains="error handling",
+        has_tool_use=True,
+        limit=10,
     )
-    for session in results:
+    for session in summaries:
         print(session.id, session.display_title)
 ```
 
-See [docs/library-api.md](docs/library-api.md).
+See [docs/library-api.md](docs/library-api.md) for the full query surface.
 
 ## Installing from source
 
