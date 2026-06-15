@@ -88,6 +88,82 @@ def test_archive_plan_cli_surfaces_existing_target_blocker(
     assert any("source target already exists" in blocker for blocker in payload["blockers"])
 
 
+def test_backup_plan_cli_reports_backup_profiles_and_tier_boundaries(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    result = cli_runner.invoke(
+        cli,
+        ["--plain", "maintenance", "backup-plan", "--output-format", "json"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["ok"] is True
+    assert payload["mode"] == "backup_plan"
+    assert payload["mutates"] is False
+    assert payload["archive_root"] == str(cli_workspace["archive_root"])
+
+    tiers = {tier["tier"]: tier for tier in payload["tiers"]}
+    assert tiers["source"]["backup_class"] == "critical"
+    assert tiers["source"]["backup_required"] is True
+    assert tiers["index"]["backup_class"] == "warm_cache"
+    assert tiers["index"]["backup_required"] is False
+    assert tiers["embeddings"]["backup_policy"] == "back_up_when_present"
+    assert tiers["user"]["backup_policy"] == "always_back_up"
+    assert tiers["ops"]["backup_policy"] == "diagnostics_only"
+    assert all(tier["present"] is True for tier in tiers.values())
+
+    profiles = {profile["name"] for profile in payload["profiles"]}
+    assert profiles == {
+        "full_evidence",
+        "user_overlays",
+        "rebuildable_cache_exclude",
+        "diagnostics_bundle",
+    }
+    assert payload["blob_store"]["backup_policy"] == "back_up_referenced_blobs_with_source_and_user_tiers"
+
+
+def test_backup_plan_cli_surfaces_missing_tiers_and_wal_checkpoint_warning(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    archive_root = cli_workspace["archive_root"]
+    (archive_root / "index.db").unlink()
+    (archive_root / "user.db-wal").write_text("pending", encoding="utf-8")
+
+    result = cli_runner.invoke(
+        cli,
+        ["--plain", "maintenance", "backup-plan", "--output-format", "json"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    tiers = {tier["tier"]: tier for tier in payload["tiers"]}
+    assert tiers["index"]["present"] is False
+    assert tiers["user"]["wal_present"] is True
+    assert tiers["user"]["checkpoint_recommended"] is True
+    assert payload["warnings"] == ["user.db-wal is present; checkpoint before copying user.db"]
+
+
+def test_backup_plan_cli_renders_plain_summary(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    result = cli_runner.invoke(
+        cli,
+        ["--plain", "maintenance", "backup-plan"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    assert "Archive backup plan" in result.output
+    assert "source.db: critical policy=back_up present" in result.output
+    assert "full_evidence:" in result.output
+
+
 def test_archive_init_cli_is_dry_run_without_yes(cli_workspace: dict[str, Path], cli_runner: CliRunner) -> None:
     _stage_uninitialized_archive(cli_workspace)
     result = cli_runner.invoke(
