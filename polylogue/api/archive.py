@@ -2984,12 +2984,19 @@ class PolylogueArchiveMixin:
         scope_issue: int | None = None,
         scope_path: str | None = None,
         related_sessions: tuple[str, ...] = (),
+        author_ref: str | None = None,
+        author_kind: str = "user",
+        evidence_refs: tuple[str, ...] = (),
+        staleness: dict[str, object] | None = None,
+        context_policy: dict[str, object] | None = None,
     ) -> BlackboardNote:
         """Post a note to the persistent agent blackboard (#1697).
 
         ``kind`` must be one of :data:`BLACKBOARD_KINDS`; raises ``ValueError``
         otherwise. The structured fields are encoded into the stored body and a
-        fresh note id is allocated, so each call appends a distinct note.
+        fresh note id is allocated, so each call appends a distinct note. The
+        optional assertion metadata fields are mirrored only into the unified
+        assertion row (#1839/#1883), preserving the legacy blackboard row shape.
         """
         from polylogue.archive.blackboard import (
             BLACKBOARD_KINDS,
@@ -3017,6 +3024,11 @@ class PolylogueArchiveMixin:
                 target_type=target_type,
                 target_id=scope_session,
                 note_id=note_id,
+                author_ref=author_ref,
+                author_kind=author_kind,
+                evidence_refs=evidence_refs,
+                staleness=staleness,
+                context_policy=context_policy,
             )
         return decode_blackboard_note(
             note_id=envelope.note_id,

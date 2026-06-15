@@ -180,6 +180,32 @@ def test_blackboard_note_write_through_scoped_and_unscoped(tmp_path: Path) -> No
     assert len(list_assertions_for_target(conn, "session:session-9", kind=AssertionKind.NOTE)) == 1
 
 
+def test_blackboard_note_assertion_metadata_is_preserved(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "user.db")
+
+    upsert_blackboard_note(
+        conn,
+        "agent finding",
+        target_type="session",
+        target_id="session-9",
+        author_ref="agent:codex-session:abc",
+        author_kind="agent",
+        evidence_refs=("message:m1", "block:m1:2"),
+        staleness={"expires_after_days": 14},
+        context_policy={"inject": False},
+        now_ms=1_700_000_033_000,
+    )
+
+    mirrored = list_assertions_for_target(conn, "session:session-9", kind=AssertionKind.NOTE)
+    assert len(mirrored) == 1
+    env = mirrored[0]
+    assert env.author_ref == "agent:codex-session:abc"
+    assert env.author_kind == "agent"
+    assert env.evidence_refs == ["message:m1", "block:m1:2"]
+    assert env.staleness == {"expires_after_days": 14}
+    assert env.context_policy == {"inject": False}
+
+
 def test_suppression_write_through_mirrors_assertion(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "user.db")
 
