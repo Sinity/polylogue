@@ -105,6 +105,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools pipeline-probe` | Run typed pipeline probes against synthetic, staged, or archive-subset inputs. |
 | `devtools query-memory-budget` | Measure query-memory envelopes on generated fixtures. |
 | `devtools regression-capture` | Capture pipeline-probe summaries as durable local regression cases. |
+| `devtools release-readiness` | Validate the externally-presentable release gate definition. |
 | `devtools run-validation-lanes` | Run named validation lanes. |
 | `devtools scenario-projections` | Render the authored scenario-bearing verification projections. |
 | `devtools schema-audit` | Run committed provider schema package quality checks. |
