@@ -1,4 +1,10 @@
-"""Tests for the ``polylogue context-pack`` command."""
+"""Tests for the multi-session ``read --view context-pack`` capability.
+
+The standalone ``context-pack`` command was absorbed into the read-view surface
+(#1842): ``read --view context-pack``. The pack logic lives in
+``polylogue.cli.commands.context_pack.run_context_pack_view``; the MCP
+``build_context_pack`` tool exposes the same capability programmatically.
+"""
 
 from __future__ import annotations
 
@@ -8,10 +14,10 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
-from click.testing import CliRunner
+import pytest
 
 from polylogue.archive.message.roles import Role
-from polylogue.cli.commands.context_pack import context_pack_command
+from polylogue.cli.commands.context_pack import run_context_pack_view
 from polylogue.cli.shared.types import AppEnv
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -28,7 +34,7 @@ def _archive_env(archive_root: Path) -> AppEnv:
     return AppEnv(services=services)
 
 
-def test_context_pack_reads_archive_from_archive_tiers(tmp_path: Path) -> None:
+def test_context_pack_view_reads_archive_from_archive_tiers(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     archive_root = tmp_path / "archive"
     with ArchiveStore(archive_root) as archive:
         archive.write_parsed(
@@ -49,14 +55,10 @@ def test_context_pack_reads_archive_from_archive_tiers(tmp_path: Path) -> None:
             )
         )
 
-    result = CliRunner().invoke(
-        context_pack_command,
-        ["--query", "hello", "--max-sessions", "1", "--max-messages", "1"],
-        obj=_archive_env(archive_root),
-    )
+    run_context_pack_view(_archive_env(archive_root), query="hello", max_sessions=1, max_messages=1)
 
-    assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
+    output = capsys.readouterr().out
+    payload = json.loads(output)
     assert payload["total_sessions"] == 1
     assert payload["total_messages"] == 1
     assert payload["provenance"]["archive_runtime"] == "archive_file_set"

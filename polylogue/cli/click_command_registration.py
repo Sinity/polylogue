@@ -90,8 +90,6 @@ _SHORT_HELP: dict[str, str] = {
     "check": "Run archive health checks and repairs.",
     "completions": "Emit shell completion setup for polylogue.",
     "config": "Show configuration paths and resolved settings.",
-    "context": "Compose context preamble from archive objects.",
-    "context_pack": "Build a provenance-rich context pack for agent analysis.",
     "cost": "Summarize session cost telemetry.",
     "dashboard": "Open the local dashboard.",
     "diagnostics": "Temporal session diagnostics",
@@ -119,7 +117,6 @@ _COMMAND_NAMES: dict[str, str] = {
 
 _GROUP_ATTRS: dict[str, str] = {
     "blackboard": "blackboard_command",
-    "context": "context_command",
     "cost": "cost_command",
     "diagnostics": "diagnostics_group",
     "embed": "embed_command",
@@ -148,8 +145,6 @@ def _L(name: str) -> _LazyCommand:  # noqa: N802
 
 ROOT_COMMANDS: tuple[click.Command, ...] = (
     _L("commands"),
-    _L("context"),
-    _L("context_pack"),
     _L("backup"),
     _L("check"),
     _L("config"),

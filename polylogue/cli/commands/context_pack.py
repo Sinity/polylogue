@@ -1,4 +1,9 @@
-"""CLI context-pack command — assemble provenance-rich context bundles for agents."""
+"""Multi-session context-pack view — assemble provenance-rich context bundles.
+
+The capability behind ``read --view context-pack`` (#1842): it absorbed the
+former standalone ``context-pack`` command. The MCP ``build_context_pack`` tool
+exposes the same capability programmatically.
+"""
 
 from __future__ import annotations
 
@@ -42,36 +47,24 @@ def _clamp_context_pack_limit(value: int | object) -> int:
     return 1
 
 
-@click.command("context-pack")
-@click.option("--project-path", "-P", default=None, help="Filter by cwd prefix pattern")
-@click.option("--project-repo", "-R", default=None, help="Filter by git repo URL or name")
-@click.option("--since", "-s", default=None, help="Start date (ISO 8601)")
-@click.option("--until", "-u", default=None, help="End date (ISO 8601)")
-@click.option("--origin", "-o", default=None, help="Source-origin filter")
-@click.option("--query", "-q", default=None, help="Free-text query")
-@click.option("--max-sessions", "-n", type=int, default=_DEFAULT_MAX_SESSIONS, help="Max sessions (1-20)")
-@click.option("--max-messages", "-m", type=int, default=_DEFAULT_MAX_MESSAGES, help="Max messages per session (1-100)")
-@click.option("--no-redact", "no_redact", is_flag=True, default=False, help="Do not redact filesystem paths")
-@click.pass_obj
-def context_pack_command(
+def run_context_pack_view(
     env: AppEnv,
-    project_path: str | None,
-    project_repo: str | None,
-    since: str | None,
-    until: str | None,
-    origin: str | None,
-    query: str | None,
-    max_sessions: int,
-    max_messages: int,
-    no_redact: bool,
+    *,
+    project_path: str | None = None,
+    project_repo: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+    origin: str | None = None,
+    query: str | None = None,
+    max_sessions: int = _DEFAULT_MAX_SESSIONS,
+    max_messages: int = _DEFAULT_MAX_MESSAGES,
+    no_redact: bool = False,
 ) -> None:
-    """Build a provenance-rich context pack for agent analysis.
+    """Build a provenance-rich multi-session context pack for agent analysis.
 
-    \b
-    Examples:
-        polylogue context-pack -P /realm/project/polylogue
-        polylogue context-pack -R github.com/Sinity/polylogue -s 2026-01-01
-        polylogue context-pack -q "cost tracking"
+    The capability behind ``read --view context-pack`` (#1842): selects matching
+    sessions by project/origin/date/query filters and emits a single provenance
+    JSON document to stdout.
     """
     conv_limit = max(1, min(max_sessions, 20))
     msg_limit = max(1, min(max_messages, 100))

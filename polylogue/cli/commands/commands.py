@@ -11,7 +11,6 @@ _COMMAND_CATEGORIES: dict[str, tuple[str, ...]] = {
     "Archive Management": ("import", "check", "reset", "backup", "maintenance"),
     "Insights & Analytics": ("insights", "analyze", "resume"),
     "User-State Objects": ("user-state", "blackboard", "tags", "feedback"),
-    "Context & Sessions": ("context", "context-pack"),
     "Configuration": ("config", "init", "auth", "completions", "dashboard", "tutorial"),
     "Embeddings": ("embed",),
     "Schema": ("schema",),

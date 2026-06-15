@@ -77,7 +77,6 @@ def _looks_like_json_output(text: str) -> bool:
 #   - backup               → creates backup file; needs populated archive
 #   - recent               → pre-existing bug: passes sort=updated_at which
 #                            is not a valid sort field (hardcoded in verb)
-#   - context, context-pack → not wired for lazy subcommand dispatch
 
 _COMMANDS: list[tuple[list[str], bool]] = [
     # ── Query verbs (root --json flows through to output_format) ──────
@@ -132,8 +131,6 @@ _EXCLUDED: list[str] = [
     "open (side effect: opens browser)",
     "backup (creates backup file)",
     "recent (pre-existing bug: hardcoded sort=updated_at is invalid)",
-    "context compose (not wired for lazy subcommand dispatch from root)",
-    "context-pack (not wired for lazy subcommand dispatch from root)",
     "insights timeline (requires SESSION_ID argument)",
     "insights export (requires --out argument)",
     "blackboard list (not wired for lazy subcommand dispatch from root)",
