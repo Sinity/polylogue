@@ -707,7 +707,7 @@ def test_async_execute_query_archive_outputs_stats(
             {
                 "archive": True,
                 "stats_only": True,
-                "provider": "codex",
+                "origin": "codex-session",
                 "tag": "archive",
                 "output_format": "json",
             },
@@ -899,8 +899,8 @@ def test_async_execute_query_archive_search_maps_provider_to_origin(
             {
                 "archive": True,
                 "query": ("needle",),
-                "provider": "codex",
-                "exclude_provider": "chatgpt",
+                "origin": "codex-session",
+                "exclude_origin": "chatgpt-export",
                 "tag": "review,archive",
                 "exclude_tag": "archived",
                 "repo": "polylogue",
@@ -970,7 +970,7 @@ def test_async_execute_query_archive_filters_multiple_providers(
             env,
             {
                 "archive": True,
-                "provider": "codex,chatgpt",
+                "origin": "codex-session,chatgpt-export",
                 "output_format": "json",
             },
         )
