@@ -107,6 +107,18 @@ def _deterministic_id(prefix: str, *parts: str) -> str:
     return f"{prefix}:{digest.hexdigest()}"
 
 
+def _target_ref(target_type: str | None, target_id: str | None) -> str | None:
+    """Compose the assertions ``target_ref`` from a legacy ``(type, id)`` pair.
+
+    Returns ``None`` when no archive target is attached (e.g. an unscoped
+    blackboard note); callers fall back to their own row identity for the
+    NOT NULL ``target_ref`` column.
+    """
+    if target_type and target_id:
+        return f"{target_type}:{target_id}"
+    return None
+
+
 @dataclass(frozen=True, slots=True)
 class ArchiveSuppressionEnvelope:
     session_id: str
@@ -237,6 +249,16 @@ def upsert_suppression(
         """,
         (session_id, reason, mode, created_at_ms, timestamp),
     )
+    upsert_assertion(
+        conn,
+        assertion_id=_deterministic_id(f"assertion-{AssertionKind.SUPPRESSION}", session_id),
+        target_ref=session_id,
+        kind=AssertionKind.SUPPRESSION,
+        value={"mode": mode},
+        body_text=reason,
+        author_kind="user",
+        now_ms=timestamp,
+    )
     return read_archive_suppression_envelope(conn, session_id)
 
 
@@ -274,6 +296,17 @@ def upsert_mark(
         """,
         (mark_id, target_type, target_id, mark_type, label, created_at_ms, timestamp, metadata_json),
     )
+    upsert_assertion(
+        conn,
+        assertion_id=_deterministic_id(f"assertion-{AssertionKind.MARK}", mark_id),
+        target_ref=f"{target_type}:{target_id}",
+        kind=AssertionKind.MARK,
+        key=mark_type,
+        value=metadata if metadata else None,
+        body_text=label,
+        author_kind="user",
+        now_ms=timestamp,
+    )
     return read_archive_mark_envelope(conn, mark_id)
 
 
@@ -305,6 +338,15 @@ def upsert_annotation(
             updated_at_ms = excluded.updated_at_ms
         """,
         (resolved_id, target_type, target_id, body, created_at_ms, timestamp),
+    )
+    upsert_assertion(
+        conn,
+        assertion_id=_deterministic_id(f"assertion-{AssertionKind.ANNOTATION}", resolved_id),
+        target_ref=f"{target_type}:{target_id}",
+        kind=AssertionKind.ANNOTATION,
+        body_text=body,
+        author_kind="user",
+        now_ms=timestamp,
     )
     return read_archive_annotation_envelope(conn, resolved_id)
 
@@ -348,6 +390,16 @@ def upsert_correction(
             timestamp,
         ),
     )
+    upsert_assertion(
+        conn,
+        assertion_id=_deterministic_id(f"assertion-{AssertionKind.CORRECTION}", correction_id),
+        target_ref=f"{target_type}:{target_id}",
+        kind=AssertionKind.CORRECTION,
+        key=correction_type,
+        value=payload,
+        author_kind="user",
+        now_ms=timestamp,
+    )
     return read_archive_correction_envelope(conn, correction_id)
 
 
@@ -373,6 +425,16 @@ def upsert_saved_view(
             updated_at_ms = excluded.updated_at_ms
         """,
         (view_id, name, _json_dumps(query), created_at_ms, timestamp),
+    )
+    upsert_assertion(
+        conn,
+        assertion_id=_deterministic_id(f"assertion-{AssertionKind.SAVED_QUERY}", name),
+        target_ref=f"saved_view:{name}",
+        kind=AssertionKind.SAVED_QUERY,
+        key=name,
+        value=query,
+        author_kind="user",
+        now_ms=timestamp,
     )
     return read_archive_saved_view_envelope(conn, name)
 
@@ -463,6 +525,15 @@ def upsert_blackboard_note(
             updated_at_ms = excluded.updated_at_ms
         """,
         (resolved_id, target_type, target_id, body, created_at_ms, timestamp),
+    )
+    upsert_assertion(
+        conn,
+        assertion_id=_deterministic_id(f"assertion-{AssertionKind.NOTE}", resolved_id),
+        target_ref=_target_ref(target_type, target_id) or resolved_id,
+        kind=AssertionKind.NOTE,
+        body_text=body,
+        author_kind="user",
+        now_ms=timestamp,
     )
     return read_archive_blackboard_note_envelope(conn, resolved_id)
 
