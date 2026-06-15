@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from io import BytesIO
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import patch
@@ -259,6 +260,48 @@ def test_import_surfaces_http_error_with_staged_path(
     combined = (result.output + (result.stderr if result.stderr_bytes else "")).lower()
     assert "400" in combined
     assert str(staged).lower() in combined
+
+
+def test_import_surfaces_structured_daemon_rejection_detail(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """Unsupported/degraded daemon preflight details reach the operator."""
+    from click.testing import CliRunner
+
+    from polylogue.cli.click_app import cli
+
+    source = tmp_path / "unknown.json"
+    source.write_text('{"not":"an export"}\n')
+
+    def fake_urlopen(req: Request, timeout: int) -> object:
+        del req, timeout
+        raise HTTPError(
+            url="http://127.0.0.1:8766/api/ingest",
+            code=415,
+            msg="Unsupported Media Type",
+            hdrs=None,  # type: ignore[arg-type]
+            fp=BytesIO(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error": "unsupported_import_source",
+                        "detail": "Import source is unsupported: no parseable Polylogue export shape was detected.",
+                    }
+                ).encode("utf-8")
+            ),
+        )
+
+    runner = CliRunner()
+    with patch("polylogue.cli.commands.import_command.urlopen", side_effect=fake_urlopen):
+        result = runner.invoke(cli, ["import", str(source)])
+
+    assert result.exit_code != 0
+    combined = (result.output + (result.stderr if result.stderr_bytes else "")).lower()
+    assert "415" in combined
+    assert "unsupported_import_source" in combined
+    assert "no parseable polylogue export shape" in combined
+    assert str(workspace_env["archive_root"] / "inbox" / source.name).lower() in combined
 
 
 def test_import_refuses_unrecognized_daemon_status(

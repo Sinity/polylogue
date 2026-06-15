@@ -2535,6 +2535,13 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             return
         assert source is not None
 
+        from polylogue.sources.import_preflight import preflight_import_source
+
+        preflight = preflight_import_source(source)
+        if not preflight.admissible:
+            self._send_error(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, preflight.error_code, preflight.summary())
+            return
+
         # Typed Operation scheduling contract (#1247/#1248): the daemon
         # accepts an ``ImportRequest`` and emits an ``ImportAck`` carrying
         # the shared ``OperationFollowUp`` envelope. The existing wire keys
@@ -2563,20 +2570,24 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         emit_daemon_event(
             "ingest",
             operation_id=op_id,
-            payload={"path": str(source), "inbox": str(inbox)},
+            payload={"path": str(source), "inbox": str(inbox), "preflight": preflight.to_dict()},
         )
 
+        message = "Ingestion scheduled. Check status for progress."
+        if preflight.status.value == "degraded":
+            message = f"{message} {preflight.summary()}"
         ack = ImportAck.pending_import(
             operation_id=op_id,
             follow_up=OperationFollowUp(
                 status_endpoint=f"/api/operations/{op_id}",
                 poll_after_ms=500,
             ),
-            message="Ingestion scheduled. Check status for progress.",
+            message=message,
         )
-        response = dict(ack.to_dict())
+        response: dict[str, object] = dict(ack.to_dict())
         response["ok"] = True
         response["path"] = str(source)
+        response["preflight"] = preflight.to_dict()
         # Surface the validated, typed request fields so clients can confirm
         # the contract used; reading the request back closes the loop for
         # adapter parity tests.
