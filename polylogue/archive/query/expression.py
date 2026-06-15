@@ -168,10 +168,13 @@ EXPRESSION_FIELD_REGISTRY: dict[str, dict[str, str]] = {
         "example": "until:2024-01-15",
     },
     "near": {
-        "description": "Semantic similarity search (vector lane)",
-        "spec_field": "similar_text",
+        "description": (
+            'Similarity search. Free text (near:"...") seeds vector similarity '
+            "from a text string; near:id:<ref> seeds it from a stored session"
+        ),
+        "spec_field": "similar_text/similar_session_id",
         "negatable": "no",
-        "example": 'near:"semantic search"',
+        "example": 'near:"semantic search" | near:id:abc123',
     },
     "contains": {
         "description": "Filter by exact content substring",
@@ -486,6 +489,7 @@ class _SpecAccumulator:
     since: str | None = None
     until: str | None = None
     similar_text: str | None = None
+    similar_session_id: str | None = None
     min_messages: int | None = None
     max_messages: int | None = None
     min_words: int | None = None
@@ -625,8 +629,25 @@ class _SpecAccumulator:
         elif fname == "near":
             if tok.negated:
                 raise ExpressionCompileError("negation is not supported for 'near'", field=fname)
-            # near:"quoted phrase" → similar_text (value already stripped of quotes by lexer)
-            self.similar_text = " ".join(values)
+            # Two seeding modes share the ``near:`` field:
+            #   near:id:<ref>  → similar_session_id (vector similarity seeded by a
+            #                    stored session's embeddings, distinct from text)
+            #   near:"text"    → similar_text (vector similarity seeded by a string)
+            # Conservative rule: a value is treated as a session reference ONLY
+            # when it is a single token unambiguously prefixed with ``id:``.
+            # Everything else (bare words, quoted phrases, alternations) stays on
+            # the free-text leg, so a hash-like search phrase is never silently
+            # reinterpreted as a session id.
+            if len(values) == 1 and values[0].startswith("id:"):
+                ref = values[0][len("id:") :].strip()
+                if not ref:
+                    raise ExpressionCompileError(
+                        "near:id: requires a session reference, e.g. near:id:abc123",
+                        field=fname,
+                    )
+                self.similar_session_id = ref
+            else:
+                self.similar_text = " ".join(values)
 
         elif fname == "contains":
             if tok.negated:
@@ -685,6 +706,7 @@ class _SpecAccumulator:
             since=self.since,
             until=self.until,
             similar_text=self.similar_text,
+            similar_session_id=self.similar_session_id,
             min_messages=self.min_messages,
             max_messages=self.max_messages,
             min_words=self.min_words,
@@ -727,6 +749,8 @@ class _SpecAccumulator:
             self.until = other.until
         if other.similar_text is not None:
             self.similar_text = other.similar_text
+        if other.similar_session_id is not None:
+            self.similar_session_id = other.similar_session_id
         if other.min_messages is not None:
             self.min_messages = other.min_messages
         if other.max_messages is not None:

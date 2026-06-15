@@ -243,6 +243,15 @@ async def search_hits_for_plan(
     hits carry FTS snippets, semantic/hybrid lanes resolve through the
     vector provider, and hybrid preserves per-lane RRF rank contributions.
     """
+    # A session-seeded plan (near:id:) carries no FTS/text evidence, so it would
+    # otherwise fall through plan_has_search_hit_evidence() and silently return
+    # no hits. Reject it typed instead — execution support is not wired yet
+    # (#1842), and silent emptiness is exactly the failure the guard prevents on
+    # every other execution entry point.
+    from polylogue.archive.query.archive_execution import _reject_unexecutable_session_seed
+
+    _reject_unexecutable_session_seed(plan)
+
     if not plan_has_search_hit_evidence(plan):
         return []
 

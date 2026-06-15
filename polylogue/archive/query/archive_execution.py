@@ -54,6 +54,34 @@ def _provider_for_origin(origin: str) -> Provider:
     return _ORIGIN_TO_PROVIDER.get(origin, Provider.UNKNOWN)
 
 
+def _reject_unexecutable_session_seed(plan: SessionQueryPlan) -> None:
+    """Fail typed for ``near:id:<ref>`` until session-seeded vectors are wired.
+
+    ``similar_session_id`` carries the intent "rank sessions by vector
+    similarity to a stored session's embeddings". Executing it requires a
+    storage primitive that does not exist yet: ``VectorProvider`` only exposes
+    ``query(text, limit)`` (which re-embeds a text string), with no way to fetch
+    a session's stored ``message_embeddings`` and vector-search against them.
+
+    Until that primitive lands, the plan compiles and round-trips (so surfaces
+    and completion already know the field), but executing it raises a typed
+    error here instead of silently broadening to an unfiltered listing — which
+    is what every execution branch below would otherwise do, because none of
+    them inspect ``similar_session_id``.
+    """
+    if plan.similar_session_id is None:
+        return
+    from polylogue.archive.query.expression import ExpressionCompileError
+
+    raise ExpressionCompileError(
+        "near:id: session-seeded similarity is not executable yet — it needs a "
+        "VectorProvider primitive that vector-searches a stored session's "
+        'embeddings (see issue #1842). Use near:"text" for text-seeded '
+        "similarity in the meantime.",
+        field="near",
+    )
+
+
 def _parse_archive_datetime(value: str | None) -> datetime | None:
     from datetime import datetime as _datetime
 
@@ -282,6 +310,7 @@ def _archive_summaries(
     archive_root: Path,
     default_limit: int,
 ) -> list[ArchiveSessionSummary]:
+    _reject_unexecutable_session_seed(plan)
     filter_kwargs = _plan_filter_kwargs(plan)
     limit = _fetch_limit(plan, default=default_limit)
     sort = plan.sort
@@ -393,6 +422,7 @@ async def count_archive(
     archive_root: Path,
     config: Config | None,
 ) -> int:
+    _reject_unexecutable_session_seed(plan)
     if not plan.has_post_filters() and plan.similar_text is None and plan.retrieval_lane not in {"semantic", "hybrid"}:
         filter_kwargs = _plan_filter_kwargs(plan)
         query_text = _plan_text_query(plan)
@@ -434,6 +464,7 @@ def archive_search_hits(
     """
     from polylogue.storage.search_providers import create_vector_provider, reciprocal_rank_fusion
 
+    _reject_unexecutable_session_seed(plan)
     text = plan.similar_text or _plan_text_query(plan) or ""
     limit = plan.limit if plan.limit is not None else default_limit
     offset = plan.offset
