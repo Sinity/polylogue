@@ -11,6 +11,7 @@ from polylogue.core.enums import Origin
 from polylogue.insights.transforms import (
     RECOVERY_TRANSFORM,
     TRANSFORM_REGISTRY,
+    ForensicIndexEntry,
     RecoveryEvent,
     RunStateSummary,
     SubagentReport,
@@ -186,6 +187,9 @@ def test_every_extracted_claim_carries_raw_refs() -> None:
     digest = compile_recovery_digest(_session())
 
     assert digest.raw_refs
+    assert digest.forensic_index.session_id == digest.session_id
+    assert digest.forensic_index.entries
+    assert all(entry.raw_ref.session_id == digest.session_id for entry in digest.forensic_index.entries)
     for tool in digest.tool_summaries:
         assert tool.raw_refs
         assert all(ref.session_id == digest.session_id for ref in tool.raw_refs)
@@ -201,6 +205,36 @@ def test_every_extracted_claim_carries_raw_refs() -> None:
     for candidate in digest.decision_candidates:
         assert candidate.raw_refs
         assert all(ref.session_id == digest.session_id for ref in candidate.raw_refs)
+
+
+def test_forensic_index_groups_claims_by_raw_ref() -> None:
+    digest = compile_recovery_digest(_session())
+    entries = {entry.evidence_id: entry for entry in digest.forensic_index.entries}
+
+    assert "codex-session:demo" in entries
+    session_entry = entries["codex-session:demo"]
+    assert session_entry.claim_kinds == ("digest",)
+    assert session_entry.claim_labels == ("digest:session",)
+    assert session_entry.raw_ref.ref_kind == "session"
+
+    run_state_entry = entries["codex-session:demo::m1"]
+    assert set(run_state_entry.claim_kinds) == {"run_state", "decision_candidate", "event"}
+    assert "run_state" in run_state_entry.claim_labels
+    assert any(label.startswith("event:pr_merged:") for label in run_state_entry.claim_labels)
+    assert any(label.startswith("decision:run_state:") for label in run_state_entry.claim_labels)
+    assert run_state_entry.raw_ref.preview.startswith("Goal: burn down")
+
+    bash_call_entry = entries["codex-session:demo::m2::0"]
+    assert bash_call_entry.claim_kinds == ("tool_summary",)
+    assert bash_call_entry.claim_labels == ("tool:Bash:tool-1",)
+    assert bash_call_entry.raw_ref.preview == "devtools verify --quick"
+
+    merged_event_entry = entries["codex-session:demo::m3"]
+    assert merged_event_entry.claim_kinds == ("event",)
+    assert any(label.startswith("event:pr_merged:") for label in merged_event_entry.claim_labels)
+    assert any(label.startswith("event:issue_closed:") for label in merged_event_entry.claim_labels)
+
+    assert digest.forensic_index.claim_count > len(digest.forensic_index.entries)
 
 
 def test_github_cli_and_failed_check_events_are_extracted() -> None:
@@ -236,6 +270,13 @@ def test_claim_models_reject_missing_raw_refs() -> None:
         RunStateSummary(raw_refs=())
     with pytest.raises(ValidationError):
         RecoveryEvent(kind="test_passed", summary="1 tests passed", raw_refs=())
+    with pytest.raises(ValidationError):
+        ForensicIndexEntry(
+            evidence_id="session::m1",
+            raw_ref=TransformRawRef(session_id="session", message_id="m1"),
+            claim_kinds=(),
+            claim_labels=("run_state",),
+        )
 
 
 def test_raw_refs_include_message_and_block_preview() -> None:

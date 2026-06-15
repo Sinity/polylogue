@@ -14,7 +14,7 @@ import re
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Literal, TypeVar
 
 from pydantic import Field, field_validator, model_validator
 
@@ -24,6 +24,16 @@ from polylogue.insights.archive_models import ArchiveInsightModel
 
 RECOVERY_TRANSFORM_ID = "recovery_digest_v0"
 RECOVERY_TRANSFORM_VERSION = 1
+T = TypeVar("T")
+
+ForensicClaimKind = Literal[
+    "digest",
+    "tool_summary",
+    "subagent_report",
+    "run_state",
+    "event",
+    "decision_candidate",
+]
 
 _ISSUE_RE = re.compile(r"(?:issues/|issue\s+|closed\s+|#)(?P<number>\d{3,6})", re.IGNORECASE)
 _PR_RE = re.compile(r"(?:pull/|PR\s+|#)(?P<number>\d{3,6})", re.IGNORECASE)
@@ -63,6 +73,31 @@ class TransformRawRef(ArchiveInsightModel):
         if not value or not value.strip():
             raise ValueError("session_id cannot be empty")
         return value
+
+
+class ForensicIndexEntry(ArchiveInsightModel):
+    """One raw evidence location and the extracted claims it supports."""
+
+    evidence_id: str
+    raw_ref: TransformRawRef
+    claim_kinds: tuple[ForensicClaimKind, ...]
+    claim_labels: tuple[str, ...]
+
+    @model_validator(mode="after")
+    def _requires_claims(self) -> ForensicIndexEntry:
+        if not self.claim_kinds:
+            raise ValueError("ForensicIndexEntry requires at least one claim kind")
+        if not self.claim_labels:
+            raise ValueError("ForensicIndexEntry requires at least one claim label")
+        return self
+
+
+class ForensicIndex(ArchiveInsightModel):
+    """Deterministic raw-ref index for blame/continue recovery surfaces."""
+
+    session_id: str
+    entries: tuple[ForensicIndexEntry, ...] = ()
+    claim_count: int = 0
 
 
 class TransformMetadata(ArchiveInsightModel):
@@ -192,6 +227,7 @@ class RecoveryDigest(ArchiveInsightModel):
     run_state: RunStateSummary | None = None
     events: tuple[RecoveryEvent, ...] = ()
     decision_candidates: tuple[DecisionCandidate, ...] = ()
+    forensic_index: ForensicIndex
     resume_markdown: str
     raw_refs: tuple[TransformRawRef, ...]
 
@@ -248,6 +284,15 @@ def compile_recovery_digest(session: Session) -> RecoveryDigest:
         events=events,
         decisions=decisions,
     )
+    forensic_index = _build_forensic_index(
+        session_id=str(session.id),
+        session_ref=session_ref,
+        tool_summaries=tool_summaries,
+        subagent_reports=subagent_reports,
+        run_state=run_state,
+        events=events,
+        decisions=decisions,
+    )
     return RecoveryDigest(
         session_id=str(session.id),
         title=session.title,
@@ -275,6 +320,7 @@ def compile_recovery_digest(session: Session) -> RecoveryDigest:
         run_state=run_state,
         events=events,
         decision_candidates=decisions,
+        forensic_index=forensic_index,
         resume_markdown=resume_markdown,
         raw_refs=(session_ref,),
     )
@@ -337,6 +383,80 @@ def render_resume_bundle(
     lines.extend(["", "## Evidence"])
     lines.append("Raw refs are available on every extracted event/tool/decision record.")
     return "\n".join(lines).strip() + "\n"
+
+
+def _build_forensic_index(
+    *,
+    session_id: str,
+    session_ref: TransformRawRef,
+    tool_summaries: Sequence[ToolSummary],
+    subagent_reports: Sequence[SubagentReport],
+    run_state: RunStateSummary | None,
+    events: Sequence[RecoveryEvent],
+    decisions: Sequence[DecisionCandidate],
+) -> ForensicIndex:
+    refs_by_key: dict[tuple[str, str | None, int | None, str], TransformRawRef] = {}
+    kinds_by_key: dict[tuple[str, str | None, int | None, str], list[ForensicClaimKind]] = {}
+    labels_by_key: dict[tuple[str, str | None, int | None, str], list[str]] = {}
+    claim_count = 0
+
+    def add(kind: ForensicClaimKind, label: str, refs: Sequence[TransformRawRef]) -> None:
+        nonlocal claim_count
+        claim_count += 1
+        for ref in refs:
+            key = _raw_ref_key(ref)
+            refs_by_key.setdefault(key, ref)
+            _append_unique(kinds_by_key.setdefault(key, []), kind)
+            _append_unique(labels_by_key.setdefault(key, []), label)
+
+    add("digest", "digest:session", (session_ref,))
+    for tool in tool_summaries:
+        label = f"tool:{tool.tool_name}"
+        if tool.tool_id:
+            label = f"{label}:{tool.tool_id}"
+        add("tool_summary", label, tool.raw_refs)
+    for index, report in enumerate(subagent_reports):
+        label = f"subagent:{report.subagent_type}:{index}"
+        add("subagent_report", label, report.raw_refs)
+    if run_state is not None:
+        add("run_state", "run_state", run_state.raw_refs)
+    for index, event in enumerate(events):
+        add("event", f"event:{event.kind}:{index}", event.raw_refs)
+    for index, decision in enumerate(decisions):
+        add("decision_candidate", f"decision:{decision.kind}:{index}", decision.raw_refs)
+
+    entries = tuple(
+        ForensicIndexEntry(
+            evidence_id=_evidence_id(ref),
+            raw_ref=ref,
+            claim_kinds=tuple(kinds_by_key[key]),
+            claim_labels=tuple(labels_by_key[key]),
+        )
+        for key, ref in sorted(refs_by_key.items(), key=lambda item: _raw_ref_sort_key(item[1]))
+    )
+    return ForensicIndex(session_id=session_id, entries=entries, claim_count=claim_count)
+
+
+def _raw_ref_key(ref: TransformRawRef) -> tuple[str, str | None, int | None, str]:
+    return (ref.session_id, ref.message_id, ref.block_index, ref.ref_kind)
+
+
+def _raw_ref_sort_key(ref: TransformRawRef) -> tuple[str, str, int, str]:
+    return (ref.session_id, ref.message_id or "", -1 if ref.block_index is None else ref.block_index, ref.ref_kind)
+
+
+def _evidence_id(ref: TransformRawRef) -> str:
+    parts = [ref.session_id]
+    if ref.message_id is not None:
+        parts.append(ref.message_id)
+    if ref.block_index is not None:
+        parts.append(str(ref.block_index))
+    return "::".join(parts)
+
+
+def _append_unique(target: list[T], value: T) -> None:
+    if value not in target:
+        target.append(value)
 
 
 def _extract_tool_summaries(session: Session, messages: Sequence[Message]) -> Iterable[ToolSummary]:
@@ -850,6 +970,8 @@ __all__ = [
     "RECOVERY_TRANSFORM_VERSION",
     "TRANSFORM_REGISTRY",
     "DecisionCandidate",
+    "ForensicIndex",
+    "ForensicIndexEntry",
     "RecoveryDigest",
     "RecoveryEvent",
     "RecoverySizeMetrics",
