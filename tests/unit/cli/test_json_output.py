@@ -78,7 +78,6 @@ def _looks_like_json_output(text: str) -> bool:
 #   - recent               → pre-existing bug: passes sort=updated_at which
 #                            is not a valid sort field (hardcoded in verb)
 #   - context, context-pack → not wired for lazy subcommand dispatch
-#   - correlate            → requires file paths for correlation
 
 _COMMANDS: list[tuple[list[str], bool]] = [
     # ── Query verbs (root --json flows through to output_format) ──────
@@ -139,7 +138,6 @@ _EXCLUDED: list[str] = [
     "insights export (requires --out argument)",
     "blackboard list (not wired for lazy subcommand dispatch from root)",
     "user-state marks (not wired for lazy subcommand dispatch from root)",
-    "correlate (requires file paths for correlation)",
 ]
 
 _COMMAND_IDS: list[str] = [" ".join(args) for args, _ in _COMMANDS]

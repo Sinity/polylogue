@@ -14,15 +14,17 @@ Usage: polylogue read [OPTIONS]
       polylogue find 'archive runtime' then read --view context
       polylogue find id:abc then read --view neighbors --window-hours 48
       polylogue --latest read --view neighbors --format json
+      polylogue find id:abc then read --view correlation --since-hours 4
+      polylogue --latest read --view correlation --otlp --format json
 
   Deferred views (not yet implemented; note in PR body):
       timeline, tools, files, metadata, continuation
 
 Options:
-  -v, --view [summary|transcript|messages|raw|context|neighbors]
+  -v, --view [summary|transcript|messages|raw|context|neighbors|correlation]
                                   What to render (summary, transcript,
-                                  messages, raw, context, neighbors).
-                                  [default: summary]
+                                  messages, raw, context, neighbors,
+                                  correlation).  [default: summary]
   --to [terminal|stdout|browser|clipboard|file]
                                   Output destination.  [default: terminal]
   -f, --format [text|markdown|json|ndjson|yaml|html|obsidian|org|csv]
@@ -36,6 +38,18 @@ Options:
   --offset INTEGER                Pagination offset.
   --window-hours INTEGER          Neighboring time window around the seed
                                   session (--view neighbors).  [default: 24]
+  --repo-path TEXT                Git repository path for correlation (--view
+                                  correlation). Defaults to the session's
+                                  repo/cwd.
+  --since-hours INTEGER           Hours before/after the session to scan for
+                                  commits (--view correlation).  [default: 2]
+  --confidence-threshold FLOAT    Minimum confidence for file-overlap commit
+                                  detection (--view correlation).  [default:
+                                  0.3]
+  --github-api / --no-github-api  Cross-reference issue/PR refs with the
+                                  GitHub API via gh CLI (--view correlation).
+  --otlp                          Add OTLP span evidence to correlation output
+                                  (--view correlation).
   --no-code-blocks                Exclude code blocks (--view messages).
   --no-tool-calls                 Exclude tool calls (--view messages).
   --no-tool-outputs               Exclude tool outputs (--view messages).

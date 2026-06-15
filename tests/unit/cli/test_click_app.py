@@ -625,7 +625,6 @@ class TestCliMetadata:
             "commands",
             "context",
             "context-pack",
-            "correlate",
             "paths",
             "recent",
             "dashboard",
