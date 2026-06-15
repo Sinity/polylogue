@@ -430,6 +430,22 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         effects=("DbRead",),
     ),
     OperationSpec(
+        name="compile-recovery-digest",
+        kind=OperationKind.PROJECTION,
+        description="Compile one archived session into the deterministic recovery/digest artifact and evidence index.",
+        consumes=("archive_session_rows", "message_rows"),
+        produces=("recovery_digest", "forensic_index", "resume_bundle"),
+        path_targets=("recovery-digest-transform-loop",),
+        code_refs=(
+            "polylogue.insights.transforms.compile_recovery_digest",
+            "polylogue.api.archive.PolylogueArchive.recovery_digest",
+            "polylogue.cli.query_verbs._render_recovery_read_view",
+        ),
+        surfaces=("api", "cli", "read-view"),
+        previewable=True,
+        effects=("DbRead",),
+    ),
+    OperationSpec(
         name="compile-inferred-corpus-specs",
         kind=OperationKind.PROJECTION,
         description="Compile inferred synthetic corpus specs from schema packages and cluster manifests.",
@@ -673,6 +689,14 @@ DECLARED_CONTROL_PLANE_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         surfaces=("benchmark-campaign",),
         previewable=True,
         effects=("DbRead", "DbWrite"),
+    ),
+    OperationSpec(
+        name="benchmark.transform.recovery-digest",
+        kind=OperationKind.BENCHMARK,
+        description="Measure deterministic recovery digest transform compilation over synthetic tool-heavy sessions.",
+        surfaces=("benchmark-campaign",),
+        previewable=True,
+        effects=("Pure",),
     ),
     OperationSpec(
         name="index.message-fts-rebuild",
