@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import patch
 
 import click
@@ -8,6 +9,7 @@ import pytest
 
 from polylogue.cli import query_verbs
 from polylogue.cli.root_request import RootModeRequest
+from polylogue.cli.shared.types import AppEnv
 
 
 def _context_pair(
@@ -197,6 +199,95 @@ def test_read_verb_context_pack_invokes_pack_view() -> None:
     pack.assert_called_once()
     assert pack.call_args.kwargs["query"] == "cost"
     assert pack.call_args.kwargs["max_sessions"] == 3
+
+
+def test_read_verb_recovery_compiles_digest() -> None:
+    """read --view recovery renders the deterministic recovery digest (#1880)."""
+    _, child = _context_pair(params={"conv_id": "codex-session:abc123"}, query_terms=())
+    child.obj.polylogue = SimpleNamespace()
+    wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
+    assert callable(wrapped)
+
+    async def get_session(session_id: str) -> SimpleNamespace:
+        return SimpleNamespace(id=session_id)
+
+    child.obj.polylogue.get_session = get_session
+    digest = SimpleNamespace(resume_markdown="# Resume: demo\n")
+
+    with (
+        patch("polylogue.insights.transforms.compile_recovery_digest", return_value=digest) as compile_digest,
+        patch("polylogue.cli.query_verbs._deliver_content") as deliver,
+    ):
+        wrapped(child, **_read_verb_kwargs(view="recovery"))
+
+    compile_digest.assert_called_once()
+    assert compile_digest.call_args.args[0].id == "codex-session:abc123"
+    deliver.assert_called_once_with(child.obj, "# Resume: demo\n", destination="terminal", out_path=None)
+
+
+def test_read_view_recovery_json_uses_success_envelope(capsys: pytest.CaptureFixture[str]) -> None:
+    """The recovery read view exposes the typed digest under the machine envelope."""
+
+    class _API:
+        async def get_session(self, session_id: str) -> SimpleNamespace:
+            return SimpleNamespace(id=session_id)
+
+    env = SimpleNamespace(polylogue=_API())
+    digest = SimpleNamespace(resume_markdown="# Resume\n")
+
+    with (
+        patch("polylogue.insights.transforms.compile_recovery_digest", return_value=digest),
+        patch("polylogue.surfaces.payloads.model_json_document", return_value={"session_id": "s1"}),
+    ):
+        query_verbs._run_read_recovery(
+            cast(AppEnv, env),
+            session_id="s1",
+            output_format="json",
+            destination="terminal",
+            out_path=None,
+        )
+
+    output = capsys.readouterr().out
+    assert '"status": "ok"' in output
+    assert '"recovery"' in output
+
+
+def test_read_view_recovery_honors_root_json_format() -> None:
+    """Root --json applies to recovery output when the verb has no local format."""
+    _, child = _context_pair(params={"conv_id": "codex-session:abc123", "output_format": "json"}, query_terms=())
+    child.obj.polylogue = SimpleNamespace()
+    wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
+    assert callable(wrapped)
+
+    async def get_session(session_id: str) -> SimpleNamespace:
+        return SimpleNamespace(id=session_id)
+
+    child.obj.polylogue.get_session = get_session
+    digest = SimpleNamespace(resume_markdown="# Resume\n")
+
+    with (
+        patch("polylogue.insights.transforms.compile_recovery_digest", return_value=digest),
+        patch("polylogue.surfaces.payloads.model_json_document", return_value={"session_id": "codex-session:abc123"}),
+        patch("polylogue.cli.query_verbs._deliver_content") as deliver,
+    ):
+        wrapped(child, **_read_verb_kwargs(view="recovery", output_format=None))
+
+    content = deliver.call_args.args[1]
+    assert '"status": "ok"' in content
+    assert '"recovery"' in content
+
+
+def test_read_view_recovery_requires_session_id() -> None:
+    env = SimpleNamespace(polylogue=SimpleNamespace())
+
+    with pytest.raises(SystemExit):
+        query_verbs._run_read_recovery(
+            cast(AppEnv, env),
+            session_id=None,
+            output_format=None,
+            destination="terminal",
+            out_path=None,
+        )
 
 
 def test_resolve_target_session_id_uses_explicit_conv_id() -> None:

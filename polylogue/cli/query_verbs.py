@@ -53,7 +53,17 @@ def _lazy_shell_complete(source: str):  # type: ignore[no-untyped-def]
 _complete_session_id = _lazy_shell_complete("session_id")
 _complete_message_type = _lazy_shell_complete("message_type")
 
-_READ_VIEWS = ("summary", "transcript", "messages", "raw", "context", "context-pack", "neighbors", "correlation")
+_READ_VIEWS = (
+    "summary",
+    "transcript",
+    "messages",
+    "raw",
+    "context",
+    "context-pack",
+    "recovery",
+    "neighbors",
+    "correlation",
+)
 _READ_DESTINATIONS = ("terminal", "stdout", "browser", "clipboard", "file")
 _READ_FORMATS = ("text", "markdown", "json", "ndjson", "yaml", "html", "obsidian", "org", "csv")
 
@@ -148,7 +158,9 @@ def recent_verb(
     type=click.Choice(_READ_VIEWS),
     default="summary",
     show_default=True,
-    help="What to render (summary, transcript, messages, raw, context, context-pack, neighbors, correlation).",
+    help=(
+        "What to render (summary, transcript, messages, raw, context, context-pack, recovery, neighbors, correlation)."
+    ),
 )
 @click.option(
     "--to",
@@ -297,6 +309,7 @@ def read_verb(
         polylogue find id:abc then read --view context --related-limit 5
         polylogue find 'cost tracking' then read --view context-pack --max-sessions 5
         polylogue read --view context-pack --project-repo github.com/Sinity/polylogue --since 2026-01-01
+        polylogue find id:abc then read --view recovery
         polylogue find id:abc then read --view neighbors --window-hours 48
         polylogue --latest read --view neighbors --format json
         polylogue find id:abc then read --view correlation --since-hours 4
@@ -376,6 +389,17 @@ def read_verb(
             max_sessions=max_sessions,
             max_messages=max_messages,
             no_redact=no_redact,
+        )
+        return
+
+    if view == "recovery":
+        effective_format = output_format or request.params.get("output_format")
+        _run_read_recovery(
+            env,
+            session_id=session_id,
+            output_format=effective_format if isinstance(effective_format, str) else None,
+            destination=destination,
+            out_path=out_path,
         )
         return
 
@@ -602,6 +626,34 @@ def _run_read_context(
         raise click.UsageError("read --view context requires a session ID (use --id, id:prefix, or --latest).")
     preamble = run_context_compose(env, session_id=session_id, related_limit=max(1, related_limit))
     _deliver_content(env, preamble + "\n", destination=destination, out_path=out_path)
+
+
+def _run_read_recovery(
+    env: AppEnv,
+    *,
+    session_id: str | None,
+    output_format: str | None,
+    destination: str,
+    out_path: str | None,
+) -> None:
+    """Render the deterministic recovery digest for one archived session (#1880)."""
+    from polylogue.api.sync.bridge import run_coroutine_sync
+    from polylogue.cli.shared.helper_support import fail
+    from polylogue.cli.shared.machine_errors import success
+    from polylogue.insights.transforms import compile_recovery_digest
+    from polylogue.surfaces.payloads import model_json_document
+
+    if session_id is None:
+        fail("read", "read --view recovery requires a session ID (use --id, id:prefix, or --latest).")
+    session = run_coroutine_sync(env.polylogue.get_session(session_id))
+    if session is None:
+        fail("read", f"Session not found: {session_id}")
+    digest = compile_recovery_digest(session)
+    if output_format == "json":
+        payload = success({"recovery": model_json_document(digest, exclude_none=True)}).to_json()
+        _deliver_content(env, payload + "\n", destination=destination, out_path=out_path)
+        return
+    _deliver_content(env, digest.resume_markdown, destination=destination, out_path=out_path)
 
 
 def _neighbor_score_label(score: float) -> str:
