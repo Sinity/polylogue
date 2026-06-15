@@ -82,6 +82,7 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     upsert_blackboard_note,
     upsert_mark,
     upsert_recall_pack,
+    upsert_saved_view,
     upsert_workspace,
 )
 from polylogue.storage.sqlite.archive_tiers.write import (
@@ -1749,26 +1750,14 @@ class ArchiveStore:
         if not isinstance(query, dict):
             raise ValueError("query_json must encode an object")
         initialize_archive_database(self.user_db_path, ArchiveTier.USER)
-        now_ms = int(datetime.now(UTC).timestamp() * 1000)
         user_conn = sqlite3.connect(self.user_db_path)
         try:
             existing = user_conn.execute(
                 "SELECT created_at_ms FROM saved_views WHERE view_id = ?",
                 (view_id,),
             ).fetchone()
-            created_at_ms = int(existing[0]) if existing is not None else now_ms
             with user_conn:
-                user_conn.execute(
-                    """
-                    INSERT INTO saved_views (view_id, name, query_json, created_at_ms, updated_at_ms)
-                    VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT(view_id) DO UPDATE SET
-                        name = excluded.name,
-                        query_json = excluded.query_json,
-                        updated_at_ms = excluded.updated_at_ms
-                    """,
-                    (view_id, normalized_name, json.dumps(query, sort_keys=True), created_at_ms, now_ms),
-                )
+                upsert_saved_view(user_conn, normalized_name, query, view_id=view_id)
             return existing is None
         finally:
             user_conn.close()

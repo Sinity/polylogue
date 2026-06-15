@@ -408,28 +408,30 @@ def upsert_saved_view(
     name: str,
     query: dict[str, object],
     *,
+    view_id: str | None = None,
     now_ms: int | None = None,
 ) -> ArchiveSavedViewEnvelope:
     """Insert-or-update a saved query view keyed by name."""
     timestamp = now_ms if now_ms is not None else _now_ms()
-    view_id = _deterministic_id("view", name)
-    existing = conn.execute("SELECT created_at_ms FROM saved_views WHERE name = ?", (name,)).fetchone()
+    resolved_id = view_id or _deterministic_id("view", name)
+    existing = conn.execute("SELECT created_at_ms FROM saved_views WHERE view_id = ?", (resolved_id,)).fetchone()
     created_at_ms = int(existing[0]) if existing is not None else timestamp
 
     conn.execute(
         """
         INSERT INTO saved_views (view_id, name, query_json, created_at_ms, updated_at_ms)
         VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(name) DO UPDATE SET
+        ON CONFLICT(view_id) DO UPDATE SET
+            name = excluded.name,
             query_json = excluded.query_json,
             updated_at_ms = excluded.updated_at_ms
         """,
-        (view_id, name, _json_dumps(query), created_at_ms, timestamp),
+        (resolved_id, name, _json_dumps(query), created_at_ms, timestamp),
     )
     upsert_assertion(
         conn,
-        assertion_id=_deterministic_id(f"assertion-{AssertionKind.SAVED_QUERY}", name),
-        target_ref=f"saved_view:{name}",
+        assertion_id=_deterministic_id(f"assertion-{AssertionKind.SAVED_QUERY}", resolved_id),
+        target_ref=f"saved_view:{resolved_id}",
         kind=AssertionKind.SAVED_QUERY,
         key=name,
         value=query,
