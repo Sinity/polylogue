@@ -107,6 +107,37 @@ def _deterministic_id(prefix: str, *parts: str) -> str:
     return f"{prefix}:{digest.hexdigest()}"
 
 
+def assertion_id_for_mark(target_type: str, target_id: str, mark_type: str) -> str:
+    """Return the mirrored assertion id for one legacy mark row."""
+    mark_id = _deterministic_id("mark", target_type, target_id, mark_type)
+    return _deterministic_id(f"assertion-{AssertionKind.MARK}", mark_id)
+
+
+def assertion_id_for_annotation(annotation_id: str) -> str:
+    """Return the mirrored assertion id for one legacy annotation row."""
+    return _deterministic_id(f"assertion-{AssertionKind.ANNOTATION}", annotation_id)
+
+
+def assertion_id_for_correction(correction_id: str) -> str:
+    """Return the mirrored assertion id for one legacy correction row."""
+    return _deterministic_id(f"assertion-{AssertionKind.CORRECTION}", correction_id)
+
+
+def assertion_id_for_saved_view(view_id: str) -> str:
+    """Return the mirrored assertion id for one legacy saved-view row."""
+    return _deterministic_id(f"assertion-{AssertionKind.SAVED_QUERY}", view_id)
+
+
+def assertion_id_for_recall_pack(recall_pack_id: str) -> str:
+    """Return the mirrored assertion id for one legacy recall-pack row."""
+    return _deterministic_id(f"assertion-{AssertionKind.RECALL_PACK}", recall_pack_id)
+
+
+def assertion_id_for_workspace(workspace_id: str) -> str:
+    """Return the mirrored assertion id for one legacy workspace row."""
+    return _deterministic_id(f"assertion-{AssertionKind.WORKSPACE_NOTE}", workspace_id)
+
+
 def _target_ref(target_type: str | None, target_id: str | None) -> str | None:
     """Compose the assertions ``target_ref`` from a legacy ``(type, id)`` pair.
 
@@ -298,7 +329,7 @@ def upsert_mark(
     )
     upsert_assertion(
         conn,
-        assertion_id=_deterministic_id(f"assertion-{AssertionKind.MARK}", mark_id),
+        assertion_id=assertion_id_for_mark(target_type, target_id, mark_type),
         target_ref=f"{target_type}:{target_id}",
         kind=AssertionKind.MARK,
         key=mark_type,
@@ -341,7 +372,7 @@ def upsert_annotation(
     )
     upsert_assertion(
         conn,
-        assertion_id=_deterministic_id(f"assertion-{AssertionKind.ANNOTATION}", resolved_id),
+        assertion_id=assertion_id_for_annotation(resolved_id),
         target_ref=f"{target_type}:{target_id}",
         kind=AssertionKind.ANNOTATION,
         body_text=body,
@@ -392,7 +423,7 @@ def upsert_correction(
     )
     upsert_assertion(
         conn,
-        assertion_id=_deterministic_id(f"assertion-{AssertionKind.CORRECTION}", correction_id),
+        assertion_id=assertion_id_for_correction(correction_id),
         target_ref=f"{target_type}:{target_id}",
         kind=AssertionKind.CORRECTION,
         key=correction_type,
@@ -430,7 +461,7 @@ def upsert_saved_view(
     )
     upsert_assertion(
         conn,
-        assertion_id=_deterministic_id(f"assertion-{AssertionKind.SAVED_QUERY}", resolved_id),
+        assertion_id=assertion_id_for_saved_view(resolved_id),
         target_ref=f"saved_view:{resolved_id}",
         kind=AssertionKind.SAVED_QUERY,
         key=name,
@@ -471,7 +502,7 @@ def upsert_recall_pack(
     )
     upsert_assertion(
         conn,
-        assertion_id=_deterministic_id(f"assertion-{AssertionKind.RECALL_PACK}", resolved_id),
+        assertion_id=assertion_id_for_recall_pack(resolved_id),
         target_ref=f"recall_pack:{resolved_id}",
         kind=AssertionKind.RECALL_PACK,
         key=name,
@@ -510,7 +541,7 @@ def upsert_workspace(
     )
     upsert_assertion(
         conn,
-        assertion_id=_deterministic_id(f"assertion-{AssertionKind.WORKSPACE_NOTE}", resolved_id),
+        assertion_id=assertion_id_for_workspace(resolved_id),
         target_ref=f"workspace:{resolved_id}",
         kind=AssertionKind.WORKSPACE_NOTE,
         key=name,
@@ -818,6 +849,26 @@ def upsert_assertion(
     return envelope
 
 
+def mark_assertion_status(
+    conn: sqlite3.Connection,
+    assertion_id: str,
+    status: str,
+    *,
+    now_ms: int | None = None,
+) -> bool:
+    """Update one assertion status without deleting its evidence row."""
+    timestamp = now_ms if now_ms is not None else _now_ms()
+    cursor = conn.execute(
+        """
+        UPDATE assertions
+        SET status = ?, updated_at_ms = ?
+        WHERE assertion_id = ?
+        """,
+        (status, timestamp, assertion_id),
+    )
+    return int(cursor.rowcount) > 0
+
+
 def _assertion_row_to_envelope(row: sqlite3.Row) -> ArchiveAssertionEnvelope:
     return ArchiveAssertionEnvelope(
         assertion_id=str(row[0]),
@@ -891,7 +942,14 @@ __all__ = [
     "ArchiveSavedViewEnvelope",
     "ArchiveWorkspaceEnvelope",
     "AssertionKind",
+    "assertion_id_for_annotation",
+    "assertion_id_for_correction",
+    "assertion_id_for_mark",
+    "assertion_id_for_recall_pack",
+    "assertion_id_for_saved_view",
+    "assertion_id_for_workspace",
     "list_assertions_for_target",
+    "mark_assertion_status",
     "read_archive_annotation_envelope",
     "read_archive_blackboard_note_envelope",
     "read_archive_correction_envelope",
