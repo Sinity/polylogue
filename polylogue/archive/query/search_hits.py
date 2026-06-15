@@ -230,7 +230,7 @@ def default_score_kind(retrieval_lane: str) -> str | None:
 
 
 def plan_has_search_hit_evidence(plan: SessionQueryPlan) -> bool:
-    return bool(plan.fts_terms or plan.similar_text)
+    return bool(plan.fts_terms or plan.similar_text or plan.similar_session_id)
 
 
 async def search_hits_for_plan(
@@ -243,20 +243,15 @@ async def search_hits_for_plan(
     hits carry FTS snippets, semantic/hybrid lanes resolve through the
     vector provider, and hybrid preserves per-lane RRF rank contributions.
     """
-    # A session-seeded plan (near:id:) carries no FTS/text evidence, so it would
-    # otherwise fall through plan_has_search_hit_evidence() and silently return
-    # no hits. Reject it typed instead — execution support is not wired yet
-    # (#1842), and silent emptiness is exactly the failure the guard prevents on
-    # every other execution entry point.
-    from polylogue.archive.query.archive_execution import _reject_unexecutable_session_seed
-
-    _reject_unexecutable_session_seed(plan)
-
     if not plan_has_search_hit_evidence(plan):
         return []
 
+    # A session-seeded plan (near:id:) carries no FTS/text evidence; its evidence is
+    # the seed session's stored vectors, resolved by archive_search_hits through the
+    # vector provider. It must bypass the text-query gate below (which would treat an
+    # empty query string as "no hits") and fail typed if it cannot execute.
     query_text = plan.similar_text or plan_search_query_text(plan)
-    if not query_text:
+    if not query_text and plan.similar_session_id is None:
         return []
 
     from polylogue.archive.query.archive_execution import archive_search_hits
@@ -272,7 +267,7 @@ async def search_hits_for_plan(
         config=config,
         default_limit=plan.limit or search_limit(plan),
     )
-    query_terms = (query_text,)
+    query_terms = (query_text,) if query_text else ()
     terms = search_terms(query_terms)
     hits: list[SessionSearchHit] = []
     for rank, (native_hit, summary) in enumerate(paired, start=1):

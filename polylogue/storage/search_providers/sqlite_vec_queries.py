@@ -11,6 +11,12 @@ from polylogue.storage.embeddings.embedding_stats import read_embedding_stats_sy
 from polylogue.storage.runtime import MessageRecord
 from polylogue.storage.search_providers.sqlite_vec_support import SqliteVecError, _serialize_f32, logger
 
+# Per-seed-message neighbor fanout used to grow the candidate pool before
+# deduplicating to messages. Bounds the number of MATCH queries issued for a
+# large seed session to a fixed, representative sample (mirrors
+# ``polylogue.daemon.similarity._PER_MESSAGE_K``).
+_SESSION_SEED_FANOUT = 20
+
 
 class SqliteVecQueryMixin:
     """Vector upsert/query/stat operations."""
@@ -131,6 +137,62 @@ class SqliteVecQueryMixin:
                 (query_embedding, limit),
             ).fetchall()
             return [(row["message_id"], row["distance"]) for row in rows]
+        finally:
+            conn.close()
+
+    def query_by_session(self, session_id: str, limit: int = 10) -> list[tuple[str, float]]:
+        """Rank messages by similarity to a stored session's own embeddings.
+
+        Fetches every stored vector for ``session_id`` and KNN-searches a bounded,
+        representative sample of them against the store. Hits belonging to the seed
+        session itself are dropped so the seed never ranks against its own messages;
+        each surviving message keeps its closest (smallest) distance across the seed
+        vectors. Returns ranked ``(message_id, distance)`` ascending by distance.
+
+        Raises :class:`SqliteVecError` when the seed session has no stored
+        embeddings (including when the vector table does not exist yet) so the caller
+        fails typed rather than returning an empty/unfiltered listing.
+        """
+        self._ensure_vec_available()
+
+        conn = self._get_connection()
+        try:
+            try:
+                seed_rows = conn.execute(
+                    "SELECT message_id, embedding FROM message_embeddings WHERE session_id = ?",
+                    (session_id,),
+                ).fetchall()
+            except sqlite3.OperationalError as exc:
+                raise SqliteVecError(f"session {session_id!r} has no stored embeddings: {exc}") from exc
+            if not seed_rows:
+                raise SqliteVecError(
+                    f"session {session_id!r} has no stored message embeddings; cannot run session-seeded similarity"
+                )
+
+            k = max(limit, 1)
+            best_distance: dict[str, float] = {}
+            for seed_row in seed_rows[:_SESSION_SEED_FANOUT]:
+                embedding_blob = bytes(seed_row["embedding"])
+                neighbors = conn.execute(
+                    """
+                    SELECT message_id, session_id, distance
+                    FROM message_embeddings
+                    WHERE embedding MATCH ?
+                      AND k = ?
+                    ORDER BY distance
+                    """,
+                    (embedding_blob, k),
+                ).fetchall()
+                for neighbor in neighbors:
+                    if str(neighbor["session_id"]) == session_id:
+                        continue
+                    message_id = str(neighbor["message_id"])
+                    distance = float(neighbor["distance"])
+                    if message_id not in best_distance or distance < best_distance[message_id]:
+                        best_distance[message_id] = distance
+
+            ranked = sorted(best_distance.items(), key=lambda item: (item[1], item[0]))
+            return ranked[:limit]
         finally:
             conn.close()
 

@@ -72,6 +72,18 @@ class VectorProvider(Protocol):
         """Synchronously return ranked ``(message_id, distance)`` search results."""
         ...
 
+    def query_by_session(self, session_id: str, limit: int = 10) -> list[tuple[str, float]]:
+        """Rank messages by similarity to a stored session's own embeddings.
+
+        Reads ``session_id``'s already-materialized message vectors and KNN-searches
+        them against the store, returning ranked ``(message_id, distance)`` hits with
+        the seed session's own messages excluded (so the seed never ranks against
+        itself). No re-embedding occurs — only stored vectors are read. Raises a typed
+        error when the seed session has no stored embeddings, never silently returning
+        an empty or unfiltered result.
+        """
+        ...
+
 
 @runtime_checkable
 class ProgressCallback(Protocol):

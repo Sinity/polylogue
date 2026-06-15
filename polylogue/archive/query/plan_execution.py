@@ -16,6 +16,27 @@ if TYPE_CHECKING:
     from polylogue.protocols import SessionQueryRuntimeStore
 
 
+def _reject_session_seed_on_repository_path(plan: SessionQueryPlan) -> None:
+    """Fail typed for ``near:id:<ref>`` on the repository runtime store path.
+
+    Session-seeded similarity executes through the archive query path
+    (``archive_execution`` / ``search_hits``), which reads the seed session's
+    stored vectors via ``VectorProvider.query_by_session``. The repository runtime
+    store exposes only text-seeded ``search_similar``; it has no session-seeded
+    vector primitive. Rather than silently broadening to an unfiltered listing,
+    reject typed and point at the executable path.
+    """
+    if plan.similar_session_id is None:
+        return
+    from polylogue.archive.query.expression import ExpressionCompileError
+
+    raise ExpressionCompileError(
+        "near:id: session-seeded similarity executes through the archive query path, "
+        "not the repository runtime store, which has no session-seeded vector primitive.",
+        field="near",
+    )
+
+
 def _plan_sort_is_rank_first(plan: SessionQueryPlan) -> bool:
     """Return True when the plan's effective sort is rank-first.
 
@@ -29,9 +50,7 @@ async def list_for_plan(
     plan: SessionQueryPlan,
     repository: SessionQueryRuntimeStore,
 ) -> list[Session]:
-    from polylogue.archive.query.archive_execution import _reject_unexecutable_session_seed
-
-    _reject_unexecutable_session_seed(plan)
+    _reject_session_seed_on_repository_path(plan)
     if plan.similar_text:
         candidates = await repository.search_similar(
             plan.similar_text,
@@ -55,9 +74,7 @@ async def list_summaries_for_plan(
     plan: SessionQueryPlan,
     repository: SessionQueryRuntimeStore,
 ) -> list[SessionSummary]:
-    from polylogue.archive.query.archive_execution import _reject_unexecutable_session_seed
-
-    _reject_unexecutable_session_seed(plan)
+    _reject_session_seed_on_repository_path(plan)
     can_use_action_stats = await plan.can_use_action_stats_with(repository)
     uses_action_read_model = plan._uses_action_read_model()
     if not plan.can_use_summaries() and not uses_action_read_model:
