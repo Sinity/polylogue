@@ -14,6 +14,7 @@ from polylogue.scenarios import (
     ScenarioProjectionSourceKind,
     build_corpus_scenarios,
     build_default_corpus_specs,
+    build_demo_corpus_specs,
     build_inferred_corpus_specs,
     resolve_corpus_scenarios,
     resolve_corpus_specs,
@@ -170,6 +171,42 @@ def test_build_default_corpus_specs_accepts_metadata_overrides() -> None:
 
     assert specs[0].origin == "generated.test-suite"
     assert specs[0].tags == ("synthetic", "test", "fixtures")
+
+
+def test_build_demo_corpus_specs_declares_release_fixture_world() -> None:
+    specs = build_demo_corpus_specs()
+
+    assert tuple(spec.provider for spec in specs) == ("chatgpt", "claude-code", "codex")
+    assert tuple(spec.style for spec in specs) == (
+        "showcase",
+        "tool-heavy",
+        "tool-heavy",
+    )
+    assert tuple(spec.seed for spec in specs) == (1843, 1844, 1845)
+    assert all(spec.count == 1 for spec in specs)
+    assert all(spec.origin == "generated.demo-fixture-world" for spec in specs)
+    assert all(spec.tags == ("synthetic", "demo", "release-gate") for spec in specs)
+    assert specs[0].messages_per_session == range(2, 4)
+    assert specs[1].messages_per_session == range(6, 11)
+    assert specs[2].messages_per_session == range(6, 11)
+    assert CorpusSpec.from_payload(specs[2].to_payload()) == specs[2]
+
+
+def test_build_demo_corpus_specs_materializes_with_synthetic_generator(tmp_path: Path) -> None:
+    from polylogue.schemas.synthetic import SyntheticCorpus
+
+    written = SyntheticCorpus.write_specs_artifacts(
+        build_demo_corpus_specs(),
+        tmp_path,
+        prefix="demo",
+    )
+
+    files = tuple(path.relative_to(tmp_path).as_posix() for batch in written for path in batch.files)
+    assert files == (
+        "chatgpt/demo-00.json",
+        "claude-code/demo-00.jsonl",
+        "codex/demo-00.jsonl",
+    )
 
 
 def test_build_inferred_corpus_specs_uses_cluster_families_when_present() -> None:
