@@ -17,6 +17,8 @@ Options:
                                   Group statistics by dimension
   --facets                        Show facet aggregates for the matched result
                                   set
+  --no-idf                        With --facets, skip inverse-document-
+                                  frequency weighting
   -f, --format [markdown|json|ndjson|html|plaintext|csv]
                                   Output format
   --help                          Show this message and exit.
