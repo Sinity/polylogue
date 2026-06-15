@@ -12,6 +12,7 @@ from polylogue.insights.transforms import (
     RECOVERY_TRANSFORM,
     TRANSFORM_REGISTRY,
     RecoveryEvent,
+    SubagentReport,
     ToolSummary,
     TransformRawRef,
     compile_recovery_digest,
@@ -55,6 +56,26 @@ def _session() -> Session:
                     id="m3",
                     role=Role.ASSISTANT,
                     text="MERGED #1910 (machine mode)\n✓ Closed issue Sinity/polylogue#1818",
+                    blocks=[
+                        {
+                            "type": "tool_use",
+                            "id": "tool-2",
+                            "name": "Task",
+                            "tool_input": {
+                                "subagent_type": "Explore",
+                                "prompt": "Map the transform surface and report caveats.",
+                            },
+                        },
+                        {
+                            "type": "tool_result",
+                            "tool_id": "tool-2",
+                            "text": (
+                                "Subagent done: opened https://github.com/Sinity/polylogue/pull/1912\n"
+                                "6 passed in 0.72s\n"
+                                "Caveat: storage persistence not included."
+                            ),
+                        },
+                    ],
                 ),
             ]
         ),
@@ -74,6 +95,7 @@ def test_compile_recovery_digest_extracts_small_evidence_linked_bundle() -> None
     assert digest.transform.transform_version == 1
     assert digest.transform.input_session_id == "codex-session:demo"
     assert digest.size_metrics.message_count == 3
+    assert digest.size_metrics.subagent_report_count == 1
     assert digest.size_metrics.raw_bytes > digest.size_metrics.resume_bundle_bytes
     assert digest.size_metrics.resume_to_raw_ratio < 1
     assert digest.role_counts == {"user": 1, "assistant": 2}
@@ -84,6 +106,16 @@ def test_compile_recovery_digest_extracts_small_evidence_linked_bundle() -> None
     assert tool.command == "devtools verify --quick"
     assert tool.status == "ok"
     assert {ref.ref_kind for ref in tool.raw_refs} == {"block"}
+
+    assert len(digest.subagent_reports) == 1
+    subagent = digest.subagent_reports[0]
+    assert subagent.subagent_type == "Explore"
+    assert subagent.prompt == "Map the transform surface and report caveats."
+    assert "Subagent done" in subagent.final_report_preview
+    assert subagent.pr_refs == ("#1912",)
+    assert subagent.test_evidence == ("6 passed in 0.72s",)
+    assert subagent.caveats == ("Caveat: storage persistence not included.",)
+    assert {ref.ref_kind for ref in subagent.raw_refs} == {"block"}
 
     event_summaries = {event.summary for event in digest.events}
     assert "PR #1911 opened" in event_summaries
@@ -99,6 +131,8 @@ def test_compile_recovery_digest_extracts_small_evidence_linked_bundle() -> None
 
     assert "# Resume: Ship the backlog" in digest.resume_markdown
     assert "feature/demo" in digest.resume_markdown
+    assert "## Subagents" in digest.resume_markdown
+    assert "Explore — Map the transform surface and report caveats." in digest.resume_markdown
     assert "Raw refs are available" in digest.resume_markdown
 
 
@@ -109,6 +143,9 @@ def test_every_extracted_claim_carries_raw_refs() -> None:
     for tool in digest.tool_summaries:
         assert tool.raw_refs
         assert all(ref.session_id == digest.session_id for ref in tool.raw_refs)
+    for report in digest.subagent_reports:
+        assert report.raw_refs
+        assert all(ref.session_id == digest.session_id for ref in report.raw_refs)
     for event in digest.events:
         assert event.raw_refs
         assert all(ref.session_id == digest.session_id for ref in event.raw_refs)
@@ -120,6 +157,8 @@ def test_every_extracted_claim_carries_raw_refs() -> None:
 def test_claim_models_reject_missing_raw_refs() -> None:
     with pytest.raises(ValidationError):
         ToolSummary(tool_name="Bash", raw_refs=())
+    with pytest.raises(ValidationError):
+        SubagentReport(raw_refs=())
     with pytest.raises(ValidationError):
         RecoveryEvent(kind="test_passed", summary="1 tests passed", raw_refs=())
 

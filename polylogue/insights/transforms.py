@@ -71,6 +71,7 @@ class RecoverySizeMetrics(ArchiveInsightModel):
     resume_bundle_bytes: int
     message_count: int
     tool_summary_count: int
+    subagent_report_count: int
     event_count: int
     decision_candidate_count: int
 
@@ -93,6 +94,23 @@ class ToolSummary(ArchiveInsightModel):
     def _requires_raw_refs(self) -> ToolSummary:
         if not self.raw_refs:
             raise ValueError("ToolSummary requires at least one raw ref")
+        return self
+
+
+class SubagentReport(ArchiveInsightModel):
+    subagent_type: str = "unknown"
+    prompt: str = ""
+    final_report_preview: str = ""
+    pr_refs: tuple[str, ...] = ()
+    issue_refs: tuple[str, ...] = ()
+    test_evidence: tuple[str, ...] = ()
+    caveats: tuple[str, ...] = ()
+    raw_refs: tuple[TransformRawRef, ...]
+
+    @model_validator(mode="after")
+    def _requires_raw_refs(self) -> SubagentReport:
+        if not self.raw_refs:
+            raise ValueError("SubagentReport requires at least one raw ref")
         return self
 
 
@@ -129,6 +147,7 @@ class RecoveryDigest(ArchiveInsightModel):
     size_metrics: RecoverySizeMetrics
     role_counts: dict[str, int] = Field(default_factory=dict)
     tool_summaries: tuple[ToolSummary, ...] = ()
+    subagent_reports: tuple[SubagentReport, ...] = ()
     events: tuple[RecoveryEvent, ...] = ()
     decision_candidates: tuple[DecisionCandidate, ...] = ()
     resume_markdown: str
@@ -172,6 +191,7 @@ def compile_recovery_digest(session: Session) -> RecoveryDigest:
         preview=session.display_title,
     )
     tool_summaries = tuple(_extract_tool_summaries(session, messages))
+    subagent_reports = tuple(_extract_subagent_reports(session, messages))
     events = tuple(_extract_events(session, messages))
     decisions = tuple(_extract_decision_candidates(session, messages))
     role_counts = dict(Counter(_role_value(message) for message in messages))
@@ -180,6 +200,7 @@ def compile_recovery_digest(session: Session) -> RecoveryDigest:
     resume_markdown = render_resume_bundle(
         session=session,
         tool_summaries=tool_summaries,
+        subagent_reports=subagent_reports,
         events=events,
         decisions=decisions,
     )
@@ -199,11 +220,13 @@ def compile_recovery_digest(session: Session) -> RecoveryDigest:
             resume_bundle_bytes=len(resume_markdown.encode("utf-8")),
             message_count=len(messages),
             tool_summary_count=len(tool_summaries),
+            subagent_report_count=len(subagent_reports),
             event_count=len(events),
             decision_candidate_count=len(decisions),
         ),
         role_counts=role_counts,
         tool_summaries=tool_summaries,
+        subagent_reports=subagent_reports,
         events=events,
         decision_candidates=decisions,
         resume_markdown=resume_markdown,
@@ -215,6 +238,7 @@ def render_resume_bundle(
     *,
     session: Session,
     tool_summaries: Sequence[ToolSummary],
+    subagent_reports: Sequence[SubagentReport],
     events: Sequence[RecoveryEvent],
     decisions: Sequence[DecisionCandidate],
 ) -> str:
@@ -234,6 +258,14 @@ def render_resume_bundle(
     lines.extend(["", "## Events"])
     lines.extend(f"- {event.kind}: {event.summary}" for event in events[:8])
     if not events:
+        lines.append("- none extracted")
+    lines.extend(["", "## Subagents"])
+    for report in subagent_reports[:8]:
+        prompt = f" — {report.prompt}" if report.prompt else ""
+        lines.append(f"- {report.subagent_type}{prompt}")
+        if report.final_report_preview:
+            lines.append(f"  - report: {report.final_report_preview}")
+    if not subagent_reports:
         lines.append("- none extracted")
     lines.extend(["", "## Tools"])
     for tool in tool_summaries[:8]:
@@ -264,6 +296,8 @@ def _extract_tool_summaries(session: Session, messages: Sequence[Message]) -> It
         for index, block in enumerate(message.blocks):
             if str(block.get("type") or "") != "tool_use":
                 continue
+            if _is_subagent_tool(block):
+                continue
             tool_id = _optional_text(block.get("id") or block.get("tool_id"))
             result_block: dict[str, object] | None = None
             result_ref: TransformRawRef | None = None
@@ -279,6 +313,43 @@ def _extract_tool_summaries(session: Session, messages: Sequence[Message]) -> It
                 command=_tool_command(block),
                 status=_tool_status(output_text),
                 output_preview=_preview(output_text),
+                raw_refs=tuple(refs),
+            )
+
+
+def _extract_subagent_reports(session: Session, messages: Sequence[Message]) -> Iterable[SubagentReport]:
+    result_by_tool_id: dict[str, tuple[dict[str, object], TransformRawRef]] = {}
+    for message in messages:
+        for index, block in enumerate(message.blocks):
+            if str(block.get("type") or "") != "tool_result":
+                continue
+            tool_id = _optional_text(block.get("tool_id") or block.get("id"))
+            if tool_id:
+                result_by_tool_id[tool_id] = (block, _block_ref(session, message, index, block))
+
+    for message in messages:
+        for index, block in enumerate(message.blocks):
+            if str(block.get("type") or "") != "tool_use":
+                continue
+            if not _is_subagent_tool(block):
+                continue
+            tool_id = _optional_text(block.get("id") or block.get("tool_id"))
+            result_block: dict[str, object] | None = None
+            result_ref: TransformRawRef | None = None
+            if tool_id and tool_id in result_by_tool_id:
+                result_block, result_ref = result_by_tool_id[tool_id]
+            refs = [_block_ref(session, message, index, block)]
+            if result_ref is not None:
+                refs.append(result_ref)
+            result_text = _block_text(result_block or {})
+            yield SubagentReport(
+                subagent_type=_subagent_type(block),
+                prompt=_subagent_prompt(block),
+                final_report_preview=_preview(result_text, limit=320),
+                pr_refs=tuple(_number_refs(_PR_RE, result_text)),
+                issue_refs=tuple(_number_refs(_ISSUE_RE, result_text)),
+                test_evidence=tuple(_test_evidence(result_text)),
+                caveats=tuple(_caveats(result_text)),
                 raw_refs=tuple(refs),
             )
 
@@ -444,6 +515,59 @@ def _tool_command(block: Mapping[str, object]) -> str | None:
     return None
 
 
+def _is_subagent_tool(block: Mapping[str, object]) -> bool:
+    name = _tool_name(block).lower()
+    if name == "task":
+        return True
+    tool_input = block.get("tool_input") or block.get("input")
+    if isinstance(tool_input, Mapping):
+        return any(key in tool_input for key in ("subagent_type", "agent_type"))
+    return False
+
+
+def _subagent_type(block: Mapping[str, object]) -> str:
+    tool_input = block.get("tool_input") or block.get("input")
+    if isinstance(tool_input, Mapping):
+        value = _optional_text(
+            tool_input.get("subagent_type") or tool_input.get("agent_type") or tool_input.get("description")
+        )
+        if value:
+            return value
+    return "unknown"
+
+
+def _subagent_prompt(block: Mapping[str, object]) -> str:
+    tool_input = block.get("tool_input") or block.get("input")
+    if isinstance(tool_input, Mapping):
+        value = _optional_text(tool_input.get("prompt") or tool_input.get("task"))
+        if value:
+            return _preview(value, limit=240)
+    return ""
+
+
+def _number_refs(pattern: re.Pattern[str], text: str) -> Iterable[str]:
+    seen: set[str] = set()
+    for match in pattern.finditer(text):
+        ref = f"#{match.group('number')}"
+        if ref in seen:
+            continue
+        seen.add(ref)
+        yield ref
+
+
+def _test_evidence(text: str) -> Iterable[str]:
+    for line in text.splitlines():
+        if _TEST_PASS_RE.search(line) or _TEST_FAIL_RE.search(line) or _CHECK_PASS_RE.search(line):
+            yield _preview(line, limit=180)
+
+
+def _caveats(text: str) -> Iterable[str]:
+    for line in text.splitlines():
+        lowered = line.lower()
+        if "caveat" in lowered or "blocker" in lowered or "not included" in lowered:
+            yield _preview(line, limit=180)
+
+
 def _tool_status(output_text: str) -> Literal["ok", "failed", "unknown"]:
     lowered = output_text.lower()
     if not lowered:
@@ -487,6 +611,7 @@ __all__ = [
     "RecoveryDigest",
     "RecoveryEvent",
     "RecoverySizeMetrics",
+    "SubagentReport",
     "ToolSummary",
     "TransformDescriptor",
     "TransformMetadata",
