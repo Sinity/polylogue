@@ -46,7 +46,7 @@ from polylogue.daemon.status import daemon_status_payload, format_daemon_status_
 from polylogue.logging import configure_logging, get_logger
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
-from polylogue.sources.live.watcher import default_sources
+from polylogue.sources.live.watcher import INBOX_SOURCE_SUFFIXES, default_sources
 
 logger = get_logger(__name__)
 _CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS = 60
@@ -91,6 +91,28 @@ def _enable_faulthandler_if_supported() -> None:
     """Enable faulthandler when stderr exposes a real file descriptor."""
     with contextlib.suppress(Exception):
         faulthandler.enable()
+
+
+def _watch_sources_from_roots(roots: tuple[Path, ...]) -> tuple[WatchSource, ...]:
+    """Build watch sources for explicit daemon roots.
+
+    An explicit ``--root`` normally means a JSONL session tree. The archive
+    inbox is different: ``polylogue import`` stages approved exports there,
+    including ChatGPT ``.json`` files and zipped takeouts, so an isolated
+    daemon pointed at that inbox must keep the same suffix contract as the
+    default inbox source.
+    """
+    if not roots:
+        return default_sources()
+
+    from polylogue.paths import archive_root
+
+    inbox_root = (archive_root() / "inbox").resolve(strict=False)
+    sources: list[WatchSource] = []
+    for root in roots:
+        suffixes = INBOX_SOURCE_SUFFIXES if root.resolve(strict=False) == inbox_root else (".jsonl",)
+        sources.append(WatchSource(name=root.name, root=root, suffixes=suffixes))
+    return tuple(sources)
 
 
 def _active_index_db_path() -> Path:
@@ -1068,7 +1090,7 @@ def run_command(
 
     atexit.register(_cleanup_pidfile)
 
-    sources = tuple(WatchSource(name=p.name, root=p) for p in roots) if roots else default_sources()
+    sources = _watch_sources_from_roots(roots)
     components = []
     if enable_watch:
         components.append(f"watch={len(sources)} source(s)")
@@ -1120,7 +1142,7 @@ def run_command(
     help="Quiet-period (seconds) before parsing a modified file.",
 )
 def watch_command(roots: tuple[Path, ...], debounce_s: float) -> None:
-    sources = tuple(WatchSource(name=p.name, root=p) for p in roots) if roots else default_sources()
+    sources = _watch_sources_from_roots(roots)
 
     click.echo(
         f"Watching {len(sources)} source(s); debounce={debounce_s}s. Ctrl-C to stop.",
