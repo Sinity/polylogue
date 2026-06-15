@@ -145,6 +145,66 @@ def test_daemon_status_payload_and_plain_output_include_failed_files(tmp_path: P
     assert f"  {failed}" in lines
 
 
+def test_daemon_status_payload_maps_component_readiness(tmp_path: Path) -> None:
+    db = tmp_path / "index.db"
+    db.touch()
+
+    with (
+        patch("polylogue.daemon.status.db_path", return_value=db),
+        patch("polylogue.daemon.status.index_db_path", return_value=db),
+        patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
+        patch("polylogue.daemon.status._check_daemon_liveness", return_value=True),
+        patch("polylogue.daemon.status._blob_size_info", return_value=0),
+        patch(
+            "polylogue.daemon.status._fts_readiness_info",
+            return_value={
+                "indexed_surface": "messages_fts",
+                "messages_ready": False,
+                "message_indexed_count": 4,
+                "message_indexable_count": 10,
+                "coverage_pct": 40.0,
+            },
+        ),
+        patch("polylogue.daemon.status._insight_freshness_info", return_value={}),
+        patch(
+            "polylogue.daemon.status.embedding_readiness_info",
+            return_value={
+                "embedding_config_enabled": True,
+                "embedding_has_voyage_key": True,
+                "embedding_status": "partial",
+                "embedding_freshness_status": "stale",
+                "embedding_retrieval_ready": True,
+                "embedding_pending_count": 2,
+                "embedding_pending_message_count": 12,
+                "embedding_stale_count": 3,
+                "embedding_coverage_percent": 70.0,
+                "embedding_failure_count": 0,
+            },
+        ),
+    ):
+        payload = daemon_status_payload(sources=())
+
+    readiness = payload["component_readiness"]
+    assert isinstance(readiness, dict)
+    search = readiness["search"]
+    embeddings = readiness["embeddings"]
+    api = readiness["daemon_api"]
+    ingest = readiness["daemon_ingest"]
+    assert isinstance(search, dict)
+    assert isinstance(embeddings, dict)
+    assert isinstance(api, dict)
+    assert isinstance(ingest, dict)
+    search_counts = cast(dict[str, object], search["counts"])
+    assert search["state"] == "stale"
+    assert search_counts["message_indexed_count"] == 4
+    assert search["repair_hint"] == "polylogue maintenance run --target dangling_fts"
+    assert embeddings["state"] == "stale"
+    assert embeddings["scope"] == "semantic"
+    assert embeddings["repair_hint"] == "polylogue embed backfill"
+    assert api["state"] == "ready"
+    assert ingest["state"] == "ready"
+
+
 def test_daemon_status_prefers_archive_ops_live_cursor(tmp_path: Path) -> None:
     db = tmp_path / "index.db"
     failed = tmp_path / "failed.jsonl"

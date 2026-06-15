@@ -62,6 +62,7 @@ REQUIRED_STATUS_KEYS: frozenset[str] = frozenset(
         "daemon_liveness",
         "checked_at",
         "component_state",
+        "component_readiness",
         "live",
         "browser_capture",
         "db_path",
@@ -231,6 +232,32 @@ class TestStatusEnvelopeContract:
         component_state = payload["component_state"]
         assert isinstance(component_state, dict)
         assert frozenset(component_state.keys()) == frozenset({"api", "watcher", "browser_capture"})
+
+    def test_component_readiness_envelope_has_canonical_status_components(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        """``component_readiness`` exposes daemon status through the shared DTO."""
+        handler = _make_handler("GET", "/api/status")
+        _, send_json = _capture_responses(handler)
+        handler.do_GET()
+
+        _, payload = send_json.call_args.args
+        component_readiness = payload["component_readiness"]
+        assert isinstance(component_readiness, dict)
+        assert {
+            "archive_storage",
+            "browser_capture",
+            "daemon_api",
+            "daemon_ingest",
+            "daemon_watcher",
+            "embeddings",
+            "search",
+        } <= set(component_readiness)
+        api = component_readiness["daemon_api"]
+        assert isinstance(api, dict)
+        assert api["state"] == "ready"
+        assert api["scope"] == "daemon"
 
     def test_health_envelope_has_documented_fields(
         self,

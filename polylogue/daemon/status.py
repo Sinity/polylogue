@@ -35,6 +35,7 @@ from polylogue.daemon.live_ingest_attempt_workload import (
     workload_fields,
 )
 from polylogue.paths import archive_root, db_path, index_db_path, resolve_active_index_db_path
+from polylogue.readiness.capability import CapabilityReadinessState, ComponentReadiness
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.watcher import default_sources
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -233,6 +234,7 @@ class DaemonStatus(BaseModel):
     insight_freshness: InsightFreshness = Field(default_factory=InsightFreshness)
     embedding_readiness: EmbeddingReadiness = Field(default_factory=EmbeddingReadiness)
     archive_storage: ArchiveStorageStatus = Field(default_factory=ArchiveStorageStatus)
+    component_readiness: dict[str, object] = Field(default_factory=dict)
     browser_capture_active: bool = False
     raw_parse_failures: int = 0
     raw_validation_failures: int = 0
@@ -1494,6 +1496,173 @@ def _check_daemon_liveness() -> bool:
         return False
 
 
+def _daemon_component_readiness(
+    *,
+    component_state: ComponentState,
+    fts_readiness: FTSReadiness,
+    embedding_readiness: EmbeddingReadiness,
+    archive_storage: ArchiveStorageStatus,
+    live_ingest_attempts: LiveIngestAttemptSummary,
+) -> dict[str, object]:
+    components: dict[str, object] = {
+        "daemon_api": _component_from_daemon_state("daemon_api", component_state.api, scope="daemon").to_dict(),
+        "daemon_watcher": _component_from_daemon_state(
+            "daemon_watcher",
+            component_state.watcher,
+            scope="daemon",
+        ).to_dict(),
+        "browser_capture": _component_from_daemon_state(
+            "browser_capture",
+            component_state.browser_capture,
+            scope="daemon",
+        ).to_dict(),
+        "search": _component_from_fts_readiness(fts_readiness).to_dict(),
+        "embeddings": _component_from_daemon_embedding_readiness(embedding_readiness).to_dict(),
+        "archive_storage": _component_from_archive_storage(archive_storage).to_dict(),
+        "daemon_ingest": _component_from_live_ingest(live_ingest_attempts).to_dict(),
+    }
+    return components
+
+
+def _component_from_daemon_state(component: str, state: str, *, scope: str) -> ComponentReadiness:
+    readiness_state = {
+        "running": CapabilityReadinessState.READY,
+        "degraded": CapabilityReadinessState.DEGRADED,
+        "stopped": CapabilityReadinessState.MISSING,
+        "disabled": CapabilityReadinessState.MISSING,
+    }.get(state, CapabilityReadinessState.UNKNOWN)
+    return ComponentReadiness(
+        component=component,
+        scope=scope,
+        state=readiness_state,
+        summary=state,
+    )
+
+
+def _component_from_fts_readiness(readiness: FTSReadiness) -> ComponentReadiness:
+    if readiness.messages_ready:
+        state = CapabilityReadinessState.READY
+    elif readiness.message_indexable_count == 0 or readiness.message_indexed_count == 0:
+        state = CapabilityReadinessState.MISSING
+    else:
+        state = CapabilityReadinessState.STALE
+    return ComponentReadiness(
+        component="search",
+        scope="lexical",
+        state=state,
+        summary="ready" if readiness.messages_ready else "fts index incomplete",
+        counts={
+            "message_indexed_count": readiness.message_indexed_count,
+            "message_indexable_count": readiness.message_indexable_count,
+            "coverage_pct": readiness.coverage_pct,
+        },
+        repair_hint=None if readiness.messages_ready else "polylogue maintenance run --target dangling_fts",
+    )
+
+
+def _component_from_daemon_embedding_readiness(readiness: EmbeddingReadiness) -> ComponentReadiness:
+    if not readiness.embedding_config_enabled:
+        state = CapabilityReadinessState.MISSING
+    elif not readiness.embedding_has_voyage_key:
+        state = CapabilityReadinessState.BLOCKED
+    elif readiness.embedding_failure_count:
+        state = CapabilityReadinessState.DEGRADED
+    elif readiness.embedding_freshness_status == "stale" or readiness.embedding_stale_count:
+        state = CapabilityReadinessState.STALE
+    elif readiness.embedding_retrieval_ready:
+        state = CapabilityReadinessState.READY
+    elif readiness.embedding_pending_count or readiness.embedding_pending_message_count:
+        state = CapabilityReadinessState.REBUILDING
+    else:
+        state = CapabilityReadinessState.MISSING
+
+    return ComponentReadiness(
+        component="embeddings",
+        scope="semantic",
+        state=state,
+        summary=readiness.embedding_status,
+        counts={
+            "pending_sessions": readiness.embedding_pending_count,
+            "pending_messages": readiness.embedding_pending_message_count,
+            "stale_messages": readiness.embedding_stale_count,
+            "failure_count": readiness.embedding_failure_count,
+            "coverage_pct": readiness.embedding_coverage_percent,
+            "retrieval_ready": readiness.embedding_retrieval_ready,
+        },
+        repair_hint=_daemon_embedding_repair_hint(readiness, state),
+    )
+
+
+def _daemon_embedding_repair_hint(
+    readiness: EmbeddingReadiness,
+    state: CapabilityReadinessState,
+) -> str | None:
+    if state == CapabilityReadinessState.MISSING and not readiness.embedding_config_enabled:
+        return "polylogue embed enable"
+    if state == CapabilityReadinessState.BLOCKED:
+        return "configure Voyage API key"
+    if state in {
+        CapabilityReadinessState.REBUILDING,
+        CapabilityReadinessState.STALE,
+        CapabilityReadinessState.DEGRADED,
+    }:
+        return "polylogue embed backfill"
+    return None
+
+
+def _component_from_archive_storage(storage: ArchiveStorageStatus) -> ComponentReadiness:
+    if storage.final_shape_ready:
+        state = CapabilityReadinessState.READY
+    elif storage.archive_ready:
+        state = CapabilityReadinessState.DEGRADED
+    elif storage.present_tiers:
+        state = CapabilityReadinessState.BLOCKED
+    else:
+        state = CapabilityReadinessState.MISSING
+    caveats = (f"missing_tiers:{','.join(storage.missing_tiers)}",) if storage.missing_tiers else ()
+    return ComponentReadiness(
+        component="archive_storage",
+        scope="archive",
+        state=state,
+        summary=storage.active_store,
+        counts={
+            "present_tier_count": len(storage.present_tiers),
+            "missing_tier_count": len(storage.missing_tiers),
+            "archive_ready": storage.archive_ready,
+            "final_shape_ready": storage.final_shape_ready,
+        },
+        caveats=caveats,
+        repair_hint=None if state == CapabilityReadinessState.READY else "polylogue maintenance archive-init --yes",
+    )
+
+
+def _component_from_live_ingest(summary: LiveIngestAttemptSummary) -> ComponentReadiness:
+    if summary.stuck_running_count or summary.stale_running_count:
+        state = CapabilityReadinessState.DEGRADED
+    elif summary.running_count:
+        state = CapabilityReadinessState.REBUILDING
+    else:
+        state = CapabilityReadinessState.READY
+    caveats: list[str] = []
+    if summary.stuck_running_count:
+        caveats.append("stuck_running_attempts")
+    if summary.stale_running_count:
+        caveats.append("stale_running_attempts")
+    return ComponentReadiness(
+        component="daemon_ingest",
+        scope="daemon",
+        state=state,
+        summary="running" if summary.running_count else "idle",
+        counts={
+            "running_count": summary.running_count,
+            "slow_running_count": summary.slow_running_count,
+            "stale_running_count": summary.stale_running_count,
+            "stuck_running_count": summary.stuck_running_count,
+        },
+        caveats=tuple(caveats),
+    )
+
+
 def build_daemon_status(
     *,
     sources: tuple[WatchSource, ...] | None = None,
@@ -1549,6 +1718,40 @@ def build_daemon_status(
                 rss_peak_mb = attempt.rss_peak_children_mb
             break
 
+    component_state = ComponentState(
+        watcher="running" if watch_sources else "stopped",
+        api="running",
+        browser_capture="running" if browser_capture_spool_path else "stopped",
+    )
+    fts_readiness = FTSReadiness(
+        indexed_surface=str(fts.get("indexed_surface", "messages_fts")),
+        messages_ready=bool(fts.get("messages_ready", False)),
+        message_indexed_count=_safe_int(fts.get("message_indexed_count", 0)),
+        message_indexable_count=_safe_int(fts.get("message_indexable_count", 0)),
+        coverage_pct=_safe_float(fts.get("coverage_pct")),
+    )
+    embedding_readiness = EmbeddingReadiness(
+        embedding_enabled=bool(embedding_info.get("embedding_enabled", False)),
+        embedding_config_enabled=bool(embedding_info.get("embedding_config_enabled", False)),
+        embedding_has_voyage_key=bool(embedding_info.get("embedding_has_voyage_key", False)),
+        embedding_model=str(embedding_info.get("embedding_model", "")),
+        embedding_dimension=_safe_int(embedding_info.get("embedding_dimension", 0)),
+        embedding_status=str(embedding_info.get("embedding_status", "empty")),
+        embedding_freshness_status=str(embedding_info.get("embedding_freshness_status", "empty")),
+        embedding_retrieval_ready=bool(embedding_info.get("embedding_retrieval_ready", False)),
+        embedding_pending_count=_safe_int(embedding_info.get("embedding_pending_count", 0)),
+        embedding_pending_message_count=_safe_int(embedding_info.get("embedding_pending_message_count", 0)),
+        embedding_pending_message_count_exact=bool(embedding_info.get("embedding_pending_message_count_exact", False)),
+        embedding_stale_count=_safe_int(embedding_info.get("embedding_stale_count", 0)),
+        embedding_coverage_percent=_safe_float(embedding_info.get("embedding_coverage_percent")),
+        embedding_failure_count=_safe_int(embedding_info.get("embedding_failure_count", 0)),
+        embedding_estimated_cost_usd=_safe_float(embedding_info.get("embedding_estimated_cost_usd")),
+        embedding_latest_catchup_run=cast(
+            dict[str, object] | None,
+            embedding_info.get("embedding_latest_catchup_run"),
+        ),
+    )
+
     return DaemonStatus(
         raw_parse_failures=_safe_int(raw_failures.get("parse_failures", 0)),
         raw_validation_failures=_safe_int(raw_failures.get("validation_failures", 0)),
@@ -1557,11 +1760,7 @@ def build_daemon_status(
         raw_failure_samples=_typed_failure_samples(raw_failures.get("samples")),
         raw_detection_warnings=_safe_int(raw_failures.get("detection_warnings", 0)),
         daemon_liveness=_check_daemon_liveness(),
-        component_state=ComponentState(
-            watcher="running" if watch_sources else "stopped",
-            api="running",
-            browser_capture="running" if browser_capture_spool_path else "stopped",
-        ),
+        component_state=component_state,
         source_lag=[SourceLagItem(name=s.name, root=str(s.root), exists=s.exists()) for s in watch_sources],
         failing_files=[item.source_path for item in live_cursor.failing_files],
         live_cursor=live_cursor,
@@ -1573,41 +1772,20 @@ def build_daemon_status(
         wal_size_bytes=_safe_int(db_info.get("wal_size_bytes", 0)),
         blob_dir_size_bytes=_blob_size_info(),
         disk_free_bytes=_safe_int(db_info.get("disk_free_bytes", 0)),
-        fts_readiness=FTSReadiness(
-            indexed_surface=str(fts.get("indexed_surface", "messages_fts")),
-            messages_ready=bool(fts.get("messages_ready", False)),
-            message_indexed_count=_safe_int(fts.get("message_indexed_count", 0)),
-            message_indexable_count=_safe_int(fts.get("message_indexable_count", 0)),
-            coverage_pct=_safe_float(fts.get("coverage_pct")),
-        ),
+        fts_readiness=fts_readiness,
         insight_freshness=InsightFreshness(
             sessions_with_profiles=_safe_int(freshness.get("sessions_with_profiles", 0)),
             total_sessions=_safe_int(freshness.get("total_sessions", 0)),
         ),
-        embedding_readiness=EmbeddingReadiness(
-            embedding_enabled=bool(embedding_info.get("embedding_enabled", False)),
-            embedding_config_enabled=bool(embedding_info.get("embedding_config_enabled", False)),
-            embedding_has_voyage_key=bool(embedding_info.get("embedding_has_voyage_key", False)),
-            embedding_model=str(embedding_info.get("embedding_model", "")),
-            embedding_dimension=_safe_int(embedding_info.get("embedding_dimension", 0)),
-            embedding_status=str(embedding_info.get("embedding_status", "empty")),
-            embedding_freshness_status=str(embedding_info.get("embedding_freshness_status", "empty")),
-            embedding_retrieval_ready=bool(embedding_info.get("embedding_retrieval_ready", False)),
-            embedding_pending_count=_safe_int(embedding_info.get("embedding_pending_count", 0)),
-            embedding_pending_message_count=_safe_int(embedding_info.get("embedding_pending_message_count", 0)),
-            embedding_pending_message_count_exact=bool(
-                embedding_info.get("embedding_pending_message_count_exact", False)
-            ),
-            embedding_stale_count=_safe_int(embedding_info.get("embedding_stale_count", 0)),
-            embedding_coverage_percent=_safe_float(embedding_info.get("embedding_coverage_percent")),
-            embedding_failure_count=_safe_int(embedding_info.get("embedding_failure_count", 0)),
-            embedding_estimated_cost_usd=_safe_float(embedding_info.get("embedding_estimated_cost_usd")),
-            embedding_latest_catchup_run=cast(
-                dict[str, object] | None,
-                embedding_info.get("embedding_latest_catchup_run"),
-            ),
-        ),
+        embedding_readiness=embedding_readiness,
         archive_storage=storage_info,
+        component_readiness=_daemon_component_readiness(
+            component_state=component_state,
+            fts_readiness=fts_readiness,
+            embedding_readiness=embedding_readiness,
+            archive_storage=storage_info,
+            live_ingest_attempts=live_ingest_attempts,
+        ),
         health=health,
         browser_capture_active=browser_capture_spool_path is not None,
         rss_current_mb=rss_current_mb,
@@ -1650,6 +1828,7 @@ def daemon_status_payload(
             "daemon_liveness": status.daemon_liveness,
             "checked_at": status.checked_at,
             "component_state": status.component_state.model_dump(),
+            "component_readiness": status.component_readiness,
             "live": live_source_status_payload(watch_sources),
             "browser_capture": browser_capture_status_payload(browser_capture_spool_path),
             "db_path": str(_active_status_db_path()),
