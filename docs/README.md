@@ -43,5 +43,5 @@ Use this map when you need the complete repository documentation surface. The to
 | Document | Description |
 |----------|-------------|
 | [Contributing](../CONTRIBUTING.md) | Branching, issues, PRs, squash-merge history, and repo policy. |
-| [Testing](../TESTING.md) | Baseline test matrix, protected surfaces, and QA entrypoints. |
+| [Testing](../TESTING.md) | Baseline test matrix, protected surfaces, and verification entrypoints. |
 | [Agent Guide](../CLAUDE.md) | Agent memory and working rules. |

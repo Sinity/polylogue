@@ -1,10 +1,14 @@
-"""Tests for the public-surface stale-vocabulary audit (#1850).
+"""Tests for the public-surface stale-vocabulary audit (#1850 / #1848).
 
 The audit (``tools/cleanup/polylogue_public_surface_audit.sh``) fails when
 stale schema-v1 vocabulary (``conversation`` / ``conversation_id`` /
 ``provider_meta`` / the legacy ``/c/{id}`` reader route) reappears on a public
 surface, while allowing it in provider-wire parsers, internal storage/core,
 tests, and historical/tombstone docs.
+
+It also rejects stale proof/QA/showcase/static-site product wording from the
+README/getting-started style public docs while allowing those terms in
+devtools/test-quality internals.
 """
 
 from __future__ import annotations
@@ -96,3 +100,32 @@ def test_audit_honors_inline_allow_marker(tmp_path: Path) -> None:
     )
     result = _run(tmp_path)
     assert result.returncode == 0, f"inline allow marker must suppress the hit:\n{result.stderr}"
+
+
+@pytest.mark.parametrize(
+    ("needle", "replacement"),
+    [
+        ("The current deterministic archive proof is complete.", "evidence or verification result"),
+        ("QA entrypoints are documented here.", "verification or test workflow"),
+        ("Use the showcase product UI.", "demo fixture or verification-lab baseline"),
+        ("Publish the static site as the product UI.", "read/export output or documentation site"),
+    ],
+)
+def test_audit_fails_on_stale_product_wording_in_public_docs(
+    tmp_path: Path,
+    needle: str,
+    replacement: str,
+) -> None:
+    _seed_minimal_tree(tmp_path)
+    (tmp_path / "README.md").write_text(needle + "\n")
+    result = _run(tmp_path)
+    assert result.returncode == 1
+    assert replacement in result.stderr
+
+
+def test_audit_allows_showcase_wording_in_devtools_docs(tmp_path: Path) -> None:
+    """Verification-lab docs can still name internal showcase baselines."""
+    _seed_minimal_tree(tmp_path)
+    (tmp_path / "docs" / "devtools.md").write_text("Run showcase baseline checks in the verification lab.\n")
+    result = _run(tmp_path)
+    assert result.returncode == 0, f"devtools internals must be outside product wording audit:\n{result.stderr}"

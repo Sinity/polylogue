@@ -88,7 +88,7 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
 
 REPO_GUIDE_ENTRIES: tuple[DocsEntry, ...] = (
     DocsEntry("Contributing", "CONTRIBUTING.md", "Branching, issues, PRs, squash-merge history, and repo policy."),
-    DocsEntry("Testing", "TESTING.md", "Baseline test matrix, protected surfaces, and QA entrypoints."),
+    DocsEntry("Testing", "TESTING.md", "Baseline test matrix, protected surfaces, and verification entrypoints."),
     DocsEntry("Agent Guide", "CLAUDE.md", "Agent memory and working rules."),
 )
 
