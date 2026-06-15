@@ -47,6 +47,7 @@ __all__ = [
     "provider_from_origin",
     "provider_to_source",
     "source_for_family",
+    "source_name_to_origin",
     "source_to_provider",
 ]
 
@@ -290,6 +291,42 @@ def provider_from_origin(origin: Origin) -> Provider:
     """
 
     return _ORIGIN_TO_PROVIDER[origin]
+
+
+_CANONICAL_ORIGIN_VALUES: Final[frozenset[str]] = frozenset(origin.value for origin in Origin)
+
+
+def source_name_to_origin(source_name: object) -> str:
+    """Project a stored ``source_name`` token onto a public ``Origin`` value.
+
+    Insight rows persist a ``source_name`` that may already be a canonical
+    ``Origin`` token or a provider-wire / source-family token. This bridges
+    such a stored value onto the public origin vocabulary for read payloads,
+    so surface modules (daemon HTTP, MCP) project insight rows to origin
+    without importing the provider-wire ``Provider`` enum themselves.
+
+    Returns ``"unknown"`` for empty input. A token that is already a
+    canonical origin passes through unchanged; otherwise it is interpreted
+    as a provider-wire token and mapped via :func:`origin_from_provider`.
+    """
+
+    value = str(source_name or "")
+    if not value:
+        return "unknown"
+    if value in _CANONICAL_ORIGIN_VALUES:
+        return value
+    # Source-family tokens (e.g. ``gemini-export``, ``drive-takeout``) are
+    # canonical families, NOT provider-wire values — ``Provider.from_string``
+    # would normalize them to ``unknown`` and mis-group those sessions under
+    # ``unknown-export``. Map families first via the family table, then fall
+    # back to provider-wire parsing (#1810).
+    family_provider = _FAMILY_TO_PROVIDER.get(value)
+    if family_provider is not None:
+        return origin_from_provider(family_provider).value
+    try:
+        return origin_from_provider(Provider.from_string(value)).value
+    except ValueError:
+        return "unknown"
 
 
 # User-facing origin tokens for CLI/MCP/completion choices. Derived from the

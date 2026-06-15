@@ -13,7 +13,7 @@ from math import ceil
 from typing import TYPE_CHECKING, Any, cast
 
 from polylogue.core.enums import Origin
-from polylogue.core.sources import origin_from_provider, provider_from_origin
+from polylogue.core.sources import provider_from_origin, source_name_to_origin
 from polylogue.insights.archive import (
     SessionLatencyProfileInsightQuery,
     SessionProfileInsight,
@@ -28,7 +28,6 @@ from polylogue.insights.registry import (
 )
 from polylogue.mcp.insight_tool_contracts import InsightListToolSpec
 from polylogue.mcp.payloads import MCPRootPayload
-from polylogue.types import Provider
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
@@ -36,25 +35,10 @@ if TYPE_CHECKING:
     from polylogue.mcp.server_support import ServerCallbacks
 
 
-_CANONICAL_ORIGIN_VALUES = frozenset(origin.value for origin in Origin)
-
-
 def _origin_to_provider_token(value: str | None) -> str | None:
     if value is None or value == "":
         return None
     return provider_from_origin(Origin(value)).value
-
-
-def _source_name_origin(source_name: object) -> str:
-    value = str(source_name or "")
-    if not value:
-        return "unknown"
-    if value in _CANONICAL_ORIGIN_VALUES:
-        return value
-    try:
-        return origin_from_provider(Provider.from_string(value)).value
-    except ValueError:
-        return "unknown"
 
 
 def _project_origin_payload(value: object) -> object:
@@ -242,7 +226,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 shape = inference.workflow_shape if inference is not None else "unknown"
                 keys: tuple[str, ...]
                 if group_by == "origin":
-                    keys = (_source_name_origin(profile.source_name),)
+                    keys = (source_name_to_origin(profile.source_name),)
                 elif group_by == "project":
                     paths = evidence.cwd_paths if evidence is not None else ()
                     keys = tuple(paths) or ("unattributed",)
@@ -317,7 +301,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 items.append(
                     {
                         "session_id": profile.session_id,
-                        "origin": _source_name_origin(profile.source_name),
+                        "origin": source_name_to_origin(profile.source_name),
                         "title": profile.title,
                         "terminal_state": state,
                         "terminal_state_confidence": (
@@ -514,7 +498,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 elif group_by == "terminal_state":
                     key = (p.inference.terminal_state if p.inference else None) or "unknown"
                 elif group_by == "origin":
-                    key = _source_name_origin(p.source_name)
+                    key = source_name_to_origin(p.source_name)
                 else:
                     return hooks.error_json(
                         f"Unknown group_by: {group_by!r}. Supported: workflow_shape, terminal_state, origin.",
@@ -581,7 +565,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 sessions.append(
                     {
                         "id": profile.session_id,
-                        "origin": _source_name_origin(profile.source_name),
+                        "origin": source_name_to_origin(profile.source_name),
                         "title": profile.title,
                         "workflow_shape": inference.workflow_shape if inference else "unknown",
                         "terminal_state": inference.terminal_state if inference else "unknown",
@@ -717,7 +701,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             ref_inference = ref_profile.inference
             ref_shape = ref_inference.workflow_shape if ref_inference else None
             ref_source = ref_profile.source_name
-            ref_origin = _source_name_origin(ref_source)
+            ref_origin = source_name_to_origin(ref_source)
             ref_date = ref_evidence.canonical_session_date if ref_evidence else None
             ref_tags = set(ref_evidence.tags) if ref_evidence else set()
 
@@ -775,7 +759,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                             {
                                 "session_id": profile.session_id,
                                 "title": profile.title,
-                                "origin": _source_name_origin(profile.source_name),
+                                "origin": source_name_to_origin(profile.source_name),
                                 "workflow_shape": cand_shape or "unknown",
                                 "terminal_state": inference.terminal_state if inference else "unknown",
                                 "canonical_session_date": cand_date,

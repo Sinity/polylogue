@@ -36,7 +36,6 @@ from polylogue.cli.shared.helpers import load_effective_config
 from polylogue.cli.shared.machine_errors import error_no_results
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
-from polylogue.core.enums import Provider
 from polylogue.paths import archive_file_set_root_for_paths
 from polylogue.storage.search_providers import create_vector_provider, reciprocal_rank_fusion
 from polylogue.storage.sqlite.archive_tiers.archive import (
@@ -54,18 +53,6 @@ from polylogue.surfaces.payloads import (
 )
 
 _PageRow = TypeVar("_PageRow", ArchiveSessionSummary, ArchiveSessionSearchHit)
-
-_PROVIDER_TO_ARCHIVE_ORIGIN: dict[str, str] = {
-    Provider.CLAUDE_CODE.value: "claude-code-session",
-    Provider.CODEX.value: "codex-session",
-    Provider.GEMINI_CLI.value: "gemini-cli-session",
-    Provider.HERMES.value: "hermes-session",
-    Provider.ANTIGRAVITY.value: "antigravity-session",
-    Provider.CHATGPT.value: "chatgpt-export",
-    Provider.CLAUDE_AI.value: "claude-ai-export",
-    Provider.GEMINI.value: "aistudio-drive",
-    Provider.UNKNOWN.value: "unknown-export",
-}
 
 _UNSUPPORTED_PARAM_MESSAGES: dict[str, str] = {}
 
@@ -878,35 +865,16 @@ def _has_value(value: object) -> bool:
 
 def _resolve_origins(params: dict[str, object]) -> tuple[str, ...]:
     origin = params.get("origin")
-    if origin:
-        return tuple(dict.fromkeys(token.strip() for token in str(origin).split(",") if token.strip()))
-    provider = params.get("provider")
-    if not provider:
+    if not origin:
         return ()
-    providers = [token.strip() for token in str(provider).split(",") if token.strip()]
-    origins: list[str] = []
-    for provider_token in providers:
-        origin = _PROVIDER_TO_ARCHIVE_ORIGIN.get(provider_token)
-        if origin is None:
-            raise click.UsageError(f"Root query cannot map provider {provider_token!r} to an origin.")
-        origins.append(origin)
-    return tuple(dict.fromkeys(origins))
+    return tuple(dict.fromkeys(token.strip() for token in str(origin).split(",") if token.strip()))
 
 
 def _resolve_excluded_origins(params: dict[str, object]) -> tuple[str, ...]:
     explicit_excluded = params.get("exclude_origin")
-    if explicit_excluded:
-        return tuple(token.strip() for token in str(explicit_excluded).split(",") if token.strip())
-    excluded = params.get("exclude_provider")
-    if not excluded:
+    if not explicit_excluded:
         return ()
-    origins: list[str] = []
-    for provider in (token.strip() for token in str(excluded).split(",") if token.strip()):
-        origin = _PROVIDER_TO_ARCHIVE_ORIGIN.get(provider)
-        if origin is None:
-            raise click.UsageError(f"Root query cannot map excluded provider {provider!r} to an origin.")
-        origins.append(origin)
-    return tuple(origins)
+    return tuple(token.strip() for token in str(explicit_excluded).split(",") if token.strip())
 
 
 def _optional_str(value: object) -> str | None:
