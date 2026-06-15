@@ -30,6 +30,27 @@ _ARCHIVE_TIER_TARGETS: tuple[str, ...] = (
     "ops.db",
 )
 
+_ARCHIVE_COMPONENT_SCOPES: dict[str, str] = {
+    "archive_sessions": "archive",
+    "raw_artifacts": "source",
+    "search": "lexical",
+    "session_profiles": "insights",
+    "timeline_work_events": "insights",
+    "timeline_phases": "insights",
+    "threads": "insights",
+    "tool_usage": "actions",
+    "latency_profiles": "insights",
+}
+
+_ARCHIVE_COMPONENT_REPAIR_HINTS: dict[str, str] = {
+    "search": "polylogue maintenance run --target dangling_fts",
+    "session_profiles": "polylogue maintenance run --target session_insights",
+    "timeline_work_events": "polylogue maintenance run --target session_insights",
+    "timeline_phases": "polylogue maintenance run --target session_insights",
+    "threads": "polylogue maintenance run --target session_insights",
+    "latency_profiles": "polylogue maintenance run --target session_insights",
+}
+
 
 def _default_daemon_url() -> str:
     """Resolve the default daemon URL.
@@ -931,15 +952,18 @@ def _direct_component_readiness(env: AppEnv, *, archive_readiness: dict[str, Any
             from polylogue.readiness.capability import component_from_archive_surface
 
             surfaces = archive_readiness.get("surfaces") or {}
-            search_surface = surfaces.get("search") if isinstance(surfaces, dict) else None
-            if isinstance(search_surface, dict):
-                search = component_from_archive_surface(
-                    "search",
-                    search_surface,
-                    scope="lexical",
-                    repair_hint="polylogue maintenance run --target dangling_fts",
-                )
-                components[search.component] = search.to_dict()
+            if isinstance(surfaces, dict):
+                for component, scope in _ARCHIVE_COMPONENT_SCOPES.items():
+                    surface = surfaces.get(component)
+                    if not isinstance(surface, dict):
+                        continue
+                    readiness = component_from_archive_surface(
+                        component,
+                        surface,
+                        scope=scope,
+                        repair_hint=_ARCHIVE_COMPONENT_REPAIR_HINTS.get(component),
+                    )
+                    components[readiness.component] = readiness.to_dict()
         except Exception:
             pass
     try:
