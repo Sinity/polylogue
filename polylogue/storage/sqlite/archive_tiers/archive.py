@@ -2169,6 +2169,11 @@ class ArchiveStore:
         target_type: str | None = None,
         target_id: str | None = None,
         note_id: str | None = None,
+        author_ref: str | None = None,
+        author_kind: str = "user",
+        evidence_refs: tuple[str, ...] = (),
+        staleness: dict[str, object] | None = None,
+        context_policy: dict[str, object] | None = None,
     ) -> ArchiveBlackboardNoteEnvelope:
         """Insert-or-update one blackboard note in archive user.db."""
         initialize_archive_database(self.user_db_path, ArchiveTier.USER)
@@ -2180,6 +2185,11 @@ class ArchiveStore:
                 target_type=target_type,
                 target_id=target_id,
                 note_id=note_id,
+                author_ref=author_ref,
+                author_kind=author_kind,
+                evidence_refs=evidence_refs,
+                staleness=staleness,
+                context_policy=context_policy,
             )
             user_conn.commit()
             return envelope

@@ -560,6 +560,11 @@ def upsert_blackboard_note(
     target_type: str | None = None,
     target_id: str | None = None,
     note_id: str | None = None,
+    author_ref: str | None = None,
+    author_kind: str = "user",
+    evidence_refs: Sequence[str] | None = None,
+    staleness: dict[str, object] | None = None,
+    context_policy: dict[str, object] | None = None,
     now_ms: int | None = None,
 ) -> ArchiveBlackboardNoteEnvelope:
     """Insert-or-update one blackboard note, optionally scoped to an archive target."""
@@ -589,7 +594,11 @@ def upsert_blackboard_note(
         target_ref=_target_ref(target_type, target_id) or resolved_id,
         kind=AssertionKind.NOTE,
         body_text=body,
-        author_kind="user",
+        author_ref=author_ref,
+        author_kind=author_kind,
+        evidence_refs=evidence_refs,
+        staleness=staleness,
+        context_policy=context_policy,
         now_ms=timestamp,
     )
     return read_archive_blackboard_note_envelope(conn, resolved_id)

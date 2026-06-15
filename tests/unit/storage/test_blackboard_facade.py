@@ -7,11 +7,13 @@ facade with structured decoding and filters applied.
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
 
 from polylogue.api import Polylogue
+from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, list_assertions_for_target
 from tests.infra.storage_records import db_setup
 
 
@@ -33,6 +35,38 @@ async def test_post_then_list_round_trips_through_user_db(workspace_env: dict[st
         assert [n.note_id for n in notes] == [posted.note_id]
         assert notes[0].title == "FTS unicode61 only"
         assert notes[0].content == "No porter stemmer compiled in this build."
+
+
+@pytest.mark.asyncio
+async def test_post_mirrors_agent_metadata_into_assertion(workspace_env: dict[str, Path]) -> None:
+    db_path = db_setup(workspace_env)
+    async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
+        await poly.post_blackboard_note(
+            kind="handoff",
+            title="resume here",
+            content="Merge the green PR.",
+            scope_session="codex-session:abc",
+            author_ref="agent:codex-session:abc",
+            author_kind="agent",
+            evidence_refs=("message:m1", "block:m1:2"),
+            staleness={"expires_after_days": 7},
+            context_policy={"inject": False},
+        )
+
+    conn = sqlite3.connect(workspace_env["archive_root"] / "user.db")
+    try:
+        conn.row_factory = sqlite3.Row
+        assertions = list_assertions_for_target(conn, "session:codex-session:abc", kind=AssertionKind.NOTE)
+    finally:
+        conn.close()
+
+    assert len(assertions) == 1
+    assertion = assertions[0]
+    assert assertion.author_ref == "agent:codex-session:abc"
+    assert assertion.author_kind == "agent"
+    assert assertion.evidence_refs == ["message:m1", "block:m1:2"]
+    assert assertion.staleness == {"expires_after_days": 7}
+    assert assertion.context_policy == {"inject": False}
 
 
 @pytest.mark.asyncio

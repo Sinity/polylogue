@@ -145,12 +145,18 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         scope_issue: int | None = None,
         scope_path: str | None = None,
         related_sessions: list[str] | None = None,
+        author_ref: str | None = None,
+        author_kind: str = "agent",
+        evidence_refs: list[str] | None = None,
+        staleness: dict[str, object] | None = None,
+        context_policy: dict[str, object] | None = None,
     ) -> str:
         """Post a note to the persistent agent blackboard (#1697).
 
         ``kind`` must be one of finding/blocker/decision/handoff/question/
         observation. Optional scope fields (repo/session/issue/path) and
-        related session ids are recorded with the note.
+        related session ids are recorded with the note. Assertion metadata is
+        mirrored into the unified assertion row for agent-written notes.
         """
 
         async def run() -> str:
@@ -165,6 +171,11 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                     scope_issue=scope_issue,
                     scope_path=scope_path,
                     related_sessions=tuple(related_sessions or ()),
+                    author_ref=author_ref,
+                    author_kind=author_kind,
+                    evidence_refs=tuple(evidence_refs or ()),
+                    staleness=staleness,
+                    context_policy=context_policy,
                 )
             except ValueError as exc:
                 return hooks.error_json(str(exc))
