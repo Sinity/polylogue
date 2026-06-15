@@ -298,6 +298,13 @@ def test_benchmark_entry_compiles_its_own_projection_entry() -> None:
     assert projection.operation_targets == ("project-archive-readiness", "readiness.startup.synthetic")
 
 
+def test_archive_maintenance_projection_propagates_maintenance_targets() -> None:
+    projection = BENCHMARK_SCENARIO_INDEX["archive-maintenance"].to_projection_entry()
+
+    assert projection.maintenance_targets == ("orphaned_blobs",)
+    assert "maintenance_targets" in projection.to_payload()
+
+
 def test_run_campaign_executes_authored_pytest_through_shared_runtime(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
