@@ -648,7 +648,7 @@ files:
     target: polylogue/cli/__main__.py
     owner: stable
   - path: polylogue/cli/archive_query.py
-    loc: 1667
+    loc: 1690
     target: polylogue/cli/archive_query.py
     owner: stable
   - path: polylogue/cli/bulk_export.py
@@ -1193,7 +1193,7 @@ files:
     target: polylogue/daemon/healthz.py
     owner: stable
   - path: polylogue/daemon/http.py
-    loc: 2678
+    loc: 2690
     target: polylogue/daemon/http.py
     owner: stable
   - path: polylogue/daemon/live_ingest_attempt_models.py
@@ -1422,6 +1422,10 @@ files:
   - path: polylogue/insights/topology.py
     loc: 299
     target: polylogue/insights/topology.py
+    owner: stable
+  - path: polylogue/insights/transforms.py
+    loc: 496
+    target: polylogue/insights/transforms.py
     owner: stable
   - path: polylogue/logging.py
     loc: 233
@@ -3451,7 +3455,7 @@ files:
     target: polylogue/surfaces/__init__.py
     owner: stable
   - path: polylogue/surfaces/payloads.py
-    loc: 1404
+    loc: 1414
     target: polylogue/surfaces/payloads.py
     owner: stable
   - path: polylogue/types.py
