@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import cast
 
+import click
+
 from polylogue.api.archive import SessionNotFoundError
 from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.archive.message.roles import MessageRoleFilter, normalize_message_roles
@@ -80,16 +82,22 @@ def run_messages(
                     "limit": limit,
                     "offset": offset,
                 }
-                env.ui.print(_json.dumps(payload, indent=2))
+                # Machine output goes through click.echo (raw stdout), NOT
+                # env.ui.print: the Rich console defaults markup=True and would
+                # interpret/strip bracket sequences like "[bold]" inside message
+                # text, corrupting the exact bytes json.dumps produced (#1818).
+                click.echo(_json.dumps(payload, indent=2))
             elif fmt == "ndjson":
                 import json as _json
 
                 # Streaming machine-output contract (#1818): one JSON document
                 # per line. Each line is self-contained, carrying session_id so
                 # downstream consumers do not need an out-of-band envelope.
+                # Raw click.echo (not env.ui.print) so Rich markup never mangles
+                # message text inside the JSON document.
                 for m in messages:
                     line = {"session_id": session_id, **_message_document(m)}
-                    env.ui.print(_json.dumps(line))
+                    click.echo(_json.dumps(line))
             else:
                 for msg in messages:
                     role = str(msg.role)
