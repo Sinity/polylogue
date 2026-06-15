@@ -1,9 +1,0 @@
-Usage: polylogue context [OPTIONS] COMMAND [ARGS]...
-
-  Context Composer — assemble context packs from archive objects.
-
-Options:
-  -h, --help  Show this message and exit.
-
-Commands:
-  compose  Compose a context preamble for a session (#1494).
