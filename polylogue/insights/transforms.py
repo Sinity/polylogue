@@ -91,8 +91,14 @@ class ToolSummary(ArchiveInsightModel):
     tool_name: str
     tool_id: str | None = None
     command: str | None = None
+    handler_kind: Literal["shell", "file_read", "github", "git", "test", "generic"] = "generic"
     status: Literal["ok", "failed", "unknown"] = "unknown"
+    line_count: int = 0
     output_preview: str = ""
+    pr_refs: tuple[str, ...] = ()
+    issue_refs: tuple[str, ...] = ()
+    test_evidence: tuple[str, ...] = ()
+    file_refs: tuple[str, ...] = ()
     raw_refs: tuple[TransformRawRef, ...]
 
     @model_validator(mode="after")
@@ -308,7 +314,7 @@ def render_resume_bundle(
     lines.extend(["", "## Tools"])
     for tool in tool_summaries[:8]:
         command = f" — {tool.command}" if tool.command else ""
-        lines.append(f"- {tool.tool_name} ({tool.status}){command}")
+        lines.append(f"- {tool.tool_name} [{tool.handler_kind}] ({tool.status}){command}")
     if not tool_summaries:
         lines.append("- none extracted")
     lines.extend(["", "## Candidate Decisions / Run State"])
@@ -345,12 +351,20 @@ def _extract_tool_summaries(session: Session, messages: Sequence[Message]) -> It
             if result_ref is not None:
                 refs.append(result_ref)
             output_text = _block_text(result_block or {})
+            tool_name = _tool_name(block)
+            command = _tool_command(block)
             yield ToolSummary(
-                tool_name=_tool_name(block),
+                tool_name=tool_name,
                 tool_id=tool_id,
-                command=_tool_command(block),
+                command=command,
+                handler_kind=_tool_handler_kind(tool_name=tool_name, command=command, output_text=output_text),
                 status=_tool_status(output_text),
+                line_count=_line_count(output_text),
                 output_preview=_preview(output_text),
+                pr_refs=tuple(_number_refs(_PR_RE, output_text)),
+                issue_refs=tuple(_number_refs(_ISSUE_RE, output_text)),
+                test_evidence=tuple(_test_evidence(output_text)),
+                file_refs=tuple(_tool_file_refs(tool_name=tool_name, command=command, output_text=output_text)),
                 raw_refs=tuple(refs),
             )
 
@@ -726,6 +740,60 @@ def _tool_status(output_text: str) -> Literal["ok", "failed", "unknown"]:
     if "exit code 1" in lowered or "failed" in lowered or "traceback" in lowered:
         return "failed"
     return "unknown"
+
+
+def _tool_handler_kind(
+    *,
+    tool_name: str,
+    command: str | None,
+    output_text: str,
+) -> Literal["shell", "file_read", "github", "git", "test", "generic"]:
+    name = tool_name.lower()
+    command_text = command or ""
+    command_lower = command_text.lower()
+    if name in {"read", "read_file"}:
+        return "file_read"
+    if command_lower.startswith("git "):
+        return "git"
+    if command_lower.startswith("gh "):
+        return "github"
+    if _looks_like_test_output(command_lower, output_text):
+        return "test"
+    if "github.com/" in output_text.lower():
+        return "github"
+    if name in {"bash", "shell", "exec_command"}:
+        return "shell"
+    return "generic"
+
+
+def _looks_like_test_output(command_lower: str, output_text: str) -> bool:
+    if any(token in command_lower for token in ("pytest", "devtools test", "devtools verify", "ruff ", "mypy")):
+        return True
+    return any(
+        (_TEST_PASS_RE.search(output_text), _TEST_FAIL_RE.search(output_text), _CHECK_PASS_RE.search(output_text))
+    )
+
+
+def _line_count(text: str) -> int:
+    if not text:
+        return 0
+    return len(text.splitlines())
+
+
+def _tool_file_refs(
+    *,
+    tool_name: str,
+    command: str | None,
+    output_text: str,
+) -> Iterable[str]:
+    if tool_name.lower() in {"read", "read_file"} and command:
+        yield command
+        return
+    for value in (command or "", output_text):
+        for token in value.split():
+            cleaned = token.strip("`'\"(),:")
+            if "/" in cleaned and not cleaned.startswith(("http://", "https://")):
+                yield cleaned
 
 
 def _block_text(block: Mapping[str, object]) -> str:

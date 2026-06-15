@@ -61,6 +61,17 @@ def _session() -> Session:
                             "tool_id": "tool-1",
                             "text": "ruff check ... ok\n20 passed in 50.28s\nhttps://github.com/Sinity/polylogue/pull/1911",
                         },
+                        {
+                            "type": "tool_use",
+                            "id": "tool-read",
+                            "name": "Read",
+                            "tool_input": {"file_path": "polylogue/insights/transforms.py"},
+                        },
+                        {
+                            "type": "tool_result",
+                            "tool_id": "tool-read",
+                            "text": "class ToolSummary\nhandler_kind: Literal",
+                        },
                     ],
                 ),
                 Message(
@@ -112,12 +123,22 @@ def test_compile_recovery_digest_extracts_small_evidence_linked_bundle() -> None
     assert digest.size_metrics.resume_to_raw_ratio < 1
     assert digest.role_counts == {"user": 1, "assistant": 2}
 
-    assert len(digest.tool_summaries) == 1
-    tool = digest.tool_summaries[0]
+    assert len(digest.tool_summaries) == 2
+    tool = next(item for item in digest.tool_summaries if item.tool_name == "Bash")
     assert tool.tool_name == "Bash"
     assert tool.command == "devtools verify --quick"
+    assert tool.handler_kind == "test"
     assert tool.status == "ok"
+    assert tool.line_count == 3
+    assert tool.pr_refs == ("#1911",)
+    assert tool.test_evidence == ("ruff check ... ok", "20 passed in 50.28s")
     assert {ref.ref_kind for ref in tool.raw_refs} == {"block"}
+
+    read_tool = next(item for item in digest.tool_summaries if item.tool_name == "Read")
+    assert read_tool.handler_kind == "file_read"
+    assert read_tool.command == "polylogue/insights/transforms.py"
+    assert read_tool.line_count == 2
+    assert read_tool.file_refs == ("polylogue/insights/transforms.py",)
 
     assert len(digest.subagent_reports) == 1
     subagent = digest.subagent_reports[0]
@@ -156,6 +177,8 @@ def test_compile_recovery_digest_extracts_small_evidence_linked_bundle() -> None
     assert "## Run State" in digest.resume_markdown
     assert "- done: #1910 merged" in digest.resume_markdown
     assert "- next: merge PR #1911" in digest.resume_markdown
+    assert "Bash [test]" in digest.resume_markdown
+    assert "Read [file_read]" in digest.resume_markdown
     assert "Raw refs are available" in digest.resume_markdown
 
 
