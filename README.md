@@ -239,17 +239,17 @@ nix run github:Sinity/polylogue -- --help
 
 ### Synthetic demo data
 
-To explore features without importing real exports, the verification lab seeds
-a synthetic archive from `polylogue.scenarios`:
+To explore features without importing real exports, schedule the approved
+deterministic demo fixture world:
 
 ```bash
-devtools lab-scenario run archive-smoke --tier 0
-devtools lab-scenario verify-baselines
+polylogue import --demo
 ```
 
-`devtools` is the repository control-plane CLI (it ships in source checkouts
-and the Nix package). See [docs/generate.md](docs/generate.md) for the
-synthetic-corpus generator.
+The command writes only approved synthetic source files and then uses the same
+daemon-backed import path as ordinary source imports. See
+[docs/generate.md](docs/generate.md) for the synthetic-corpus generator and
+verification-lab workflows.
 
 ## Developer tools
 

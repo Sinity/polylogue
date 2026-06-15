@@ -87,10 +87,13 @@ Satisfied:
   facade, and GitHub/check event extraction slices.
 - #1883 has the assertions table, write-through adapters, delete/status
   transitions, reset user.db guard, and blackboard assertion metadata slices.
+- #1843 has deterministic demo corpus specs and the `polylogue import --demo`
+  scheduling surface.
 
 Still blocking external release claims:
 
-- #1843 demo fixture world and `import --demo` are not landed.
+- #1843 still needs end-to-end demo archive convergence evidence and
+  README-ready commands against the generated demo archive.
 - #1816 generated action-contract replacement is not landed.
 - #1847/#1846 web/API release scope is not settled.
 - #1848/#1849 static/docs/proof pruning is not settled.
