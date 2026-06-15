@@ -759,8 +759,6 @@ def _tool_handler_kind(
         return "github"
     if _looks_like_test_output(command_lower, output_text):
         return "test"
-    if "github.com/" in output_text.lower():
-        return "github"
     if name in {"bash", "shell", "exec_command"}:
         return "shell"
     return "generic"
