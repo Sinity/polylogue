@@ -203,6 +203,30 @@ def test_every_extracted_claim_carries_raw_refs() -> None:
         assert all(ref.session_id == digest.session_id for ref in candidate.raw_refs)
 
 
+def test_github_cli_and_failed_check_events_are_extracted() -> None:
+    session = Session(
+        id=SessionId("codex-session:github-events"),
+        origin=Origin.CODEX_SESSION,
+        title="GitHub event extraction",
+        messages=MessageCollection(
+            messages=[
+                Message(
+                    id="m-gh",
+                    role=Role.ASSISTANT,
+                    text=("✓ Created pull request #1930\nshowcase-verify ... FAILED (2.3s)\nAnalyze (python) ... ok"),
+                )
+            ]
+        ),
+    )
+
+    digest = compile_recovery_digest(session)
+    events = {(event.kind, event.summary) for event in digest.events}
+
+    assert ("pr_opened", "PR #1930 opened") in events
+    assert ("check_failed", "showcase-verify failed") in events
+    assert ("check_passed", "Analyze (python) passed") in events
+
+
 def test_claim_models_reject_missing_raw_refs() -> None:
     with pytest.raises(ValidationError):
         ToolSummary(tool_name="Bash", raw_refs=())
