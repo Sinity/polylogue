@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+from unittest.mock import patch
+
 import click
+from click.testing import CliRunner
 
 from polylogue.cli.action_contracts import (
     ACTION_CONTRACT_BY_PATH,
@@ -24,6 +29,11 @@ def _command_for_contract(entry: CliActionContract, commands: dict[tuple[str, ..
     if entry.path == ("find",):
         return cli
     return commands[entry.path]
+
+
+def _assert_contract_declares_guard(path: tuple[str, ...], guard: str) -> None:
+    contract = ACTION_CONTRACT_BY_PATH[path]
+    assert guard in contract.guards, f"{path!r} no longer declares guard {guard!r}"
 
 
 def _choice_values(command: click.Command) -> set[str]:
@@ -98,3 +108,64 @@ def test_default_format_is_declared_for_every_contract() -> None:
     """The default format must be one of the contract's declared formats."""
     invalid = [entry.path for entry in ACTION_CONTRACTS if entry.default_format not in entry.formats]
     assert not invalid, f"Contracts have default_format outside formats: {invalid}"
+
+
+def test_delete_contract_guard_refuses_plain_forceless_delete(workspace_env: dict[str, Path]) -> None:
+    """`dry_run_or_yes_required` is enforced by the public delete CLI."""
+    _assert_contract_declares_guard(("delete",), "dry_run_or_yes_required")
+
+    runner = CliRunner()
+    with patch("polylogue.cli.verb_cardinality.resolve_session_ids_for_verb", return_value=["session-1"]):
+        result = runner.invoke(cli, ["--plain", "find", "needle", "then", "delete"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["operation"] == "delete"
+    assert payload["status"] == "aborted"
+    assert payload["detail"] == "confirmation_required"
+    assert payload["affected_count"] == 0
+
+
+def test_delete_contract_guard_allows_dry_run_preview(workspace_env: dict[str, Path]) -> None:
+    """`dry_run_or_yes_required` permits previewing the full resolved set."""
+    _assert_contract_declares_guard(("delete",), "dry_run_or_yes_required")
+
+    session_ids = ["session-1", "session-2"]
+    runner = CliRunner()
+    with patch("polylogue.cli.verb_cardinality.resolve_session_ids_for_verb", return_value=session_ids):
+        result = runner.invoke(cli, ["--plain", "find", "needle", "then", "delete", "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["operation"] == "delete"
+    assert payload["status"] == "preview"
+    assert payload["session_count"] == len(session_ids)
+    assert payload["affected_count"] == 0
+    assert payload["session_ids"] == session_ids
+
+
+def test_delete_contract_guard_requires_all_for_multi_match(workspace_env: dict[str, Path]) -> None:
+    """`single_match_unless_all` is enforced before destructive deletion."""
+    _assert_contract_declares_guard(("delete",), "single_match_unless_all")
+
+    runner = CliRunner()
+    with (
+        patch("polylogue.cli.verb_cardinality.resolve_session_ids_for_verb", return_value=["session-1", "session-2"]),
+        patch("polylogue.cli.archive_query.execute_delete_by_session_ids") as execute_delete,
+    ):
+        result = runner.invoke(cli, ["--plain", "find", "needle", "then", "delete", "--yes"])
+
+    assert result.exit_code != 0
+    assert "--all" in result.output
+    execute_delete.assert_not_called()
+
+
+def test_import_contract_guard_rejects_missing_source_path(tmp_path: Path) -> None:
+    """`path_exists_or_demo` is enforced by the public import CLI."""
+    _assert_contract_declares_guard(("import",), "path_exists_or_demo")
+
+    missing = tmp_path / "missing-export.jsonl"
+    result = CliRunner().invoke(cli, ["import", str(missing)])
+
+    assert result.exit_code != 0
+    assert "does not exist" in result.output.lower() or "no such" in result.output.lower()
