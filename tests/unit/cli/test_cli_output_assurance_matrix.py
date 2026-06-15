@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.cli.action_contracts import ACTION_CONTRACTS
 from polylogue.cli.click_app import cli
 from polylogue.cli.command_inventory import iter_command_paths
 from polylogue.cli.output_assurance import (
@@ -24,6 +25,7 @@ from polylogue.cli.output_assurance import (
     ASSURANCE_REGISTRY,
     FAMILY_ORDER,
     OutputAssurance,
+    action_contract_coverage,
     render_matrix_markdown,
 )
 
@@ -112,8 +114,36 @@ def test_matrix_renders_non_empty_markdown() -> None:
     """The matrix renders a Markdown table including every primary command."""
     rendered = render_matrix_markdown()
     assert "## Output Assurance Matrix" in rendered
+    assert "### Public Action Contract Coverage" in rendered
     for entry in ASSURANCE_REGISTRY:
         assert f"`{entry.command}`" in rendered, f"Rendered matrix is missing command `{entry.command}`."
+
+
+def test_action_contract_coverage_is_derived_from_action_contracts() -> None:
+    """The output assurance report must expose every public action contract."""
+    rows = action_contract_coverage()
+    assert [row.contract for row in rows] == list(ACTION_CONTRACTS)
+    assert all(row.assurance is not None for row in rows)
+
+
+def test_rendered_matrix_reflects_action_contract_metadata() -> None:
+    """Contract effect/format/envelope metadata should come from ACTION_CONTRACTS."""
+    rendered = render_matrix_markdown()
+    for contract in ACTION_CONTRACTS:
+        path_cell = "`" + " ".join(contract.path) + "`"
+        assert path_cell in rendered
+        assert f"`{contract.effect}`" in rendered
+        assert f"`{contract.machine_envelope}`" in rendered
+        for output_format in contract.formats:
+            assert f"`{output_format}`" in rendered
+
+
+def test_virtual_find_contract_maps_to_search_assurance_row() -> None:
+    """`find` is virtual grammar, but the assurance report must still cover it."""
+    by_path = {row.contract.path: row for row in action_contract_coverage()}
+    find_row = by_path[("find",)]
+    assert find_row.assurance_command == "search"
+    assert find_row.assurance is ASSURANCE_BY_COMMAND["search"]
 
 
 def test_streaming_implies_json_contract() -> None:
