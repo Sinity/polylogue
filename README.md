@@ -239,17 +239,34 @@ nix run github:Sinity/polylogue -- --help
 
 ### Synthetic demo data
 
-To explore features without importing real exports, schedule the approved
-deterministic demo fixture world:
+To explore features without importing real exports, use an isolated archive
+root and schedule the approved deterministic demo fixture world:
+
+```bash
+export POLYLOGUE_DEMO_HOME="$(mktemp -d)"
+export POLYLOGUE_ARCHIVE_ROOT="$POLYLOGUE_DEMO_HOME/archive"
+export XDG_CONFIG_HOME="$POLYLOGUE_DEMO_HOME/config"
+
+polylogue init
+polylogued run
+```
+
+In a second terminal with the same environment:
 
 ```bash
 polylogue import --demo
+polylogue status
+polylogue stats
+polylogue "pytest" list --limit 5
+polylogue find "pytest" then read --view messages
 ```
 
-The command writes only approved synthetic source files and then uses the same
-daemon-backed import path as ordinary source imports. See
-[docs/generate.md](docs/generate.md) for the synthetic-corpus generator and
-verification-lab workflows.
+`polylogue import --demo` writes only approved synthetic source files and asks
+the running daemon to ingest them. The command is asynchronous: `status` shows
+daemon/archive health, while `stats` and search/read commands are meaningful
+after daemon convergence. The current deterministic archive proof is the
+in-process fixture evidence in [docs/generate.md](docs/generate.md), including
+the expected `pytest` search hit.
 
 ## Developer tools
 
