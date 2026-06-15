@@ -145,6 +145,7 @@ def test_backup_archive_copies_precious_tiers_and_referenced_blobs(
 
     assert result.ok
     assert result.backup_mode == "archive_file_set"
+    assert result.backup_profile == "rebuildable_cache_exclude"
     assert result.verified is True
     assert result.verification["ok"] is True
     assert result.verification["tier_integrity"] == {
@@ -175,8 +176,138 @@ def test_backup_archive_copies_precious_tiers_and_referenced_blobs(
 
     manifest = json.loads((backup_root / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["mode"] == "archive_file_set"
+    assert manifest["profile"] == "rebuildable_cache_exclude"
+    assert manifest["included_tiers"] == ["source.db", "user.db", "embeddings.db"]
     assert manifest["omitted_tiers"] == ["index.db", "ops.db"]
     assert manifest["blob_count"] == 1
+
+
+def test_backup_archive_full_evidence_profile_includes_all_tiers(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    db_setup(workspace_env)
+    archive_root = workspace_env["archive_root"]
+    for name in ("index.db", "ops.db"):
+        with sqlite3.connect(archive_root / name) as conn:
+            conn.execute("CREATE TABLE IF NOT EXISTS marker (value TEXT NOT NULL)")
+            conn.execute("INSERT INTO marker VALUES (?)", (name,))
+
+    result = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+
+    assert result.ok
+    assert result.backup_profile == "full_evidence"
+    assert result.omitted_tiers == []
+    assert result.verified is True
+    assert result.verification["tier_integrity"] == {
+        "source": True,
+        "index": True,
+        "embeddings": True,
+        "user": True,
+        "ops": True,
+    }
+    assert result.output_path is not None
+    backup_root = Path(result.output_path)
+    assert {path.name for path in backup_root.glob("*.db")} == {
+        "source.db",
+        "index.db",
+        "embeddings.db",
+        "user.db",
+        "ops.db",
+    }
+    manifest = json.loads((backup_root / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["profile"] == "full_evidence"
+    assert manifest["included_tiers"] == ["source.db", "index.db", "embeddings.db", "user.db", "ops.db"]
+    assert manifest["omitted_tiers"] == []
+
+
+def test_backup_archive_full_evidence_profile_treats_ops_as_optional(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    db_setup(workspace_env)
+    archive_root = workspace_env["archive_root"]
+    (archive_root / "ops.db").unlink()
+
+    result = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+
+    assert result.ok
+    assert result.backup_profile == "full_evidence"
+    assert result.omitted_tiers == ["ops.db"]
+    assert result.verified is True
+    assert result.verification["tier_integrity"] == {
+        "source": True,
+        "index": True,
+        "embeddings": True,
+        "user": True,
+    }
+    assert result.output_path is not None
+    backup_root = Path(result.output_path)
+    assert not (backup_root / "ops.db").exists()
+    manifest = json.loads((backup_root / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["included_tiers"] == ["source.db", "index.db", "embeddings.db", "user.db"]
+    assert manifest["omitted_tiers"] == ["ops.db"]
+
+
+def test_backup_archive_user_overlays_profile_copies_only_user_tier(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    db_setup(workspace_env)
+    result = backup_archive(output_dir=tmp_path / "backups", profile="user_overlays", verify=True)
+
+    assert result.ok
+    assert result.backup_profile == "user_overlays"
+    assert result.verified is True
+    assert result.verification["tier_integrity"] == {"user": True}
+    assert result.output_path is not None
+    backup_root = Path(result.output_path)
+    assert (backup_root / "user.db").exists()
+    assert not (backup_root / "source.db").exists()
+    assert not (backup_root / "index.db").exists()
+    assert not (backup_root / "embeddings.db").exists()
+    assert not (backup_root / "ops.db").exists()
+    assert not (backup_root / "blob").exists()
+    manifest = json.loads((backup_root / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["profile"] == "user_overlays"
+    assert manifest["included_tiers"] == ["user.db"]
+    assert manifest["omitted_tiers"] == ["source.db", "index.db", "embeddings.db", "ops.db"]
+
+
+def test_backup_archive_diagnostics_profile_copies_only_ops_tier(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    db_setup(workspace_env)
+    result = backup_archive(output_dir=tmp_path / "backups", profile="diagnostics_bundle", verify=True)
+
+    assert result.ok
+    assert result.backup_profile == "diagnostics_bundle"
+    assert result.verified is True
+    assert result.verification["tier_integrity"] == {"ops": True}
+    assert result.output_path is not None
+    backup_root = Path(result.output_path)
+    assert (backup_root / "ops.db").exists()
+    assert not (backup_root / "source.db").exists()
+    assert not (backup_root / "index.db").exists()
+    assert not (backup_root / "embeddings.db").exists()
+    assert not (backup_root / "user.db").exists()
+    assert not (backup_root / "blob").exists()
+    manifest = json.loads((backup_root / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["profile"] == "diagnostics_bundle"
+    assert manifest["included_tiers"] == ["ops.db"]
+    assert manifest["omitted_tiers"] == ["source.db", "index.db", "embeddings.db", "user.db"]
+
+
+def test_backup_result_formats_non_default_omissions_neutrally() -> None:
+    from polylogue.daemon.backup import BackupResult, format_backup_result
+
+    lines = format_backup_result(
+        BackupResult(ok=True, output_path="/tmp/backup", backup_profile="user_overlays", omitted_tiers=["source.db"])
+    )
+
+    assert "  Omitted by profile: source.db" in lines
+    assert all("rebuildable/disposable" not in line for line in lines)
 
 
 def test_backup_archive_requires_precious_tiers(workspace_env: dict[str, Path], tmp_path: Path) -> None:
