@@ -12,12 +12,12 @@ sample data, and timestamps all change between renders, producing large diffs
 that carry no semantic signal and date the documentation badly.
 
 When such media is needed (for a release, a blog post, the website), it is
-rendered on demand from the same showcase exercises and seeded environments
-that back the test suite:
+rendered on demand from the same demo fixtures and verification-lab
+environments that back the test suite:
 
-- `polylogue/showcase/` produces deterministic demo workspaces.
-- `polylogue generate` + `polylogue qa --only exercises` reproduce the
-  scenarios used in any rendered capture.
+- deterministic demo workspaces provide safe, synthetic session data;
+- verification-lab exercise baselines reproduce the scenarios used in any
+  rendered capture;
 - `devtools render-readme-media` re-renders the diagrams committed here
   from their Mermaid sources.
 
@@ -53,14 +53,14 @@ explicitly excluded:
 - No README content currently references screenshots or terminal recordings.
 - A committed asset without a `--check`-style freshness gate is dead weight
   the manifest cannot honestly claim coverage over.
-- The showcase + qa workflows already provide reproducible demo output,
-  which is the source of truth when capture is actually needed.
+- Demo fixtures plus verification-lab baselines already provide reproducible
+  output, which is the source of truth when capture is actually needed.
 
 If a future README change introduces a screenshot or VHS tape, the asset
 must arrive together with:
 
-1. A render script that regenerates it deterministically from a showcase
-   exercise or seeded environment.
+1. A render script that regenerates it deterministically from a demo fixture
+   or verification-lab environment.
 2. A `--check` mode that fails when the committed asset diverges from the
    freshly rendered output (the pattern used by `render-readme-media`).
 3. A new row in `docs/plans/docs-media-coverage.yaml` pointing at that
