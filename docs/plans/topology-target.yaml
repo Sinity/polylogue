@@ -647,6 +647,10 @@ files:
     loc: 6
     target: polylogue/cli/__main__.py
     owner: stable
+  - path: polylogue/cli/action_contracts.py
+    loc: 213
+    target: polylogue/cli/action_contracts.py
+    owner: stable
   - path: polylogue/cli/archive_query.py
     loc: 1690
     target: polylogue/cli/archive_query.py
