@@ -27,10 +27,15 @@ RECOVERY_TRANSFORM_VERSION = 1
 
 _ISSUE_RE = re.compile(r"(?:issues/|issue\s+|closed\s+|#)(?P<number>\d{3,6})", re.IGNORECASE)
 _PR_RE = re.compile(r"(?:pull/|PR\s+|#)(?P<number>\d{3,6})", re.IGNORECASE)
+_CREATED_PR_RE = re.compile(
+    r"\b(?:created|opened)\s+(?:pull\s+request|PR)\s+#?(?P<number>\d{3,6})\b",
+    re.IGNORECASE,
+)
 _MERGED_RE = re.compile(r"\bMERGED\s+#(?P<number>\d{3,6})\b", re.IGNORECASE)
 _TEST_PASS_RE = re.compile(r"\b(?P<count>\d+)\s+passed\b", re.IGNORECASE)
 _TEST_FAIL_RE = re.compile(r"\b(?P<count>\d+)\s+failed\b", re.IGNORECASE)
-_CHECK_PASS_RE = re.compile(r"\b(?P<name>[A-Za-z0-9_. -]+)\s+\.\.\.\s+ok\b")
+_CHECK_PASS_RE = re.compile(r"\b(?P<name>[A-Za-z0-9_.() -]+)\s+\.\.\.\s+ok\b")
+_CHECK_FAIL_RE = re.compile(r"\b(?P<name>[A-Za-z0-9_.() -]+)\s+\.\.\.\s+(?:FAIL|FAILED|failure)\b", re.IGNORECASE)
 _DECISION_RE = re.compile(r"\b(decision|decided|choose|chosen):?\s+(?P<text>.+)", re.IGNORECASE)
 _STATUS_HEADING_RE = re.compile(r"^\s*(goal|done|in flight|blockers?|next):\s*(?P<text>.+)$", re.IGNORECASE)
 _RUNSTATE_SECTION_RE = re.compile(
@@ -143,7 +148,15 @@ class RunStateSummary(ArchiveInsightModel):
 
 
 class RecoveryEvent(ArchiveInsightModel):
-    kind: Literal["pr_opened", "pr_merged", "issue_closed", "check_passed", "test_passed", "test_failed"]
+    kind: Literal[
+        "pr_opened",
+        "pr_merged",
+        "issue_closed",
+        "check_passed",
+        "check_failed",
+        "test_passed",
+        "test_failed",
+    ]
     summary: str
     raw_refs: tuple[TransformRawRef, ...]
 
@@ -536,6 +549,13 @@ def _events_from_text(text: str, ref: TransformRawRef) -> Iterable[RecoveryEvent
         yield RecoveryEvent(kind="pr_merged", summary=f"PR #{number} merged", raw_refs=(ref,))
     for line in text.splitlines():
         lowered = line.lower()
+        created_pr_match = _CREATED_PR_RE.search(line)
+        if created_pr_match is not None:
+            yield RecoveryEvent(
+                kind="pr_opened",
+                summary=f"PR #{created_pr_match.group('number')} opened",
+                raw_refs=(ref,),
+            )
         if "pull/" in lowered or "pr " in lowered:
             pr_match = _PR_RE.search(line)
             if pr_match is not None:
@@ -571,6 +591,13 @@ def _events_from_text(text: str, ref: TransformRawRef) -> Iterable[RecoveryEvent
             yield RecoveryEvent(
                 kind="check_passed",
                 summary=f"{check_match.group('name').strip()} passed",
+                raw_refs=(ref,),
+            )
+        failed_check_match = _CHECK_FAIL_RE.search(line)
+        if failed_check_match:
+            yield RecoveryEvent(
+                kind="check_failed",
+                summary=f"{failed_check_match.group('name').strip()} failed",
                 raw_refs=(ref,),
             )
 
