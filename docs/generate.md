@@ -4,12 +4,19 @@
 
 Polylogue includes a built-in synthetic data generator for exploring features without importing real session data.
 
-Synthetic generation is available through the `polylogue.scenarios` module and the test infrastructure. Use `devtools lab-scenario` for demo workspace seeding and verification-lab exercises.
+For users, the supported entrypoint is `polylogue import --demo`: it generates
+the approved deterministic fixture world and schedules it through the same
+daemon-backed import path as ordinary source imports. For tests and repository
+verification, the same generator is available through `polylogue.scenarios`,
+shared fixtures, and `devtools lab-scenario`.
 
 ## Quick Start
 
 ```bash
-# Lab scenario with synthetic data
+# User-facing demo source import
+polylogue import --demo
+
+# Repository verification-lab scenarios
 devtools lab-scenario run archive-smoke --tier 0
 devtools lab-scenario verify-baselines
 ```
@@ -33,6 +40,9 @@ The test suite uses the same `SyntheticCorpus` infrastructure through shared fix
 - `seeded_db` — A pre-populated database for integration tests
 - `synthetic_source` — A temporary source directory with generated files
 - `raw_synthetic_samples` — Raw session data for unit tests
+
+`polylogue import --demo` uses the named `build_demo_corpus_specs()` fixture
+world so README examples and release checks can run without private exports.
 
 ---
 
