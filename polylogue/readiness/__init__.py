@@ -19,6 +19,18 @@ from polylogue.core.outcomes import OutcomeCheck, OutcomeReport, OutcomeStatus
 from polylogue.maintenance.models import DerivedModelStatus
 from polylogue.maintenance.targets import build_maintenance_target_catalog
 from polylogue.paths import active_index_db_path
+from polylogue.readiness.capability import (
+    LEGACY_READINESS_SOURCE_TYPES,
+    CapabilityReadinessState,
+    ComponentReadiness,
+    component_from_archive_debt,
+    component_from_catchup_status,
+    component_from_derived_model,
+    component_from_embedding_payload,
+    component_from_insight_entry,
+    component_from_operation_status,
+    component_from_outcome_check,
+)
 from polylogue.storage.repair import ArchiveDebtStatus
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 
@@ -796,10 +808,20 @@ def quick_readiness_summary(archive_root: Path) -> str:
 
 
 __all__ = [
+    "CapabilityReadinessState",
+    "ComponentReadiness",
+    "LEGACY_READINESS_SOURCE_TYPES",
     "READINESS_TTL_SECONDS",
     "ReadinessCheck",
     "ReadinessReport",
     "VerifyStatus",
+    "component_from_archive_debt",
+    "component_from_catchup_status",
+    "component_from_derived_model",
+    "component_from_embedding_payload",
+    "component_from_insight_entry",
+    "component_from_operation_status",
+    "component_from_outcome_check",
     "quick_readiness_summary",
     "get_readiness",
     "run_archive_readiness",
