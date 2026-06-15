@@ -135,6 +135,54 @@ def test_run_messages_emits_json_and_passes_projection(tmp_path: Path) -> None:
     assert projection.include_tool_calls is False
 
 
+def test_run_messages_json_is_single_finite_document(tmp_path: Path) -> None:
+    """`read --view messages --format json` emits one finite JSON value (#1818)."""
+    env = _env()
+    api = _FakeApi(
+        messages_result=(
+            [
+                {"id": "m1", "role": "user", "message_type": "message", "text": "first"},
+                {"id": "m2", "role": "assistant", "message_type": "message", "text": "second"},
+            ],
+            2,
+        )
+    )
+
+    with patch("polylogue.api.Polylogue.open", return_value=api):
+        run_messages(env, _request(tmp_path), session_id="conv-1", output_format="json")
+
+    # Exactly one print, and it parses as a single finite JSON value.
+    assert _ui_print(env).call_count == 1
+    raw = _ui_print(env).call_args.args[0]
+    payload = json.loads(raw)  # single json.loads must succeed (finite)
+    assert payload["session_id"] == "conv-1"
+    assert [m["text"] for m in payload["messages"]] == ["first", "second"]
+    assert payload["total"] == 2
+
+
+def test_run_messages_ndjson_emits_one_json_document_per_line(tmp_path: Path) -> None:
+    """`--format ndjson` streams one parseable JSON document per message (#1818)."""
+    env = _env()
+    api = _FakeApi(
+        messages_result=(
+            [
+                {"id": "m1", "role": "user", "message_type": "message", "text": "first"},
+                {"id": "m2", "role": "assistant", "message_type": "message", "text": "second"},
+            ],
+            2,
+        )
+    )
+
+    with patch("polylogue.api.Polylogue.open", return_value=api):
+        run_messages(env, _request(tmp_path), session_id="conv-1", output_format="ndjson")
+
+    lines = [call.args[0] for call in _ui_print(env).call_args_list]
+    assert len(lines) == 2
+    docs = [json.loads(line) for line in lines]  # each line parses independently
+    assert [d["text"] for d in docs] == ["first", "second"]
+    assert all(d["session_id"] == "conv-1" for d in docs)
+
+
 def test_run_messages_markdown_and_not_found_paths(tmp_path: Path) -> None:
     env = _env()
     api = _FakeApi(messages_result=([{"role": "assistant", "message_type": "message", "text": "x" * 501}], 1))

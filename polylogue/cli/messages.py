@@ -61,25 +61,35 @@ def run_messages(
 
             fmt = output_format or "markdown"
 
+            def _message_document(m: object) -> dict[str, object]:
+                return {
+                    "id": str(m.id),  # type: ignore[attr-defined]
+                    "role": str(m.role),  # type: ignore[attr-defined]
+                    "message_type": str(m.message_type.value),  # type: ignore[attr-defined]
+                    "text": m.text or "",  # type: ignore[attr-defined]
+                }
+
             if fmt == "json":
                 import json as _json
 
+                # Finite machine-output contract (#1818): one JSON value.
                 payload = {
                     "session_id": session_id,
-                    "messages": [
-                        {
-                            "id": str(m.id),
-                            "role": str(m.role),
-                            "message_type": str(m.message_type.value),
-                            "text": m.text or "",
-                        }
-                        for m in messages
-                    ],
+                    "messages": [_message_document(m) for m in messages],
                     "total": total,
                     "limit": limit,
                     "offset": offset,
                 }
                 env.ui.print(_json.dumps(payload, indent=2))
+            elif fmt == "ndjson":
+                import json as _json
+
+                # Streaming machine-output contract (#1818): one JSON document
+                # per line. Each line is self-contained, carrying session_id so
+                # downstream consumers do not need an out-of-band envelope.
+                for m in messages:
+                    line = {"session_id": session_id, **_message_document(m)}
+                    env.ui.print(_json.dumps(line))
             else:
                 for msg in messages:
                     role = str(msg.role)
