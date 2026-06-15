@@ -12,7 +12,6 @@ Run with:
 from __future__ import annotations
 
 import json
-import os
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -120,10 +119,11 @@ def _run_convergence_probe(
     from polylogue.sources.live.cursor import CursorStore
     from polylogue.sources.live.watcher import WatchSource
 
-    # Use a fresh DB for clean measurement.
+    # Use a fresh DB for clean measurement. Archive root / config are scoped by
+    # the calling test via ``monkeypatch.setenv`` so the probe never mutates
+    # process-global ``os.environ`` directly (#1878). The convergence path reads
+    # the archive root from the ``_BenchmarkPolylogue`` object, not the env.
     db_path = tmp_path / "index.db"
-    os.environ["POLYLOGUE_ARCHIVE_ROOT"] = str(tmp_path)
-    os.environ["POLYLOGUE_CONFIG"] = str(tmp_path / "polylogue.toml")
 
     # Collect all JSONL files.
     files = list(corpus_root.rglob("*.jsonl"))
@@ -190,6 +190,7 @@ def test_convergence_scale_tier(benchmark, tier: str, tmp_path: Path, monkeypatc
     """Measure convergence throughput at each scale tier."""
     corpus_root = _generate_corpus(tmp_path, tier)
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+    monkeypatch.setenv("POLYLOGUE_CONFIG", str(tmp_path / "polylogue.toml"))
 
     result = benchmark(_run_convergence_probe, corpus_root, tmp_path)
 
@@ -230,6 +231,7 @@ def test_convergence_single_file_perf(benchmark, tmp_path: Path, monkeypatch: py
     records = _make_claude_code_session("single-test", 1000)
     _write_jsonl(root / "single.jsonl", records)
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+    monkeypatch.setenv("POLYLOGUE_CONFIG", str(tmp_path / "polylogue.toml"))
 
     result = benchmark(_run_convergence_probe, root.parent, tmp_path)
     msgs = 1000
@@ -259,7 +261,6 @@ def _run_convergence_memory_probe(
     from polylogue.sources.live.watcher import WatchSource
 
     db_path = tmp_path / "index.db"
-    os.environ["POLYLOGUE_ARCHIVE_ROOT"] = str(tmp_path)
 
     files = list(corpus_root.rglob("*.jsonl"))
 
@@ -278,7 +279,10 @@ def _run_convergence_memory_probe(
     elapsed = time.perf_counter() - t_total
 
     return {
-        "total_s": round(elapsed, 2),
+        # Return the unrounded elapsed time. Rounding to 2 decimals here would
+        # collapse a sub-10ms run to ``0.0`` and trip the ``total_s > 0``
+        # measurement guard in callers (#1878); round only at display time.
+        "total_s": elapsed,
         "files": float(len(files)),
         "succeeded_files": float(metrics.succeeded_file_count),
         "failed_files": float(metrics.failed_file_count),
@@ -314,7 +318,7 @@ def test_convergence_large_session_memory(
         rss_peak_mb = result["rss_peak_self_mb"] + result["rss_peak_children_mb"]
         extras = {
             "n_messages": n_messages,
-            "total_s": result["total_s"],
+            "total_s": round(result["total_s"], 2),
             "msgs_per_s": round(n_messages / result["total_s"], 1),
             "parse_wall_s": result["parse_wall_s"],
             "convergence_wall_s": result["convergence_wall_s"],
@@ -362,7 +366,7 @@ def test_convergence_huge_session_memory_bounded(
     file_mb = file_bytes / (1024 * 1024)
     extras = {
         "n_messages": n_messages,
-        "total_s": result["total_s"],
+        "total_s": round(result["total_s"], 2),
         "file_mb": round(file_mb, 1),
         "rss_peak_mb": round(rss_peak_mb, 1),
         "rss_per_file_mb_ratio": round(rss_peak_mb / max(file_mb, 0.001), 3),

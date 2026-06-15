@@ -13,7 +13,6 @@ Run with:
 from __future__ import annotations
 
 import json
-import os
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -165,9 +164,11 @@ def _run_convergence_probe(
     from polylogue.sources.live.cursor import CursorStore
     from polylogue.sources.live.watcher import WatchSource
 
+    # Archive root / config are scoped by the calling test via
+    # ``monkeypatch.setenv`` so the probe never mutates process-global
+    # ``os.environ`` directly (#1878). The convergence path reads the archive
+    # root from the ``_BenchmarkPolylogue`` object, not the env.
     db_path = tmp_path / "index.db"
-    os.environ["POLYLOGUE_ARCHIVE_ROOT"] = str(tmp_path)
-    os.environ["POLYLOGUE_CONFIG"] = str(tmp_path / "polylogue.toml")
 
     files = list(corpus_root.rglob("*.jsonl")) + list(corpus_root.rglob("*.json"))
     # Filter only session files (skip metadata)
@@ -188,7 +189,10 @@ def _run_convergence_probe(
     elapsed = time.perf_counter() - t_total
 
     return {
-        "total_s": round(elapsed, 2),
+        # Unrounded elapsed: rounding to 2 decimals would collapse a sub-10ms
+        # run to ``0.0`` and trip the ``total_s > 0`` guard (#1878). Round at
+        # display time only.
+        "total_s": elapsed,
         "files": float(len(files)),
         "total_files": float(len(files)),
         "succeeded_files": float(metrics.succeeded_file_count),
@@ -227,6 +231,7 @@ def test_convergence_per_provider(
     """Measure convergence throughput for each provider at each scale tier."""
     corpus_root = _generate_corpus(tmp_path, tier, provider)
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+    monkeypatch.setenv("POLYLOGUE_CONFIG", str(tmp_path / "polylogue.toml"))
 
     result = benchmark(lambda: _run_convergence_probe(corpus_root, tmp_path))
 
@@ -240,7 +245,7 @@ def test_convergence_per_provider(
             "files": spec["files"],
             "msgs_per_file": spec["msgs_per_file"],
             "total_msgs": total_msgs,
-            "total_s": result["total_s"],
+            "total_s": round(result["total_s"], 2),
             "msgs_per_s": round(msgs_per_s, 1),
             "parse_wall_s": result["parse_wall_s"],
             "convergence_wall_s": result["convergence_wall_s"],
@@ -276,13 +281,14 @@ def test_convergence_single_file_per_provider(
             json.dump(conv_data, f)
 
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+    monkeypatch.setenv("POLYLOGUE_CONFIG", str(tmp_path / "polylogue.toml"))
 
     result = benchmark(lambda: _run_convergence_probe(root.parent, tmp_path))
     msgs = 500
     if result["total_s"] > 0:
         extras = {
             "provider": provider,
-            "total_s": result["total_s"],
+            "total_s": round(result["total_s"], 2),
             "msgs_per_s": round(msgs / result["total_s"], 1),
         }
         if hasattr(benchmark, "extra_info"):
@@ -310,6 +316,7 @@ def test_cross_provider_convergence_correctness(
         _generate_corpus(tmp_path, tier, provider)
 
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+    monkeypatch.setenv("POLYLOGUE_CONFIG", str(tmp_path / "polylogue.toml"))
 
     result = benchmark(lambda: _run_convergence_probe(corpus_root, tmp_path))
 
@@ -321,7 +328,7 @@ def test_cross_provider_convergence_correctness(
     extras = {
         "providers": ",".join(providers),
         "total_files": result["files"],
-        "total_s": result["total_s"],
+        "total_s": round(result["total_s"], 2),
         "succeeded": int(result["succeeded_files"]),
     }
     if hasattr(benchmark, "extra_info"):
