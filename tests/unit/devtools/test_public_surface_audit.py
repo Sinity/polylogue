@@ -123,6 +123,16 @@ def test_audit_fails_on_stale_product_wording_in_public_docs(
     assert replacement in result.stderr
 
 
+def test_audit_scans_docs_media_readme_as_product_docs(tmp_path: Path) -> None:
+    _seed_minimal_tree(tmp_path)
+    (tmp_path / "docs" / "media").mkdir()
+    (tmp_path / "docs" / "media" / "README.md").write_text("Render screenshots from the showcase product UI.\n")
+    result = _run(tmp_path)
+    assert result.returncode == 1
+    assert "docs/media/README.md" in result.stderr
+    assert "demo fixture or verification-lab baseline" in result.stderr
+
+
 def test_audit_allows_showcase_wording_in_devtools_docs(tmp_path: Path) -> None:
     """Verification-lab docs can still name internal showcase baselines."""
     _seed_minimal_tree(tmp_path)
