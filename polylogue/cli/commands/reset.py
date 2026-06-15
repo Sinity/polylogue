@@ -28,13 +28,19 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import upsert_suppression
 
-_ARCHIVE_DATABASES = (
+# Rebuildable tiers: re-acquired from source on the next ``polylogued run``.
+# Deleting these is the supported "move aside and re-ingest" reset path.
+_REBUILDABLE_ARCHIVE_DATABASES = (
     ("source database", "source.db"),
     ("index database", "index.db"),
     ("embeddings database", "embeddings.db"),
-    ("user database", "user.db"),
     ("ops database", "ops.db"),
 )
+# Irreplaceable tier: marks, annotations, corrections, tags, saved views,
+# recall packs, workspaces, blackboard notes. Nothing re-creates it, so
+# ``reset --database`` preserves it unless the operator opts in explicitly.
+_USER_ARCHIVE_DATABASE = ("user database", "user.db")
+_ARCHIVE_DATABASES = (*_REBUILDABLE_ARCHIVE_DATABASES, _USER_ARCHIVE_DATABASE)
 
 
 def _archive_root() -> Path:
@@ -53,10 +59,17 @@ def _user_db_path() -> Path:
     return _archive_root() / "user.db"
 
 
-def _archive_database_targets() -> list[tuple[str, Path]]:
+def _archive_database_targets(*, include_user_db: bool = False) -> list[tuple[str, Path]]:
+    """Resolve archive-tier files to delete for ``reset --database``.
+
+    The irreplaceable ``user.db`` tier is excluded unless ``include_user_db``
+    is set, so the default reset path drops only rebuildable tiers and never
+    silently destroys hand-authored user state (#1883).
+    """
     root = _archive_root()
+    databases = _ARCHIVE_DATABASES if include_user_db else _REBUILDABLE_ARCHIVE_DATABASES
     targets: list[tuple[str, Path]] = []
-    for name, filename in _ARCHIVE_DATABASES:
+    for name, filename in databases:
         path = root / filename
         if path.exists():
             targets.append((name, path))
@@ -65,6 +78,10 @@ def _archive_database_targets() -> list[tuple[str, Path]]:
             if sidecar.exists():
                 targets.append((f"{name} {suffix}", sidecar))
     return targets
+
+
+def _user_db_present() -> bool:
+    return _user_db_path().exists()
 
 
 def _resolve_archive_session_ids(tokens: list[str]) -> list[str]:
@@ -173,7 +190,12 @@ def _archive_session_ids_from_source(source_path: Path) -> list[str]:
 
 
 @click.command("reset")
-@click.option("--database", is_flag=True, help="Delete the SQLite database")
+@click.option("--database", is_flag=True, help="Delete the rebuildable SQLite tiers (preserves user.db)")
+@click.option(
+    "--include-user-db",
+    is_flag=True,
+    help="Also delete the irreplaceable user.db tier (tags, annotations, marks, notes). Destructive.",
+)
 @click.option("--blob", is_flag=True, help="Delete the content-addressed blob store")
 @click.option("--assets", is_flag=True, help="Delete archived assets/attachments")
 @click.option("--cache", is_flag=True, help="Delete search indexes, schemas, and cache")
@@ -192,6 +214,7 @@ def _archive_session_ids_from_source(source_path: Path) -> list[str]:
 def reset_command(
     env: AppEnv,
     database: bool,
+    include_user_db: bool,
     blob: bool,
     assets: bool,
     cache: bool,
@@ -243,7 +266,13 @@ def reset_command(
 
     targets = []
     if database:
-        targets.extend(_archive_database_targets())
+        targets.extend(_archive_database_targets(include_user_db=include_user_db))
+        if not include_user_db and _user_db_present():
+            env.ui.console.print(
+                "Preserving user.db (irreplaceable: tags, annotations, marks, saved views, "
+                "notes). Rebuildable tiers will be re-acquired on the next `polylogued run`. "
+                "Pass --include-user-db to delete user.db too."
+            )
     if blob:
         _blob_root = blob_store_root()
         if _blob_root.exists():

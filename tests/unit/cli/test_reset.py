@@ -241,15 +241,9 @@ class TestResetCommandDeletion:
             assert not archive_db.exists()
             assert not assets_dir.exists()
 
-    def test_reset_database_deletes_all_archive_tiers_and_sidecars(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Database reset targets all archive database tier files."""
-        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
-
-        archive_root = tmp_path / "archive"
-        archive_root.mkdir()
-        paths = [
+    def _seed_archive_tiers(self, archive_root: Path) -> tuple[list[Path], Path]:
+        archive_root.mkdir(exist_ok=True)
+        rebuildable = [
             archive_root / "source.db",
             archive_root / "source.db-wal",
             archive_root / "source.db-shm",
@@ -259,21 +253,63 @@ class TestResetCommandDeletion:
             archive_root / "embeddings.db",
             archive_root / "embeddings.db-wal",
             archive_root / "embeddings.db-shm",
-            archive_root / "user.db",
             archive_root / "ops.db",
         ]
-        for path in paths:
+        user_db = archive_root / "user.db"
+        for path in [*rebuildable, user_db]:
             path.write_text("test database", encoding="utf-8")
+        return rebuildable, user_db
+
+    def test_reset_database_preserves_irreplaceable_user_db(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``reset --database`` deletes rebuildable tiers but PRESERVES user.db (#1883)."""
+        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+        archive_root = tmp_path / "archive"
+        rebuildable, user_db = self._seed_archive_tiers(archive_root)
 
         with (
             patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root),
             patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path),
         ):
-            runner = CliRunner()
-            result = runner.invoke(cli, ["reset", "--database", "--yes"])
+            result = CliRunner().invoke(cli, ["reset", "--database", "--yes"])
 
         assert result.exit_code == 0
-        assert all(not path.exists() for path in paths)
+        assert all(not path.exists() for path in rebuildable), "rebuildable tiers should be deleted"
+        assert user_db.exists(), "user.db is irreplaceable and must survive a plain --database reset"
+        assert "Preserving user.db" in result.output
+
+    def test_reset_database_include_user_db_deletes_everything(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``reset --database --include-user-db`` opts into deleting user.db too (#1883)."""
+        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+        archive_root = tmp_path / "archive"
+        rebuildable, user_db = self._seed_archive_tiers(archive_root)
+
+        with (
+            patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root),
+            patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path),
+        ):
+            result = CliRunner().invoke(cli, ["reset", "--database", "--include-user-db", "--yes"])
+
+        assert result.exit_code == 0
+        assert all(not path.exists() for path in [*rebuildable, user_db])
+
+    def test_reset_all_preserves_user_db_without_opt_in(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Even ``reset --all`` preserves user.db unless --include-user-db is given (#1883)."""
+        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+        archive_root = tmp_path / "archive"
+        _rebuildable, user_db = self._seed_archive_tiers(archive_root)
+
+        with (
+            patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root),
+            patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path),
+        ):
+            result = CliRunner().invoke(cli, ["reset", "--all", "--yes"])
+
+        assert result.exit_code == 0
+        assert user_db.exists(), "user.db must survive --all without an explicit --include-user-db opt-in"
 
     def test_reset_session_records_archive_suppression_and_deletes_archive_row(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
