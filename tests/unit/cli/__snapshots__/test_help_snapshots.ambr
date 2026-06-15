@@ -177,7 +177,6 @@
     list               List matched sessions.
     maintenance        Preview and run maintenance backfill operations.
     mark
-    neighbors          Show semantic neighbors for a session.
     paths              Print canonical archive paths and bind-mount detection.
     read               Read matched sessions (route to view/destination).
     recent             List the most recently updated sessions.

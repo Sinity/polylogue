@@ -13,6 +13,7 @@ import click
 
 if TYPE_CHECKING:
     from polylogue.archive.session.domain_models import Session, SessionSummary
+    from polylogue.archive.session.neighbor_candidates import SessionNeighborCandidate
     from polylogue.cli.root_request import RootModeRequest
 
 from polylogue.cli.click_option_groups import _LazyChoice
@@ -52,7 +53,7 @@ def _lazy_shell_complete(source: str):  # type: ignore[no-untyped-def]
 _complete_session_id = _lazy_shell_complete("session_id")
 _complete_message_type = _lazy_shell_complete("message_type")
 
-_READ_VIEWS = ("summary", "transcript", "messages", "raw", "context")
+_READ_VIEWS = ("summary", "transcript", "messages", "raw", "context", "neighbors")
 _READ_DESTINATIONS = ("terminal", "stdout", "browser", "clipboard", "file")
 _READ_FORMATS = ("text", "markdown", "json", "ndjson", "yaml", "html", "obsidian", "org", "csv")
 
@@ -147,7 +148,7 @@ def recent_verb(
     type=click.Choice(_READ_VIEWS),
     default="summary",
     show_default=True,
-    help="What to render (summary, transcript, messages, raw, context).",
+    help="What to render (summary, transcript, messages, raw, context, neighbors).",
 )
 @click.option(
     "--to",
@@ -178,6 +179,13 @@ def recent_verb(
 )
 @click.option("--limit", "-l", "-n", type=int, default=None, help="Max items to return.")
 @click.option("--offset", type=int, default=0, help="Pagination offset.")
+@click.option(
+    "--window-hours",
+    type=int,
+    default=24,
+    show_default=True,
+    help="Neighboring time window around the seed session (--view neighbors).",
+)
 @click.option("--no-code-blocks", is_flag=True, help="Exclude code blocks (--view messages).")
 @click.option("--no-tool-calls", is_flag=True, help="Exclude tool calls (--view messages).")
 @click.option("--no-tool-outputs", is_flag=True, help="Exclude tool outputs (--view messages).")
@@ -196,6 +204,7 @@ def read_verb(
     message_type: str | None,
     limit: int | None,
     offset: int,
+    window_hours: int,
     no_code_blocks: bool,
     no_tool_calls: bool,
     no_tool_outputs: bool,
@@ -217,6 +226,8 @@ def read_verb(
         polylogue find id:abc then read --to browser
         polylogue find 'repo:polylogue has:paste' then read --all --format ndjson
         polylogue find 'archive runtime' then read --view context
+        polylogue find id:abc then read --view neighbors --window-hours 48
+        polylogue --latest read --view neighbors --format json
 
     \b
     Deferred views (not yet implemented; note in PR body):
@@ -274,6 +285,19 @@ def read_verb(
 
     if view == "context":
         _run_read_context(env, request, destination=destination, out_path=out_path)
+        return
+
+    if view == "neighbors":
+        _run_read_neighbors(
+            env,
+            request,
+            session_id=session_id,
+            limit=limit if limit is not None else 10,
+            window_hours=max(1, window_hours),
+            output_format=output_format,
+            destination=destination,
+            out_path=out_path,
+        )
         return
 
     # summary / transcript: standard show/query path with destination routing.
@@ -463,6 +487,95 @@ def _run_read_context(env: AppEnv, request: RootModeRequest, *, destination: str
         execute_query_request(env, updated.with_param_updates(output="clipboard"))
     else:
         execute_query_request(env, updated)
+
+
+def _neighbor_score_label(score: float) -> str:
+    return f"{score:.2f}".rstrip("0").rstrip(".")
+
+
+def _neighbor_candidate_heading(candidate: SessionNeighborCandidate) -> str:
+    summary = candidate.summary
+    date = f" {summary.display_date.isoformat()}" if summary.display_date else ""
+    return (
+        f"{candidate.rank}. {candidate.session_id} "
+        f"[{summary.origin.value}] {summary.display_title}{date} "
+        f"(score {_neighbor_score_label(candidate.score)})"
+    )
+
+
+def _render_neighbors_plain(candidates: list[SessionNeighborCandidate]) -> str:
+    if not candidates:
+        return "No neighboring candidates found.\n"
+    lines = [f"Neighbor candidates ({len(candidates)}):"]
+    for candidate in candidates:
+        lines.append(_neighbor_candidate_heading(candidate))
+        for reason in candidate.reasons:
+            evidence = f" ({reason.evidence})" if reason.evidence else ""
+            lines.append(f"   - {reason.kind}: {reason.detail}{evidence}")
+    return "\n".join(lines) + "\n"
+
+
+def _run_read_neighbors(
+    env: AppEnv,
+    request: RootModeRequest,
+    *,
+    session_id: str | None,
+    limit: int,
+    window_hours: int,
+    output_format: str | None,
+    destination: str,
+    out_path: str | None,
+) -> None:
+    """Render explainable neighbor/near-duplicate candidates for a seed session.
+
+    Absorbs the former ``neighbors`` command (#1842): the seed is resolved from
+    the query (``--id``/``id:``/``--latest``) and the free-text query terms,
+    scoped by the root ``--origin`` filter. The MCP ``neighbor_candidates`` tool
+    exposes the same capability programmatically.
+    """
+    from polylogue.api.sync.bridge import run_coroutine_sync
+    from polylogue.archive.session.neighbor_candidates import NeighborDiscoveryError
+    from polylogue.cli.shared.helper_support import fail
+    from polylogue.cli.shared.machine_errors import emit_success
+    from polylogue.core.enums import Origin
+    from polylogue.core.sources import provider_from_origin
+    from polylogue.surfaces.payloads import SessionNeighborCandidatePayload, model_json_document
+
+    query_seed = " ".join(request.query_terms).strip() or None
+    if not session_id and not query_seed:
+        fail("read", "read --view neighbors requires a seed (use --id, id:prefix, --latest, or a query).")
+
+    origin = request.params.get("origin")
+    provider = provider_from_origin(Origin(str(origin))).value if origin else None
+
+    try:
+        candidates = run_coroutine_sync(
+            env.polylogue.neighbor_candidates(
+                session_id=session_id,
+                query=query_seed,
+                provider=provider,
+                limit=max(1, limit),
+                window_hours=max(1, window_hours),
+            )
+        )
+    except NeighborDiscoveryError as exc:
+        fail("read", str(exc))
+
+    if output_format == "json":
+        emit_success(
+            {
+                "neighbors": [
+                    model_json_document(
+                        SessionNeighborCandidatePayload.from_candidate(candidate),
+                        exclude_none=True,
+                    )
+                    for candidate in candidates
+                ]
+            }
+        )
+        return
+
+    _deliver_content(env, _render_neighbors_plain(candidates), destination=destination, out_path=out_path)
 
 
 def _run_read_bulk(

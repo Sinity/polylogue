@@ -660,7 +660,7 @@ files:
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
-    loc: 190
+    loc: 188
     target: polylogue/cli/click_command_registration.py
     owner: stable
   - path: polylogue/cli/click_option_groups.py
@@ -751,10 +751,6 @@ files:
     loc: 897
     target: polylogue/cli/commands/maintenance.py
     owner: stable
-  - path: polylogue/cli/commands/neighbors.py
-    loc: 124
-    target: polylogue/cli/commands/neighbors.py
-    owner: stable
   - path: polylogue/cli/commands/paths.py
     loc: 311
     target: polylogue/cli/commands/paths.py
@@ -808,7 +804,7 @@ files:
     target: polylogue/cli/messages.py
     owner: stable
   - path: polylogue/cli/output_assurance.py
-    loc: 519
+    loc: 510
     target: polylogue/cli/output_assurance.py
     owner: stable
   - path: polylogue/cli/parser_diagnostics.py
@@ -852,7 +848,7 @@ files:
     target: polylogue/cli/query_stats.py
     owner: stable
   - path: polylogue/cli/query_verbs.py
-    loc: 844
+    loc: 957
     target: polylogue/cli/query_verbs.py
     owner: stable
   - path: polylogue/cli/root_request.py
@@ -982,7 +978,7 @@ files:
     target: polylogue/cli/shell_completion_values.py
     owner: stable
   - path: polylogue/cli/verb_cardinality.py
-    loc: 119
+    loc: 133
     target: polylogue/cli/verb_cardinality.py
     owner: stable
   - path: polylogue/cli/verb_names.py

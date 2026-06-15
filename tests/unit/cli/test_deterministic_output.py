@@ -239,7 +239,6 @@ _PLAIN_COMMANDS: tuple[tuple[str, ...], ...] = (
     ("maintenance",),
     ("maintenance", "plan"),
     ("maintenance", "run"),
-    ("neighbors",),
     ("read",),
     ("reset",),
     ("resume",),
@@ -309,9 +308,8 @@ class TestJsonEnvelopeParametrized:
         [
             (["doctor", "--format", "json"], None),
             (["tags", "--format", "json"], "tags"),
-            (["neighbors", "--format", "json", "--query", "test"], "neighbors"),
         ],
-        ids=["doctor", "tags", "neighbors"],
+        ids=["doctor", "tags"],
     )
     def test_json_envelope_shape(
         self: object,
@@ -337,9 +335,8 @@ class TestJsonEnvelopeParametrized:
         [
             ["doctor", "--format", "json"],
             ["tags", "--format", "json"],
-            ["neighbors", "--format", "json", "--query", "test"],
         ],
-        ids=["doctor", "tags", "neighbors"],
+        ids=["doctor", "tags"],
     )
     def test_json_output_no_ansi(
         self: object,
@@ -379,9 +376,8 @@ class TestJsonEnvelopeParametrized:
         "cmd_args,expected_error",
         [
             (["tags", "--format", "yaml"], "Invalid value for '--format'"),
-            (["neighbors", "--format", "markdown", "--query", "test"], "Invalid value for '--format'"),
         ],
-        ids=["tags-yaml-rejected", "neighbors-markdown-rejected"],
+        ids=["tags-yaml-rejected"],
     )
     def test_json_only_commands_reject_other_formats(
         self: object,
@@ -389,7 +385,7 @@ class TestJsonEnvelopeParametrized:
         cmd_args: list[str],
         expected_error: str,
     ) -> None:
-        """JSON-only commands (tags, neighbors) reject non-json formats with a clear Click error."""
+        """JSON-only commands (tags) reject non-json formats with a clear Click error."""
         runner = CliRunner()
         result = runner.invoke(cli, ["--plain", *cmd_args], catch_exceptions=False)
         assert result.exit_code != 0

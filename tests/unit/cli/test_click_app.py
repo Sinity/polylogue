@@ -629,7 +629,6 @@ class TestCliMetadata:
             "paths",
             "recent",
             "dashboard",
-            "neighbors",
             "resume",
             "resume-candidates",
             "insights",

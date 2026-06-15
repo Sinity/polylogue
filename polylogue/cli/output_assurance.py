@@ -171,15 +171,6 @@ ASSURANCE_REGISTRY: tuple[OutputAssurance, ...] = (
         ),
     ),
     OutputAssurance(
-        command="neighbors",
-        family=QUERY_FAMILY,
-        json_contract=True,
-        snapshot=True,
-        plain=True,
-        streaming=False,
-        schema="session-neighbor-candidate.schema.json",
-    ),
-    OutputAssurance(
         command="resume",
         family=QUERY_FAMILY,
         json_contract=False,

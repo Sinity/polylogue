@@ -1,4 +1,10 @@
-"""CLI tests for neighboring-session discovery."""
+"""CLI tests for neighboring-session discovery via ``read --view neighbors``.
+
+The standalone ``neighbors`` command was absorbed into the read-view surface
+(#1842): ``find <seed> then read --view neighbors``. These tests exercise the
+``_run_read_neighbors`` renderer directly (the cli-app path builds its own env,
+so the neighbor backend is injected through a mock env here).
+"""
 
 from __future__ import annotations
 
@@ -6,11 +12,12 @@ import json
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
-from click.testing import CliRunner
+import pytest
 
 from polylogue.archive.models import SessionSummary
 from polylogue.archive.session.neighbor_candidates import NeighborReason, SessionNeighborCandidate
-from polylogue.cli.commands.neighbors import neighbors_command
+from polylogue.cli.query_verbs import _run_read_neighbors
+from polylogue.cli.root_request import RootModeRequest
 from polylogue.core.enums import Origin
 from polylogue.types import SessionId
 
@@ -29,28 +36,32 @@ def _candidate() -> SessionNeighborCandidate:
         reasons=(
             NeighborReason(
                 kind="same_title",
-                detail="same normalized title: Archive Lock Retries",
+                detail="same normalized title",
                 weight=3.0,
+                evidence="message-1",
             ),
         ),
         source_session_id="target",
     )
 
 
-def test_neighbors_command_emits_json_payload(cli_runner: CliRunner) -> None:
+def test_read_view_neighbors_emits_json_payload(capsys: pytest.CaptureFixture[str]) -> None:
     env = MagicMock()
-    env.polylogue = MagicMock()
     env.polylogue.neighbor_candidates = AsyncMock(return_value=[_candidate()])
+    request = RootModeRequest.from_params({"origin": "codex-session"})
 
-    result = cli_runner.invoke(
-        neighbors_command,
-        ["--id", "target", "--origin", "codex-session", "--format", "json"],
-        obj=env,
-        catch_exceptions=False,
+    _run_read_neighbors(
+        env,
+        request,
+        session_id="target",
+        limit=10,
+        window_hours=24,
+        output_format="json",
+        destination="stdout",
+        out_path=None,
     )
 
-    assert result.exit_code == 0
-    payload = json.loads(result.output)
+    payload = json.loads(capsys.readouterr().out)
     neighbor = payload["result"]["neighbors"][0]
     assert neighbor["session"]["id"] == "candidate"
     assert neighbor["reasons"][0]["kind"] == "same_title"
@@ -63,9 +74,85 @@ def test_neighbors_command_emits_json_payload(cli_runner: CliRunner) -> None:
     )
 
 
-def test_neighbors_command_requires_id_or_query(cli_runner: CliRunner) -> None:
-    result = cli_runner.invoke(neighbors_command, [], obj=MagicMock())
+def test_read_view_neighbors_plain_renders_reasons(capsys: pytest.CaptureFixture[str]) -> None:
+    env = MagicMock()
+    env.polylogue.neighbor_candidates = AsyncMock(return_value=[_candidate()])
+    request = RootModeRequest.from_params({})
 
-    assert result.exit_code != 0
-    assert "provide --id" in result.output
-    assert "--query" in result.output
+    _run_read_neighbors(
+        env,
+        request,
+        session_id="target",
+        limit=10,
+        window_hours=24,
+        output_format=None,
+        destination="stdout",
+        out_path=None,
+    )
+
+    out = capsys.readouterr().out
+    assert "Neighbor candidates (1):" in out
+    assert "1. candidate" in out
+    # reason rendering includes the kind and the evidence in parentheses
+    assert "same_title: same normalized title (message-1)" in out
+
+
+def test_read_view_neighbors_surfaces_discovery_error(capsys: pytest.CaptureFixture[str]) -> None:
+    from polylogue.archive.session.neighbor_candidates import NeighborDiscoveryError
+
+    env = MagicMock()
+    env.polylogue.neighbor_candidates = AsyncMock(side_effect=NeighborDiscoveryError("no candidates"))
+    request = RootModeRequest.from_params({})
+
+    with pytest.raises(SystemExit):
+        _run_read_neighbors(
+            env,
+            request,
+            session_id="target",
+            limit=10,
+            window_hours=24,
+            output_format=None,
+            destination="stdout",
+            out_path=None,
+        )
+
+    assert "no candidates" in capsys.readouterr().err
+
+
+def test_read_view_neighbors_empty_renders_message(capsys: pytest.CaptureFixture[str]) -> None:
+    env = MagicMock()
+    env.polylogue.neighbor_candidates = AsyncMock(return_value=[])
+    request = RootModeRequest.from_params({})
+
+    _run_read_neighbors(
+        env,
+        request,
+        session_id="target",
+        limit=10,
+        window_hours=24,
+        output_format=None,
+        destination="stdout",
+        out_path=None,
+    )
+
+    assert "No neighboring candidates found." in capsys.readouterr().out
+
+
+def test_read_view_neighbors_requires_a_seed(capsys: pytest.CaptureFixture[str]) -> None:
+    env = MagicMock()
+    request = RootModeRequest.from_params({})
+
+    with pytest.raises(SystemExit):
+        _run_read_neighbors(
+            env,
+            request,
+            session_id=None,
+            limit=10,
+            window_hours=24,
+            output_format=None,
+            destination="stdout",
+            out_path=None,
+        )
+
+    assert "requires a seed" in capsys.readouterr().err
+    env.polylogue.neighbor_candidates.assert_not_called()

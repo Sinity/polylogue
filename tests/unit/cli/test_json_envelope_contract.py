@@ -117,7 +117,6 @@ class TestQueryShapedJsonMatrix:
         ("args", "result_key"),
         [
             (["tags", "--format", "json"], "tags"),
-            (["neighbors", "--query", "__polylogue_json_contract_probe__", "--format", "json"], "neighbors"),
             (["insights", "status", "--format", "json"], "insights"),
             (["schema", "list", "--format", "json"], "providers"),
         ],
@@ -137,7 +136,6 @@ class TestQueryShapedJsonMatrix:
     @pytest.mark.parametrize(
         "args",
         [
-            ["neighbors", "--query", "__polylogue_json_contract_probe__", "--format", "json"],
             ["insights", "status", "--format", "json"],
             ["schema", "list", "--format", "json"],
         ],

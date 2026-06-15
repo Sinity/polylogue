@@ -68,7 +68,6 @@ _ALL_COMMANDS: tuple[tuple[str, ...], ...] = (
     ("maintenance",),
     ("maintenance", "plan"),
     ("maintenance", "run"),
-    ("neighbors",),
     ("read",),
     ("reset",),
     ("resume",),
