@@ -274,6 +274,13 @@ mutation_campaigns:
     status: active
 
 benchmark_campaigns:
+  - name: archive-maintenance
+    description: >
+      Archive backup planning, blob-GC dry-run, and space-report benchmark domain
+    tests:
+      - tests/benchmarks/test_archive_maintenance.py
+    status: active
+
   - name: pipeline
     description: >
       Index rebuild/update, action repair, plus hashing/semantic helper benchmark domain

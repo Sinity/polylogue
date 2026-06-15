@@ -239,6 +239,7 @@ def test_compile_benchmark_campaigns_indexes_by_name() -> None:
     campaigns = compile_benchmark_campaigns(BENCHMARK_SCENARIOS)
 
     assert set(campaigns) == {
+        "archive-maintenance",
         "search-filters",
         "storage",
         "pipeline",
@@ -246,12 +247,14 @@ def test_compile_benchmark_campaigns_indexes_by_name() -> None:
         "recovery-digest",
         "daemon-convergence",
     }
+    assert campaigns["archive-maintenance"].tests == ("tests/benchmarks/test_archive_maintenance.py",)
     assert campaigns["search-filters"].tests == ("tests/benchmarks/test_search_filters.py",)
     assert campaigns["recovery-digest"].tests == ("tests/benchmarks/test_recovery_digest.py",)
 
 
 def test_benchmark_scenario_index_tracks_authored_catalog() -> None:
     assert set(BENCHMARK_SCENARIO_INDEX) == {
+        "archive-maintenance",
         "search-filters",
         "storage",
         "pipeline",
@@ -259,6 +262,20 @@ def test_benchmark_scenario_index_tracks_authored_catalog() -> None:
         "recovery-digest",
         "daemon-convergence",
     }
+
+
+def test_archive_maintenance_campaign_tracks_backup_gc_artifact_contract() -> None:
+    campaign = BENCHMARK_SCENARIO_INDEX["archive-maintenance"]
+
+    assert campaign.tests == ("tests/benchmarks/test_archive_maintenance.py",)
+    assert campaign.artifact_targets == ("archive_readiness",)
+    assert campaign.operation_targets == (
+        "benchmark.archive.backup-plan",
+        "benchmark.archive.blob-gc-dry-run",
+        "benchmark.archive.space-report",
+    )
+    assert campaign.maintenance_targets == ("orphaned_blobs",)
+    assert "Backup runtime copy/restore semantics are intentionally out of scope." in campaign.notes
 
 
 def test_benchmark_entry_compiles_its_own_projection_entry() -> None:

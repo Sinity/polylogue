@@ -108,6 +108,9 @@ def test_declared_operation_catalog_contains_runtime_and_control_plane_operation
     assert "render-recovery-report" in catalog.names()
     assert "benchmark.transform.recovery-digest" in catalog.names()
     assert "benchmark.transform.recovery-report" in catalog.names()
+    assert "benchmark.archive.backup-plan" in catalog.names()
+    assert "benchmark.archive.blob-gc-dry-run" in catalog.names()
+    assert "benchmark.archive.space-report" in catalog.names()
     assert "benchmark.storage.crud" in catalog.names()
     assert "cli.json-contract" in catalog.names()
 
