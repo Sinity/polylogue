@@ -33,6 +33,16 @@ Follow-up: eliminate provider_meta escape hatch from parser-output models
           — see #1858 (Ref #1790). Tracked as a new issue filed during this task.
 
 Ref #1833.
+
+Dispatch coverage
+-----------------
+The direct-parser table below is paired with a dispatch-level regression test
+for #1815.  That test proves advertised source-origin payload shapes flow
+through ``detect_provider`` / ``parse_payload`` and land on the expected public
+``Origin`` token.  There is no committed demo fixture world in this checkout
+(demo mode is coordinated in #1843), so the closest stable dev-snapshot shape is
+the synthetic browser-capture ``capture_mode="snapshot"`` envelope tested at the
+bottom of this file.
 """
 
 from __future__ import annotations
@@ -44,11 +54,14 @@ from typing import Any
 import pytest
 
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import Provider
+from polylogue.core.enums import Origin, Provider
 from polylogue.core.json import JSONDocument
+from polylogue.core.sources import origin_from_provider
+from polylogue.sources.dispatch import detect_provider, parse_payload
 from polylogue.sources.parsers.antigravity import (
     BRAIN_METADATA_FRAGMENT_FLAG,
     AntigravitySessionSummary,
+    markdown_export_payload,
     parse_markdown_export,
 )
 from polylogue.sources.parsers.base import ParsedSession
@@ -98,10 +111,19 @@ class OriginFixture:
     min_messages: int
     """Lower bound on ``len(session.messages)``."""
 
+    expected_origin: Origin
+    """Expected public origin token after dispatch/provider bridging."""
+
     # Detection
     looks_like_fn: Any  # callable(payload) -> bool
     payload: Any  # the input payload passed to both looks_like and parse
     parse_fn: Any  # callable(payload, fallback_id) -> ParsedSession
+    dispatch_payload: Any | None = None
+    """Payload shape used by generic dispatch; defaults to ``payload``."""
+    expected_detected_provider: Provider | None = None
+    """Expected ``detect_provider`` result; defaults to ``provider``."""
+    expected_dispatch_provider: Provider | None = None
+    """Expected source_name after ``parse_payload``; defaults to detected provider."""
 
     # Optional contract items — use _NA to skip
     expected_title: Any = _NA  # str | None | _NA
@@ -484,6 +506,7 @@ ORIGIN_FIXTURES: list[OriginFixture] = [
         provider=Provider.CHATGPT,
         session_id="chatgpt-session-reg-1",
         min_messages=4,
+        expected_origin=Origin.CHATGPT_EXPORT,
         looks_like_fn=chatgpt_looks_like,
         payload=_chatgpt_payload(),
         parse_fn=chatgpt_parse,
@@ -506,6 +529,7 @@ ORIGIN_FIXTURES: list[OriginFixture] = [
         provider=Provider.CLAUDE_AI,
         session_id="claude-ai-session-reg-1",
         min_messages=3,
+        expected_origin=Origin.CLAUDE_AI_EXPORT,
         looks_like_fn=claude_ai_looks_like,
         payload=_claude_ai_payload(),
         parse_fn=claude_ai_parse,
@@ -526,6 +550,7 @@ ORIGIN_FIXTURES: list[OriginFixture] = [
         provider=Provider.CLAUDE_CODE,
         session_id="claude-code-session-reg-1",
         min_messages=3,
+        expected_origin=Origin.CLAUDE_CODE_SESSION,
         looks_like_fn=claude_code_looks_like,
         payload=_claude_code_payload(),
         parse_fn=claude_code_parse,
@@ -546,6 +571,7 @@ ORIGIN_FIXTURES: list[OriginFixture] = [
         provider=Provider.CODEX,
         session_id="codex-session-reg-1",
         min_messages=2,
+        expected_origin=Origin.CODEX_SESSION,
         looks_like_fn=codex_looks_like,
         payload=_codex_payload(),
         parse_fn=codex_parse,
@@ -566,6 +592,7 @@ ORIGIN_FIXTURES: list[OriginFixture] = [
         provider=Provider.GEMINI_CLI,
         session_id="gemini-cli-session-reg-1",
         min_messages=2,
+        expected_origin=Origin.GEMINI_CLI_SESSION,
         looks_like_fn=looks_like_gemini_cli,
         payload=_gemini_cli_payload(),
         parse_fn=parse_gemini_cli,
@@ -586,9 +613,12 @@ ORIGIN_FIXTURES: list[OriginFixture] = [
         provider=Provider.DRIVE,
         session_id="aistudio-drive-session-reg-1",
         min_messages=2,
+        expected_origin=Origin.AISTUDIO_DRIVE,
         looks_like_fn=drive_looks_like,
         payload=_aistudio_drive_payload(),
         parse_fn=lambda payload, fid: parse_chunked_prompt(Provider.DRIVE, payload, fid),
+        expected_detected_provider=Provider.GEMINI,
+        expected_dispatch_provider=Provider.GEMINI,
         expected_title="AI Studio regression fixture",
         has_tool_use=False,
         has_thinking=False,
@@ -606,9 +636,11 @@ ORIGIN_FIXTURES: list[OriginFixture] = [
         provider=Provider.ANTIGRAVITY,
         session_id="antigravity-session-reg-1",
         min_messages=4,
+        expected_origin=Origin.ANTIGRAVITY_SESSION,
         looks_like_fn=_ag_looks_like,
         payload=(_AG_MARKDOWN, _AG_SUMMARY),
         parse_fn=_ag_parse,
+        dispatch_payload=markdown_export_payload(_AG_SUMMARY, _AG_MARKDOWN),
         expected_title="Antigravity regression fixture",
         has_tool_use=False,
         has_thinking=False,
@@ -627,6 +659,7 @@ ORIGIN_FIXTURES: list[OriginFixture] = [
         provider=Provider.HERMES,
         session_id="hermes-session-reg-1",
         min_messages=3,
+        expected_origin=Origin.HERMES_SESSION,
         looks_like_fn=looks_like_hermes,
         payload=_hermes_payload(),
         parse_fn=parse_hermes,
@@ -668,6 +701,30 @@ def _has_paste_marker(session: ParsedSession) -> bool:
 
 def _has_attachments(session: ParsedSession) -> bool:
     return len(session.attachments) > 0
+
+
+def _browser_capture_snapshot_payload() -> JSONDocument:
+    return {
+        "polylogue_capture_kind": "browser_llm_session",
+        "schema_version": 1,
+        "capture_id": "chatgpt:browser-snapshot-reg-1",
+        "provenance": {
+            "source_url": "https://chatgpt.com/c/browser-snapshot-reg-1",
+            "page_title": "Browser snapshot regression fixture",
+            "captured_at": "2026-06-01T00:00:00+00:00",
+            "adapter_name": "chatgpt-dom-v1",
+            "capture_mode": "snapshot",
+        },
+        "session": {
+            "provider": "chatgpt",
+            "provider_session_id": "browser-snapshot-reg-1",
+            "title": "Browser snapshot regression fixture",
+            "turns": [
+                {"provider_turn_id": "u1", "role": "user", "text": "Capture this page.", "ordinal": 0},
+                {"provider_turn_id": "a1", "role": "assistant", "text": "Captured.", "ordinal": 1},
+            ],
+        },
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -807,6 +864,50 @@ def test_origin_contract(fixture: OriginFixture) -> None:
         assert flag not in session.ingest_flags, (
             f"[{fixture.label}] expected ingest_flags to NOT include {flag!r}, got {session.ingest_flags!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Dispatch-level advertised origin matrix (#1815)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("fixture", ORIGIN_FIXTURES, ids=lambda f: f.label)
+def test_advertised_origin_shapes_dispatch_to_expected_provider_and_origin(fixture: OriginFixture) -> None:
+    """Advertised importable shapes route through generic dispatch correctly."""
+    payload = fixture.payload if fixture.dispatch_payload is None else fixture.dispatch_payload
+    expected_detected = fixture.expected_detected_provider or fixture.provider
+    expected_dispatch_provider = fixture.expected_dispatch_provider or expected_detected
+
+    detected = detect_provider(payload)
+    assert detected is expected_detected, (
+        f"[{fixture.label}] detect_provider returned {detected!r}, expected {expected_detected!r}"
+    )
+    assert detected is not None
+
+    sessions = parse_payload(detected, payload, fixture.session_id)
+
+    assert len(sessions) == 1, f"[{fixture.label}] expected one dispatched session, got {len(sessions)}"
+    session = sessions[0]
+    assert session.source_name is expected_dispatch_provider, (
+        f"[{fixture.label}] dispatch source_name={session.source_name!r}, expected {expected_dispatch_provider!r}"
+    )
+    assert session.provider_session_id == fixture.session_id
+    assert origin_from_provider(session.source_name) is fixture.expected_origin
+
+
+def test_browser_capture_snapshot_dispatches_to_chatgpt_export_origin() -> None:
+    """Closest stable dev-snapshot fixture until #1843 lands a demo fixture world."""
+    payload = _browser_capture_snapshot_payload()
+
+    detected = detect_provider(payload)
+    assert detected is not None
+    sessions = parse_payload(detected, payload, "fallback")
+
+    assert detected is Provider.CHATGPT
+    assert len(sessions) == 1
+    assert sessions[0].source_name is Provider.CHATGPT
+    assert sessions[0].provider_session_id == "browser-snapshot-reg-1"
+    assert origin_from_provider(sessions[0].source_name) is Origin.CHATGPT_EXPORT
 
 
 # ---------------------------------------------------------------------------
