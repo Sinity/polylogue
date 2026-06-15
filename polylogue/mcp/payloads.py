@@ -91,7 +91,11 @@ class MCPRootPayload(RootModel[TRoot], Generic[TRoot]):
 
 
 class MCPErrorPayload(SurfacePayloadModel):
-    error: str
+    # Canonical machine-error envelope core (#1818): ``status``/``code``/
+    # ``message``/``detail`` match the CLI ``MachineError`` and daemon error
+    # shapes. MCP-specific fields below are additive optional keys.
+    status: Literal["error"] = "error"
+    message: str
     code: int | str | None = None
     detail: str | None = None
     tool: str | None = None

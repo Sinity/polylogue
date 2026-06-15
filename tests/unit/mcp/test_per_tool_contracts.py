@@ -419,7 +419,7 @@ class TestMutationToolArgumentContracts:
             return
         body = json.loads(result)
         assert body.get("is_error") is True, f"{tool_name}: missing is_error in {body}"
-        assert "error" in body, f"{tool_name}: missing error in {body}"
+        assert "message" in body, f"{tool_name}: missing error in {body}"
 
 
 # ---------------------------------------------------------------------------
@@ -595,7 +595,7 @@ class TestMutationToolIdempotency:
         # Without confirm.
         unconfirmed = json.loads(invoke_surface(fn, session_id=_CONV_ID))
         assert unconfirmed.get("is_error") is True
-        assert "error" in unconfirmed
+        assert "message" in unconfirmed
 
         # With confirm.
         confirmed = json.loads(invoke_surface(fn, session_id=_CONV_ID, confirm=True))

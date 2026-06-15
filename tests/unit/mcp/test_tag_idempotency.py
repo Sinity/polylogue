@@ -79,8 +79,8 @@ class TestTagIdempotencyOutcomes:
             )
 
         parsed = json.loads(result)
-        assert "error" in parsed
-        assert "not found" in parsed["error"].lower()
+        assert "message" in parsed
+        assert "not found" in parsed["message"].lower()
 
     # ── remove_tag ───────────────────────────────────────────────────
 
@@ -132,8 +132,8 @@ class TestTagIdempotencyOutcomes:
             )
 
         parsed = json.loads(result)
-        assert "error" in parsed
-        assert "not found" in parsed["error"].lower()
+        assert "message" in parsed
+        assert "not found" in parsed["message"].lower()
 
 
 class TestBulkTagExcludesOutcome:

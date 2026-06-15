@@ -206,8 +206,8 @@ async def test_aggregate_with_invalid_group_by_returns_error(
         )
 
     payload = json.loads(raw)
-    assert "error" in payload
-    assert "invalid_key" in payload["error"]
+    assert "message" in payload
+    assert "invalid_key" in payload["message"]
 
 
 # ── Empty archive ────────────────────────────────────────────────────

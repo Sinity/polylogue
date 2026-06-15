@@ -80,7 +80,7 @@ def test_add_mark_rejects_unknown_type(mcp_server: MCPServerUnderTest) -> None:
 
     parsed = json.loads(result)
     assert parsed["is_error"] is True
-    assert "star, pin, archive" in parsed["error"]
+    assert "star, pin, archive" in parsed["message"]
 
 
 def test_remove_mark_reports_missing_mark(mcp_server: MCPServerUnderTest) -> None:
@@ -116,7 +116,7 @@ def test_remove_mark_rejects_unknown_type(mcp_server: MCPServerUnderTest) -> Non
 
     parsed = json.loads(result)
     assert parsed["is_error"] is True
-    assert "star, pin, archive" in parsed["error"]
+    assert "star, pin, archive" in parsed["message"]
 
 
 def test_add_mark_accepts_message_target(mcp_server: MCPServerUnderTest) -> None:
@@ -281,7 +281,7 @@ def test_save_saved_view_rejects_unknown_query_param(mcp_server: MCPServerUnderT
 
     parsed = json.loads(result)
     assert parsed["is_error"] is True
-    assert "SessionQuerySpec" in parsed["error"]
+    assert "SessionQuerySpec" in parsed["message"]
     assert "not_a_filter" in parsed["detail"]
 
 

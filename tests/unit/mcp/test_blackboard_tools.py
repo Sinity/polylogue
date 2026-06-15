@@ -97,4 +97,4 @@ def test_blackboard_post_reports_invalid_kind_as_error(mcp_server: MCPServerUnde
 
     parsed = json.loads(result)
     assert parsed["is_error"] is True
-    assert "kind must be one of" in parsed["error"]
+    assert "kind must be one of" in parsed["message"]

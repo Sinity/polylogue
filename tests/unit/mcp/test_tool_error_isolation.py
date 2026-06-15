@@ -53,7 +53,7 @@ class TestSchemaVersionMismatchSurface:
         assert body["current_version"] == 16
         assert body["expected_version"] == 9
         assert body["detail"] == "SchemaVersionMismatchError"
-        assert "schema version 16" in cast(str, body["error"])
+        assert "schema version 16" in cast(str, body["message"])
 
     @pytest.mark.asyncio
     async def test_async_safe_call_returns_schema_version_mismatch_payload(self) -> None:
@@ -84,8 +84,8 @@ class TestTopLevelIsolation:
         assert body["detail"] == "RuntimeError"
         # The exception class name MUST appear so the operator can see
         # what failed; the raw message MUST NOT.
-        assert "RuntimeError" in cast(str, body["error"])
-        assert "oops" not in cast(str, body["error"])
+        assert "RuntimeError" in cast(str, body["message"])
+        assert "oops" not in cast(str, body["message"])
 
     @pytest.mark.asyncio
     async def test_async_safe_call_swallows_arbitrary_exception(self) -> None:
@@ -96,7 +96,7 @@ class TestTopLevelIsolation:
         assert body["code"] == "internal_error"
         assert body["tool"] == "list_sessions"
         assert body["detail"] == "ValueError"
-        assert "inner failure" not in cast(str, body["error"])
+        assert "inner failure" not in cast(str, body["message"])
 
     @pytest.mark.asyncio
     async def test_async_safe_call_does_not_reraise(self) -> None:

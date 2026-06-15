@@ -394,7 +394,7 @@ class TestResourceSurfaces:
             )
 
         result_dict = json.loads(result)
-        assert "error" in result_dict
+        assert "message" in result_dict
 
     def test_messages_resource_reads_archive_file_set(
         self: object, mcp_server: MCPServerUnderTest, tmp_path: Path
@@ -969,8 +969,8 @@ class TestExportSessionTool:
             result = invoke_surface(mcp_server._tool_manager._tools["export_session"].fn, id="nonexistent")
 
         parsed = json.loads(result)
-        assert "error" in parsed
-        assert "not found" in parsed["error"].lower()
+        assert "message" in parsed
+        assert "not found" in parsed["message"].lower()
 
     def test_export_invalid_format_falls_back_to_markdown(
         self: object,
