@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
@@ -15,6 +16,7 @@ if TYPE_CHECKING:
 
     from polylogue.archive.blackboard import BlackboardNote
     from polylogue.archive.query.spec import SessionQuerySpec
+    from polylogue.archive.semantic.content_projection import ContentProjectionSpec
     from polylogue.config import Config
     from polylogue.mcp.payloads import (
         MCPBlackboardNotePayload,
@@ -28,7 +30,7 @@ if TYPE_CHECKING:
         ArchiveSessionSummary,
         ArchiveStore,
     )
-    from polylogue.storage.sqlite.archive_tiers.write import ArchiveMessageRow, ArchiveSessionEnvelope
+    from polylogue.storage.sqlite.archive_tiers.write import ArchiveBlockRow, ArchiveMessageRow, ArchiveSessionEnvelope
     from polylogue.surfaces.payloads import SearchEnvelope, SessionSearchHitPayload
 
 
@@ -153,6 +155,73 @@ def blackboard_note_payload(note: BlackboardNote) -> MCPBlackboardNotePayload:
     )
 
 
+def _project_text_block(text: str | None, projection: ContentProjectionSpec) -> str | None:
+    if text is None:
+        return None
+    if (
+        projection.include_prose
+        and projection.include_code
+        and projection.include_reasoning
+        and projection.include_system_noise
+    ):
+        return text
+    from polylogue.archive.message.models import Message
+    from polylogue.archive.message.roles import Role
+    from polylogue.archive.semantic.content_projection import project_message_content
+
+    projected = project_message_content(
+        [Message(id="archive-block", role=Role.ASSISTANT, text=text, blocks=[])],
+        projection,
+    )
+    if not projected:
+        return None
+    return projected[0].text
+
+
+def _project_archive_message(
+    message: ArchiveMessageRow,
+    projection: ContentProjectionSpec | None,
+) -> ArchiveMessageRow | None:
+    if projection is None or projection.is_default():
+        return message
+    tool_semantics = {
+        block.tool_id: block.semantic_type
+        for block in message.blocks
+        if block.block_type == "tool_use" and block.tool_id and block.semantic_type
+    }
+    blocks: list[ArchiveBlockRow] = []
+    for block in message.blocks:
+        if block.block_type == "thinking" and not projection.include_reasoning:
+            continue
+        if block.block_type == "code" and not projection.include_code:
+            continue
+        if block.block_type == "tool_use" and not projection.include_tool_calls:
+            continue
+        if block.block_type == "tool_result":
+            semantic_type = tool_semantics.get(block.tool_id or "", block.semantic_type or "")
+            if semantic_type == "file_read" and not (projection.include_file_reads and projection.include_tool_outputs):
+                continue
+            if semantic_type != "file_read" and not projection.include_tool_outputs:
+                continue
+        if block.block_type in {"image", "document", "file"} and not projection.include_attachments:
+            continue
+        if block.block_type == "text":
+            text = _project_text_block(block.text, projection)
+            if text is None:
+                continue
+            blocks.append(replace(block, text=text))
+            continue
+        if (
+            block.block_type not in {"thinking", "code", "tool_use", "tool_result", "image", "document", "file"}
+            and not projection.include_prose
+        ):
+            continue
+        blocks.append(block)
+    if not blocks and projection.filters_content():
+        return None
+    return replace(message, blocks=tuple(blocks))
+
+
 def archive_message_payload(message: ArchiveMessageRow, *, session_id: str) -> MCPMessagePayload:
     """Project one archive message into the generic MCP message shape."""
     from polylogue.mcp.payloads import MCPMessagePayload
@@ -254,6 +323,7 @@ def archive_messages_payload(
     *,
     roles: Sequence[str] = (),
     message_type: str | None = None,
+    content_projection: ContentProjectionSpec | None = None,
     limit: int,
     offset: int,
 ) -> MCPMessagesListPayload:
@@ -262,10 +332,12 @@ def archive_messages_payload(
 
     role_filter = frozenset(roles)
     messages = [
-        message
+        projected
         for message in session.messages
         if (not role_filter or message.role in role_filter)
         and (message_type is None or message.message_type == message_type)
+        for projected in (_project_archive_message(message, content_projection),)
+        if projected is not None
     ]
     page = messages[offset : offset + limit]
     return MCPMessagesListPayload(
