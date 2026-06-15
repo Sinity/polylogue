@@ -70,6 +70,7 @@ READ_BY_ID_NONE_METHODS: frozenset[str] = frozenset(
         "get_session_profile_record",
         "get_session_latency_profile_insight",
         "resume_brief",
+        "recovery_digest",
     }
 )
 
@@ -621,6 +622,25 @@ async def test_get_session_returns_typed_object(tmp_path: Path) -> None:
         assert conv is not None
         assert isinstance(conv, Session)
         assert conv.title == "Alpha"
+    finally:
+        await archive.close()
+
+
+async def test_recovery_digest_compiles_seeded_session(tmp_path: Path) -> None:
+    """``recovery_digest`` exposes the deterministic transform surface (#1880)."""
+    archive = _archive(tmp_path)
+    db_path = archive.config.archive_root / "index.db"
+    await _seed_two_sessions(db_path)
+    try:
+        digest = await archive.recovery_digest("claude-ai-export:conv-alpha")
+
+        assert digest is not None
+        assert digest.session_id == "claude-ai-export:conv-alpha"
+        assert digest.transform.transform_id == "recovery_digest_v0"
+        assert digest.transform.input_session_id == "claude-ai-export:conv-alpha"
+        assert digest.resume_markdown.startswith("# Resume: Alpha")
+        assert digest.raw_refs
+        assert await archive.recovery_digest("nonexistent") is None
     finally:
         await archive.close()
 
