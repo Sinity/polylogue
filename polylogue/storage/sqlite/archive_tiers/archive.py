@@ -81,6 +81,8 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     upsert_annotation,
     upsert_blackboard_note,
     upsert_mark,
+    upsert_recall_pack,
+    upsert_workspace,
 )
 from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveInsightMaterialization,
@@ -1837,26 +1839,14 @@ class ArchiveStore:
         payload = dict(payload)
         payload["session_ids_json"] = session_ids_json
         initialize_archive_database(self.user_db_path, ArchiveTier.USER)
-        now_ms = int(datetime.now(UTC).timestamp() * 1000)
         user_conn = sqlite3.connect(self.user_db_path)
         try:
             existing = user_conn.execute(
                 "SELECT created_at_ms FROM recall_packs WHERE recall_pack_id = ?",
                 (pack_id,),
             ).fetchone()
-            created_at_ms = int(existing[0]) if existing is not None else now_ms
             with user_conn:
-                user_conn.execute(
-                    """
-                    INSERT INTO recall_packs (recall_pack_id, name, payload_json, created_at_ms, updated_at_ms)
-                    VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT(recall_pack_id) DO UPDATE SET
-                        name = excluded.name,
-                        payload_json = excluded.payload_json,
-                        updated_at_ms = excluded.updated_at_ms
-                    """,
-                    (pack_id, label, json.dumps(payload, sort_keys=True), created_at_ms, now_ms),
-                )
+                upsert_recall_pack(user_conn, label, payload, recall_pack_id=pack_id)
             return existing is None
         finally:
             user_conn.close()
@@ -1929,33 +1919,21 @@ class ArchiveStore:
         active_target_json: str,
     ) -> bool:
         """Create or update one reader workspace in archive user.db."""
-        settings = {
+        settings: dict[str, object] = {
             "mode": mode,
             "open_targets_json": open_targets_json,
             "layout_json": layout_json,
             "active_target_json": active_target_json,
         }
         initialize_archive_database(self.user_db_path, ArchiveTier.USER)
-        now_ms = int(datetime.now(UTC).timestamp() * 1000)
         user_conn = sqlite3.connect(self.user_db_path)
         try:
             existing = user_conn.execute(
                 "SELECT created_at_ms FROM workspaces WHERE workspace_id = ?",
                 (workspace_id,),
             ).fetchone()
-            created_at_ms = int(existing[0]) if existing is not None else now_ms
             with user_conn:
-                user_conn.execute(
-                    """
-                    INSERT INTO workspaces (workspace_id, name, settings_json, created_at_ms, updated_at_ms)
-                    VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT(workspace_id) DO UPDATE SET
-                        name = excluded.name,
-                        settings_json = excluded.settings_json,
-                        updated_at_ms = excluded.updated_at_ms
-                    """,
-                    (workspace_id, name, json.dumps(settings, sort_keys=True), created_at_ms, now_ms),
-                )
+                upsert_workspace(user_conn, name, settings, workspace_id=workspace_id)
             return existing is None
         finally:
             user_conn.close()

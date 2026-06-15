@@ -467,6 +467,17 @@ def upsert_recall_pack(
         """,
         (resolved_id, name, _json_dumps(payload), created_at_ms, timestamp),
     )
+    upsert_assertion(
+        conn,
+        assertion_id=_deterministic_id(f"assertion-{AssertionKind.RECALL_PACK}", resolved_id),
+        target_ref=f"recall_pack:{resolved_id}",
+        kind=AssertionKind.RECALL_PACK,
+        key=name,
+        value=payload,
+        body_text=name,
+        author_kind="user",
+        now_ms=timestamp,
+    )
     return read_archive_recall_pack_envelope(conn, resolved_id)
 
 
@@ -475,23 +486,36 @@ def upsert_workspace(
     name: str,
     settings: dict[str, object],
     *,
+    workspace_id: str | None = None,
     now_ms: int | None = None,
 ) -> ArchiveWorkspaceEnvelope:
     """Insert-or-update one workspace keyed by name."""
     timestamp = now_ms if now_ms is not None else _now_ms()
-    workspace_id = _deterministic_id("workspace", name)
-    existing = conn.execute("SELECT created_at_ms FROM workspaces WHERE name = ?", (name,)).fetchone()
+    resolved_id = workspace_id or _deterministic_id("workspace", name)
+    existing = conn.execute("SELECT created_at_ms FROM workspaces WHERE workspace_id = ?", (resolved_id,)).fetchone()
     created_at_ms = int(existing[0]) if existing is not None else timestamp
 
     conn.execute(
         """
         INSERT INTO workspaces (workspace_id, name, settings_json, created_at_ms, updated_at_ms)
         VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(name) DO UPDATE SET
+        ON CONFLICT(workspace_id) DO UPDATE SET
+            name = excluded.name,
             settings_json = excluded.settings_json,
             updated_at_ms = excluded.updated_at_ms
         """,
-        (workspace_id, name, _json_dumps(settings), created_at_ms, timestamp),
+        (resolved_id, name, _json_dumps(settings), created_at_ms, timestamp),
+    )
+    upsert_assertion(
+        conn,
+        assertion_id=_deterministic_id(f"assertion-{AssertionKind.WORKSPACE_NOTE}", resolved_id),
+        target_ref=f"workspace:{resolved_id}",
+        kind=AssertionKind.WORKSPACE_NOTE,
+        key=name,
+        value=settings,
+        body_text=name,
+        author_kind="user",
+        now_ms=timestamp,
     )
     return read_archive_workspace_envelope(conn, name)
 

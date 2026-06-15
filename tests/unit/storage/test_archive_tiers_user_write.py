@@ -14,6 +14,8 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     ArchiveSavedViewEnvelope,
     ArchiveSuppressionEnvelope,
     ArchiveWorkspaceEnvelope,
+    AssertionKind,
+    list_assertions_for_target,
     read_archive_annotation_envelope,
     read_archive_blackboard_note_envelope,
     read_archive_correction_envelope,
@@ -210,11 +212,23 @@ def test_archive_tiers_user_write_minimal_upserts(tmp_path: Path) -> None:
     assert recall_pack.created_at_ms == 1_700_000_010_000
     assert recall_pack_refresh.updated_at_ms == 1_700_000_011_000
     assert refreshed_recall_pack.payload == {"session_ids": ["session-1", "session-2"]}
+    recall_pack_assertions = list_assertions_for_target(conn, "recall_pack:pack-1", kind=AssertionKind.RECALL_PACK)
+    assert len(recall_pack_assertions) == 1
+    assert recall_pack_assertions[0].key == "launch-pack"
+    assert recall_pack_assertions[0].value == {"session_ids": ["session-1", "session-2"]}
+    assert recall_pack_assertions[0].updated_at_ms == 1_700_000_011_000
 
     assert workspace.workspace_id == workspace_refresh.workspace_id
     assert workspace.created_at_ms == 1_700_000_012_000
     assert workspace_refresh.updated_at_ms == 1_700_000_013_000
     assert refreshed_workspace.settings == {"root": "/realm/project/polylogue", "branch": "feature"}
+    workspace_assertions = list_assertions_for_target(
+        conn, f"workspace:{workspace.workspace_id}", kind=AssertionKind.WORKSPACE_NOTE
+    )
+    assert len(workspace_assertions) == 1
+    assert workspace_assertions[0].key == "polylogue"
+    assert workspace_assertions[0].value == {"root": "/realm/project/polylogue", "branch": "feature"}
+    assert workspace_assertions[0].updated_at_ms == 1_700_000_013_000
 
     assert blackboard_note.note_id == blackboard_note_refresh.note_id
     assert blackboard_note.created_at_ms == 1_700_000_014_000
