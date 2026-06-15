@@ -13,13 +13,34 @@ shared fixtures, and `devtools lab-scenario`.
 ## Quick Start
 
 ```bash
-# User-facing demo source import
+export POLYLOGUE_DEMO_HOME="$(mktemp -d)"
+export POLYLOGUE_ARCHIVE_ROOT="$POLYLOGUE_DEMO_HOME/archive"
+export XDG_CONFIG_HOME="$POLYLOGUE_DEMO_HOME/config"
+
+polylogue init
+polylogued run
+```
+
+In a second terminal with the same environment:
+
+```bash
 polylogue import --demo
+polylogue status
+polylogue stats
+polylogue "pytest" list --limit 5
+polylogue find "pytest" then read --view messages
 
 # Repository verification-lab scenarios
 devtools lab-scenario run archive-smoke --tier 0
 devtools lab-scenario verify-baselines
 ```
+
+`polylogue import --demo` is a daemon scheduling command, not an in-process
+archive build. It materializes approved fixture sources under the configured
+archive root, stages them into the daemon inbox, and reports success only after
+the daemon accepts scheduling. Until the running daemon converges the staged
+source, `polylogue status` may show an empty or in-progress archive and
+search/read examples can legitimately return no rows.
 
 ## How It Works
 
@@ -43,6 +64,29 @@ The test suite uses the same `SyntheticCorpus` infrastructure through shared fix
 
 `polylogue import --demo` uses the named `build_demo_corpus_specs()` fixture
 world so README examples and release checks can run without private exports.
+
+## README Demo Evidence
+
+The deterministic archive evidence for the current demo fixture world is
+`tests/unit/scenarios/test_demo_archive_convergence.py`. That test writes the
+same `build_demo_corpus_specs()` artifacts, converges them in process with
+`parse_sources_archive()`, and verifies:
+
+- three sessions are stored: ChatGPT export, Claude Code session, and Codex
+  session;
+- nineteen messages are indexed;
+- raw source paths remain relative (`chatgpt/demo-00.json`,
+  `claude-code/demo-00.jsonl`, `codex/demo-00.jsonl`);
+- `polylogue` full-text search for `pytest` is backed by the Claude Code demo
+  session;
+- repeating convergence is idempotent for raw sessions, sessions, messages,
+  and blocks.
+
+SPEC_MISMATCH: the README command transcript exercises the shipped
+daemon-backed scheduling surface, while the convergence evidence above uses
+the in-process archive parser. The documented search/read examples are
+therefore truthful after daemon convergence, but `polylogue import --demo`
+itself does not synchronously prove the archive contains those rows.
 
 ---
 
