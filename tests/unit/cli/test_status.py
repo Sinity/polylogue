@@ -405,6 +405,52 @@ class TestNoArchiveStatus:
             "ops.db",
         ]
 
+    def test_direct_status_json_maps_embeddings_component_readiness(self, tmp_path: Path) -> None:
+        env = _make_app_env()
+        db_anchor = tmp_path / "index.db"
+        initialize_archive_database(db_anchor, ArchiveTier.INDEX)
+        embedding_payload = {
+            "config_enabled": True,
+            "has_voyage_api_key": True,
+            "status": "partial",
+            "total_sessions": 3,
+            "embedded_sessions": 2,
+            "embedded_messages": 20,
+            "pending_sessions": 1,
+            "stale_messages": 4,
+            "failure_count": 0,
+            "freshness_status": "stale",
+            "retrieval_ready": True,
+            "next_action": {
+                "code": "refresh_stale",
+                "command": "polylogue embed backfill --max-sessions 10",
+                "reason": "Existing vectors are stale for at least one message.",
+            },
+        }
+
+        with (
+            patch("polylogue.paths.db_path", return_value=db_anchor),
+            patch("polylogue.paths.archive_root", return_value=tmp_path),
+            patch(
+                "polylogue.storage.embeddings.status_payload.embedding_status_payload",
+                return_value=embedding_payload,
+            ),
+        ):
+            _show_direct_json(env)
+
+        payload = json.loads(_combined_calls(env))
+        readiness = payload["component_readiness"]["embeddings"]
+        assert readiness["component"] == "embeddings"
+        assert readiness["scope"] == "semantic"
+        assert readiness["state"] == "stale"
+        assert readiness["summary"] == "partial"
+        assert readiness["counts"]["total_sessions"] == 3
+        assert readiness["counts"]["embedded_sessions"] == 2
+        assert readiness["counts"]["stale_messages"] == 4
+        assert readiness["counts"]["retrieval_ready"] is True
+        assert readiness["caveats"] == []
+        assert readiness["repair_hint"] == "polylogue embed backfill --max-sessions 10"
+
     def test_direct_status_uses_active_archive_root(self, tmp_path: Path) -> None:
         env = _make_app_env()
         db_anchor = tmp_path / "custom.sqlite"
