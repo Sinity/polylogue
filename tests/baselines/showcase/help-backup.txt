@@ -3,10 +3,16 @@ Usage: polylogue backup [OPTIONS]
   Back up the Polylogue archive durability tiers.
 
 Options:
-  --output-dir PATH  Directory to write the backup into.  [required]
-  --check            Verify backup prerequisites without creating a backup.
-  --include-blobs    Accepted for compatibility; backups copy referenced blobs
-                     automatically.
-  --verify           Restore the finished backup into a scratch directory and
-                     run smoke checks.
-  -h, --help         Show this message and exit.
+  --output-dir PATH               Directory to write the backup into.
+                                  [required]
+  --check                         Verify backup prerequisites without creating
+                                  a backup.
+  --include-blobs                 Accepted for compatibility; backups copy
+                                  referenced blobs automatically.
+  --verify                        Restore the finished backup into a scratch
+                                  directory and run smoke checks.
+  --profile [full_evidence|user_overlays|rebuildable_cache_exclude|diagnostics_bundle]
+                                  Named backup profile controlling copied
+                                  archive tiers.  [default:
+                                  rebuildable_cache_exclude]
+  -h, --help                      Show this message and exit.
