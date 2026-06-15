@@ -406,6 +406,59 @@ class TestDeleteVerbCardinality:
 
 
 # ---------------------------------------------------------------------------
+# resolve_session_ids_for_verb — --sample is rejected, never silently ignored
+# ---------------------------------------------------------------------------
+
+
+class TestSampleRejectedForMutatingVerbs:
+    """``--sample`` must not silently widen a mutating verb's blast radius.
+
+    ``--sample N`` is a display-window random subset; the verb resolution path
+    deliberately resolves the COMPLETE matched set. Honoring it would mean a
+    destructive ``delete``/``mark`` operated on every match while the operator
+    believed only N rows were in scope. The shared resolver rejects the
+    combination up front rather than ignoring it.
+    """
+
+    def test_resolver_rejects_sample(self) -> None:
+        from polylogue.cli.verb_cardinality import resolve_session_ids_for_verb
+
+        request = RootModeRequest.from_params({"sample": 5})
+        assert request.query_spec().sample == 5
+
+        with patch("polylogue.api.sync.bridge.run_coroutine_sync") as mock_run:
+            with pytest.raises(click.UsageError, match="--sample"):
+                resolve_session_ids_for_verb(cast(object, MagicMock()), request)  # type: ignore[arg-type]
+
+        # The guard fires before any DB resolution.
+        mock_run.assert_not_called()
+
+    def test_resolver_allows_absent_sample(self) -> None:
+        """Without --sample the resolver proceeds to the async DB path."""
+        from polylogue.cli.verb_cardinality import resolve_session_ids_for_verb
+
+        request = RootModeRequest.from_params({})
+        assert request.query_spec().sample is None
+
+        with (
+            # _async_resolve_ids is stubbed so no coroutine is created and the
+            # MagicMock env is never dereferenced for real DB work.
+            patch(
+                "polylogue.cli.verb_cardinality._async_resolve_ids",
+                new=lambda env, request: object(),
+            ),
+            patch(
+                "polylogue.api.sync.bridge.run_coroutine_sync",
+                return_value=["id1"],
+            ) as mock_run,
+        ):
+            result = resolve_session_ids_for_verb(cast(object, MagicMock()), request)  # type: ignore[arg-type]
+
+        assert result == ["id1"]
+        mock_run.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
 # analyze_verb — no cardinality restriction
 # ---------------------------------------------------------------------------
 
