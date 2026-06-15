@@ -35,6 +35,7 @@ logger = get_logger(__name__)
 _PARSER_FINGERPRINT = "live-batched-v2"
 _CATCH_UP_MAX_BATCH_FILES = 50
 _CATCH_UP_MAX_BATCH_BYTES = 64 * 1024 * 1024
+INBOX_SOURCE_SUFFIXES = (".jsonl", ".zip", ".json", ".ndjson")
 
 
 @dataclass(frozen=True, slots=True)
@@ -606,7 +607,7 @@ def default_sources() -> tuple[WatchSource, ...]:
         WatchSource(name="antigravity", root=antigravity_path(), suffixes=(".metadata.json",)),
         # #1683: inbox accepts archive, zip, and json-line formats so that
         # GDPR exports (typically .zip) and raw .json dumps are observed.
-        WatchSource(name="inbox", root=archive_root() / "inbox", suffixes=(".jsonl", ".zip", ".json", ".ndjson")),
+        WatchSource(name="inbox", root=archive_root() / "inbox", suffixes=INBOX_SOURCE_SUFFIXES),
         WatchSource(name="hooks", root=hooks_sidecar_dir()),
     )
 

@@ -384,6 +384,21 @@ def test_polylogued_watch_builds_sources_from_roots(tmp_path: Path) -> None:
     assert "Watching 2 source(s); debounce=2.0s" in result.stderr
 
 
+def test_explicit_archive_inbox_root_keeps_import_suffixes(workspace_env: dict[str, Path]) -> None:
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.sources.live.watcher import INBOX_SOURCE_SUFFIXES
+
+    inbox = workspace_env["archive_root"] / "inbox"
+    ordinary = workspace_env["archive_root"] / "ordinary-jsonl-root"
+
+    sources = daemon_cli._watch_sources_from_roots((inbox, ordinary))
+
+    assert sources == (
+        WatchSource(name="inbox", root=inbox, suffixes=INBOX_SOURCE_SUFFIXES),
+        WatchSource(name="ordinary-jsonl-root", root=ordinary, suffixes=(".jsonl",)),
+    )
+
+
 def test_run_live_watcher_stops_on_keyboard_interrupt() -> None:
     from polylogue.daemon import cli as daemon_cli
 

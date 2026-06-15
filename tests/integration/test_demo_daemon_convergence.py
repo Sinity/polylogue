@@ -1,15 +1,9 @@
-"""Live-daemon scheduling harness for ``polylogue import --demo`` (#1843).
+"""Live-daemon convergence harness for ``polylogue import --demo`` (#1843).
 
 This test covers the real scheduling chain:
 
 ``polylogue import --demo`` -> daemon ``/api/ingest`` acceptance -> staged
-demo fixture in the archive inbox.
-
-SPEC_MISMATCH: the attempted full convergence assertion showed that the
-current live daemon path converges only 2 of the 3 generated demo sessions
-from this fixture world when driven through filesystem watch events. Keep this
-test at the accepted-operation boundary until the daemon scheduling path has a
-deterministic operation-to-worker handoff for staged directories.
+demo fixture in the archive inbox -> live daemon convergence.
 """
 
 from __future__ import annotations
@@ -18,6 +12,7 @@ import asyncio
 import contextlib
 import os
 import socket
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -27,6 +22,27 @@ from urllib.request import urlopen
 import pytest
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
+
+EXPECTED_DEMO_SESSIONS = (
+    (
+        "chatgpt-export:dc13ca54-0bba-4298-a38f-09068c2ef2c5",
+        "chatgpt-export",
+        "dc13ca54-0bba-4298-a38f-09068c2ef2c5",
+        3,
+    ),
+    (
+        "claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6",
+        "claude-code-session",
+        "63705dcc-f3e5-4378-8118-8bc21e53bbb6",
+        10,
+    ),
+    (
+        "codex-session:demo-00",
+        "codex-session",
+        "demo-00",
+        6,
+    ),
+)
 
 
 def _free_local_port() -> int:
@@ -74,11 +90,66 @@ def _run_import_demo(daemon_url: str, env: dict[str, str]) -> subprocess.Complet
     )
 
 
-async def test_import_demo_is_accepted_by_live_daemon_scheduling_path(
+def _session_rows(archive_root: Path) -> tuple[tuple[object, ...], ...]:
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        rows = conn.execute(
+            """
+            SELECT session_id, origin, native_id, message_count
+            FROM sessions
+            ORDER BY origin, native_id
+            """
+        ).fetchall()
+    return tuple(tuple(row) for row in rows)
+
+
+def _message_count(archive_root: Path) -> int:
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        return int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
+
+
+async def _wait_for_demo_archive(
+    archive_root: Path,
+    *,
+    daemon_log: Path,
+    timeout_s: float = 20.0,
+) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout_s
+    last_error: BaseException | None = None
+    while asyncio.get_running_loop().time() < deadline:
+        try:
+            if _session_rows(archive_root) == EXPECTED_DEMO_SESSIONS and _message_count(archive_root) == 19:
+                return
+        except (OSError, sqlite3.Error) as exc:
+            last_error = exc
+        await asyncio.sleep(0.1)
+
+    log_text = daemon_log.read_text(encoding="utf-8", errors="replace") if daemon_log.exists() else "<missing>"
+    try:
+        rows = _session_rows(archive_root)
+        messages = _message_count(archive_root)
+    except (OSError, sqlite3.Error):
+        rows = ()
+        messages = -1
+    raise AssertionError(
+        "demo import did not converge through live daemon path: "
+        f"sessions={len(rows)} messages={messages} rows={rows!r} "
+        f"last_error={last_error!r}\ndaemon log:\n{log_text}"
+    )
+
+
+def _assert_demo_searchable(archive_root: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    with ArchiveStore.open_existing(archive_root, read_only=True) as archive:
+        hits = archive.search_summaries("pytest", limit=5)
+    assert "claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6" in {hit.session_id for hit in hits}
+
+
+async def test_import_demo_converges_through_live_daemon_path(
     workspace_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``polylogue import --demo`` reaches a real daemon accepted operation."""
+    """``polylogue import --demo`` reaches and converges through a real daemon."""
     from polylogue.core.degraded import clear_degraded
 
     clear_degraded()
@@ -126,6 +197,11 @@ async def test_import_demo_is_accepted_by_live_daemon_scheduling_path(
             staged = inbox / "demo-fixture-world-source"
             assert sorted(path.name for path in staged.iterdir()) == ["chatgpt", "claude-code", "codex"]
             assert len(tuple(staged.rglob("demo-*.json*"))) == 3
+
+            await _wait_for_demo_archive(archive_root, daemon_log=daemon_log)
+            assert _session_rows(archive_root) == EXPECTED_DEMO_SESSIONS
+            assert _message_count(archive_root) == 19
+            _assert_demo_searchable(archive_root)
             assert daemon.poll() is None
         finally:
             daemon.terminate()
