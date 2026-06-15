@@ -307,7 +307,7 @@ jobs:
       - name: List artifacts about to be signed and published
         run: ls -la dist/
       - name: Sign wheel + sdist with Sigstore (keyless OIDC)
-        uses: sigstore/gh-action-sigstore-python@v3.0.0
+        uses: sigstore/gh-action-sigstore-python@v3.4.0
         with:
           inputs: |
             ./dist/*.whl
@@ -350,7 +350,7 @@ jobs:
       - name: List artifacts about to be signed and published
         run: ls -la dist/
       - name: Sign wheel + sdist with Sigstore (keyless OIDC)
-        uses: sigstore/gh-action-sigstore-python@v3.0.0
+        uses: sigstore/gh-action-sigstore-python@v3.4.0
         with:
           inputs: |
             ./dist/*.whl
@@ -389,7 +389,7 @@ jobs:
       - name: List artifacts about to be signed and published
         run: ls -la dist/
       - name: Sign wheel + sdist with Sigstore (keyless OIDC)
-        uses: sigstore/gh-action-sigstore-python@v3.0.0
+        uses: sigstore/gh-action-sigstore-python@v3.4.0
         with:
           inputs: |
             ./dist/*.whl
