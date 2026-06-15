@@ -393,10 +393,11 @@ def read_verb(
         return
 
     if view == "recovery":
+        effective_format = output_format or request.params.get("output_format")
         _run_read_recovery(
             env,
             session_id=session_id,
-            output_format=output_format,
+            output_format=effective_format if isinstance(effective_format, str) else None,
             destination=destination,
             out_path=out_path,
         )

@@ -252,6 +252,31 @@ def test_read_view_recovery_json_uses_success_envelope(capsys: pytest.CaptureFix
     assert '"recovery"' in output
 
 
+def test_read_view_recovery_honors_root_json_format() -> None:
+    """Root --json applies to recovery output when the verb has no local format."""
+    _, child = _context_pair(params={"conv_id": "codex-session:abc123", "output_format": "json"}, query_terms=())
+    child.obj.polylogue = SimpleNamespace()
+    wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
+    assert callable(wrapped)
+
+    async def get_session(session_id: str) -> SimpleNamespace:
+        return SimpleNamespace(id=session_id)
+
+    child.obj.polylogue.get_session = get_session
+    digest = SimpleNamespace(resume_markdown="# Resume\n")
+
+    with (
+        patch("polylogue.insights.transforms.compile_recovery_digest", return_value=digest),
+        patch("polylogue.surfaces.payloads.model_json_document", return_value={"session_id": "codex-session:abc123"}),
+        patch("polylogue.cli.query_verbs._deliver_content") as deliver,
+    ):
+        wrapped(child, **_read_verb_kwargs(view="recovery", output_format=None))
+
+    content = deliver.call_args.args[1]
+    assert '"status": "ok"' in content
+    assert '"recovery"' in content
+
+
 def test_read_view_recovery_requires_session_id() -> None:
     env = SimpleNamespace(polylogue=SimpleNamespace())
 
