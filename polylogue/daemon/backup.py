@@ -18,6 +18,7 @@ import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -27,6 +28,14 @@ from polylogue.storage.blob_store import BlobStore
 
 logger = get_logger(__name__)
 
+BackupProfile = Literal["full_evidence", "user_overlays", "rebuildable_cache_exclude", "diagnostics_bundle"]
+BACKUP_PROFILES: tuple[BackupProfile, ...] = (
+    "full_evidence",
+    "user_overlays",
+    "rebuildable_cache_exclude",
+    "diagnostics_bundle",
+)
+
 
 class BackupResult(BaseModel):
     """Result of a backup operation."""
@@ -34,6 +43,7 @@ class BackupResult(BaseModel):
     ok: bool
     output_path: str | None = None
     backup_mode: str = "archive_file_set"
+    backup_profile: str = "rebuildable_cache_exclude"
     db_size_bytes: int = 0
     blob_count: int = 0
     blob_size_bytes: int = 0
@@ -86,10 +96,38 @@ def _omitted_archive_tiers(root: Path) -> dict[str, Path]:
     }
 
 
+def _all_archive_tiers(root: Path) -> dict[str, Path]:
+    return {
+        "source": root / "source.db",
+        "index": root / "index.db",
+        "embeddings": root / "embeddings.db",
+        "user": root / "user.db",
+        "ops": root / "ops.db",
+    }
+
+
+def _profile_archive_tiers(root: Path, profile: BackupProfile) -> dict[str, Path]:
+    all_tiers = _all_archive_tiers(root)
+    if profile == "full_evidence":
+        return all_tiers
+    if profile == "user_overlays":
+        return {"user": all_tiers["user"]}
+    if profile == "diagnostics_bundle":
+        return {"ops": all_tiers["ops"]}
+    return {
+        "source": all_tiers["source"],
+        "user": all_tiers["user"],
+        "embeddings": all_tiers["embeddings"],
+    }
+
+
+def _profile_omitted_tiers(root: Path, profile: BackupProfile) -> dict[str, Path]:
+    included = set(_profile_archive_tiers(root, profile))
+    return {tier: path for tier, path in _all_archive_tiers(root).items() if tier not in included}
+
+
 def _archive_layout_present(root: Path) -> bool:
-    return any(
-        path.exists() for path in (*_precious_archive_tiers(root).values(), *_omitted_archive_tiers(root).values())
-    )
+    return any(path.exists() for path in _all_archive_tiers(root).values())
 
 
 def _readable_sqlite(path: Path) -> str | None:
@@ -104,7 +142,7 @@ def _readable_sqlite(path: Path) -> str | None:
     return None
 
 
-def _check_prerequisites() -> list[str]:
+def _check_prerequisites(*, profile: BackupProfile = "rebuildable_cache_exclude") -> list[str]:
     """Return a list of warning/error strings for backup prerequisites."""
     warnings: list[str] = []
 
@@ -112,7 +150,7 @@ def _check_prerequisites() -> list[str]:
     if not _archive_layout_present(root):
         return [f"archive tiers not found under {root}"]
 
-    for tier, path in _precious_archive_tiers(root).items():
+    for tier, path in _profile_archive_tiers(root, profile).items():
         if not path.exists():
             warnings.append(f"{tier}.db not found at {path}")
             continue
@@ -123,7 +161,7 @@ def _check_prerequisites() -> list[str]:
     # Check available disk space (rough estimate: 2x db size for VACUUM INTO).
     try:
         db_size = 0
-        for path in _precious_archive_tiers(root).values():
+        for path in _profile_archive_tiers(root, profile).values():
             if path.exists():
                 db_size += path.stat().st_size
                 wal = path.with_suffix(".db-wal")
@@ -192,7 +230,9 @@ def _write_manifest(
     *,
     backup_root: Path,
     mode: str,
+    profile: BackupProfile,
     backed_up_files: list[str],
+    included_tiers: list[str],
     omitted_tiers: list[str],
     blob_count: int,
     blob_size: int,
@@ -202,7 +242,9 @@ def _write_manifest(
         "format": "polylogue-backup-v1",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "mode": mode,
+        "profile": profile,
         "backed_up_files": backed_up_files,
+        "included_tiers": included_tiers,
         "omitted_tiers": omitted_tiers,
         "blob_count": blob_count,
         "blob_size_bytes": blob_size,
@@ -217,12 +259,14 @@ def backup_archive(
     check_only: bool = False,
     include_blobs: bool = False,
     verify: bool = False,
+    profile: BackupProfile = "rebuildable_cache_exclude",
 ) -> BackupResult:
     """Backup the Polylogue archive.
 
-    archives are backed up by durability tier: source.db,
-    user.db, embeddings.db, plus blobs referenced by source.db. index.db and
-    ops.db are intentionally omitted because they are rebuildable/disposable.
+    Archives are backed up by named durability profiles. The default
+    ``rebuildable_cache_exclude`` profile preserves the historical behavior:
+    source.db, user.db, embeddings.db, plus blobs referenced by source.db;
+    index.db and ops.db are omitted because they are rebuildable/disposable.
 
     Args:
         output_dir: Target directory for the backup.
@@ -231,15 +275,17 @@ def backup_archive(
             only blobs referenced by source.db.
         verify: Restore the finished backup into a scratch directory and run
             integrity/smoke checks before returning.
+        profile: Named backup profile controlling which archive tiers are copied.
     """
     started = time.monotonic()
 
     if check_only:
-        warnings = _check_prerequisites()
+        warnings = _check_prerequisites(profile=profile)
         return BackupResult(
             ok=len(warnings) == 0,
             check_only=True,
             backup_mode="archive_file_set",
+            backup_profile=profile,
             warnings=warnings,
             error=warnings[0] if warnings else None,
             elapsed_s=round(time.monotonic() - started, 3),
@@ -250,23 +296,26 @@ def backup_archive(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     del include_blobs
-    result = _backup_archive(output_dir=output_dir, started=started)
+    result = _backup_archive(output_dir=output_dir, started=started, profile=profile)
     if verify and result.ok and result.output_path is not None:
         _verify_backup_result(result)
     return result
 
 
-def _backup_archive(*, output_dir: Path, started: float) -> BackupResult:
+def _backup_archive(*, output_dir: Path, started: float, profile: BackupProfile) -> BackupResult:
     root = archive_root()
-    warnings = _check_prerequisites()
+    included_tiers = _profile_archive_tiers(root, profile)
+    omitted_tiers = _profile_omitted_tiers(root, profile)
+    warnings = _check_prerequisites(profile=profile)
     if _has_backup_error(warnings):
         return BackupResult(
             ok=False,
             backup_mode="archive_file_set",
+            backup_profile=profile,
             error=warnings[0],
             elapsed_s=round(time.monotonic() - started, 3),
             warnings=warnings,
-            omitted_tiers=list(_omitted_archive_tiers(root)),
+            omitted_tiers=[f"{tier}.db" for tier in omitted_tiers],
         )
 
     ts = _timestamp()
@@ -275,24 +324,30 @@ def _backup_archive(*, output_dir: Path, started: float) -> BackupResult:
 
     db_size = 0
     backed_up_files: list[str] = []
-    for tier, src in _precious_archive_tiers(root).items():
+    for tier, src in included_tiers.items():
         dst = backup_root / f"{tier}.db"
         db_size += _backup_sqlite(src, dst)
         backed_up_files.append(str(dst))
 
-    blob_count, blob_size = _copy_referenced_blobs(
-        source_db=_precious_archive_tiers(root)["source"],
-        backup_root=backup_root,
-        warnings=warnings,
-    )
+    if "source" in included_tiers:
+        blob_count, blob_size = _copy_referenced_blobs(
+            source_db=included_tiers["source"],
+            backup_root=backup_root,
+            warnings=warnings,
+        )
+    else:
+        blob_count = 0
+        blob_size = 0
     if blob_count:
         backed_up_files.append(str(backup_root / "blob"))
 
-    omitted = [f"{tier}.db" for tier in _omitted_archive_tiers(root)]
+    omitted = [f"{tier}.db" for tier in omitted_tiers]
     _write_manifest(
         backup_root=backup_root,
         mode="archive_file_set",
+        profile=profile,
         backed_up_files=backed_up_files,
+        included_tiers=[f"{tier}.db" for tier in included_tiers],
         omitted_tiers=omitted,
         blob_count=blob_count,
         blob_size=blob_size,
@@ -304,6 +359,7 @@ def _backup_archive(*, output_dir: Path, started: float) -> BackupResult:
         ok=True,
         output_path=str(backup_root),
         backup_mode="archive_file_set",
+        backup_profile=profile,
         db_size_bytes=db_size,
         blob_count=blob_count,
         blob_size_bytes=blob_size,
@@ -364,11 +420,16 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
             return {"ok": False, "mode": "archive_file_set", "error": "manifest.json is missing"}
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
+        included_tiers = [
+            str(item) for item in manifest.get("included_tiers", ("source.db", "user.db", "embeddings.db"))
+        ]
+        omitted_tiers = [str(item) for item in manifest.get("omitted_tiers", ("index.db", "ops.db"))]
         tier_integrity = {
-            name: _sqlite_integrity_ok(restored / f"{name}.db") if (restored / f"{name}.db").exists() else False
-            for name in ("source", "user", "embeddings")
+            name.removesuffix(".db"): _sqlite_integrity_ok(restored / name) if (restored / name).exists() else False
+            for name in included_tiers
+            if name.endswith(".db")
         }
-        omitted_absent = not (restored / "index.db").exists() and not (restored / "ops.db").exists()
+        omitted_absent = all(not (restored / name).exists() for name in omitted_tiers)
         blob_count = int(manifest.get("blob_count", 0) or 0)
         restored_blob_count = sum(1 for path_ in (restored / "blob").rglob("*") if path_.is_file()) if blob_count else 0
         blobs_ok = restored_blob_count == blob_count
@@ -376,6 +437,7 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
         return {
             "ok": ok,
             "mode": "archive_file_set",
+            "profile": manifest.get("profile", "rebuildable_cache_exclude"),
             "tier_integrity": tier_integrity,
             "omitted_tiers_absent": omitted_absent,
             "manifest_blob_count": blob_count,
@@ -399,6 +461,7 @@ def format_backup_result(result: BackupResult) -> list[str]:
     if result.ok:
         lines.append(f"Backup complete: {result.output_path}")
         lines.append("  Mode: archive")
+        lines.append(f"  Profile: {result.backup_profile}")
         if result.omitted_tiers:
             lines.append(f"  Omitted: {', '.join(result.omitted_tiers)} (rebuildable/disposable)")
     else:
@@ -420,6 +483,8 @@ def format_backup_result(result: BackupResult) -> list[str]:
 
 __all__ = [
     "BackupResult",
+    "BACKUP_PROFILES",
+    "BackupProfile",
     "backup_archive",
     "format_backup_result",
 ]

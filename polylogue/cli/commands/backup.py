@@ -6,7 +6,7 @@ from pathlib import Path
 
 import click
 
-from polylogue.daemon.backup import backup_archive, format_backup_result
+from polylogue.daemon.backup import BACKUP_PROFILES, BackupProfile, backup_archive, format_backup_result
 from polylogue.logging import configure_logging
 
 
@@ -39,11 +39,19 @@ from polylogue.logging import configure_logging
     default=False,
     help="Restore the finished backup into a scratch directory and run smoke checks.",
 )
+@click.option(
+    "--profile",
+    type=click.Choice(BACKUP_PROFILES),
+    default="rebuildable_cache_exclude",
+    show_default=True,
+    help="Named backup profile controlling copied archive tiers.",
+)
 def backup_command(
     output_dir: Path,
     check_only: bool,
     include_blobs: bool,
     verify: bool,
+    profile: BackupProfile,
 ) -> None:
     """Back up the Polylogue archive.
 
@@ -60,6 +68,7 @@ def backup_command(
         check_only=check_only,
         include_blobs=include_blobs,
         verify=verify,
+        profile=profile,
     )
     for line in format_backup_result(result):
         click.echo(line)
