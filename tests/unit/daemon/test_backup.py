@@ -221,6 +221,34 @@ def test_backup_archive_full_evidence_profile_includes_all_tiers(
     assert manifest["omitted_tiers"] == []
 
 
+def test_backup_archive_full_evidence_profile_treats_ops_as_optional(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    db_setup(workspace_env)
+    archive_root = workspace_env["archive_root"]
+    (archive_root / "ops.db").unlink()
+
+    result = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+
+    assert result.ok
+    assert result.backup_profile == "full_evidence"
+    assert result.omitted_tiers == ["ops.db"]
+    assert result.verified is True
+    assert result.verification["tier_integrity"] == {
+        "source": True,
+        "index": True,
+        "embeddings": True,
+        "user": True,
+    }
+    assert result.output_path is not None
+    backup_root = Path(result.output_path)
+    assert not (backup_root / "ops.db").exists()
+    manifest = json.loads((backup_root / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["included_tiers"] == ["source.db", "index.db", "embeddings.db", "user.db"]
+    assert manifest["omitted_tiers"] == ["ops.db"]
+
+
 def test_backup_archive_user_overlays_profile_copies_only_user_tier(
     workspace_env: dict[str, Path],
     tmp_path: Path,
@@ -269,6 +297,17 @@ def test_backup_archive_diagnostics_profile_copies_only_ops_tier(
     assert manifest["profile"] == "diagnostics_bundle"
     assert manifest["included_tiers"] == ["ops.db"]
     assert manifest["omitted_tiers"] == ["source.db", "index.db", "embeddings.db", "user.db"]
+
+
+def test_backup_result_formats_non_default_omissions_neutrally() -> None:
+    from polylogue.daemon.backup import BackupResult, format_backup_result
+
+    lines = format_backup_result(
+        BackupResult(ok=True, output_path="/tmp/backup", backup_profile="user_overlays", omitted_tiers=["source.db"])
+    )
+
+    assert "  Omitted by profile: source.db" in lines
+    assert all("rebuildable/disposable" not in line for line in lines)
 
 
 def test_backup_archive_requires_precious_tiers(workspace_env: dict[str, Path], tmp_path: Path) -> None:

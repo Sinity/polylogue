@@ -121,6 +121,14 @@ def _profile_archive_tiers(root: Path, profile: BackupProfile) -> dict[str, Path
     }
 
 
+def _optional_profile_tiers(profile: BackupProfile) -> set[str]:
+    if profile == "full_evidence":
+        return {"ops"}
+    if profile == "rebuildable_cache_exclude":
+        return {"embeddings"}
+    return set()
+
+
 def _profile_omitted_tiers(root: Path, profile: BackupProfile) -> dict[str, Path]:
     included = set(_profile_archive_tiers(root, profile))
     return {tier: path for tier, path in _all_archive_tiers(root).items() if tier not in included}
@@ -150,8 +158,11 @@ def _check_prerequisites(*, profile: BackupProfile = "rebuildable_cache_exclude"
     if not _archive_layout_present(root):
         return [f"archive tiers not found under {root}"]
 
+    optional_tiers = _optional_profile_tiers(profile)
     for tier, path in _profile_archive_tiers(root, profile).items():
         if not path.exists():
+            if tier in optional_tiers:
+                continue
             warnings.append(f"{tier}.db not found at {path}")
             continue
         error = _readable_sqlite(path)
@@ -304,8 +315,12 @@ def backup_archive(
 
 def _backup_archive(*, output_dir: Path, started: float, profile: BackupProfile) -> BackupResult:
     root = archive_root()
-    included_tiers = _profile_archive_tiers(root, profile)
-    omitted_tiers = _profile_omitted_tiers(root, profile)
+    included_tiers = {
+        tier: path
+        for tier, path in _profile_archive_tiers(root, profile).items()
+        if path.exists() or tier not in _optional_profile_tiers(profile)
+    }
+    omitted_tiers = {tier: path for tier, path in _all_archive_tiers(root).items() if tier not in included_tiers}
     warnings = _check_prerequisites(profile=profile)
     if _has_backup_error(warnings):
         return BackupResult(
@@ -463,7 +478,10 @@ def format_backup_result(result: BackupResult) -> list[str]:
         lines.append("  Mode: archive")
         lines.append(f"  Profile: {result.backup_profile}")
         if result.omitted_tiers:
-            lines.append(f"  Omitted: {', '.join(result.omitted_tiers)} (rebuildable/disposable)")
+            if result.backup_profile == "rebuildable_cache_exclude":
+                lines.append(f"  Omitted: {', '.join(result.omitted_tiers)} (rebuildable/disposable)")
+            else:
+                lines.append(f"  Omitted by profile: {', '.join(result.omitted_tiers)}")
     else:
         lines.append(f"Backup failed: {result.error}")
         lines.append(f"  Partial output: {result.output_path}")
