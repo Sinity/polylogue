@@ -1,4 +1,4 @@
-Usage: polylogue import [OPTIONS] PATH
+Usage: polylogue import [OPTIONS] [PATH]
 
   Schedule a file or directory for import by the running daemon.
 
@@ -9,5 +9,7 @@ Usage: polylogue import [OPTIONS] PATH
   success without observable processing.
 
 Options:
+  --demo             Generate and schedule the approved deterministic demo
+                     fixture world.
   --daemon-url TEXT  Daemon API URL.  [default: http://127.0.0.1:8766]
   -h, --help         Show this message and exit.
