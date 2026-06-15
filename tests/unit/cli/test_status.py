@@ -451,6 +451,39 @@ class TestNoArchiveStatus:
         assert readiness["caveats"] == []
         assert readiness["repair_hint"] == "polylogue embed backfill --max-sessions 10"
 
+    def test_direct_status_json_maps_search_component_readiness(self, tmp_path: Path) -> None:
+        env = _make_app_env()
+        db_anchor = tmp_path / "index.db"
+        initialize_archive_database(db_anchor, ArchiveTier.INDEX)
+        archive_readiness = {
+            "checked": True,
+            "surfaces": {
+                "search": {
+                    "ready": False,
+                    "blockers": ["messages_fts_row_mismatch"],
+                    "evidence": {"text_block_count": 10, "messages_fts_count": 8},
+                }
+            },
+        }
+
+        with (
+            patch("polylogue.paths.db_path", return_value=db_anchor),
+            patch("polylogue.paths.archive_root", return_value=tmp_path),
+            patch("polylogue.cli.commands.status._archive_readiness_status", return_value=archive_readiness),
+            patch("polylogue.storage.embeddings.status_payload.embedding_status_payload", side_effect=RuntimeError),
+        ):
+            _show_direct_json(env)
+
+        payload = json.loads(_combined_calls(env))
+        readiness = payload["component_readiness"]["search"]
+        assert payload["archive_readiness"] == archive_readiness
+        assert readiness["component"] == "search"
+        assert readiness["scope"] == "lexical"
+        assert readiness["state"] == "stale"
+        assert readiness["counts"] == {"text_block_count": 10, "messages_fts_count": 8}
+        assert readiness["caveats"] == ["messages_fts_row_mismatch"]
+        assert readiness["repair_hint"] == "polylogue maintenance run --target dangling_fts"
+
     def test_direct_status_uses_active_archive_root(self, tmp_path: Path) -> None:
         env = _make_app_env()
         db_anchor = tmp_path / "custom.sqlite"

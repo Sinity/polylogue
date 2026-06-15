@@ -182,6 +182,39 @@ def component_from_embedding_payload(payload: Mapping[str, Any]) -> ComponentRea
     )
 
 
+def component_from_archive_surface(
+    component: str,
+    surface: Mapping[str, Any],
+    *,
+    scope: str = "archive",
+    repair_hint: str | None = None,
+) -> ComponentReadiness:
+    """Map direct archive-readiness surfaces into the shared DTO."""
+    ready = surface.get("ready")
+    blockers = _string_tuple(surface.get("blockers", ()))
+    evidence = surface.get("evidence", {})
+    counts = _numeric_mapping(evidence) if isinstance(evidence, Mapping) else {}
+
+    if ready is True:
+        state = CapabilityReadinessState.READY
+    elif ready is False and blockers:
+        state = CapabilityReadinessState.STALE
+    elif ready is False:
+        state = CapabilityReadinessState.DEGRADED
+    else:
+        state = CapabilityReadinessState.UNKNOWN
+
+    return ComponentReadiness(
+        component=component,
+        scope=scope,
+        state=state,
+        summary=", ".join(blockers) if blockers else ("ready" if ready is True else "unknown"),
+        counts=counts,
+        caveats=blockers,
+        repair_hint=repair_hint if blockers else None,
+    )
+
+
 def component_from_insight_entry(entry: Any, *, scope: str = "insights") -> ComponentReadiness:
     verdict = str(getattr(entry, "verdict", "unknown"))
     state = {
@@ -272,11 +305,20 @@ def _string_tuple(values: object) -> tuple[str, ...]:
     return tuple(str(value) for value in values)
 
 
+def _numeric_mapping(values: Mapping[str, Any]) -> dict[str, int | float | bool]:
+    result: dict[str, int | float | bool] = {}
+    for key, value in values.items():
+        if isinstance(value, bool | int | float):
+            result[str(key)] = value
+    return result
+
+
 __all__ = [
     "CapabilityReadinessState",
     "ComponentReadiness",
     "LEGACY_READINESS_SOURCE_TYPES",
     "component_from_archive_debt",
+    "component_from_archive_surface",
     "component_from_catchup_status",
     "component_from_derived_model",
     "component_from_embedding_payload",
