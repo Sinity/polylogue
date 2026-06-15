@@ -13,6 +13,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Any
 
 
 class AssertionKind(StrEnum):
@@ -113,6 +114,11 @@ def assertion_id_for_mark(target_type: str, target_id: str, mark_type: str) -> s
     return _deterministic_id(f"assertion-{AssertionKind.MARK}", mark_id)
 
 
+def assertion_id_for_suppression(session_id: str) -> str:
+    """Return the mirrored assertion id for one legacy suppression row."""
+    return _deterministic_id(f"assertion-{AssertionKind.SUPPRESSION}", session_id)
+
+
 def assertion_id_for_annotation(annotation_id: str) -> str:
     """Return the mirrored assertion id for one legacy annotation row."""
     return _deterministic_id(f"assertion-{AssertionKind.ANNOTATION}", annotation_id)
@@ -136,6 +142,11 @@ def assertion_id_for_recall_pack(recall_pack_id: str) -> str:
 def assertion_id_for_workspace(workspace_id: str) -> str:
     """Return the mirrored assertion id for one legacy workspace row."""
     return _deterministic_id(f"assertion-{AssertionKind.WORKSPACE_NOTE}", workspace_id)
+
+
+def assertion_id_for_blackboard_note(note_id: str) -> str:
+    """Return the mirrored assertion id for one legacy blackboard note row."""
+    return _deterministic_id(f"assertion-{AssertionKind.NOTE}", note_id)
 
 
 def _target_ref(target_type: str | None, target_id: str | None) -> str | None:
@@ -282,7 +293,7 @@ def upsert_suppression(
     )
     upsert_assertion(
         conn,
-        assertion_id=_deterministic_id(f"assertion-{AssertionKind.SUPPRESSION}", session_id),
+        assertion_id=assertion_id_for_suppression(session_id),
         target_ref=session_id,
         kind=AssertionKind.SUPPRESSION,
         value={"mode": mode},
@@ -590,7 +601,7 @@ def upsert_blackboard_note(
     )
     upsert_assertion(
         conn,
-        assertion_id=_deterministic_id(f"assertion-{AssertionKind.NOTE}", resolved_id),
+        assertion_id=assertion_id_for_blackboard_note(resolved_id),
         target_ref=_target_ref(target_type, target_id) or resolved_id,
         kind=AssertionKind.NOTE,
         body_text=body,
@@ -615,12 +626,16 @@ def read_archive_suppression_envelope(conn: sqlite3.Connection, session_id: str)
     ).fetchone()
     if row is None:
         raise KeyError(session_id)
+    assertion = _read_mirrored_assertion(conn, assertion_id_for_suppression(session_id))
+    assertion_value = assertion.value if assertion is not None and isinstance(assertion.value, dict) else None
     return ArchiveSuppressionEnvelope(
         session_id=str(row[0]),
-        reason=str(row[1]) if row[1] is not None else None,
-        mode=str(row[2]),
-        created_at_ms=int(row[3]),
-        updated_at_ms=int(row[4]),
+        reason=assertion.body_text if assertion is not None else str(row[1]) if row[1] is not None else None,
+        mode=str(assertion_value.get("mode"))
+        if assertion_value is not None and "mode" in assertion_value
+        else str(row[2]),
+        created_at_ms=assertion.created_at_ms if assertion is not None else int(row[3]),
+        updated_at_ms=assertion.updated_at_ms if assertion is not None else int(row[4]),
     )
 
 
@@ -635,15 +650,19 @@ def read_archive_mark_envelope(conn: sqlite3.Connection, mark_id: str) -> Archiv
     ).fetchone()
     if row is None:
         raise KeyError(mark_id)
+    assertion = _read_mirrored_assertion(conn, assertion_id_for_mark(str(row[1]), str(row[2]), str(row[3])))
+    assertion_value = assertion.value if assertion is not None and isinstance(assertion.value, dict) else None
     return ArchiveMarkEnvelope(
         mark_id=str(row[0]),
         target_type=str(row[1]),
         target_id=str(row[2]),
         mark_type=str(row[3]),
-        label=str(row[4]) if row[4] is not None else None,
-        created_at_ms=int(row[5]),
-        updated_at_ms=int(row[6]),
-        metadata=_read_payload_text(row[7] if isinstance(row[7], str) else None),
+        label=assertion.body_text if assertion is not None else str(row[4]) if row[4] is not None else None,
+        created_at_ms=assertion.created_at_ms if assertion is not None else int(row[5]),
+        updated_at_ms=assertion.updated_at_ms if assertion is not None else int(row[6]),
+        metadata=assertion_value
+        if assertion_value is not None
+        else _read_payload_text(row[7] if isinstance(row[7], str) else None),
     )
 
 
@@ -658,13 +677,14 @@ def read_archive_annotation_envelope(conn: sqlite3.Connection, annotation_id: st
     ).fetchone()
     if row is None:
         raise KeyError(annotation_id)
+    assertion = _read_mirrored_assertion(conn, assertion_id_for_annotation(annotation_id))
     return ArchiveAnnotationEnvelope(
         annotation_id=str(row[0]),
         target_type=str(row[1]),
         target_id=str(row[2]),
-        body=str(row[3]),
-        created_at_ms=int(row[4]),
-        updated_at_ms=int(row[5]),
+        body=assertion.body_text if assertion is not None and assertion.body_text is not None else str(row[3]),
+        created_at_ms=assertion.created_at_ms if assertion is not None else int(row[4]),
+        updated_at_ms=assertion.updated_at_ms if assertion is not None else int(row[5]),
     )
 
 
@@ -682,14 +702,18 @@ def read_archive_correction_envelope(
     ).fetchone()
     if row is None:
         raise KeyError(correction_id)
+    assertion = _read_mirrored_assertion(conn, assertion_id_for_correction(correction_id))
+    assertion_value = assertion.value if assertion is not None and isinstance(assertion.value, dict) else None
     return ArchiveCorrectionEnvelope(
         correction_id=str(row[0]),
         target_type=str(row[1]),
         target_id=str(row[2]),
         correction_type=str(row[3]),
-        payload=_read_payload_text(row[4] if isinstance(row[4], str) else None),
-        created_at_ms=int(row[5]),
-        updated_at_ms=int(row[6]),
+        payload=assertion_value
+        if assertion_value is not None
+        else _read_payload_text(row[4] if isinstance(row[4], str) else None),
+        created_at_ms=assertion.created_at_ms if assertion is not None else int(row[5]),
+        updated_at_ms=assertion.updated_at_ms if assertion is not None else int(row[6]),
     )
 
 
@@ -704,12 +728,16 @@ def read_archive_saved_view_envelope(conn: sqlite3.Connection, name: str) -> Arc
     ).fetchone()
     if row is None:
         raise KeyError(name)
+    assertion = _read_mirrored_assertion(conn, assertion_id_for_saved_view(str(row[0])))
+    assertion_value = assertion.value if assertion is not None and isinstance(assertion.value, dict) else None
     return ArchiveSavedViewEnvelope(
         view_id=str(row[0]),
         name=str(row[1]),
-        query=_read_payload_text(row[2] if isinstance(row[2], str) else None),
-        created_at_ms=int(row[3]),
-        updated_at_ms=int(row[4]),
+        query=assertion_value
+        if assertion_value is not None
+        else _read_payload_text(row[2] if isinstance(row[2], str) else None),
+        created_at_ms=assertion.created_at_ms if assertion is not None else int(row[3]),
+        updated_at_ms=assertion.updated_at_ms if assertion is not None else int(row[4]),
     )
 
 
@@ -724,12 +752,16 @@ def read_archive_recall_pack_envelope(conn: sqlite3.Connection, recall_pack_id: 
     ).fetchone()
     if row is None:
         raise KeyError(recall_pack_id)
+    assertion = _read_mirrored_assertion(conn, assertion_id_for_recall_pack(recall_pack_id))
+    assertion_value = assertion.value if assertion is not None and isinstance(assertion.value, dict) else None
     return ArchiveRecallPackEnvelope(
         recall_pack_id=str(row[0]),
         name=str(row[1]),
-        payload=_read_payload_text(row[2] if isinstance(row[2], str) else None),
-        created_at_ms=int(row[3]),
-        updated_at_ms=int(row[4]),
+        payload=assertion_value
+        if assertion_value is not None
+        else _read_payload_text(row[2] if isinstance(row[2], str) else None),
+        created_at_ms=assertion.created_at_ms if assertion is not None else int(row[3]),
+        updated_at_ms=assertion.updated_at_ms if assertion is not None else int(row[4]),
     )
 
 
@@ -744,12 +776,47 @@ def read_archive_workspace_envelope(conn: sqlite3.Connection, name: str) -> Arch
     ).fetchone()
     if row is None:
         raise KeyError(name)
+    assertion = _read_mirrored_assertion(conn, assertion_id_for_workspace(str(row[0])))
+    assertion_value = assertion.value if assertion is not None and isinstance(assertion.value, dict) else None
     return ArchiveWorkspaceEnvelope(
         workspace_id=str(row[0]),
         name=str(row[1]),
-        settings=_read_payload_text(row[2] if isinstance(row[2], str) else None),
-        created_at_ms=int(row[3]),
-        updated_at_ms=int(row[4]),
+        settings=assertion_value
+        if assertion_value is not None
+        else _read_payload_text(row[2] if isinstance(row[2], str) else None),
+        created_at_ms=assertion.created_at_ms if assertion is not None else int(row[3]),
+        updated_at_ms=assertion.updated_at_ms if assertion is not None else int(row[4]),
+    )
+
+
+def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    return (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
+            (table_name,),
+        ).fetchone()
+        is not None
+    )
+
+
+def _read_mirrored_assertion(conn: sqlite3.Connection, assertion_id: str) -> ArchiveAssertionEnvelope | None:
+    if not _table_exists(conn, "assertions"):
+        return None
+    return read_assertion_envelope(conn, assertion_id)
+
+
+def _blackboard_envelope_from_legacy_row(
+    row: sqlite3.Row | tuple[Any, ...],
+    assertion: ArchiveAssertionEnvelope | None = None,
+) -> ArchiveBlackboardNoteEnvelope:
+    """Project one legacy note row, preferring mirrored assertion content."""
+    return ArchiveBlackboardNoteEnvelope(
+        note_id=str(row[0]),
+        target_type=str(row[1]) if row[1] is not None else None,
+        target_id=str(row[2]) if row[2] is not None else None,
+        body=assertion.body_text if assertion is not None and assertion.body_text is not None else str(row[3]),
+        created_at_ms=assertion.created_at_ms if assertion is not None else int(row[4]),
+        updated_at_ms=assertion.updated_at_ms if assertion is not None else int(row[5]),
     )
 
 
@@ -764,14 +831,64 @@ def read_archive_blackboard_note_envelope(conn: sqlite3.Connection, note_id: str
     ).fetchone()
     if row is None:
         raise KeyError(note_id)
-    return ArchiveBlackboardNoteEnvelope(
-        note_id=str(row[0]),
-        target_type=str(row[1]) if row[1] is not None else None,
-        target_id=str(row[2]) if row[2] is not None else None,
-        body=str(row[3]),
-        created_at_ms=int(row[4]),
-        updated_at_ms=int(row[5]),
+    assertion = (
+        read_assertion_envelope(conn, assertion_id_for_blackboard_note(note_id))
+        if _table_exists(conn, "assertions")
+        else None
     )
+    return _blackboard_envelope_from_legacy_row(row, assertion)
+
+
+def list_archive_blackboard_note_envelopes(
+    conn: sqlite3.Connection,
+    *,
+    limit: int | None = None,
+) -> list[ArchiveBlackboardNoteEnvelope]:
+    """List blackboard notes through mirrored assertions with legacy fallback.
+
+    The assertion row owns the note body and timestamps for write-through notes.
+    The legacy row still owns the public ``note_id`` and target fields until the
+    assertion model grows a first-class blackboard note identity.
+    """
+    if not _table_exists(conn, "blackboard_notes"):
+        return []
+
+    legacy_rows = conn.execute(
+        """
+        SELECT note_id, target_type, target_id, body, created_at_ms, updated_at_ms
+        FROM blackboard_notes
+        """
+    ).fetchall()
+    if not legacy_rows:
+        return []
+
+    legacy_by_assertion_id = {assertion_id_for_blackboard_note(str(row[0])): row for row in legacy_rows}
+    seen_note_ids: set[str] = set()
+    envelopes: list[ArchiveBlackboardNoteEnvelope] = []
+
+    if _table_exists(conn, "assertions"):
+        assertion_rows = conn.execute(
+            f"SELECT {_ASSERTION_COLUMNS} FROM assertions WHERE kind = ? ORDER BY created_at_ms DESC, assertion_id DESC",
+            (AssertionKind.NOTE,),
+        ).fetchall()
+        for assertion_row in assertion_rows:
+            assertion = _assertion_row_to_envelope(assertion_row)
+            legacy_row = legacy_by_assertion_id.get(assertion.assertion_id)
+            if legacy_row is None:
+                continue
+            envelope = _blackboard_envelope_from_legacy_row(legacy_row, assertion)
+            envelopes.append(envelope)
+            seen_note_ids.add(envelope.note_id)
+
+    for legacy_row in legacy_rows:
+        note_id = str(legacy_row[0])
+        if note_id not in seen_note_ids:
+            envelopes.append(_blackboard_envelope_from_legacy_row(legacy_row))
+
+    envelopes.sort(key=lambda envelope: (envelope.created_at_ms, envelope.note_id), reverse=True)
+    if limit is not None and limit > 0:
+        return envelopes[:limit]
+    return envelopes
 
 
 def upsert_assertion(
@@ -952,11 +1069,14 @@ __all__ = [
     "ArchiveWorkspaceEnvelope",
     "AssertionKind",
     "assertion_id_for_annotation",
+    "assertion_id_for_blackboard_note",
     "assertion_id_for_correction",
     "assertion_id_for_mark",
     "assertion_id_for_recall_pack",
     "assertion_id_for_saved_view",
+    "assertion_id_for_suppression",
     "assertion_id_for_workspace",
+    "list_archive_blackboard_note_envelopes",
     "list_assertions_for_target",
     "mark_assertion_status",
     "read_archive_annotation_envelope",

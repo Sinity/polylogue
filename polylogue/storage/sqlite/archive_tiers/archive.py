@@ -85,6 +85,7 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     assertion_id_for_recall_pack,
     assertion_id_for_saved_view,
     assertion_id_for_workspace,
+    list_archive_blackboard_note_envelopes,
     mark_assertion_status,
     upsert_annotation,
     upsert_assertion,
@@ -2199,37 +2200,16 @@ class ArchiveStore:
     def list_blackboard_notes(self, *, limit: int | None = None) -> list[ArchiveBlackboardNoteEnvelope]:
         """List blackboard notes from archive user.db, newest first.
 
-        Returns raw envelopes; structured-field decoding (kind/title/scope) is a
-        presentation concern handled by ``polylogue.archive.blackboard``.
+        Mirrored assertion rows own note body/timestamps for write-through
+        notes; legacy rows still provide stable note ids and target fields.
+        Structured-field decoding (kind/title/scope) is a presentation concern
+        handled by ``polylogue.archive.blackboard``.
         """
         if not self.user_db_path.exists():
             return []
         user_conn = sqlite3.connect(f"file:{self.user_db_path}?mode=ro", uri=True)
         try:
-            row = user_conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='blackboard_notes' LIMIT 1"
-            ).fetchone()
-            if row is None:
-                return []
-            sql = (
-                "SELECT note_id, target_type, target_id, body, created_at_ms, updated_at_ms "
-                "FROM blackboard_notes ORDER BY created_at_ms DESC, note_id DESC"
-            )
-            params: tuple[object, ...] = ()
-            if limit is not None and limit > 0:
-                sql += " LIMIT ?"
-                params = (limit,)
-            return [
-                ArchiveBlackboardNoteEnvelope(
-                    note_id=str(record[0]),
-                    target_type=record[1],
-                    target_id=record[2],
-                    body=str(record[3]),
-                    created_at_ms=int(record[4]),
-                    updated_at_ms=int(record[5]),
-                )
-                for record in user_conn.execute(sql, params).fetchall()
-            ]
+            return list_archive_blackboard_note_envelopes(user_conn, limit=limit)
         finally:
             user_conn.close()
 
