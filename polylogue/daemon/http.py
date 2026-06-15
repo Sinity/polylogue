@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import parse_qs, urlparse
 
 from polylogue.core.loopback import is_loopback_origin
-from polylogue.core.sources import origin_from_provider
+from polylogue.core.sources import source_name_to_origin
 from polylogue.daemon import user_state_http, workspace_routes
 from polylogue.daemon.events import (
     emit_daemon_event,
@@ -49,7 +49,6 @@ from polylogue.surfaces.payloads import (
     reader_message_actions,
     reader_session_actions,
 )
-from polylogue.types import Provider
 
 if TYPE_CHECKING:
     from polylogue.api import Polylogue
@@ -218,20 +217,12 @@ def _usage_dict(usage: Any) -> dict[str, int]:
     }
 
 
-def _source_name_origin(source_name: object) -> str:
-    """Project an insight source/provider token into a canonical origin token."""
-    value = str(source_name)
-    if value.endswith(("-session", "-export")) or value in {"drive-takeout", "unknown"}:
-        return value
-    return origin_from_provider(Provider.from_string(value)).value
-
-
 def _cost_panel_payload(insight: Any) -> dict[str, object]:
     """Render a typed ``SessionCostInsight`` as a cost-panel JSON payload (#1122)."""
     estimate = insight.estimate
     return {
         "session_id": insight.session_id,
-        "origin": _source_name_origin(insight.source_name),
+        "origin": source_name_to_origin(insight.source_name),
         "model_name": estimate.model_name,
         "normalized_model": estimate.normalized_model,
         "status": estimate.status,
@@ -412,7 +403,7 @@ def _work_event_panel_payload(events: list[Any]) -> dict[str, object]:
                 "event_id": ev.event_id,
                 "event_index": int(ev.event_index),
                 "session_id": ev.session_id,
-                "origin": _source_name_origin(ev.source_name),
+                "origin": source_name_to_origin(ev.source_name),
                 "evidence": ev.evidence.model_dump(mode="json"),
                 "inference": ev.inference.model_dump(mode="json"),
                 "provenance": _provenance_dict(ev.provenance),
@@ -434,7 +425,7 @@ def _phase_panel_payload(phases: list[Any]) -> dict[str, object]:
                 "phase_id": ph.phase_id,
                 "phase_index": int(ph.phase_index),
                 "session_id": ph.session_id,
-                "origin": _source_name_origin(ph.source_name),
+                "origin": source_name_to_origin(ph.source_name),
                 "evidence": ph.evidence.model_dump(mode="json"),
                 "inference": ph.inference.model_dump(mode="json"),
                 "provenance": _provenance_dict(ph.provenance),
