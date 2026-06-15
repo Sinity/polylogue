@@ -53,6 +53,19 @@ BENCHMARK_SCENARIOS: tuple[BenchmarkCampaignEntry, ...] = (
         tags=("benchmark", "reader", "api"),
     ),
     BenchmarkCampaignEntry(
+        name="recovery-digest",
+        description="Deterministic recovery digest transform benchmark domain",
+        execution=pytest_execution("tests/benchmarks/test_recovery_digest.py"),
+        notes=(
+            "Covers recovery/digest transform compilation over tool-heavy sessions.",
+            "Keeps #1880 recovery artifact shape in the generated benchmark inventory.",
+        ),
+        origin="authored.benchmark-domain",
+        artifact_targets=("recovery_digest", "forensic_index", "resume_bundle"),
+        operation_targets=("compile-recovery-digest", "benchmark.transform.recovery-digest"),
+        tags=("benchmark", "transform", "recovery"),
+    ),
+    BenchmarkCampaignEntry(
         name="daemon-convergence",
         description="Daemon ingest convergence at synthetic scale tiers — single-file and multi-session",
         execution=pytest_execution("tests/benchmarks/test_daemon_convergence.py"),

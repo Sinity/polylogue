@@ -17,6 +17,7 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     assert any(entry.name == "filters" for entry in registry.mutation_campaigns)
     assert any(entry.name == "search-filters" for entry in registry.benchmark_campaigns)
     assert any(entry.name == "pipeline" for entry in registry.benchmark_campaigns)
+    assert any(entry.name == "recovery-digest" for entry in registry.benchmark_campaigns)
     assert any(entry.name == "session-insight-materialization" for entry in registry.synthetic_benchmark_campaigns)
     assert any(entry.name == "startup-readiness" for entry in registry.synthetic_benchmark_campaigns)
     assert any(
@@ -67,6 +68,14 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     assert pipeline.origin == "authored.benchmark-domain"
     assert pipeline.operation_targets == ("benchmark.pipeline.index-and-helpers",)
     assert pipeline.tags == ("benchmark", "pipeline")
+    recovery_digest = next(entry for entry in registry.benchmark_campaigns if entry.name == "recovery-digest")
+    assert recovery_digest.origin == "authored.benchmark-domain"
+    assert recovery_digest.artifact_targets == ("recovery_digest", "forensic_index", "resume_bundle")
+    assert recovery_digest.operation_targets == (
+        "compile-recovery-digest",
+        "benchmark.transform.recovery-digest",
+    )
+    assert recovery_digest.tags == ("benchmark", "transform", "recovery")
     startup_health = next(
         entry for entry in registry.synthetic_benchmark_campaigns if entry.name == "startup-readiness"
     )

@@ -302,6 +302,13 @@ benchmark_campaigns:
       - tests/benchmarks/test_reader_api.py
     status: active
 
+  - name: recovery-digest
+    description: >
+      Deterministic recovery digest transform benchmark domain
+    tests:
+      - tests/benchmarks/test_recovery_digest.py
+    status: active
+
   - name: daemon-convergence
     description: >
       Daemon ingest convergence at synthetic scale tiers — single-file and multi-session
