@@ -2462,8 +2462,21 @@ async def test_archive_tiers_api_marks_and_annotations_write_user_tier(tmp_path:
         with sqlite3.connect(tmp_path / "user.db") as conn:
             mark_count = conn.execute("SELECT COUNT(*) FROM marks").fetchone()[0]
             annotation_count = conn.execute("SELECT COUNT(*) FROM annotations").fetchone()[0]
+            assertion_statuses = conn.execute(
+                """
+                SELECT kind, key, status
+                FROM assertions
+                WHERE target_ref = ?
+                ORDER BY kind, key
+                """,
+                (f"session:{session_id}",),
+            ).fetchall()
         assert mark_count == 0
         assert annotation_count == 0
+        assert assertion_statuses == [
+            ("annotation", None, "deleted"),
+            ("mark", "star", "deleted"),
+        ]
     finally:
         await archive.close()
 
@@ -2563,6 +2576,19 @@ async def test_archive_tiers_api_reader_artifacts_write_user_tier(tmp_path: Path
             assert conn.execute("SELECT COUNT(*) FROM saved_views").fetchone()[0] == 0
             assert conn.execute("SELECT COUNT(*) FROM recall_packs").fetchone()[0] == 0
             assert conn.execute("SELECT COUNT(*) FROM workspaces").fetchone()[0] == 0
+            assertion_statuses = conn.execute(
+                """
+                SELECT target_ref, kind, status
+                FROM assertions
+                WHERE target_ref IN ('saved_view:view-v1', 'recall_pack:pack-v1', 'workspace:workspace-v1')
+                ORDER BY target_ref
+                """
+            ).fetchall()
+        assert assertion_statuses == [
+            ("recall_pack:pack-v1", "recall_pack", "deleted"),
+            ("saved_view:view-v1", "saved_query", "deleted"),
+            ("workspace:workspace-v1", "workspace_note", "deleted"),
+        ]
     finally:
         await archive.close()
 
@@ -2621,6 +2647,19 @@ async def test_archive_tiers_api_corrections_write_user_tier(tmp_path: Path) -> 
 
         with sqlite3.connect(tmp_path / "user.db") as conn:
             assert conn.execute("SELECT COUNT(*) FROM corrections").fetchone()[0] == 0
+            assertion_statuses = conn.execute(
+                """
+                SELECT key, status, json_extract(value_json, '$.payload.tag'), json_extract(value_json, '$.payload.summary')
+                FROM assertions
+                WHERE target_ref = ? AND kind = 'correction'
+                ORDER BY key
+                """,
+                (f"insight:{session_id}",),
+            ).fetchall()
+        assert assertion_statuses == [
+            ("summary_override", "deleted", None, "replacement"),
+            ("tag_accept", "deleted", "archive-updated", None),
+        ]
     finally:
         await archive.close()
 

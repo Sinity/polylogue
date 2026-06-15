@@ -201,16 +201,16 @@ def test_suppression_write_through_mirrors_assertion(tmp_path: Path) -> None:
 def test_saved_view_write_through_mirrors_assertion(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "user.db")
 
-    upsert_saved_view(conn, "recent", {"limit": 10}, now_ms=1_700_000_050_000)
+    saved_view = upsert_saved_view(conn, "recent", {"limit": 10}, now_ms=1_700_000_050_000)
     assert conn.execute("SELECT 1 FROM saved_views WHERE name = ?", ("recent",)).fetchone() is not None
 
-    mirrored = list_assertions_for_target(conn, "saved_view:recent", kind=AssertionKind.SAVED_QUERY)
+    mirrored = list_assertions_for_target(conn, f"saved_view:{saved_view.view_id}", kind=AssertionKind.SAVED_QUERY)
     assert len(mirrored) == 1
     assert mirrored[0].key == "recent"
     assert mirrored[0].value == {"limit": 10}
 
     upsert_saved_view(conn, "recent", {"limit": 20}, now_ms=1_700_000_051_000)
-    again = list_assertions_for_target(conn, "saved_view:recent", kind=AssertionKind.SAVED_QUERY)
+    again = list_assertions_for_target(conn, f"saved_view:{saved_view.view_id}", kind=AssertionKind.SAVED_QUERY)
     assert len(again) == 1
     assert again[0].assertion_id == mirrored[0].assertion_id
     assert again[0].value == {"limit": 20}

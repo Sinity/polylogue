@@ -78,7 +78,16 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import (
     ArchiveBlackboardNoteEnvelope,
+    AssertionKind,
+    assertion_id_for_annotation,
+    assertion_id_for_correction,
+    assertion_id_for_mark,
+    assertion_id_for_recall_pack,
+    assertion_id_for_saved_view,
+    assertion_id_for_workspace,
+    mark_assertion_status,
     upsert_annotation,
+    upsert_assertion,
     upsert_blackboard_note,
     upsert_mark,
     upsert_recall_pack,
@@ -1593,7 +1602,14 @@ class ArchiveStore:
                     """,
                     (storage_target_type, target_id, mark_type),
                 )
-                return int(cursor.rowcount) > 0
+                deleted = int(cursor.rowcount) > 0
+                if deleted:
+                    mark_assertion_status(
+                        user_conn,
+                        assertion_id_for_mark(storage_target_type, target_id, mark_type),
+                        "deleted",
+                    )
+                return deleted
         finally:
             user_conn.close()
 
@@ -1737,7 +1753,10 @@ class ArchiveStore:
         try:
             with user_conn:
                 cursor = user_conn.execute("DELETE FROM annotations WHERE annotation_id = ?", (annotation_id,))
-                return int(cursor.rowcount) > 0
+                deleted = int(cursor.rowcount) > 0
+                if deleted:
+                    mark_assertion_status(user_conn, assertion_id_for_annotation(annotation_id), "deleted")
+                return deleted
         finally:
             user_conn.close()
 
@@ -1810,7 +1829,10 @@ class ArchiveStore:
         try:
             with user_conn:
                 cursor = user_conn.execute("DELETE FROM saved_views WHERE view_id = ?", (view_id,))
-                return int(cursor.rowcount) > 0
+                deleted = int(cursor.rowcount) > 0
+                if deleted:
+                    mark_assertion_status(user_conn, assertion_id_for_saved_view(view_id), "deleted")
+                return deleted
         finally:
             user_conn.close()
 
@@ -1893,7 +1915,10 @@ class ArchiveStore:
         try:
             with user_conn:
                 cursor = user_conn.execute("DELETE FROM recall_packs WHERE recall_pack_id = ?", (pack_id,))
-                return int(cursor.rowcount) > 0
+                deleted = int(cursor.rowcount) > 0
+                if deleted:
+                    mark_assertion_status(user_conn, assertion_id_for_recall_pack(pack_id), "deleted")
+                return deleted
         finally:
             user_conn.close()
 
@@ -1982,7 +2007,10 @@ class ArchiveStore:
         try:
             with user_conn:
                 cursor = user_conn.execute("DELETE FROM workspaces WHERE workspace_id = ?", (workspace_id,))
-                return int(cursor.rowcount) > 0
+                deleted = int(cursor.rowcount) > 0
+                if deleted:
+                    mark_assertion_status(user_conn, assertion_id_for_workspace(workspace_id), "deleted")
+                return deleted
         finally:
             user_conn.close()
 
@@ -2032,6 +2060,17 @@ class ArchiveStore:
                         now_ms,
                     ),
                 )
+                upsert_assertion(
+                    user_conn,
+                    assertion_id=assertion_id_for_correction(correction_id),
+                    target_ref=f"insight:{resolved_session_id}",
+                    kind=AssertionKind.CORRECTION,
+                    key=correction_kind.value,
+                    value=stored_payload,
+                    body_text=note,
+                    author_kind="user",
+                    now_ms=now_ms,
+                )
         finally:
             user_conn.close()
         listed = self.list_corrections(session_id=resolved_session_id, kind=correction_kind.value)
@@ -2077,6 +2116,14 @@ class ArchiveStore:
         user_conn = sqlite3.connect(self.user_db_path)
         try:
             with user_conn:
+                row = user_conn.execute(
+                    """
+                    SELECT correction_id
+                    FROM corrections
+                    WHERE target_type = 'session' AND target_id = ? AND correction_type = ?
+                    """,
+                    (resolved_session_id, correction_kind.value),
+                ).fetchone()
                 cursor = user_conn.execute(
                     """
                     DELETE FROM corrections
@@ -2084,7 +2131,10 @@ class ArchiveStore:
                     """,
                     (resolved_session_id, correction_kind.value),
                 )
-                return int(cursor.rowcount) > 0
+                deleted = int(cursor.rowcount) > 0
+                if deleted and row is not None:
+                    mark_assertion_status(user_conn, assertion_id_for_correction(str(row[0])), "deleted")
+                return deleted
         finally:
             user_conn.close()
 
@@ -2096,11 +2146,19 @@ class ArchiveStore:
         user_conn = sqlite3.connect(self.user_db_path)
         try:
             with user_conn:
+                rows = user_conn.execute(
+                    "SELECT correction_id FROM corrections WHERE target_type = 'session' AND target_id = ?",
+                    (resolved_session_id,),
+                ).fetchall()
                 cursor = user_conn.execute(
                     "DELETE FROM corrections WHERE target_type = 'session' AND target_id = ?",
                     (resolved_session_id,),
                 )
-                return max(int(cursor.rowcount), 0)
+                deleted_count = max(int(cursor.rowcount), 0)
+                if deleted_count:
+                    for row in rows:
+                        mark_assertion_status(user_conn, assertion_id_for_correction(str(row[0])), "deleted")
+                return deleted_count
         finally:
             user_conn.close()
 
