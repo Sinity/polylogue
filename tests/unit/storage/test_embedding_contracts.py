@@ -54,6 +54,9 @@ class _FakeV1VectorProvider:
     def query(self, text: str, limit: int = 10) -> list[tuple[str, float]]:
         return []
 
+    def query_by_session(self, session_id: str, limit: int = 10) -> list[tuple[str, float]]:
+        return []
+
     def _get_embeddings(self, texts: list[str], input_type: str = "document") -> list[list[float]]:
         self.texts.extend(texts)
         return [[0.01] * 1024 for _ in texts]

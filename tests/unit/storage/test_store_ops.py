@@ -1810,6 +1810,9 @@ class _VectorSpy:
         self.query_calls.append((text, limit))
         return [("msg-1", 0.125)]
 
+    def query_by_session(self, session_id: str, limit: int = 10) -> list[tuple[str, float]]:
+        return [("msg-1", 0.125)]
+
     def upsert(self, session_id: str, messages: list[MessageRecord]) -> None:
         self.upsert_calls.append((session_id, messages))
 

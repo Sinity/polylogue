@@ -54,32 +54,56 @@ def _provider_for_origin(origin: str) -> Provider:
     return _ORIGIN_TO_PROVIDER.get(origin, Provider.UNKNOWN)
 
 
-def _reject_unexecutable_session_seed(plan: SessionQueryPlan) -> None:
-    """Fail typed for ``near:id:<ref>`` until session-seeded vectors are wired.
+def _session_seed_scored(
+    plan: SessionQueryPlan,
+    *,
+    config: Config | None,
+    archive_root: Path,
+    pool: int,
+) -> list[tuple[str, float]]:
+    """Resolve a ``near:id:<ref>`` plan to vector-ranked ``(message_id, distance)``.
 
-    ``similar_session_id`` carries the intent "rank sessions by vector
-    similarity to a stored session's embeddings". Executing it requires a
-    storage primitive that does not exist yet: ``VectorProvider`` only exposes
-    ``query(text, limit)`` (which re-embeds a text string), with no way to fetch
-    a session's stored ``message_embeddings`` and vector-search against them.
-
-    Until that primitive lands, the plan compiles and round-trips (so surfaces
-    and completion already know the field), but executing it raises a typed
-    error here instead of silently broadening to an unfiltered listing — which
-    is what every execution branch below would otherwise do, because none of
-    them inspect ``similar_session_id``.
+    Unlike the text-semantic leg, a session seed is an explicit request to rank by
+    a *stored* session's embeddings; there is no text query to fall back to. When
+    the request cannot be honored — no vector backend is available, or the seed
+    session has no stored embeddings — this raises a typed ``ExpressionCompileError``
+    on the ``near`` field rather than degrading to an unfiltered or silently-empty
+    listing. The returned hits already exclude the seed session's own messages
+    (enforced by ``VectorProvider.query_by_session``).
     """
-    if plan.similar_session_id is None:
-        return
     from polylogue.archive.query.expression import ExpressionCompileError
+    from polylogue.storage.search_providers import create_vector_provider
+    from polylogue.storage.search_providers.sqlite_vec_support import SqliteVecError
 
-    raise ExpressionCompileError(
-        "near:id: session-seeded similarity is not executable yet — it needs a "
-        "VectorProvider primitive that vector-searches a stored session's "
-        'embeddings (see issue #1842). Use near:"text" for text-seeded '
-        "similarity in the meantime.",
-        field="near",
-    )
+    seed = plan.similar_session_id
+    assert seed is not None
+    vector_provider = plan.vector_provider
+    if vector_provider is None and config is not None:
+        vector_provider = create_vector_provider(config, db_path=archive_root / "embeddings.db")
+    if vector_provider is None:
+        raise ExpressionCompileError(
+            "near:id: session-seeded similarity needs a configured vector backend "
+            "(sqlite-vec plus an embedded archive); none is available for this archive.",
+            field="near",
+        )
+    try:
+        return vector_provider.query_by_session(seed, limit=pool)
+    except SqliteVecError as exc:
+        raise ExpressionCompileError(str(exc), field="near") from exc
+
+
+def _session_seed_hits(
+    plan: SessionQueryPlan,
+    archive: ArchiveStore,
+    *,
+    config: Config | None,
+    archive_root: Path,
+) -> list[ArchiveSessionSearchHit]:
+    """Resolve a session-seeded plan to filtered session-level hits."""
+    limit = plan.limit if plan.limit is not None else 50
+    pool = max(limit + plan.offset, limit) * 3
+    scored = _session_seed_scored(plan, config=config, archive_root=archive_root, pool=pool)
+    return archive.semantic_summaries(scored, limit=pool, offset=0, **_plan_filter_kwargs(plan))
 
 
 def _parse_archive_datetime(value: str | None) -> datetime | None:
@@ -310,11 +334,14 @@ def _archive_summaries(
     archive_root: Path,
     default_limit: int,
 ) -> list[ArchiveSessionSummary]:
-    _reject_unexecutable_session_seed(plan)
     filter_kwargs = _plan_filter_kwargs(plan)
     limit = _fetch_limit(plan, default=default_limit)
     sort = plan.sort
     reverse = plan.reverse
+
+    if plan.similar_session_id is not None:
+        hits = _session_seed_hits(plan, archive, config=config, archive_root=archive_root)
+        return _summaries_from_hits(archive, hits)
 
     if plan.similar_text is not None or plan.retrieval_lane in {"semantic", "hybrid"}:
         hits = _semantic_hits(plan, archive, config=config, archive_root=archive_root)
@@ -422,8 +449,12 @@ async def count_archive(
     archive_root: Path,
     config: Config | None,
 ) -> int:
-    _reject_unexecutable_session_seed(plan)
-    if not plan.has_post_filters() and plan.similar_text is None and plan.retrieval_lane not in {"semantic", "hybrid"}:
+    if (
+        not plan.has_post_filters()
+        and plan.similar_text is None
+        and plan.similar_session_id is None
+        and plan.retrieval_lane not in {"semantic", "hybrid"}
+    ):
         filter_kwargs = _plan_filter_kwargs(plan)
         query_text = _plan_text_query(plan)
         with _open_archive(archive_root) as archive:
@@ -464,12 +495,17 @@ def archive_search_hits(
     """
     from polylogue.storage.search_providers import create_vector_provider, reciprocal_rank_fusion
 
-    _reject_unexecutable_session_seed(plan)
     text = plan.similar_text or _plan_text_query(plan) or ""
     limit = plan.limit if plan.limit is not None else default_limit
     offset = plan.offset
     filter_kwargs = _plan_filter_kwargs(plan)
     with _open_archive(archive_root) as archive:
+        if plan.similar_session_id is not None:
+            pool = max(limit + offset, limit) * 3
+            scored = _session_seed_scored(plan, config=config, archive_root=archive_root, pool=pool)
+            semantic_hits = archive.semantic_summaries(scored, limit=pool, offset=0, **filter_kwargs)
+            return _pair_hits(archive, semantic_hits[offset : offset + limit]), "semantic"
+
         if plan.similar_text is None and plan.retrieval_lane in {"auto", "dialogue"}:
             hits = archive.search_summaries(
                 text,

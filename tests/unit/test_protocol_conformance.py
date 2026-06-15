@@ -40,6 +40,10 @@ class _VectorStub:
         del text, limit
         return []
 
+    def query_by_session(self, session_id: str, limit: int = 10) -> list[tuple[str, float]]:
+        del session_id, limit
+        return []
+
 
 # ---------------------------------------------------------------------------
 # Helpers
