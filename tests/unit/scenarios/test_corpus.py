@@ -193,7 +193,10 @@ def test_build_demo_corpus_specs_declares_release_fixture_world() -> None:
 
 
 def test_build_demo_corpus_specs_materializes_with_synthetic_generator(tmp_path: Path) -> None:
+    from polylogue.config import Source
     from polylogue.schemas.synthetic import SyntheticCorpus
+    from polylogue.sources import iter_source_sessions
+    from polylogue.types import BlockType
 
     written = SyntheticCorpus.write_specs_artifacts(
         build_demo_corpus_specs(),
@@ -206,6 +209,34 @@ def test_build_demo_corpus_specs_materializes_with_synthetic_generator(tmp_path:
         "chatgpt/demo-00.json",
         "claude-code/demo-00.jsonl",
         "codex/demo-00.jsonl",
+    )
+
+    raw_text = "\n".join(path.read_text(encoding="utf-8") for batch in written for path in batch.files)
+    assert "/tmp/" not in raw_text
+    assert "/tmp/polylogue" not in raw_text
+
+    parsed = tuple(
+        session
+        for batch in written
+        for path in batch.files
+        for session in iter_source_sessions(Source(name="demo", path=path))
+    )
+    assert tuple(str(session.source_name) for session in parsed) == ("chatgpt", "claude-code", "codex")
+    assert all(session.provider_session_id for session in parsed)
+    assert all(session.messages for session in parsed)
+
+    tool_inputs = tuple(
+        block.tool_input
+        for session in parsed
+        for message in session.messages
+        for block in message.blocks
+        if block.type is BlockType.TOOL_USE and isinstance(block.tool_input, dict)
+    )
+    assert tool_inputs
+    assert all(
+        not str(tool_input.get("file_path", "")).startswith("/")
+        for tool_input in tool_inputs
+        if "file_path" in tool_input
     )
 
 

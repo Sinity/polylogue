@@ -124,7 +124,7 @@ def _tool_use_blocks(provider: str, index: int) -> list[JSONValue]:
             "type": "tool_use",
             "id": read_id,
             "name": "Read",
-            "input": {"file_path": f"/tmp/polylogue/generated-{index:04d}.jsonl"},
+            "input": {"file_path": f"fixtures/generated-{index:04d}.jsonl"},
         },
         {
             "type": "tool_use",
