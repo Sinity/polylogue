@@ -12,11 +12,11 @@ Current registry snapshot:
 - live lanes: `19`
 - composite lanes: `24`
 - mutation campaigns: `19`
-- benchmark campaigns: `5`
+- benchmark campaigns: `6`
 - synthetic benchmark campaigns: `6`
-- scenario projections: `265`
+- scenario projections: `266`
 - inferred corpus scenarios: `8`
-  - benchmark-campaign: `5`
+  - benchmark-campaign: `6`
   - exercise: `160`
   - inferred-corpus-scenario: `8`
   - mutation-campaign: `19`
@@ -27,9 +27,9 @@ Current registry snapshot:
 
 - covered runtime paths: `22`
 - covered runtime artifacts: `43`
-- covered runtime operations: `25`
+- covered runtime operations: `26`
 - covered maintenance targets: `2`
-- covered declared operation targets: `38`
+- covered declared operation targets: `40`
 - uncovered runtime paths: —
 - uncovered runtime artifacts: —
 - uncovered runtime operations: `mutate-add-tag`, `mutate-bulk-tag-sessions`, `mutate-delete-metadata`, `mutate-delete-session`, `mutate-remove-tag`, `mutate-set-metadata`
@@ -260,6 +260,7 @@ Benchmark comparisons are manual.
 | `daemon-convergence` | `tests/benchmarks/test_daemon_convergence.py` | 0.0% | 0.0% | Daemon ingest convergence at synthetic scale tiers — single-file and multi-session |
 | `pipeline` | `tests/benchmarks/test_pipeline.py` | 0.0% | 0.0% | Index rebuild/update plus hashing and semantic helper benchmark domain |
 | `reader-api` | `tests/benchmarks/test_reader_api.py` | 0.0% | 0.0% | Reader HTTP API list/get/facets/context-pack/cost-rollup benchmark domain |
+| `recovery-digest` | `tests/benchmarks/test_recovery_digest.py` | 0.0% | 0.0% | Deterministic recovery digest transform benchmark domain |
 | `search-filters` | `tests/benchmarks/test_search_filters.py` | 0.0% | 0.0% | FTS and SessionFilter benchmark domain |
 | `storage` | `tests/benchmarks/test_storage.py` | 0.0% | 0.0% | Repository/backend list/get-many/save benchmark domain |
 
@@ -300,6 +301,7 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `benchmark-campaign` | `daemon-convergence` | — | `daemon_convergence_timing` | `benchmark.daemon.convergence` | — | `benchmark`<br>`daemon`<br>`convergence` | Daemon ingest convergence at synthetic scale tiers — single-file and multi-session |
 | `benchmark-campaign` | `pipeline` | — | `index_state`<br>`pipeline_helpers` | `benchmark.pipeline.index-and-helpers` | — | `benchmark`<br>`pipeline` | Index rebuild/update plus hashing and semantic helper benchmark domain |
 | `benchmark-campaign` | `reader-api` | — | `reader_list_results`<br>`reader_facets` | `benchmark.reader.api` | — | `benchmark`<br>`reader`<br>`api` | Reader HTTP API list/get/facets/context-pack/cost-rollup benchmark domain |
+| `benchmark-campaign` | `recovery-digest` | — | `recovery_digest`<br>`forensic_index`<br>`resume_bundle` | `compile-recovery-digest`<br>`benchmark.transform.recovery-digest` | — | `benchmark`<br>`transform`<br>`recovery` | Deterministic recovery digest transform benchmark domain |
 | `benchmark-campaign` | `search-filters` | — | `session_query_results`<br>`message_fts` | `query-sessions`<br>`benchmark.query.search-filters` | — | `benchmark`<br>`search`<br>`filters` | FTS and SessionFilter benchmark domain |
 | `benchmark-campaign` | `storage` | — | `session_rows`<br>`message_rows`<br>`raw_rows` | `benchmark.storage.crud` | — | `benchmark`<br>`storage` | Repository/backend list/get-many/save benchmark domain |
 | `exercise` | `combined-filters` | — | — | — | — | — | Combined provider + date filter |

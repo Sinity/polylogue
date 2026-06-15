@@ -238,8 +238,16 @@ def test_benchmark_entry_exposes_tests_from_execution() -> None:
 def test_compile_benchmark_campaigns_indexes_by_name() -> None:
     campaigns = compile_benchmark_campaigns(BENCHMARK_SCENARIOS)
 
-    assert set(campaigns) == {"search-filters", "storage", "pipeline", "reader-api", "daemon-convergence"}
+    assert set(campaigns) == {
+        "search-filters",
+        "storage",
+        "pipeline",
+        "reader-api",
+        "recovery-digest",
+        "daemon-convergence",
+    }
     assert campaigns["search-filters"].tests == ("tests/benchmarks/test_search_filters.py",)
+    assert campaigns["recovery-digest"].tests == ("tests/benchmarks/test_recovery_digest.py",)
 
 
 def test_benchmark_scenario_index_tracks_authored_catalog() -> None:
@@ -248,6 +256,7 @@ def test_benchmark_scenario_index_tracks_authored_catalog() -> None:
         "storage",
         "pipeline",
         "reader-api",
+        "recovery-digest",
         "daemon-convergence",
     }
 
