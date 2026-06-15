@@ -707,9 +707,9 @@ class TestDeleteCardinalityLargeNonMocked:
         # 2. Dry-run preview set: must equal the guard set (the #1873 bug previewed
         #    only the first page while --yes --all deleted everything).
         preview = self._invoke_delete(env, dry_run=True, yes_flag=False, all_flag=False)
-        assert preview["dry_run"] is True
-        assert preview["matched"] == self.COUNT
-        assert preview["deleted"] == 0
+        assert preview["status"] == "preview"
+        assert preview["session_count"] == self.COUNT
+        assert preview["affected_count"] == 0
         preview_ids = preview["session_ids"]
         assert isinstance(preview_ids, list)
         assert set(preview_ids) == set(guard), "dry-run preview set diverges from the guard set"
@@ -719,8 +719,10 @@ class TestDeleteCardinalityLargeNonMocked:
 
         # 3. Deleted set: --yes --all removes the entire matched set.
         result = self._invoke_delete(env, dry_run=False, yes_flag=True, all_flag=True)
-        assert result["matched"] == self.COUNT
-        assert result["deleted"] == self.COUNT, f"delete truncated to {result['deleted']} (expected {self.COUNT})"
+        assert result["session_count"] == self.COUNT
+        assert result["affected_count"] == self.COUNT, (
+            f"delete truncated to {result['affected_count']} (expected {self.COUNT})"
+        )
 
         # The archive no longer matches the query: deleted set == guard set.
         assert resolve_session_ids_for_verb(env, request) == []

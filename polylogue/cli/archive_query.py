@@ -48,6 +48,7 @@ from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.surfaces.payloads import (
     SEARCH_CURSOR_VERSION,
     InvalidSearchCursorError,
+    MutationResultPayload,
     SearchCursor,
     decode_search_cursor,
 )
@@ -1144,7 +1145,9 @@ def _emit_stats_by(
 
 
 def _emit_mutation(changed: int, *, operation: str) -> None:
-    click.echo(json.dumps({"mode": "mutation", "operation": operation, "changed": changed}, indent=2))
+    click.echo(
+        MutationResultPayload(status="ok", operation=operation, affected_count=changed).to_json(exclude_none=True)
+    )
 
 
 def _emit_user_mutations(
@@ -1165,12 +1168,16 @@ def _emit_user_mutations(
     if set(changes) == {"metadata"}:
         _emit_mutation(changes["metadata"], operation="set_meta")
         return
+    # Combined tag+metadata mutation: ``tag_count`` carries the number of
+    # sessions that had a tag added, ``applied_count`` the number that had
+    # metadata set (the two halves of the former ``changed`` dict).
     click.echo(
-        json.dumps(
-            {"mode": "mutation", "operation": "mutate", "changed": changes},
-            indent=2,
-            sort_keys=True,
-        )
+        MutationResultPayload(
+            status="ok",
+            operation="mutate",
+            tag_count=changes.get("tags"),
+            applied_count=changes.get("metadata"),
+        ).to_json(exclude_none=True)
     )
 
 
@@ -1181,21 +1188,23 @@ def _emit_delete(
     force = bool(params.get("force"))
     count = len(session_ids)
     if count == 0:
-        click.echo(json.dumps({"mode": "mutation", "operation": "delete", "matched": 0, "deleted": 0}, indent=2))
+        click.echo(
+            MutationResultPayload(status="ok", operation="delete", session_count=0, affected_count=0).to_json(
+                exclude_none=True
+            )
+        )
         return
     if dry_run:
+        # ``session_count`` = matched, ``affected_count`` = deleted (0 in a
+        # preview); ``session_ids`` enumerates the sessions that would be deleted.
         click.echo(
-            json.dumps(
-                {
-                    "mode": "mutation",
-                    "operation": "delete",
-                    "dry_run": True,
-                    "matched": count,
-                    "deleted": 0,
-                    "session_ids": list(session_ids),
-                },
-                indent=2,
-            )
+            MutationResultPayload(
+                status="preview",
+                operation="delete",
+                session_count=count,
+                affected_count=0,
+                session_ids=tuple(session_ids),
+            ).to_json(exclude_none=True)
         )
         return
     if not force:
@@ -1206,24 +1215,20 @@ def _emit_delete(
             click.echo(f"  ... and {count - 5} more", err=True)
         if not env.ui.confirm("Proceed?", default=False):
             click.echo(
-                json.dumps(
-                    {
-                        "mode": "mutation",
-                        "operation": "delete",
-                        "matched": count,
-                        "deleted": 0,
-                        "aborted": True,
-                    },
-                    indent=2,
-                )
+                MutationResultPayload(
+                    status="aborted", operation="delete", session_count=count, affected_count=0
+                ).to_json(exclude_none=True)
             )
             return
     deleted = archive.delete_sessions(session_ids)
+    # ``session_count`` = matched, ``affected_count`` = sessions actually deleted.
     click.echo(
-        json.dumps(
-            {"mode": "mutation", "operation": "delete", "matched": count, "deleted": deleted},
-            indent=2,
-        )
+        MutationResultPayload(
+            status="deleted" if deleted else "ok",
+            operation="delete",
+            session_count=count,
+            affected_count=deleted,
+        ).to_json(exclude_none=True)
     )
 
 
