@@ -24,6 +24,7 @@ shipped product behavior.
 Run these from a clean checkout inside the devshell:
 
 ```bash
+devtools release-readiness
 devtools verify --quick
 devtools verify --lab
 devtools build-package

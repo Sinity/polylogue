@@ -162,6 +162,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         featured=True,
     ),
     CommandSpec(
+        "release-readiness",
+        "verification",
+        "Validate the externally-presentable release gate definition.",
+        "devtools.release_readiness",
+        use_when=(
+            "Check that the release-readiness gate document, required local commands, "
+            "and release PR evidence template are still coherent before touching a release PR."
+        ),
+        examples=("devtools release-readiness", "devtools release-readiness --json"),
+    ),
+    CommandSpec(
         "test",
         "verification",
         "Run a focused pytest selection through the managed harness.",
