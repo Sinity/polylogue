@@ -207,6 +207,13 @@ def test_archive_tiers_user_write_minimal_upserts(tmp_path: Path) -> None:
     assert saved_view.created_at_ms == 1_700_000_008_000
     assert saved_view_refresh.updated_at_ms == 1_700_000_009_000
     assert refreshed_saved_view.query == {"origin": "codex-session", "limit": 20}
+    saved_view_assertions = list_assertions_for_target(
+        conn, f"saved_view:{saved_view.view_id}", kind=AssertionKind.SAVED_QUERY
+    )
+    assert len(saved_view_assertions) == 1
+    assert saved_view_assertions[0].key == "recent-codex"
+    assert saved_view_assertions[0].value == {"origin": "codex-session", "limit": 20}
+    assert saved_view_assertions[0].updated_at_ms == 1_700_000_009_000
 
     assert recall_pack.recall_pack_id == recall_pack_refresh.recall_pack_id
     assert recall_pack.created_at_ms == 1_700_000_010_000

@@ -167,7 +167,7 @@ async def test_user_state_mutations_write_archive_user_tier(
             """
             SELECT target_ref, kind, key, value_json
             FROM assertions
-            WHERE target_ref IN ('recall_pack:pack-v1', 'workspace:workspace-v1')
+            WHERE target_ref IN ('recall_pack:pack-v1', 'saved_view:view-v1', 'workspace:workspace-v1')
             ORDER BY target_ref
             """
         ).fetchall()
@@ -190,10 +190,12 @@ async def test_user_state_mutations_write_archive_user_tier(
     assert json.loads(workspace[2])["mode"] == "tabs"
     assert [(row[0], row[1], row[2]) for row in assertion_rows] == [
         ("recall_pack:pack-v1", "recall_pack", "Archive pack"),
+        ("saved_view:view-v1", "saved_query", "Archive view"),
         ("workspace:workspace-v1", "workspace_note", "Archive workspace"),
     ]
     assert json.loads(assertion_rows[0][3])["session_ids_json"]
-    assert json.loads(assertion_rows[1][3])["mode"] == "tabs"
+    assert json.loads(assertion_rows[1][3]) == {"query": "storage", "limit": 5}
+    assert json.loads(assertion_rows[2][3])["mode"] == "tabs"
     assert correction_row is not None
     assert correction_row[0:3] == ("session", ARCHIVE_USER_STATE_SESSION_ID, "tag_accept")
     assert json.loads(correction_row[3])["payload"] == {"tag": "archive"}
