@@ -12,6 +12,7 @@ from polylogue.insights.transforms import (
     RECOVERY_TRANSFORM,
     TRANSFORM_REGISTRY,
     RecoveryEvent,
+    RunStateSummary,
     SubagentReport,
     ToolSummary,
     TransformRawRef,
@@ -32,7 +33,17 @@ def _session() -> Session:
                 Message(
                     id="m1",
                     role=Role.USER,
-                    text="Goal: burn down the backlog\nNext: merge PR #1911",
+                    text=(
+                        "Goal: burn down the backlog\n"
+                        "Done:\n"
+                        "- #1910 merged\n"
+                        "- #1818 closed\n"
+                        "In flight:\n"
+                        "- #1913 CI\n"
+                        "Blockers:\n"
+                        "- none\n"
+                        "Next: merge PR #1911"
+                    ),
                 ),
                 Message(
                     id="m2",
@@ -96,6 +107,7 @@ def test_compile_recovery_digest_extracts_small_evidence_linked_bundle() -> None
     assert digest.transform.input_session_id == "codex-session:demo"
     assert digest.size_metrics.message_count == 3
     assert digest.size_metrics.subagent_report_count == 1
+    assert digest.size_metrics.run_state_count == 1
     assert digest.size_metrics.raw_bytes > digest.size_metrics.resume_bundle_bytes
     assert digest.size_metrics.resume_to_raw_ratio < 1
     assert digest.role_counts == {"user": 1, "assistant": 2}
@@ -117,6 +129,14 @@ def test_compile_recovery_digest_extracts_small_evidence_linked_bundle() -> None
     assert subagent.caveats == ("Caveat: storage persistence not included.",)
     assert {ref.ref_kind for ref in subagent.raw_refs} == {"block"}
 
+    assert digest.run_state is not None
+    assert digest.run_state.goal == "burn down the backlog"
+    assert digest.run_state.done == ("#1910 merged", "#1818 closed")
+    assert digest.run_state.in_flight == ("#1913 CI",)
+    assert digest.run_state.blockers == ("none",)
+    assert digest.run_state.next_actions == ("merge PR #1911",)
+    assert digest.run_state.raw_refs[0].message_id == "m1"
+
     event_summaries = {event.summary for event in digest.events}
     assert "PR #1911 opened" in event_summaries
     assert "PR #1910 merged" in event_summaries
@@ -133,6 +153,9 @@ def test_compile_recovery_digest_extracts_small_evidence_linked_bundle() -> None
     assert "feature/demo" in digest.resume_markdown
     assert "## Subagents" in digest.resume_markdown
     assert "Explore — Map the transform surface and report caveats." in digest.resume_markdown
+    assert "## Run State" in digest.resume_markdown
+    assert "- done: #1910 merged" in digest.resume_markdown
+    assert "- next: merge PR #1911" in digest.resume_markdown
     assert "Raw refs are available" in digest.resume_markdown
 
 
@@ -146,6 +169,9 @@ def test_every_extracted_claim_carries_raw_refs() -> None:
     for report in digest.subagent_reports:
         assert report.raw_refs
         assert all(ref.session_id == digest.session_id for ref in report.raw_refs)
+    assert digest.run_state is not None
+    assert digest.run_state.raw_refs
+    assert all(ref.session_id == digest.session_id for ref in digest.run_state.raw_refs)
     for event in digest.events:
         assert event.raw_refs
         assert all(ref.session_id == digest.session_id for ref in event.raw_refs)
@@ -159,6 +185,8 @@ def test_claim_models_reject_missing_raw_refs() -> None:
         ToolSummary(tool_name="Bash", raw_refs=())
     with pytest.raises(ValidationError):
         SubagentReport(raw_refs=())
+    with pytest.raises(ValidationError):
+        RunStateSummary(raw_refs=())
     with pytest.raises(ValidationError):
         RecoveryEvent(kind="test_passed", summary="1 tests passed", raw_refs=())
 
