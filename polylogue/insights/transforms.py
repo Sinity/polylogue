@@ -34,6 +34,7 @@ ForensicClaimKind = Literal[
     "event",
     "decision_candidate",
 ]
+RecoveryReportPreset = Literal["continue", "blame"]
 
 _ISSUE_RE = re.compile(r"(?:issues/|issue\s+|closed\s+|#)(?P<number>\d{3,6})", re.IGNORECASE)
 _PR_RE = re.compile(r"(?:pull/|PR\s+|#)(?P<number>\d{3,6})", re.IGNORECASE)
@@ -237,6 +238,11 @@ class RecoveryDigest(ArchiveInsightModel):
             raise ValueError("RecoveryDigest requires at least one raw ref")
         return self
 
+    def report_markdown(self, preset: RecoveryReportPreset) -> str:
+        """Render a deterministic evidence-linked recovery report preset."""
+
+        return render_recovery_report(self, preset=preset)
+
 
 class TransformDescriptor(ArchiveInsightModel):
     transform_id: str
@@ -383,6 +389,199 @@ def render_resume_bundle(
     lines.extend(["", "## Evidence"])
     lines.append("Raw refs are available on every extracted event/tool/decision record.")
     return "\n".join(lines).strip() + "\n"
+
+
+def render_recovery_report(digest: RecoveryDigest, *, preset: RecoveryReportPreset) -> str:
+    """Render a deterministic recovery report preset from a compiled digest."""
+
+    if preset == "continue":
+        return _render_continue_report(digest)
+    if preset == "blame":
+        return _render_blame_report(digest)
+    raise ValueError(f"unsupported recovery report preset: {preset}")
+
+
+def _render_continue_report(digest: RecoveryDigest) -> str:
+    session_refs = digest.raw_refs
+    lines = [
+        f"# Continue: {digest.title or digest.session_id}{_evidence_suffix(digest, session_refs)}",
+        "",
+        "## Session",
+        f"- session_id: {digest.session_id}{_evidence_suffix(digest, session_refs)}",
+        f"- origin: {digest.transform.source_origin}{_evidence_suffix(digest, session_refs)}",
+        f"- messages: {digest.size_metrics.message_count}{_evidence_suffix(digest, session_refs)}",
+    ]
+    lines.extend(["", "## Boot Packet"])
+    if digest.run_state is None:
+        lines.append(f"- run_state: none extracted{_evidence_suffix(digest, session_refs)}")
+    else:
+        if digest.run_state.goal:
+            lines.append(f"- goal: {digest.run_state.goal}{_evidence_suffix(digest, digest.run_state.raw_refs)}")
+        lines.extend(
+            f"- done: {item}{_evidence_suffix(digest, digest.run_state.raw_refs)}" for item in digest.run_state.done[:8]
+        )
+        lines.extend(
+            f"- in_flight: {item}{_evidence_suffix(digest, digest.run_state.raw_refs)}"
+            for item in digest.run_state.in_flight[:8]
+        )
+        lines.extend(
+            f"- blocker: {item}{_evidence_suffix(digest, digest.run_state.raw_refs)}"
+            for item in digest.run_state.blockers[:8]
+        )
+        lines.extend(
+            f"- next: {item}{_evidence_suffix(digest, digest.run_state.raw_refs)}"
+            for item in digest.run_state.next_actions[:8]
+        )
+    lines.extend(["", "## Recent Events"])
+    if digest.events:
+        lines.extend(
+            f"- {event.kind}: {event.summary}{_evidence_suffix(digest, event.raw_refs)}" for event in digest.events[:10]
+        )
+    else:
+        lines.append(f"- none extracted{_evidence_suffix(digest, session_refs)}")
+    lines.extend(["", "## Subagent Reports"])
+    if digest.subagent_reports:
+        for report in digest.subagent_reports[:8]:
+            prompt = f" — {report.prompt}" if report.prompt else ""
+            lines.append(f"- {report.subagent_type}{prompt}{_evidence_suffix(digest, report.raw_refs)}")
+            if report.final_report_preview:
+                lines.append(f"  report: {report.final_report_preview}{_evidence_suffix(digest, report.raw_refs)}")
+            for caveat in report.caveats[:4]:
+                lines.append(f"  caveat: {caveat}{_evidence_suffix(digest, report.raw_refs)}")
+    else:
+        lines.append(f"- none extracted{_evidence_suffix(digest, session_refs)}")
+    lines.extend(["", "## Useful Tools"])
+    if digest.tool_summaries:
+        for tool in digest.tool_summaries[:10]:
+            command = f" — {tool.command}" if tool.command else ""
+            lines.append(
+                f"- {tool.tool_name} [{tool.handler_kind}] ({tool.status}){command}"
+                f"{_evidence_suffix(digest, tool.raw_refs)}"
+            )
+    else:
+        lines.append(f"- none extracted{_evidence_suffix(digest, session_refs)}")
+    lines.extend(["", "## Candidate Decisions"])
+    if digest.decision_candidates:
+        lines.extend(
+            f"- {candidate.kind}: {candidate.text}{_evidence_suffix(digest, candidate.raw_refs)}"
+            for candidate in digest.decision_candidates[:10]
+        )
+    else:
+        lines.append(f"- none extracted{_evidence_suffix(digest, session_refs)}")
+    lines.extend(["", "## Evidence Index"])
+    lines.extend(_render_evidence_index_lines(digest, limit=12))
+    return "\n".join(lines).strip() + "\n"
+
+
+def _render_blame_report(digest: RecoveryDigest) -> str:
+    session_refs = digest.raw_refs
+    lines = [
+        f"# Blame: {digest.title or digest.session_id}{_evidence_suffix(digest, session_refs)}",
+        "",
+        "## Forensic Summary",
+        f"- session_id: {digest.session_id}{_evidence_suffix(digest, session_refs)}",
+        f"- transform: {digest.transform.transform_id} v{digest.transform.transform_version}"
+        f"{_evidence_suffix(digest, session_refs)}",
+        f"- extracted_claims: {digest.forensic_index.claim_count}{_evidence_suffix(digest, session_refs)}",
+        f"- evidence_locations: {len(digest.forensic_index.entries)}{_evidence_suffix(digest, session_refs)}",
+        "",
+        "## Checks And Tests",
+    ]
+    check_events = [
+        event for event in digest.events if event.kind in {"check_passed", "check_failed", "test_passed", "test_failed"}
+    ]
+    if check_events:
+        lines.extend(
+            f"- {event.kind}: {event.summary}{_evidence_suffix(digest, event.raw_refs)}" for event in check_events
+        )
+    else:
+        lines.append(f"- none extracted{_evidence_suffix(digest, session_refs)}")
+    lines.extend(["", "## GitHub Events"])
+    github_events = [event for event in digest.events if event.kind in {"pr_opened", "pr_merged", "issue_closed"}]
+    if github_events:
+        lines.extend(
+            f"- {event.kind}: {event.summary}{_evidence_suffix(digest, event.raw_refs)}" for event in github_events
+        )
+    else:
+        lines.append(f"- none extracted{_evidence_suffix(digest, session_refs)}")
+    lines.extend(["", "## Tool Envelopes"])
+    if digest.tool_summaries:
+        for tool in digest.tool_summaries:
+            command = f" — {tool.command}" if tool.command else ""
+            lines.append(
+                f"- {tool.tool_name} [{tool.handler_kind}] status={tool.status} lines={tool.line_count}{command}"
+                f"{_evidence_suffix(digest, tool.raw_refs)}"
+            )
+            if tool.output_preview:
+                lines.append(f"  output: {tool.output_preview}{_evidence_suffix(digest, tool.raw_refs)}")
+    else:
+        lines.append(f"- none extracted{_evidence_suffix(digest, session_refs)}")
+    lines.extend(["", "## Subagent Evidence"])
+    if digest.subagent_reports:
+        for report in digest.subagent_reports:
+            lines.append(
+                f"- {report.subagent_type}: {report.final_report_preview or report.prompt}"
+                f"{_evidence_suffix(digest, report.raw_refs)}"
+            )
+            for caveat in report.caveats:
+                lines.append(f"  caveat: {caveat}{_evidence_suffix(digest, report.raw_refs)}")
+    else:
+        lines.append(f"- none extracted{_evidence_suffix(digest, session_refs)}")
+    lines.extend(["", "## Decision Candidates"])
+    if digest.decision_candidates:
+        lines.extend(
+            f"- {candidate.kind}: {candidate.text}{_evidence_suffix(digest, candidate.raw_refs)}"
+            for candidate in digest.decision_candidates
+        )
+    else:
+        lines.append(f"- none extracted{_evidence_suffix(digest, session_refs)}")
+    lines.extend(["", "## Evidence Timeline"])
+    lines.extend(_render_evidence_index_lines(digest, limit=None))
+    return "\n".join(lines).strip() + "\n"
+
+
+def _render_evidence_index_lines(digest: RecoveryDigest, *, limit: int | None) -> list[str]:
+    entries = digest.forensic_index.entries if limit is None else digest.forensic_index.entries[:limit]
+    if not entries:
+        return [f"- none extracted{_evidence_suffix(digest, digest.raw_refs)}"]
+    lines = []
+    for entry in entries:
+        location = _raw_location(entry.raw_ref)
+        preview = f" preview={entry.raw_ref.preview!r}" if entry.raw_ref.preview else ""
+        lines.append(
+            f"- evidence_id: {entry.evidence_id}; raw: {location}; claims: {', '.join(entry.claim_labels)}"
+            f"{preview}{_evidence_suffix(digest, (entry.raw_ref,))}"
+        )
+    if limit is not None and len(digest.forensic_index.entries) > limit:
+        lines.append(
+            f"- truncated: {len(digest.forensic_index.entries) - limit} more{_evidence_suffix(digest, digest.raw_refs)}"
+        )
+    return lines
+
+
+def _raw_location(ref: TransformRawRef) -> str:
+    parts: list[str] = [ref.ref_kind]
+    if ref.message_id is not None:
+        parts.append(f"message={ref.message_id}")
+    if ref.block_index is not None:
+        parts.append(f"block={ref.block_index}")
+    return " ".join(parts)
+
+
+def _evidence_suffix(digest: RecoveryDigest, refs: Sequence[TransformRawRef]) -> str:
+    evidence_ids = _evidence_ids_for_refs(digest, refs)
+    if not evidence_ids:
+        evidence_ids = tuple(_evidence_id(ref) for ref in refs)
+    return f" [evidence: {', '.join(evidence_ids)}]"
+
+
+def _evidence_ids_for_refs(digest: RecoveryDigest, refs: Sequence[TransformRawRef]) -> tuple[str, ...]:
+    evidence_ids_by_key = {_raw_ref_key(entry.raw_ref): entry.evidence_id for entry in digest.forensic_index.entries}
+    result: list[str] = []
+    for ref in refs:
+        evidence_id = evidence_ids_by_key.get(_raw_ref_key(ref), _evidence_id(ref))
+        _append_unique(result, evidence_id)
+    return tuple(result)
 
 
 def _build_forensic_index(
@@ -974,6 +1173,7 @@ __all__ = [
     "ForensicIndexEntry",
     "RecoveryDigest",
     "RecoveryEvent",
+    "RecoveryReportPreset",
     "RecoverySizeMetrics",
     "RunStateSummary",
     "SubagentReport",
@@ -982,5 +1182,6 @@ __all__ = [
     "TransformMetadata",
     "TransformRawRef",
     "compile_recovery_digest",
+    "render_recovery_report",
     "render_resume_bundle",
 ]

@@ -18,6 +18,7 @@ from polylogue.insights.transforms import (
     ToolSummary,
     TransformRawRef,
     compile_recovery_digest,
+    render_recovery_report,
 )
 from polylogue.types import SessionId
 
@@ -235,6 +236,52 @@ def test_forensic_index_groups_claims_by_raw_ref() -> None:
     assert any(label.startswith("event:issue_closed:") for label in merged_event_entry.claim_labels)
 
     assert digest.forensic_index.claim_count > len(digest.forensic_index.entries)
+
+
+def test_continue_report_renders_successor_boot_packet_with_evidence_refs() -> None:
+    digest = compile_recovery_digest(_session())
+
+    report = digest.report_markdown("continue")
+
+    assert report.startswith("# Continue: Ship the backlog [evidence: codex-session:demo]")
+    assert "## Boot Packet" in report
+    assert "- goal: burn down the backlog [evidence: codex-session:demo::m1]" in report
+    assert "- next: merge PR #1911 [evidence: codex-session:demo::m1]" in report
+    assert "- pr_opened: PR #1911 opened [evidence: codex-session:demo::m2]" in report
+    assert "Explore — Map the transform surface and report caveats. [evidence: codex-session:demo::m3::0" in report
+    assert "Bash [test] (ok) — devtools verify --quick [evidence: codex-session:demo::m2::0" in report
+    assert "## Evidence Index" in report
+    assert "evidence_id: codex-session:demo::m2::0; raw: block message=m2 block=0" in report
+    _assert_report_claim_lines_are_evidence_linked(report)
+
+
+def test_blame_report_renders_forensic_evidence_report_with_raw_refs() -> None:
+    digest = compile_recovery_digest(_session())
+
+    report = render_recovery_report(digest, preset="blame")
+
+    assert report.startswith("# Blame: Ship the backlog [evidence: codex-session:demo]")
+    assert "## Forensic Summary" in report
+    assert f"- extracted_claims: {digest.forensic_index.claim_count} [evidence: codex-session:demo]" in report
+    assert "- check_passed: ruff check passed [evidence: codex-session:demo::m2]" in report
+    assert "- test_passed: 20 tests passed [evidence: codex-session:demo::m2]" in report
+    assert "- issue_closed: Issue #1818 closed [evidence: codex-session:demo::m3]" in report
+    assert "- Bash [test] status=ok lines=3 — devtools verify --quick [evidence: codex-session:demo::m2::0" in report
+    assert "output: ruff check ... ok 20 passed in 50.28s" in report
+    assert "## Evidence Timeline" in report
+    assert "raw: message message=m1" in report
+    assert "claims: run_state, event:pr_merged:0, decision:run_state:0, decision:run_state:1" in report
+    _assert_report_claim_lines_are_evidence_linked(report)
+
+
+def _assert_report_claim_lines_are_evidence_linked(report: str) -> None:
+    for line in report.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.startswith("##"):
+            continue
+        assert "[evidence: " in line, line
 
 
 def test_github_cli_and_failed_check_events_are_extracted() -> None:
