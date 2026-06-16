@@ -1034,6 +1034,15 @@ def _direct_transform_component(archive_readiness: dict[str, Any] | None) -> dic
     from polylogue.insights.transforms import RECOVERY_TRANSFORM_VERSION, TRANSFORM_REGISTRY
     from polylogue.readiness.capability import component_from_transform_registry
 
+    if isinstance(archive_readiness, dict) and archive_readiness.get("checked") is False:
+        reason = str(archive_readiness.get("reason") or "archive_readiness_unchecked")
+        return component_from_transform_registry(
+            transform_count=len(TRANSFORM_REGISTRY),
+            session_count=None,
+            recovery_transform_version=RECOVERY_TRANSFORM_VERSION,
+            error=reason,
+        ).to_dict()
+
     counts = archive_readiness.get("counts") if isinstance(archive_readiness, dict) else None
     session_count = int(counts.get("session_count") or 0) if isinstance(counts, dict) else 0
     return component_from_transform_registry(

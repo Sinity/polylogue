@@ -225,16 +225,21 @@ def component_from_assertion_substrate(
 def component_from_transform_registry(
     *,
     transform_count: int,
-    session_count: int,
+    session_count: int | None,
     recovery_transform_version: int | None = None,
+    error: str | None = None,
 ) -> ComponentReadiness:
     """Map deterministic transform availability into the shared DTO."""
 
-    if transform_count <= 0:
+    if error:
+        state = CapabilityReadinessState.BLOCKED
+        summary = error
+        repair_hint = None
+    elif transform_count <= 0:
         state = CapabilityReadinessState.MISSING
         summary = "no transforms registered"
         repair_hint = None
-    elif session_count <= 0:
+    elif session_count is None or session_count <= 0:
         state = CapabilityReadinessState.MISSING
         summary = "no sessions"
         repair_hint = "polylogue import --demo"
@@ -245,8 +250,9 @@ def component_from_transform_registry(
 
     counts: dict[str, int | float | bool] = {
         "transform_count": transform_count,
-        "session_count": session_count,
     }
+    if session_count is not None:
+        counts["session_count"] = session_count
     if recovery_transform_version is not None:
         counts["recovery_transform_version"] = recovery_transform_version
 
@@ -256,6 +262,7 @@ def component_from_transform_registry(
         state=state,
         summary=summary,
         counts=counts,
+        caveats=(error,) if error else (),
         repair_hint=repair_hint,
         evidence_refs=("transform_registry",) if transform_count > 0 else (),
     )

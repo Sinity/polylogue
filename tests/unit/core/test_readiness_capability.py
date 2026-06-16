@@ -196,6 +196,11 @@ def test_transform_registry_maps_registry_and_session_availability() -> None:
     )
     no_sessions = component_from_transform_registry(transform_count=1, session_count=0)
     no_registry = component_from_transform_registry(transform_count=0, session_count=2)
+    blocked = component_from_transform_registry(
+        transform_count=1,
+        session_count=None,
+        error="database is locked",
+    )
 
     assert ready.state is CapabilityReadinessState.READY
     assert ready.scope == "recovery"
@@ -208,6 +213,11 @@ def test_transform_registry_maps_registry_and_session_availability() -> None:
     assert no_sessions.state is CapabilityReadinessState.MISSING
     assert no_sessions.repair_hint == "polylogue import --demo"
     assert no_registry.state is CapabilityReadinessState.MISSING
+    assert blocked.state is CapabilityReadinessState.BLOCKED
+    assert blocked.summary == "database is locked"
+    assert blocked.caveats == ("database is locked",)
+    assert blocked.repair_hint is None
+    assert "session_count" not in blocked.counts
 
 
 def test_insight_entry_operation_and_catchup_adapters() -> None:

@@ -564,6 +564,33 @@ class TestNoArchiveStatus:
         assert transforms["summary"] == "no sessions"
         assert transforms["repair_hint"] == "polylogue import --demo"
 
+    def test_direct_status_json_blocks_transforms_when_archive_readiness_fails(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        env = _make_app_env()
+        db_anchor = tmp_path / "index.db"
+        initialize_archive_database(db_anchor, ArchiveTier.INDEX)
+
+        with (
+            patch("polylogue.paths.db_path", return_value=db_anchor),
+            patch("polylogue.paths.archive_root", return_value=tmp_path),
+            patch(
+                "polylogue.cli.commands.status._archive_readiness_status",
+                return_value={"checked": False, "reason": "database is locked", "surfaces": {}},
+            ),
+            patch("polylogue.storage.embeddings.status_payload.embedding_status_payload", side_effect=RuntimeError),
+        ):
+            _show_direct_json(env)
+
+        payload = json.loads(_combined_calls(env))
+        transforms = payload["component_readiness"]["transforms"]
+        assert transforms["state"] == "blocked"
+        assert transforms["summary"] == "database is locked"
+        assert transforms["caveats"] == ["database is locked"]
+        assert transforms["repair_hint"] is None
+        assert "session_count" not in transforms["counts"]
+
     def test_direct_status_uses_active_archive_root(self, tmp_path: Path) -> None:
         env = _make_app_env()
         db_anchor = tmp_path / "custom.sqlite"
