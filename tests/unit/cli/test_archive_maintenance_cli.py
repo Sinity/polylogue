@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,7 @@ from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
 from polylogue.cli.commands import maintenance
+from polylogue.storage.blob_gc import read_gc_history
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
 from polylogue.storage.sqlite.archive_tiers.archive_init import (
     ArchiveInitResult,
@@ -30,6 +32,16 @@ def _stage_uninitialized_archive(cli_workspace: dict[str, Path]) -> None:
     archive_root = cli_workspace["archive_root"]
     for name in _ARCHIVE_TIERS:
         (archive_root / name).unlink(missing_ok=True)
+
+
+def _write_gc_candidate(cli_workspace: dict[str, Path], blob_hash: str) -> Path:
+    blob_root = cli_workspace["data_root"] / "polylogue" / "blob"
+    path = blob_root / blob_hash[:2] / blob_hash[2:]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"gc candidate")
+    old_epoch_s = 946684800
+    os.utime(path, (old_epoch_s, old_epoch_s))
+    return path
 
 
 def test_archive_plan_cli_reports_tier_targets(cli_workspace: dict[str, Path], cli_runner: CliRunner) -> None:
@@ -163,6 +175,83 @@ def test_backup_plan_cli_renders_plain_summary(
     assert "Archive backup plan" in result.output
     assert "source.db: critical policy=back_up present" in result.output
     assert "full_evidence:" in result.output
+
+
+def test_blob_gc_cli_dry_run_reports_without_deleting(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    blob_hash = "aa" + "1" * 62
+    candidate = _write_gc_candidate(cli_workspace, blob_hash)
+
+    result = cli_runner.invoke(
+        cli,
+        ["--plain", "maintenance", "blob-gc", "--max-batch", "5", "--output-format", "json"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["ok"] is True
+    assert payload["mode"] == "blob_gc"
+    assert payload["mutates"] is False
+    assert payload["dry_run"] is True
+    assert payload["candidate_count"] == 1
+    assert payload["inspected_count"] == 1
+    assert payload["would_delete_count"] == 1
+    assert payload["deleted_count"] == 0
+    assert payload["generation_written"] is False
+    assert candidate.exists(), "dry-run must not delete the candidate"
+    assert read_gc_history(cli_workspace["archive_root"] / "index.db", limit=1) == []
+
+
+def test_blob_gc_cli_plain_preview_names_skip_counts(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    _write_gc_candidate(cli_workspace, "bb" + "2" * 62)
+
+    result = cli_runner.invoke(
+        cli,
+        ["--plain", "maintenance", "blob-gc", "--max-batch", "5"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    assert "Blob GC dry-run" in result.output
+    assert "Candidates: 1" in result.output
+    assert "Result:     would delete 1 blob(s)" in result.output
+    assert "referenced=0 leased=0 missing=0 unlink_error=0" in result.output
+
+
+def test_blob_gc_cli_yes_deletes_and_records_generation(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    blob_hash = "cc" + "3" * 62
+    candidate = _write_gc_candidate(cli_workspace, blob_hash)
+
+    result = cli_runner.invoke(
+        cli,
+        ["--plain", "maintenance", "blob-gc", "--yes", "--output-format", "json"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["mutates"] is True
+    assert payload["dry_run"] is False
+    assert payload["would_delete_count"] == 0
+    assert payload["deleted_count"] == 1
+    assert payload["reclaimed_bytes"] == len(b"gc candidate")
+    assert payload["generation_written"] is True
+    assert str(payload["generation_id"]).startswith("gc-")
+    assert not candidate.exists()
+
+    history = read_gc_history(cli_workspace["archive_root"] / "index.db", limit=1)
+    assert len(history) == 1
+    assert history[0].generation_id == payload["generation_id"]
+    assert history[0].reclaimed_count == 1
 
 
 def test_archive_init_cli_is_dry_run_without_yes(cli_workspace: dict[str, Path], cli_runner: CliRunner) -> None:
