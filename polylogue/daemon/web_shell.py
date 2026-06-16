@@ -551,7 +551,10 @@ function renderComponentReadinessChip(el, label, component) {
 
 function renderFtsChip(component, fts) {
   var el = document.getElementById('status-fts');
-  if (renderComponentReadinessChip(el, 'FTS', component)) return;
+  if (component && component.state !== 'unknown') {
+    renderComponentReadinessChip(el, 'FTS', component);
+    return;
+  }
   var msgReady = !!fts.messages_ready;
   var indexed = Number(fts.message_indexed_count || 0);
   var indexable = Number(fts.message_indexable_count || 0);

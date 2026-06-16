@@ -1295,6 +1295,7 @@ class TestReaderInformability:
         with _running_server(workspace_env) as (_, base_url):
             _, _, body = _get_text(base_url, "/")
         assert "function renderFtsChip(" in body
+        assert "component && component.state !== 'unknown'" in body
         assert "'FTS: ok'" in body
         assert "'FTS: partial'" in body
         assert "'FTS: unavailable'" in body
