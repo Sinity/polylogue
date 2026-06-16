@@ -10,6 +10,15 @@ InputUnit = Literal["none", "query_result_set", "session", "path", "config", "ru
 ActionCardinality = Literal["any", "singleton", "explicit_multi", "destructive_multi"]
 ActionFormat = Literal["human", "json", "ndjson"]
 MachineEnvelope = Literal["result_set", "item", "mutation", "error", "stream_item"]
+CompletionContext = Literal[
+    "archive_path",
+    "config_key",
+    "daemon_url",
+    "filesystem_path",
+    "maintenance_operation",
+    "query_expression",
+    "session_id",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,7 +39,7 @@ class CliActionContract:
     machine_envelope: MachineEnvelope
     requires_daemon: bool
     guards: tuple[str, ...] = ()
-    completion_context: str | None = None
+    completion_context: CompletionContext | None = None
 
 
 VIRTUAL_ACTION_PATHS: frozenset[tuple[str, ...]] = frozenset(
@@ -186,6 +195,13 @@ def contract_for_path(path: tuple[str, ...]) -> CliActionContract | None:
     return ACTION_CONTRACT_BY_PATH.get(path)
 
 
+def action_completion_contexts() -> tuple[CompletionContext, ...]:
+    """Return completion contexts declared by public action contracts."""
+    return tuple(
+        dict.fromkeys(entry.completion_context for entry in ACTION_CONTRACTS if entry.completion_context is not None)
+    )
+
+
 def _validate_contracts() -> None:
     duplicate_paths = len(ACTION_CONTRACT_BY_PATH) != len(ACTION_CONTRACTS)
     if duplicate_paths:
@@ -207,7 +223,9 @@ __all__ = [
     "ActionEffect",
     "ActionFormat",
     "CliActionContract",
+    "CompletionContext",
     "InputUnit",
     "MachineEnvelope",
+    "action_completion_contexts",
     "contract_for_path",
 ]

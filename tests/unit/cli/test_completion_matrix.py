@@ -27,6 +27,7 @@ from click.shell_completion import (
     ZshComplete,
 )
 
+from polylogue.cli.action_contracts import CompletionContext, action_completion_contexts
 from polylogue.cli.click_app import cli
 
 SUPPORTED_SHELLS: tuple[tuple[str, type[ShellComplete]], ...] = (
@@ -46,13 +47,30 @@ STATIC_COMPLETERS: tuple[tuple[str, list[str]], ...] = (
     ("message_type", ["messages", "--message-type"]),
 )
 
+CONTRACT_COMPLETION_COMMANDS: dict[CompletionContext, list[str]] = {
+    "session_id": ["--id"],
+}
+SHELL_MATRIX_REQUIRED_CONTRACT_CONTEXTS: frozenset[CompletionContext] = frozenset({"session_id"})
+
 DYNAMIC_COMPLETERS: tuple[tuple[str, list[str]], ...] = (
-    ("session_id", ["--id"]),
+    *(
+        (context, cwords)
+        for context, cwords in CONTRACT_COMPLETION_COMMANDS.items()
+        if context in action_completion_contexts()
+    ),
     ("tag", ["--tag"]),
     ("repo", ["--repo"]),
     ("cwd_prefix", ["--cwd-prefix"]),
     ("tool", ["--tool"]),
 )
+
+
+def test_contract_completion_contexts_are_in_shell_matrix() -> None:
+    """Action-contract completion contexts with shell completers are matrix-covered."""
+    declared = set(action_completion_contexts())
+    required = declared.intersection(SHELL_MATRIX_REQUIRED_CONTRACT_CONTEXTS)
+    missing = required - set(CONTRACT_COMPLETION_COMMANDS)
+    assert not missing, f"contract completion contexts missing shell matrix rows: {sorted(missing)}"
 
 
 @contextmanager
