@@ -617,6 +617,8 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         code_refs=(
             "polylogue.storage.repository.archive.writes.sessions.delete_session_via_backend",
             "polylogue.api.archive.PolylogueArchiveMixin.delete_session",
+            "polylogue.cli.query_verbs.delete_verb",
+            "polylogue.cli.archive_query._emit_delete",
             "polylogue.mcp.server_mutation_tools.delete_session",
         ),
         surfaces=("facade", "cli", "mcp", "daemon"),
