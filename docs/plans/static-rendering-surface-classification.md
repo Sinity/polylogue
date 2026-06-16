@@ -8,7 +8,7 @@ breaking required gates.
 | --- | --- | --- | --- |
 | `polylogue/rendering/` | read/export format | Retain | Imported by CLI/API rendering paths; owns Markdown and HTML session output. |
 | `polylogue/rendering/templates/session.html` | read/export format | Retain | HTML session renderer template, not a separate product UI. |
-| `polylogue/templates/` | legacy web/page templates | Re-audit before deletion | No direct import found in the #1848 surface scan; deletion needs a focused import/test pass. |
+| `polylogue/templates/` | dead static-site product residue | Deleted | No live imports or package/runtime references were found; `tests/unit/architecture/test_static_rendering_prune.py` pins absence while retaining `polylogue/rendering/templates/session.html`. |
 | `polylogue/publication/` | report manifest helper | Retain for lab reports | Used by report writers as an output manifest type. |
 | `devtools/pages_builder.py` | documentation site build | Retain | `devtools render-pages` and site renderer tests exercise it. |
 | `devtools/pages_templates.py` | documentation site build | Retain | Template source for `pages_builder.py`. |
@@ -23,7 +23,6 @@ breaking required gates.
 
 Deletion candidates after #1849 or a focused import graph proves disuse:
 
-- `polylogue/templates/`
 - any `polylogue/showcase/*` report/output adapters that are no longer used by
   `devtools lab-scenario`, validation lanes, or command help baselines.
 
