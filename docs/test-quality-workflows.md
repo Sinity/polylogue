@@ -12,11 +12,11 @@ Current registry snapshot:
 - live lanes: `19`
 - composite lanes: `24`
 - mutation campaigns: `19`
-- benchmark campaigns: `6`
+- benchmark campaigns: `7`
 - synthetic benchmark campaigns: `6`
-- scenario projections: `266`
+- scenario projections: `267`
 - inferred corpus scenarios: `8`
-  - benchmark-campaign: `6`
+  - benchmark-campaign: `7`
   - exercise: `160`
   - inferred-corpus-scenario: `8`
   - mutation-campaign: `19`
@@ -28,12 +28,12 @@ Current registry snapshot:
 - covered runtime paths: `22`
 - covered runtime artifacts: `46`
 - covered runtime operations: `27`
-- covered maintenance targets: `2`
-- covered declared operation targets: `42`
+- covered maintenance targets: `3`
+- covered declared operation targets: `45`
 - uncovered runtime paths: `recovery-digest-transform-loop`
 - uncovered runtime artifacts: `recovery_report_markdown`
 - uncovered runtime operations: `mutate-add-tag`, `mutate-bulk-tag-sessions`, `mutate-delete-metadata`, `mutate-delete-session`, `mutate-remove-tag`, `mutate-set-metadata`
-- uncovered maintenance targets: `empty_sessions`, `message_embeddings`, `message_type_backfill`, `orphaned_attachments`, `orphaned_blobs`, `orphaned_messages`, `superseded_raw_snapshots`, `wal_checkpoint`
+- uncovered maintenance targets: `empty_sessions`, `message_embeddings`, `message_type_backfill`, `orphaned_attachments`, `orphaned_messages`, `superseded_raw_snapshots`, `wal_checkpoint`
 - uncovered declared operation targets: `mutate-add-tag`, `mutate-bulk-tag-sessions`, `mutate-delete-metadata`, `mutate-delete-session`, `mutate-remove-tag`, `mutate-set-metadata`
 
 Inspect the full authored map with:
@@ -257,6 +257,7 @@ Benchmark comparisons are manual.
 
 | Campaign | Tests | Warn | Fail | Description |
 | --- | --- | ---: | ---: | --- |
+| `archive-maintenance` | `tests/benchmarks/test_archive_maintenance.py` | 0.0% | 0.0% | Archive backup planning, blob-GC dry-run, and space-report benchmark domain |
 | `daemon-convergence` | `tests/benchmarks/test_daemon_convergence.py` | 0.0% | 0.0% | Daemon ingest convergence at synthetic scale tiers — single-file and multi-session |
 | `pipeline` | `tests/benchmarks/test_pipeline.py` | 0.0% | 0.0% | Index rebuild/update plus hashing and semantic helper benchmark domain |
 | `reader-api` | `tests/benchmarks/test_reader_api.py` | 0.0% | 0.0% | Reader HTTP API list/get/facets/context-pack/cost-rollup benchmark domain |
@@ -298,6 +299,7 @@ These are the authored scenario-bearing projections currently feeding runtime co
 
 | Source | Projection | Path Targets | Artifact Targets | Operation Targets | Maintenance Targets | Tags | Description |
 | --- | --- | --- | --- | --- | --- | --- | --- |
+| `benchmark-campaign` | `archive-maintenance` | — | `archive_readiness` | `benchmark.archive.backup-plan`<br>`benchmark.archive.blob-gc-dry-run`<br>`benchmark.archive.space-report` | `orphaned_blobs` | `benchmark`<br>`archive`<br>`maintenance`<br>`backup`<br>`gc` | Archive backup planning, blob-GC dry-run, and space-report benchmark domain |
 | `benchmark-campaign` | `daemon-convergence` | — | `daemon_convergence_timing` | `benchmark.daemon.convergence` | — | `benchmark`<br>`daemon`<br>`convergence` | Daemon ingest convergence at synthetic scale tiers — single-file and multi-session |
 | `benchmark-campaign` | `pipeline` | — | `index_state`<br>`pipeline_helpers` | `benchmark.pipeline.index-and-helpers` | — | `benchmark`<br>`pipeline` | Index rebuild/update plus hashing and semantic helper benchmark domain |
 | `benchmark-campaign` | `reader-api` | — | `reader_list_results`<br>`reader_facets` | `benchmark.reader.api` | — | `benchmark`<br>`reader`<br>`api` | Reader HTTP API list/get/facets/context-pack/cost-rollup benchmark domain |

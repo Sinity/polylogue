@@ -83,6 +83,24 @@ BENCHMARK_SCENARIOS: tuple[BenchmarkCampaignEntry, ...] = (
         operation_targets=("benchmark.daemon.convergence",),
         tags=("benchmark", "daemon", "convergence"),
     ),
+    BenchmarkCampaignEntry(
+        name="archive-maintenance",
+        description="Archive backup planning, blob-GC dry-run, and space-report benchmark domain",
+        execution=pytest_execution("tests/benchmarks/test_archive_maintenance.py"),
+        notes=(
+            "Covers read-only archive maintenance performance artifacts.",
+            "Backup runtime copy/restore semantics are intentionally out of scope.",
+        ),
+        origin="authored.benchmark-domain",
+        artifact_targets=("archive_readiness",),
+        operation_targets=(
+            "benchmark.archive.backup-plan",
+            "benchmark.archive.blob-gc-dry-run",
+            "benchmark.archive.space-report",
+        ),
+        maintenance_targets=("orphaned_blobs",),
+        tags=("benchmark", "archive", "maintenance", "backup", "gc"),
+    ),
 )
 
 BENCHMARK_SCENARIO_INDEX: dict[str, BenchmarkCampaignEntry] = compile_benchmark_campaigns(BENCHMARK_SCENARIOS)
