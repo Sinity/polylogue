@@ -84,8 +84,16 @@ def build_report(*, gate_doc: Path = GATE_DOC) -> dict[str, Any]:
             errors.append(f"release PR template missing field: {field}")
 
     for command in (*REQUIRED_COMMANDS, *FOCUSED_COMMANDS):
+        command_text = " ".join(command.argv)
+        if command.required and command_text not in text:
+            errors.append(f"required command missing from gate document: {command_text}")
         if command.argv[0] == "devtools" and command.argv[1] not in COMMANDS:
-            errors.append(f"unknown devtools command in release gate: {' '.join(command.argv)}")
+            errors.append(f"unknown devtools command in release gate: {command_text}")
+
+    if "Satisfied:" not in text:
+        errors.append("gate document missing satisfied release-status list")
+    if "Still blocking external release claims:" not in text:
+        errors.append("gate document missing blocking release-status list")
 
     return {
         "ok": not errors,
