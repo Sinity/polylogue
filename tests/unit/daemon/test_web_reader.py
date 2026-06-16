@@ -1272,11 +1272,24 @@ class TestReaderInformability:
         ):
             assert f".chip.{quality}" in body, f"web shell missing MK3 chip-quality class {quality!r}"
 
-    def test_fts_chip_renders_tri_state_not_binary(self, workspace_env: dict[str, Path]) -> None:
-        """``renderFtsChip`` must distinguish ok / partial / unavailable
-        rather than collapsing partial readiness into the ok bucket. The
-        prior code rendered ``messages_ready ? 'ok' : '--'`` which hides
-        partial message FTS readiness entirely.
+    def test_status_strip_consumes_component_readiness(self, workspace_env: dict[str, Path]) -> None:
+        """The web shell status strip should consume the canonical #1832
+        component readiness map instead of recomputing product state from
+        legacy daemon fields. Legacy FTS rendering remains as fallback for
+        old/status-snapshot payloads.
+        """
+        with _running_server(workspace_env) as (_, base_url):
+            _, _, body = _get_text(base_url, "/")
+        assert "var readiness = s.component_readiness || {};" in body
+        assert "renderFtsChip(readiness.search || null, s.fts_readiness || {})" in body
+        assert "renderSemanticChip(readiness.embeddings || null)" in body
+        assert "renderIngestChip(readiness.daemon_ingest || null, s.live || {})" in body
+        assert "function renderComponentReadinessChip(" in body
+        assert "function readinessQuality(" in body
+
+    def test_fts_chip_keeps_legacy_tri_state_fallback(self, workspace_env: dict[str, Path]) -> None:
+        """``renderFtsChip`` must still distinguish ok / partial /
+        unavailable when an older payload lacks ``component_readiness``.
         """
         with _running_server(workspace_env) as (_, base_url):
             _, _, body = _get_text(base_url, "/")
@@ -1284,6 +1297,20 @@ class TestReaderInformability:
         assert "'FTS: ok'" in body
         assert "'FTS: partial'" in body
         assert "'FTS: unavailable'" in body
+
+    def test_semantic_and_ingest_readiness_chips_render_present(self, workspace_env: dict[str, Path]) -> None:
+        """Semantic and ingest state have first-class status-strip chips fed
+        by ``component_readiness.embeddings`` and
+        ``component_readiness.daemon_ingest``.
+        """
+        with _running_server(workspace_env) as (_, base_url):
+            _, _, body = _get_text(base_url, "/")
+        assert 'id="status-semantic"' in body
+        assert 'id="status-ingest"' in body
+        assert "function renderSemanticChip(" in body
+        assert "function renderIngestChip(" in body
+        assert "'semantic'" in body
+        assert "'ingest'" in body
 
     def test_insight_freshness_chip_render_present(self, workspace_env: dict[str, Path]) -> None:
         """Session insight freshness gets its own status-strip chip so

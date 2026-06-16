@@ -246,6 +246,7 @@ __ATTACHMENT_CSS__
     <span class="chip" id="status-db">--</span>
     <span class="spacer"></span>
     <span class="chip" id="status-fts" title="FTS readiness">FTS: --</span>
+    <span class="chip" id="status-semantic" title="Semantic readiness">semantic: --</span>
     <span class="chip" id="status-insights" title="Session insight freshness" style="display:none">insights: --</span>
     <span class="chip" id="status-ingest" style="display:none">live</span>
     <span class="chip" id="status-live" title="Realtime channel">live: --</span>
@@ -499,16 +500,13 @@ async function loadStatus() {
   }
   try {
     var s = await fetchJSON('/api/status');
+    var readiness = s.component_readiness || {};
     document.getElementById('status-convs').textContent = (s.total_sessions || 0).toLocaleString() + ' convs';
     document.getElementById('status-msgs').textContent = (s.total_messages || 0).toLocaleString() + ' msgs';
-    renderFtsChip(s.fts_readiness || {});
+    renderFtsChip(readiness.search || null, s.fts_readiness || {});
+    renderSemanticChip(readiness.embeddings || null);
     renderInsightChip(s.insight_freshness || {});
-    var ingestEl = document.getElementById('status-ingest');
-    if (s.live && s.live.existing_source_count > 0) {
-      ingestEl.style.display = '';
-      ingestEl.textContent = 'live: ' + s.live.existing_source_count + ' srcs';
-      setChipQuality(ingestEl, 'canonical');
-    } else { ingestEl.style.display = 'none'; }
+    renderIngestChip(readiness.daemon_ingest || null, s.live || {});
   } catch(e) {}
 }
 
@@ -520,8 +518,40 @@ function setChipQuality(el, quality) {
   if (quality) el.classList.add('q-' + quality);
 }
 
-function renderFtsChip(fts) {
+function readinessQuality(state) {
+  if (state === 'ready') return 'canonical';
+  if (state === 'stale') return 'stale';
+  if (state === 'rebuilding' || state === 'degraded') return 'partial';
+  if (state === 'poisoned') return 'redacted';
+  if (state === 'missing' || state === 'blocked') return 'unavailable';
+  return 'unavailable';
+}
+
+function readinessLabel(state) {
+  if (state === 'ready') return 'ok';
+  if (state === 'rebuilding') return 'rebuilding';
+  if (state === 'stale') return 'stale';
+  if (state === 'degraded') return 'degraded';
+  if (state === 'missing') return 'missing';
+  if (state === 'blocked') return 'blocked';
+  if (state === 'poisoned') return 'poisoned';
+  return 'unknown';
+}
+
+function renderComponentReadinessChip(el, label, component) {
+  if (!el || !component) return false;
+  var state = component.state || 'unknown';
+  el.textContent = label + ': ' + readinessLabel(state);
+  setChipQuality(el, readinessQuality(state));
+  var caveats = component.caveats || [];
+  var summary = component.summary || state;
+  el.title = label + ' readiness: ' + summary + (caveats.length ? ' (' + caveats.join(', ') + ')' : '');
+  return true;
+}
+
+function renderFtsChip(component, fts) {
   var el = document.getElementById('status-fts');
+  if (renderComponentReadinessChip(el, 'FTS', component)) return;
   var msgReady = !!fts.messages_ready;
   var indexed = Number(fts.message_indexed_count || 0);
   var indexable = Number(fts.message_indexable_count || 0);
@@ -535,6 +565,11 @@ function renderFtsChip(fts) {
   setChipQuality(el, quality);
 }
 
+function renderSemanticChip(component) {
+  var el = document.getElementById('status-semantic');
+  renderComponentReadinessChip(el, 'semantic', component);
+}
+
 function renderInsightChip(freshness) {
   var el = document.getElementById('status-insights');
   var total = freshness.total_sessions || 0;
@@ -544,6 +579,20 @@ function renderInsightChip(freshness) {
   if (withProfiles >= total) { el.textContent = 'insights: ok'; setChipQuality(el, 'canonical'); }
   else if (withProfiles > 0) { el.textContent = 'insights: ' + withProfiles + '/' + total; setChipQuality(el, 'partial'); }
   else { el.textContent = 'insights: stale'; setChipQuality(el, 'stale'); }
+}
+
+function renderIngestChip(component, live) {
+  var el = document.getElementById('status-ingest');
+  if (component) {
+    el.style.display = '';
+    renderComponentReadinessChip(el, 'ingest', component);
+    return;
+  }
+  if (live && live.existing_source_count > 0) {
+    el.style.display = '';
+    el.textContent = 'live: ' + live.existing_source_count + ' srcs';
+    setChipQuality(el, 'canonical');
+  } else { el.style.display = 'none'; }
 }
 
 function renderSidebarState(kind, msg) {
