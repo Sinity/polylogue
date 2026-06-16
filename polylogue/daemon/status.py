@@ -1500,6 +1500,7 @@ def _daemon_component_readiness(
     *,
     component_state: ComponentState,
     fts_readiness: FTSReadiness,
+    insight_freshness: InsightFreshness,
     embedding_readiness: EmbeddingReadiness,
     archive_storage: ArchiveStorageStatus,
     live_ingest_attempts: LiveIngestAttemptSummary,
@@ -1517,6 +1518,7 @@ def _daemon_component_readiness(
             scope="daemon",
         ).to_dict(),
         "search": _component_from_fts_readiness(fts_readiness).to_dict(),
+        "session_profiles": _component_from_insight_freshness(insight_freshness).to_dict(),
         "embeddings": _component_from_daemon_embedding_readiness(embedding_readiness).to_dict(),
         "archive_storage": _component_from_archive_storage(archive_storage).to_dict(),
         "daemon_ingest": _component_from_live_ingest(live_ingest_attempts).to_dict(),
@@ -1557,6 +1559,37 @@ def _component_from_fts_readiness(readiness: FTSReadiness) -> ComponentReadiness
             "coverage_pct": readiness.coverage_pct,
         },
         repair_hint=None if readiness.messages_ready else "polylogue maintenance run --target dangling_fts",
+    )
+
+
+def _component_from_insight_freshness(freshness: InsightFreshness) -> ComponentReadiness:
+    total = freshness.total_sessions
+    with_profiles = freshness.sessions_with_profiles
+    if total <= 0:
+        state = CapabilityReadinessState.MISSING
+        summary = "no sessions"
+    elif with_profiles >= total:
+        state = CapabilityReadinessState.READY
+        summary = "ready"
+    elif with_profiles > 0:
+        state = CapabilityReadinessState.DEGRADED
+        summary = "partial"
+    else:
+        state = CapabilityReadinessState.STALE
+        summary = "profiles missing"
+    return ComponentReadiness(
+        component="session_profiles",
+        scope="insights",
+        state=state,
+        summary=summary,
+        counts={
+            "sessions_with_profiles": with_profiles,
+            "total_sessions": total,
+            "missing_profiles": max(0, total - with_profiles),
+        },
+        repair_hint=None
+        if state is CapabilityReadinessState.READY
+        else "polylogue maintenance preview --scope derived",
     )
 
 
@@ -1752,6 +1785,11 @@ def build_daemon_status(
         ),
     )
 
+    insight_freshness = InsightFreshness(
+        sessions_with_profiles=_safe_int(freshness.get("sessions_with_profiles", 0)),
+        total_sessions=_safe_int(freshness.get("total_sessions", 0)),
+    )
+
     return DaemonStatus(
         raw_parse_failures=_safe_int(raw_failures.get("parse_failures", 0)),
         raw_validation_failures=_safe_int(raw_failures.get("validation_failures", 0)),
@@ -1773,15 +1811,13 @@ def build_daemon_status(
         blob_dir_size_bytes=_blob_size_info(),
         disk_free_bytes=_safe_int(db_info.get("disk_free_bytes", 0)),
         fts_readiness=fts_readiness,
-        insight_freshness=InsightFreshness(
-            sessions_with_profiles=_safe_int(freshness.get("sessions_with_profiles", 0)),
-            total_sessions=_safe_int(freshness.get("total_sessions", 0)),
-        ),
+        insight_freshness=insight_freshness,
         embedding_readiness=embedding_readiness,
         archive_storage=storage_info,
         component_readiness=_daemon_component_readiness(
             component_state=component_state,
             fts_readiness=fts_readiness,
+            insight_freshness=insight_freshness,
             embedding_readiness=embedding_readiness,
             archive_storage=storage_info,
             live_ingest_attempts=live_ingest_attempts,

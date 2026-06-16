@@ -165,7 +165,10 @@ def test_daemon_status_payload_maps_component_readiness(tmp_path: Path) -> None:
                 "coverage_pct": 40.0,
             },
         ),
-        patch("polylogue.daemon.status._insight_freshness_info", return_value={}),
+        patch(
+            "polylogue.daemon.status._insight_freshness_info",
+            return_value={"sessions_with_profiles": 7, "total_sessions": 10},
+        ),
         patch(
             "polylogue.daemon.status.embedding_readiness_info",
             return_value={
@@ -187,10 +190,12 @@ def test_daemon_status_payload_maps_component_readiness(tmp_path: Path) -> None:
     readiness = payload["component_readiness"]
     assert isinstance(readiness, dict)
     search = readiness["search"]
+    session_profiles = readiness["session_profiles"]
     embeddings = readiness["embeddings"]
     api = readiness["daemon_api"]
     ingest = readiness["daemon_ingest"]
     assert isinstance(search, dict)
+    assert isinstance(session_profiles, dict)
     assert isinstance(embeddings, dict)
     assert isinstance(api, dict)
     assert isinstance(ingest, dict)
@@ -198,6 +203,12 @@ def test_daemon_status_payload_maps_component_readiness(tmp_path: Path) -> None:
     assert search["state"] == "stale"
     assert search_counts["message_indexed_count"] == 4
     assert search["repair_hint"] == "polylogue maintenance run --target dangling_fts"
+    profile_counts = cast(dict[str, object], session_profiles["counts"])
+    assert session_profiles["state"] == "degraded"
+    assert session_profiles["scope"] == "insights"
+    assert profile_counts["sessions_with_profiles"] == 7
+    assert profile_counts["missing_profiles"] == 3
+    assert session_profiles["repair_hint"] == "polylogue maintenance preview --scope derived"
     assert embeddings["state"] == "stale"
     assert embeddings["scope"] == "semantic"
     assert embeddings["repair_hint"] == "polylogue embed backfill"
