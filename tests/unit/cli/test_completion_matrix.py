@@ -27,6 +27,7 @@ from click.shell_completion import (
     ZshComplete,
 )
 
+from polylogue.cli.action_contracts import action_completion_contexts
 from polylogue.cli.click_app import cli
 
 SUPPORTED_SHELLS: tuple[tuple[str, type[ShellComplete]], ...] = (
@@ -46,13 +47,29 @@ STATIC_COMPLETERS: tuple[tuple[str, list[str]], ...] = (
     ("message_type", ["messages", "--message-type"]),
 )
 
+CONTRACT_COMPLETION_COMMANDS: dict[str, list[str]] = {
+    "session_id": ["--id"],
+}
+
 DYNAMIC_COMPLETERS: tuple[tuple[str, list[str]], ...] = (
-    ("session_id", ["--id"]),
+    *(
+        (context, cwords)
+        for context, cwords in CONTRACT_COMPLETION_COMMANDS.items()
+        if context in action_completion_contexts()
+    ),
     ("tag", ["--tag"]),
     ("repo", ["--repo"]),
     ("cwd_prefix", ["--cwd-prefix"]),
     ("tool", ["--tool"]),
 )
+
+
+def test_contract_completion_contexts_are_in_shell_matrix() -> None:
+    """Action-contract completion contexts with shell completers are matrix-covered."""
+    missing = set(CONTRACT_COMPLETION_COMMANDS).intersection(action_completion_contexts()) - {
+        label for label, _ in DYNAMIC_COMPLETERS
+    }
+    assert not missing, f"contract completion contexts missing shell matrix rows: {sorted(missing)}"
 
 
 @contextmanager

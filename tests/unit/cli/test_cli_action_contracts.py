@@ -18,6 +18,7 @@ from polylogue.cli.action_contracts import (
     PUBLIC_ACTION_FLOOR,
     VIRTUAL_ACTION_PATHS,
     CliActionContract,
+    action_completion_contexts,
 )
 from polylogue.cli.click_app import cli
 from polylogue.cli.command_inventory import CommandPath, iter_command_paths
@@ -36,6 +37,16 @@ GUARD_BEHAVIOR_COVERAGE: dict[str, str] = {
     "secret_values_redacted": "test_config_contract_guard_redacts_secret_values",
     "single_match_unless_all": "test_delete_contract_guard_requires_all_for_multi_match",
     "single_match_unless_all_or_first": "test_mark_contract_guard_requires_all_or_first_for_multi_match",
+}
+
+COMPLETION_CONTEXT_COVERAGE: dict[str, str] = {
+    "archive_path": "doctor archive-path options are covered by help/format contracts",
+    "config_key": "config command key space is covered by config guard/schema tests",
+    "daemon_url": "status daemon URL behavior is covered by status runtime tests",
+    "filesystem_path": "import path handling is covered by path guard tests",
+    "maintenance_operation": "maintenance target handling is covered by maintenance workflow tests",
+    "query_expression": "find/analyze query grammar is covered by query parser tests",
+    "session_id": "session-id shell completion is covered by test_completion_matrix.py",
 }
 
 
@@ -116,6 +127,17 @@ def test_every_declared_guard_has_behavior_coverage() -> None:
         "#1816 guards should not be documentation-only metadata.\n"
         f"Missing behavior coverage: {sorted(declared - covered)}\n"
         f"Stale behavior coverage: {sorted(covered - declared)}"
+    )
+
+
+def test_every_completion_context_has_declared_coverage() -> None:
+    """Completion-context metadata must stay tied to executable surfaces."""
+    declared: set[str] = set(action_completion_contexts())
+    covered = set(COMPLETION_CONTEXT_COVERAGE)
+    assert declared == covered, (
+        "#1816 completion contexts should not be free-form notes.\n"
+        f"Missing coverage: {sorted(declared - covered)}\n"
+        f"Stale coverage: {sorted(covered - declared)}"
     )
 
 
