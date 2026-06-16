@@ -29,8 +29,8 @@ from polylogue.schemas.audit.models import AuditReport
 from polylogue.schemas.validation.models import ArtifactProofReport, ProviderArtifactProof
 from polylogue.showcase.exercises import Exercise
 from polylogue.showcase.invariants import InvariantResult
-from polylogue.showcase.qa_report import generate_qa_session
 from polylogue.showcase.qa_runner import QAResult
+from polylogue.showcase.qa_session_payload import generate_qa_session
 from polylogue.showcase.runner import ExerciseResult, ShowcaseResult
 from tests.infra.json_contracts import envelope_result, extract_json_object
 
@@ -166,12 +166,12 @@ class TestFrozenClockShowcaseReport:
         """Two calls with same frozen clock produce identical timestamps."""
         result = self._make_qa_result()
 
-        with patch("polylogue.showcase.qa_report.datetime") as mock_dt:
+        with patch("polylogue.showcase.qa_session_payload.datetime") as mock_dt:
             mock_dt.now.return_value = self.FROZEN_DT
             mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
             session_a = generate_qa_session(result)
 
-        with patch("polylogue.showcase.qa_report.datetime") as mock_dt:
+        with patch("polylogue.showcase.qa_session_payload.datetime") as mock_dt:
             mock_dt.now.return_value = self.FROZEN_DT
             mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
             session_b = generate_qa_session(result)
@@ -186,12 +186,12 @@ class TestFrozenClockShowcaseReport:
         dt_a = datetime(2024, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
         dt_b = datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
 
-        with patch("polylogue.showcase.qa_report.datetime") as mock_dt:
+        with patch("polylogue.showcase.qa_session_payload.datetime") as mock_dt:
             mock_dt.now.return_value = dt_a
             mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
             session_a = generate_qa_session(result)
 
-        with patch("polylogue.showcase.qa_report.datetime") as mock_dt:
+        with patch("polylogue.showcase.qa_session_payload.datetime") as mock_dt:
             mock_dt.now.return_value = dt_b
             mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
             session_b = generate_qa_session(result)

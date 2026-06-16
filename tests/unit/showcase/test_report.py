@@ -22,12 +22,10 @@ from polylogue.schemas.audit.models import AuditReport
 from polylogue.schemas.validation.models import ArtifactProofReport, ProviderArtifactProof
 from polylogue.showcase.exercise_models import Exercise
 from polylogue.showcase.invariants import InvariantResult
-from polylogue.showcase.qa_report import (
-    generate_qa_markdown,
-    generate_qa_summary,
-)
+from polylogue.showcase.qa_markdown import generate_qa_markdown
 from polylogue.showcase.qa_runner import QAResult
 from polylogue.showcase.qa_session_payload import build_qa_session_record
+from polylogue.showcase.qa_summary import generate_qa_summary
 from polylogue.showcase.runner import ExerciseResult, ShowcaseResult
 from polylogue.showcase.showcase_report_payloads import (
     build_showcase_session_record,

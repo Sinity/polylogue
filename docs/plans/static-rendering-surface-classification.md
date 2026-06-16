@@ -18,6 +18,7 @@ breaking required gates.
 | `docs/media/*.svg` | public docs media output | Retain | Committed render output for environments without `mmdc`. |
 | `polylogue/scenarios/` | fixture/demo and contract substrate | Retain | Used by demo import, validation lanes, benchmarks, and pipeline probes. |
 | `polylogue/showcase/` | verification-lab runner substrate | Retain until #1849 replacement | Required by `devtools lab-scenario`, validation lanes, and command help baselines. |
+| `polylogue/showcase/qa_report.py` | obsolete report aggregator | Deleted | Callers now import the owned QA payload, Markdown, and summary modules directly; the lab runner/report persistence path remains intact. |
 | `tests/baselines/showcase/` | generated command contract fixtures | Retain until #1849 replacement | Required by `devtools lab-scenario verify-baselines`. |
 | `polylogue/verification/` | manifest validation substrate | Retain | Used by manifest verification tooling. |
 
