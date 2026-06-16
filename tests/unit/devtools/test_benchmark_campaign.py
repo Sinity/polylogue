@@ -5,13 +5,14 @@ from pathlib import Path
 from types import TracebackType
 from typing import Literal
 
-from pytest import MonkeyPatch
+from pytest import CaptureFixture, MonkeyPatch
 
 from devtools.benchmark_campaign import (
     CampaignResult,
     Regression,
     _compare_results,
     compare_artifacts,
+    main,
     render_index,
     run_campaign,
 )
@@ -48,6 +49,31 @@ def _benchmark_record(fullname: str, mean: float) -> BenchmarkStatRecord:
         "rounds": 1,
         "ops": (1.0 / mean) if mean > 0 else None,
     }
+
+
+def _campaign_result(*, description: str, commit: str, mean: float) -> CampaignResult:
+    return CampaignResult(
+        campaign="search-filters",
+        description=description,
+        commit=commit,
+        worktree_dirty=False,
+        created_at="2026-04-11T00:00:00+00:00",
+        workspace="/tmp/workspace",
+        command=["pytest"],
+        tests=["tests/benchmarks/test_search_filters.py"],
+        notes=[],
+        benchmark_count=1,
+        runtime_seconds=1.0,
+        exit_code=0,
+        machine_info={},
+        benchmarks=[_benchmark_record("bench.query", mean)],
+        slowest=[],
+        compare_to=None,
+        warn_pct=10.0,
+        fail_pct=20.0,
+        regressions=[],
+        worst_regression_pct=None,
+    )
 
 
 def test_compare_results_orders_regressions_by_worst_delta() -> None:
@@ -138,6 +164,30 @@ def test_compare_artifacts_fails_when_threshold_is_exceeded(tmp_path: Path) -> N
     candidate_path.write_text(json.dumps(candidate.__dict__), encoding="utf-8")
 
     assert compare_artifacts(baseline_path, candidate_path, 20.0) == 1
+
+
+def test_compare_command_reports_expected_delta(tmp_path: Path, capsys: CaptureFixture[str]) -> None:
+    """#1849: benchmark artifact comparison has an executable smoke fixture.
+
+    The public operator command must read two durable campaign artifacts,
+    report the overlapping benchmark delta, and return failure only when the
+    configured threshold is exceeded.
+    """
+    baseline = _campaign_result(description="baseline", commit="a" * 40, mean=1.0)
+    candidate = _campaign_result(description="candidate", commit="b" * 40, mean=1.15)
+    baseline_path = tmp_path / "baseline.json"
+    candidate_path = tmp_path / "candidate.json"
+    baseline_path.write_text(json.dumps(baseline.__dict__), encoding="utf-8")
+    candidate_path.write_text(json.dumps(candidate.__dict__), encoding="utf-8")
+
+    assert main(["compare", str(baseline_path), str(candidate_path), "--fail-pct", "20.0"]) == 0
+    out = capsys.readouterr().out
+    assert "Comparing candidate.json against baseline.json:" in out
+    assert "bench.query: 15.00% (1.000000s -> 1.150000s)" in out
+
+    assert main(["compare", str(baseline_path), str(candidate_path), "--fail-pct", "10.0"]) == 1
+    out = capsys.readouterr().out
+    assert "FAIL: worst regression 15.00% exceeds 10.00%" in out
 
 
 def test_render_index_lists_saved_artifacts(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
