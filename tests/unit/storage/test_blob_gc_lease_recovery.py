@@ -30,6 +30,7 @@ from polylogue.storage.blob_gc import (
     sweep_orphaned_blob_leases,
 )
 from polylogue.storage.sqlite.connection_profile import open_connection
+from tests.infra.frozen_clock import FrozenClock
 
 
 @pytest.fixture
@@ -208,7 +209,12 @@ def test_gc_age_gate_respects_previous_generation(db_path: Path, tmp_path: Path)
     assert not (blob_dir / blob_hash[:2] / blob_hash[2:]).exists()
 
 
-def test_gc_combines_reference_lease_and_generation_guards(db_path: Path, tmp_path: Path) -> None:
+def test_gc_combines_reference_lease_and_generation_guards(
+    db_path: Path,
+    tmp_path: Path,
+    workspace_env: dict[str, Path],
+    frozen_clock: FrozenClock,
+) -> None:
     """One GC pass applies all #1830 safety gates before reclaiming.
 
     A generation-safe GC pass must keep referenced blobs, in-flight leased
@@ -224,7 +230,7 @@ def test_gc_combines_reference_lease_and_generation_guards(db_path: Path, tmp_pa
     generation_young_hash = "cc" + "3" * 62
     orphan_hash = "dd" + "4" * 62
 
-    now = int(time.time())
+    now = int(frozen_clock.time())
     completed_at_ms = (now - 1000) * 1000
     conn = open_connection(db_path)
     try:
@@ -247,6 +253,7 @@ def test_gc_combines_reference_lease_and_generation_guards(db_path: Path, tmp_pa
     acquire_blob_leases(db_path, [leased_hash], "op-in-flight")
     _make_blob(blob_dir, referenced_hash, age_s=1200)
     _make_blob(blob_dir, leased_hash, age_s=1200)
+    assert MIN_AGE_S + 10 < 1000  # guard the generation-young premise
     _make_blob(blob_dir, generation_young_hash, age_s=MIN_AGE_S + 10)
     _make_blob(blob_dir, orphan_hash, age_s=1200)
 
