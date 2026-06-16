@@ -85,6 +85,36 @@ def test_machine_success_payload_validates_against_schema() -> None:
     jsonschema.validate(instance=instance, schema=schema)
 
 
+def test_mutation_result_payload_validates_against_schema() -> None:
+    """A real MutationResultPayload must validate against the published schema."""
+    import jsonschema
+
+    from polylogue.surfaces.payloads import MutationResultPayload
+
+    schema = _load_published_schema("mutation-result")
+    payload = MutationResultPayload(
+        status="preview",
+        operation="delete",
+        affected_count=0,
+        session_count=2,
+        session_ids=("session-a", "session-b"),
+    )
+    instance = payload.model_dump(mode="json", exclude_none=True)
+    jsonschema.validate(instance=instance, schema=schema)
+
+
+def test_query_error_payload_validates_against_schema() -> None:
+    """A real QueryErrorPayload must validate against the published schema."""
+    import jsonschema
+
+    from polylogue.surfaces.payloads import QueryErrorPayload
+
+    schema = _load_published_schema("query-error")
+    payload = QueryErrorPayload(error="invalid_cursor", detail="cursor expired", field="cursor")
+    instance = payload.model_dump(mode="json", exclude_none=True)
+    jsonschema.validate(instance=instance, schema=schema)
+
+
 def test_session_list_row_payload_validates_against_schema() -> None:
     """SessionListRowPayload must validate against the published schema."""
     import jsonschema

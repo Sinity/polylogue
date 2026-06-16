@@ -25,6 +25,8 @@ from polylogue.cli.commands.config import config_command
 from polylogue.cli.query_group import _split_query_mode_args
 from tests.infra.app_env import make_app_env
 
+SCHEMAS_DIR = Path("docs/schemas/cli-output")
+
 GUARD_BEHAVIOR_COVERAGE: dict[str, str] = {
     "daemon_accepts_schedule": "test_import_contract_guard_requires_daemon_acceptance",
     "dry_run_or_yes_required": "test_delete_contract_guard_refuses_plain_forceless_delete",
@@ -35,6 +37,13 @@ GUARD_BEHAVIOR_COVERAGE: dict[str, str] = {
     "single_match_unless_all": "test_delete_contract_guard_requires_all_for_multi_match",
     "single_match_unless_all_or_first": "test_mark_contract_guard_requires_all_or_first_for_multi_match",
 }
+
+
+def _load_cli_output_schema(name: str) -> dict[str, object]:
+    target = SCHEMAS_DIR / f"{name}.schema.json"
+    loaded = json.loads(target.read_text(encoding="utf-8"))
+    assert isinstance(loaded, dict)
+    return loaded
 
 
 def _command_paths() -> dict[tuple[str, ...], click.Command]:
@@ -137,6 +146,21 @@ def test_default_format_is_declared_for_every_contract() -> None:
     assert not invalid, f"Contracts have default_format outside formats: {invalid}"
 
 
+def test_mutation_contracts_have_published_schema() -> None:
+    """Mutation action contracts must be backed by a generated JSON Schema."""
+    from devtools.render_cli_output_schemas import SCHEMAS
+    from polylogue.surfaces.payloads import MutationResultPayload
+
+    mutation_paths = sorted(entry.path for entry in ACTION_CONTRACTS if entry.machine_envelope == "mutation")
+    assert mutation_paths == [("delete",), ("import",), ("mark",)]
+
+    schema_by_name = {entry.name: entry for entry in SCHEMAS}
+    mutation_schema = schema_by_name.get("mutation-result")
+    assert mutation_schema is not None, "mutation-result schema missing from render_cli_output_schemas.SCHEMAS"
+    assert mutation_schema.model is MutationResultPayload
+    assert (SCHEMAS_DIR / "mutation-result.schema.json").exists()
+
+
 def test_delete_contract_guard_refuses_plain_forceless_delete(workspace_env: dict[str, Path]) -> None:
     """`dry_run_or_yes_required` is enforced by the public delete CLI."""
     _assert_contract_declares_guard(("delete",), "dry_run_or_yes_required")
@@ -151,6 +175,21 @@ def test_delete_contract_guard_refuses_plain_forceless_delete(workspace_env: dic
     assert payload["status"] == "aborted"
     assert payload["detail"] == "confirmation_required"
     assert payload["affected_count"] == 0
+
+
+def test_delete_contract_aborted_payload_matches_mutation_schema(workspace_env: dict[str, Path]) -> None:
+    """The destructive-action guard emits the declared mutation envelope."""
+    import jsonschema
+
+    _assert_contract_declares_guard(("delete",), "dry_run_or_yes_required")
+    schema = _load_cli_output_schema("mutation-result")
+
+    runner = CliRunner()
+    with patch("polylogue.cli.verb_cardinality.resolve_session_ids_for_verb", return_value=["session-1"]):
+        result = runner.invoke(cli, ["--plain", "find", "needle", "then", "delete"])
+
+    assert result.exit_code == 0, result.output
+    jsonschema.validate(instance=json.loads(result.output), schema=schema)
 
 
 def test_delete_contract_guard_allows_dry_run_preview(workspace_env: dict[str, Path]) -> None:
@@ -169,6 +208,22 @@ def test_delete_contract_guard_allows_dry_run_preview(workspace_env: dict[str, P
     assert payload["session_count"] == len(session_ids)
     assert payload["affected_count"] == 0
     assert payload["session_ids"] == session_ids
+
+
+def test_delete_contract_preview_payload_matches_mutation_schema(workspace_env: dict[str, Path]) -> None:
+    """The dry-run destructive action emits a schema-valid mutation preview."""
+    import jsonschema
+
+    _assert_contract_declares_guard(("delete",), "dry_run_or_yes_required")
+    schema = _load_cli_output_schema("mutation-result")
+
+    session_ids = ["session-1", "session-2"]
+    runner = CliRunner()
+    with patch("polylogue.cli.verb_cardinality.resolve_session_ids_for_verb", return_value=session_ids):
+        result = runner.invoke(cli, ["--plain", "find", "needle", "then", "delete", "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    jsonschema.validate(instance=json.loads(result.output), schema=schema)
 
 
 def test_delete_contract_guard_requires_all_for_multi_match(workspace_env: dict[str, Path]) -> None:

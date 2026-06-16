@@ -20,5 +20,7 @@ devtools render-cli-output-schemas --check # CI sync check
 | [`session-search-hit.schema.json`](./session-search-hit.schema.json) | `polylogue --format json <query>`<br>`polylogue --format ndjson <query>` | `SessionSearchHitPayload` |
 | [`search-envelope.schema.json`](./search-envelope.schema.json) | `polylogue --format json <query>`<br>`GET /api/sessions?query=...` | `SearchEnvelope` |
 | [`session-neighbor-candidate.schema.json`](./session-neighbor-candidate.schema.json) | `polylogue neighbors --format json` | `SessionNeighborCandidatePayload` |
+| [`mutation-result.schema.json`](./mutation-result.schema.json) | `polylogue find <query> then delete --dry-run`<br>`polylogue find <query> then delete --yes`<br>`MCP mutation tools`<br>`daemon mutation endpoints` | `MutationResultPayload` |
 | [`machine-error.schema.json`](./machine-error.schema.json) | `polylogue * --machine (error path)` | `MachineErrorPayload` |
 | [`machine-success.schema.json`](./machine-success.schema.json) | `polylogue * --machine (success path)` | `MachineSuccessPayload` |
+| [`query-error.schema.json`](./query-error.schema.json) | `GET /api/sessions?query=... (error path)`<br>`daemon query/read error responses`<br>`MCP query/read error responses` | `QueryErrorPayload` |
