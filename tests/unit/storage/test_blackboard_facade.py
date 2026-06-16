@@ -13,7 +13,12 @@ from pathlib import Path
 import pytest
 
 from polylogue.api import Polylogue
-from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, list_assertions_for_target
+from polylogue.storage.sqlite.archive_tiers.user_write import (
+    AssertionKind,
+    assertion_id_for_blackboard_note,
+    list_assertions_for_target,
+    upsert_assertion,
+)
 from tests.infra.storage_records import db_setup
 
 
@@ -67,6 +72,42 @@ async def test_post_mirrors_agent_metadata_into_assertion(workspace_env: dict[st
     assert assertion.evidence_refs == ["message:m1", "block:m1:2"]
     assert assertion.staleness == {"expires_after_days": 7}
     assert assertion.context_policy == {"inject": False}
+
+
+@pytest.mark.asyncio
+async def test_list_decodes_assertion_backed_blackboard_body(workspace_env: dict[str, Path]) -> None:
+    db_path = db_setup(workspace_env)
+    async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
+        posted = await poly.post_blackboard_note(
+            kind="finding",
+            title="legacy title",
+            content="legacy body",
+            scope_repo="polylogue",
+        )
+
+    conn = sqlite3.connect(workspace_env["archive_root"] / "user.db")
+    try:
+        conn.row_factory = sqlite3.Row
+        upsert_assertion(
+            conn,
+            assertion_id=assertion_id_for_blackboard_note(posted.note_id),
+            target_ref=posted.note_id,
+            kind=AssertionKind.NOTE,
+            body_text="[decision] asserted title\n\nassertion body\n\nscope_repo: polylogue",
+            now_ms=1_700_000_000_000,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
+        notes = await poly.list_blackboard_notes()
+
+    assert [note.note_id for note in notes] == [posted.note_id]
+    assert notes[0].kind == "decision"
+    assert notes[0].title == "asserted title"
+    assert notes[0].content == "assertion body"
+    assert notes[0].scope_repo == "polylogue"
 
 
 @pytest.mark.asyncio
