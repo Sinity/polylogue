@@ -42,4 +42,4 @@ A quoted query may omit `find` only when the parser can treat it unambiguously a
 - Old roots are absent from command registration, docs, completion, and tests.
 - Read/mark/analyze/remove share one selection path.
 - Ambiguity errors are typed and machine-readable.
-- #1879 future query ceiling is not required for this issue.
+- #2006 full query DSL ceiling is not required for this command-floor issue.

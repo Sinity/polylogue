@@ -14,15 +14,22 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, Literal, TypeAlias, cast
 
 import pytest
 
 from tests.benchmarks.helpers import BenchmarkFixture
 
 # ── Synthetic data generation per provider ────────────────────────────
+
+JsonRecordList: TypeAlias = list[dict[str, object]]
+JsonRecord: TypeAlias = dict[str, object]
+JsonlGenerator: TypeAlias = Callable[[str, int], JsonRecordList]
+JsonGenerator: TypeAlias = Callable[[str, int], JsonRecord]
+ProviderGenerator: TypeAlias = tuple[Literal["jsonl"], JsonlGenerator] | tuple[Literal["json"], JsonGenerator]
 
 
 def _write_jsonl(path: Path, records: list[dict[str, object]]) -> None:
@@ -114,7 +121,7 @@ def _make_chatgpt_session(conv_id: str, n_messages: int) -> dict[str, object]:
 
 
 # mypy note: generator functions have different signatures but all return list[dict].
-_PROVIDER_GENERATORS = {
+_PROVIDER_GENERATORS: dict[str, ProviderGenerator] = {
     "claude-code": ("jsonl", _make_claude_code_session),
     "codex": ("jsonl", _make_codex_session),
     "chatgpt": ("json", _make_chatgpt_session),
@@ -127,16 +134,28 @@ _SCALE_TIERS = {
 }
 
 
+def _jsonl_generator(provider: str) -> JsonlGenerator:
+    fmt, generator = _PROVIDER_GENERATORS[provider]
+    if fmt != "jsonl":
+        raise AssertionError(f"provider {provider} is not JSONL-backed")
+    return cast(JsonlGenerator, generator)
+
+
+def _json_generator(provider: str) -> JsonGenerator:
+    fmt, generator = _PROVIDER_GENERATORS[provider]
+    if fmt != "json":
+        raise AssertionError(f"provider {provider} is not JSON-backed")
+    return cast(JsonGenerator, generator)
+
+
 def _generate_corpus(tmp_path: Path, tier: str, provider: str) -> Path:
     spec = _SCALE_TIERS[tier]
     root = tmp_path / "corpus" / f"{provider}-project"
-    fmt, generator = _PROVIDER_GENERATORS[provider]
-    write = _write_jsonl if fmt == "jsonl" else _write_json
 
     for i in range(spec["files"]):
         if provider == "chatgpt":
             conv_id = f"chatgpt-conv-{i:04d}"
-            conv_data = generator(conv_id, spec["msgs_per_file"])  # type: ignore[operator]
+            conv_data = _json_generator(provider)(conv_id, spec["msgs_per_file"])
             # chats/ subdir with individual JSON files
             chat_dir = root / "chats"
             chat_dir.mkdir(parents=True, exist_ok=True)
@@ -144,8 +163,8 @@ def _generate_corpus(tmp_path: Path, tier: str, provider: str) -> Path:
                 json.dump(conv_data, f)
         else:
             uuid = f"deadbeef-0000-0000-0000-{i:012x}"
-            records = generator(uuid, spec["msgs_per_file"])  # type: ignore[operator]
-            write(root / f"{uuid}.jsonl", records)
+            records = _jsonl_generator(provider)(uuid, spec["msgs_per_file"])
+            _write_jsonl(root / f"{uuid}.jsonl", records)
     return root.parent
 
 
@@ -269,16 +288,9 @@ def test_convergence_single_file_per_provider(
 ) -> None:
     """Per-provider throughput on a single 500-message file."""
     root = tmp_path / "corpus" / "test"
-    fmt, generator = _PROVIDER_GENERATORS[provider]
     uuid = f"single-{provider}-test"
-    if fmt == "jsonl":
-        records = generator(uuid, 500)  # type: ignore[operator]
-        _write_jsonl(root / f"{uuid}.jsonl", records)
-    else:
-        conv_data = generator(uuid, 500)  # type: ignore[operator]
-        root.mkdir(parents=True, exist_ok=True)
-        with open(root / f"{uuid}.json", "w") as f:
-            json.dump(conv_data, f)
+    records = _jsonl_generator(provider)(uuid, 500)
+    _write_jsonl(root / f"{uuid}.jsonl", records)
 
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
     monkeypatch.setenv("POLYLOGUE_CONFIG", str(tmp_path / "polylogue.toml"))
