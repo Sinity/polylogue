@@ -469,6 +469,15 @@ so pytest-testmon still selects affected tests instead of letting pytest marker
 selection expand the run. Full diagnostic and seed runs use the same worker
 override and default to `-n 16`.
 
+Pytest temp databases default to `/realm/tmp/polylogue-pytest` so interrupted
+full or xdist runs do not leave multi-GiB `/dev/shm` directories resident in
+RAM. Use `POLYLOGUE_PYTEST_TMPFS=1` only for explicit performance lanes that
+can afford tmpfs pressure. `POLYLOGUE_PYTEST_BASETEMP_ROOT=/path` overrides
+both. Per-run `pytest-polylogue-*` basetemps are removed at normal pytest
+shutdown, and pytest startup sweeps stale per-run dirs from both the configured
+root and legacy `/dev/shm`; shared `pytest-polylogue-seeded-*` caches are kept
+because they are small and reused.
+
 The default path does not replay cached verify results. Every invocation runs
 the static gates and then invokes pytest-testmon for affected-test selection.
 Polylogue does not maintain a parallel changed-file router for helper/config
