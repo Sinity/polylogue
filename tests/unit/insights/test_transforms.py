@@ -88,6 +88,8 @@ def _session() -> Session:
                             "name": "Task",
                             "tool_input": {
                                 "subagent_type": "Explore",
+                                "taskId": "task-42",
+                                "child_session_id": "codex-session:child-42",
                                 "prompt": "Map the transform surface and report caveats.",
                             },
                         },
@@ -146,6 +148,9 @@ def test_compile_recovery_digest_extracts_small_evidence_linked_bundle() -> None
     assert len(digest.subagent_reports) == 1
     subagent = digest.subagent_reports[0]
     assert subagent.subagent_type == "Explore"
+    assert subagent.tool_id == "tool-2"
+    assert subagent.task_id == "task-42"
+    assert subagent.child_session_id == "codex-session:child-42"
     assert subagent.prompt == "Map the transform surface and report caveats."
     assert "Subagent done" in subagent.final_report_preview
     assert subagent.pr_refs == ("#1912",)
@@ -177,6 +182,7 @@ def test_compile_recovery_digest_extracts_small_evidence_linked_bundle() -> None
     assert "feature/demo" in digest.resume_markdown
     assert "## Subagents" in digest.resume_markdown
     assert "Explore — Map the transform surface and report caveats." in digest.resume_markdown
+    assert "refs: tool_id=tool-2, task_id=task-42, child_session_id=codex-session:child-42" in digest.resume_markdown
     assert "## Run State" in digest.resume_markdown
     assert "- done: #1910 merged" in digest.resume_markdown
     assert "- next: merge PR #1911" in digest.resume_markdown
@@ -269,6 +275,7 @@ def test_work_packet_exposes_storage_free_continuation_bundle() -> None:
     assert any(ref.format() == "codex-session:demo::m2::0" for entry in packet.entries for ref in entry.evidence_refs)
     assert "# Resume: Ship the backlog" in rendered
     assert "- pr_opened: PR #1911 opened" in rendered
+    assert "refs: tool_id=tool-2, task_id=task-42, child_session_id=codex-session:child-42" in rendered
     assert "- Bash [test] (ok) — devtools verify --quick" in rendered
 
 
@@ -282,7 +289,10 @@ def test_continue_report_renders_successor_boot_packet_with_evidence_refs() -> N
     assert "- goal: burn down the backlog [evidence: codex-session:demo::m1]" in report
     assert "- next: merge PR #1911 [evidence: codex-session:demo::m1]" in report
     assert "- pr_opened: PR #1911 opened [evidence: codex-session:demo::m2]" in report
-    assert "Explore — Map the transform surface and report caveats. [evidence: codex-session:demo::m3::0" in report
+    assert (
+        "Explore [tool_id=tool-2, task_id=task-42, child_session_id=codex-session:child-42] "
+        "— Map the transform surface and report caveats. [evidence: codex-session:demo::m3::0"
+    ) in report
     assert "Bash [test] (ok) — devtools verify --quick [evidence: codex-session:demo::m2::0" in report
     assert "## Evidence Index" in report
     assert "evidence_id: codex-session:demo::m2::0; raw: block message=m2 block=0" in report
@@ -302,6 +312,7 @@ def test_blame_report_renders_forensic_evidence_report_with_raw_refs() -> None:
     assert "- issue_closed: Issue #1818 closed [evidence: codex-session:demo::m3]" in report
     assert "- Bash [test] status=ok lines=3 — devtools verify --quick [evidence: codex-session:demo::m2::0" in report
     assert "output: ruff check ... ok 20 passed in 50.28s" in report
+    assert "Explore [tool_id=tool-2, task_id=task-42, child_session_id=codex-session:child-42]:" in report
     assert "## Evidence Timeline" in report
     assert "raw: message message=m1" in report
     assert "claims: run_state, event:pr_merged:0, decision:run_state:0, decision:run_state:1" in report

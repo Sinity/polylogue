@@ -162,6 +162,9 @@ class ToolSummary(ArchiveInsightModel):
 
 class SubagentReport(ArchiveInsightModel):
     subagent_type: str = "unknown"
+    tool_id: str | None = None
+    task_id: str | None = None
+    child_session_id: str | None = None
     prompt: str = ""
     final_report_preview: str = ""
     pr_refs: tuple[str, ...] = ()
@@ -449,6 +452,9 @@ def render_work_packet(packet: RecoveryWorkPacket) -> str:
     for entry in subagent_entries[:8]:
         prompt = f" — {entry.text}" if entry.text else ""
         lines.append(f"- {entry.label}{prompt}")
+        refs = _subagent_metadata_line(entry.metadata)
+        if refs:
+            lines.append(f"  - refs: {refs}")
         report = entry.metadata.get("report", "")
         if report:
             lines.append(f"  - report: {report}")
@@ -520,11 +526,14 @@ def _work_packet_entries(
             evidence_refs=_to_evidence_refs(event.raw_refs),
         )
     for report in subagent_reports:
+        metadata = _subagent_report_metadata(report)
+        if report.final_report_preview:
+            metadata["report"] = report.final_report_preview
         yield RecoveryWorkPacketEntry(
             section="subagents",
             label=report.subagent_type,
             text=report.prompt,
-            metadata={"report": report.final_report_preview},
+            metadata=metadata,
             evidence_refs=_to_evidence_refs(report.raw_refs),
         )
     if run_state is not None:
@@ -621,7 +630,10 @@ def _render_continue_report(digest: RecoveryDigest) -> str:
     if digest.subagent_reports:
         for report in digest.subagent_reports[:8]:
             prompt = f" — {report.prompt}" if report.prompt else ""
-            lines.append(f"- {report.subagent_type}{prompt}{_evidence_suffix(digest, report.raw_refs)}")
+            lines.append(
+                f"- {report.subagent_type}{_subagent_link_suffix(report)}{prompt}"
+                f"{_evidence_suffix(digest, report.raw_refs)}"
+            )
             if report.final_report_preview:
                 lines.append(f"  report: {report.final_report_preview}{_evidence_suffix(digest, report.raw_refs)}")
             for caveat in report.caveats[:4]:
@@ -698,7 +710,8 @@ def _render_blame_report(digest: RecoveryDigest) -> str:
     if digest.subagent_reports:
         for report in digest.subagent_reports:
             lines.append(
-                f"- {report.subagent_type}: {report.final_report_preview or report.prompt}"
+                f"- {report.subagent_type}{_subagent_link_suffix(report)}: "
+                f"{report.final_report_preview or report.prompt}"
                 f"{_evidence_suffix(digest, report.raw_refs)}"
             )
             for caveat in report.caveats:
@@ -901,6 +914,9 @@ def _extract_subagent_reports(session: Session, messages: Sequence[Message]) -> 
             result_text = _block_text(result_block or {})
             yield SubagentReport(
                 subagent_type=_subagent_type(block),
+                tool_id=tool_id,
+                task_id=_subagent_task_id(block),
+                child_session_id=_subagent_child_session_id(block, result_text),
                 prompt=_subagent_prompt(block),
                 final_report_preview=_preview(result_text, limit=320),
                 pr_refs=tuple(_number_refs(_PR_RE, result_text)),
@@ -1225,6 +1241,55 @@ def _subagent_prompt(block: Mapping[str, object]) -> str:
         if value:
             return _preview(value, limit=240)
     return ""
+
+
+def _subagent_task_id(block: Mapping[str, object]) -> str | None:
+    tool_input = block.get("tool_input") or block.get("input")
+    if isinstance(tool_input, Mapping):
+        return _optional_text(tool_input.get("taskId") or tool_input.get("task_id"))
+    return None
+
+
+def _subagent_child_session_id(block: Mapping[str, object], result_text: str) -> str | None:
+    tool_input = block.get("tool_input") or block.get("input")
+    if isinstance(tool_input, Mapping):
+        for key in ("child_session_id", "subagent_session_id", "agent_session_id", "sessionId", "session_id"):
+            value = _optional_text(tool_input.get(key))
+            if value:
+                return value
+    return _subagent_child_session_id_from_text(result_text)
+
+
+def _subagent_child_session_id_from_text(text: str) -> str | None:
+    for line in text.splitlines():
+        if "session" not in line.lower():
+            continue
+        for token in line.replace("=", " ").split():
+            cleaned = token.strip("`'\"(),")
+            if cleaned.startswith(("claude-code-session:", "codex-session:", "gemini-cli-session:")):
+                return cleaned
+    return None
+
+
+def _subagent_report_metadata(report: SubagentReport) -> dict[str, str]:
+    metadata: dict[str, str] = {}
+    if report.tool_id:
+        metadata["tool_id"] = report.tool_id
+    if report.task_id:
+        metadata["task_id"] = report.task_id
+    if report.child_session_id:
+        metadata["child_session_id"] = report.child_session_id
+    return metadata
+
+
+def _subagent_metadata_line(metadata: Mapping[str, str]) -> str:
+    parts = [f"{key}={metadata[key]}" for key in ("tool_id", "task_id", "child_session_id") if metadata.get(key)]
+    return ", ".join(parts)
+
+
+def _subagent_link_suffix(report: SubagentReport) -> str:
+    refs = _subagent_metadata_line(_subagent_report_metadata(report))
+    return f" [{refs}]" if refs else ""
 
 
 def _number_refs(pattern: re.Pattern[str], text: str) -> Iterable[str]:
