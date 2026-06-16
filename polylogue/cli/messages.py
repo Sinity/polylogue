@@ -14,6 +14,11 @@ from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.storage.sqlite.queries.message_query_reads import MessageTypeName
+from polylogue.surfaces.payloads import (
+    SessionMessageRowPayload,
+    SessionMessagesResponsePayload,
+    model_json_document,
+)
 
 
 def run_messages(
@@ -64,24 +69,30 @@ def run_messages(
             fmt = output_format or "markdown"
 
             def _message_document(m: object) -> dict[str, object]:
-                return {
-                    "id": str(m.id),  # type: ignore[attr-defined]
-                    "role": str(m.role),  # type: ignore[attr-defined]
-                    "message_type": str(m.message_type.value),  # type: ignore[attr-defined]
-                    "text": m.text or "",  # type: ignore[attr-defined]
-                }
+                return cast(
+                    "dict[str, object]",
+                    model_json_document(
+                        SessionMessageRowPayload.from_message(m, session_id=session_id),  # type: ignore[arg-type]
+                        exclude_none=True,
+                    ),
+                )
 
             if fmt == "json":
                 import json as _json
 
                 # Finite machine-output contract (#1818): one JSON value.
-                payload = {
-                    "session_id": session_id,
-                    "messages": [_message_document(m) for m in messages],
-                    "total": total,
-                    "limit": limit,
-                    "offset": offset,
-                }
+                payload = model_json_document(
+                    SessionMessagesResponsePayload(
+                        session_id=session_id,
+                        messages=tuple(
+                            SessionMessageRowPayload.from_message(m, session_id=session_id) for m in messages
+                        ),
+                        total=total,
+                        limit=limit,
+                        offset=offset,
+                    ),
+                    exclude_none=True,
+                )
                 # Machine output goes through click.echo (raw stdout), NOT
                 # env.ui.print: the Rich console defaults markup=True and would
                 # interpret/strip bracket sequences like "[bold]" inside message
