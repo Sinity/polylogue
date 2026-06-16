@@ -353,7 +353,7 @@ def _lower_grouped_payload(
         return []
 
     messages = _record_messages(record)
-    grouped_payload = messages if messages is not None else [record]
+    grouped_payload: PayloadSequence = messages if messages is not None else [record]
     return [_grouped_records_spec(provider, grouped_payload, fallback_id)]
 
 
@@ -559,7 +559,7 @@ def _parse_lowered_spec(spec: LoweredPayloadSpec) -> list[ParsedSession]:
 
     if spec.mode == "chunked_prompt":
         record = _payload_record(spec.payload)
-        payload = record if record is not None else {"chunks": _payload_sequence(spec.payload) or []}
+        payload: JSONDocument = record if record is not None else {"chunks": _payload_sequence(spec.payload) or []}
         return [drive.parse_chunked_prompt(spec.provider, payload, spec.fallback_id)]
 
     if spec.mode == "generic_messages":

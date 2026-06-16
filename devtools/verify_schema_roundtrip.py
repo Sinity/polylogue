@@ -94,7 +94,7 @@ def _verify_corpus_roundtrip_for_provider(
 
     Returns a list of failure messages (empty if all records validate).
     """
-    if SyntheticCorpus is None or jsonschema is None:  # type: ignore[redundant-expr]  # defensive: imports may fail
+    if SyntheticCorpus is None or jsonschema is None:  # defensive: imports may fail
         return ["synthetic corpus or jsonschema not available (import failed)"]
     if provider not in PROVIDER_WIRE_FORMATS:
         return [f"no wire format configured for provider {provider!r}"]
