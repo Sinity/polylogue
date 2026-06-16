@@ -30,6 +30,7 @@ from polylogue.storage.blob_gc import (
     sweep_orphaned_blob_leases,
 )
 from polylogue.storage.sqlite.connection_profile import open_connection
+from tests.infra.frozen_clock import FrozenClock
 
 
 @pytest.fixture
@@ -206,3 +207,76 @@ def test_gc_age_gate_respects_previous_generation(db_path: Path, tmp_path: Path)
     deleted = run_blob_gc(db_path, blob_dir)
     assert deleted == 1
     assert not (blob_dir / blob_hash[:2] / blob_hash[2:]).exists()
+
+
+def test_gc_combines_reference_lease_and_generation_guards(
+    db_path: Path,
+    tmp_path: Path,
+    workspace_env: dict[str, Path],
+    frozen_clock: FrozenClock,
+) -> None:
+    """One GC pass applies all #1830 safety gates before reclaiming.
+
+    A generation-safe GC pass must keep referenced blobs, in-flight leased
+    blobs, and blobs newer than the previous completed generation while still
+    reclaiming old unreferenced blobs in the same run. This is the executable
+    proof for the combined backup/GC safety story rather than independent
+    unit checks for each predicate.
+    """
+    blob_dir = tmp_path / "blobs"
+    blob_dir.mkdir()
+    referenced_hash = "aa" + "1" * 62
+    leased_hash = "bb" + "2" * 62
+    generation_young_hash = "cc" + "3" * 62
+    orphan_hash = "dd" + "4" * 62
+
+    now = int(frozen_clock.time())
+    completed_at_ms = (now - 1000) * 1000
+    conn = open_connection(db_path)
+    try:
+        conn.execute(
+            "INSERT INTO gc_generations "
+            "(generation_id, started_at_ms, completed_at_ms, reclaimed_count, reclaimed_bytes) "
+            "VALUES (?, ?, ?, 0, 0)",
+            ("gen-boundary", completed_at_ms, completed_at_ms),
+        )
+        conn.execute(
+            "INSERT INTO blob_refs "
+            "(blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms) "
+            "VALUES (?, 'ref-1', 'raw_payload', 'source.jsonl', 4, ?)",
+            (bytes.fromhex(referenced_hash), completed_at_ms),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    acquire_blob_leases(db_path, [leased_hash], "op-in-flight")
+    _make_blob(blob_dir, referenced_hash, age_s=1200)
+    _make_blob(blob_dir, leased_hash, age_s=1200)
+    assert MIN_AGE_S + 10 < 1000  # guard the generation-young premise
+    _make_blob(blob_dir, generation_young_hash, age_s=MIN_AGE_S + 10)
+    _make_blob(blob_dir, orphan_hash, age_s=1200)
+
+    deleted = run_blob_gc(db_path, blob_dir, max_batch=10)
+
+    assert deleted == 1
+    assert (blob_dir / referenced_hash[:2] / referenced_hash[2:]).exists()
+    assert (blob_dir / leased_hash[:2] / leased_hash[2:]).exists()
+    assert (blob_dir / generation_young_hash[:2] / generation_young_hash[2:]).exists()
+    assert not (blob_dir / orphan_hash[:2] / orphan_hash[2:]).exists()
+
+    conn = open_connection(db_path)
+    try:
+        rows = [
+            tuple(row)
+            for row in conn.execute(
+                "SELECT reclaimed_count, reclaimed_bytes FROM gc_generations ORDER BY started_at_ms DESC LIMIT 1"
+            ).fetchall()
+        ]
+        pending = conn.execute("SELECT COUNT(*) FROM pending_blob_refs WHERE operation_id = 'op-in-flight'").fetchone()
+    finally:
+        conn.close()
+
+    assert rows == [(1, 4)]
+    assert pending is not None
+    assert pending[0] == 1
