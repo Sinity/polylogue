@@ -51,6 +51,48 @@ class GCRunEvidence:
     max_batch: int = 0
 
 
+@dataclass
+class BlobGCResult:
+    """Machine-readable summary of one blob-GC pass."""
+
+    db_path: str
+    blob_dir: str
+    dry_run: bool
+    max_batch: int
+    candidate_count: int = 0
+    inspected_count: int = 0
+    would_delete_count: int = 0
+    deleted_count: int = 0
+    reclaimed_bytes: int = 0
+    skipped_referenced: int = 0
+    skipped_leased: int = 0
+    skipped_missing: int = 0
+    skipped_unlink_error: int = 0
+    generation_id: str | None = None
+    generation_written: bool = False
+    older_than_s: float = 0.0
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "db_path": self.db_path,
+            "blob_dir": self.blob_dir,
+            "dry_run": self.dry_run,
+            "max_batch": self.max_batch,
+            "candidate_count": self.candidate_count,
+            "inspected_count": self.inspected_count,
+            "would_delete_count": self.would_delete_count,
+            "deleted_count": self.deleted_count,
+            "reclaimed_bytes": self.reclaimed_bytes,
+            "skipped_referenced": self.skipped_referenced,
+            "skipped_leased": self.skipped_leased,
+            "skipped_missing": self.skipped_missing,
+            "skipped_unlink_error": self.skipped_unlink_error,
+            "generation_id": self.generation_id,
+            "generation_written": self.generation_written,
+            "older_than_s": self.older_than_s,
+        }
+
+
 # Minimum age in seconds for a blob to be eligible for deletion.
 # Provides defense-in-depth against clockskew and delayed lease writes
 # beyond the lease-based safety mechanism.
@@ -306,12 +348,35 @@ def run_blob_gc(
     pre-existing partial cleanup) bumps ``skipped_missing`` in the
     persisted evidence record and is NOT counted as a deletion (#1190).
     """
+    result = run_blob_gc_report(db_path, blob_dir, max_batch=max_batch, dry_run=dry_run)
+    return result.would_delete_count if dry_run else result.deleted_count
+
+
+def run_blob_gc_report(
+    db_path: str | Path,
+    blob_dir: str | Path,
+    max_batch: int = 100,
+    *,
+    dry_run: bool = False,
+) -> BlobGCResult:
+    """Run blob GC and return an operator-facing report.
+
+    ``run_blob_gc`` remains the compatibility API returning only the affected
+    count. This report form exposes the same pass as machine-readable counts
+    for CLI dry-runs and maintenance logs.
+    """
     blob_path = Path(blob_dir)
+    db_path_obj = Path(db_path)
+    report = BlobGCResult(
+        db_path=str(db_path_obj),
+        blob_dir=str(blob_path),
+        dry_run=dry_run,
+        max_batch=int(max_batch),
+    )
     if not blob_path.is_dir():
         logger.debug("Blob directory %s does not exist, skipping GC", blob_dir)
-        return 0
+        return report
 
-    db_path_obj = Path(db_path)
     source_db_path: Path | None = db_path_obj.with_name("source.db")
     if source_db_path == db_path_obj:
         source_db_path = None
@@ -337,9 +402,11 @@ def run_blob_gc(
         if prev_completed_at is not None:
             since_prev_generation = time.time() - prev_completed_at
             older_than = max(older_than, since_prev_generation)
+        report.older_than_s = older_than
         candidates = _candidate_blobs(blob_path, older_than=older_than)
+        report.candidate_count = len(candidates)
         if not candidates:
-            return 0
+            return report
 
         evidence = GCRunEvidence(dry_run=dry_run, max_batch=max_batch)
         deleted = 0
@@ -415,7 +482,13 @@ def run_blob_gc(
                 evidence.skipped_leased,
                 evidence.skipped_missing,
             )
-            return deleted
+            report.inspected_count = evidence.inspected
+            report.would_delete_count = evidence.deleted
+            report.skipped_referenced = evidence.skipped_referenced
+            report.skipped_leased = evidence.skipped_leased
+            report.skipped_missing = evidence.skipped_missing
+            report.skipped_unlink_error = evidence.skipped_unlink_error
+            return report
 
         # Record the completed generation with typed reclaim counters. The
         # per-skip tally stays an in-memory log aggregate; the durable record is
@@ -437,7 +510,16 @@ def run_blob_gc(
                 generation_id,
             )
 
-        return deleted
+        report.generation_id = generation_id
+        report.generation_written = True
+        report.inspected_count = evidence.inspected
+        report.reclaimed_bytes = reclaimed_bytes
+        report.deleted_count = deleted
+        report.skipped_referenced = evidence.skipped_referenced
+        report.skipped_leased = evidence.skipped_leased
+        report.skipped_missing = evidence.skipped_missing
+        report.skipped_unlink_error = evidence.skipped_unlink_error
+        return report
     except Exception:
         conn.rollback()
         raise
@@ -545,6 +627,7 @@ def release_operation_leases(
 
 
 __all__ = [
+    "BlobGCResult",
     "MIN_AGE_S",
     "ORPHAN_LEASE_MAX_AGE_S",
     "GCHistoryRow",
@@ -553,5 +636,6 @@ __all__ = [
     "read_gc_history",
     "release_operation_leases",
     "run_blob_gc",
+    "run_blob_gc_report",
     "sweep_orphaned_blob_leases",
 ]

@@ -10,6 +10,7 @@ Commands:
   archive-plan  Inspect readiness for the archive file set.
   archive-read  Read index sessions from the archive.
   backup-plan   Inspect archive backup boundaries without copying data.
+  blob-gc       Preview or run lease-safe blob garbage collection.
   gc-history    Show recent blob-GC passes recorded in ``gc_generations``.
   plan          Dry-run summary: show what would be rebuilt without...
   preview       Staleness inventory by model and scope.

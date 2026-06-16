@@ -14,10 +14,10 @@ Current registry snapshot:
 - mutation campaigns: `19`
 - benchmark campaigns: `7`
 - synthetic benchmark campaigns: `6`
-- scenario projections: `267`
+- scenario projections: `268`
 - inferred corpus scenarios: `8`
   - benchmark-campaign: `7`
-  - exercise: `160`
+  - exercise: `161`
   - inferred-corpus-scenario: `8`
   - mutation-campaign: `19`
   - synthetic-benchmark: `6`
@@ -400,6 +400,7 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-maintenance-archive-plan` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | maintenance archive-plan help |
 | `exercise` | `help-maintenance-archive-read` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | maintenance archive-read help |
 | `exercise` | `help-maintenance-backup-plan` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | maintenance backup-plan help |
+| `exercise` | `help-maintenance-blob-gc` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | maintenance blob-gc help |
 | `exercise` | `help-maintenance-gc-history` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | maintenance gc-history help |
 | `exercise` | `help-maintenance-plan` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | maintenance plan help |
 | `exercise` | `help-maintenance-preview` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | maintenance preview help |

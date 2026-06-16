@@ -23,7 +23,7 @@ from polylogue.maintenance.replay import ReplayProgress, execute_replay
 from polylogue.maintenance.scope import MaintenanceScopeFilter
 from polylogue.maintenance.targets import MAINTENANCE_TARGET_NAMES, build_maintenance_target_catalog
 from polylogue.paths import archive_file_set_root_for_paths, archive_root, blob_store_root, db_path, render_root
-from polylogue.storage.blob_gc import read_gc_history
+from polylogue.storage.blob_gc import read_gc_history, run_blob_gc_report
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.archive_init import (
     ArchiveInitBlockedError,
@@ -833,6 +833,76 @@ def preview_command(
                 f"  {item.reason.value:>20s}  count={item.count:>10,}  fraction={fraction_pct:>5.1f}%  {item.detail}"
             )
         click.echo("")
+
+
+@maintenance_group.command("blob-gc")
+@click.option(
+    "--max-batch",
+    type=int,
+    default=100,
+    show_default=True,
+    help="Maximum number of eligible blobs to delete or preview.",
+)
+@click.option(
+    "--yes",
+    is_flag=True,
+    help="Actually delete eligible blobs. Without this flag the command is a dry-run preview.",
+)
+@click.option(
+    "--output-format",
+    "output_format",
+    type=click.Choice(["plain", "json"]),
+    default="plain",
+    show_default=True,
+    help="Output format.",
+)
+def blob_gc_command(max_batch: int, yes: bool, output_format: str) -> None:
+    """Preview or run lease-safe blob garbage collection.
+
+    The default is a dry-run report. Pass ``--yes`` to reclaim eligible blobs.
+    """
+    configure_logging()
+    config = Config(
+        archive_root=archive_root(),
+        render_root=render_root(),
+        sources=[],
+    )
+    result = run_blob_gc_report(
+        config.db_path,
+        blob_store_root(),
+        max_batch=max_batch,
+        dry_run=not yes,
+    )
+    payload = {
+        "ok": True,
+        "mode": "blob_gc",
+        "mutates": bool(yes),
+        **result.to_dict(),
+    }
+
+    if output_format == "json":
+        click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+
+    action = "would delete" if result.dry_run else "deleted"
+    affected = result.would_delete_count if result.dry_run else result.deleted_count
+    click.echo("Blob GC dry-run" if result.dry_run else "Blob GC")
+    click.echo(f"Archive DB: {result.db_path}")
+    click.echo(f"Blob root:  {result.blob_dir}")
+    click.echo(f"Candidates: {result.candidate_count:,}")
+    click.echo(f"Inspected:  {result.inspected_count:,}")
+    click.echo(f"Result:     {action} {affected:,} blob(s)")
+    click.echo(
+        "Skipped:    "
+        f"referenced={result.skipped_referenced:,} "
+        f"leased={result.skipped_leased:,} "
+        f"missing={result.skipped_missing:,} "
+        f"unlink_error={result.skipped_unlink_error:,}"
+    )
+    if not result.dry_run:
+        click.echo(f"Reclaimed:  {result.reclaimed_bytes:,} byte(s)")
+        if result.generation_id is not None:
+            click.echo(f"Generation: {result.generation_id}")
 
 
 @maintenance_group.command("gc-history")
