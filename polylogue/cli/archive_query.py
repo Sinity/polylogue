@@ -11,7 +11,7 @@ from collections.abc import Callable, Iterable, Sequence
 from contextlib import redirect_stdout
 from dataclasses import replace
 from pathlib import Path
-from typing import NoReturn, TypeVar
+from typing import NoReturn, TypeVar, cast
 from urllib.parse import quote
 
 import click
@@ -50,7 +50,15 @@ from polylogue.surfaces.payloads import (
     InvalidSearchCursorError,
     MutationResultPayload,
     SearchCursor,
+    SessionListRowPayload,
+    SessionSearchHitPayload,
+    SessionSearchMatchPayload,
+    SessionSummaryPayload,
+    TargetRefPayload,
     decode_search_cursor,
+    model_json_document,
+    reader_anchor,
+    reader_message_actions,
 )
 
 _PageRow = TypeVar("_PageRow", ArchiveSessionSummary, ArchiveSessionSearchHit)
@@ -407,6 +415,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                         return
                     _emit_search(
                         page_hits,
+                        archive=archive,
                         query=similar_text or query,
                         limit=limit,
                         offset=page_offset,
@@ -521,6 +530,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                 return
             _emit_search(
                 page_hits,
+                archive=archive,
                 query=similar_text or query,
                 limit=limit,
                 offset=page_offset,
@@ -1280,6 +1290,7 @@ def _emit_list(
 def _emit_search(
     hits: list[ArchiveSessionSearchHit],
     *,
+    archive: ArchiveStore,
     query: str,
     limit: int,
     offset: int,
@@ -1290,7 +1301,14 @@ def _emit_search(
     fields: str | None,
     typo_hint: str | None = None,
 ) -> None:
-    items = [_hit_payload(hit) for hit in hits]
+    items = [
+        _hit_payload(
+            hit,
+            summary=archive.read_summary(hit.session_id),
+            retrieval_lane=retrieval_lane,
+        )
+        for hit in hits
+    ]
     envelope: dict[str, object] = {
         "mode": "search",
         "origin": origin,
@@ -1493,33 +1511,63 @@ def _csv(items: list[dict[str, object]]) -> str:
 
 
 def _summary_payload(summary: ArchiveSessionSummary) -> dict[str, object]:
-    return {
-        "id": summary.session_id,
-        "session_id": summary.session_id,
-        "native_id": summary.native_id,
-        "origin": summary.origin,
-        "source": summary.origin,
-        "title": summary.title,
-        "created_at": summary.created_at,
-        "updated_at": summary.updated_at,
-        "message_count": summary.message_count,
-        "word_count": summary.word_count,
-        "tags": list(summary.tags),
-    }
+    return cast(
+        "dict[str, object]",
+        model_json_document(
+            SessionListRowPayload(
+                id=summary.session_id,
+                origin=summary.origin,
+                title=summary.title or summary.session_id,
+                target_ref=TargetRefPayload.session(summary.session_id),
+                anchor=reader_anchor("session", summary.session_id),
+                created_at=summary.created_at,
+                updated_at=summary.updated_at,
+                message_count=summary.message_count,
+                messages=summary.message_count,
+                tags=summary.tags,
+                words=summary.word_count,
+                repo=summary.git_repository_url,
+                cwd_display=summary.working_directories[0] if summary.working_directories else None,
+            ),
+            exclude_none=True,
+        ),
+    )
 
 
-def _hit_payload(hit: ArchiveSessionSearchHit) -> dict[str, object]:
-    return {
-        "rank": hit.rank,
-        "id": hit.session_id,
-        "session_id": hit.session_id,
-        "block_id": hit.block_id,
-        "message_id": hit.message_id,
-        "origin": hit.origin,
-        "source": hit.origin,
-        "title": hit.title,
-        "snippet": hit.snippet,
-    }
+def _hit_payload(
+    hit: ArchiveSessionSearchHit,
+    *,
+    summary: ArchiveSessionSummary,
+    retrieval_lane: str,
+) -> dict[str, object]:
+    return cast(
+        "dict[str, object]",
+        model_json_document(
+            SessionSearchHitPayload(
+                session=SessionSummaryPayload(
+                    id=summary.session_id,
+                    origin=summary.origin,
+                    title=summary.title or summary.session_id,
+                    message_count=summary.message_count,
+                    target_ref=TargetRefPayload.session(summary.session_id),
+                    anchor=reader_anchor("session", summary.session_id),
+                ),
+                match=SessionSearchMatchPayload(
+                    rank=hit.rank,
+                    retrieval_lane=retrieval_lane,
+                    match_surface="message",
+                    target_ref=TargetRefPayload.message(session_id=hit.session_id, message_id=hit.message_id),
+                    anchor=reader_anchor("message", hit.message_id),
+                    actions=reader_message_actions(),
+                    message_id=hit.message_id,
+                    snippet=hit.snippet,
+                    score=None,
+                    score_kind=None,
+                ),
+            ),
+            exclude_none=True,
+        ),
+    )
 
 
 def _project_session_envelope(
@@ -1665,7 +1713,7 @@ def _ellipsize(value: str, max_width: int) -> str:
 
 
 def _summary_line(item: dict[str, object]) -> str:
-    session_id = str(item["session_id"])
+    session_id = str(item["id"])
     title = _ellipsize(str(item.get("title") or session_id), 50)
     date = str(item.get("updated_at") or item.get("created_at") or "unknown")[:10]
     origin = str(item["origin"])
@@ -1674,8 +1722,12 @@ def _summary_line(item: dict[str, object]) -> str:
 
 
 def _hit_line(item: dict[str, object]) -> str:
-    title = item.get("title") or item["session_id"]
-    return f"{item['rank']}. {item['origin']}  {title}  {item['snippet']}"
+    session = item.get("session")
+    match = item.get("match")
+    if not isinstance(session, dict) or not isinstance(match, dict):
+        return str(item)
+    title = session.get("title") or session.get("id")
+    return f"{match['rank']}. {session['origin']}  {title}  {match.get('snippet') or ''}"
 
 
 def _stats_by_line(item: dict[str, object]) -> str:
