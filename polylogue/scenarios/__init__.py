@@ -10,11 +10,16 @@ from .cli_surfaces import (
     build_cli_surface_memory_budget_variants,
 )
 from .corpus import (
+    DEMO_CHATGPT_SESSION_ID,
+    DEMO_CLAUDE_CODE_SESSION_ID,
+    DEMO_CODEX_SESSION_ID,
+    DEMO_SESSION_IDS,
     CorpusProfile,
     CorpusRequest,
     CorpusScenario,
     CorpusSourceKind,
     CorpusSpec,
+    DemoUserOverlayResult,
     build_corpus_scenarios,
     build_default_corpus_specs,
     build_demo_corpus_specs,
@@ -22,6 +27,7 @@ from .corpus import (
     flatten_corpus_specs,
     resolve_corpus_scenarios,
     resolve_corpus_specs,
+    seed_demo_user_overlays,
 )
 from .executable import ExecutableScenario
 from .execution import (
@@ -81,6 +87,7 @@ __all__ = [
     "classification_label",
     "build_default_corpus_specs",
     "build_demo_corpus_specs",
+    "seed_demo_user_overlays",
     "build_corpus_scenarios",
     "build_inferred_corpus_specs",
     "build_cli_surface_exercises",
@@ -101,6 +108,11 @@ __all__ = [
     "CorpusSourceKind",
     "CorpusScenario",
     "CorpusSpec",
+    "DEMO_CLAUDE_CODE_SESSION_ID",
+    "DEMO_CODEX_SESSION_ID",
+    "DEMO_CHATGPT_SESSION_ID",
+    "DEMO_SESSION_IDS",
+    "DemoUserOverlayResult",
     "compile_projection_entries",
     "dispatch_execution",
     "dispatch_runner_execution",

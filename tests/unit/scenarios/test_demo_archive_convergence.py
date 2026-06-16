@@ -8,9 +8,14 @@ import pytest
 
 from polylogue.config import Source
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
-from polylogue.scenarios import build_demo_corpus_specs
+from polylogue.scenarios import (
+    DEMO_CLAUDE_CODE_SESSION_ID,
+    build_demo_corpus_specs,
+    seed_demo_user_overlays,
+)
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, list_assertions_for_target
 
 EXPECTED_DEMO_SESSIONS = (
     (
@@ -78,6 +83,20 @@ def _raw_source_paths(archive_root: Path) -> tuple[str, ...]:
     return tuple(str(row["source_path"]) for row in rows)
 
 
+def _user_overlay_rows(archive_root: Path) -> tuple[tuple[str, str, str | None, object | None, str | None], ...]:
+    with _connect(archive_root / "user.db") as conn:
+        rows = conn.execute(
+            """
+            SELECT assertion_id, kind, key, value_json, body_text
+            FROM assertions
+            ORDER BY assertion_id
+            """
+        ).fetchall()
+    return tuple(
+        (str(row["assertion_id"]), str(row["kind"]), row["key"], row["value_json"], row["body_text"]) for row in rows
+    )
+
+
 def _stored_text_values(archive_root: Path) -> Iterable[str]:
     with _connect(archive_root / "index.db") as conn:
         for table, columns in (
@@ -132,11 +151,46 @@ async def test_demo_fixture_world_converges_into_deterministic_archive(
     assert all(not Path(path).is_absolute() for path in _raw_source_paths(archive_root))
     assert all(fragment not in value for value in stored_values for fragment in forbidden_fragments)
 
+    overlay = seed_demo_user_overlays(archive_root)
+    assert overlay.session_ids == tuple(row[0] for row in EXPECTED_DEMO_SESSIONS)
+    assert overlay.tag == "pytest-triage"
+    assert overlay.note_id == "demo-note:pytest-triage"
+    assert overlay.saved_view_id == "demo-view:pytest-triage"
+
+    with _connect(archive_root / "user.db") as conn:
+        session_tags = conn.execute(
+            "SELECT tag, tag_source FROM session_tags WHERE session_id = ?",
+            (DEMO_CLAUDE_CODE_SESSION_ID,),
+        ).fetchall()
+        assertions = list_assertions_for_target(conn, f"session:{DEMO_CLAUDE_CODE_SESSION_ID}")
+
+    assert tuple((row["tag"], row["tag_source"]) for row in session_tags) == (("pytest-triage", "user"),)
+    assert {assertion.kind for assertion in assertions} == {
+        AssertionKind.MARK,
+        AssertionKind.NOTE,
+        AssertionKind.TAG,
+        AssertionKind.DECISION,
+    }
+    assert {
+        assertion.key for assertion in assertions if assertion.kind in {AssertionKind.TAG, AssertionKind.DECISION}
+    } == {"pytest-triage"}
+    fixture_assertions = [assertion for assertion in assertions if assertion.author_kind == "fixture"]
+    assert fixture_assertions
+    assert all(assertion.context_policy == {"demo": True, "inject": False} for assertion in fixture_assertions)
+    assert all(assertion.author_kind in {"fixture", "user"} for assertion in assertions)
+    assert all("/tmp/" not in str(value) for row in _user_overlay_rows(archive_root) for value in row if value)
+
+    overlay_rows_before = _user_overlay_rows(archive_root)
+    overlay_again = seed_demo_user_overlays(archive_root)
+    assert overlay_again == overlay
+    assert _user_overlay_rows(archive_root) == overlay_rows_before
+
     before_counts = {
         "raw_sessions": _row_count(archive_root / "source.db", "raw_sessions"),
         "sessions": _row_count(archive_root / "index.db", "sessions"),
         "messages": _row_count(archive_root / "index.db", "messages"),
         "blocks": _row_count(archive_root / "index.db", "blocks"),
+        "assertions": _row_count(archive_root / "user.db", "assertions"),
     }
 
     repeat = await parse_sources_archive(archive_root, sources)
@@ -148,4 +202,5 @@ async def test_demo_fixture_world_converges_into_deterministic_archive(
         "sessions": _row_count(archive_root / "index.db", "sessions"),
         "messages": _row_count(archive_root / "index.db", "messages"),
         "blocks": _row_count(archive_root / "index.db", "blocks"),
+        "assertions": _row_count(archive_root / "user.db", "assertions"),
     } == before_counts
