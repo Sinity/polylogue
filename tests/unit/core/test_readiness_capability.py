@@ -11,12 +11,14 @@ from polylogue.readiness import (
     ComponentReadiness,
     component_from_archive_debt,
     component_from_archive_surface,
+    component_from_assertion_substrate,
     component_from_catchup_status,
     component_from_derived_model,
     component_from_embedding_payload,
     component_from_insight_entry,
     component_from_operation_status,
     component_from_outcome_check,
+    component_from_transform_registry,
 )
 from polylogue.storage.repair import ArchiveDebtStatus
 
@@ -164,6 +166,48 @@ def test_archive_surface_maps_search_mismatch_to_stale_component() -> None:
     assert component.counts == {"text_block_count": 10, "messages_fts_count": 8}
     assert component.caveats == ("messages_fts_row_mismatch",)
     assert component.repair_hint == "polylogue maintenance run --target dangling_fts"
+
+
+def test_assertion_substrate_maps_missing_ready_and_error_states() -> None:
+    missing = component_from_assertion_substrate(table_exists=False)
+    ready = component_from_assertion_substrate(
+        table_exists=True,
+        assertion_count=4,
+        target_count=2,
+        active_count=3,
+    )
+    busy = component_from_assertion_substrate(table_exists=True, error="database is locked")
+
+    assert missing.state is CapabilityReadinessState.MISSING
+    assert missing.caveats == ("assertions_table_missing",)
+    assert ready.state is CapabilityReadinessState.READY
+    assert ready.scope == "user"
+    assert ready.counts == {"assertion_count": 4, "target_count": 2, "active_count": 3}
+    assert ready.evidence_refs == ("user.db:assertions",)
+    assert busy.state is CapabilityReadinessState.DEGRADED
+    assert busy.caveats == ("database is locked",)
+
+
+def test_transform_registry_maps_registry_and_session_availability() -> None:
+    ready = component_from_transform_registry(
+        transform_count=1,
+        session_count=2,
+        recovery_transform_version=1,
+    )
+    no_sessions = component_from_transform_registry(transform_count=1, session_count=0)
+    no_registry = component_from_transform_registry(transform_count=0, session_count=2)
+
+    assert ready.state is CapabilityReadinessState.READY
+    assert ready.scope == "recovery"
+    assert ready.counts == {
+        "transform_count": 1,
+        "session_count": 2,
+        "recovery_transform_version": 1,
+    }
+    assert ready.evidence_refs == ("transform_registry",)
+    assert no_sessions.state is CapabilityReadinessState.MISSING
+    assert no_sessions.repair_hint == "polylogue import --demo"
+    assert no_registry.state is CapabilityReadinessState.MISSING
 
 
 def test_insight_entry_operation_and_catchup_adapters() -> None:
