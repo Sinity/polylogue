@@ -63,6 +63,8 @@ browser-extension/package-lock.json
 .cclsp.json
 .mcp.json
 
+.serena/
+
 # Legacy build-tool defaults that may still appear at the repo root
 dist/
 
