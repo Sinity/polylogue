@@ -362,6 +362,32 @@ class SessionMessagePayload(SurfacePayloadModel):
         )
 
 
+class SessionMessageRowPayload(SessionMessagePayload):
+    """One `read --view messages` machine-output row."""
+
+    session_id: str
+
+    @classmethod
+    def from_message(
+        cls,
+        message: Message,
+        *,
+        session_id: object | None = None,
+        raw_id: str | None = None,
+        source_path: str | None = None,
+    ) -> SessionMessageRowPayload:
+        if session_id is None:
+            msg_id = getattr(message, "id", "<unknown>")
+            raise ValueError(f"SessionMessageRowPayload requires session_id for message {msg_id}")
+        base = SessionMessagePayload.from_message(
+            message,
+            session_id=session_id,
+            raw_id=raw_id,
+            source_path=source_path,
+        )
+        return cls(session_id=str(session_id), **base.model_dump())
+
+
 class SessionSummaryPayload(SurfacePayloadModel):
     """Compact session summary payload used by MCP/search surfaces."""
 
@@ -1121,6 +1147,16 @@ class SessionDetailResponse(SurfacePayloadModel):
     session: SessionDetailPayload
 
 
+class SessionMessagesResponsePayload(SurfacePayloadModel):
+    """Finite `read --view messages --format json` response."""
+
+    session_id: str
+    messages: tuple[SessionMessageRowPayload, ...]
+    total: int
+    limit: int
+    offset: int
+
+
 class FacetTimeRange(SurfacePayloadModel):
     """Time range boundary for facet results."""
 
@@ -1357,6 +1393,8 @@ __all__ = [
     "SessionFlagsPayload",
     "SessionListResponse",
     "SessionListRowPayload",
+    "SessionMessageRowPayload",
+    "SessionMessagesResponsePayload",
     "SessionMessagePayload",
     "ContextPreamble",
     "ContextPreambleBlackboardNote",

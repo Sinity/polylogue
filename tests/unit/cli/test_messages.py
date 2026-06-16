@@ -14,6 +14,14 @@ from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 
+SCHEMAS_DIR = Path("docs/schemas/cli-output")
+
+
+def _load_schema(name: str) -> dict[str, object]:
+    loaded = json.loads((SCHEMAS_DIR / f"{name}.schema.json").read_text(encoding="utf-8"))
+    assert isinstance(loaded, dict)
+    return loaded
+
 
 class _FakeApi:
     def __init__(
@@ -48,10 +56,31 @@ class _FakeApi:
             raise SessionNotFoundError("missing")
         msgs, total = self.messages_result
         # Convert dicts to fake objects with attribute access for Message compat
+        defaults: dict[str, object] = {
+            "blocks": [],
+            "parent_id": None,
+            "timestamp": None,
+            "attachments": (),
+            "branch_index": 0,
+            "has_paste": False,
+            "has_tool_use": False,
+            "has_thinking": False,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "model_name": None,
+        }
         objs = (
             [
                 type(
-                    "_FakeMsg", (), {**m, "message_type": type("_FakeMT", (), {"value": m.get("message_type", "")})()}
+                    "_FakeMsg",
+                    (),
+                    {
+                        **defaults,
+                        **m,
+                        "message_type": type("_FakeMT", (), {"value": m.get("message_type", "")})(),
+                    },
                 )()
                 for m in msgs
             ]
@@ -139,6 +168,8 @@ def test_run_messages_emits_json_and_passes_projection(tmp_path: Path, capsys: p
 
 def test_run_messages_json_is_single_finite_document(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     """`read --view messages --format json` emits one finite JSON value (#1818)."""
+    import jsonschema
+
     env = _env()
     api = _FakeApi(
         messages_result=(
@@ -157,6 +188,7 @@ def test_run_messages_json_is_single_finite_document(tmp_path: Path, capsys: pyt
 
     # Output is a single finite JSON value on stdout (one json.loads succeeds).
     payload = json.loads(capsys.readouterr().out)
+    jsonschema.validate(instance=payload, schema=_load_schema("session-messages-response"))
     assert payload["session_id"] == "conv-1"
     assert [m["text"] for m in payload["messages"]] == ["[bold]first[/bold]", "second"]
     assert payload["total"] == 2
@@ -166,6 +198,8 @@ def test_run_messages_ndjson_emits_one_json_document_per_line(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """`--format ndjson` streams one parseable JSON document per message (#1818)."""
+    import jsonschema
+
     env = _env()
     api = _FakeApi(
         messages_result=(
@@ -183,6 +217,9 @@ def test_run_messages_ndjson_emits_one_json_document_per_line(
     lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
     assert len(lines) == 2
     docs = [json.loads(line) for line in lines]  # each line parses independently
+    schema = _load_schema("session-message-row")
+    for doc in docs:
+        jsonschema.validate(instance=doc, schema=schema)
     # Rich markup in text survives byte-for-byte (raw click.echo, no console markup).
     assert [d["text"] for d in docs] == ["[bold]first[/bold]", "second"]
     assert all(d["session_id"] == "conv-1" for d in docs)

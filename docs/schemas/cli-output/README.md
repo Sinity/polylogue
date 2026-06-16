@@ -17,6 +17,8 @@ devtools render-cli-output-schemas --check # CI sync check
 | --- | --- | --- |
 | [`session-list-row.schema.json`](./session-list-row.schema.json) | `polylogue list --format json`<br>`polylogue list --format ndjson`<br>`polylogue list --format yaml` | `SessionListRowPayload` |
 | [`session-summary.schema.json`](./session-summary.schema.json) | `polylogue stats --format json (rows)`<br>`polylogue select --format json` | `SessionSummaryPayload` |
+| [`session-message-row.schema.json`](./session-message-row.schema.json) | `polylogue read --view messages --format ndjson`<br>`polylogue read --view messages --format json (messages[])` | `SessionMessageRowPayload` |
+| [`session-messages-response.schema.json`](./session-messages-response.schema.json) | `polylogue read --view messages --format json` | `SessionMessagesResponsePayload` |
 | [`session-search-hit.schema.json`](./session-search-hit.schema.json) | `polylogue --format json <query>`<br>`polylogue --format ndjson <query>` | `SessionSearchHitPayload` |
 | [`search-envelope.schema.json`](./search-envelope.schema.json) | `polylogue --format json <query>`<br>`GET /api/sessions?query=...` | `SearchEnvelope` |
 | [`session-neighbor-candidate.schema.json`](./session-neighbor-candidate.schema.json) | `polylogue neighbors --format json` | `SessionNeighborCandidatePayload` |

@@ -30,6 +30,8 @@ from polylogue.surfaces.payloads import (
     QueryErrorPayload,
     SearchEnvelope,
     SessionListRowPayload,
+    SessionMessageRowPayload,
+    SessionMessagesResponsePayload,
     SessionNeighborCandidatePayload,
     SessionSearchHitPayload,
     SessionSummaryPayload,
@@ -75,6 +77,26 @@ SCHEMAS: tuple[CliOutputSchema, ...] = (
             "polylogue stats --format json (rows)",
             "polylogue select --format json",
         ),
+    ),
+    CliOutputSchema(
+        name="session-message-row",
+        title="Session Message Row",
+        description=(
+            "One message row emitted by `polylogue read --view messages --format ndjson` "
+            "and embedded inside the finite messages response."
+        ),
+        model=SessionMessageRowPayload,
+        surfaces=(
+            "polylogue read --view messages --format ndjson",
+            "polylogue read --view messages --format json (messages[])",
+        ),
+    ),
+    CliOutputSchema(
+        name="session-messages-response",
+        title="Session Messages Response",
+        description=("Finite response for `polylogue read --view messages --format json`."),
+        model=SessionMessagesResponsePayload,
+        surfaces=("polylogue read --view messages --format json",),
     ),
     CliOutputSchema(
         name="session-search-hit",
