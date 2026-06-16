@@ -259,14 +259,16 @@ polylogue status
 polylogue stats
 polylogue "pytest" list --limit 5
 polylogue find "pytest" then read --view messages
+polylogue find "pytest" then analyze --facets
 ```
 
 `polylogue import --demo` writes only approved synthetic source files and asks
 the running daemon to ingest them. The command is asynchronous: `status` shows
-daemon/archive health, while `stats` and search/read commands are meaningful
-after daemon convergence. The current deterministic archive evidence is the
-in-process fixture evidence in [docs/generate.md](docs/generate.md), including
-the expected `pytest` search hit and user-tier overlay evidence for the
+daemon/archive health, while `stats` and search/read/analyze commands are
+meaningful after daemon convergence. The current deterministic archive
+evidence is the in-process fixture evidence in
+[docs/generate.md](docs/generate.md), including the expected `pytest` search
+hit and user-tier overlay evidence for the
 `pytest-triage` tag, mark, note, saved query, and typed assertions.
 
 ## Developer tools

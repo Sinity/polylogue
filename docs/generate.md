@@ -29,6 +29,7 @@ polylogue status
 polylogue stats
 polylogue "pytest" list --limit 5
 polylogue find "pytest" then read --view messages
+polylogue find "pytest" then analyze --facets
 
 # Repository verification-lab scenarios
 devtools lab-scenario run archive-smoke --tier 0
@@ -40,7 +41,7 @@ archive build. It materializes approved fixture sources under the configured
 archive root, stages them into the daemon inbox, and reports success only after
 the daemon accepts scheduling. Until the running daemon converges the staged
 source, `polylogue status` may show an empty or in-progress archive and
-search/read examples can legitimately return no rows.
+search/read/analyze examples can legitimately return no rows.
 
 ## How It Works
 
@@ -92,7 +93,7 @@ same `build_demo_corpus_specs()` artifacts, converges them in process with
 
 SPEC_MISMATCH: the README command transcript exercises the shipped
 daemon-backed scheduling surface, while the convergence evidence above uses
-the in-process archive parser. The documented search/read examples are
+the in-process archive parser. The documented search/read/analyze examples are
 therefore truthful after daemon convergence, but `polylogue import --demo`
 itself does not synchronously prove the archive contains those rows.
 
