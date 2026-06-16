@@ -3,15 +3,25 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+from polylogue.archive.message.messages import MessageCollection
+from polylogue.archive.message.models import Message
+from polylogue.archive.message.roles import Role
+from polylogue.archive.session.domain_models import Session
+from polylogue.core.enums import Origin
+from polylogue.insights.transforms import compile_recovery_digest
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user import USER_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.user_write import (
     AssertionKind,
+    assertion_id_for_transform_candidate,
     list_assertions_for_target,
+    mark_assertion_status,
     read_assertion_envelope,
     upsert_assertion,
+    upsert_transform_candidate_assertions,
 )
+from polylogue.types import SessionId
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -19,6 +29,30 @@ def _connect(path: Path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     initialize_archive_tier(conn, ArchiveTier.USER)
     return conn
+
+
+def _recovery_candidate_session() -> Session:
+    return Session(
+        id=SessionId("codex-session:assertion-demo"),
+        origin=Origin.CODEX_SESSION,
+        title="Recover assertion candidates",
+        messages=MessageCollection(
+            messages=[
+                Message(
+                    id="m1",
+                    role=Role.USER,
+                    text=(
+                        "Goal: connect transform candidates to assertions\nNext: keep candidates private until accepted"
+                    ),
+                ),
+                Message(
+                    id="m2",
+                    role=Role.ASSISTANT,
+                    text="Decision: transform candidates require evidence refs and no default context injection.",
+                ),
+            ]
+        ),
+    )
 
 
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
@@ -287,3 +321,93 @@ def test_assertions_table_added_additively_without_version_bump(tmp_path: Path) 
         assert restored.assertion_id == "post-additive"
     finally:
         conn2.close()
+
+
+def test_recovery_digest_candidates_write_transform_candidate_assertions(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "user.db")
+    try:
+        digest = compile_recovery_digest(_recovery_candidate_session())
+        assert digest.decision_candidates
+
+        written = upsert_transform_candidate_assertions(
+            conn,
+            digest,
+            now_ms=1_700_000_000_000,
+        )
+
+        mirrored = list_assertions_for_target(
+            conn,
+            f"session:{digest.session_id}",
+            kind=AssertionKind.TRANSFORM_CANDIDATE,
+        )
+        assert {item.assertion_id for item in mirrored} == {item.assertion_id for item in written}
+        assert len(mirrored) == len(digest.decision_candidates)
+
+        mirrored_by_id = {assertion.assertion_id: assertion for assertion in mirrored}
+        for index, candidate in enumerate(digest.decision_candidates):
+            evidence_refs = [ref.to_evidence_ref().format() for ref in candidate.raw_refs]
+            expected_id = assertion_id_for_transform_candidate(
+                session_id=digest.session_id,
+                transform_id=digest.transform.transform_id,
+                transform_version=digest.transform.transform_version,
+                candidate_index=index,
+                candidate_kind=candidate.kind,
+                candidate_text=candidate.text,
+                evidence_refs=evidence_refs,
+            )
+            assertion = mirrored_by_id[expected_id]
+            assert assertion.assertion_id == expected_id
+            assert assertion.kind == AssertionKind.TRANSFORM_CANDIDATE
+            assert assertion.scope_ref == "transform:recovery_digest_v0@v1"
+            assert assertion.target_ref == "session:codex-session:assertion-demo"
+            assert assertion.key == f"candidate/{candidate.kind}/{index}"
+            assert assertion.value == {
+                "candidate_index": index,
+                "candidate_kind": candidate.kind,
+                "session_id": digest.session_id,
+                "source_origin": "codex-session",
+                "transform_id": "recovery_digest_v0",
+                "transform_version": 1,
+            }
+            assert assertion.body_text == candidate.text
+            assert assertion.author_ref == "transform:recovery_digest_v0@v1"
+            assert assertion.author_kind == "transform"
+            assert assertion.evidence_refs == evidence_refs
+            assert assertion.status == "candidate"
+            assert assertion.visibility == "private"
+            assert assertion.context_policy == {"inject": False, "promotion_required": True}
+
+        again = upsert_transform_candidate_assertions(
+            conn,
+            digest,
+            now_ms=1_700_000_005_000,
+        )
+        assert [item.assertion_id for item in again] == [item.assertion_id for item in written]
+        assert len(list_assertions_for_target(conn, f"session:{digest.session_id}")) == len(written)
+        assert all(item.created_at_ms == 1_700_000_000_000 for item in again)
+        assert all(item.updated_at_ms == 1_700_000_005_000 for item in again)
+
+        accepted_id = written[0].assertion_id
+        assert mark_assertion_status(conn, accepted_id, "accepted", now_ms=1_700_000_006_000)
+
+        after_accept = upsert_transform_candidate_assertions(
+            conn,
+            digest,
+            now_ms=1_700_000_007_000,
+        )
+        accepted_after_remirror = next(item for item in after_accept if item.assertion_id == accepted_id)
+        assert accepted_after_remirror.status == "accepted"
+        assert accepted_after_remirror.updated_at_ms == 1_700_000_006_000
+
+        duplicate_digest = digest.model_copy(
+            update={"decision_candidates": (digest.decision_candidates[0], digest.decision_candidates[0])}
+        )
+        duplicate_written = upsert_transform_candidate_assertions(
+            conn,
+            duplicate_digest,
+            now_ms=1_700_000_008_000,
+        )
+        assert len({item.assertion_id for item in duplicate_written}) == 2
+        assert {item.value["candidate_index"] for item in duplicate_written if isinstance(item.value, dict)} == {0, 1}
+    finally:
+        conn.close()

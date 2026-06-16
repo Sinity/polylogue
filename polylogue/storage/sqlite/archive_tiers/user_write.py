@@ -13,7 +13,10 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from polylogue.insights.transforms import DecisionCandidate, RecoveryDigest, TransformRawRef
 
 
 class AssertionKind(StrEnum):
@@ -147,6 +150,30 @@ def assertion_id_for_workspace(workspace_id: str) -> str:
 def assertion_id_for_blackboard_note(note_id: str) -> str:
     """Return the mirrored assertion id for one legacy blackboard note row."""
     return _deterministic_id(f"assertion-{AssertionKind.NOTE}", note_id)
+
+
+def assertion_id_for_transform_candidate(
+    *,
+    session_id: str,
+    transform_id: str,
+    transform_version: int,
+    candidate_index: int,
+    candidate_kind: str,
+    candidate_text: str,
+    evidence_refs: Sequence[str],
+) -> str:
+    """Return the assertion id for one deterministic transform candidate."""
+
+    return _deterministic_id(
+        f"assertion-{AssertionKind.TRANSFORM_CANDIDATE}",
+        session_id,
+        transform_id,
+        str(transform_version),
+        str(candidate_index),
+        candidate_kind,
+        candidate_text,
+        *evidence_refs,
+    )
 
 
 def _target_ref(target_type: str | None, target_id: str | None) -> str | None:
@@ -979,6 +1006,72 @@ def upsert_assertion(
     return envelope
 
 
+def upsert_transform_candidate_assertions(
+    conn: sqlite3.Connection,
+    digest: RecoveryDigest,
+    *,
+    now_ms: int | None = None,
+) -> list[ArchiveAssertionEnvelope]:
+    """Mirror recovery digest decision candidates as non-injected assertions."""
+
+    timestamp = now_ms if now_ms is not None else _now_ms()
+    scope_ref = f"transform:{digest.transform.transform_id}@v{digest.transform.transform_version}"
+    target_ref = f"session:{digest.session_id}"
+    envelopes: list[ArchiveAssertionEnvelope] = []
+
+    for index, candidate in enumerate(digest.decision_candidates):
+        evidence_refs = _transform_candidate_evidence_refs(candidate)
+        assertion_id = assertion_id_for_transform_candidate(
+            session_id=digest.session_id,
+            transform_id=digest.transform.transform_id,
+            transform_version=digest.transform.transform_version,
+            candidate_index=index,
+            candidate_kind=candidate.kind,
+            candidate_text=candidate.text,
+            evidence_refs=evidence_refs,
+        )
+        existing = read_assertion_envelope(conn, assertion_id)
+        if existing is not None and existing.status != "candidate":
+            envelopes.append(existing)
+            continue
+        envelopes.append(
+            upsert_assertion(
+                conn,
+                assertion_id=assertion_id,
+                scope_ref=scope_ref,
+                target_ref=target_ref,
+                key=f"candidate/{candidate.kind}/{index}",
+                kind=AssertionKind.TRANSFORM_CANDIDATE,
+                value={
+                    "candidate_index": index,
+                    "candidate_kind": candidate.kind,
+                    "session_id": digest.session_id,
+                    "source_origin": digest.transform.source_origin,
+                    "transform_id": digest.transform.transform_id,
+                    "transform_version": digest.transform.transform_version,
+                },
+                body_text=candidate.text,
+                author_ref=scope_ref,
+                author_kind="transform",
+                evidence_refs=evidence_refs,
+                status="candidate",
+                visibility="private",
+                context_policy={"inject": False, "promotion_required": True},
+                now_ms=timestamp,
+            )
+        )
+
+    return envelopes
+
+
+def _transform_candidate_evidence_refs(candidate: DecisionCandidate) -> list[str]:
+    return [_format_transform_raw_ref(ref) for ref in candidate.raw_refs]
+
+
+def _format_transform_raw_ref(ref: TransformRawRef) -> str:
+    return ref.to_evidence_ref().format()
+
+
 def mark_assertion_status(
     conn: sqlite3.Connection,
     assertion_id: str,
@@ -1079,6 +1172,7 @@ __all__ = [
     "assertion_id_for_recall_pack",
     "assertion_id_for_saved_view",
     "assertion_id_for_suppression",
+    "assertion_id_for_transform_candidate",
     "assertion_id_for_workspace",
     "list_archive_blackboard_note_envelopes",
     "list_assertions_for_target",
@@ -1100,5 +1194,6 @@ __all__ = [
     "upsert_recall_pack",
     "upsert_saved_view",
     "upsert_suppression",
+    "upsert_transform_candidate_assertions",
     "upsert_workspace",
 ]
