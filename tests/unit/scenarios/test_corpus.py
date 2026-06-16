@@ -7,6 +7,10 @@ import pytest
 
 from polylogue.core.json import JSONDocument
 from polylogue.scenarios import (
+    DEMO_CHATGPT_SESSION_ID,
+    DEMO_CLAUDE_CODE_SESSION_ID,
+    DEMO_CODEX_SESSION_ID,
+    DEMO_SESSION_IDS,
     CorpusProfile,
     CorpusRequest,
     CorpusScenario,
@@ -177,6 +181,11 @@ def test_build_demo_corpus_specs_declares_release_fixture_world() -> None:
     specs = build_demo_corpus_specs()
 
     assert tuple(spec.provider for spec in specs) == ("chatgpt", "claude-code", "codex")
+    assert DEMO_SESSION_IDS == (
+        DEMO_CHATGPT_SESSION_ID,
+        DEMO_CLAUDE_CODE_SESSION_ID,
+        DEMO_CODEX_SESSION_ID,
+    )
     assert tuple(spec.style for spec in specs) == (
         "showcase",
         "tool-heavy",

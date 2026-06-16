@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from enum import Enum
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.insights.authored_payloads import (
@@ -46,6 +48,26 @@ class CorpusSourceKind(str, Enum):
 
 
 DEMO_CORPUS_SEED = 1843
+DEMO_CHATGPT_SESSION_ID = "chatgpt-export:dc13ca54-0bba-4298-a38f-09068c2ef2c5"
+DEMO_CLAUDE_CODE_SESSION_ID = "claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6"
+DEMO_CODEX_SESSION_ID = "codex-session:demo-00"
+DEMO_SESSION_IDS = (
+    DEMO_CHATGPT_SESSION_ID,
+    DEMO_CLAUDE_CODE_SESSION_ID,
+    DEMO_CODEX_SESSION_ID,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class DemoUserOverlayResult:
+    """Deterministic user-tier overlay rows seeded for the approved demo world."""
+
+    session_ids: tuple[str, ...]
+    tag: str
+    mark_id: str
+    note_id: str
+    saved_view_id: str
+    assertion_ids: tuple[str, ...]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -558,6 +580,116 @@ def build_demo_corpus_specs(
             origin=origin,
             tags=tags,
         ),
+    )
+
+
+def seed_demo_user_overlays(
+    archive_root: Path,
+    *,
+    now_ms: int = 1_700_000_200_000,
+) -> DemoUserOverlayResult:
+    """Seed deterministic user-tier overlays for the approved demo archive.
+
+    ``polylogue import --demo`` is an asynchronous daemon scheduling command,
+    so it cannot synchronously attach overlays to sessions it has not converged
+    yet. This helper is the executable fixture contract for README/release
+    evidence after the demo archive has converged.
+    """
+
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.archive_tiers.user_write import (
+        AssertionKind,
+        list_assertions_for_target,
+        upsert_assertion,
+        upsert_blackboard_note,
+        upsert_mark,
+        upsert_saved_view,
+    )
+
+    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+        resolved_session_ids = tuple(archive.resolve_session_id(session_id) for session_id in DEMO_SESSION_IDS)
+        archive.add_user_tags((DEMO_CLAUDE_CODE_SESSION_ID,), ("pytest-triage",))
+
+    user_db_path = archive_root / "user.db"
+    initialize_archive_database(user_db_path, ArchiveTier.USER)
+    conn = sqlite3.connect(user_db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        mark = upsert_mark(
+            conn,
+            "session",
+            DEMO_CLAUDE_CODE_SESSION_ID,
+            "star",
+            label="README search example",
+            metadata={"demo": True, "query": "pytest"},
+            now_ms=now_ms,
+        )
+        note = upsert_blackboard_note(
+            conn,
+            "The demo pytest session is the approved fixture for search, read, and assertion overlays.",
+            target_type="session",
+            target_id=DEMO_CLAUDE_CODE_SESSION_ID,
+            note_id="demo-note:pytest-triage",
+            author_ref="demo-fixture-world",
+            author_kind="fixture",
+            evidence_refs=(f"session:{DEMO_CLAUDE_CODE_SESSION_ID}",),
+            context_policy={"inject": False, "demo": True},
+            now_ms=now_ms + 1_000,
+        )
+        saved_view = upsert_saved_view(
+            conn,
+            "demo-pytest-triage",
+            {"query": "pytest", "origin": "claude-code-session", "limit": 5},
+            view_id="demo-view:pytest-triage",
+            now_ms=now_ms + 2_000,
+        )
+        upsert_assertion(
+            conn,
+            assertion_id="demo-assertion:tag:pytest-triage",
+            target_ref=f"session:{DEMO_CLAUDE_CODE_SESSION_ID}",
+            key="pytest-triage",
+            kind=AssertionKind.TAG,
+            value={"tag": "pytest-triage", "source": "demo-fixture-world"},
+            body_text="Demo session tag used by README search examples.",
+            author_ref="demo-fixture-world",
+            author_kind="fixture",
+            evidence_refs=(f"session:{DEMO_CLAUDE_CODE_SESSION_ID}",),
+            status="active",
+            visibility="public",
+            context_policy={"inject": False, "demo": True},
+            now_ms=now_ms + 3_000,
+        )
+        upsert_assertion(
+            conn,
+            assertion_id="demo-assertion:decision:pytest-triage",
+            target_ref=f"session:{DEMO_CLAUDE_CODE_SESSION_ID}",
+            key="pytest-triage",
+            kind=AssertionKind.DECISION,
+            value={"decision": "use-demo-fixture", "query": "pytest"},
+            body_text="Use the Claude Code demo session as the stable pytest triage example.",
+            author_ref="demo-fixture-world",
+            author_kind="fixture",
+            evidence_refs=(f"session:{DEMO_CLAUDE_CODE_SESSION_ID}",),
+            status="active",
+            visibility="public",
+            confidence=1.0,
+            context_policy={"inject": False, "demo": True},
+            now_ms=now_ms + 4_000,
+        )
+        assertions = list_assertions_for_target(conn, f"session:{DEMO_CLAUDE_CODE_SESSION_ID}")
+        conn.commit()
+    finally:
+        conn.close()
+
+    return DemoUserOverlayResult(
+        session_ids=resolved_session_ids,
+        tag="pytest-triage",
+        mark_id=mark.mark_id,
+        note_id=note.note_id,
+        saved_view_id=saved_view.view_id,
+        assertion_ids=tuple(dict.fromkeys(assertion.assertion_id for assertion in assertions)),
     )
 
 

@@ -64,6 +64,11 @@ The test suite uses the same `SyntheticCorpus` infrastructure through shared fix
 
 `polylogue import --demo` uses the named `build_demo_corpus_specs()` fixture
 world so README examples and release checks can run without private exports.
+After that archive has converged, the repository-level
+`seed_demo_user_overlays()` fixture attaches deterministic user-tier overlays
+to the same sessions for release evidence: a `pytest-triage` tag, a starred
+README example mark, a session-scoped blackboard note, a saved query, and
+typed assertions in `user.db`.
 
 ## README Demo Evidence
 
@@ -79,8 +84,11 @@ same `build_demo_corpus_specs()` artifacts, converges them in process with
   `claude-code/demo-00.jsonl`, `codex/demo-00.jsonl`);
 - `polylogue` full-text search for `pytest` is backed by the Claude Code demo
   session;
+- deterministic user overlays are stored in `user.db`: the `pytest-triage`
+  tag, session mark, blackboard note, saved query, and typed tag/decision
+  assertions all target the Claude Code demo session;
 - repeating convergence is idempotent for raw sessions, sessions, messages,
-  and blocks.
+  blocks, and user overlay assertions.
 
 SPEC_MISMATCH: the README command transcript exercises the shipped
 daemon-backed scheduling surface, while the convergence evidence above uses

@@ -266,7 +266,8 @@ the running daemon to ingest them. The command is asynchronous: `status` shows
 daemon/archive health, while `stats` and search/read commands are meaningful
 after daemon convergence. The current deterministic archive evidence is the
 in-process fixture evidence in [docs/generate.md](docs/generate.md), including
-the expected `pytest` search hit.
+the expected `pytest` search hit and user-tier overlay evidence for the
+`pytest-triage` tag, mark, note, saved query, and typed assertions.
 
 ## Developer tools
 
