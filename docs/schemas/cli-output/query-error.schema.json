@@ -1,0 +1,53 @@
+{
+  "$id": "https://polylogue.dev/schemas/cli-output/query-error.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Shared typed error payload for daemon HTTP, MCP, and query/read surfaces that need field-addressable machine-readable failures.\n\nGenerated from `polylogue.surfaces.payloads.QueryErrorPayload` by `devtools render-cli-output-schemas`. Do not edit by hand.",
+  "properties": {
+    "detail": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Detail"
+    },
+    "error": {
+      "title": "Error",
+      "type": "string"
+    },
+    "field": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Field"
+    },
+    "ok": {
+      "const": false,
+      "default": false,
+      "title": "Ok",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "error"
+  ],
+  "title": "Query Error Payload",
+  "type": "object",
+  "x-polylogue-cli-surfaces": [
+    "GET /api/sessions?query=... (error path)",
+    "daemon query/read error responses",
+    "MCP query/read error responses"
+  ],
+  "x-polylogue-source-model": "QueryErrorPayload"
+}

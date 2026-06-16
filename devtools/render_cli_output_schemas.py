@@ -26,6 +26,8 @@ from devtools.render_support import write_if_changed
 from polylogue.surfaces.payloads import (
     MachineErrorPayload,
     MachineSuccessPayload,
+    MutationResultPayload,
+    QueryErrorPayload,
     SearchEnvelope,
     SessionListRowPayload,
     SessionNeighborCandidatePayload,
@@ -115,6 +117,23 @@ SCHEMAS: tuple[CliOutputSchema, ...] = (
         surfaces=("polylogue neighbors --format json",),
     ),
     CliOutputSchema(
+        name="mutation-result",
+        title="Mutation Result",
+        description=(
+            "Shared result envelope for CLI, MCP, API, and daemon mutation "
+            "surfaces. Used by tag, metadata, delete, and related bulk "
+            "mutation actions to report status, affected counts, and "
+            "optional session ids."
+        ),
+        model=MutationResultPayload,
+        surfaces=(
+            "polylogue find <query> then delete --dry-run",
+            "polylogue find <query> then delete --yes",
+            "MCP mutation tools",
+            "daemon mutation endpoints",
+        ),
+    ),
+    CliOutputSchema(
         name="machine-error",
         title="Machine Error Envelope",
         description=(
@@ -135,6 +154,20 @@ SCHEMAS: tuple[CliOutputSchema, ...] = (
         ),
         model=MachineSuccessPayload,
         surfaces=("polylogue * --machine (success path)",),
+    ),
+    CliOutputSchema(
+        name="query-error",
+        title="Query Error Payload",
+        description=(
+            "Shared typed error payload for daemon HTTP, MCP, and query/read "
+            "surfaces that need field-addressable machine-readable failures."
+        ),
+        model=QueryErrorPayload,
+        surfaces=(
+            "GET /api/sessions?query=... (error path)",
+            "daemon query/read error responses",
+            "MCP query/read error responses",
+        ),
     ),
 )
 

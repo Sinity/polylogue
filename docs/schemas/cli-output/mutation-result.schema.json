@@ -1,0 +1,171 @@
+{
+  "$id": "https://polylogue.dev/schemas/cli-output/mutation-result.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Shared result envelope for CLI, MCP, API, and daemon mutation surfaces. Used by tag, metadata, delete, and related bulk mutation actions to report status, affected counts, and optional session ids.\n\nGenerated from `polylogue.surfaces.payloads.MutationResultPayload` by `devtools render-cli-output-schemas`. Do not edit by hand.",
+  "properties": {
+    "affected_count": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Affected Count"
+    },
+    "applied_count": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Applied Count"
+    },
+    "detail": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Detail"
+    },
+    "key": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Key"
+    },
+    "operation": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Operation"
+    },
+    "outcome": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Outcome"
+    },
+    "session_count": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Session Count"
+    },
+    "session_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Session Id"
+    },
+    "session_ids": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Session Ids"
+    },
+    "skipped_count": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Skipped Count"
+    },
+    "status": {
+      "title": "Status",
+      "type": "string"
+    },
+    "tag": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Tag"
+    },
+    "tag_count": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Tag Count"
+    }
+  },
+  "required": [
+    "status"
+  ],
+  "title": "Mutation Result",
+  "type": "object",
+  "x-polylogue-cli-surfaces": [
+    "polylogue find <query> then delete --dry-run",
+    "polylogue find <query> then delete --yes",
+    "MCP mutation tools",
+    "daemon mutation endpoints"
+  ],
+  "x-polylogue-source-model": "MutationResultPayload"
+}
