@@ -1027,6 +1027,10 @@ def upsert_transform_candidate_assertions(
             candidate_text=candidate.text,
             evidence_refs=evidence_refs,
         )
+        existing = read_assertion_envelope(conn, assertion_id)
+        if existing is not None and existing.status != "candidate":
+            envelopes.append(existing)
+            continue
         envelopes.append(
             upsert_assertion(
                 conn,

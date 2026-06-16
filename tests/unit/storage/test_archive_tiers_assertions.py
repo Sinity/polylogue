@@ -16,6 +16,7 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     AssertionKind,
     assertion_id_for_transform_candidate,
     list_assertions_for_target,
+    mark_assertion_status,
     read_assertion_envelope,
     upsert_assertion,
     upsert_transform_candidate_assertions,
@@ -383,5 +384,17 @@ def test_recovery_digest_candidates_write_transform_candidate_assertions(tmp_pat
         assert len(list_assertions_for_target(conn, f"session:{digest.session_id}")) == len(written)
         assert all(item.created_at_ms == 1_700_000_000_000 for item in again)
         assert all(item.updated_at_ms == 1_700_000_005_000 for item in again)
+
+        accepted_id = written[0].assertion_id
+        assert mark_assertion_status(conn, accepted_id, "accepted", now_ms=1_700_000_006_000)
+
+        after_accept = upsert_transform_candidate_assertions(
+            conn,
+            digest,
+            now_ms=1_700_000_007_000,
+        )
+        accepted_after_remirror = next(item for item in after_accept if item.assertion_id == accepted_id)
+        assert accepted_after_remirror.status == "accepted"
+        assert accepted_after_remirror.updated_at_ms == 1_700_000_006_000
     finally:
         conn.close()
