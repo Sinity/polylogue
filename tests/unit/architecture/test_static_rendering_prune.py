@@ -20,3 +20,9 @@ def test_read_export_html_template_is_retained() -> None:
     """HTML output remains available through the read/export renderer path."""
 
     assert (ROOT / "polylogue" / "rendering" / "templates" / "session.html").is_file()
+
+
+def test_legacy_qa_report_aggregator_is_removed() -> None:
+    """QA report behavior lives in owned payload, Markdown, and summary modules."""
+
+    assert not (ROOT / "polylogue" / "showcase" / "qa_report.py").exists()

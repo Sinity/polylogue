@@ -199,7 +199,7 @@ def test_save_qa_reports_writes_success_and_error_payloads(tmp_path: object) -> 
             "polylogue.showcase.showcase_report_payloads.build_showcase_session_record", return_value="showcase-session"
         ),
         patch("polylogue.showcase.qa_session_payload.build_qa_session_record", return_value=qa_session),
-        patch("polylogue.showcase.qa_report.generate_qa_markdown", return_value="# QA report"),
+        patch("polylogue.showcase.qa_markdown.generate_qa_markdown", return_value="# QA report"),
     ):
         save_qa_reports(result, tmp_path)
 
@@ -220,7 +220,7 @@ def test_save_qa_reports_writes_success_and_error_payloads(tmp_path: object) -> 
     with (
         patch("polylogue.showcase.report_files.save_reports") as mock_save_reports,
         patch("polylogue.showcase.qa_session_payload.build_qa_session_record", return_value=qa_session),
-        patch("polylogue.showcase.qa_report.generate_qa_markdown", return_value="# errors"),
+        patch("polylogue.showcase.qa_markdown.generate_qa_markdown", return_value="# errors"),
     ):
         save_qa_reports(error_result, error_dir)
 
@@ -232,7 +232,7 @@ def test_save_qa_reports_writes_success_and_error_payloads(tmp_path: object) -> 
 def test_format_qa_summary_delegates_to_renderer() -> None:
     result = QAResult()
 
-    with patch("polylogue.showcase.qa_report.generate_qa_summary", return_value="summary") as mock_generate:
+    with patch("polylogue.showcase.qa_summary.generate_qa_summary", return_value="summary") as mock_generate:
         assert format_qa_summary(result) == "summary"
 
     mock_generate.assert_called_once_with(result)

@@ -27,7 +27,7 @@ def save_qa_reports(result: QAResult, report_dir: Path) -> None:
             json.dumps({"error": result.proof_error}, indent=2, sort_keys=True)
         )
 
-    from polylogue.showcase.qa_report import generate_qa_markdown
+    from polylogue.showcase.qa_markdown import generate_qa_markdown
     from polylogue.showcase.qa_session_payload import build_qa_session_record
     from polylogue.showcase.report_files import save_reports
     from polylogue.showcase.showcase_report_payloads import build_showcase_session_record
@@ -58,7 +58,7 @@ def save_qa_reports(result: QAResult, report_dir: Path) -> None:
 
 def format_qa_summary(result: QAResult) -> str:
     """Format a human-readable QA session summary."""
-    from polylogue.showcase.qa_report import generate_qa_summary
+    from polylogue.showcase.qa_summary import generate_qa_summary
 
     return generate_qa_summary(result)
 
