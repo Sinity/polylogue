@@ -564,6 +564,74 @@ class TestNoArchiveStatus:
         assert transforms["summary"] == "no sessions"
         assert transforms["repair_hint"] == "polylogue import --demo"
 
+    def test_direct_status_json_covers_component_readiness_state_matrix(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        env = _make_app_env()
+        db_anchor = tmp_path / "index.db"
+        initialize_archive_database(db_anchor, ArchiveTier.INDEX)
+        archive_readiness = {
+            "checked": True,
+            "counts": {"session_count": 0},
+            "surfaces": {
+                "archive_sessions": {
+                    "ready": True,
+                    "blockers": [],
+                    "evidence": {"session_count": 0},
+                },
+                "search": {
+                    "ready": False,
+                    "blockers": ["messages_fts_row_mismatch"],
+                    "evidence": {"text_block_count": 10, "messages_fts_count": 8},
+                },
+                "session_profiles": {
+                    "ready": False,
+                    "blockers": [],
+                    "evidence": {"profile_row_count": 1, "missing_profile_row_count": 1},
+                },
+            },
+        }
+        embedding_payload = {
+            "config_enabled": False,
+            "has_voyage_api_key": False,
+            "status": "disabled",
+            "total_sessions": 0,
+            "embedded_sessions": 0,
+            "embedded_messages": 0,
+            "pending_sessions": 0,
+            "stale_messages": 0,
+            "failure_count": 0,
+            "freshness_status": "disabled",
+            "retrieval_ready": False,
+            "next_action": {"code": "enable", "command": "polylogue embed enable"},
+        }
+
+        with (
+            patch("polylogue.paths.db_path", return_value=db_anchor),
+            patch("polylogue.paths.archive_root", return_value=tmp_path),
+            patch("polylogue.cli.commands.status._archive_readiness_status", return_value=archive_readiness),
+            patch(
+                "polylogue.storage.embeddings.status_payload.embedding_status_payload",
+                return_value=embedding_payload,
+            ),
+        ):
+            _show_direct_json(env)
+
+        components = json.loads(_combined_calls(env))["component_readiness"]
+        assert components["archive_sessions"]["state"] == "ready"
+        assert components["search"]["state"] == "stale"
+        assert components["search"]["caveats"] == ["messages_fts_row_mismatch"]
+        assert components["search"]["repair_hint"] == "polylogue maintenance run --target dangling_fts"
+        assert components["session_profiles"]["state"] == "degraded"
+        assert components["session_profiles"]["counts"] == {
+            "profile_row_count": 1,
+            "missing_profile_row_count": 1,
+        }
+        assert components["embeddings"]["state"] == "missing"
+        assert components["assertions"]["state"] == "missing"
+        assert components["transforms"]["state"] == "missing"
+
     def test_direct_status_json_blocks_transforms_when_archive_readiness_fails(
         self,
         tmp_path: Path,
