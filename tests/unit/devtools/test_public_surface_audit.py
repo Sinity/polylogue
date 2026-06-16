@@ -146,6 +146,19 @@ def test_audit_scans_docs_media_mermaid_sources_as_product_docs(tmp_path: Path) 
     assert "demo fixture or verification-lab baseline" in result.stderr
 
 
+def test_audit_scans_docs_media_svg_outputs_as_product_docs(tmp_path: Path) -> None:
+    _seed_minimal_tree(tmp_path)
+    (tmp_path / "docs" / "media").mkdir()
+    (tmp_path / "docs" / "media" / "architecture-overview.svg").write_text(
+        "<svg><text>Static Site</text><text>Showcase / QA</text></svg>\n"
+    )
+    result = _run(tmp_path)
+    assert result.returncode == 1
+    assert "docs/media/architecture-overview.svg" in result.stderr
+    assert "read/export output or documentation site" in result.stderr
+    assert "demo fixture or verification-lab baseline" in result.stderr
+
+
 def test_audit_allows_showcase_wording_in_devtools_docs(tmp_path: Path) -> None:
     """Verification-lab docs can still name internal showcase baselines."""
     _seed_minimal_tree(tmp_path)

@@ -74,6 +74,7 @@ PRODUCT_DOC_GLOBS=(
   "docs/archive-backup.md"
   "docs/media/README.md"
   "docs/media/*.mmd"
+  "docs/media/*.svg"
 )
 
 # Path prefixes excluded from scanning even when matched by a public glob:
