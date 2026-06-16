@@ -31,6 +31,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from polylogue.operations import build_runtime_operation_catalog
 from polylogue.surfaces.payloads import (
     BulkTagMutationResult,
     DeleteSessionResult,
@@ -93,6 +94,7 @@ MUTATION_TOOL_NAMES: frozenset[str] = _discover_mutation_tool_names()
 
 _CONV_ID = "test:conv-mutation"
 _LONG_STRING = "x" * 10_000
+_DELETE_SESSION_SPEC = build_runtime_operation_catalog().by_name()["mutate-delete-session"]
 
 TOOL_MATRIX: dict[str, dict[str, Any]] = {
     "add_tag": {
@@ -584,10 +586,12 @@ class TestMutationToolIdempotency:
         admin_server: MCPServerUnderTest,
         patched_mutation_seam: Any,
     ) -> None:
-        """``delete_session`` without ``confirm=true`` must return a
-        structured error envelope (safety guard). Confirmed delete must
-        succeed and surface the documented outcome.
-        """
+        """Destructive operation metadata generates the MCP confirmation contract."""
+        assert "Destructive" in _DELETE_SESSION_SPEC.effects
+        assert "confirmed_before_execute" in _DELETE_SESSION_SPEC.safety_guards
+        assert "write_role_required" in _DELETE_SESSION_SPEC.safety_guards
+        assert "mcp" in _DELETE_SESSION_SPEC.surfaces
+
         poly = patched_mutation_seam
         poly.delete_session_safe = AsyncMock(return_value=DeleteSessionResult(outcome="deleted", session_id=_CONV_ID))
         fn = admin_server._tool_manager._tools["delete_session"].fn
