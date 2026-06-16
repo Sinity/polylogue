@@ -615,7 +615,7 @@ files:
     target: polylogue/artifacts/graph.py
     owner: stable
   - path: polylogue/artifacts/runtime.py
-    loc: 757
+    loc: 815
     target: polylogue/artifacts/runtime.py
     owner: stable
   - path: polylogue/assets.py
@@ -684,7 +684,7 @@ files:
     target: polylogue/cli/commands/auth.py
     owner: stable
   - path: polylogue/cli/commands/backup.py
-    loc: 70
+    loc: 79
     target: polylogue/cli/commands/backup.py
     owner: stable
   - path: polylogue/cli/commands/blackboard.py
@@ -776,7 +776,7 @@ files:
     target: polylogue/cli/commands/schema.py
     owner: stable
   - path: polylogue/cli/commands/status.py
-    loc: 1207
+    loc: 1248
     target: polylogue/cli/commands/status.py
     owner: stable
   - path: polylogue/cli/commands/status_diagnostics.py
@@ -1064,6 +1064,11 @@ files:
     target: polylogue/core/provider_identity.py
     owner: core-primitive
     reason: core primitive
+  - path: polylogue/core/refs.py
+    loc: 140
+    target: polylogue/core/refs.py
+    owner: core-primitive
+    reason: core primitive
   - path: polylogue/core/security.py
     loc: 63
     target: polylogue/core/security.py
@@ -1105,7 +1110,7 @@ files:
     target: polylogue/daemon/__init__.py
     owner: stable
   - path: polylogue/daemon/backup.py
-    loc: 425
+    loc: 508
     target: polylogue/daemon/backup.py
     owner: stable
   - path: polylogue/daemon/blob_integrity_alerts.py
@@ -1262,11 +1267,11 @@ files:
     target: polylogue/daemon/similarity.py
     owner: stable
   - path: polylogue/daemon/status.py
-    loc: 1971
+    loc: 2150
     target: polylogue/daemon/status.py
     owner: stable
   - path: polylogue/daemon/status_snapshot.py
-    loc: 180
+    loc: 243
     target: polylogue/daemon/status_snapshot.py
     owner: stable
   - path: polylogue/daemon/thread_continue.py
@@ -1428,7 +1433,7 @@ files:
     target: polylogue/insights/topology.py
     owner: stable
   - path: polylogue/insights/transforms.py
-    loc: 1187
+    loc: 1360
     target: polylogue/insights/transforms.py
     owner: stable
   - path: polylogue/logging.py
@@ -1549,7 +1554,7 @@ files:
     target: polylogue/mcp/server_support.py
     owner: stable
   - path: polylogue/mcp/server_tools.py
-    loc: 685
+    loc: 689
     target: polylogue/mcp/server_tools.py
     owner: stable
   - path: polylogue/operations/__init__.py
@@ -1577,7 +1582,7 @@ files:
     target: polylogue/operations/operation_contract.py
     owner: stable
   - path: polylogue/operations/specs.py
-    loc: 741
+    loc: 789
     target: polylogue/operations/specs.py
     owner: stable
   - path: polylogue/paths/__init__.py
@@ -1748,11 +1753,11 @@ files:
     target: polylogue/publication/__init__.py
     owner: stable
   - path: polylogue/readiness/__init__.py
-    loc: 829
+    loc: 831
     target: polylogue/readiness/__init__.py
     owner: stable
   - path: polylogue/readiness/capability.py
-    loc: 286
+    loc: 330
     target: polylogue/readiness/capability.py
     owner: stable
   - path: polylogue/rendering/block_models.py
