@@ -37,6 +37,37 @@ def _load_published_schema(name: str) -> dict[str, object]:
     return loaded
 
 
+def _seed_live_cli_schema_fixture(cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> None:
+    """Seed a real archive row for live CLI output-schema checks."""
+    from polylogue.storage.index import rebuild_index
+    from tests.infra.storage_records import SessionBuilder, db_setup
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(cli_workspace["state_dir"]))
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(cli_workspace["archive_root"]))
+    monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+
+    db_path = db_setup(cli_workspace)
+    (
+        SessionBuilder(db_path, "schema-live-output")
+        .provider("claude-code")
+        .title("Schema Live Output")
+        .add_message(role="user", text="schema fixture needle")
+        .add_message(role="assistant", text="schema fixture response")
+        .save()
+    )
+    rebuild_index()
+
+
+def _invoke_live_cli(args: list[str]) -> str:
+    from click.testing import CliRunner
+
+    from polylogue.cli import cli
+
+    result = CliRunner().invoke(cli, ["--plain", *args])
+    assert result.exit_code == 0, result.output
+    return result.output
+
+
 @pytest.mark.parametrize("entry", SCHEMAS, ids=lambda e: e.name)
 def test_published_schema_matches_current_model(entry: object) -> None:
     """Published JSON Schema files must be in sync with the Pydantic models.
@@ -216,3 +247,73 @@ def test_ndjson_empty_rows_render_empty_string() -> None:
 
     document = StructuredRowsDocument(rows=(), csv_headers=(), csv_rows=(), text_lines=())
     assert document.render("ndjson") == ""
+
+
+def test_live_list_json_rows_validate_against_schema(
+    cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real `polylogue list --format json` rows validate against the published schema."""
+    import jsonschema
+
+    _seed_live_cli_schema_fixture(cli_workspace, monkeypatch)
+    schema = _load_published_schema("session-list-row")
+
+    payload = json.loads(_invoke_live_cli(["list", "-f", "json"]))
+    assert isinstance(payload, dict)
+    rows = payload.get("items")
+    assert isinstance(rows, list)
+    assert len(rows) == 1
+    jsonschema.validate(instance=rows[0], schema=schema)
+    assert rows[0]["title"] == "Schema Live Output"
+
+
+def test_live_list_ndjson_rows_validate_against_schema(
+    cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real `polylogue list --format ndjson` rows validate line-by-line."""
+    import jsonschema
+
+    _seed_live_cli_schema_fixture(cli_workspace, monkeypatch)
+    schema = _load_published_schema("session-list-row")
+
+    lines = [line for line in _invoke_live_cli(["list", "-f", "ndjson"]).splitlines() if line]
+    assert len(lines) == 1
+    row = json.loads(lines[0])
+    jsonschema.validate(instance=row, schema=schema)
+    assert row["title"] == "Schema Live Output"
+
+
+def test_live_search_json_rows_validate_against_schema(
+    cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real query-mode JSON rows validate against the search-hit schema."""
+    import jsonschema
+
+    _seed_live_cli_schema_fixture(cli_workspace, monkeypatch)
+    schema = _load_published_schema("session-search-hit")
+
+    payload = json.loads(_invoke_live_cli(["find", "schema", "-f", "json"]))
+    assert isinstance(payload, dict)
+    rows = payload.get("items")
+    assert isinstance(rows, list)
+    assert rows
+    jsonschema.validate(instance=rows[0], schema=schema)
+    assert rows[0]["session"]["title"] == "Schema Live Output"
+    assert rows[0]["match"]["snippet"]
+
+
+def test_live_search_ndjson_rows_validate_against_schema(
+    cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real query-mode NDJSON rows validate line-by-line against the search-hit schema."""
+    import jsonschema
+
+    _seed_live_cli_schema_fixture(cli_workspace, monkeypatch)
+    schema = _load_published_schema("session-search-hit")
+
+    lines = [line for line in _invoke_live_cli(["find", "schema", "-f", "ndjson"]).splitlines() if line]
+    assert lines
+    row = json.loads(lines[0])
+    jsonschema.validate(instance=row, schema=schema)
+    assert row["session"]["title"] == "Schema Live Output"
+    assert row["match"]["snippet"]
