@@ -415,6 +415,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                         return
                     _emit_search(
                         page_hits,
+                        archive=archive,
                         query=similar_text or query,
                         limit=limit,
                         offset=page_offset,
@@ -529,6 +530,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                 return
             _emit_search(
                 page_hits,
+                archive=archive,
                 query=similar_text or query,
                 limit=limit,
                 offset=page_offset,
@@ -1288,6 +1290,7 @@ def _emit_list(
 def _emit_search(
     hits: list[ArchiveSessionSearchHit],
     *,
+    archive: ArchiveStore,
     query: str,
     limit: int,
     offset: int,
@@ -1298,7 +1301,14 @@ def _emit_search(
     fields: str | None,
     typo_hint: str | None = None,
 ) -> None:
-    items = [_hit_payload(hit) for hit in hits]
+    items = [
+        _hit_payload(
+            hit,
+            summary=archive.read_summary(hit.session_id),
+            retrieval_lane=retrieval_lane,
+        )
+        for hit in hits
+    ]
     envelope: dict[str, object] = {
         "mode": "search",
         "origin": origin,
@@ -1524,22 +1534,27 @@ def _summary_payload(summary: ArchiveSessionSummary) -> dict[str, object]:
     )
 
 
-def _hit_payload(hit: ArchiveSessionSearchHit) -> dict[str, object]:
+def _hit_payload(
+    hit: ArchiveSessionSearchHit,
+    *,
+    summary: ArchiveSessionSummary,
+    retrieval_lane: str,
+) -> dict[str, object]:
     return cast(
         "dict[str, object]",
         model_json_document(
             SessionSearchHitPayload(
                 session=SessionSummaryPayload(
-                    id=hit.session_id,
-                    origin=hit.origin,
-                    title=hit.title or hit.session_id,
-                    message_count=0,
-                    target_ref=TargetRefPayload.session(hit.session_id),
-                    anchor=reader_anchor("session", hit.session_id),
+                    id=summary.session_id,
+                    origin=summary.origin,
+                    title=summary.title or summary.session_id,
+                    message_count=summary.message_count,
+                    target_ref=TargetRefPayload.session(summary.session_id),
+                    anchor=reader_anchor("session", summary.session_id),
                 ),
                 match=SessionSearchMatchPayload(
                     rank=hit.rank,
-                    retrieval_lane="dialogue",
+                    retrieval_lane=retrieval_lane,
                     match_surface="message",
                     target_ref=TargetRefPayload.message(session_id=hit.session_id, message_id=hit.message_id),
                     anchor=reader_anchor("message", hit.message_id),

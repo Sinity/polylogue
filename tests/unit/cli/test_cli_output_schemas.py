@@ -299,6 +299,8 @@ def test_live_search_json_rows_validate_against_schema(
     assert rows
     jsonschema.validate(instance=rows[0], schema=schema)
     assert rows[0]["session"]["title"] == "Schema Live Output"
+    assert rows[0]["session"]["message_count"] == 2
+    assert rows[0]["match"]["retrieval_lane"] == payload["retrieval_lane"]
     assert rows[0]["match"]["snippet"]
 
 
@@ -316,4 +318,6 @@ def test_live_search_ndjson_rows_validate_against_schema(
     row = json.loads(lines[0])
     jsonschema.validate(instance=row, schema=schema)
     assert row["session"]["title"] == "Schema Live Output"
+    assert row["session"]["message_count"] == 2
+    assert row["match"]["retrieval_lane"] == "dialogue"
     assert row["match"]["snippet"]
