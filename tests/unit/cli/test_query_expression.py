@@ -505,14 +505,71 @@ class TestCLIRootRequestWiring:
 
 
 class TestFieldRegistry:
+    FIELD_DESCRIPTOR_CASES = {
+        "repo": ("repo:polylogue", "repo_names", ("polylogue",)),
+        "origin": ("origin:claude-code-session", "origins", ("claude-code-session",)),
+        "tag": ("tag:review", "tags", ("review",)),
+        "path": ("path:polylogue/cli", "referenced_path", ("polylogue/cli",)),
+        "cwd": ("cwd:/realm/project", "cwd_prefix", "/realm/project"),
+        "tool": ("tool:bash", "tool_terms", ("bash",)),
+        "action": ("action:file_edit", "action_terms", ("file_edit",)),
+        "has": ("has:paste", "filter_has_paste", True),
+        "id": ("id:abc123", "session_id", "abc123"),
+        "title": ("title:refactor", "title", "refactor"),
+        "since": ("since:7d", "since", "7 days ago"),
+        "until": ("until:2024-01-15", "until", "2024-01-15"),
+        "near": ('near:"semantic search"', "similar_text", "semantic search"),
+        "contains": ("contains:foo", "contains_terms", ("foo",)),
+        "messages": ("messages:>=10", "min_messages", 10),
+        "words": ("words:>=200", "min_words", 200),
+        "lane": ("lane:dialogue", "retrieval_lane", "dialogue"),
+    }
+
     def test_registry_has_required_fields(self) -> None:
         required = {"repo", "origin", "tag", "path", "cwd", "tool", "action", "has", "id", "since", "until", "near"}
         assert required.issubset(EXPRESSION_FIELD_REGISTRY.keys())
 
-    def test_all_registry_entries_have_description(self) -> None:
+    def test_descriptor_cases_cover_every_registry_field(self) -> None:
+        assert set(self.FIELD_DESCRIPTOR_CASES) == set(EXPRESSION_FIELD_REGISTRY)
+
+    def test_all_registry_entries_have_required_descriptor_keys(self) -> None:
         for field, info in EXPRESSION_FIELD_REGISTRY.items():
             assert "description" in info, f"{field} missing description"
             assert info["description"], f"{field} has empty description"
+            assert info.get("spec_field"), f"{field} missing spec_field"
+            assert info.get("example"), f"{field} missing example"
+            assert info.get("negatable") in {"yes", "no"}, f"{field} has invalid negatable descriptor"
+
+    @pytest.mark.parametrize("field", sorted(EXPRESSION_FIELD_REGISTRY))
+    def test_registry_example_reaches_declared_spec_field(self, field: str) -> None:
+        expression, spec_field, expected = self.FIELD_DESCRIPTOR_CASES[field]
+        assert EXPRESSION_FIELD_REGISTRY[field]["example"].split(" | ")[0] == expression
+        advertised_fields = EXPRESSION_FIELD_REGISTRY[field]["spec_field"].split("/")
+        assert spec_field in advertised_fields
+
+        spec = compile_expression(expression)
+        assert getattr(spec, spec_field) == expected
+
+    @pytest.mark.parametrize("field", sorted(EXPRESSION_FIELD_REGISTRY))
+    def test_registry_negatable_descriptor_matches_behavior(self, field: str) -> None:
+        expression, spec_field, expected = self.FIELD_DESCRIPTOR_CASES[field]
+        negated = "-" + expression
+
+        if EXPRESSION_FIELD_REGISTRY[field]["negatable"] == "no":
+            with pytest.raises(ExpressionCompileError):
+                compile_expression(negated)
+            return
+
+        spec = compile_expression(negated)
+        if field == "origin":
+            assert spec.excluded_origins == expected
+        elif field == "tag":
+            assert spec.excluded_tags == expected
+        elif field == "tool":
+            assert spec.excluded_tool_terms == expected
+        elif field == "action":
+            assert spec.excluded_action_terms == expected
+        assert getattr(spec, spec_field) in {(), None, False}
 
     def test_origin_description_has_no_provider_source_wording(self) -> None:
         """Regression: origin field description must not use 'provider source' (#1861)."""

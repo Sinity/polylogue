@@ -139,7 +139,7 @@ EXPRESSION_FIELD_REGISTRY: dict[str, dict[str, str]] = {
     },
     "has": {
         "description": "Filter by session content presence (paste, tools, thinking)",
-        "spec_field": "has_types",
+        "spec_field": "filter_has_paste/filter_has_tool_use/filter_has_thinking/has_types",
         "negatable": "no",
         "example": "has:paste",
     },
