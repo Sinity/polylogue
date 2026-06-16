@@ -6,6 +6,7 @@ Refs #862.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from polylogue.surfaces.payloads import TagMutationResult
@@ -19,6 +20,15 @@ _ADD_TAG_TOOL = "add_tag"
 _REMOVE_TAG_TOOL = "remove_tag"
 _CONV_ID = "test:conv-tag-1"
 _TAG = "review"
+_MUTATION_SCHEMA = Path("docs/schemas/cli-output/mutation-result.schema.json")
+
+
+def _assert_mutation_schema(instance: dict[str, object]) -> None:
+    """MCP mutation tools must stay compatible with the shared mutation schema."""
+    import jsonschema
+
+    schema = json.loads(_MUTATION_SCHEMA.read_text(encoding="utf-8"))
+    jsonschema.validate(instance=instance, schema=schema)
 
 
 def _tag_result(outcome: str, detail: str | None = None) -> TagMutationResult:
@@ -48,6 +58,7 @@ class TestTagIdempotencyOutcomes:
         assert parsed["outcome"] == "added"
         assert parsed["tag"] == _TAG
         assert "detail" not in parsed
+        _assert_mutation_schema(parsed)
 
     def test_add_tag_already_present_yields_no_op(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
@@ -66,6 +77,7 @@ class TestTagIdempotencyOutcomes:
         assert parsed["outcome"] == "no_op"
         assert parsed["detail"] == "already_present"
         assert parsed["tag"] == _TAG
+        _assert_mutation_schema(parsed)
 
     def test_add_tag_session_not_found(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
@@ -101,6 +113,7 @@ class TestTagIdempotencyOutcomes:
         assert parsed["outcome"] == "removed"
         assert parsed["tag"] == _TAG
         assert "detail" not in parsed
+        _assert_mutation_schema(parsed)
 
     def test_remove_tag_absent_yields_not_present(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
@@ -119,6 +132,7 @@ class TestTagIdempotencyOutcomes:
         assert parsed["outcome"] == "not_present"
         assert parsed["detail"] == "tag_not_present"
         assert parsed["tag"] == _TAG
+        _assert_mutation_schema(parsed)
 
     def test_remove_tag_session_not_found(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
@@ -158,6 +172,7 @@ class TestBulkTagExcludesOutcome:
         parsed = json.loads(result)
         assert parsed["status"] == "ok"
         assert "outcome" not in parsed
+        _assert_mutation_schema(parsed)
 
 
 class TestMutationResultPayloadRoundtrip:
