@@ -24,6 +24,7 @@ from .specs import (
     OperationCatalog,
     OperationKind,
     OperationSpec,
+    SafetyGuard,
     build_declared_operation_catalog,
     build_runtime_operation_catalog,
 )
@@ -43,6 +44,7 @@ __all__ = [
     "OperationSpec",
     "OperationStatus",
     "RawFailureSample",
+    "SafetyGuard",
     "bounded_failure_samples",
     "build_declared_operation_catalog",
     "build_runtime_operation_catalog",

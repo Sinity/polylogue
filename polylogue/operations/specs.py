@@ -24,6 +24,9 @@ must check:
   Destructive → explicit_dry_run_evidence, confirmed_before_execute
 """
 
+SafetyGuard = Literal["write_role_required", "confirmed_before_execute", "explicit_dry_run_evidence"]
+"""Declared safety guard that a mutating operation's public surfaces must enforce."""
+
 
 class OperationKind(str, Enum):
     """High-level operation class over runtime artifacts."""
@@ -56,6 +59,7 @@ class OperationSpec:
     previewable: bool = False
     idempotent: bool = True
     effects: tuple[Effect, ...] = ()
+    safety_guards: tuple[SafetyGuard, ...] = ()
 
     def to_dict(self) -> JSONDocument:
         return json_document(
@@ -72,6 +76,7 @@ class OperationSpec:
                 "previewable": self.previewable,
                 "idempotent": self.idempotent,
                 "effects": list(self.effects),
+                "safety_guards": list(self.safety_guards),
             }
         )
 
@@ -537,6 +542,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         mutates_state=True,
         idempotent=True,
         effects=("DbRead", "DbWrite"),
+        safety_guards=("write_role_required",),
     ),
     OperationSpec(
         name="mutate-remove-tag",
@@ -553,6 +559,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         mutates_state=True,
         idempotent=True,
         effects=("DbRead", "DbWrite"),
+        safety_guards=("write_role_required",),
     ),
     OperationSpec(
         name="mutate-bulk-tag-sessions",
@@ -566,6 +573,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         mutates_state=True,
         idempotent=True,
         effects=("DbRead", "DbWrite"),
+        safety_guards=("write_role_required",),
     ),
     OperationSpec(
         name="mutate-set-metadata",
@@ -583,6 +591,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         mutates_state=True,
         idempotent=True,
         effects=("DbRead", "DbWrite"),
+        safety_guards=("write_role_required",),
     ),
     OperationSpec(
         name="mutate-delete-metadata",
@@ -596,6 +605,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         mutates_state=True,
         idempotent=True,
         effects=("DbRead", "DbWrite"),
+        safety_guards=("write_role_required",),
     ),
     OperationSpec(
         name="mutate-delete-session",
@@ -607,6 +617,8 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         code_refs=(
             "polylogue.storage.repository.archive.writes.sessions.delete_session_via_backend",
             "polylogue.api.archive.PolylogueArchiveMixin.delete_session",
+            "polylogue.cli.query_verbs.delete_verb",
+            "polylogue.cli.archive_query._emit_delete",
             "polylogue.mcp.server_mutation_tools.delete_session",
         ),
         surfaces=("facade", "cli", "mcp", "daemon"),
@@ -614,6 +626,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         previewable=False,
         idempotent=True,
         effects=("DbRead", "DbWrite", "Destructive"),
+        safety_guards=("write_role_required", "confirmed_before_execute", "explicit_dry_run_evidence"),
     ),
     OperationSpec(
         name="project-archive-readiness",
@@ -810,4 +823,5 @@ __all__ = [
     "OperationKind",
     "OperationSpec",
     "RUNTIME_OPERATION_SPECS",
+    "SafetyGuard",
 ]

@@ -31,6 +31,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from polylogue.operations import build_runtime_operation_catalog
 from polylogue.surfaces.payloads import (
     BulkTagMutationResult,
     DeleteSessionResult,
@@ -93,6 +94,12 @@ MUTATION_TOOL_NAMES: frozenset[str] = _discover_mutation_tool_names()
 
 _CONV_ID = "test:conv-mutation"
 _LONG_STRING = "x" * 10_000
+_DELETE_SESSION_SPEC = build_runtime_operation_catalog().by_name()["mutate-delete-session"]
+_MCP_MUTATION_OPERATION_SPECS = tuple(
+    spec
+    for spec in build_runtime_operation_catalog().specs
+    if spec.mutates_state and "mcp" in spec.surfaces and "write_role_required" in spec.safety_guards
+)
 
 TOOL_MATRIX: dict[str, dict[str, Any]] = {
     "add_tag": {
@@ -290,6 +297,18 @@ class TestMutationToolDiscovery:
         # (marks, annotations, saved views, recall packs, workspaces,
         # tags, metadata, delete_session, learning corrections).
         assert len(MUTATION_TOOL_NAMES) >= 20, sorted(MUTATION_TOOL_NAMES)
+
+    @pytest.mark.parametrize("spec", _MCP_MUTATION_OPERATION_SPECS, ids=lambda spec: spec.name)
+    def test_mcp_mutation_operation_spec_names_registered_tool(self, spec: Any) -> None:
+        tool_refs = tuple(ref for ref in spec.code_refs if ref.startswith("polylogue.mcp.server_mutation_tools."))
+        assert tool_refs, f"{spec.name} declares mcp surface but no server_mutation_tools code_ref"
+        referenced_tools = {ref.rsplit(".", 1)[-1] for ref in tool_refs}
+        missing = referenced_tools - MUTATION_TOOL_NAMES
+        assert not missing, (
+            f"{spec.name} references MCP mutation tools not registered by register_mutation_tools: {sorted(missing)}"
+        )
+        uncovered = referenced_tools - set(TOOL_MATRIX)
+        assert not uncovered, f"{spec.name} references MCP mutation tools missing TOOL_MATRIX rows: {sorted(uncovered)}"
 
 
 # ---------------------------------------------------------------------------
@@ -584,10 +603,12 @@ class TestMutationToolIdempotency:
         admin_server: MCPServerUnderTest,
         patched_mutation_seam: Any,
     ) -> None:
-        """``delete_session`` without ``confirm=true`` must return a
-        structured error envelope (safety guard). Confirmed delete must
-        succeed and surface the documented outcome.
-        """
+        """Destructive operation metadata generates the MCP confirmation contract."""
+        assert "Destructive" in _DELETE_SESSION_SPEC.effects
+        assert "confirmed_before_execute" in _DELETE_SESSION_SPEC.safety_guards
+        assert "write_role_required" in _DELETE_SESSION_SPEC.safety_guards
+        assert "mcp" in _DELETE_SESSION_SPEC.surfaces
+
         poly = patched_mutation_seam
         poly.delete_session_safe = AsyncMock(return_value=DeleteSessionResult(outcome="deleted", session_id=_CONV_ID))
         fn = admin_server._tool_manager._tools["delete_session"].fn

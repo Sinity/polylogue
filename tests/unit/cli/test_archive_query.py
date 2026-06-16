@@ -43,6 +43,7 @@ from polylogue.cli.archive_query import (
     _transform,
     _tuple_tokens,
 )
+from polylogue.operations import OperationSpec, build_runtime_operation_catalog
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSummary
 from polylogue.storage.sqlite.archive_tiers.write import ArchiveBlockRow, ArchiveMessageRow
 
@@ -637,7 +638,7 @@ class TestSummaryLine:
     def test_summary_line_format(self) -> None:
         """Summary line contains expected fields."""
         item: dict[str, object] = {
-            "session_id": "abc123def456",
+            "id": "abc123def456",
             "title": "Test Session",
             "created_at": "2026-01-15T10:00:00Z",
             "updated_at": "2026-01-15T11:00:00Z",
@@ -654,7 +655,7 @@ class TestSummaryLine:
     def test_summary_line_missing_title(self) -> None:
         """Missing title falls back to session_id."""
         item: dict[str, object] = {
-            "session_id": "abc123",
+            "id": "abc123",
             "origin": "chatgpt-export",
             "created_at": "2026-01-15T10:00:00Z",
         }
@@ -906,6 +907,10 @@ class TestEmitDeleteMachineModeNoPrompt:
     """
 
     @staticmethod
+    def _delete_spec() -> OperationSpec:
+        return build_runtime_operation_catalog().by_name()["mutate-delete-session"]
+
+    @staticmethod
     def _env(*, plain: bool) -> MagicMock:
         env = MagicMock()
         env.ui.plain = plain
@@ -919,6 +924,11 @@ class TestEmitDeleteMachineModeNoPrompt:
         return archive
 
     def test_plain_forceless_delete_aborts_without_prompt(self, capsys: pytest.CaptureFixture[str]) -> None:
+        spec = self._delete_spec()
+        assert "Destructive" in spec.effects
+        assert "confirmed_before_execute" in spec.safety_guards
+        assert "cli" in spec.surfaces
+
         env = self._env(plain=True)
         archive = self._archive()
 
@@ -932,6 +942,24 @@ class TestEmitDeleteMachineModeNoPrompt:
         assert payload["detail"] == "confirmation_required"
         assert payload["session_count"] == 2
         assert payload["affected_count"] == 0
+
+    def test_dry_run_evidence_lists_matched_sessions(self, capsys: pytest.CaptureFixture[str]) -> None:
+        spec = self._delete_spec()
+        assert "explicit_dry_run_evidence" in spec.safety_guards
+
+        env = self._env(plain=True)
+        archive = self._archive()
+
+        _emit_delete(env, archive, ("s1", "s2"), params={"force": False, "dry_run": True})
+
+        env.ui.confirm.assert_not_called()
+        archive.delete_sessions.assert_not_called()
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["status"] == "preview"
+        assert payload["operation"] == "delete"
+        assert payload["session_count"] == 2
+        assert payload["affected_count"] == 0
+        assert payload["session_ids"] == ["s1", "s2"]
 
     def test_plain_forced_delete_proceeds_without_prompt(self, capsys: pytest.CaptureFixture[str]) -> None:
         env = self._env(plain=True)

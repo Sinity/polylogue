@@ -614,6 +614,7 @@ _DECLARED_NAME_RE = re.compile(r"^[a-z][a-z0-9\-]*(\.[a-z][a-z0-9\-]*)*$")
 _CODE_REF_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)+$")
 _KNOWN_EFFECTS = frozenset({"Pure", "DbRead", "DbWrite", "FileWrite", "Network", "LiveArchive", "Destructive"})
 _MUTATING_EFFECTS = frozenset({"DbWrite", "FileWrite", "Destructive"})
+_KNOWN_SAFETY_GUARDS = frozenset({"write_role_required", "confirmed_before_execute", "explicit_dry_run_evidence"})
 
 
 @pytest.mark.contract
@@ -661,6 +662,18 @@ class TestOperationSpecContract:
                     issues.append(f"unknown effects: {unknown}")
             if any(e in _MUTATING_EFFECTS for e in spec.effects) and not spec.mutates_state:
                 issues.append("mutating effects but mutates_state=False")
+            unknown_guards = [guard for guard in spec.safety_guards if guard not in _KNOWN_SAFETY_GUARDS]
+            if unknown_guards:
+                issues.append(f"unknown safety_guards: {unknown_guards}")
+            if spec.mutates_state and "mcp" in spec.surfaces and "write_role_required" not in spec.safety_guards:
+                issues.append("mutating MCP surface but no write_role_required guard")
+            if "Destructive" in spec.effects:
+                missing_guards = {
+                    "confirmed_before_execute",
+                    "explicit_dry_run_evidence",
+                } - set(spec.safety_guards)
+                if missing_guards:
+                    issues.append(f"destructive operation missing safety guards: {sorted(missing_guards)}")
             if issues:
                 offenders.append(f"{spec.name}: {'; '.join(issues)}")
 
@@ -688,6 +701,9 @@ class TestOperationSpecContract:
                 unknown = [e for e in spec.effects if e not in _KNOWN_EFFECTS]
                 if unknown:
                     issues.append(f"unknown effects: {unknown}")
+            unknown_guards = [guard for guard in spec.safety_guards if guard not in _KNOWN_SAFETY_GUARDS]
+            if unknown_guards:
+                issues.append(f"unknown safety_guards: {unknown_guards}")
             if issues:
                 offenders.append(f"{spec.name}: {'; '.join(issues)}")
 
