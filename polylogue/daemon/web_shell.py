@@ -505,7 +505,7 @@ async function loadStatus() {
     document.getElementById('status-msgs').textContent = (s.total_messages || 0).toLocaleString() + ' msgs';
     renderFtsChip(readiness.search || null, s.fts_readiness || {});
     renderSemanticChip(readiness.embeddings || null);
-    renderInsightChip(s.insight_freshness || {});
+    renderInsightChip(readiness.session_profiles || null, s.insight_freshness || {});
     renderIngestChip(readiness.daemon_ingest || null, s.live || {});
   } catch(e) {}
 }
@@ -570,8 +570,13 @@ function renderSemanticChip(component) {
   renderComponentReadinessChip(el, 'semantic', component);
 }
 
-function renderInsightChip(freshness) {
+function renderInsightChip(component, freshness) {
   var el = document.getElementById('status-insights');
+  if (component) {
+    el.style.display = '';
+    renderComponentReadinessChip(el, 'insights', component);
+    return;
+  }
   var total = freshness.total_sessions || 0;
   var withProfiles = freshness.sessions_with_profiles || 0;
   if (total <= 0) { el.style.display = 'none'; return; }

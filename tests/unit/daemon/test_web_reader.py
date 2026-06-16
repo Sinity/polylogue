@@ -1283,6 +1283,7 @@ class TestReaderInformability:
         assert "var readiness = s.component_readiness || {};" in body
         assert "renderFtsChip(readiness.search || null, s.fts_readiness || {})" in body
         assert "renderSemanticChip(readiness.embeddings || null)" in body
+        assert "renderInsightChip(readiness.session_profiles || null, s.insight_freshness || {})" in body
         assert "renderIngestChip(readiness.daemon_ingest || null, s.live || {})" in body
         assert "function renderComponentReadinessChip(" in body
         assert "function readinessQuality(" in body
@@ -1312,14 +1313,15 @@ class TestReaderInformability:
         assert "'semantic'" in body
         assert "'ingest'" in body
 
-    def test_insight_freshness_chip_render_present(self, workspace_env: dict[str, Path]) -> None:
-        """Session insight freshness gets its own status-strip chip so
-        operators can tell whether session profiles are computed, partial,
-        or stale without opening the inspector."""
+    def test_insight_freshness_chip_keeps_legacy_fallback(self, workspace_env: dict[str, Path]) -> None:
+        """Session insight freshness gets its own status-strip chip. It now
+        prefers ``component_readiness.session_profiles`` and keeps the
+        previous freshness-payload fallback for old status snapshots."""
         with _running_server(workspace_env) as (_, base_url):
             _, _, body = _get_text(base_url, "/")
         assert "function renderInsightChip(" in body
         assert 'id="status-insights"' in body
+        assert "renderComponentReadinessChip(el, 'insights', component)" in body
         assert "'insights: ok'" in body
         assert "'insights: stale'" in body
 
