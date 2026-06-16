@@ -384,6 +384,100 @@ def test_polylogued_watch_builds_sources_from_roots(tmp_path: Path) -> None:
     assert "Watching 2 source(s); debounce=2.0s" in result.stderr
 
 
+def test_drive_source_catchup_skips_when_no_drive_sources(tmp_path: Path) -> None:
+    from polylogue.config import Config
+    from polylogue.daemon import cli as daemon_cli
+
+    config = Config(
+        archive_root=tmp_path,
+        render_root=tmp_path / "render",
+        sources=[],
+        db_path=tmp_path / "index.db",
+    )
+
+    with (
+        patch("polylogue.config.get_config", return_value=config),
+        patch("polylogue.services.build_runtime_services") as build_services,
+    ):
+        changed = asyncio.run(daemon_cli._run_drive_source_catchup_once())
+
+    assert changed == 0
+    build_services.assert_not_called()
+
+
+def test_drive_source_catchup_ingests_configured_drive_source(tmp_path: Path) -> None:
+    from polylogue.config import Config, Source
+    from polylogue.daemon import cli as daemon_cli
+
+    drive_source = Source(name="aistudio", folder="Google AI Studio", path=tmp_path / "drive-cache" / "gemini")
+    config = Config(
+        archive_root=tmp_path,
+        render_root=tmp_path / "render",
+        sources=[drive_source],
+        db_path=tmp_path / "index.db",
+    )
+    events: list[object] = []
+
+    class FakeServices:
+        def get_repository(self) -> object:
+            events.append("repository")
+            return object()
+
+        def get_backend(self) -> object:
+            events.append("backend")
+            return object()
+
+        async def close(self) -> None:
+            events.append("close")
+
+    class FakeParser:
+        def __init__(self, *, repository: object, archive_root: Path, config: Config) -> None:
+            events.append(("parser", repository, archive_root, config))
+
+        async def ingest_sources(self, *, sources: list[Source], stage: str, parse_records: bool) -> SimpleNamespace:
+            events.append(("ingest", sources, stage, parse_records))
+            return SimpleNamespace(
+                acquire_result=SimpleNamespace(raw_ids=["raw-1"], errors=0),
+                parse_result=SimpleNamespace(
+                    processed_ids={"session-b", "session-a"},
+                    counts={"sessions": 2},
+                ),
+            )
+
+    async def fake_refresh(_backend: object, session_ids: list[str]) -> None:
+        events.append(("refresh", session_ids))
+
+    with (
+        patch("polylogue.config.get_config", return_value=config),
+        patch("polylogue.services.build_runtime_services", return_value=FakeServices()) as build_services,
+        patch("polylogue.pipeline.services.parsing.ParsingService", FakeParser),
+        patch("polylogue.pipeline.services.ingest_batch.refresh_session_insights_bulk", fake_refresh),
+    ):
+        changed = asyncio.run(daemon_cli._run_drive_source_catchup_once())
+
+    assert changed == 2
+    build_services.assert_called_once_with(config=config, db_path=config.db_path)
+    assert ("ingest", [drive_source], "all", True) in events
+    assert ("refresh", ["session-a", "session-b"]) in events
+    assert events[-1] == "close"
+
+
+def test_drive_source_catchup_safe_wrapper_logs_failure() -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    async def fail_catchup() -> int:
+        raise RuntimeError("drive unavailable")
+
+    with (
+        patch.object(daemon_cli, "_run_drive_source_catchup_once", fail_catchup),
+        patch.object(daemon_cli.logger, "warning") as warning,
+    ):
+        changed = asyncio.run(daemon_cli._run_drive_source_catchup_safely())
+
+    assert changed == 0
+    warning.assert_called_once_with("daemon: Drive source catch-up failed", exc_info=True)
+
+
 def test_explicit_archive_inbox_root_keeps_import_suffixes(workspace_env: dict[str, Path]) -> None:
     from polylogue.daemon import cli as daemon_cli
     from polylogue.sources.live.watcher import INBOX_SOURCE_SUFFIXES
@@ -1078,6 +1172,10 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
     async def fake_sweep_orphaned_blob_leases() -> None:
         events.append("sweep")
 
+    async def fake_drive_catchup() -> int:
+        events.append("drive-once")
+        return 0
+
     async def fake_loop(name: str) -> None:
         events.append(name)
         await asyncio.Event().wait()
@@ -1096,6 +1194,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
         patch.object(daemon_cli, "Polylogue", FakePolylogue),
         patch.object(daemon_cli, "LiveWatcher", FakeWatcher),
         patch.object(daemon_cli, "_ensure_fts_startup_readiness", fake_fts_startup),
+        patch.object(daemon_cli, "_run_drive_source_catchup_safely", fake_drive_catchup),
         patch.object(daemon_cli, "_sweep_orphaned_blob_leases", fake_sweep_orphaned_blob_leases),
         patch.object(daemon_cli, "_periodic_wal_checkpoint", lambda: fake_loop("wal")),
         patch.object(daemon_cli, "_periodic_heartbeat", lambda: fake_loop("heartbeat")),
@@ -1103,6 +1202,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
         patch.object(daemon_cli, "_periodic_health_check", lambda: fake_loop("health")),
         patch.object(daemon_cli, "_periodic_db_optimize", lambda: fake_loop("optimize")),
         patch.object(daemon_cli, "_periodic_status_snapshot_refresh", lambda: fake_loop("status")),
+        patch.object(daemon_cli, "_periodic_drive_source_catchup", lambda: fake_loop("drive")),
         patch("polylogue.daemon.embedding_backlog.periodic_embedding_backlog_check", lambda: fake_loop("embedding")),
         patch("polylogue.daemon.convergence.DaemonConverger", FakeConverger),
         patch("polylogue.daemon.convergence_stages.make_default_convergence_stages", return_value=()),
@@ -1122,7 +1222,9 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
 
     assert "watcher" in events
     assert events.index("fts") < events.index("watcher")
+    assert events.index("drive-once") < events.index("watcher")
     assert events.index("fts") < events.index("convergence")
+    assert events.index("fts") < events.index("drive")
     assert events.index("fts") < events.index("converger")
 
 
@@ -1262,6 +1364,7 @@ def test_run_daemon_services_schema_block_skips_db_background_work() -> None:
         patch.object(daemon_cli, "_periodic_health_check", side_effect=fail_background_work),
         patch.object(daemon_cli, "_periodic_db_optimize", side_effect=fail_background_work),
         patch.object(daemon_cli, "_periodic_status_snapshot_refresh", side_effect=fail_background_work),
+        patch.object(daemon_cli, "_periodic_drive_source_catchup", side_effect=fail_background_work),
         patch("polylogue.daemon.convergence.DaemonConverger", side_effect=fail_background_work),
         patch.object(daemon_cli, "make_server", return_value=server),
         pytest.raises(RuntimeError, match="server stopped"),

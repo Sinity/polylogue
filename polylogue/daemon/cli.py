@@ -50,6 +50,7 @@ from polylogue.sources.live.watcher import INBOX_SOURCE_SUFFIXES, default_source
 
 logger = get_logger(__name__)
 _CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS = 60
+_DRIVE_SOURCE_CATCHUP_INTERVAL_SECONDS = 3600
 
 # Track the pidfile path for atexit cleanup.
 _pidfile_path: Path | None = None
@@ -243,6 +244,73 @@ async def _periodic_status_snapshot_refresh() -> None:
         except Exception:
             logger.warning("daemon: status snapshot refresh failed", exc_info=True)
         await asyncio.sleep(10)
+
+
+async def _run_drive_source_catchup_once() -> int:
+    """Acquire and parse configured Drive sources once.
+
+    The live watcher only observes filesystem roots. Google Drive sources are
+    remote acquisition roots, so the daemon has to run their catch-up through
+    the staged acquisition pipeline explicitly.
+    """
+    from polylogue.config import get_config
+    from polylogue.pipeline.services.ingest_batch import refresh_session_insights_bulk
+    from polylogue.pipeline.services.parsing import ParsingService
+    from polylogue.services import build_runtime_services
+
+    config = get_config()
+    sources = [source for source in config.sources if source.is_drive]
+    if not sources:
+        return 0
+
+    services = build_runtime_services(config=config, db_path=config.db_path)
+    try:
+        repository = services.get_repository()
+        backend = services.get_backend()
+        parser = ParsingService(
+            repository=repository,
+            archive_root=config.archive_root,
+            config=config,
+        )
+        result = await parser.ingest_sources(
+            sources=sources,
+            stage="all",
+            parse_records=True,
+        )
+        session_ids = sorted(result.parse_result.processed_ids)
+        if session_ids:
+            await refresh_session_insights_bulk(backend, session_ids)
+        logger.info(
+            "daemon: Drive source catch-up complete — sources=%d raw=%d sessions=%d changed=%d errors=%d",
+            len(sources),
+            len(result.acquire_result.raw_ids),
+            result.parse_result.counts["sessions"],
+            len(session_ids),
+            result.acquire_result.errors,
+        )
+        return len(session_ids)
+    finally:
+        await services.close()
+
+
+async def _run_drive_source_catchup_safely() -> int:
+    """Run Drive catch-up without letting remote-source failures kill daemon."""
+    try:
+        return await _run_drive_source_catchup_once()
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.warning("daemon: Drive source catch-up failed", exc_info=True)
+        return 0
+
+
+async def _periodic_drive_source_catchup() -> None:
+    """Periodically converge remote Drive sources such as AiStudio exports."""
+    while True:
+        await asyncio.sleep(_DRIVE_SOURCE_CATCHUP_INTERVAL_SECONDS)
+        changed = await _run_drive_source_catchup_safely()
+        if changed:
+            logger.info("daemon: Drive catch-up refreshed %d session(s)", changed)
 
 
 async def _periodic_heartbeat() -> None:
@@ -681,6 +749,9 @@ async def run_daemon_services(
             # not trigger a merge of the full (hundreds-of-MB) existing
             # segments (#1851).  A periodic merge pass amortises the cost.
             await _configure_fts_automerge()
+            changed_drive_sessions = await _run_drive_source_catchup_safely()
+            if changed_drive_sessions:
+                logger.info("daemon: startup Drive catch-up refreshed %d session(s)", changed_drive_sessions)
             maintenance_tasks.extend(
                 asyncio.create_task(loop)
                 for loop in (
@@ -688,6 +759,7 @@ async def run_daemon_services(
                     _periodic_fts_merge(),
                     _periodic_heartbeat(),
                     periodic_embedding_backlog_check(),
+                    _periodic_drive_source_catchup(),
                     _periodic_health_check(),
                     _periodic_db_optimize(),
                     _periodic_status_snapshot_refresh(),
