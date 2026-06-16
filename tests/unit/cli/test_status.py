@@ -27,6 +27,7 @@ from polylogue.cli.shared.types import AppEnv
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
 
 
 class _CapturingConsole:
@@ -455,8 +456,22 @@ class TestNoArchiveStatus:
         env = _make_app_env()
         db_anchor = tmp_path / "index.db"
         initialize_archive_database(db_anchor, ArchiveTier.INDEX)
+        initialize_archive_database(tmp_path / "user.db", ArchiveTier.USER)
+        with sqlite3.connect(tmp_path / "user.db") as user_conn:
+            upsert_assertion(
+                user_conn,
+                assertion_id="demo-assertion",
+                target_ref="session:demo",
+                key="pytest-triage",
+                kind=AssertionKind.TAG,
+                value={"tag": "pytest-triage"},
+                status="active",
+                now_ms=1_700_000_000_000,
+            )
+            user_conn.commit()
         archive_readiness = {
             "checked": True,
+            "counts": {"session_count": 3},
             "surfaces": {
                 "archive_sessions": {
                     "ready": True,
@@ -495,6 +510,8 @@ class TestNoArchiveStatus:
         readiness = components["search"]
         profiles = components["session_profiles"]
         tool_usage = components["tool_usage"]
+        assertions = components["assertions"]
+        transforms = components["transforms"]
         assert payload["archive_readiness"] == archive_readiness
         assert archive["component"] == "archive_sessions"
         assert archive["scope"] == "archive"
@@ -511,6 +528,68 @@ class TestNoArchiveStatus:
         assert profiles["repair_hint"] == "polylogue maintenance run --target session_insights"
         assert tool_usage["scope"] == "actions"
         assert tool_usage["counts"] == {"action_count": 4}
+        assert assertions["scope"] == "user"
+        assert assertions["state"] == "ready"
+        assert assertions["counts"] == {"assertion_count": 1, "target_count": 1, "active_count": 1}
+        assert assertions["evidence_refs"] == ["user.db:assertions"]
+        assert transforms["scope"] == "recovery"
+        assert transforms["state"] == "ready"
+        assert transforms["counts"]["session_count"] == 3
+        assert transforms["counts"]["transform_count"] >= 1
+        assert transforms["counts"]["recovery_transform_version"] == 1
+
+    def test_direct_status_json_reports_missing_assertions_and_transforms_without_archive(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        env = _make_app_env()
+        db_anchor = tmp_path / "index.db"
+        initialize_archive_database(db_anchor, ArchiveTier.INDEX)
+
+        with (
+            patch("polylogue.paths.db_path", return_value=db_anchor),
+            patch("polylogue.paths.archive_root", return_value=tmp_path),
+            patch("polylogue.storage.embeddings.status_payload.embedding_status_payload", side_effect=RuntimeError),
+        ):
+            _show_direct_json(env)
+
+        payload = json.loads(_combined_calls(env))
+        components = payload["component_readiness"]
+        assertions = components["assertions"]
+        transforms = components["transforms"]
+        assert assertions["state"] == "missing"
+        assert assertions["summary"] == "assertions table missing"
+        assert assertions["repair_hint"] == "polylogue maintenance archive-init --yes"
+        assert transforms["state"] == "missing"
+        assert transforms["summary"] == "no sessions"
+        assert transforms["repair_hint"] == "polylogue import --demo"
+
+    def test_direct_status_json_blocks_transforms_when_archive_readiness_fails(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        env = _make_app_env()
+        db_anchor = tmp_path / "index.db"
+        initialize_archive_database(db_anchor, ArchiveTier.INDEX)
+
+        with (
+            patch("polylogue.paths.db_path", return_value=db_anchor),
+            patch("polylogue.paths.archive_root", return_value=tmp_path),
+            patch(
+                "polylogue.cli.commands.status._archive_readiness_status",
+                return_value={"checked": False, "reason": "database is locked", "surfaces": {}},
+            ),
+            patch("polylogue.storage.embeddings.status_payload.embedding_status_payload", side_effect=RuntimeError),
+        ):
+            _show_direct_json(env)
+
+        payload = json.loads(_combined_calls(env))
+        transforms = payload["component_readiness"]["transforms"]
+        assert transforms["state"] == "blocked"
+        assert transforms["summary"] == "database is locked"
+        assert transforms["caveats"] == ["database is locked"]
+        assert transforms["repair_hint"] is None
+        assert "session_count" not in transforms["counts"]
 
     def test_direct_status_uses_active_archive_root(self, tmp_path: Path) -> None:
         env = _make_app_env()

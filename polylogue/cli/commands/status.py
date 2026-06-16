@@ -924,7 +924,11 @@ def _show_direct_json(env: AppEnv) -> None:
         "archive_facade_routes": _archive_facade_route_status(),
         "archive_cli_routes": _archive_cli_route_status(),
         "archive_runtime_paths": _archive_runtime_path_status(),
-        "component_readiness": _direct_component_readiness(env, archive_readiness=archive_readiness),
+        "component_readiness": _direct_component_readiness(
+            env,
+            active_root=active_root,
+            archive_readiness=archive_readiness,
+        ),
         "next_action": diag.next_action,
         "diagnostic": diagnostic_payload(diag),
     }
@@ -944,7 +948,12 @@ def _show_direct_json(env: AppEnv) -> None:
     env.ui.console.print(json.dumps(payload, indent=2, default=str))
 
 
-def _direct_component_readiness(env: AppEnv, *, archive_readiness: dict[str, Any] | None = None) -> dict[str, Any]:
+def _direct_component_readiness(
+    env: AppEnv,
+    *,
+    active_root: Path,
+    archive_readiness: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Return additive component readiness for direct status JSON."""
     components: dict[str, Any] = {}
     if archive_readiness is not None:
@@ -975,7 +984,72 @@ def _direct_component_readiness(env: AppEnv, *, archive_readiness: dict[str, Any
         components[embedding.component] = embedding.to_dict()
     except Exception:
         pass
+    try:
+        assertions = _direct_assertion_component(active_root)
+        components[assertions["component"]] = assertions
+    except Exception:
+        pass
+    try:
+        transforms = _direct_transform_component(archive_readiness)
+        components[transforms["component"]] = transforms
+    except Exception:
+        pass
     return components
+
+
+def _direct_assertion_component(active_root: Path) -> dict[str, Any]:
+    from polylogue.readiness.capability import component_from_assertion_substrate
+
+    user_db = active_root / "user.db"
+    if not user_db.exists():
+        return component_from_assertion_substrate(table_exists=False).to_dict()
+
+    try:
+        conn = sqlite3.connect(f"file:{user_db}?mode=ro", uri=True)
+        try:
+            table_exists = _table_exists(conn, "assertions")
+            if not table_exists:
+                return component_from_assertion_substrate(table_exists=False).to_dict()
+            component = component_from_assertion_substrate(
+                table_exists=True,
+                assertion_count=_fast_count(conn, "SELECT COUNT(*) FROM assertions"),
+                target_count=_fast_count(conn, "SELECT COUNT(DISTINCT target_ref) FROM assertions"),
+                active_count=_fast_count(
+                    conn,
+                    """
+                    SELECT COUNT(*)
+                    FROM assertions
+                    WHERE status IS NULL OR status IN ('active', 'candidate')
+                    """,
+                ),
+            )
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        component = component_from_assertion_substrate(table_exists=True, error=str(exc))
+    return component.to_dict()
+
+
+def _direct_transform_component(archive_readiness: dict[str, Any] | None) -> dict[str, Any]:
+    from polylogue.insights.transforms import RECOVERY_TRANSFORM_VERSION, TRANSFORM_REGISTRY
+    from polylogue.readiness.capability import component_from_transform_registry
+
+    if isinstance(archive_readiness, dict) and archive_readiness.get("checked") is False:
+        reason = str(archive_readiness.get("reason") or "archive_readiness_unchecked")
+        return component_from_transform_registry(
+            transform_count=len(TRANSFORM_REGISTRY),
+            session_count=None,
+            recovery_transform_version=RECOVERY_TRANSFORM_VERSION,
+            error=reason,
+        ).to_dict()
+
+    counts = archive_readiness.get("counts") if isinstance(archive_readiness, dict) else None
+    session_count = int(counts.get("session_count") or 0) if isinstance(counts, dict) else 0
+    return component_from_transform_registry(
+        transform_count=len(TRANSFORM_REGISTRY),
+        session_count=session_count,
+        recovery_transform_version=RECOVERY_TRANSFORM_VERSION,
+    ).to_dict()
 
 
 def _render_diagnostic(env: AppEnv, diag: Any) -> None:

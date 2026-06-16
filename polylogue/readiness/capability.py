@@ -182,6 +182,92 @@ def component_from_embedding_payload(payload: Mapping[str, Any]) -> ComponentRea
     )
 
 
+def component_from_assertion_substrate(
+    *,
+    table_exists: bool,
+    assertion_count: int = 0,
+    target_count: int = 0,
+    active_count: int = 0,
+    error: str | None = None,
+) -> ComponentReadiness:
+    """Map the user-tier assertion substrate into the shared DTO."""
+
+    caveats: tuple[str, ...]
+    if error:
+        state = CapabilityReadinessState.DEGRADED
+        summary = error
+        caveats = (error,)
+    elif table_exists:
+        state = CapabilityReadinessState.READY
+        summary = "ready"
+        caveats = ()
+    else:
+        state = CapabilityReadinessState.MISSING
+        summary = "assertions table missing"
+        caveats = ("assertions_table_missing",)
+
+    return ComponentReadiness(
+        component="assertions",
+        scope="user",
+        state=state,
+        summary=summary,
+        counts={
+            "assertion_count": assertion_count,
+            "target_count": target_count,
+            "active_count": active_count,
+        },
+        caveats=caveats,
+        repair_hint=None if table_exists and not error else "polylogue maintenance archive-init --yes",
+        evidence_refs=("user.db:assertions",) if table_exists else (),
+    )
+
+
+def component_from_transform_registry(
+    *,
+    transform_count: int,
+    session_count: int | None,
+    recovery_transform_version: int | None = None,
+    error: str | None = None,
+) -> ComponentReadiness:
+    """Map deterministic transform availability into the shared DTO."""
+
+    if error:
+        state = CapabilityReadinessState.BLOCKED
+        summary = error
+        repair_hint = None
+    elif transform_count <= 0:
+        state = CapabilityReadinessState.MISSING
+        summary = "no transforms registered"
+        repair_hint = None
+    elif session_count is None or session_count <= 0:
+        state = CapabilityReadinessState.MISSING
+        summary = "no sessions"
+        repair_hint = "polylogue import --demo"
+    else:
+        state = CapabilityReadinessState.READY
+        summary = "ready"
+        repair_hint = None
+
+    counts: dict[str, int | float | bool] = {
+        "transform_count": transform_count,
+    }
+    if session_count is not None:
+        counts["session_count"] = session_count
+    if recovery_transform_version is not None:
+        counts["recovery_transform_version"] = recovery_transform_version
+
+    return ComponentReadiness(
+        component="transforms",
+        scope="recovery",
+        state=state,
+        summary=summary,
+        counts=counts,
+        caveats=(error,) if error else (),
+        repair_hint=repair_hint,
+        evidence_refs=("transform_registry",) if transform_count > 0 else (),
+    )
+
+
 def component_from_archive_surface(
     component: str,
     surface: Mapping[str, Any],
@@ -321,10 +407,12 @@ __all__ = [
     "LEGACY_READINESS_SOURCE_TYPES",
     "component_from_archive_debt",
     "component_from_archive_surface",
+    "component_from_assertion_substrate",
     "component_from_catchup_status",
     "component_from_derived_model",
     "component_from_embedding_payload",
     "component_from_insight_entry",
     "component_from_operation_status",
     "component_from_outcome_check",
+    "component_from_transform_registry",
 ]
