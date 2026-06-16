@@ -73,6 +73,8 @@ PRODUCT_DOC_GLOBS=(
   "docs/maintenance.md"
   "docs/archive-backup.md"
   "docs/media/README.md"
+  "docs/media/*.mmd"
+  "docs/media/*.svg"
 )
 
 # Path prefixes excluded from scanning even when matched by a public glob:
@@ -99,11 +101,11 @@ declare -a RULES=(
 )
 
 declare -a PRODUCT_RULES=(
-  '\bproof\b|||evidence or verification result (#1848)'
-  '\bwitness\b|||fixture, evidence, or contract test (#1848)'
+  '\b[Pp]roof\b|||evidence or verification result (#1848)'
+  '\b[Ww]itness\b|||fixture, evidence, or contract test (#1848)'
   '\bQA\b|||verification or test workflow (#1848)'
-  '\bshowcase\b|||demo fixture or verification-lab baseline (#1848)'
-  '\bstatic[- ]site\b|\bstatic site\b|||read/export output or documentation site (#1848)'
+  '\b[Ss]howcase\b|||demo fixture or verification-lab baseline (#1848)'
+  '\b[Ss]tatic[- ][Ss]ite\b|\b[Ss]tatic [Ss]ite\b|||read/export output or documentation site (#1848)'
 )
 
 rg_args=()

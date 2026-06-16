@@ -48,15 +48,15 @@ _DIAGRAMS: dict[str, tuple[str, str]] = {
         C1["CLI"]
         C2["Python API"]
         C3["MCP Server"]
-        C4["Static Site"]
-        C5["Dashboard / TUI"]
+        C4["Web Reader"]
+        C5["Read / HTML Export"]
         C6["Renderers"]
     end
 
     subgraph Ring4["4. Verification"]
         D1["Schema Inference"]
         D2["Synthetic Corpora"]
-        D3["Showcase / QA"]
+        D3["Verification Lab"]
         D4["DevTools"]
         D5["Validation Lanes"]
     end
@@ -107,8 +107,8 @@ _DIAGRAMS: dict[str, tuple[str, str]] = {
     ROOT --> RENDERING["rendering/<br/>markdown / HTML"]
     ROOT --> UI["ui/<br/>TUI / dashboard"]
     ROOT --> SCENARIOS["scenarios/<br/>corpus specs, scenarios"]
-    ROOT --> PROOF["proof/<br/>obligations, claims, witnesses"]
-    ROOT --> SHOWCASE["showcase/<br/>QA exercises"]
+    ROOT --> VERIFY["verification/<br/>manifests"]
+    ROOT --> LAB["lab exercises<br/>CLI contracts"]
     ROOT --> DEVTOOLS["devtools/<br/>operator tooling"]
     ROOT --> TESTS["tests/<br/>pytest suite"]""",
     ),
