@@ -12,8 +12,8 @@ Do not preserve stale public aliases. Do not add ceremonial proof, witness, QA, 
 
 1. #1873: stop-line correctness for query/action behavior.
 2. #1818: machine-output/action-contract hub, gating #1842, #1849, #1825, and #1847.
-3. #1842: public command-floor prune. Ship the familiar `find QUERY then ACTION` floor and remove the old command zoo. Do not absorb the full #1879 ceiling.
-4. #1879: future predicate/pipeline query substrate.
+3. #1842: public command-floor prune. Ship the familiar `find QUERY then ACTION` floor and remove the old command zoo. Do not absorb the full #2006 ceiling.
+4. #2006: full query DSL substrate.
 5. #1880: transform-first recovery/digest views for agent sessions.
 6. #1883, #1882, #1881: KV/assertions, agent identity/context/delivery, and Beads/GitHub/Polylogue boundary.
 7. Demo, README, release, web workbench, and work packets follow the import/query/action/output spine.
@@ -24,7 +24,7 @@ Do not preserve stale public aliases. Do not add ceremonial proof, witness, QA, 
 
 #1842 owns the public command floor: `find`, `import`, `config`, `ops`, and terminal actions `read`, `mark`, `analyze`, `remove`, and `continue` if it truly resumes work. `read` absorbs show/open/messages/raw/export. `mark` absorbs tags/user-state/blackboard/feedback. `analyze` absorbs stats/facets/cost/neighbors/insights/diagnostics/correlate.
 
-#1879 owns the future query ceiling: a typed AST compiled onto SQLite, FTS5, vector search, and recursive CTEs. It is not a custom database engine and must not block #1842.
+#2006 owns the full query DSL: a typed AST and lowering pipeline over SQLite, FTS5, vector search, recursive CTEs, EXISTS subqueries, and existing read/action contracts. It is not a custom database engine. It includes Boolean predicates, structural message/action predicates, lineage/run/event/assertion traversal, aggregation, terminal report/action stages, and explain output. The old flat compiler remains the floor; #2006 owns the ceiling.
 
 #1815 owns public import/demo/source vocabulary. Public command is `import`; internal ingestion terminology may remain only for daemon or pipeline mechanics. Remaining work is demo fixture worlds, parser regression coverage, and operation/status truthfulness.
 

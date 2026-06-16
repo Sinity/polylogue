@@ -1,8 +1,10 @@
 # Query pipeline substrate
 
+Owning issue: #2006.
+
 ## Purpose
 
-Polylogue needs a richer query ceiling without becoming its own query engine. The surface language should compile onto the archive storage and search layers already present in the project.
+Polylogue needs a richer query ceiling without becoming its own query engine. The surface language should compile onto the archive storage and search layers already present in the project. The old `SessionQuerySpec` / query-expression compiler is the floor; #2006 owns the full DSL ceiling.
 
 ## Current limitation
 
