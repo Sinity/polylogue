@@ -98,6 +98,33 @@ def _daemon_unreachable_message(daemon_url: str, reason: str) -> str:
     )
 
 
+def _daemon_http_error_message(exc: HTTPError, *, daemon_url: str, staged: Path) -> str:
+    detail = ""
+    try:
+        raw_body = exc.read()
+    except OSError:
+        raw_body = b""
+    if raw_body:
+        try:
+            payload = json.loads(raw_body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            payload = None
+        if isinstance(payload, dict):
+            error = payload.get("error")
+            body_detail = payload.get("detail")
+            fragments: list[str] = []
+            if isinstance(error, str) and error:
+                fragments.append(error)
+            if isinstance(body_detail, str) and body_detail:
+                fragments.append(body_detail)
+            detail = "\n  Daemon detail: " + " — ".join(fragments) if fragments else ""
+    return (
+        f"Daemon at {daemon_url} rejected /api/ingest with HTTP {exc.code}: {exc.reason}.{detail}\n"
+        "  Check the daemon log for the cause; the staged inbox file was "
+        f"left in place at {staged}."
+    )
+
+
 @click.command("import")
 @click.argument("path", required=False, type=click.Path(exists=True, path_type=Path))
 @click.option(
@@ -152,12 +179,7 @@ def import_command(
         # Daemon responded but rejected the request. Surface the status
         # code so the operator knows it's a contract problem, not a
         # transport problem.
-        fail(
-            "import",
-            f"Daemon at {daemon_url} rejected /api/ingest with HTTP {exc.code}: {exc.reason}.\n"
-            "  Check the daemon log for the cause; the staged inbox file was "
-            f"left in place at {staged}.",
-        )
+        fail("import", _daemon_http_error_message(exc, daemon_url=daemon_url, staged=staged))
     except URLError as exc:
         fail("import", _daemon_unreachable_message(daemon_url, str(exc.reason)))
     except OSError as exc:

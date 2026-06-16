@@ -20,6 +20,7 @@ of adding a new endpoint includes adding it to ``ENDPOINTS_GET`` /
 from __future__ import annotations
 
 import json
+import zipfile
 from email.message import Message
 from http import HTTPStatus
 from io import BytesIO
@@ -434,10 +435,25 @@ class TestIngestEndpointInboxBoundary:
     ) -> None:
         inbox = workspace_env["archive_root"] / "inbox"
         inbox.mkdir(parents=True)
-        staged = inbox / "session.jsonl"
-        staged.write_text('{"type":"session"}\n')
+        staged = inbox / "session.json"
+        staged.write_text(
+            json.dumps(
+                {
+                    "mapping": {
+                        "root": {
+                            "id": "root",
+                            "message": {
+                                "author": {"role": "user"},
+                                "content": {"content_type": "text", "parts": ["hello"]},
+                            },
+                            "children": [],
+                        }
+                    }
+                }
+            )
+        )
 
-        body = json.dumps({"path": "/outside/tree/session.jsonl"}).encode("utf-8")
+        body = json.dumps({"path": "/outside/tree/session.json"}).encode("utf-8")
         handler = _make_handler("POST", "/api/ingest", auth_header="Bearer secret", body=body)
         send_error, send_json = _capture_responses(handler)
 
@@ -452,8 +468,83 @@ class TestIngestEndpointInboxBoundary:
         assert send_json.call_args.args[0] == HTTPStatus.ACCEPTED
         payload = send_json.call_args.args[1]
         assert payload["path"] == str(staged.resolve())
+        assert payload["preflight"]["status"] == "supported"
+        assert payload["preflight"]["providers"] == ["chatgpt"]
         emit_event.assert_called_once()
         assert emit_event.call_args.kwargs["payload"]["path"] == str(staged.resolve())
+        assert emit_event.call_args.kwargs["payload"]["preflight"]["status"] == "supported"
+
+    def test_rejects_staged_unsupported_import_shape(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        inbox = workspace_env["archive_root"] / "inbox"
+        inbox.mkdir(parents=True)
+        staged = inbox / "unknown.json"
+        staged.write_text(json.dumps({"not": "an export"}))
+
+        body = json.dumps({"path": str(staged)}).encode("utf-8")
+        handler = _make_handler("POST", "/api/ingest", auth_header="Bearer secret", body=body)
+        send_error, send_json = _capture_responses(handler)
+
+        with (
+            patch("polylogue.paths.archive_root", return_value=workspace_env["archive_root"]),
+            patch("polylogue.daemon.http.emit_daemon_event") as emit_event,
+        ):
+            handler.do_POST()
+
+        send_error.assert_called_once()
+        assert send_error.call_args.args[0] == HTTPStatus.UNSUPPORTED_MEDIA_TYPE
+        assert send_error.call_args.args[1] == "unsupported_import_source"
+        assert "no parseable" in send_error.call_args.args[2]
+        send_json.assert_not_called()
+        emit_event.assert_not_called()
+
+    def test_accepts_degraded_staged_import_with_preflight_caveat(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        inbox = workspace_env["archive_root"] / "inbox"
+        inbox.mkdir(parents=True)
+        staged = inbox / "mixed.zip"
+        with zipfile.ZipFile(staged, "w") as zf:
+            zf.writestr(
+                "conversations.json",
+                json.dumps(
+                    {
+                        "mapping": {
+                            "root": {
+                                "id": "root",
+                                "message": {
+                                    "author": {"role": "user"},
+                                    "content": {"content_type": "text", "parts": ["hello"]},
+                                },
+                                "children": [],
+                            }
+                        }
+                    }
+                ),
+            )
+            zf.writestr("unknown.json", json.dumps({"not": "an export"}))
+
+        body = json.dumps({"path": str(staged)}).encode("utf-8")
+        handler = _make_handler("POST", "/api/ingest", auth_header="Bearer secret", body=body)
+        send_error, send_json = _capture_responses(handler)
+
+        with (
+            patch("polylogue.paths.archive_root", return_value=workspace_env["archive_root"]),
+            patch("polylogue.daemon.http.emit_daemon_event"),
+        ):
+            handler.do_POST()
+
+        send_error.assert_not_called()
+        send_json.assert_called_once()
+        assert send_json.call_args.args[0] == HTTPStatus.ACCEPTED
+        payload = send_json.call_args.args[1]
+        assert payload["preflight"]["status"] == "degraded"
+        assert payload["preflight"]["supported_count"] == 1
+        assert payload["preflight"]["unsupported_count"] == 1
+        assert "degraded" in payload["message"]
 
     def test_rejects_unstaged_absolute_local_path(
         self,
@@ -545,7 +636,23 @@ class TestIngestEndpointInboxBoundary:
         inbox = workspace_env["archive_root"] / "inbox"
         inbox.mkdir(parents=True, exist_ok=True)
         staged = inbox / "session.jsonl"
-        staged.write_text('{"type":"session"}\n')
+        staged.write_text(
+            json.dumps(
+                {
+                    "mapping": {
+                        "root": {
+                            "id": "root",
+                            "message": {
+                                "author": {"role": "user"},
+                                "content": {"content_type": "text", "parts": ["hello"]},
+                            },
+                            "children": [],
+                        }
+                    }
+                }
+            )
+            + "\n"
+        )
 
         # Client sends a dotdot path whose basename is "session.jsonl"
         body = json.dumps({"path": "../inbox/session.jsonl"}).encode("utf-8")
