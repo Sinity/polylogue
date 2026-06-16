@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Generic, Literal, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar
 
 from pydantic import RootModel
 from typing_extensions import TypedDict
@@ -36,6 +36,7 @@ from polylogue.mcp.context_pack import (
 from polylogue.mcp.context_pack import (
     ContextPackUnresolvedWork as MCPContextPackUnresolvedWork,
 )
+from polylogue.readiness import component_from_outcome_check
 from polylogue.surfaces.payloads import (
     MutationResultPayload,
     SearchCursor,
@@ -870,6 +871,7 @@ class MCPReadinessReportPayload(SurfacePayloadModel):
     checks: list[MCPReadinessCheckPayload]
     summary: str | dict[str, int]
     source: str | None = None
+    component_readiness: dict[str, Any] | None = None
 
     @classmethod
     def from_report(
@@ -879,6 +881,7 @@ class MCPReadinessReportPayload(SurfacePayloadModel):
         include_counts: bool,
         include_detail: bool,
         include_cached: bool,
+        include_component_readiness: bool = True,
     ) -> MCPReadinessReportPayload:
         return cls(
             checks=[
@@ -891,6 +894,12 @@ class MCPReadinessReportPayload(SurfacePayloadModel):
             ],
             summary=report.summary,
             source=_extract_readiness_source(report) if include_cached else None,
+            component_readiness={
+                check.name: component_from_outcome_check(check, scope="mcp_readiness").to_dict()
+                for check in report.checks
+            }
+            if include_component_readiness
+            else None,
         )
 
 

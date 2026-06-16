@@ -477,13 +477,20 @@ class TestResourceSurfaces:
         assert parsed == {"feature": 10, "bug": 5}
 
     def test_readiness_resource(self: object, mcp_server: MCPServerUnderTest) -> None:
-        mock_check = MagicMock()
-        mock_check.name = "database"
-        mock_check.status.value = "ok"
+        from polylogue.core.outcomes import OutcomeCheck, OutcomeStatus
 
         mock_report = MagicMock()
-        mock_report.checks = [mock_check]
-        mock_report.summary = "All systems operational"
+        mock_report.checks = [
+            OutcomeCheck("database", OutcomeStatus.OK, summary="DB reachable", count=1),
+            OutcomeCheck(
+                "index",
+                OutcomeStatus.WARNING,
+                summary="messages FTS stale",
+                count=2,
+                details=["messages_fts_row_mismatch"],
+            ),
+        ]
+        mock_report.summary = {"ok": 1, "warning": 1, "error": 0}
 
         with (
             patch("polylogue.mcp.server._get_config") as mock_get_config,
@@ -495,8 +502,16 @@ class TestResourceSurfaces:
             result = invoke_surface(mcp_server._resource_manager._resources["polylogue://readiness"].fn)
 
         parsed = json.loads(result)
-        assert len(parsed["checks"]) == 1
-        assert parsed["summary"] == "All systems operational"
+        assert len(parsed["checks"]) == 2
+        assert parsed["summary"] == {"ok": 1, "warning": 1, "error": 0}
+        assert parsed["checks"][0] == {"name": "database", "status": "ok"}
+        component_readiness = parsed["component_readiness"]
+        assert component_readiness["database"]["component"] == "database"
+        assert component_readiness["database"]["scope"] == "mcp_readiness"
+        assert component_readiness["database"]["state"] == "ready"
+        assert component_readiness["database"]["counts"] == {"count": 1}
+        assert component_readiness["index"]["state"] == "degraded"
+        assert component_readiness["index"]["caveats"] == ["messages_fts_row_mismatch"]
 
 
 class TestArchiveGenericToolSurfaces:
