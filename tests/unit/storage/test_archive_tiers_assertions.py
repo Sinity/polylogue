@@ -350,6 +350,7 @@ def test_recovery_digest_candidates_write_transform_candidate_assertions(tmp_pat
                 session_id=digest.session_id,
                 transform_id=digest.transform.transform_id,
                 transform_version=digest.transform.transform_version,
+                candidate_index=index,
                 candidate_kind=candidate.kind,
                 candidate_text=candidate.text,
                 evidence_refs=evidence_refs,
@@ -361,6 +362,7 @@ def test_recovery_digest_candidates_write_transform_candidate_assertions(tmp_pat
             assert assertion.target_ref == "session:codex-session:assertion-demo"
             assert assertion.key == f"candidate/{candidate.kind}/{index}"
             assert assertion.value == {
+                "candidate_index": index,
                 "candidate_kind": candidate.kind,
                 "session_id": digest.session_id,
                 "source_origin": "codex-session",
@@ -396,5 +398,16 @@ def test_recovery_digest_candidates_write_transform_candidate_assertions(tmp_pat
         accepted_after_remirror = next(item for item in after_accept if item.assertion_id == accepted_id)
         assert accepted_after_remirror.status == "accepted"
         assert accepted_after_remirror.updated_at_ms == 1_700_000_006_000
+
+        duplicate_digest = digest.model_copy(
+            update={"decision_candidates": (digest.decision_candidates[0], digest.decision_candidates[0])}
+        )
+        duplicate_written = upsert_transform_candidate_assertions(
+            conn,
+            duplicate_digest,
+            now_ms=1_700_000_008_000,
+        )
+        assert len({item.assertion_id for item in duplicate_written}) == 2
+        assert {item.value["candidate_index"] for item in duplicate_written if isinstance(item.value, dict)} == {0, 1}
     finally:
         conn.close()
