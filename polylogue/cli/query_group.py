@@ -190,12 +190,16 @@ class QueryFirstGroupBase(click.Group):
 
     def shell_complete(self, ctx: click.Context, incomplete: str) -> list[click.shell_completion.CompletionItem]:
         items = list(super().shell_complete(ctx, incomplete))
-        from polylogue.cli.shell_completion_values import complete_query_expression_fields
+        from polylogue.cli.shell_completion_values import complete_query_actions, complete_query_expression_fields
 
-        query_items = complete_query_expression_fields(ctx, None, incomplete)
-        existing = {item.value for item in items}
-        items.extend(item for item in query_items if item.value not in existing)
-        return items
+        replacement_items = [
+            *complete_query_actions(ctx, None, incomplete),
+            *complete_query_expression_fields(ctx, None, incomplete),
+        ]
+        replacements = {item.value: item for item in replacement_items}
+        merged = [replacements.pop(item.value, item) for item in items]
+        merged.extend(replacements.values())
+        return merged
 
     def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
         """Parse args, preserving raw query terms."""

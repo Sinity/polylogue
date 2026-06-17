@@ -20,6 +20,7 @@ from polylogue.archive.message.types import MessageType
 from polylogue.archive.query.expression import EXPRESSION_FIELD_REGISTRY
 from polylogue.archive.query.fields import QUERY_FIELD_DESCRIPTORS, CompletionSource
 from polylogue.archive.query.spec import QUERY_ACTION_TYPES, QUERY_RETRIEVAL_LANES, QUERY_SEQUENCE_ACTION_TYPES
+from polylogue.cli.action_contracts import ACTION_CONTRACTS, CliActionContract
 from polylogue.paths import active_index_db_path
 
 if TYPE_CHECKING:
@@ -59,10 +60,13 @@ class QueryCompletionCandidate:
     score: float = 1.0
 
     def to_click_item(self) -> CompletionItem:
+        help_text = self.description
+        if self.danger:
+            help_text = f"DANGER: {help_text}" if help_text else "DANGER"
         return CompletionItem(
             self.insert,
             type="plain",
-            help=self.description,
+            help=help_text,
         )
 
 
@@ -173,6 +177,38 @@ def query_field_candidates(incomplete: str) -> list[QueryCompletionCandidate]:
     return candidates
 
 
+def _action_description(contract: CliActionContract) -> str:
+    guards = ", ".join(contract.guards)
+    detail = f"{contract.effect}; input={contract.input_unit}; cardinality={contract.cardinality}"
+    return f"{detail}; guards={guards}" if guards else detail
+
+
+def query_action_candidates(incomplete: str) -> list[QueryCompletionCandidate]:
+    """Return root query/action candidates from public action contracts."""
+
+    current = incomplete.strip().lower()
+    candidates: list[QueryCompletionCandidate] = []
+    for contract in ACTION_CONTRACTS:
+        if len(contract.path) != 1:
+            continue
+        name = contract.path[0]
+        if current and not name.startswith(current):
+            continue
+        candidates.append(
+            QueryCompletionCandidate(
+                value=name,
+                insert=name,
+                display=name,
+                kind="query-action",
+                group="query actions",
+                description=_action_description(contract),
+                source="ACTION_CONTRACTS",
+                danger=contract.effect == "destructive",
+            )
+        )
+    return candidates
+
+
 def _completion_source_for_expression_field(field_name: str) -> CompletionSource | None:
     info = EXPRESSION_FIELD_REGISTRY.get(field_name)
     if info is None:
@@ -233,6 +269,17 @@ def complete_query_expression_fields(
         return _complete_query_expression_values(ctx, param, incomplete)
     del ctx, param
     return [candidate.to_click_item() for candidate in query_field_candidates(incomplete)]
+
+
+def complete_query_actions(
+    ctx: click.Context,
+    param: click.Parameter | None,
+    incomplete: str,
+) -> list[CompletionItem]:
+    """Complete root query actions from public action contracts."""
+
+    del ctx, param
+    return [candidate.to_click_item() for candidate in query_action_candidates(incomplete)]
 
 
 def complete_origin_values(
@@ -415,6 +462,7 @@ __all__ = [
     "COMPLETION_SOURCE_HANDLERS",
     "complete_action_sequence_values",
     "complete_action_values",
+    "complete_query_actions",
     "complete_query_expression_fields",
     "complete_session_ids",
     "complete_cwd_prefix_values",
@@ -425,6 +473,7 @@ __all__ = [
     "complete_retrieval_lane_values",
     "complete_tag_values",
     "complete_tool_values",
+    "query_action_candidates",
     "query_field_candidates",
     "QueryCompletionCandidate",
 ]
