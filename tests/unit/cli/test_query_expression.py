@@ -1792,7 +1792,7 @@ class TestJsonSpecStrictMode:
 
 
 # ---------------------------------------------------------------------------
-# Bug 7 regression: ?contains= not routed through DSL compiler (#1873)
+# Bug 7 regression: ?contains= not routed through DSL parsing (#1873)
 # ---------------------------------------------------------------------------
 
 
@@ -1800,8 +1800,8 @@ class TestDaemonContainsParamNotCompiled:
     """_do_archive_list_sessions must not route ?contains= through compile_expression."""
 
     def test_contains_param_not_compiled_as_dsl(self, workspace_env: dict[str, Path]) -> None:
-        """Bug 7: a ?contains= value that the DSL compiler would reject must still
-        be treated as a literal FTS filter, not compiled.
+        """Bug 7: a ?contains= value rejected as DSL must still be treated as
+        a literal FTS filter, not parsed/lowered as query syntax.
 
         ``action:badaction`` raises ExpressionCompileError("unknown action") if
         routed through compile_expression; as a literal content filter it is

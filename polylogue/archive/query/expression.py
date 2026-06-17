@@ -40,8 +40,8 @@ and explicit Boolean session predicates:
 
 Unknown fields and unsupported structured forms fail loudly. The Lark grammar
 in this module is the query grammar. Compact field/text clauses and explicit
-Boolean predicates are two entry shapes in that grammar, not separate languages
-or a preserved legacy compiler.
+Boolean predicates are two entry shapes in that grammar, not a legacy/future
+split.
 
 Field and structure registries
 ------------------------------
@@ -54,14 +54,15 @@ maintain parallel lists.
 Public API
 ----------
 :func:`compile_expression`
-    Parse a DSL string into a :class:`SessionQuerySpec`.
+    Historical entrypoint name for parsing a DSL string and lowering it into a
+    :class:`SessionQuerySpec`.
 
 :func:`compile_expression_into`
     Merge a DSL string into an existing :class:`SessionQuerySpec`, additive
     (tuple fields are extended, scalar fields are overridden if set).
 
 :class:`ExpressionCompileError`
-    Typed compile-time error with a ``field`` attribute (``None`` for
+    Typed parse/lowering error with a ``field`` attribute (``None`` for
     structural errors such as malformed Boolean syntax).
 """
 

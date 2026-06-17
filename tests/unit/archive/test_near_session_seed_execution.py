@@ -1,6 +1,6 @@
 """Execution tests for ``near:id:<ref>`` session-seeded similarity (#1842).
 
-The compiler accepts ``near:id:<ref>`` and threads it into
+The DSL parser/lowerer accepts ``near:id:<ref>`` and threads it into
 ``SessionQueryPlan.similar_session_id`` (#1899). This module pins the *execution*
 of that field: a session-seeded plan reads the seed session's stored embeddings,
 KNN-searches them, excludes the seed itself, and aggregates to session-level hits
