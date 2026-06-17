@@ -9,6 +9,7 @@ yet and degrades to an empty completion list.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
@@ -17,7 +18,12 @@ import click
 from click.shell_completion import CompletionItem
 
 from polylogue.archive.message.types import MessageType
-from polylogue.archive.query.expression import EXPRESSION_FIELD_REGISTRY
+from polylogue.archive.query.expression import (
+    EXPRESSION_FIELD_REGISTRY,
+    STRUCTURAL_QUERY_UNIT_REGISTRY,
+    structural_query_fields,
+    structural_query_units,
+)
 from polylogue.archive.query.fields import QUERY_FIELD_DESCRIPTORS, CompletionSource
 from polylogue.archive.query.spec import QUERY_ACTION_TYPES, QUERY_RETRIEVAL_LANES, QUERY_SEQUENCE_ACTION_TYPES
 from polylogue.cli.action_contracts import ACTION_CONTRACTS, CliActionContract
@@ -177,6 +183,56 @@ def query_field_candidates(incomplete: str) -> list[QueryCompletionCandidate]:
     return candidates
 
 
+def query_structural_unit_candidates(incomplete: str) -> list[QueryCompletionCandidate]:
+    """Return ``exists <unit>(...)`` candidates from the grammar registry."""
+
+    current = incomplete.strip().lower()
+    candidates: list[QueryCompletionCandidate] = []
+    for unit in structural_query_units():
+        if current and not unit.startswith(current):
+            continue
+        info = STRUCTURAL_QUERY_UNIT_REGISTRY[unit]
+        description = info.description
+        if info.example:
+            description = f"{description} Example: {info.example}" if description else f"Example: {info.example}"
+        candidates.append(
+            QueryCompletionCandidate(
+                value=unit,
+                insert=f"{unit}(",
+                display=f"{unit}(",
+                kind="query-structural-unit",
+                group="query structural units",
+                description=_trim_help(description),
+                source="STRUCTURAL_QUERY_UNIT_REGISTRY",
+            )
+        )
+    return candidates
+
+
+def query_structural_field_candidates(unit: str, incomplete: str) -> list[QueryCompletionCandidate]:
+    """Return field candidates accepted inside ``exists <unit>(...)``."""
+
+    current = incomplete.strip().lstrip("-").lower()
+    if ":" in current:
+        return []
+    candidates: list[QueryCompletionCandidate] = []
+    for field_name in structural_query_fields(unit):
+        if current and not field_name.startswith(current):
+            continue
+        candidates.append(
+            QueryCompletionCandidate(
+                value=field_name,
+                insert=f"{field_name}:",
+                display=f"{field_name}:",
+                kind="query-structural-field",
+                group=f"{unit} structural fields",
+                description=f"Field accepted inside exists {unit}(...).",
+                source="STRUCTURAL_QUERY_UNIT_REGISTRY",
+            )
+        )
+    return candidates
+
+
 def _action_description(contract: CliActionContract) -> str:
     guards = ", ".join(contract.guards)
     detail = f"{contract.effect}; input={contract.input_unit}; cardinality={contract.cardinality}"
@@ -256,6 +312,56 @@ def _complete_query_expression_values(
     return _prefixed_query_value_items(items, prefix=prefix)
 
 
+def _completion_words() -> tuple[str, ...]:
+    raw_words = os.environ.get("COMP_WORDS", "")
+    words = tuple(part for part in raw_words.split() if part)
+    if words and words[0] == "polylogue":
+        return words[1:]
+    return words
+
+
+def _structural_completion_context(incomplete: str) -> tuple[str, str] | None:
+    stripped = incomplete.strip()
+    lower = stripped.lower()
+    if lower.startswith("exists "):
+        after_exists = stripped[len("exists ") :].lstrip()
+        if "(" not in after_exists:
+            return "unit", after_exists
+        unit, field_prefix = after_exists.split("(", 1)
+        unit = unit.strip().lower()
+        if unit in structural_query_units() and ")" not in field_prefix:
+            return unit, field_prefix.rsplit(" ", 1)[-1]
+        return None
+    if lower.startswith("exists"):
+        return "unit", stripped[len("exists") :].lstrip()
+    for unit in structural_query_units():
+        prefix = f"{unit}("
+        if lower.startswith(prefix):
+            return unit, stripped[len(prefix) :].rsplit(" ", 1)[-1]
+
+    words = _completion_words()
+    if words:
+        previous = words[-2].lower() if len(words) >= 2 else ""
+        if previous == "exists":
+            return "unit", stripped
+        for word in reversed(words[:-1]):
+            word_lower = word.lower()
+            for unit in structural_query_units():
+                if word_lower == f"{unit}(" or word_lower.startswith(f"{unit}("):
+                    return unit, stripped
+    return None
+
+
+def _complete_structural_query_context(incomplete: str) -> list[CompletionItem] | None:
+    context = _structural_completion_context(incomplete)
+    if context is None:
+        return None
+    unit_or_kind, prefix = context
+    if unit_or_kind == "unit":
+        return [candidate.to_click_item() for candidate in query_structural_unit_candidates(prefix)]
+    return [candidate.to_click_item() for candidate in query_structural_field_candidates(unit_or_kind, prefix)]
+
+
 def complete_query_expression_fields(
     ctx: click.Context,
     param: click.Parameter | None,
@@ -265,6 +371,9 @@ def complete_query_expression_fields(
 
     if incomplete.startswith("--"):
         return []
+    structural_items = _complete_structural_query_context(incomplete)
+    if structural_items is not None:
+        return structural_items
     if ":" in incomplete:
         return _complete_query_expression_values(ctx, param, incomplete)
     del ctx, param
@@ -475,5 +584,7 @@ __all__ = [
     "complete_tool_values",
     "query_action_candidates",
     "query_field_candidates",
+    "query_structural_field_candidates",
+    "query_structural_unit_candidates",
     "QueryCompletionCandidate",
 ]

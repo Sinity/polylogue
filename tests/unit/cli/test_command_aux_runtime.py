@@ -130,6 +130,28 @@ def test_query_field_candidates_come_from_expression_registry() -> None:
     assert click_item.type == "plain"
 
 
+def test_query_structural_unit_candidates_come_from_expression_registry() -> None:
+    candidates = shell_completion_values.query_structural_unit_candidates("b")
+    assert [candidate.value for candidate in candidates] == ["block"]
+
+    block_candidate = candidates[0]
+    assert block_candidate.insert == "block("
+    assert block_candidate.kind == "query-structural-unit"
+    assert block_candidate.source == "STRUCTURAL_QUERY_UNIT_REGISTRY"
+    assert block_candidate.description.startswith("Match sessions with at least one parsed message block")
+
+
+def test_query_structural_field_candidates_come_from_expression_registry() -> None:
+    candidates = shell_completion_values.query_structural_field_candidates("block", "t")
+    values = {candidate.value for candidate in candidates}
+
+    assert {"text", "type"}.issubset(values)
+    type_candidate = next(candidate for candidate in candidates if candidate.value == "type")
+    assert type_candidate.insert == "type:"
+    assert type_candidate.kind == "query-structural-field"
+    assert type_candidate.source == "STRUCTURAL_QUERY_UNIT_REGISTRY"
+
+
 def test_query_expression_value_completion_uses_field_completion_source() -> None:
     ctx, param = _ctx_param()
 
@@ -147,6 +169,17 @@ def test_query_expression_value_completion_uses_field_completion_source() -> Non
 
     assert [item.value for item in repo_items] == ["repo:polylogue"]
     assert repo_items[0].help == "4 sessions"
+
+
+def test_query_expression_completion_handles_structural_contexts() -> None:
+    ctx, param = _ctx_param()
+
+    unit_items = shell_completion_values.complete_query_expression_fields(ctx, param, "exists b")
+    assert [item.value for item in unit_items] == ["block("]
+
+    field_items = shell_completion_values.complete_query_expression_fields(ctx, param, "exists block(t")
+    values = {item.value for item in field_items}
+    assert {"text:", "type:"}.issubset(values)
 
 
 def test_query_action_candidates_come_from_action_contracts_with_danger_metadata() -> None:

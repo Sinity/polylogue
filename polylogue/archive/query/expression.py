@@ -38,11 +38,13 @@ in this module is the query grammar. Compact field/text clauses and explicit
 Boolean predicates are two entry shapes in that grammar, not separate languages
 or a preserved legacy compiler.
 
-Field registry
---------------
-:data:`EXPRESSION_FIELD_REGISTRY` maps every recognized DSL token to its spec
-field name.  Completion tools (#1844) should introspect this single registry
-rather than maintain a parallel list.
+Field and structure registries
+------------------------------
+:data:`EXPRESSION_FIELD_REGISTRY` maps every recognized session-scope DSL token
+to its spec field name. :data:`STRUCTURAL_QUERY_UNIT_REGISTRY` maps the
+``exists <unit>(...)`` units to the structural fields accepted for each unit.
+Completion tools (#1844) should introspect these registries rather than
+maintain parallel lists.
 
 Public API
 ----------
@@ -461,6 +463,49 @@ _ACTION_STRUCTURAL_FIELDS = {"tool", "action", "type", "command", "path", "outpu
 _BLOCK_STRUCTURAL_FIELDS = {"type", "text", "tool", "action", "command", "path"}
 
 
+@dataclass(frozen=True)
+class StructuralQueryUnitInfo:
+    """Completion/query-builder metadata for one ``exists <unit>(...)`` unit."""
+
+    description: str
+    fields: tuple[str, ...]
+    example: str
+
+
+STRUCTURAL_QUERY_UNIT_REGISTRY: dict[str, StructuralQueryUnitInfo] = {
+    "action": StructuralQueryUnitInfo(
+        description="Match sessions with at least one action row satisfying the child predicate.",
+        fields=tuple(sorted(_ACTION_STRUCTURAL_FIELDS)),
+        example="exists action(tool:bash AND text:pytest)",
+    ),
+    "block": StructuralQueryUnitInfo(
+        description="Match sessions with at least one parsed message block satisfying the child predicate.",
+        fields=tuple(sorted(_BLOCK_STRUCTURAL_FIELDS)),
+        example="exists block(type:code AND text:timeout)",
+    ),
+    "message": StructuralQueryUnitInfo(
+        description="Match sessions with at least one message satisfying the child predicate.",
+        fields=tuple(sorted(_MESSAGE_STRUCTURAL_FIELDS)),
+        example="exists message(role:assistant AND text:timeout)",
+    ),
+}
+
+
+def structural_query_units() -> tuple[str, ...]:
+    """Return the structural units accepted by the query grammar."""
+
+    return tuple(sorted(STRUCTURAL_QUERY_UNIT_REGISTRY))
+
+
+def structural_query_fields(unit: str) -> tuple[str, ...]:
+    """Return structural field names accepted inside ``exists <unit>(...)``."""
+
+    info = STRUCTURAL_QUERY_UNIT_REGISTRY.get(unit.lower())
+    if info is None:
+        return ()
+    return info.fields
+
+
 def _unknown_query_field_message(field_name: str, *, include_structural: bool = False) -> str:
     recognized = sorted(EXPRESSION_FIELD_REGISTRY)
     message = f"unknown query field {field_name!r}; recognized fields: " + ", ".join(recognized)
@@ -761,7 +806,7 @@ _BOOLEAN_QUERY_TRANSFORMER = _BooleanQueryTransformer()
 
 def _is_boolean_expression(expression: str) -> bool:
     if re.search(
-        r"^\s*\(|^\s*sessions\s+where\b|^\s*exists\s+(?:message|action)\s*\(|^\s*seq\s*\(|^\s*lineage:",
+        r"^\s*\(|^\s*sessions\s+where\b|^\s*exists\s+(?:message|action|block)\s*\(|^\s*seq\s*\(|^\s*lineage:",
         expression,
         re.IGNORECASE,
     ):
@@ -1393,9 +1438,13 @@ __all__ = [
     "explain_expression",
     "ExpressionCompileError",
     "EXPRESSION_FIELD_REGISTRY",
+    "StructuralQueryUnitInfo",
+    "STRUCTURAL_QUERY_UNIT_REGISTRY",
     "QueryExpressionExplainClause",
     "QueryExpressionExplanation",
     "QueryExpressionAST",
     "_HAS_BOOL_MAP",
     "parse_expression_ast",
+    "structural_query_fields",
+    "structural_query_units",
 ]

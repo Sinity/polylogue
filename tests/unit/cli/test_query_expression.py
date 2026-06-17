@@ -239,6 +239,14 @@ class TestBooleanQueryExpression:
             ),
         )
 
+    def test_compile_expression_detects_single_block_exists_predicate(self) -> None:
+        spec = compile_expression("exists block(type:code)")
+
+        assert spec.boolean_predicate == QueryExistsPredicate(
+            unit="block",
+            child=QueryFieldPredicate(field="type", values=("code",)),
+        )
+
     def test_sequence_ast_exposes_ordered_action_terms(self) -> None:
         ast = parse_expression_ast("seq(action:file_edit -> action:shell -> action:file_edit)")
 
