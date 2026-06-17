@@ -1,4 +1,4 @@
-"""Static-rendering surface checks."""
+"""Static-rendering contracts."""
 
 from __future__ import annotations
 

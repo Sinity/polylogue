@@ -917,15 +917,6 @@ def test_session_insight_status_marks_missing_profile_rows_not_ready(cli_workspa
     assert status.profile_rows_ready is False
 
 
-# Retired (#1743): the materializer_version staleness guard and the
-# session_work_events_fts "incomplete search index" rejection were retired single-file
-# mechanisms. has no materializer_version column, no
-# threads / session_tag_rollups tables, and no per-surface FTS staleness
-# rejection — the readiness model is rebuild-from-source, so these surfaces are
-# always coherent or absent. Tests removed rather than asserting a removed
-# contract.
-
-
 def test_insights_timeline_json_emits_fidelity_tags(cli_workspace: CliWorkspace) -> None:
     """`insights timeline <conv-id> --format json` emits per-entry fidelity tags."""
     _seed_products(cli_workspace)
