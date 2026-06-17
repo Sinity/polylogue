@@ -262,6 +262,59 @@ class QueryExpressionAST:
     clauses: tuple[_LexToken, ...]
 
 
+ExplainClauseKind = Literal["field", "count", "text", "json"]
+
+
+@dataclass(frozen=True)
+class QueryExpressionExplainClause:
+    """Serializable clause view for parser/lowerer diagnostics."""
+
+    kind: ExplainClauseKind
+    field: str | None = None
+    value: str | None = None
+    negated: bool = False
+    quoted: bool = False
+    op: Literal[">=", "<=", "="] | None = None
+    number: int | None = None
+
+    def to_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {"kind": self.kind}
+        if self.field is not None:
+            payload["field"] = self.field
+        if self.value is not None:
+            payload["value"] = self.value
+        if self.negated:
+            payload["negated"] = True
+        if self.quoted:
+            payload["quoted"] = True
+        if self.op is not None:
+            payload["op"] = self.op
+        if self.number is not None:
+            payload["number"] = self.number
+        return payload
+
+
+@dataclass(frozen=True)
+class QueryExpressionExplanation:
+    """Debug envelope for query parsing, lowering, and execution-plan selection."""
+
+    source_text: str
+    clauses: tuple[QueryExpressionExplainClause, ...]
+    lowerer: str
+    lowered_spec: SessionQuerySpec
+    plan_description: tuple[str, ...]
+    unsupported_nodes: tuple[str, ...] = ()
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "source_text": self.source_text,
+            "clauses": [clause.to_payload() for clause in self.clauses],
+            "lowerer": self.lowerer,
+            "plan_description": list(self.plan_description),
+            "unsupported_nodes": list(self.unsupported_nodes),
+        }
+
+
 # ---------------------------------------------------------------------------
 # Parser
 # ---------------------------------------------------------------------------
@@ -394,6 +447,55 @@ def parse_expression_ast(expression: str) -> QueryExpressionAST:
 def _lex(expression: str) -> list[_LexToken]:
     """Tokenize an expression string into the compatibility token stream."""
     return list(parse_expression_ast(expression).clauses)
+
+
+def _explain_clause(token: _LexToken) -> QueryExpressionExplainClause:
+    if isinstance(token, _FieldToken):
+        return QueryExpressionExplainClause(
+            kind="field",
+            field=token.field,
+            value=token.raw_value,
+            negated=token.negated,
+        )
+    if isinstance(token, _CountToken):
+        return QueryExpressionExplainClause(
+            kind="count",
+            field=token.field,
+            op=token.op,
+            number=token.number,
+        )
+    if isinstance(token, _TextToken):
+        return QueryExpressionExplainClause(
+            kind="text",
+            value=token.text,
+            negated=token.negated,
+            quoted=token.quoted,
+        )
+    return QueryExpressionExplainClause(kind="json", value=token.raw)
+
+
+def explain_expression(expression: str) -> QueryExpressionExplanation:
+    """Explain parser output, lowering path, and execution-plan descriptions."""
+    source_text = expression
+    stripped = expression.strip()
+    if stripped.startswith("{") or stripped.startswith("["):
+        lowered = _compile_json_spec(stripped)
+        return QueryExpressionExplanation(
+            source_text=source_text,
+            clauses=(_explain_clause(_JsonToken(raw=stripped)),),
+            lowerer="json-spec",
+            lowered_spec=lowered,
+            plan_description=tuple(lowered.to_plan().describe()),
+        )
+    ast = parse_expression_ast(stripped)
+    lowered = compile_expression(stripped)
+    return QueryExpressionExplanation(
+        source_text=source_text,
+        clauses=tuple(_explain_clause(clause) for clause in ast.clauses),
+        lowerer="lark-query-expression-to-session-query-spec",
+        lowered_spec=lowered,
+        plan_description=tuple(lowered.to_plan().describe()),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -849,8 +951,11 @@ def _compile_json_spec(raw: str) -> SessionQuerySpec:
 __all__ = [
     "compile_expression",
     "compile_expression_into",
+    "explain_expression",
     "ExpressionCompileError",
     "EXPRESSION_FIELD_REGISTRY",
+    "QueryExpressionExplainClause",
+    "QueryExpressionExplanation",
     "QueryExpressionAST",
     "_HAS_BOOL_MAP",
     "parse_expression_ast",

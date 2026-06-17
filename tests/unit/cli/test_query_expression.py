@@ -33,6 +33,7 @@ from polylogue.archive.query.expression import (
     _TextToken,
     compile_expression,
     compile_expression_into,
+    explain_expression,
     parse_expression_ast,
 )
 from polylogue.archive.query.spec import SessionQuerySpec
@@ -114,6 +115,37 @@ class TestLexer:
 
     def test_whitespace_only(self) -> None:
         assert _lex("   ") == []
+
+
+class TestExplainExpression:
+    def test_explain_expression_reports_ast_lowerer_and_plan(self) -> None:
+        explanation = explain_expression('repo:polylogue has:paste "json envelope"')
+
+        assert explanation.source_text == 'repo:polylogue has:paste "json envelope"'
+        assert explanation.lowerer == "lark-query-expression-to-session-query-spec"
+        assert explanation.unsupported_nodes == ()
+        assert explanation.lowered_spec.repo_names == ("polylogue",)
+        assert explanation.lowered_spec.filter_has_paste is True
+        assert explanation.clauses[0].to_payload() == {
+            "kind": "field",
+            "field": "repo",
+            "value": "polylogue",
+        }
+        assert explanation.clauses[2].to_payload() == {
+            "kind": "text",
+            "value": "json envelope",
+            "quoted": True,
+        }
+        assert "repo: polylogue" in explanation.plan_description
+
+    def test_explain_expression_reports_json_spec_mode(self) -> None:
+        explanation = explain_expression('{"repo": "polylogue", "limit": 5}')
+
+        assert explanation.lowerer == "json-spec"
+        assert explanation.lowered_spec.repo_names == ("polylogue",)
+        assert explanation.lowered_spec.limit == 5
+        assert explanation.clauses[0].kind == "json"
+        assert explanation.to_payload()["unsupported_nodes"] == []
 
 
 # ---------------------------------------------------------------------------
