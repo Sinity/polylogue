@@ -980,6 +980,22 @@ class TestReaderQueryCompletions:
         assert "--unit is required" in str(payload["message"])
 
 
+class TestReaderViewProfiles:
+    def test_read_view_profiles_endpoint_exposes_shared_profile_semantics(self) -> None:
+        with _running_server_without_seed() as (_server, base_url):
+            payload = _get_json(base_url, "/api/read-view-profiles")
+
+        assert isinstance(payload, dict)
+        assert payload["total"] >= 3
+        read_views = payload["read_views"]
+        assert isinstance(read_views, list)
+        profiles = {profile["view_id"]: profile for profile in read_views}
+        assert profiles["raw"]["lossiness"] == "raw"
+        assert profiles["raw"]["evidence_policy"] == "required"
+        assert profiles["recovery"]["successor_handoff"] is True
+        assert "markdown" in profiles["recovery"]["formats"]
+
+
 class TestReaderPrivacy:
     """The reader must never expose absolute local paths or auth tokens.
 

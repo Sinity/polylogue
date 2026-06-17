@@ -827,6 +827,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._handle_facets(params)
         elif path == ["api", "query-completions"]:
             self._handle_query_completions(params)
+        elif path == ["api", "read-view-profiles"]:
+            self._handle_read_view_profiles()
         elif path == ["api", "paste-browser"]:
             self._handle_paste_browser(params)
         elif path == ["api", "attachments"]:
@@ -2150,6 +2152,15 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid_query_completion", "message": str(exc)})
             return
         self._send_json(HTTPStatus.OK, {"query_completions": payload})
+
+    @daemon_safe_handler
+    def _handle_read_view_profiles(self) -> None:
+        """``GET /api/read-view-profiles`` exposes shared read-view metadata."""
+
+        from polylogue.archive.viewport import read_view_profile_payloads
+
+        profiles = read_view_profile_payloads()
+        self._send_json(HTTPStatus.OK, {"read_views": profiles, "total": len(profiles)})
 
     # ------------------------------------------------------------------
     # Handlers: per-session embedding similarity (#1123)
