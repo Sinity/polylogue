@@ -17,7 +17,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/archive.py
-    loc: 3104
+    loc: 3120
     target: polylogue/api/archive.py
     owner: stable
     cross_cut: { api: async }
@@ -286,6 +286,11 @@ files:
   - path: polylogue/archive/query/archive_execution.py
     loc: 610
     target: polylogue/archive/query/archive_execution.py
+    owner: archive-query
+    reason: archive-domain query semantics
+  - path: polylogue/archive/query/completions.py
+    loc: 342
+    target: polylogue/archive/query/completions.py
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/expression.py
@@ -658,7 +663,7 @@ files:
     target: polylogue/cli/__main__.py
     owner: stable
   - path: polylogue/cli/action_contracts.py
-    loc: 243
+    loc: 35
     target: polylogue/cli/action_contracts.py
     owner: stable
   - path: polylogue/cli/archive_query.py
@@ -670,7 +675,7 @@ files:
     target: polylogue/cli/bulk_export.py
     owner: stable
   - path: polylogue/cli/click_app.py
-    loc: 343
+    loc: 355
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
@@ -770,7 +775,7 @@ files:
     target: polylogue/cli/commands/paths.py
     owner: stable
   - path: polylogue/cli/commands/query_completions.py
-    loc: 103
+    loc: 62
     target: polylogue/cli/commands/query_completions.py
     owner: stable
   - path: polylogue/cli/commands/query_explain.py
@@ -996,7 +1001,7 @@ files:
     target: polylogue/cli/shared/types.py
     owner: stable
   - path: polylogue/cli/shell_completion_values.py
-    loc: 676
+    loc: 473
     target: polylogue/cli/shell_completion_values.py
     owner: stable
   - path: polylogue/cli/verb_cardinality.py
@@ -1572,12 +1577,16 @@ files:
     target: polylogue/mcp/server_support.py
     owner: stable
   - path: polylogue/mcp/server_tools.py
-    loc: 712
+    loc: 732
     target: polylogue/mcp/server_tools.py
     owner: stable
   - path: polylogue/operations/__init__.py
     loc: 51
     target: polylogue/operations/__init__.py
+    owner: stable
+  - path: polylogue/operations/action_contracts.py
+    loc: 243
+    target: polylogue/operations/action_contracts.py
     owner: stable
   - path: polylogue/operations/archive.py
     loc: 48

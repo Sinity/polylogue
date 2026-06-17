@@ -697,6 +697,26 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
         return await hooks.async_safe_call("explain_query_expression", run)
 
+    @mcp.tool()
+    async def query_completions(
+        kind: str,
+        incomplete: str = "",
+        unit: str | None = None,
+        field: str | None = None,
+    ) -> str:
+        """Return shared query/action completion metadata for non-shell clients."""
+
+        async def run() -> str:
+            payload = await hooks.get_polylogue().query_completions(
+                kind,
+                incomplete=incomplete,
+                unit=unit,
+                field=field,
+            )
+            return hooks.json_payload(MCPRootPayload(root=cast(dict[str, object], {"query_completions": payload})))
+
+        return await hooks.async_safe_call("query_completions", run)
+
 
 def register_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     register_query_tools(mcp, hooks)

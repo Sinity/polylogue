@@ -1107,6 +1107,22 @@ class PolylogueArchiveMixin:
 
         return cast(JSONDocument, explain_expression(expression).to_payload())
 
+    async def query_completions(
+        self,
+        kind: str,
+        *,
+        incomplete: str = "",
+        unit: str | None = None,
+        field: str | None = None,
+    ) -> JSONDocument:
+        """Return shared query/action completion metadata for adapters."""
+        from polylogue.archive.query.completions import query_completion_payload
+
+        return cast(
+            JSONDocument,
+            query_completion_payload(kind, incomplete=incomplete, unit=unit, field=field),
+        )
+
     async def get_sessions(
         self,
         session_ids: list[str],

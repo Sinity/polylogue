@@ -2,56 +2,18 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-
 import click
 
-from polylogue.cli.shared.machine_errors import emit_success
-from polylogue.cli.shell_completion_values import (
+from polylogue.archive.query.completions import (
+    QUERY_COMPLETION_KINDS,
     QueryCompletionCandidate,
-    query_action_candidates,
-    query_count_operator_candidates,
-    query_date_operator_candidates,
-    query_field_candidates,
-    query_structural_field_candidates,
-    query_structural_unit_candidates,
+    QueryCompletionError,
+    query_completion_candidates,
+    query_completion_payload,
 )
+from polylogue.cli.shared.machine_errors import emit_success
 
 CompletionKind = str
-CandidateProvider = Callable[[], list[QueryCompletionCandidate]]
-
-_COMPLETION_KINDS = (
-    "field",
-    "structural-unit",
-    "structural-field",
-    "count-operator",
-    "date-operator",
-    "action",
-)
-
-
-def _candidate_provider(
-    kind: CompletionKind, incomplete: str, unit: str | None, field: str | None
-) -> CandidateProvider:
-    if kind == "field":
-        return lambda: query_field_candidates(incomplete)
-    if kind == "structural-unit":
-        return lambda: query_structural_unit_candidates(incomplete)
-    if kind == "structural-field":
-        if unit is None:
-            raise click.UsageError("--unit is required for --kind structural-field")
-        return lambda: query_structural_field_candidates(unit, incomplete)
-    if kind == "count-operator":
-        if field is None:
-            raise click.UsageError("--field is required for --kind count-operator")
-        return lambda: query_count_operator_candidates(field, incomplete)
-    if kind == "date-operator":
-        if field is None:
-            raise click.UsageError("--field is required for --kind date-operator")
-        return lambda: query_date_operator_candidates(field, incomplete)
-    if kind == "action":
-        return lambda: query_action_candidates(incomplete)
-    raise click.UsageError(f"Unsupported completion kind: {kind}")
 
 
 def _render_plain(candidates: list[QueryCompletionCandidate]) -> str:
@@ -70,7 +32,7 @@ def _render_plain(candidates: list[QueryCompletionCandidate]) -> str:
 
 
 @click.command("query-completions")
-@click.option("--kind", type=click.Choice(_COMPLETION_KINDS), required=True, help="Candidate kind to inspect.")
+@click.option("--kind", type=click.Choice(QUERY_COMPLETION_KINDS), required=True, help="Candidate kind to inspect.")
 @click.option("--incomplete", default="", show_default=True, help="Current incomplete token.")
 @click.option("--unit", help="Structural unit for structural-field completion.")
 @click.option("--field", help="Field name for count/date operator completion.")
@@ -86,14 +48,11 @@ def query_completions_command(
 ) -> None:
     """List structured query-completion candidates."""
 
-    candidates = _candidate_provider(kind, incomplete, unit, field)()
-    payload = {
-        "kind": kind,
-        "incomplete": incomplete,
-        "unit": unit,
-        "field": field,
-        "candidates": [candidate.to_payload() for candidate in candidates],
-    }
+    try:
+        candidates = query_completion_candidates(kind, incomplete=incomplete, unit=unit, field=field)
+        payload = query_completion_payload(kind, incomplete=incomplete, unit=unit, field=field)
+    except QueryCompletionError as exc:
+        raise click.UsageError(str(exc)) from exc
     if output_format == "json":
         emit_success({"query_completions": payload})
         return

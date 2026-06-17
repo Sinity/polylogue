@@ -41,14 +41,26 @@ class QueryFirstGroup(QueryFirstGroupBase):
 
         count_field = _count_operator_completion_field()
         if count_field is not None:
-            from polylogue.cli.shell_completion_values import query_count_operator_candidates
+            from polylogue.cli.shell_completion_values import (
+                query_completion_candidate_to_click_item,
+                query_count_operator_candidates,
+            )
 
-            return [candidate.to_click_item() for candidate in query_count_operator_candidates(count_field, incomplete)]
+            return [
+                query_completion_candidate_to_click_item(candidate)
+                for candidate in query_count_operator_candidates(count_field, incomplete)
+            ]
         date_field = _date_operator_completion_field()
         if date_field is not None:
-            from polylogue.cli.shell_completion_values import query_date_operator_candidates
+            from polylogue.cli.shell_completion_values import (
+                query_completion_candidate_to_click_item,
+                query_date_operator_candidates,
+            )
 
-            return [candidate.to_click_item() for candidate in query_date_operator_candidates(date_field, incomplete)]
+            return [
+                query_completion_candidate_to_click_item(candidate)
+                for candidate in query_date_operator_candidates(date_field, incomplete)
+            ]
         if _is_after_then_completion():
             from polylogue.cli.shell_completion_values import complete_query_actions
 
