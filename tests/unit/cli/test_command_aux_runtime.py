@@ -125,6 +125,11 @@ def test_query_field_candidates_come_from_expression_registry() -> None:
     assert repo_candidate.kind == "query-field"
     assert repo_candidate.source == "EXPRESSION_FIELD_REGISTRY"
     assert EXPRESSION_FIELD_REGISTRY["repo"]["description"] in repo_candidate.description
+    payload = repo_candidate.to_payload()
+    assert payload["value"] == "repo"
+    assert payload["replace_start"] is None
+    assert payload["danger"] is False
+    assert payload["unsupported_reason"] is None
     click_item = repo_candidate.to_click_item()
     assert click_item.value == "repo:"
     assert click_item.type == "plain"

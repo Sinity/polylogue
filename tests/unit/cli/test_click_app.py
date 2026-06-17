@@ -285,6 +285,35 @@ def test_read_views_json_outputs_profile_payload(cli_runner: CliRunner) -> None:
     assert "markdown" in views["recovery"]["formats"]
 
 
+def test_query_completions_json_outputs_structured_candidates(cli_runner: CliRunner) -> None:
+    result = cli_runner.invoke(
+        click_cli,
+        ["--plain", "query-completions", "--kind", "field", "--incomplete", "re", "--format", "json"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    envelope = payload["result"]["query_completions"]
+    candidates = {item["value"]: item for item in envelope["candidates"]}
+    repo = candidates["repo"]
+    assert repo["insert"] == "repo:"
+    assert repo["kind"] == "query-field"
+    assert repo["source"] == "EXPRESSION_FIELD_REGISTRY"
+    assert repo["danger"] is False
+    assert "repository name" in repo["description"]
+
+
+def test_query_completions_requires_unit_for_structural_fields(cli_runner: CliRunner) -> None:
+    result = cli_runner.invoke(
+        click_cli,
+        ["--plain", "query-completions", "--kind", "structural-field", "--incomplete", "t"],
+    )
+
+    assert result.exit_code != 0
+    assert "--unit is required" in result.output
+
+
 def test_read_verb_raw_view_forwards_options(cli_runner: CliRunner) -> None:
     """read --view raw routes pagination and format to run_raw."""
     with patch("polylogue.cli.messages.run_raw") as mock_run_raw:
@@ -694,6 +723,7 @@ class TestCliMetadata:
             "paths",
             "query-explain",
             "read-views",
+            "query-completions",
             "recent",
             "dashboard",
             "resume",

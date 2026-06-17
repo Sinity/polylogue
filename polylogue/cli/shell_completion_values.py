@@ -67,9 +67,33 @@ class QueryCompletionCandidate:
     group: str
     description: str
     source: str
+    replace_start: int | None = None
+    replace_end: int | None = None
     stale: bool = False
     danger: bool = False
     score: float = 1.0
+    unsupported_reason: str | None = None
+    preview_command: str | None = None
+
+    def to_payload(self) -> dict[str, object]:
+        """Return the structured candidate payload for non-shell consumers."""
+
+        return {
+            "value": self.value,
+            "insert": self.insert,
+            "replace_start": self.replace_start,
+            "replace_end": self.replace_end,
+            "display": self.display,
+            "kind": self.kind,
+            "group": self.group,
+            "description": self.description,
+            "score": self.score,
+            "source": self.source,
+            "stale": self.stale,
+            "danger": self.danger,
+            "unsupported_reason": self.unsupported_reason,
+            "preview_command": self.preview_command,
+        }
 
     def to_click_item(self) -> CompletionItem:
         help_text = self.description
