@@ -625,6 +625,7 @@ The schema files live under `docs/schemas/cli-output/`.
 | `session-messages-response` | `SessionMessagesResponsePayload` | `polylogue read --view messages --format json` |
 | `session-search-hit` | `SessionSearchHitPayload` | `polylogue --format json <query>`<br>`polylogue --format ndjson <query>` |
 | `search-envelope` | `SearchEnvelope` | `polylogue --format json <query>`<br>`GET /api/sessions?query=...` |
+| `query-unit-envelope` | `QueryUnitEnvelope` | `polylogue --format json messages where ...`<br>`polylogue --format json actions where ...`<br>`polylogue --format json blocks where ...`<br>`Polylogue.query_units(...)`<br>`MCP query_units`<br>`GET /api/query-units?expression=...` |
 | `session-neighbor-candidate` | `SessionNeighborCandidatePayload` | `polylogue read --view neighbors --format json` |
 | `mutation-result` | `MutationResultPayload` | `polylogue find <query> then delete --dry-run`<br>`polylogue find <query> then delete --yes`<br>`MCP mutation tools`<br>`daemon mutation endpoints` |
 | `machine-error` | `MachineErrorPayload` | `polylogue * --machine (error path)` |

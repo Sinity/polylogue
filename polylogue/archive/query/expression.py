@@ -42,10 +42,10 @@ and explicit Boolean session predicates:
     blocks where type:code AND text:timeout
 
 Unit-scoped ``messages/actions/blocks where ...`` predicates are executable
-session selectors: they lower to the same correlated ``exists <unit>(...)``
-predicates as the explicit structural form. They do not yet change the terminal
-result unit to raw message/action/block rows; terminal unit-changing pipelines
-are a later layer over the same AST/lowerer.
+in two shared paths: ``compile_expression`` keeps the compatibility session
+selector behavior by lowering them to correlated ``exists <unit>(...)``
+predicates, while terminal query-unit surfaces preserve the selected unit and
+return raw message/action/block rows from the same predicate semantics.
 
 Unknown fields and unsupported structured forms fail loudly. The Lark grammar
 in this module is the query grammar. Compact field/text clauses and explicit
