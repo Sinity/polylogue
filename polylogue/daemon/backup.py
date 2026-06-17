@@ -268,7 +268,6 @@ def backup_archive(
     *,
     output_dir: Path,
     check_only: bool = False,
-    include_blobs: bool = False,
     verify: bool = False,
     profile: BackupProfile = "rebuildable_cache_exclude",
 ) -> BackupResult:
@@ -282,8 +281,6 @@ def backup_archive(
     Args:
         output_dir: Target directory for the backup.
         check_only: If True, only verify prerequisites without creating a backup.
-        include_blobs: Retained for CLI compatibility; backups copy
-            only blobs referenced by source.db.
         verify: Restore the finished backup into a scratch directory and run
             integrity/smoke checks before returning.
         profile: Named backup profile controlling which archive tiers are copied.
@@ -306,7 +303,6 @@ def backup_archive(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    del include_blobs
     result = _backup_archive(output_dir=output_dir, started=started, profile=profile)
     if verify and result.ok and result.output_path is not None:
         _verify_backup_result(result)
