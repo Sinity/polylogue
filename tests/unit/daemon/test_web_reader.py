@@ -31,6 +31,7 @@ from http.server import HTTPServer
 from pathlib import Path
 from typing import cast
 from urllib.error import HTTPError
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 import pytest
@@ -1028,6 +1029,37 @@ class TestReaderQueryCompletions:
         assert status == 400
         assert payload["error"] == "invalid_query_completion"
         assert "--unit is required" in str(payload["message"])
+
+
+class TestReaderQueryUnits:
+    def test_query_units_endpoint_returns_terminal_message_rows(self, workspace_env: dict[str, Path]) -> None:
+        expression = quote("messages where text:Hello")
+        with _running_server(workspace_env) as (_, base_url):
+            payload = _get_json(base_url, f"/api/query-units?expression={expression}&limit=2")
+
+        assert isinstance(payload, dict)
+        assert payload["mode"] == "query-unit"
+        assert payload["unit"] == "message"
+        assert payload["limit"] == 2
+        assert payload["next_offset"] == 2
+        items = cast(list[dict[str, object]], payload["items"])
+        assert len(items) == 2
+        assert {item["unit"] for item in items} == {"message"}
+        assert {item["text"] for item in items} == {"Hello reader"}
+        assert {item["session_id"] for item in items} <= {
+            "claude-code-session:c1",
+            "chatgpt-export:c2",
+            "claude-ai-export:c3",
+        }
+
+    def test_query_units_endpoint_rejects_session_expression(self, workspace_env: dict[str, Path]) -> None:
+        expression = quote("repo:polylogue")
+        with _running_server(workspace_env) as (_, base_url):
+            status, payload = _get_json_ex(base_url, f"/api/query-units?expression={expression}")
+
+        assert status == 400
+        assert payload["error"] == "invalid_query"
+        assert "messages/actions/blocks where" in str(payload["message"])
 
 
 class TestReaderViewProfiles:
