@@ -1088,10 +1088,11 @@ class PolylogueArchiveMixin:
         session = await self.get_session(session_id)
         if session is None:
             return None
+        resolved_session_id = str(session.id)
         session_links: list[dict[str, object]] = await self.repository.queries.list_session_links_for_session(
-            session_id
+            resolved_session_id
         )
-        children = await self.repository.queries.list_sessions(SessionRecordQuery(parent_id=session_id))
+        children = await self.repository.queries.list_sessions(SessionRecordQuery(parent_id=resolved_session_id))
         session_links.extend(
             {
                 "dst_origin": child.origin.value,

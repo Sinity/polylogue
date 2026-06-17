@@ -711,6 +711,11 @@ async def test_recovery_digest_resolves_subagent_child_links(tmp_path: Path) -> 
         report = await archive.recovery_report(parent_id, "continue")
         assert report is not None
         assert "resolved_child_session_id=codex-session:recovery-child" in report
+
+        alias_digest = await archive.recovery_digest("codex:recovery-parent")
+        assert alias_digest is not None
+        [alias_subagent] = alias_digest.subagent_reports
+        assert alias_subagent.resolved_child_session_id == child_id
     finally:
         await archive.close()
 
