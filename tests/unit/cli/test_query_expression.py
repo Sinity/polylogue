@@ -70,6 +70,14 @@ class TestLexer:
             _TextToken(text="envelope", quoted=False, negated=False),
         ]
 
+    def test_code_like_bare_words(self) -> None:
+        tokens = _lex("foo(bar) array[0] dict{key}")
+        assert tokens == [
+            _TextToken(text="foo(bar)", quoted=False, negated=False),
+            _TextToken(text="array[0]", quoted=False, negated=False),
+            _TextToken(text="dict{key}", quoted=False, negated=False),
+        ]
+
     def test_quoted_phrase(self) -> None:
         tokens = _lex('"json envelope"')
         assert tokens == [_TextToken(text="json envelope", quoted=True, negated=False)]
@@ -353,7 +361,7 @@ class TestRejection:
             compile_expression("repo:polylogue OR repo:sinex")
 
     def test_cross_field_or_mentions_follow_up_issue(self) -> None:
-        with pytest.raises(ExpressionCompileError, match="1812"):
+        with pytest.raises(ExpressionCompileError, match="2006"):
             compile_expression("repo:polylogue OR origin:claude-code-session")
 
     def test_unknown_origin_raises(self) -> None:
@@ -363,6 +371,12 @@ class TestRejection:
     def test_messages_without_op_raises(self) -> None:
         with pytest.raises(ExpressionCompileError, match="comparison operator"):
             compile_expression("messages:10")
+
+    @pytest.mark.parametrize("expr", ["messages:>=10x", "words:<=5m"])
+    def test_malformed_count_clause_raises_instead_of_broadening(self, expr: str) -> None:
+        with pytest.raises(ExpressionCompileError, match="comparison operator") as exc_info:
+            compile_expression(expr)
+        assert exc_info.value.field in {"messages", "words"}
 
 
 # ---------------------------------------------------------------------------
@@ -629,9 +643,9 @@ class TestFieldRegistry:
             desc
         )
 
-    def test_cross_field_or_error_cites_1812(self) -> None:
-        """Regression: cross-field OR error must cite issue #1812, not #1858 (#1861)."""
-        with pytest.raises(ExpressionCompileError, match="1812"):
+    def test_cross_field_or_error_cites_2006(self) -> None:
+        """Regression: cross-field OR error must cite the full query DSL issue."""
+        with pytest.raises(ExpressionCompileError, match="2006"):
             compile_expression("repo:x OR origin:y")
 
 

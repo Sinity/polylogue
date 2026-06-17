@@ -330,12 +330,12 @@ _QUERY_GRAMMAR = r"""
         | NEG_BARE_TEXT         -> neg_bare_text
         | BARE_TEXT             -> bare_text
 
-    COUNT_CLAUSE.5: /(messages|words):(>=|<=|=)\d+/
+    COUNT_CLAUSE.5: /(messages|words):(>=|<=|=)\d+(?!\S)/
     FIELD_CLAUSE.4: /-?[a-zA-Z_][a-zA-Z0-9_]*:(?:"(\\.|[^"\\])*"|\([^)]*\)|[^\s"()\[\]{}]+)/
     NEG_QUOTED_TEXT.3: /-"(\\.|[^"\\])*"/
     QUOTED_TEXT.2: /"(\\.|[^"\\])*"/
-    NEG_BARE_TEXT.1: /-[^\s"()\[\]{}]+/
-    BARE_TEXT: /[^\s"()\[\]{}]+/
+    NEG_BARE_TEXT.1: /-[^\s"]+/
+    BARE_TEXT: /[^\s"]+/
 
     %import common.WS
     %ignore WS
@@ -435,6 +435,11 @@ def parse_expression_ast(expression: str) -> QueryExpressionAST:
     expression = expression.strip()
     if not expression:
         return QueryExpressionAST(())
+    if expression.startswith("("):
+        raise ExpressionCompileError(
+            "cross-field OR / parentheses are not supported; use field:(a|b|c)",
+            field=None,
+        )
     try:
         tree = _QUERY_PARSER.parse(expression)
     except UnexpectedInput as exc:
@@ -875,7 +880,7 @@ def compile_expression(expression: str) -> SessionQuerySpec:
         raise ExpressionCompileError(
             "cross-field OR is not supported in this version; express as separate queries "
             "or use field:(a|b|c) for in-field OR. "
-            "Boolean-tree queries are tracked in issue #1812.",
+            "Boolean-tree queries are tracked in issue #2006.",
             field=None,
         )
 
