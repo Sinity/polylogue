@@ -8,7 +8,7 @@ from http import HTTPStatus
 from typing import Any, cast
 
 from polylogue.archive.query.spec import SessionQuerySpec
-from polylogue.core.user_state_targets import TARGET_KIND_NAMES
+from polylogue.core.user_state_targets import TARGET_SESSION, is_mark_type_supported, validate_target_kind
 
 
 def _read_json_body(handler: Any) -> dict[str, object] | None:
@@ -188,13 +188,15 @@ def handle_create_mark(handler: Any) -> None:
         return
     session_id = str(body.get("session_id") or "")
     mark_type = str(body.get("mark_type") or "")
-    target_type = str(body.get("target_type") or "session")
+    target_type = str(body.get("target_type") or TARGET_SESSION)
     target_id = str(body.get("target_id") or "") or None
     message_id = str(body.get("message_id") or "") or None
-    if not session_id or mark_type not in {"star", "pin", "archive"}:
+    if not session_id or not is_mark_type_supported(mark_type):
         handler._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
         return
-    if target_type not in TARGET_KIND_NAMES:
+    try:
+        validate_target_kind(target_type)
+    except ValueError:
         handler._send_error(HTTPStatus.BAD_REQUEST, "invalid_target_type")
         return
 
@@ -222,7 +224,7 @@ def handle_create_mark(handler: Any) -> None:
 def handle_delete_mark(handler: Any, params: dict[str, list[str]]) -> None:
     session_id = handler._get_param(params, "session_id")
     mark_type = handler._get_param(params, "mark_type")
-    target_type = handler._get_param(params, "target_type", "session")
+    target_type = handler._get_param(params, "target_type", TARGET_SESSION)
     target_id = handler._get_param(params, "target_id")
     message_id = handler._get_param(params, "message_id")
     if not session_id or not mark_type:
@@ -233,12 +235,12 @@ def handle_delete_mark(handler: Any, params: dict[str, list[str]]) -> None:
         deleted = await poly.remove_mark(
             session_id,
             mark_type,
-            target_type=target_type or "session",
+            target_type=target_type or TARGET_SESSION,
             target_id=target_id,
             message_id=message_id,
         )
         return {
-            "target_type": target_type or "session",
+            "target_type": target_type or TARGET_SESSION,
             "target_id": target_id or message_id or session_id,
             "session_id": session_id,
             "message_id": message_id,
@@ -286,14 +288,16 @@ def handle_save_annotation(handler: Any) -> None:
     if body is None:
         return
     session_id = str(body.get("session_id") or "")
-    target_type = str(body.get("target_type") or "session")
+    target_type = str(body.get("target_type") or TARGET_SESSION)
     target_id = str(body.get("target_id") or "") or None
     message_id = str(body.get("message_id") or "") or None
     note_text = str(body.get("note_text") or "")
     if not session_id or not note_text.strip():
         handler._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
         return
-    if target_type not in TARGET_KIND_NAMES:
+    try:
+        validate_target_kind(target_type)
+    except ValueError:
         handler._send_error(HTTPStatus.BAD_REQUEST, "invalid_target_type")
         return
     resolved_target_id = target_id or message_id or session_id

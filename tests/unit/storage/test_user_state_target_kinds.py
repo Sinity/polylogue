@@ -1,7 +1,7 @@
 """Archive storage contracts for user-state target kinds (#1113, archive).
 
 The user-state target registry (``session``, ``message``, ``session``,
-``work_event``, ``thread``, ``content_block``, ``attachment``, ``paste_span``)
+``work_event``, ``thread``, ``block``, ``attachment``, ``paste_span``)
 is exercised here against the archive: seeding writes through
 ``ArchiveStore`` / ``SessionBuilder``, insight rows are seeded into the native
 ``index.db`` tables, and marks/annotations/recall-packs/workspaces are driven
@@ -11,16 +11,16 @@ Archive target ids are the deterministic public ids:
   * session  -> archive session id (``origin:provider_session_id``)
   * message  -> ``session_id:provider_message_id``
   * thread   -> native thread_id (the root session id for a single-session thread)
-  * content_block -> ``message_id:block_index``
+  * block -> ``message_id:block_index``
 
 All insight kinds are now writable as marks/annotations directly:
-  * ``content_block`` — the resolver emits ``content_block`` and the native
-    write path maps it to the CHECK-admitted ``block`` storage token.
+  * ``block`` — the resolver emits ``block`` and assertions persist the same
+    public target vocabulary.
   * ``work_event`` — the resolver probes the native ``session_work_events``
     generated ``event_id`` column (``session_id || ':work_event:' ||
     position``).
-The recall-pack / workspace resolution path (which does not write into the
-CHECK-constrained tables) resolves ``content_block`` correctly and is asserted.
+The recall-pack / workspace resolution path resolves ``block`` correctly and is
+asserted.
 """
 
 from __future__ import annotations
@@ -33,10 +33,14 @@ import pytest
 
 from polylogue.api import Polylogue
 from polylogue.core.user_state_targets import (
+    MARK_TYPE_NAMES,
     TARGET_KIND_NAMES,
     identity_key,
+    is_mark_type_supported,
     is_supported,
+    validate_mark_type,
 )
+from polylogue.storage.sqlite.archive_tiers.user import USER_DDL
 from tests.infra.storage_records import SessionBuilder, db_setup
 
 
@@ -72,7 +76,7 @@ def test_target_kinds_registry_admits_documented_kinds() -> None:
         "message",
         "work_event",
         "thread",
-        "content_block",
+        "block",
         "attachment",
         "paste_span",
     }
@@ -82,11 +86,24 @@ def test_target_kinds_registry_admits_documented_kinds() -> None:
     assert not is_supported("topology_edge")
 
 
+def test_mark_type_registry_is_the_public_validation_source() -> None:
+    assert MARK_TYPE_NAMES == ("star", "pin", "archive")
+    assert is_mark_type_supported("star")
+    assert validate_mark_type("pin") == "pin"
+    with pytest.raises(ValueError, match="mark_type must be one of"):
+        validate_mark_type("bogus")
+
+
+def test_user_tier_assertions_store_public_target_refs() -> None:
+    assert "CREATE TABLE IF NOT EXISTS assertions" in USER_DDL
+    assert "target_ref          TEXT NOT NULL" in USER_DDL
+
+
 def test_identity_key_renders_distinct_keys_per_kind() -> None:
     assert identity_key("session", session_id="conv", target_id="conv") == "session:conv"
     assert identity_key("work_event", session_id="conv", target_id="evt-1") == "work_event:conv:evt-1"
     assert identity_key("thread", session_id="conv", target_id="thr-1") == "thread:thr-1"
-    assert identity_key("content_block", session_id="conv", target_id="msg-1:0") == "content_block:conv:msg-1:0"
+    assert identity_key("block", session_id="conv", target_id="msg-1:0") == "block:conv:msg-1:0"
 
 
 # ---------------------------------------------------------------------------
@@ -248,7 +265,7 @@ async def test_recall_pack_resolves_insight_targets_and_degrades_explicitly(
             "items": [
                 {"target_type": "session", "session_id": session_id},
                 {"target_type": "thread", "session_id": session_id, "target_id": thread_id},
-                {"target_type": "content_block", "session_id": session_id, "target_id": f"{message_id}:0"},
+                {"target_type": "block", "session_id": session_id, "target_id": f"{message_id}:0"},
                 {"target_type": "session", "session_id": "missing-conv"},
                 {"target_type": "topology_edge", "target_id": "edge-1"},
             ],
@@ -265,7 +282,7 @@ async def test_recall_pack_resolves_insight_targets_and_degrades_explicitly(
     statuses = {(item["target_type"], item["target_id"]): item["status"] for item in payload["items"]}
     assert statuses[("session", session_id)] == "resolved"
     assert statuses[("thread", thread_id)] == "resolved"
-    assert statuses[("content_block", f"{message_id}:0")] == "resolved"
+    assert statuses[("block", f"{message_id}:0")] == "resolved"
     assert statuses[("session", "missing-conv")] == "missing"
     assert statuses[("topology_edge", "edge-1")] == "unsupported"
 
@@ -276,7 +293,7 @@ async def test_recall_pack_resolves_insight_targets_and_degrades_explicitly(
     }
     assert identity_keys[("session", session_id)] == f"session:{session_id}"
     assert identity_keys[("thread", thread_id)] == f"thread:{thread_id}"
-    assert identity_keys[("content_block", f"{message_id}:0")] == f"content_block:{session_id}:{message_id}:0"
+    assert identity_keys[("block", f"{message_id}:0")] == f"block:{session_id}:{message_id}:0"
 
 
 # ---------------------------------------------------------------------------

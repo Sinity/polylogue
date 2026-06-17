@@ -89,6 +89,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import (
+    ArchiveAssertionEnvelope,
     ArchiveBlackboardNoteEnvelope,
     AssertionKind,
     assertion_id_for_annotation,
@@ -97,11 +98,14 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     assertion_id_for_recall_pack,
     assertion_id_for_saved_view,
     assertion_id_for_workspace,
+    correction_id_for,
     list_archive_blackboard_note_envelopes,
+    list_assertions_by_kind,
     mark_assertion_status,
+    read_assertion_envelope,
     upsert_annotation,
-    upsert_assertion,
     upsert_blackboard_note,
+    upsert_correction,
     upsert_mark,
     upsert_recall_pack,
     upsert_saved_view,
@@ -1630,22 +1634,13 @@ class ArchiveStore:
 
     def add_mark(self, target_type: str, target_id: str, mark_type: str) -> bool:
         """Add one user mark to archive user.db."""
-        storage_target_type = _user_target_type_to_storage(target_type)
         initialize_archive_database(self.user_db_path, ArchiveTier.USER)
         user_conn = sqlite3.connect(self.user_db_path)
         try:
-            exists = (
-                user_conn.execute(
-                    """
-                    SELECT 1 FROM marks
-                    WHERE target_type = ? AND target_id = ? AND mark_type = ?
-                    """,
-                    (storage_target_type, target_id, mark_type),
-                ).fetchone()
-                is not None
-            )
+            assertion = read_assertion_envelope(user_conn, assertion_id_for_mark(target_type, target_id, mark_type))
+            exists = assertion is not None and assertion.status != "deleted"
             with user_conn:
-                upsert_mark(user_conn, storage_target_type, target_id, mark_type)
+                upsert_mark(user_conn, target_type, target_id, mark_type)
             return not exists
         finally:
             user_conn.close()
@@ -1654,25 +1649,14 @@ class ArchiveStore:
         """Remove one user mark from archive user.db."""
         if not self.user_db_path.exists():
             return False
-        storage_target_type = _user_target_type_to_storage(target_type)
         user_conn = sqlite3.connect(self.user_db_path)
         try:
             with user_conn:
-                cursor = user_conn.execute(
-                    """
-                    DELETE FROM marks
-                    WHERE target_type = ? AND target_id = ? AND mark_type = ?
-                    """,
-                    (storage_target_type, target_id, mark_type),
+                return mark_assertion_status(
+                    user_conn,
+                    assertion_id_for_mark(target_type, target_id, mark_type),
+                    "deleted",
                 )
-                deleted = int(cursor.rowcount) > 0
-                if deleted:
-                    mark_assertion_status(
-                        user_conn,
-                        assertion_id_for_mark(storage_target_type, target_id, mark_type),
-                        "deleted",
-                    )
-                return deleted
         finally:
             user_conn.close()
 
@@ -1686,55 +1670,43 @@ class ArchiveStore:
         """List user marks from archive user.db."""
         if not self.user_db_path.exists():
             return []
-        where: list[str] = []
-        params: list[object] = []
-        if mark_type:
-            where.append("mark_type = ?")
-            params.append(mark_type)
-        if target_type:
-            where.append("target_type = ?")
-            params.append(_user_target_type_to_storage(target_type))
-        if target_id:
-            where.append("target_id = ?")
-            params.append(target_id)
-        sql = "SELECT target_type, target_id, mark_type, created_at_ms FROM marks"
-        if where:
-            sql += " WHERE " + " AND ".join(where)
-        sql += " ORDER BY created_at_ms DESC, mark_id"
         user_conn = sqlite3.connect(f"file:{self.user_db_path}?mode=ro", uri=True)
         try:
-            rows = user_conn.execute(sql, tuple(params)).fetchall()
+            assertions = list_assertions_by_kind(user_conn, AssertionKind.MARK)
         finally:
             user_conn.close()
-        return [
-            {
-                "target_type": _user_target_type_from_storage(str(row[0])),
-                "target_id": str(row[1]),
-                "session_id": _user_mark_session_id(str(row[0]), str(row[1])),
-                "message_id": str(row[1]) if str(row[0]) == "message" else "",
-                "mark_type": str(row[2]),
-                "created_at": str(row[3]),
-            }
-            for row in rows
-        ]
+        out: list[dict[str, str]] = []
+        for assertion in assertions:
+            found_target_type, found_target_id = _split_user_target_ref(assertion.target_ref)
+            if mark_type and assertion.key != mark_type:
+                continue
+            if target_type and found_target_type != target_type:
+                continue
+            if target_id and found_target_id != target_id:
+                continue
+            out.append(
+                {
+                    "target_type": found_target_type,
+                    "target_id": found_target_id,
+                    "session_id": _user_mark_session_id(found_target_type, found_target_id),
+                    "message_id": found_target_id if found_target_type == "message" else "",
+                    "mark_type": str(assertion.key or ""),
+                    "created_at": str(assertion.created_at_ms),
+                }
+            )
+        return out
 
     def save_annotation(self, annotation_id: str, target_type: str, target_id: str, note_text: str) -> bool:
         """Create or update one annotation in archive user.db."""
-        storage_target_type = _user_target_type_to_storage(target_type)
         initialize_archive_database(self.user_db_path, ArchiveTier.USER)
         user_conn = sqlite3.connect(self.user_db_path)
         try:
-            exists = (
-                user_conn.execute(
-                    "SELECT 1 FROM annotations WHERE annotation_id = ?",
-                    (annotation_id,),
-                ).fetchone()
-                is not None
-            )
+            assertion = read_assertion_envelope(user_conn, assertion_id_for_annotation(annotation_id))
+            exists = assertion is not None and assertion.status != "deleted"
             with user_conn:
                 upsert_annotation(
                     user_conn,
-                    storage_target_type,
+                    target_type,
                     target_id,
                     note_text,
                     annotation_id=annotation_id,
@@ -1767,46 +1739,41 @@ class ArchiveStore:
         """
         if not self.user_db_path.exists():
             return []
-        where: list[str] = []
-        params: list[object] = []
-        if annotation_id:
-            where.append("annotation_id = ?")
-            params.append(annotation_id)
-        if session_id and target_type is None and target_id is None:
-            where.append(
-                "((target_type = 'session' AND target_id = ?)"
-                " OR (target_type = 'message' AND (target_id = ? OR target_id LIKE ? ESCAPE '\\')))"
-            )
-            like_prefix = session_id.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + ":%"
-            params.extend([session_id, session_id, like_prefix])
-        if target_type:
-            where.append("target_type = ?")
-            params.append(_user_target_type_to_storage(target_type))
-        if target_id:
-            where.append("target_id = ?")
-            params.append(target_id)
-        sql = "SELECT annotation_id, target_type, target_id, body, created_at_ms, updated_at_ms FROM annotations"
-        if where:
-            sql += " WHERE " + " AND ".join(where)
-        sql += " ORDER BY updated_at_ms DESC, annotation_id"
         user_conn = sqlite3.connect(f"file:{self.user_db_path}?mode=ro", uri=True)
         try:
-            rows = user_conn.execute(sql, tuple(params)).fetchall()
+            assertions = list_assertions_by_kind(user_conn, AssertionKind.ANNOTATION)
         finally:
             user_conn.close()
-        return [
-            {
-                "annotation_id": str(row[0]),
-                "target_type": _user_target_type_from_storage(str(row[1])),
-                "target_id": str(row[2]),
-                "session_id": _user_mark_session_id(str(row[1]), str(row[2])),
-                "message_id": str(row[2]) if str(row[1]) == "message" else "",
-                "note_text": str(row[3]),
-                "created_at": str(row[4]),
-                "updated_at": str(row[5]),
-            }
-            for row in rows
-        ]
+        out: list[dict[str, str]] = []
+        for assertion in assertions:
+            found_annotation_id = str(assertion.key or "")
+            found_target_type, found_target_id = _split_user_target_ref(assertion.target_ref)
+            if annotation_id and found_annotation_id != annotation_id:
+                continue
+            if session_id and target_id is None:
+                belongs_to_session = (found_target_type == "session" and found_target_id == session_id) or (
+                    found_target_type == "message"
+                    and (found_target_id == session_id or found_target_id.startswith(f"{session_id}:"))
+                )
+                if not belongs_to_session:
+                    continue
+            if target_type and found_target_type != target_type:
+                continue
+            if target_id and found_target_id != target_id:
+                continue
+            out.append(
+                {
+                    "annotation_id": found_annotation_id,
+                    "target_type": found_target_type,
+                    "target_id": found_target_id,
+                    "session_id": _user_mark_session_id(found_target_type, found_target_id),
+                    "message_id": found_target_id if found_target_type == "message" else "",
+                    "note_text": assertion.body_text or "",
+                    "created_at": str(assertion.created_at_ms),
+                    "updated_at": str(assertion.updated_at_ms),
+                }
+            )
+        return out
 
     def delete_annotation(self, annotation_id: str) -> bool:
         """Delete one annotation from archive user.db."""
@@ -1815,11 +1782,7 @@ class ArchiveStore:
         user_conn = sqlite3.connect(self.user_db_path)
         try:
             with user_conn:
-                cursor = user_conn.execute("DELETE FROM annotations WHERE annotation_id = ?", (annotation_id,))
-                deleted = int(cursor.rowcount) > 0
-                if deleted:
-                    mark_assertion_status(user_conn, assertion_id_for_annotation(annotation_id), "deleted")
-                return deleted
+                return mark_assertion_status(user_conn, assertion_id_for_annotation(annotation_id), "deleted")
         finally:
             user_conn.close()
 
@@ -1834,54 +1797,51 @@ class ArchiveStore:
         initialize_archive_database(self.user_db_path, ArchiveTier.USER)
         user_conn = sqlite3.connect(self.user_db_path)
         try:
-            existing = user_conn.execute(
-                "SELECT created_at_ms FROM saved_views WHERE view_id = ?",
-                (view_id,),
-            ).fetchone()
+            assertion_id = assertion_id_for_saved_view(view_id)
+            assertion = read_assertion_envelope(user_conn, assertion_id)
+            name_assertion = _active_assertion_by_kind_key(user_conn, AssertionKind.SAVED_QUERY, normalized_name)
+            exists = (assertion is not None and assertion.status != "deleted") or name_assertion is not None
             with user_conn:
+                if name_assertion is not None and name_assertion.assertion_id != assertion_id:
+                    mark_assertion_status(user_conn, name_assertion.assertion_id, "deleted")
                 upsert_saved_view(user_conn, normalized_name, query, view_id=view_id)
-            return existing is None
+            return not exists
         finally:
             user_conn.close()
 
     def get_view(self, view_id: str) -> dict[str, str] | None:
         """Get one saved view by id from archive user.db."""
-        rows = self._list_views(where="WHERE view_id = ?", params=(view_id,))
-        return rows[0] if rows else None
+        return next((row for row in self.list_views() if row["view_id"] == view_id), None)
 
     def get_view_by_name(self, name: str) -> dict[str, str] | None:
         """Get one saved view by name from archive user.db."""
-        rows = self._list_views(where="WHERE name = ?", params=(name,))
-        return rows[0] if rows else None
+        return next((row for row in self.list_views() if row["name"] == name), None)
 
     def list_views(self) -> list[dict[str, str]]:
         """List saved views from archive user.db."""
         return self._list_views()
 
     def _list_views(self, *, where: str = "", params: tuple[object, ...] = ()) -> list[dict[str, str]]:
+        del where, params
         if not self.user_db_path.exists():
             return []
         user_conn = sqlite3.connect(f"file:{self.user_db_path}?mode=ro", uri=True)
         try:
-            rows = user_conn.execute(
-                f"""
-                SELECT view_id, name, query_json, created_at_ms
-                FROM saved_views
-                {where}
-                ORDER BY created_at_ms DESC, view_id
-                """,
-                params,
-            ).fetchall()
+            assertions = list_assertions_by_kind(user_conn, AssertionKind.SAVED_QUERY)
         finally:
             user_conn.close()
         return [
             {
-                "view_id": str(row[0]),
-                "name": str(row[1]),
-                "query_json": str(row[2]),
-                "created_at": str(row[3]),
+                "view_id": _id_from_target_ref(assertion.target_ref, "saved_view:"),
+                "name": str(assertion.key or ""),
+                "query_json": json.dumps(
+                    assertion.value if isinstance(assertion.value, dict) else {},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                "created_at": str(assertion.created_at_ms),
             }
-            for row in rows
+            for assertion in assertions
         ]
 
     def delete_view(self, view_id: str) -> bool:
@@ -1891,11 +1851,7 @@ class ArchiveStore:
         user_conn = sqlite3.connect(self.user_db_path)
         try:
             with user_conn:
-                cursor = user_conn.execute("DELETE FROM saved_views WHERE view_id = ?", (view_id,))
-                deleted = int(cursor.rowcount) > 0
-                if deleted:
-                    mark_assertion_status(user_conn, assertion_id_for_saved_view(view_id), "deleted")
-                return deleted
+                return mark_assertion_status(user_conn, assertion_id_for_saved_view(view_id), "deleted")
         finally:
             user_conn.close()
 
@@ -1915,57 +1871,44 @@ class ArchiveStore:
         initialize_archive_database(self.user_db_path, ArchiveTier.USER)
         user_conn = sqlite3.connect(self.user_db_path)
         try:
-            existing = user_conn.execute(
-                "SELECT created_at_ms FROM recall_packs WHERE recall_pack_id = ?",
-                (pack_id,),
-            ).fetchone()
+            assertion = read_assertion_envelope(user_conn, assertion_id_for_recall_pack(pack_id))
+            exists = assertion is not None and assertion.status != "deleted"
             with user_conn:
                 upsert_recall_pack(user_conn, label, payload, recall_pack_id=pack_id)
-            return existing is None
+            return not exists
         finally:
             user_conn.close()
 
     def get_recall_pack(self, pack_id: str) -> dict[str, str] | None:
         """Get one recall pack by id from archive user.db."""
-        rows = self._list_recall_packs(where="WHERE recall_pack_id = ?", params=(pack_id,))
-        return rows[0] if rows else None
+        return next((row for row in self.list_recall_packs() if row["pack_id"] == pack_id), None)
 
     def list_recall_packs(self) -> list[dict[str, str]]:
         """List recall packs from archive user.db."""
         return self._list_recall_packs()
 
     def _list_recall_packs(self, *, where: str = "", params: tuple[object, ...] = ()) -> list[dict[str, str]]:
+        del where, params
         if not self.user_db_path.exists():
             return []
         user_conn = sqlite3.connect(f"file:{self.user_db_path}?mode=ro", uri=True)
         try:
-            rows = user_conn.execute(
-                f"""
-                SELECT recall_pack_id, name, payload_json, created_at_ms
-                FROM recall_packs
-                {where}
-                ORDER BY created_at_ms DESC, recall_pack_id
-                """,
-                params,
-            ).fetchall()
+            assertions = list_assertions_by_kind(user_conn, AssertionKind.RECALL_PACK)
         finally:
             user_conn.close()
         out: list[dict[str, str]] = []
-        for row in rows:
-            try:
-                payload = json.loads(str(row[2]))
-            except json.JSONDecodeError:
-                payload = {}
+        for assertion in assertions:
+            payload = assertion.value if isinstance(assertion.value, dict) else {}
             if not isinstance(payload, dict):
                 payload = {}
             session_ids_json = payload.pop("session_ids_json", "[]")
             out.append(
                 {
-                    "pack_id": str(row[0]),
-                    "label": str(row[1]),
+                    "pack_id": _id_from_target_ref(assertion.target_ref, "recall_pack:"),
+                    "label": str(assertion.key or ""),
                     "session_ids_json": str(session_ids_json),
                     "payload_json": json.dumps(payload, sort_keys=True, separators=(",", ":")),
-                    "created_at": str(row[3]),
+                    "created_at": str(assertion.created_at_ms),
                 }
             )
         return out
@@ -1977,11 +1920,7 @@ class ArchiveStore:
         user_conn = sqlite3.connect(self.user_db_path)
         try:
             with user_conn:
-                cursor = user_conn.execute("DELETE FROM recall_packs WHERE recall_pack_id = ?", (pack_id,))
-                deleted = int(cursor.rowcount) > 0
-                if deleted:
-                    mark_assertion_status(user_conn, assertion_id_for_recall_pack(pack_id), "deleted")
-                return deleted
+                return mark_assertion_status(user_conn, assertion_id_for_recall_pack(pack_id), "deleted")
         finally:
             user_conn.close()
 
@@ -2005,59 +1944,50 @@ class ArchiveStore:
         initialize_archive_database(self.user_db_path, ArchiveTier.USER)
         user_conn = sqlite3.connect(self.user_db_path)
         try:
-            existing = user_conn.execute(
-                "SELECT created_at_ms FROM workspaces WHERE workspace_id = ?",
-                (workspace_id,),
-            ).fetchone()
+            assertion_id = assertion_id_for_workspace(workspace_id)
+            assertion = read_assertion_envelope(user_conn, assertion_id)
+            name_assertion = _active_assertion_by_kind_key(user_conn, AssertionKind.WORKSPACE_NOTE, name)
+            exists = (assertion is not None and assertion.status != "deleted") or name_assertion is not None
             with user_conn:
+                if name_assertion is not None and name_assertion.assertion_id != assertion_id:
+                    mark_assertion_status(user_conn, name_assertion.assertion_id, "deleted")
                 upsert_workspace(user_conn, name, settings, workspace_id=workspace_id)
-            return existing is None
+            return not exists
         finally:
             user_conn.close()
 
     def get_workspace(self, workspace_id: str) -> dict[str, str] | None:
         """Get one workspace by id from archive user.db."""
-        rows = self._list_workspaces(where="WHERE workspace_id = ?", params=(workspace_id,))
-        return rows[0] if rows else None
+        return next((row for row in self.list_workspaces() if row["workspace_id"] == workspace_id), None)
 
     def list_workspaces(self) -> list[dict[str, str]]:
         """List workspaces from archive user.db."""
         return self._list_workspaces()
 
     def _list_workspaces(self, *, where: str = "", params: tuple[object, ...] = ()) -> list[dict[str, str]]:
+        del where, params
         if not self.user_db_path.exists():
             return []
         user_conn = sqlite3.connect(f"file:{self.user_db_path}?mode=ro", uri=True)
         try:
-            rows = user_conn.execute(
-                f"""
-                SELECT workspace_id, name, settings_json, created_at_ms, updated_at_ms
-                FROM workspaces
-                {where}
-                ORDER BY updated_at_ms DESC, workspace_id
-                """,
-                params,
-            ).fetchall()
+            assertions = list_assertions_by_kind(user_conn, AssertionKind.WORKSPACE_NOTE)
         finally:
             user_conn.close()
         out: list[dict[str, str]] = []
-        for row in rows:
-            try:
-                settings = json.loads(str(row[2]))
-            except json.JSONDecodeError:
-                settings = {}
+        for assertion in assertions:
+            settings = assertion.value if isinstance(assertion.value, dict) else {}
             if not isinstance(settings, dict):
                 settings = {}
             out.append(
                 {
-                    "workspace_id": str(row[0]),
-                    "name": str(row[1]),
+                    "workspace_id": _id_from_target_ref(assertion.target_ref, "workspace:"),
+                    "name": str(assertion.key or ""),
                     "mode": str(settings.get("mode") or ""),
                     "open_targets_json": str(settings.get("open_targets_json") or "[]"),
                     "layout_json": str(settings.get("layout_json") or "{}"),
                     "active_target_json": str(settings.get("active_target_json") or "{}"),
-                    "created_at": str(row[3]),
-                    "updated_at": str(row[4]),
+                    "created_at": str(assertion.created_at_ms),
+                    "updated_at": str(assertion.updated_at_ms),
                 }
             )
         return out
@@ -2069,11 +1999,7 @@ class ArchiveStore:
         user_conn = sqlite3.connect(self.user_db_path)
         try:
             with user_conn:
-                cursor = user_conn.execute("DELETE FROM workspaces WHERE workspace_id = ?", (workspace_id,))
-                deleted = int(cursor.rowcount) > 0
-                if deleted:
-                    mark_assertion_status(user_conn, assertion_id_for_workspace(workspace_id), "deleted")
-                return deleted
+                return mark_assertion_status(user_conn, assertion_id_for_workspace(workspace_id), "deleted")
         finally:
             user_conn.close()
 
@@ -2089,56 +2015,22 @@ class ArchiveStore:
         resolved_session_id = self.resolve_session_id(session_id)
         correction_kind = parse_correction_kind(kind)
         initialize_archive_database(self.user_db_path, ArchiveTier.USER)
-        now_ms = int(datetime.now(UTC).timestamp() * 1000)
-        correction_id = f"correction:{resolved_session_id}:{correction_kind.value}"
-        stored_payload = {"payload": dict(payload), "note": note}
+        stored_payload: dict[str, object] = {"payload": dict(payload), "note": note}
         user_conn = sqlite3.connect(self.user_db_path)
         try:
-            existing = user_conn.execute(
-                """
-                SELECT created_at_ms
-                FROM corrections
-                WHERE target_type = 'session' AND target_id = ? AND correction_type = ?
-                """,
-                (resolved_session_id, correction_kind.value),
-            ).fetchone()
-            created_at_ms = int(existing[0]) if existing is not None else now_ms
             with user_conn:
-                user_conn.execute(
-                    """
-                    INSERT INTO corrections (
-                        correction_id, target_type, target_id, correction_type,
-                        payload_json, created_at_ms, updated_at_ms
-                    ) VALUES (?, 'session', ?, ?, ?, ?, ?)
-                    ON CONFLICT(target_type, target_id, correction_type) DO UPDATE SET
-                        payload_json = excluded.payload_json,
-                        updated_at_ms = excluded.updated_at_ms
-                    """,
-                    (
-                        correction_id,
-                        resolved_session_id,
-                        correction_kind.value,
-                        json.dumps(stored_payload, sort_keys=True),
-                        created_at_ms,
-                        now_ms,
-                    ),
-                )
-                upsert_assertion(
+                upsert_correction(
                     user_conn,
-                    assertion_id=assertion_id_for_correction(correction_id),
-                    target_ref=f"insight:{resolved_session_id}",
-                    kind=AssertionKind.CORRECTION,
-                    key=correction_kind.value,
-                    value=stored_payload,
-                    body_text=note,
-                    author_kind="user",
-                    now_ms=now_ms,
+                    "insight",
+                    resolved_session_id,
+                    correction_kind.value,
+                    stored_payload,
                 )
         finally:
             user_conn.close()
         listed = self.list_corrections(session_id=resolved_session_id, kind=correction_kind.value)
         if not listed:
-            raise KeyError(correction_id)
+            raise KeyError((resolved_session_id, correction_kind.value))
         return listed[0]
 
     def list_corrections(self, *, session_id: str | None = None, kind: str | None = None) -> list[LearningCorrection]:
@@ -2147,28 +2039,27 @@ class ArchiveStore:
             return []
         resolved_session_id = self.resolve_session_id(session_id) if session_id else None
         correction_kind = parse_correction_kind(kind).value if kind is not None else None
-        where = ["target_type = 'session'"]
-        params: list[object] = []
-        if resolved_session_id is not None:
-            where.append("target_id = ?")
-            params.append(resolved_session_id)
-        if correction_kind is not None:
-            where.append("correction_type = ?")
-            params.append(correction_kind)
         user_conn = sqlite3.connect(f"file:{self.user_db_path}?mode=ro", uri=True)
         try:
-            rows = user_conn.execute(
-                f"""
-                SELECT target_id, correction_type, payload_json, updated_at_ms
-                FROM corrections
-                WHERE {" AND ".join(where)}
-                ORDER BY updated_at_ms DESC, correction_id
-                """,
-                tuple(params),
-            ).fetchall()
+            assertions = list_assertions_by_kind(user_conn, AssertionKind.CORRECTION)
         finally:
             user_conn.close()
-        return [_learning_correction_from_archive_row(row) for row in rows]
+        out: list[LearningCorrection] = []
+        for assertion in assertions:
+            target_type, target_id = _split_user_target_ref(assertion.target_ref)
+            if target_type != "insight":
+                continue
+            if resolved_session_id is not None and target_id != resolved_session_id:
+                continue
+            if correction_kind is not None and assertion.key != correction_kind:
+                continue
+            payload_json = json.dumps(assertion.value if isinstance(assertion.value, dict) else {}, sort_keys=True)
+            out.append(
+                _learning_correction_from_archive_row(
+                    (target_id, str(assertion.key or ""), payload_json, assertion.updated_at_ms)
+                )
+            )
+        return out
 
     def delete_correction(self, session_id: str, kind: str) -> bool:
         """Delete one learning correction from archive user.db."""
@@ -2179,25 +2070,8 @@ class ArchiveStore:
         user_conn = sqlite3.connect(self.user_db_path)
         try:
             with user_conn:
-                row = user_conn.execute(
-                    """
-                    SELECT correction_id
-                    FROM corrections
-                    WHERE target_type = 'session' AND target_id = ? AND correction_type = ?
-                    """,
-                    (resolved_session_id, correction_kind.value),
-                ).fetchone()
-                cursor = user_conn.execute(
-                    """
-                    DELETE FROM corrections
-                    WHERE target_type = 'session' AND target_id = ? AND correction_type = ?
-                    """,
-                    (resolved_session_id, correction_kind.value),
-                )
-                deleted = int(cursor.rowcount) > 0
-                if deleted and row is not None:
-                    mark_assertion_status(user_conn, assertion_id_for_correction(str(row[0])), "deleted")
-                return deleted
+                correction_id = correction_id_for("insight", resolved_session_id, correction_kind.value)
+                return mark_assertion_status(user_conn, assertion_id_for_correction(correction_id), "deleted")
         finally:
             user_conn.close()
 
@@ -2209,18 +2083,15 @@ class ArchiveStore:
         user_conn = sqlite3.connect(self.user_db_path)
         try:
             with user_conn:
-                rows = user_conn.execute(
-                    "SELECT correction_id FROM corrections WHERE target_type = 'session' AND target_id = ?",
-                    (resolved_session_id,),
-                ).fetchall()
-                cursor = user_conn.execute(
-                    "DELETE FROM corrections WHERE target_type = 'session' AND target_id = ?",
-                    (resolved_session_id,),
-                )
-                deleted_count = max(int(cursor.rowcount), 0)
-                if deleted_count:
-                    for row in rows:
-                        mark_assertion_status(user_conn, assertion_id_for_correction(str(row[0])), "deleted")
+                deleted_count = 0
+                for assertion in list_assertions_by_kind(user_conn, AssertionKind.CORRECTION):
+                    target_type, target_id = _split_user_target_ref(assertion.target_ref)
+                    if (
+                        target_type == "insight"
+                        and target_id == resolved_session_id
+                        and mark_assertion_status(user_conn, assertion.assertion_id, "deleted")
+                    ):
+                        deleted_count += 1
                 return deleted_count
         finally:
             user_conn.close()
@@ -2262,8 +2133,7 @@ class ArchiveStore:
     def list_blackboard_notes(self, *, limit: int | None = None) -> list[ArchiveBlackboardNoteEnvelope]:
         """List blackboard notes from archive user.db, newest first.
 
-        Mirrored assertion rows own note body/timestamps for write-through
-        notes; legacy rows still provide stable note ids and target fields.
+        Assertion rows own note ids, targets, body text, and timestamps.
         Structured-field decoding (kind/title/scope) is a presentation concern
         handled by ``polylogue.archive.blackboard``.
         """
@@ -3897,20 +3767,26 @@ def _all_session_tags_sql() -> str:
     """
 
 
-def _user_target_type_to_storage(target_type: str) -> str:
-    if target_type == "session":
-        return "session"
-    if target_type == "content_block":
-        return "block"
-    return target_type
+def _split_user_target_ref(target_ref: str) -> tuple[str, str]:
+    target_type, sep, target_id = target_ref.partition(":")
+    if not sep:
+        return "", target_ref
+    return target_type, target_id
 
 
-def _user_target_type_from_storage(target_type: str) -> str:
-    if target_type == "session":
-        return "session"
-    if target_type == "block":
-        return "content_block"
-    return target_type
+def _id_from_target_ref(target_ref: str, prefix: str) -> str:
+    return target_ref[len(prefix) :] if target_ref.startswith(prefix) else target_ref
+
+
+def _active_assertion_by_kind_key(
+    conn: sqlite3.Connection,
+    kind: str,
+    key: str,
+) -> ArchiveAssertionEnvelope | None:
+    for assertion in list_assertions_by_kind(conn, kind):
+        if assertion.key == key:
+            return assertion
+    return None
 
 
 def _user_mark_session_id(target_type: str, target_id: str) -> str:
@@ -5527,20 +5403,26 @@ def _archive_user_overlay_debt(conn: sqlite3.Connection, user_db_path: Path) -> 
             "WHERE NOT EXISTS (SELECT 1 FROM sessions s WHERE s.session_id = u.session_id)",
             "SELECT COUNT(*) FROM user_debt.session_metadata u "
             "WHERE NOT EXISTS (SELECT 1 FROM sessions s WHERE s.session_id = u.session_id)",
-            "SELECT COUNT(*) FROM user_debt.suppressions u "
-            "WHERE NOT EXISTS (SELECT 1 FROM sessions s WHERE s.session_id = u.session_id)",
-            "SELECT COUNT(*) FROM user_debt.corrections u "
-            "WHERE u.target_type = 'session' "
-            "AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.session_id = u.target_id)",
-            "SELECT COUNT(*) FROM user_debt.marks u "
-            "WHERE u.target_type = 'session' "
-            "AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.session_id = u.target_id)",
-            "SELECT COUNT(*) FROM user_debt.annotations u "
-            "WHERE u.target_type = 'session' "
-            "AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.session_id = u.target_id)",
-            "SELECT COUNT(*) FROM user_debt.blackboard_notes u "
-            "WHERE u.target_type = 'session' "
-            "AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.session_id = u.target_id)",
+            "SELECT COUNT(*) FROM user_debt.assertions u "
+            "WHERE u.kind IN ('mark', 'annotation', 'note', 'suppression') "
+            "AND u.target_ref LIKE 'session:%' "
+            "AND COALESCE(u.status, '') != 'deleted' "
+            "AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.session_id = substr(u.target_ref, 9))",
+            "SELECT COUNT(*) FROM user_debt.assertions u "
+            "WHERE u.kind IN ('mark', 'annotation', 'note', 'suppression') "
+            "AND u.target_ref LIKE 'message:%' "
+            "AND COALESCE(u.status, '') != 'deleted' "
+            "AND NOT EXISTS ("
+            "  SELECT 1 FROM sessions s "
+            "  WHERE substr(u.target_ref, 9) = s.session_id "
+            "     OR (substr(substr(u.target_ref, 9), 1, length(s.session_id)) = s.session_id "
+            "         AND substr(substr(u.target_ref, 9), length(s.session_id) + 1, 1) = ':')"
+            ")",
+            "SELECT COUNT(*) FROM user_debt.assertions u "
+            "WHERE u.kind = 'correction' "
+            "AND u.target_ref LIKE 'insight:%' "
+            "AND COALESCE(u.status, '') != 'deleted' "
+            "AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.session_id = substr(u.target_ref, 9))",
         )
         issue_count = sum(_count_scalar(conn, sql) for sql in checks)
     finally:

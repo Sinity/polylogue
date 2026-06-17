@@ -100,8 +100,10 @@ class MCPSessionQueryRequest:
     min_messages: MCPCountBound = None
     max_messages: MCPCountBound = None
     min_words: MCPCountBound = None
+    max_words: MCPCountBound = None
     sample: int | None = None
     similar_text: str | None = None
+    similar_session_id: str | None = None
     since_session_id: str | None = None
     message_type: str | None = None
     offset: MCPToolOffset = 0
@@ -144,8 +146,10 @@ class MCPSessionQueryRequest:
             min_messages=self.min_messages,
             max_messages=self.max_messages,
             min_words=self.min_words,
+            max_words=self.max_words,
             sample=self.sample,
             similar_text=self.similar_text,
+            similar_session_id=self.similar_session_id,
             since_session_id=self.since_session_id,
             message_type=self.message_type,
             offset=self.offset,

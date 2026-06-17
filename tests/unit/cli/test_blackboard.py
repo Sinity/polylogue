@@ -86,11 +86,11 @@ class TestBlackboardPost:
         user_db = workspace_env["archive_root"] / "user.db"
         conn = sqlite3.connect(str(user_db))
         row = conn.execute(
-            "SELECT target_type, target_id, body FROM blackboard_notes WHERE body LIKE ?",
+            "SELECT body_text FROM assertions WHERE kind = 'note' AND body_text LIKE ?",
             ("[finding] Test Finding%",),
         ).fetchone()
         conn.close()
-        assert row == (None, None, "[finding] Test Finding\n\nSomething interesting was found.")
+        assert row == ("[finding] Test Finding\n\nSomething interesting was found.",)
 
     def test_post_writes_archive_user_db(self, cli_runner: CliRunner, workspace_env: dict[str, Path]) -> None:
         """Posting a scoped note writes directly to archive user.db."""
@@ -113,9 +113,9 @@ class TestBlackboardPost:
 
         assert result.exit_code == 0, f"post failed: {result.output}"
         conn = sqlite3.connect(workspace_env["archive_root"] / "user.db")
-        row = conn.execute("SELECT target_type, target_id, body FROM blackboard_notes").fetchone()
+        row = conn.execute("SELECT target_ref, body_text FROM assertions WHERE kind = 'note'").fetchone()
         conn.close()
-        assert row == ("session", "codex-session:one", "[decision] Archive\n\nStore in user db.")
+        assert row == ("session:codex-session:one", "[decision] Archive\n\nStore in user db.")
 
     def test_post_with_scope_fields(self, cli_runner: CliRunner, workspace_env: dict[str, Path]) -> None:
         """Posting with scope fields stores them in the archive note body."""
@@ -147,7 +147,10 @@ class TestBlackboardPost:
         assert result.exit_code == 0, f"post failed: {result.output}"
 
         conn = sqlite3.connect(workspace_env["archive_root"] / "user.db")
-        row = conn.execute("SELECT body FROM blackboard_notes WHERE body LIKE ?", ("[blocker] Scope Test%",)).fetchone()
+        row = conn.execute(
+            "SELECT body_text FROM assertions WHERE kind = 'note' AND body_text LIKE ?",
+            ("[blocker] Scope Test%",),
+        ).fetchone()
         conn.close()
         assert row is not None
         assert "Scoped content." in row[0]
@@ -254,7 +257,7 @@ class TestBlackboardPost:
         assert (workspace_env["archive_root"] / "user.db").exists()
         assert not (outside_root / "user.db").exists()
         with sqlite3.connect(workspace_env["archive_root"] / "user.db") as conn:
-            row = conn.execute("SELECT body FROM blackboard_notes").fetchone()
+            row = conn.execute("SELECT body_text FROM assertions WHERE kind = 'note'").fetchone()
         assert row == ("[handoff] Active Root\n\nUse the active archive root.",)
 
     def test_post_allowed_kinds(self, cli_runner: CliRunner, workspace_env: dict[str, Path]) -> None:

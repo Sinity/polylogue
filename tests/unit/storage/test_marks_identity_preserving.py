@@ -1,14 +1,14 @@
 """Native marks/annotations identity-preservation laws (#1114, archive).
 
 These tests pin the surface contract: user marks and annotations live in the
-archive ``user.db`` tier, keyed by stable public target ids, and survive a
-hard delete + re-import of the underlying session. Because the native session
-id is deterministic (``origin:provider_session_id``), re-ingesting the same
-logical session rebinds to the identical target id with no repoint pass.
+archive ``user.db`` tier as assertions, keyed by stable public target ids, and
+survive a hard delete + re-import of the underlying session. Because the native
+session id is deterministic (``origin:provider_session_id``), re-ingesting the
+same logical session rebinds to the identical target id with no repoint pass.
 
 Seeding writes the archive through ``SessionBuilder`` (which routes
-to ``ArchiveStore``); reads go through the async ``Polylogue`` facade. The marks
-rows are inspected directly in ``user.db``.
+to ``ArchiveStore``); reads go through the async ``Polylogue`` facade. The
+assertions are inspected directly in ``user.db``.
 """
 
 from __future__ import annotations
@@ -31,23 +31,25 @@ def _user_db_path(workspace_env: dict[str, Path]) -> Path:
 def _mark_row(user_db: Path, mark_type: str = "star") -> tuple[str, str, str, dict[str, object]]:
     with sqlite3.connect(user_db) as conn:
         row = conn.execute(
-            "SELECT target_type, target_id, mark_type, metadata_json FROM marks WHERE mark_type = ?",
+            "SELECT target_ref, key, value_json FROM assertions WHERE kind = 'mark' AND key = ?",
             (mark_type,),
         ).fetchone()
     assert row is not None
-    metadata = json.loads(row[3])
+    target_type, target_id = str(row[0]).split(":", 1)
+    metadata = json.loads(row[2]) if row[2] is not None else {}
     assert isinstance(metadata, dict)
-    return row[0], row[1], row[2], metadata
+    return target_type, target_id, row[1], metadata
 
 
 def _annotation_row(user_db: Path, annotation_id: str) -> tuple[str, str, str]:
     with sqlite3.connect(user_db) as conn:
         row = conn.execute(
-            "SELECT target_type, target_id, body FROM annotations WHERE annotation_id = ?",
+            "SELECT target_ref, body_text FROM assertions WHERE kind = 'annotation' AND key = ?",
             (annotation_id,),
         ).fetchone()
     assert row is not None
-    return row[0], row[1], row[2]
+    target_type, target_id = str(row[0]).split(":", 1)
+    return target_type, target_id, row[1]
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +170,7 @@ async def test_marks_survive_session_delete_and_rebind_on_reimport(
         assert {row["target_id"] for row in marks_after_delete} == {session_id}
         assert {row["annotation_id"] for row in annotations_after_delete} == {"ann-1"}
 
-    # The stored rows persist through delete (no orphaning, no repoint needed).
+    # The stored assertions persist through delete (no orphaning, no repoint needed).
     target_type, target_id, _, metadata = _mark_row(_user_db_path(workspace_env))
     assert target_type == "session"
     assert target_id == session_id
@@ -226,11 +228,9 @@ async def test_message_target_marks_survive_reimport(workspace_env: dict[str, Pa
         text="hello",
     ).save()
 
-    with sqlite3.connect(_user_db_path(workspace_env)) as conn:
-        row = conn.execute("SELECT target_type, target_id FROM marks WHERE mark_type='pin'").fetchone()
-    assert row is not None
-    assert row[0] == "message"
-    assert row[1] == message_id
+    target_type, target_id, _, _ = _mark_row(_user_db_path(workspace_env), "pin")
+    assert target_type == "message"
+    assert target_id == message_id
 
 
 @pytest.mark.asyncio
@@ -263,23 +263,21 @@ async def test_message_target_mark_survives_when_message_disappears(
         )
         assert await poly.delete_session(session_id) is True
 
-    # Reimport WITHOUT the original message — the mark row is keyed by the stable
+    # Reimport WITHOUT the original message — the mark is keyed by the stable
     # public message id and is not deleted just because the message is gone.
     SessionBuilder(db_path, "conv-id").provider("claude-code").add_message(
         message_id="other-msg",
         text="different",
     ).save()
 
-    with sqlite3.connect(_user_db_path(workspace_env)) as conn:
-        row = conn.execute("SELECT target_type, target_id FROM marks WHERE mark_type='pin'").fetchone()
-    assert row is not None
-    assert row[0] == "message"
-    assert row[1] == message_id
+    target_type, target_id, _, _ = _mark_row(_user_db_path(workspace_env), "pin")
+    assert target_type == "message"
+    assert target_id == message_id
 
 
 @pytest.mark.asyncio
 async def test_reimport_is_idempotent_for_user_state(workspace_env: dict[str, Path]) -> None:
-    """Re-ingesting unchanged content does not duplicate or re-touch mark rows."""
+    """Re-ingesting unchanged content does not duplicate or re-touch marks."""
     db_path = db_setup(workspace_env)
     builder = (
         SessionBuilder(db_path, "conv-id")

@@ -8,10 +8,9 @@ canonical ``identity_key`` used by recall packs and workspaces.
 The resolver returns the validated ``ResolvedTarget`` mapping or raises
 ``ValueError`` with a specific, surface-friendly message. Insight kinds
 (``session``, ``work_event``, ``thread``) are validated against the
-respective insight tables; ``content_block`` and ``attachment`` are
-validated against the archive substrate; ``paste_span`` is treated as an
-opaque content-block-derived identifier and only validated for non-empty
-``target_id``.
+respective insight tables; ``block`` and ``attachment`` are validated
+against the archive substrate; ``paste_span`` is treated as an opaque
+block-derived identifier and only validated for non-empty ``target_id``.
 """
 
 from __future__ import annotations
@@ -22,9 +21,14 @@ from pathlib import Path
 from typing import TypedDict
 
 from polylogue.core.user_state_targets import (
-    KINDS_BY_NAME,
-    TARGET_KIND_NAMES,
+    TARGET_ATTACHMENT,
+    TARGET_BLOCK,
+    TARGET_PASTE_SPAN,
+    TARGET_SESSION,
+    TARGET_THREAD,
+    TARGET_WORK_EVENT,
     identity_key,
+    validate_target_kind,
 )
 
 
@@ -39,9 +43,9 @@ class ResolvedTarget(TypedDict, total=False):
 
 
 _INSIGHT_QUERIES: dict[str, str] = {
-    "session": "SELECT 1 FROM session_profiles WHERE session_id = ?",
-    "work_event": "SELECT 1 FROM session_work_events WHERE event_id = ? AND session_id = ?",
-    "thread": "SELECT 1 FROM threads WHERE thread_id = ?",
+    TARGET_SESSION: "SELECT 1 FROM session_profiles WHERE session_id = ?",
+    TARGET_WORK_EVENT: "SELECT 1 FROM session_work_events WHERE event_id = ? AND session_id = ?",
+    TARGET_THREAD: "SELECT 1 FROM threads WHERE thread_id = ?",
 }
 
 
@@ -77,7 +81,7 @@ async def _row_exists(archive_root: Path, sql: str, params: tuple[object, ...]) 
         return False
 
 
-def _content_block_exists_sync(
+def _block_exists_sync(
     db_path: Path,
     *,
     session_id: str,
@@ -98,7 +102,7 @@ def _content_block_exists_sync(
     return row is not None
 
 
-async def _content_block_exists(
+async def _block_exists(
     archive_root: Path,
     *,
     session_id: str,
@@ -114,7 +118,7 @@ async def _content_block_exists(
         return False
     try:
         return await asyncio.to_thread(
-            _content_block_exists_sync,
+            _block_exists_sync,
             db_path,
             session_id=session_id,
             message_id=message_id,
@@ -124,17 +128,17 @@ async def _content_block_exists(
         return False
 
 
-def parse_content_block_target_id(target_id: str) -> tuple[str, str]:
+def parse_block_target_id(target_id: str) -> tuple[str, str]:
     """Split ``"{message_id}:{block_index}"`` into its components.
 
     Raises ``ValueError`` if the token is malformed.
     """
 
     if ":" not in target_id:
-        raise ValueError("content_block target_id must be 'message_id:block_index'")
+        raise ValueError("block target_id must be 'message_id:block_index'")
     message_part, _, block_part = target_id.rpartition(":")
     if not message_part or not block_part:
-        raise ValueError("content_block target_id must be 'message_id:block_index'")
+        raise ValueError("block target_id must be 'message_id:block_index'")
     return message_part, block_part
 
 
@@ -154,116 +158,120 @@ async def resolve_insight_target(
     Existence is checked against the `index.db` under ``archive_root``.
     """
 
-    if target_type not in KINDS_BY_NAME:
-        raise ValueError(f"target_type must be one of: {', '.join(TARGET_KIND_NAMES)}")
+    validate_target_kind(target_type)
 
-    if target_type == "session":
+    if target_type == TARGET_SESSION:
         resolved_target_id = target_id or session_id
         if resolved_target_id != session_id:
             raise ValueError("session target_id must equal the session_id (session root)")
-        if not await _row_exists(archive_root, _INSIGHT_QUERIES["session"], (session_id,)):
+        if not await _row_exists(archive_root, _INSIGHT_QUERIES[TARGET_SESSION], (session_id,)):
             raise ValueError(f"session profile for session {session_id!r} is not materialized")
         return {
-            "target_type": "session",
+            "target_type": TARGET_SESSION,
             "target_id": session_id,
             "session_id": session_id,
             "message_id": None,
             "identity_key": identity_key(
-                "session",
+                TARGET_SESSION,
                 session_id=session_id,
                 target_id=session_id,
             ),
         }
 
-    if target_type == "work_event":
+    if target_type == TARGET_WORK_EVENT:
         if not target_id:
             raise ValueError("work_event target requires target_id (event_id)")
-        if not await _row_exists(archive_root, _INSIGHT_QUERIES["work_event"], (target_id, session_id)):
+        if not await _row_exists(archive_root, _INSIGHT_QUERIES[TARGET_WORK_EVENT], (target_id, session_id)):
             raise ValueError(f"work_event {target_id!r} is not in session {session_id!r}")
         return {
-            "target_type": "work_event",
+            "target_type": TARGET_WORK_EVENT,
             "target_id": target_id,
             "session_id": session_id,
             "message_id": None,
             "identity_key": identity_key(
-                "work_event",
+                TARGET_WORK_EVENT,
                 session_id=session_id,
                 target_id=target_id,
             ),
         }
 
-    if target_type == "thread":
+    if target_type == TARGET_THREAD:
         if not target_id:
             raise ValueError("thread target requires target_id (thread_id)")
-        if not await _row_exists(archive_root, _INSIGHT_QUERIES["thread"], (target_id,)):
+        if not await _row_exists(archive_root, _INSIGHT_QUERIES[TARGET_THREAD], (target_id,)):
             raise ValueError(f"thread {target_id!r} is not a materialized thread root")
         return {
-            "target_type": "thread",
+            "target_type": TARGET_THREAD,
             "target_id": target_id,
             "session_id": session_id,
             "message_id": None,
             "identity_key": identity_key(
-                "thread",
+                TARGET_THREAD,
                 session_id=session_id,
                 target_id=target_id,
             ),
         }
 
-    if target_type == "content_block":
+    if target_type == TARGET_BLOCK:
         if not target_id:
-            raise ValueError("content_block target requires target_id 'message_id:block_index'")
-        msg_id, block_part = parse_content_block_target_id(target_id)
+            raise ValueError("block target requires target_id 'message_id:block_index'")
+        msg_id, block_part = parse_block_target_id(target_id)
+        try:
+            block_index = int(block_part)
+        except ValueError:
+            raise ValueError("block target_id must be 'message_id:block_index'") from None
+        if block_index < 0 or str(block_index) != block_part:
+            raise ValueError("block target_id must use a canonical non-negative block_index")
+        canonical_target_id = f"{msg_id}:{block_index}"
         effective_message_id = message_id or msg_id
         if effective_message_id != msg_id:
-            raise ValueError("content_block message_id must match the message_id in target_id")
-        if not await _content_block_exists(
+            raise ValueError("block message_id must match the message_id in target_id")
+        if not await _block_exists(
             archive_root,
             session_id=session_id,
             message_id=effective_message_id,
-            block_index_token=block_part,
+            block_index_token=str(block_index),
         ):
-            raise ValueError(f"content_block {target_id!r} is not present in session {session_id!r}")
+            raise ValueError(f"block {target_id!r} is not present in session {session_id!r}")
         return {
-            "target_type": "content_block",
-            "target_id": target_id,
+            "target_type": TARGET_BLOCK,
+            "target_id": canonical_target_id,
             "session_id": session_id,
             "message_id": effective_message_id,
             "identity_key": identity_key(
-                "content_block",
+                TARGET_BLOCK,
                 session_id=session_id,
-                target_id=target_id,
+                target_id=canonical_target_id,
             ),
         }
 
-    if target_type == "attachment":
+    if target_type == TARGET_ATTACHMENT:
         if not target_id:
             raise ValueError("attachment target requires target_id")
-        # Attachments live as content blocks of kind 'tool_result' or as raw
-        # blob refs; the durable identity contract is "non-empty token, scoped
-        # to a session". A stronger FK lands when attachment identity is
-        # promoted to a first-class table.
+        # Attachments currently resolve as non-empty tokens scoped to a
+        # session; first-class attachment refs belong with #1845.
         return {
-            "target_type": "attachment",
+            "target_type": TARGET_ATTACHMENT,
             "target_id": target_id,
             "session_id": session_id,
             "message_id": message_id,
             "identity_key": identity_key(
-                "attachment",
+                TARGET_ATTACHMENT,
                 session_id=session_id,
                 target_id=target_id,
             ),
         }
 
-    if target_type == "paste_span":
+    if target_type == TARGET_PASTE_SPAN:
         if not target_id:
             raise ValueError("paste_span target requires target_id")
         return {
-            "target_type": "paste_span",
+            "target_type": TARGET_PASTE_SPAN,
             "target_id": target_id,
             "session_id": session_id,
             "message_id": message_id,
             "identity_key": identity_key(
-                "paste_span",
+                TARGET_PASTE_SPAN,
                 session_id=session_id,
                 target_id=target_id,
             ),
@@ -277,6 +285,6 @@ async def resolve_insight_target(
 
 __all__ = [
     "ResolvedTarget",
-    "parse_content_block_target_id",
+    "parse_block_target_id",
     "resolve_insight_target",
 ]

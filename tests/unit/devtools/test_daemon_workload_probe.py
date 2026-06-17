@@ -298,12 +298,11 @@ def test_daemon_workload_probe_reports_archive_tier_inventory(tmp_path: Path) ->
         )
         conn.execute(
             """
-            INSERT INTO corrections (
-                correction_id, target_type, target_id, correction_type,
-                payload_json, created_at_ms, updated_at_ms
+            INSERT INTO assertions (
+                assertion_id, target_ref, key, kind, value_json, created_at_ms, updated_at_ms
             ) VALUES (
-                'correction-missing', 'session', 'missing-session',
-                'tag_accept', '{"payload":{"tag":"orphaned"}}', 1, 1
+                'correction-missing', 'insight:missing-session', 'tag_accept',
+                'correction', '{"payload":{"tag":"orphaned"}}', 1, 1
             )
             """
         )
@@ -330,7 +329,7 @@ def test_daemon_workload_probe_reports_archive_tier_inventory(tmp_path: Path) ->
     assert tiers["user_overlay_orphans"]["checked"] is True
     assert tiers["user_overlay_orphans"]["total_orphan_session_references"] == 2
     assert tiers["user_overlay_orphans"]["orphan_session_reference_counts"]["session_tags"] == 1
-    assert tiers["user_overlay_orphans"]["orphan_session_reference_counts"]["corrections"] == 1
+    assert tiers["user_overlay_orphans"]["orphan_session_reference_counts"]["assertion_corrections"] == 1
     readiness = tiers["derived_readiness"]
     assert readiness["checked"] is True
     assert readiness["source_check_available"] is True

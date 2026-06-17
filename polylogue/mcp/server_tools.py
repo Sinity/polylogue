@@ -98,7 +98,8 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                     limit=(spec.limit or clamped_limit) + clamped_limit,
                 )
             config = hooks.get_config()
-            with ArchiveStore.open_existing(active_archive_root(config) or config.archive_root) as archive:
+            archive_root = active_archive_root(config) or config.archive_root
+            with ArchiveStore.open_existing(archive_root) as archive:
                 return hooks.json_payload(
                     archive_search_payload(
                         archive,
@@ -108,6 +109,8 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                         offset=clamped_offset,
                         retrieval_lane=request.retrieval_lane or "dialogue",
                         sort=request.sort,
+                        config=config,
+                        archive_root=archive_root,
                     )
                 )
 
@@ -210,8 +213,11 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         async def run() -> str:
             spec = request.build_spec(hooks.clamp_limit)
             config = hooks.get_config()
-            with ArchiveStore.open_existing(active_archive_root(config) or config.archive_root) as archive:
-                return hooks.json_payload(archive_session_list_payload(archive, spec))
+            archive_root = active_archive_root(config) or config.archive_root
+            with ArchiveStore.open_existing(archive_root) as archive:
+                return hooks.json_payload(
+                    archive_session_list_payload(archive, spec, config=config, archive_root=archive_root)
+                )
 
         return await hooks.async_safe_call("list_sessions", run)
 
@@ -265,6 +271,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
+        max_words: int | None = None,
         since: str | None = None,
         until: str | None = None,
         limit: MCPToolLimit = 10,
@@ -313,6 +320,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 min_messages=min_messages,
                 max_messages=max_messages,
                 min_words=min_words,
+                max_words=max_words,
                 since=since,
                 until=until,
                 limit=clamped_limit,
@@ -343,6 +351,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 min_messages=min_messages,
                 max_messages=max_messages,
                 min_words=min_words,
+                max_words=max_words,
                 since=since,
                 until=until,
             )

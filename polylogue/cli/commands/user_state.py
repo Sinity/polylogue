@@ -10,9 +10,8 @@ import click
 
 from polylogue.cli.shared.machine_errors import emit_success
 from polylogue.cli.shared.types import AppEnv
-from polylogue.core.user_state_targets import TARGET_KIND_NAMES
+from polylogue.core.user_state_targets import MARK_TYPE_NAMES, TARGET_KIND_NAMES, TARGET_SESSION
 
-_MARK_TYPES = ("star", "pin", "archive")
 _WORKSPACE_MODES = ("tabs", "stack", "compare", "timeline")
 _TARGET_TYPES = list(TARGET_KIND_NAMES)
 
@@ -82,7 +81,7 @@ def marks_group() -> None:
 
 
 @marks_group.command("list")
-@click.option("--mark-type", type=click.Choice(_MARK_TYPES), default=None)
+@click.option("--mark-type", type=click.Choice(MARK_TYPE_NAMES), default=None)
 @click.option("--session-id", default=None)
 @click.option("--target-type", type=click.Choice(_TARGET_TYPES), default=None)
 @click.option("--target-id", default=None)
@@ -120,8 +119,8 @@ def list_marks_command(
 
 @marks_group.command("add")
 @click.argument("session_id")
-@click.argument("mark_type", type=click.Choice(_MARK_TYPES))
-@click.option("--target-type", type=click.Choice(_TARGET_TYPES), default="session")
+@click.argument("mark_type", type=click.Choice(MARK_TYPE_NAMES))
+@click.option("--target-type", type=click.Choice(_TARGET_TYPES), default=TARGET_SESSION)
 @click.option("--target-id", default=None)
 @click.option("--message-id", default=None)
 @click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
@@ -156,8 +155,8 @@ def add_mark_command(
 
 @marks_group.command("remove")
 @click.argument("session_id")
-@click.argument("mark_type", type=click.Choice(_MARK_TYPES))
-@click.option("--target-type", type=click.Choice(_TARGET_TYPES), default="session")
+@click.argument("mark_type", type=click.Choice(MARK_TYPE_NAMES))
+@click.option("--target-type", type=click.Choice(_TARGET_TYPES), default=TARGET_SESSION)
 @click.option("--target-id", default=None)
 @click.option("--message-id", default=None)
 @click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
@@ -233,7 +232,7 @@ def list_annotations_command(
 @click.argument("annotation_id")
 @click.argument("session_id")
 @click.argument("note_text")
-@click.option("--target-type", type=click.Choice(_TARGET_TYPES), default="session")
+@click.option("--target-type", type=click.Choice(_TARGET_TYPES), default=TARGET_SESSION)
 @click.option("--target-id", default=None)
 @click.option("--message-id", default=None)
 @click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)

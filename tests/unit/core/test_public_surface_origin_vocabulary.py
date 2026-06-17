@@ -63,7 +63,3 @@ def test_archive_query_origin_resolution_is_origin_only() -> None:
         "claude-code-session",
     )
     assert _resolve_excluded_origins({"exclude_origin": "chatgpt-export"}) == ("chatgpt-export",)
-    # The dead provider fallbacks are gone: provider tokens are no longer
-    # honored on the public root query surface.
-    assert _resolve_origins({"provider": "codex"}) == ()
-    assert _resolve_excluded_origins({"exclude_provider": "chatgpt"}) == ()

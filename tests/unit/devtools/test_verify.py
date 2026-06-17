@@ -14,6 +14,8 @@ from devtools.verify import (
     _parse_pytest_test_count,
     _pytest_command_metadata,
     _pytest_metadata_from_report,
+    _pytest_stall_timeout_s,
+    _pytest_timeout_s,
     _read_pytest_report,
     _run,
     _stop_after_failed_step,
@@ -326,6 +328,76 @@ def test_pytest_run_emits_heartbeat_for_long_silent_child(
     assert "command:" in captured.err
     assert "still running: pid=" in captured.err
     assert "elapsed=" in captured.err
+
+
+def test_pytest_run_terminates_after_runtime_budget(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("POLYLOGUE_VERIFY_HEARTBEAT_S", "0.05")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S", "0.15")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S", "0")
+
+    rc, _elapsed, metadata = _run("pytest timeout", [sys.executable, "-c", "import time; time.sleep(5)"])
+
+    captured = capsys.readouterr()
+    assert rc == 124
+    assert metadata["timeout_s"] == 0.15
+    assert metadata["stall_timeout_s"] == 0.0
+    assert "pytest runtime exceeded 0.15s" in captured.err
+    assert "terminated pytest process group" in captured.err
+
+
+def test_pytest_run_terminates_with_heartbeat_disabled(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("POLYLOGUE_VERIFY_HEARTBEAT_S", "0")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S", "0.15")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S", "0")
+
+    rc, _elapsed, metadata = _run("pytest timeout", [sys.executable, "-c", "import time; time.sleep(5)"])
+
+    captured = capsys.readouterr()
+    assert rc == 124
+    assert metadata["heartbeat_s"] == 0.0
+    assert "pytest runtime exceeded 0.15s" in captured.err
+
+
+def test_pytest_run_terminates_after_output_stall(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("POLYLOGUE_VERIFY_HEARTBEAT_S", "0.05")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S", "0")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S", "0.15")
+
+    rc, _elapsed, metadata = _run(
+        "pytest stall",
+        [sys.executable, "-c", "import time; print('progress', flush=True); time.sleep(5)"],
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 124
+    assert metadata["timeout_s"] == 0.0
+    assert metadata["stall_timeout_s"] == 0.15
+    assert "progress" in captured.err
+    assert "pytest produced no output for 0.15s" in captured.err
+    assert "terminated pytest process group" in captured.err
+
+
+def test_pytest_timeout_env_defaults_and_invalid_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S", raising=False)
+    monkeypatch.delenv("POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S", raising=False)
+    assert _pytest_timeout_s() > 0
+    assert _pytest_stall_timeout_s() > 0
+
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S", "-1")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S", "nope")
+    assert _pytest_timeout_s() == 0.0
+    assert _pytest_stall_timeout_s() > 0
+
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S", "nan")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S", "inf")
+    assert _pytest_timeout_s() > 0
+    assert _pytest_stall_timeout_s() > 0
 
 
 def test_pytest_command_metadata_reports_worker_and_selection_policy() -> None:

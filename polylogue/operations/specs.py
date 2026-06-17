@@ -444,7 +444,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         code_refs=(
             "polylogue.insights.transforms.compile_recovery_digest",
             "polylogue.api.archive.PolylogueArchive.recovery_digest",
-            "polylogue.cli.query_verbs._render_recovery_read_view",
+            "polylogue.cli.query_verbs._run_read_recovery",
         ),
         surfaces=("api", "cli", "read-view"),
         previewable=True,
@@ -460,7 +460,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         code_refs=(
             "polylogue.insights.transforms.render_recovery_report",
             "polylogue.insights.transforms.RecoveryDigest.report_markdown",
-            "polylogue.cli.query_verbs._render_recovery_read_view",
+            "polylogue.cli.query_verbs._run_read_recovery",
         ),
         surfaces=("cli", "read-view"),
         previewable=True,

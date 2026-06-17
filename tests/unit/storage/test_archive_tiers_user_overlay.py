@@ -8,6 +8,7 @@ from polylogue.sources.parsers.base import ParsedAttachment, ParsedContentBlock,
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_overlay import find_archive_user_overlay_orphans
+from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
 from polylogue.storage.sqlite.archive_tiers.write import (
     upsert_session_phase,
     upsert_session_work_event,
@@ -68,66 +69,42 @@ def test_archive_tiers_user_overlay_orphan_check_resolves_archive_targets(tmp_pa
         phase_type="build",
     )
 
-    user_conn.executemany(
-        """
-        INSERT INTO marks (
-            mark_id, target_type, target_id, mark_type, created_at_ms, updated_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        [
-            ("mark-session-ok", "session", session_id, "pin", 1, 1),
-            ("mark-message-ok", "message", message_id, "pin", 1, 1),
-            ("mark-block-ok", "block", block_id, "pin", 1, 1),
-            ("mark-attachment-ok", "attachment", attachment_id, "pin", 1, 1),
-            ("mark-work-event-ok", "work_event", work_event.event_id, "pin", 1, 1),
-            ("mark-phase-ok", "phase", phase.phase_id, "pin", 1, 1),
-            ("mark-thread-ok", "thread", session_id, "pin", 1, 1),
-            ("mark-missing", "message", f"{session_id}:missing", "pin", 1, 1),
-        ],
-    )
-    user_conn.executemany(
-        """
-        INSERT INTO annotations (
-            annotation_id, target_type, target_id, body, created_at_ms, updated_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        [
-            ("annotation-missing", "paste_span", f"{message_id}:0:4", "lost paste", 1, 1),
-            ("annotation-attachment-missing", "attachment", f"{session_id}:attachment:missing", "lost", 1, 1),
-            ("annotation-phase-missing", "phase", f"{session_id}:phase:7", "lost phase", 1, 1),
-            ("annotation-thread-missing", "thread", f"{session_id}:missing-thread", "lost thread", 1, 1),
-            (
-                "annotation-work-event-missing",
-                "work_event",
-                f"{session_id}:work_event:7",
-                "lost event",
-                1,
-                1,
-            ),
-        ],
-    )
-    user_conn.executemany(
-        """
-        INSERT INTO blackboard_notes (
-            note_id, target_type, target_id, body, created_at_ms, updated_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        [
-            ("note-global-ok", None, None, "global note", 1, 1),
-            ("note-session-ok", "session", session_id, "session note", 1, 1),
-            ("note-work-event-ok", "work_event", work_event.event_id, "event note", 1, 1),
-            ("note-work-event-missing", "work_event", f"{session_id}:work_event:8", "lost event", 1, 1),
-        ],
-    )
+    for assertion_id, target_ref, kind in [
+        ("mark-session-ok", f"session:{session_id}", AssertionKind.MARK),
+        ("mark-message-ok", f"message:{message_id}", AssertionKind.MARK),
+        ("mark-block-ok", f"block:{block_id}", AssertionKind.MARK),
+        ("mark-attachment-ok", f"attachment:{attachment_id}", AssertionKind.MARK),
+        ("mark-work-event-ok", f"work_event:{work_event.event_id}", AssertionKind.MARK),
+        ("mark-phase-ok", f"phase:{phase.phase_id}", AssertionKind.MARK),
+        ("mark-thread-ok", f"thread:{session_id}", AssertionKind.MARK),
+        ("mark-missing", f"message:{session_id}:missing", AssertionKind.MARK),
+        ("annotation-missing", f"paste_span:{message_id}:0:4", AssertionKind.ANNOTATION),
+        ("annotation-attachment-missing", f"attachment:{session_id}:attachment:missing", AssertionKind.ANNOTATION),
+        ("annotation-phase-missing", f"phase:{session_id}:phase:7", AssertionKind.ANNOTATION),
+        ("annotation-thread-missing", f"thread:{session_id}:missing-thread", AssertionKind.ANNOTATION),
+        ("annotation-work-event-missing", f"work_event:{session_id}:work_event:7", AssertionKind.ANNOTATION),
+        ("note-global-ok", "note-global-ok", AssertionKind.NOTE),
+        ("note-session-ok", f"session:{session_id}", AssertionKind.NOTE),
+        ("note-work-event-ok", f"work_event:{work_event.event_id}", AssertionKind.NOTE),
+        ("note-work-event-missing", f"work_event:{session_id}:work_event:8", AssertionKind.NOTE),
+    ]:
+        upsert_assertion(
+            user_conn,
+            assertion_id=assertion_id,
+            target_ref=target_ref,
+            kind=kind,
+            body_text=assertion_id,
+            now_ms=1,
+        )
 
     orphans = find_archive_user_overlay_orphans(user_conn, archive_conn)
 
     assert [(item.table, item.row_id, item.target_type, item.target_id) for item in orphans] == [
-        ("marks", "mark-missing", "message", f"{session_id}:missing"),
-        ("annotations", "annotation-attachment-missing", "attachment", f"{session_id}:attachment:missing"),
-        ("annotations", "annotation-missing", "paste_span", f"{message_id}:0:4"),
-        ("annotations", "annotation-phase-missing", "phase", f"{session_id}:phase:7"),
-        ("annotations", "annotation-thread-missing", "thread", f"{session_id}:missing-thread"),
-        ("annotations", "annotation-work-event-missing", "work_event", f"{session_id}:work_event:7"),
-        ("blackboard_notes", "note-work-event-missing", "work_event", f"{session_id}:work_event:8"),
+        ("assertions", "annotation-attachment-missing", "attachment", f"{session_id}:attachment:missing"),
+        ("assertions", "annotation-missing", "paste_span", f"{message_id}:0:4"),
+        ("assertions", "annotation-phase-missing", "phase", f"{session_id}:phase:7"),
+        ("assertions", "annotation-thread-missing", "thread", f"{session_id}:missing-thread"),
+        ("assertions", "annotation-work-event-missing", "work_event", f"{session_id}:work_event:7"),
+        ("assertions", "mark-missing", "message", f"{session_id}:missing"),
+        ("assertions", "note-work-event-missing", "work_event", f"{session_id}:work_event:8"),
     ]

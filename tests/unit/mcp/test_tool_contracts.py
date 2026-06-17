@@ -27,6 +27,7 @@ from polylogue.archive.session.neighbor_candidates import NeighborReason, Sessio
 from polylogue.archive.stats import ArchiveStats
 from polylogue.archive.viewport import read_view_profile_payloads
 from polylogue.core.enums import Origin
+from polylogue.core.outcomes import OutcomeCheck, OutcomeStatus
 from polylogue.insights.archive import (
     ArchiveCoverageInsight,
     ArchiveDebtInsight,
@@ -603,6 +604,7 @@ class TestArchiveTools:
                 typed_only=True,
                 message_type="tool_use",
                 title="Copied",
+                max_words=100,
                 limit=5,
             )
 
@@ -636,6 +638,7 @@ class TestArchiveTools:
             min_messages=None,
             max_messages=None,
             min_words=None,
+            max_words=100,
             since=None,
             until=None,
             limit=5,
@@ -666,6 +669,7 @@ class TestArchiveTools:
             min_messages=None,
             max_messages=None,
             min_words=None,
+            max_words=100,
             since=None,
             until=None,
         )
@@ -1600,11 +1604,7 @@ class TestMutationTools:
         assert json.loads(result) == expected
 
     def test_health_check_success(self, mcp_server: MCPServerUnderTest) -> None:
-        mock_check = MagicMock()
-        mock_check.name = "database"
-        mock_check.status.value = "ok"
-        mock_check.count = 100
-        mock_check.detail = "All good"
+        mock_check = OutcomeCheck("database", OutcomeStatus.OK, summary="All good", count=100)
 
         mock_report = MagicMock()
         mock_report.checks = [mock_check]
@@ -1746,7 +1746,7 @@ def test_mcp_search_params_match_query_spec() -> None:
         "referenced_path",
     }
     missing = mcp_params - spec_fields
-    surface_aliases: set[str] = {
+    contract_projections: set[str] = {
         "limit",
         "offset",
         "tag",  # → tags
@@ -1761,4 +1761,6 @@ def test_mcp_search_params_match_query_spec() -> None:
         "action_terms",  # passthrough
         "tool_terms",  # passthrough
     }
-    assert missing.issubset(surface_aliases), f"MCP params not in SessionQuerySpec: {missing - surface_aliases}"
+    assert missing.issubset(contract_projections), (
+        f"MCP params not in SessionQuerySpec: {missing - contract_projections}"
+    )

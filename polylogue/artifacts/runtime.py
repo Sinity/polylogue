@@ -438,7 +438,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         code_refs=(
             "polylogue.insights.transforms.compile_recovery_digest",
             "polylogue.api.archive.PolylogueArchive.recovery_digest",
-            "polylogue.cli.query_verbs._render_recovery_read_view",
+            "polylogue.cli.query_verbs._run_read_recovery",
         ),
         readiness_surfaces=("read-view", "api", "cli"),
     ),
@@ -472,7 +472,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         code_refs=(
             "polylogue.insights.transforms.render_recovery_report",
             "polylogue.insights.transforms.RecoveryDigest.report_markdown",
-            "polylogue.cli.query_verbs._render_recovery_read_view",
+            "polylogue.cli.query_verbs._run_read_recovery",
         ),
         readiness_surfaces=("read-view", "cli"),
     ),

@@ -1222,6 +1222,7 @@ async def test_archive_tiers_api_reads_native_sessions(tmp_path: Path) -> None:
             typed_only=True,
             message_type="tool-use",
             title="API",
+            max_words=10,
         )
         summaries = await archive.archive_list_sessions(
             origin="codex-session",
@@ -1242,6 +1243,7 @@ async def test_archive_tiers_api_reads_native_sessions(tmp_path: Path) -> None:
             typed_only=True,
             message_type="tool-use",
             title="API",
+            max_words=10,
             limit=5,
         )
         hits = await archive.archive_search_sessions(
@@ -2753,6 +2755,8 @@ async def test_archive_tiers_api_marks_and_annotations_write_user_tier(tmp_path:
         marks = await archive.list_marks(session_id=session_id)
         mark_removed = await archive.remove_mark(session_id, "star")
         mark_missing = await archive.remove_mark(session_id, "star")
+        with pytest.raises(ValueError, match="mark_type must be one of"):
+            await archive.add_mark(session_id, "bogus")
         annotation_created = await archive.save_annotation("ann-v1", session_id, "needs follow-up")
         annotation_updated = await archive.save_annotation("ann-v1", session_id, "resolved")
         annotation = await archive.get_annotation("ann-v1")
@@ -2775,9 +2779,9 @@ async def test_archive_tiers_api_marks_and_annotations_write_user_tier(tmp_path:
         assert annotation_deleted is True
         assert annotation_missing is False
 
+        marks_after_delete = await archive.list_marks(session_id=session_id)
+        annotations_after_delete = await archive.list_annotations(session_id=session_id)
         with sqlite3.connect(tmp_path / "user.db") as conn:
-            mark_count = conn.execute("SELECT COUNT(*) FROM marks").fetchone()[0]
-            annotation_count = conn.execute("SELECT COUNT(*) FROM annotations").fetchone()[0]
             assertion_statuses = conn.execute(
                 """
                 SELECT kind, key, status
@@ -2787,10 +2791,10 @@ async def test_archive_tiers_api_marks_and_annotations_write_user_tier(tmp_path:
                 """,
                 (f"session:{session_id}",),
             ).fetchall()
-        assert mark_count == 0
-        assert annotation_count == 0
+        assert marks_after_delete == []
+        assert annotations_after_delete == []
         assert assertion_statuses == [
-            ("annotation", None, "deleted"),
+            ("annotation", "ann-v1", "deleted"),
             ("mark", "star", "deleted"),
         ]
     finally:
@@ -2826,7 +2830,9 @@ async def test_archive_tiers_api_reader_artifacts_write_user_tier(tmp_path: Path
 
         view_created = await archive.save_view("view-v1", "Needs Review", '{"provider":"codex"}')
         view_updated = await archive.save_view("view-v1", "Needs Review", '{"provider":"codex","tag":"review"}')
+        view_renamed_id = await archive.save_view("view-v2", "Needs Review", '{"provider":"codex","tag":"second"}')
         view = await archive.get_view("view-v1")
+        replaced_view = await archive.get_view("view-v2")
         view_by_name = await archive.get_view_by_name("Needs Review")
         views = await archive.list_views()
 
@@ -2859,15 +2865,26 @@ async def test_archive_tiers_api_reader_artifacts_write_user_tier(tmp_path: Path
             json.dumps({"panes": 2}),
             "{}",
         )
+        workspace_renamed_id = await archive.save_workspace(
+            "workspace-v2",
+            "Review Workspace",
+            "tabs",
+            json.dumps([{"target_type": "session", "session_id": session_id}]),
+            json.dumps({"panes": 3}),
+            "{}",
+        )
         workspace = await archive.get_workspace("workspace-v1")
+        replaced_workspace = await archive.get_workspace("workspace-v2")
         workspaces = await archive.list_workspaces()
 
         assert view_created is True
         assert view_updated is False
-        assert view is not None
-        assert view_by_name == view
-        assert views == [view]
-        assert json.loads(view["query_json"]) == {"provider": "codex", "tag": "review"}
+        assert view_renamed_id is False
+        assert view is None
+        assert replaced_view is not None
+        assert view_by_name == replaced_view
+        assert views == [replaced_view]
+        assert json.loads(replaced_view["query_json"]) == {"provider": "codex", "tag": "second"}
         assert pack_created is True
         assert pack_updated is False
         assert pack is not None
@@ -2876,22 +2893,24 @@ async def test_archive_tiers_api_reader_artifacts_write_user_tier(tmp_path: Path
         assert json.loads(pack["payload_json"])["resolved_count"] == 1
         assert workspace_created is True
         assert workspace_updated is False
-        assert workspace is not None
-        assert workspaces == [workspace]
-        assert workspace["mode"] == "stack"
-        assert json.loads(workspace["layout_json"]) == {"panes": 2}
+        assert workspace_renamed_id is False
+        assert workspace is None
+        assert replaced_workspace is not None
+        assert workspaces == [replaced_workspace]
+        assert replaced_workspace["mode"] == "tabs"
+        assert json.loads(replaced_workspace["layout_json"]) == {"panes": 3}
 
-        assert await archive.delete_view("view-v1") is True
-        assert await archive.delete_view("view-v1") is False
+        assert await archive.delete_view("view-v2") is True
+        assert await archive.delete_view("view-v2") is False
         assert await archive.delete_recall_pack("pack-v1") is True
         assert await archive.delete_recall_pack("pack-v1") is False
-        assert await archive.delete_workspace("workspace-v1") is True
-        assert await archive.delete_workspace("workspace-v1") is False
+        assert await archive.delete_workspace("workspace-v2") is True
+        assert await archive.delete_workspace("workspace-v2") is False
 
+        assert await archive.list_views() == []
+        assert await archive.list_recall_packs() == []
+        assert await archive.list_workspaces() == []
         with sqlite3.connect(tmp_path / "user.db") as conn:
-            assert conn.execute("SELECT COUNT(*) FROM saved_views").fetchone()[0] == 0
-            assert conn.execute("SELECT COUNT(*) FROM recall_packs").fetchone()[0] == 0
-            assert conn.execute("SELECT COUNT(*) FROM workspaces").fetchone()[0] == 0
             assertion_statuses = conn.execute(
                 """
                 SELECT target_ref, kind, status
@@ -2961,8 +2980,8 @@ async def test_archive_tiers_api_corrections_write_user_tier(tmp_path: Path) -> 
         assert missing_delete is False
         assert cleared == 1
 
+        assert await archive.list_corrections(session_id=session_id) == []
         with sqlite3.connect(tmp_path / "user.db") as conn:
-            assert conn.execute("SELECT COUNT(*) FROM corrections").fetchone()[0] == 0
             assertion_statuses = conn.execute(
                 """
                 SELECT key, status, json_extract(value_json, '$.payload.tag'), json_extract(value_json, '$.payload.summary')

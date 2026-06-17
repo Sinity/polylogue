@@ -2,54 +2,9 @@
 
 from __future__ import annotations
 
-USER_SCHEMA_VERSION = 1
+USER_SCHEMA_VERSION = 2
 
 USER_DDL = """
-CREATE TABLE IF NOT EXISTS marks (
-    mark_id         TEXT PRIMARY KEY,
-    target_type     TEXT NOT NULL CHECK(target_type IN ('session', 'message', 'block', 'attachment', 'paste_span', 'work_event', 'phase', 'thread')),
-    target_id       TEXT NOT NULL,
-    mark_type       TEXT NOT NULL,
-    label           TEXT,
-    created_at_ms   INTEGER NOT NULL,
-    updated_at_ms   INTEGER NOT NULL,
-    metadata_json   TEXT NOT NULL DEFAULT '{}'
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_marks_target
-ON marks(target_type, target_id);
-
-CREATE TABLE IF NOT EXISTS annotations (
-    annotation_id  TEXT PRIMARY KEY,
-    target_type    TEXT NOT NULL CHECK(target_type IN ('session', 'message', 'block', 'attachment', 'paste_span', 'work_event', 'phase', 'thread')),
-    target_id      TEXT NOT NULL,
-    body           TEXT NOT NULL,
-    created_at_ms  INTEGER NOT NULL,
-    updated_at_ms  INTEGER NOT NULL
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_annotations_target
-ON annotations(target_type, target_id);
-
-CREATE TABLE IF NOT EXISTS corrections (
-    correction_id    TEXT PRIMARY KEY,
-    target_type      TEXT NOT NULL CHECK(target_type IN ('session', 'message', 'insight')),
-    target_id        TEXT NOT NULL,
-    correction_type  TEXT NOT NULL CHECK(correction_type IN ('tag_reject', 'tag_accept', 'summary_override')),
-    payload_json     TEXT NOT NULL DEFAULT '{}',
-    created_at_ms    INTEGER NOT NULL,
-    updated_at_ms    INTEGER NOT NULL,
-    UNIQUE(target_type, target_id, correction_type)
-) STRICT;
-
-CREATE TABLE IF NOT EXISTS suppressions (
-    session_id       TEXT PRIMARY KEY,
-    reason           TEXT,
-    mode             TEXT NOT NULL DEFAULT 'hide' CHECK(mode IN ('hide', 'freeze')),
-    created_at_ms    INTEGER NOT NULL,
-    updated_at_ms    INTEGER NOT NULL
-) STRICT;
-
 CREATE TABLE IF NOT EXISTS session_tags (
     session_id     TEXT NOT NULL,
     tag            TEXT NOT NULL,
@@ -69,45 +24,10 @@ CREATE TABLE IF NOT EXISTS session_metadata (
     PRIMARY KEY(session_id, key)
 ) STRICT;
 
-CREATE TABLE IF NOT EXISTS saved_views (
-    view_id          TEXT PRIMARY KEY,
-    name             TEXT NOT NULL UNIQUE,
-    query_json       TEXT NOT NULL,
-    created_at_ms    INTEGER NOT NULL,
-    updated_at_ms    INTEGER NOT NULL
-) STRICT;
-
-CREATE TABLE IF NOT EXISTS recall_packs (
-    recall_pack_id   TEXT PRIMARY KEY,
-    name             TEXT NOT NULL,
-    payload_json     TEXT NOT NULL,
-    created_at_ms    INTEGER NOT NULL,
-    updated_at_ms    INTEGER NOT NULL
-) STRICT;
-
-CREATE TABLE IF NOT EXISTS workspaces (
-    workspace_id     TEXT PRIMARY KEY,
-    name             TEXT NOT NULL UNIQUE,
-    settings_json    TEXT NOT NULL DEFAULT '{}',
-    created_at_ms    INTEGER NOT NULL,
-    updated_at_ms    INTEGER NOT NULL
-) STRICT;
-
-CREATE TABLE IF NOT EXISTS blackboard_notes (
-    note_id          TEXT PRIMARY KEY,
-    target_type      TEXT CHECK(target_type IN ('session', 'message', 'block', 'attachment', 'paste_span', 'work_event', 'phase', 'thread') OR target_type IS NULL),
-    target_id        TEXT,
-    body             TEXT NOT NULL,
-    created_at_ms    INTEGER NOT NULL,
-    updated_at_ms    INTEGER NOT NULL
-) STRICT;
-
--- Unified evidence-linked user assertion (#1883). One table collapses the
--- user-tier overlay mini-systems (marks/annotations/corrections/tags/
--- saved_views/recall_packs/workspaces/blackboard_notes). Additive in this
--- slice: the legacy tables above remain authoritative; this is the new
--- substrate they will write through in a later slice. ``kind`` carries a
--- closed v0 vocabulary -- see ``AssertionKind`` in user_write.py.
+-- Unified evidence-linked user assertion (#1883). Marks, annotations,
+-- corrections, suppressions, saved views, recall packs, workspaces, and
+-- blackboard notes are represented here directly. ``kind`` carries the closed
+-- v0 vocabulary defined by ``AssertionKind`` in user_write.py.
 CREATE TABLE IF NOT EXISTS assertions (
     assertion_id        TEXT PRIMARY KEY,
     scope_ref           TEXT,

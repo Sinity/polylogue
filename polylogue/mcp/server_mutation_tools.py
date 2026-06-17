@@ -7,6 +7,7 @@ from contextlib import suppress
 from hashlib import sha256
 from typing import TYPE_CHECKING
 
+from polylogue.core.user_state_targets import MARK_TYPE_NAMES, TARGET_SESSION, is_mark_type_supported
 from polylogue.mcp.archive_support import blackboard_note_payload
 from polylogue.mcp.payloads import (
     MCPMetadataPayload,
@@ -39,9 +40,9 @@ async def _resolve_or_error(hooks: ServerCallbacks, session_id: str) -> tuple[st
 
 
 def _mark_type_error(hooks: ServerCallbacks, mark_type: str) -> str | None:
-    if mark_type in {"star", "pin", "archive"}:
+    if is_mark_type_supported(mark_type):
         return None
-    return hooks.error_json("mark_type must be one of: star, pin, archive", detail=mark_type)
+    return hooks.error_json(f"mark_type must be one of: {', '.join(MARK_TYPE_NAMES)}", detail=mark_type)
 
 
 def _default_saved_view_id(name: str, query_json: str) -> str:
@@ -293,7 +294,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     async def add_mark(
         session_id: str,
         mark_type: str,
-        target_type: str = "session",
+        target_type: str = TARGET_SESSION,
         target_id: str | None = None,
         message_id: str | None = None,
     ) -> str:
@@ -330,7 +331,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     async def remove_mark(
         session_id: str,
         mark_type: str,
-        target_type: str = "session",
+        target_type: str = TARGET_SESSION,
         target_id: str | None = None,
         message_id: str | None = None,
     ) -> str:
@@ -388,7 +389,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         annotation_id: str,
         session_id: str,
         note_text: str,
-        target_type: str = "session",
+        target_type: str = TARGET_SESSION,
         target_id: str | None = None,
         message_id: str | None = None,
     ) -> str:

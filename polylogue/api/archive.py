@@ -26,6 +26,7 @@ from polylogue.archive.session.domain_models import Session, SessionSummary
 from polylogue.core.enums import Origin
 from polylogue.core.json import JSONDocument
 from polylogue.core.sources import origin_from_provider, provider_from_origin
+from polylogue.core.user_state_targets import TARGET_MESSAGE, TARGET_SESSION
 from polylogue.errors import PolylogueError
 from polylogue.insights.archive import (
     SessionProfileInsight,
@@ -165,6 +166,7 @@ def _archive_query_kwargs(spec: SessionQuerySpec, *, default_limit: int | None) 
         "min_messages": spec.min_messages,
         "max_messages": spec.max_messages,
         "min_words": spec.min_words,
+        "max_words": spec.max_words,
         "since_ms": _archive_query_date_ms("since", spec.since),
         "until_ms": _archive_query_date_ms("until", spec.until),
         "since_session_id": spec.since_session_id,
@@ -720,6 +722,7 @@ class _ArchiveNeighborRuntime:
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
+        max_words: int | None = None,
         message_type: str | None = None,
     ) -> builtins.list[Session]:
         sessions: builtins.list[Session] = []
@@ -742,6 +745,7 @@ class _ArchiveNeighborRuntime:
             min_messages=min_messages,
             max_messages=max_messages,
             min_words=min_words,
+            max_words=max_words,
             message_type=message_type,
         ):
             session = await self.get(str(summary.id))
@@ -770,6 +774,7 @@ class _ArchiveNeighborRuntime:
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
+        max_words: int | None = None,
         message_type: str | None = None,
     ) -> builtins.list[SessionSummary]:
         del source
@@ -794,6 +799,7 @@ class _ArchiveNeighborRuntime:
                 min_messages=min_messages,
                 max_messages=max_messages,
                 min_words=min_words,
+                max_words=max_words,
                 since_ms=_archive_query_date_ms("since", since),
                 until_ms=_archive_query_date_ms("until", until),
             )
@@ -817,6 +823,7 @@ class _ArchiveNeighborRuntime:
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
+        max_words: int | None = None,
         message_type: str | None = None,
     ) -> int:
         origin, origins = self._provider_filters(provider=provider, providers=providers)
@@ -838,6 +845,7 @@ class _ArchiveNeighborRuntime:
                 min_messages=min_messages,
                 max_messages=max_messages,
                 min_words=min_words,
+                max_words=max_words,
                 since_ms=_archive_query_date_ms("since", since),
                 until_ms=_archive_query_date_ms("until", until),
             ),
@@ -957,6 +965,7 @@ class _ArchiveNeighborRuntime:
             "min_messages": getattr(query, "min_messages", None),
             "max_messages": getattr(query, "max_messages", None),
             "min_words": getattr(query, "min_words", None),
+            "max_words": getattr(query, "max_words", None),
             "since_ms": _archive_query_date_ms("since", getattr(query, "since", None)),
             "until_ms": _archive_query_date_ms("until", getattr(query, "until", None)),
         }
@@ -1523,6 +1532,7 @@ class PolylogueArchiveMixin:
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
+        max_words: int | None = None,
         since: str | None = None,
         until: str | None = None,
     ) -> int:
@@ -1554,6 +1564,7 @@ class PolylogueArchiveMixin:
                 min_messages=min_messages,
                 max_messages=max_messages,
                 min_words=min_words,
+                max_words=max_words,
                 since_ms=_archive_query_date_ms("since", since),
                 until_ms=_archive_query_date_ms("until", until),
             )
@@ -1584,6 +1595,7 @@ class PolylogueArchiveMixin:
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
+        max_words: int | None = None,
         since: str | None = None,
         until: str | None = None,
         limit: int = 50,
@@ -1619,6 +1631,7 @@ class PolylogueArchiveMixin:
                     min_messages=min_messages,
                     max_messages=max_messages,
                     min_words=min_words,
+                    max_words=max_words,
                     since_ms=_archive_query_date_ms("since", since),
                     until_ms=_archive_query_date_ms("until", until),
                     limit=limit,
@@ -1654,6 +1667,7 @@ class PolylogueArchiveMixin:
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
+        max_words: int | None = None,
         since: str | None = None,
         until: str | None = None,
         limit: int = 20,
@@ -1688,6 +1702,7 @@ class PolylogueArchiveMixin:
                     min_messages=min_messages,
                     max_messages=max_messages,
                     min_words=min_words,
+                    max_words=max_words,
                     since_ms=_archive_query_date_ms("since", since),
                     until_ms=_archive_query_date_ms("until", until),
                     limit=limit,
@@ -2397,35 +2412,40 @@ class PolylogueArchiveMixin:
         self,
         session_id: str,
         *,
-        target_type: str = "session",
+        target_type: str = TARGET_SESSION,
         target_id: str | None = None,
         message_id: str | None = None,
     ) -> dict[str, str | None]:
         from polylogue.api.user_state_resolver import resolve_insight_target
-        from polylogue.core.user_state_targets import TARGET_KIND_NAMES
+        from polylogue.core.user_state_targets import validate_target_kind
 
         resolved_session_id = await self._resolve_user_state_session_id(session_id)
-        if target_type == "session":
+        if target_type == TARGET_SESSION:
+            if target_id:
+                resolved_target_id = await self._resolve_user_state_session_id(target_id)
+                if resolved_target_id != resolved_session_id:
+                    raise ValueError("session target_id must match session_id")
             return {
-                "target_type": "session",
+                "target_type": TARGET_SESSION,
                 "target_id": resolved_session_id,
                 "session_id": resolved_session_id,
                 "message_id": None,
             }
-        if target_type == "message":
+        if target_type == TARGET_MESSAGE:
+            if target_id and message_id and target_id != message_id:
+                raise ValueError("message target_id must match message_id")
             resolved_message_id = message_id or target_id
             if not resolved_message_id:
                 raise ValueError("message target requires message_id or target_id")
             if not await self._user_state_message_exists(resolved_session_id, resolved_message_id):
                 raise ValueError(f"message {resolved_message_id!r} is not in session {resolved_session_id!r}")
             return {
-                "target_type": "message",
+                "target_type": TARGET_MESSAGE,
                 "target_id": resolved_message_id,
                 "session_id": resolved_session_id,
                 "message_id": resolved_message_id,
             }
-        if target_type not in TARGET_KIND_NAMES:
-            raise ValueError(f"target_type must be one of: {', '.join(TARGET_KIND_NAMES)}")
+        validate_target_kind(target_type)
         resolved_target = await resolve_insight_target(
             _active_archive_root(self.config),
             target_type=target_type,
@@ -2488,7 +2508,7 @@ class PolylogueArchiveMixin:
         session_id: str,
         mark_type: str,
         *,
-        target_type: str = "session",
+        target_type: str = TARGET_SESSION,
         target_id: str | None = None,
         message_id: str | None = None,
     ) -> bool:
@@ -2497,6 +2517,9 @@ class PolylogueArchiveMixin:
         Returns ``True`` if the mark was newly added, ``False`` if it already
         existed.
         """
+        from polylogue.core.user_state_targets import validate_mark_type
+
+        mark_type = validate_mark_type(mark_type)
         target = await self._resolve_user_state_target(
             session_id,
             target_type=target_type,
@@ -2513,11 +2536,14 @@ class PolylogueArchiveMixin:
         session_id: str,
         mark_type: str,
         *,
-        target_type: str = "session",
+        target_type: str = TARGET_SESSION,
         target_id: str | None = None,
         message_id: str | None = None,
     ) -> bool:
         """Remove a mark from a session or message. Returns ``True`` if removed."""
+        from polylogue.core.user_state_targets import validate_mark_type
+
+        mark_type = validate_mark_type(mark_type)
         target = await self._resolve_user_state_target(
             session_id,
             target_type=target_type,
@@ -2544,12 +2570,12 @@ class PolylogueArchiveMixin:
         resolved_target_type = target_type
         resolved_target_id = target_id
         if message_id is not None:
-            resolved_target_type = "message"
+            resolved_target_type = TARGET_MESSAGE
             resolved_target_id = message_id
         elif session_id is not None and target_id is None:
             try:
                 resolved_target_id = await self._resolve_user_state_session_id(session_id)
-                resolved_target_type = "session"
+                resolved_target_type = TARGET_SESSION
             except SessionNotFoundError:
                 return []
         with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
@@ -2565,7 +2591,7 @@ class PolylogueArchiveMixin:
         session_id: str,
         note_text: str,
         *,
-        target_type: str = "session",
+        target_type: str = TARGET_SESSION,
         target_id: str | None = None,
         message_id: str | None = None,
     ) -> bool:

@@ -148,20 +148,18 @@ async def test_user_state_mutations_write_archive_user_tier(
     assert user_db.exists()
     with sqlite3.connect(user_db) as conn:
         assert conn.execute("PRAGMA user_version").fetchone()[0] == archive_tier_spec(ArchiveTier.USER).version
-        mark = conn.execute(
-            "SELECT target_type, target_id, mark_type, json_extract(metadata_json, '$.public_target_type') FROM marks"
-        ).fetchone()
+        mark = conn.execute("SELECT target_ref, key, value_json FROM assertions WHERE kind = 'mark'").fetchone()
         annotation = conn.execute(
-            "SELECT target_type, target_id, body FROM annotations WHERE annotation_id = 'ann-v1'"
+            "SELECT target_ref, key, body_text FROM assertions WHERE kind = 'annotation' AND key = 'ann-v1'"
         ).fetchone()
         saved_view = conn.execute(
-            "SELECT view_id, name, query_json FROM saved_views WHERE view_id = 'view-v1'"
+            "SELECT target_ref, key, value_json FROM assertions WHERE kind = 'saved_query' AND target_ref = 'saved_view:view-v1'"
         ).fetchone()
         recall_pack = conn.execute(
-            "SELECT recall_pack_id, name, payload_json FROM recall_packs WHERE recall_pack_id = 'pack-v1'"
+            "SELECT target_ref, key, value_json FROM assertions WHERE kind = 'recall_pack' AND target_ref = 'recall_pack:pack-v1'"
         ).fetchone()
         workspace = conn.execute(
-            "SELECT workspace_id, name, settings_json FROM workspaces WHERE workspace_id = 'workspace-v1'"
+            "SELECT target_ref, key, value_json FROM assertions WHERE kind = 'workspace_note' AND target_ref = 'workspace:workspace-v1'"
         ).fetchone()
         assertion_rows = conn.execute(
             """
@@ -172,21 +170,23 @@ async def test_user_state_mutations_write_archive_user_tier(
             """
         ).fetchall()
         correction_row = conn.execute(
-            "SELECT target_type, target_id, correction_type, payload_json FROM corrections"
+            "SELECT target_ref, key, value_json FROM assertions WHERE kind = 'correction'"
         ).fetchone()
 
-    assert mark == ("session", ARCHIVE_USER_STATE_SESSION_ID, "star", None)
+    assert mark is not None
+    assert mark[0:2] == (f"session:{ARCHIVE_USER_STATE_SESSION_ID}", "star")
+    assert (json.loads(mark[2]) if mark[2] is not None else {}) == {}
     assert annotation is not None
-    assert annotation[0:2] == ("session", ARCHIVE_USER_STATE_SESSION_ID)
+    assert annotation[0:2] == (f"session:{ARCHIVE_USER_STATE_SESSION_ID}", "ann-v1")
     assert annotation[2] == "Stored in user.db"
     assert saved_view is not None
-    assert saved_view[0:2] == ("view-v1", "Archive view")
+    assert saved_view[0:2] == ("saved_view:view-v1", "Archive view")
     assert json.loads(saved_view[2]) == {"query": "storage", "limit": 5}
     assert recall_pack is not None
-    assert recall_pack[0:2] == ("pack-v1", "Archive pack")
+    assert recall_pack[0:2] == ("recall_pack:pack-v1", "Archive pack")
     assert json.loads(json.loads(recall_pack[2])["session_ids_json"]) == [ARCHIVE_USER_STATE_SESSION_ID]
     assert workspace is not None
-    assert workspace[0:2] == ("workspace-v1", "Archive workspace")
+    assert workspace[0:2] == ("workspace:workspace-v1", "Archive workspace")
     assert json.loads(workspace[2])["mode"] == "tabs"
     assert [(row[0], row[1], row[2]) for row in assertion_rows] == [
         ("recall_pack:pack-v1", "recall_pack", "Archive pack"),
@@ -197,8 +197,8 @@ async def test_user_state_mutations_write_archive_user_tier(
     assert json.loads(assertion_rows[1][3]) == {"query": "storage", "limit": 5}
     assert json.loads(assertion_rows[2][3])["mode"] == "tabs"
     assert correction_row is not None
-    assert correction_row[0:3] == ("session", ARCHIVE_USER_STATE_SESSION_ID, "tag_accept")
-    assert json.loads(correction_row[3])["payload"] == {"tag": "archive"}
+    assert correction_row[0:2] == (f"insight:{ARCHIVE_USER_STATE_SESSION_ID}", "tag_accept")
+    assert json.loads(correction_row[2])["payload"] == {"tag": "archive"}
 
 
 @pytest.mark.asyncio
@@ -235,15 +235,39 @@ async def test_user_state_target_resolution_reads_archive_file_set_from_archive_
     with sqlite3.connect(archive_root / "user.db") as conn:
         rows = conn.execute(
             """
-            SELECT target_type, target_id, mark_type
-            FROM marks
-            ORDER BY target_type, mark_type
+            SELECT target_ref, key
+            FROM assertions
+            WHERE kind = 'mark'
+            ORDER BY target_ref, key
             """
         ).fetchall()
     assert rows == [
-        ("message", message_id, "pin"),
-        ("session", session_id, "star"),
+        (f"message:{message_id}", "pin"),
+        (f"session:{session_id}", "star"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_user_state_targets_reject_contradictory_identifiers(workspace_env: dict[str, Path]) -> None:
+    archive_root = workspace_env["archive_root"]
+    _session_id, message_id = _seed_user_state_session(archive_root)
+
+    async with Polylogue(db_path=archive_root / "index.db", archive_root=archive_root) as poly:
+        with pytest.raises(ValueError, match="message target_id must match message_id"):
+            await poly.add_mark(
+                USER_STATE_SESSION_ID,
+                "pin",
+                target_type="message",
+                target_id="other-message",
+                message_id=message_id,
+            )
+        with pytest.raises(ValueError, match="canonical non-negative block_index"):
+            await poly.add_mark(
+                USER_STATE_SESSION_ID,
+                "pin",
+                target_type="block",
+                target_id=f"{message_id}:00",
+            )
 
 
 @pytest.mark.asyncio
