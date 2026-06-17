@@ -149,6 +149,18 @@ def test_query_expression_value_completion_uses_field_completion_source() -> Non
     assert repo_items[0].help == "4 sessions"
 
 
+def test_query_action_candidates_come_from_action_contracts_with_danger_metadata() -> None:
+    candidates = shell_completion_values.query_action_candidates("de")
+
+    delete_candidate = next(candidate for candidate in candidates if candidate.value == "delete")
+    assert delete_candidate.source == "ACTION_CONTRACTS"
+    assert delete_candidate.kind == "query-action"
+    assert delete_candidate.danger is True
+    help_text = delete_candidate.to_click_item().help
+    assert help_text is not None
+    assert help_text.startswith("DANGER:")
+
+
 @pytest.fixture
 def cli_runner() -> CliRunner:
     return CliRunner()

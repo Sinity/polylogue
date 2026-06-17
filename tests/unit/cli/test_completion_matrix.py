@@ -198,6 +198,25 @@ def test_query_field_value_completion_per_shell(
 
 
 @pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
+def test_query_action_completion_marks_destructive_actions_per_shell(
+    shell: str,
+    comp_cls: type[ShellComplete],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Root action completion is backed by contracts and marks destructive actions."""
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+    items = _run_completion_for_partial(shell, comp_cls, [], "de")
+    item_map = dict(items)
+    assert "delete" in item_map
+    assert item_map["delete"] is not None and item_map["delete"].startswith("DANGER:")
+
+
+@pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
 @pytest.mark.parametrize("label,cwords", DYNAMIC_COMPLETERS, ids=[label for label, _ in DYNAMIC_COMPLETERS])
 def test_dynamic_completers_empty_archive_per_shell(
     shell: str,
