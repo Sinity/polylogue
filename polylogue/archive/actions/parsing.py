@@ -6,8 +6,8 @@ import json
 from collections.abc import Mapping, Sequence
 
 from polylogue.archive.viewport.viewports import ToolCall, ToolCategory, classify_tool
+from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, json_document
-from polylogue.types import Provider
 
 
 def _clean_str(value: object) -> str | None:

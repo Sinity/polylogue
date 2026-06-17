@@ -39,11 +39,11 @@ from polylogue.api.contracts import (
 from polylogue.api.contracts.api_write_surface import APIWriteSurface
 from polylogue.api.contracts.cli_write_surface import CLIWriteSurface
 from polylogue.api.contracts.mcp_write_surface import MCPWriteSurface
+from polylogue.core.enums import Provider
 from polylogue.maintenance.planner import BackfillOperation
 from polylogue.operations.import_contracts import ImportOperation
 from polylogue.services import build_runtime_services
 from polylogue.surfaces.payloads import TagMutationResult
-from polylogue.types import Provider
 from tests.infra.archive_scenarios import native_session_id_for
 from tests.infra.storage_records import SessionBuilder, db_setup
 

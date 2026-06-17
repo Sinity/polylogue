@@ -17,7 +17,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.models import Message
 from polylogue.archive.raw_payload import build_raw_payload_envelope
 from polylogue.archive.viewport.viewports import ToolCall, classify_tool
-from polylogue.core.enums import Origin
+from polylogue.core.enums import Origin, Provider, SemanticBlockType
 from polylogue.core.json import JSONDocument, JSONValue, json_document
 from polylogue.core.provider_identity import (
     canonical_acquisition_provider,
@@ -34,7 +34,7 @@ from polylogue.storage.hydrators import (
 from polylogue.storage.runtime import (
     MessageRecord,
 )
-from polylogue.types import ContentHash, MessageId, Provider, SemanticBlockType, SessionId
+from polylogue.types import ContentHash, MessageId, SessionId
 from tests.infra.builders import make_msg
 from tests.infra.storage_records import make_attachment, make_content_block, make_message, make_session
 

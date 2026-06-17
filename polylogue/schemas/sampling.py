@@ -6,6 +6,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from polylogue.archive.raw_payload import build_raw_payload_envelope, collect_limited_samples
+from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument
 from polylogue.paths import db_path as index_db_path
 from polylogue.schemas.observation import resolve_provider_config
@@ -20,7 +21,6 @@ from polylogue.schemas.sampling_sessions import (
     _iter_samples_from_sessions,
     _iter_schema_units_from_sessions,
 )
-from polylogue.types import Provider
 
 
 def iter_schema_units(

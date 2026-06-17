@@ -33,10 +33,10 @@ from polylogue.cli.query_contracts import (
     QueryOutputSpec,
 )
 from polylogue.cli.shared.types import AppEnv
+from polylogue.core.enums import Provider
 from polylogue.services import build_runtime_services
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
 from polylogue.surfaces.payloads import decode_search_cursor
-from polylogue.types import Provider
 from tests.infra.builders import make_conv, make_msg
 
 pytestmark = pytest.mark.query_routing

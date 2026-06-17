@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from polylogue.archive.message.roles import Role
+from polylogue.core.enums import BlockType, Provider
 from polylogue.pipeline.services.validation import ValidationService
 from polylogue.schemas import ValidationResult
 from polylogue.sources.parsers.base import (
@@ -25,7 +26,6 @@ from polylogue.sources.parsers.base import (
     ParsedSessionEvent,
 )
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-from polylogue.types import BlockType, Provider
 from tests.infra.live_ingest import ingest_session
 
 

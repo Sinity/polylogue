@@ -19,9 +19,9 @@ import pytest
 from polylogue.archive.message.roles import Role
 from polylogue.cli.commands.context_pack import run_context_pack_view
 from polylogue.cli.shared.types import AppEnv
+from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.types import BlockType, Provider
 
 
 def _archive_env(archive_root: Path) -> AppEnv:

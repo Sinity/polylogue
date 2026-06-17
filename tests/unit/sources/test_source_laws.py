@@ -21,7 +21,7 @@ from typing_extensions import TypedDict
 
 from polylogue.archive.message.roles import Role, normalize_role
 from polylogue.config import Source
-from polylogue.core.enums import TitleSource
+from polylogue.core.enums import Provider, TitleSource
 from polylogue.core.json import JSONDocument, JSONValue, is_json_value
 from polylogue.sources import decoders as decoders_module
 from polylogue.sources import dispatch as dispatch_module
@@ -84,7 +84,6 @@ from polylogue.sources.source_parsing import (
 from polylogue.sources.source_walk import _has_supported_extension
 from polylogue.storage.blob_store import BlobStore, Heartbeat
 from polylogue.storage.cursor_state import CursorFailurePayload, CursorStatePayload
-from polylogue.types import Provider
 from tests.infra.source_builders import GenericSessionBuilder, make_claude_chat_message
 from tests.infra.strategies import (
     json_array_bytes_strategy,

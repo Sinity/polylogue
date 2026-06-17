@@ -7,7 +7,7 @@ from typing import Protocol, TypeAlias
 
 from polylogue.archive.message.roles import Role
 from polylogue.archive.viewport.viewports import ReasoningTrace, TokenUsage, ToolCall
-from polylogue.types import Provider
+from polylogue.core.enums import Provider
 
 ContentBlockSequence: TypeAlias = Sequence[Mapping[str, object]]
 

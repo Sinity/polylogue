@@ -6,8 +6,8 @@ from polylogue.archive.message.types import validate_message_type_filter
 from polylogue.archive.query.fields import storage_filters_require_stats_join
 from polylogue.archive.query.path_prefix import escaped_sql_path_prefix_patterns
 from polylogue.archive.viewport.viewports import ToolCategory
+from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
-from polylogue.types import Provider
 
 _SEMANTIC_ACTION_TYPES = tuple(category.value for category in ToolCategory)
 

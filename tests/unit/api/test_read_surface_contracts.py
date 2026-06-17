@@ -24,8 +24,8 @@ from polylogue.api.contracts import (
 )
 from polylogue.api.contracts.tui_surface import TUIReadSurface
 from polylogue.archive.query.spec import SessionQuerySpec
+from polylogue.core.enums import Provider
 from polylogue.surfaces.payloads import SessionListResponse
-from polylogue.types import Provider
 from tests.infra.archive_scenarios import native_session_id_for
 from tests.infra.storage_records import SessionBuilder, db_setup
 

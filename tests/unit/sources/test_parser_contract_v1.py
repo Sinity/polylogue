@@ -3,8 +3,8 @@ from __future__ import annotations
 import pytest
 
 from polylogue.archive.message.roles import Role
+from polylogue.core.enums import Provider
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
-from polylogue.types import Provider
 
 
 def test_parsed_message_exposes_optional_archive_contract_fields() -> None:

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
+from polylogue.core.enums import PlanStage
 from polylogue.storage.run_state import DriftBucket, PlanCounts, PlanResult, RunCounts, RunDrift
-from polylogue.types import PlanStage
 
 
 def test_plan_result_coerces_stage_sequence_counts_details_and_cursors() -> None:

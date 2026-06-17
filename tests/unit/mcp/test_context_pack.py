@@ -12,10 +12,10 @@ import pytest
 from polylogue.archive.message.roles import Role
 from polylogue.archive.models import Session
 from polylogue.archive.query.spec import SessionQuerySpec
+from polylogue.core.enums import BlockType, Provider
 from polylogue.mcp.context_pack import select_context_pack_sessions
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.types import BlockType, Provider
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.mcp import (
     EXPECTED_TOOL_NAMES,

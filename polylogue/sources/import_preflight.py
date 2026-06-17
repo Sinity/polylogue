@@ -17,9 +17,9 @@ from itertools import islice
 from pathlib import Path
 from typing import Any
 
+from polylogue.core.enums import Provider
 from polylogue.sources.decoders import _decode_json_bytes, _iter_json_stream
 from polylogue.sources.dispatch import detect_provider
-from polylogue.types import Provider
 
 _JSON_SUFFIXES = frozenset({".json", ".jsonl", ".ndjson"})
 _ZIP_JSON_SUFFIXES = (".json", ".jsonl", ".ndjson", ".jsonl.txt")

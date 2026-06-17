@@ -202,9 +202,9 @@ class TestPreflightCommand:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from polylogue.archive.message.roles import Role
+        from polylogue.core.enums import BlockType, Provider
         from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-        from polylogue.types import BlockType, Provider
 
         archive_root = tmp_path / "archive"
         monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
@@ -244,9 +244,9 @@ class TestPreflightCommand:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from polylogue.archive.message.roles import Role
+        from polylogue.core.enums import BlockType, Provider
         from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-        from polylogue.types import BlockType, Provider
 
         archive_root = tmp_path / "archive"
         monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))

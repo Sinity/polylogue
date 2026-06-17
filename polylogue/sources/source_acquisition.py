@@ -7,11 +7,11 @@ from collections.abc import Iterable
 from typing import IO, TypeAlias
 
 from polylogue.config import Source
+from polylogue.core.enums import Provider
 from polylogue.core.json import JSONValue
 from polylogue.logging import get_logger
 from polylogue.storage.blob_store import get_blob_store
 from polylogue.storage.cursor_state import CursorStatePayload
-from polylogue.types import Provider
 
 from . import cursor as _cursor
 from . import decoders as _decoders

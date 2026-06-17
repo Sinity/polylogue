@@ -20,7 +20,7 @@ from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.domain_models import Session, SessionSummary
 from polylogue.archive.session.events import SessionEvent
-from polylogue.core.enums import Origin
+from polylogue.core.enums import Origin, Provider
 from polylogue.core.json import loads
 from polylogue.core.sources import provider_from_origin
 from polylogue.core.timestamps import parse_timestamp
@@ -30,7 +30,7 @@ from polylogue.storage.runtime import (
     SessionEventRecord,
     SessionRecord,
 )
-from polylogue.types import MessageId, Provider
+from polylogue.types import MessageId
 
 
 def _parse_json_blob(raw: object) -> object | None:

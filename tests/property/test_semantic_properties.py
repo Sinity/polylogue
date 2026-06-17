@@ -14,10 +14,10 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from polylogue.archive.message.roles import Role
+from polylogue.core.enums import BlockType
 from polylogue.sources.dispatch import detect_provider, parse_payload
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.parsers.base_models import ParsedSessionEvent
-from polylogue.types import BlockType
 from tests.infra.strategies.schema_driven import schema_conformant_payload
 
 PARSEABLE_PROVIDERS = ("chatgpt", "claude-code", "codex")

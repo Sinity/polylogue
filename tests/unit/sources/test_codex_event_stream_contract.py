@@ -28,11 +28,11 @@ import pytest
 
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
+from polylogue.core.enums import BlockType
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.parsers.codex import looks_like as _looks_like_impl
 from polylogue.sources.parsers.codex import parse as _parse_impl
 from polylogue.sources.parsers.codex import parse_stream
-from polylogue.types import BlockType
 
 CATALOG_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "codex_event_stream"
 

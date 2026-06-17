@@ -14,7 +14,7 @@ from polylogue.archive.viewport.tools import (
     clean_metadata_path_candidate,
     clean_shell_path_candidate,
 )
-from polylogue.types import Provider
+from polylogue.core.enums import Provider
 
 
 class ReasoningTrace(BaseModel):

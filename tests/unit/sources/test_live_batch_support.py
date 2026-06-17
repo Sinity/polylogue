@@ -8,6 +8,7 @@ from typing import Any, cast
 
 import pytest
 
+from polylogue.core.enums import Provider
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.append_ingest import ingest_append_plans
 from polylogue.sources.live.batch import _MAX_APPEND_PLAN_PAYLOAD_BYTES, LiveBatchProcessor
@@ -19,7 +20,6 @@ from polylogue.sources.live.batch_support import (
     _parse_path_as_session_artifact,
 )
 from polylogue.sources.live.cursor import CursorStore
-from polylogue.types import Provider
 
 
 def test_full_ingest_heartbeats_small_file_groups_with_current_path(

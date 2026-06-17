@@ -9,9 +9,9 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
+from polylogue.core.enums import Provider
 from polylogue.errors import PolylogueError
 from polylogue.storage.query_models import SessionRecordQuery
-from polylogue.types import Provider
 
 if TYPE_CHECKING:
     from polylogue.archive.query.search_hits import SessionSearchHit

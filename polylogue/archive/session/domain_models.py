@@ -12,9 +12,9 @@ from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.session.domain_runtime import SessionRuntimeMixin
 from polylogue.archive.session.events import SessionEvent
 from polylogue.archive.session.summary_runtime import SessionSummaryRuntimeMixin
-from polylogue.core.enums import Origin
+from polylogue.core.enums import Origin, Provider
 from polylogue.core.sources import origin_from_provider
-from polylogue.types import Provider, SessionId
+from polylogue.types import SessionId
 
 
 def _coerce_origin(v: object) -> Origin:

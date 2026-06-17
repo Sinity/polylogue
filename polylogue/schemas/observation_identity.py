@@ -5,8 +5,8 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+from polylogue.core.enums import Provider
 from polylogue.schemas.observation_models import PROVIDERS, ProviderConfig, SchemaClusterPayload
-from polylogue.types import Provider
 
 
 def resolve_provider_config(source_name: str | Provider) -> ProviderConfig:

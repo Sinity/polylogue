@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from html import escape
 
+from polylogue.core.enums import BlockType
 from polylogue.rendering.block_models import RenderableBlock
-from polylogue.types import BlockType
 
 # -------------------------------------------------------------------
 # Markdown rendering

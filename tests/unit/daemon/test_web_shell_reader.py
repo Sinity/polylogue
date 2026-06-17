@@ -75,10 +75,10 @@ def _index_db_path(workspace: dict[str, Path]) -> Path:
 def _seed_test_db(workspace: dict[str, Path]) -> None:
     import sqlite3
 
+    from polylogue.core.enums import Provider
     from polylogue.core.sources import origin_from_provider
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-    from polylogue.types import Provider
 
     db = _index_db_path(workspace)
     db.parent.mkdir(parents=True, exist_ok=True)

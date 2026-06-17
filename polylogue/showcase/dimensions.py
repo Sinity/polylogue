@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from polylogue.types import ExerciseIOMode
+from polylogue.core.enums import ExerciseIOMode
 
 
 @dataclass(frozen=True, slots=True)

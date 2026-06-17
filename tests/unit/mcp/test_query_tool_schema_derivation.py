@@ -20,11 +20,11 @@ from mcp.server.fastmcp import FastMCP
 
 from polylogue.archive.query.fields import mcp_query_field_names
 from polylogue.archive.query.plan import SessionQueryPlan
+from polylogue.core.enums import Provider
 from polylogue.mcp.archive_support import archive_query_filters, archive_search_payload, archive_session_list_payload
 from polylogue.mcp.query_contracts import MCPSessionQueryRequest
 from polylogue.mcp.server_tools import register_query_tools
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
-from polylogue.types import Provider
 
 SchemaMap = dict[str, dict[str, Any]]
 

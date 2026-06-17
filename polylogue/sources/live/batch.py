@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 from polylogue.config import Source
 from polylogue.core.degraded import is_degraded
+from polylogue.core.enums import Provider
 from polylogue.core.memory import release_process_memory
 from polylogue.core.metrics import (
     read_cgroup_memory_current_mb,
@@ -99,7 +100,6 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import (
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     initialize_active_archive_root as initialize_archive_root,
 )
-from polylogue.types import Provider
 
 if TYPE_CHECKING:
     from polylogue.api import Polylogue

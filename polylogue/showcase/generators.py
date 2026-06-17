@@ -15,6 +15,7 @@ import click
 
 from polylogue.cli.click_app import cli as root_cli
 from polylogue.cli.command_inventory import CommandPath, iter_command_paths
+from polylogue.core.enums import ExerciseIOMode
 from polylogue.scenarios import (
     build_insight_contract_surfaces,
     build_operational_contract_surfaces,
@@ -22,7 +23,6 @@ from polylogue.scenarios import (
 )
 from polylogue.showcase.dimensions import query_read, schema_exercise
 from polylogue.showcase.exercise_models import AssertionSpec, Exercise
-from polylogue.types import ExerciseIOMode
 
 
 @dataclass(frozen=True, slots=True)

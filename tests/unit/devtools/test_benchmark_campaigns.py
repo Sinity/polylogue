@@ -26,10 +26,10 @@ from devtools.synthetic_benchmark_runtime import (
     run_daemon_live_convergence_campaign,
     run_session_insight_materialization_campaign,
 )
+from polylogue.core.enums import Provider
 from polylogue.scenarios import ExecutionKind
 from polylogue.sources.dispatch import detect_provider
 from polylogue.storage.insights.session.runtime import SessionInsightCounts
-from polylogue.types import Provider
 
 
 def test_synthetic_benchmark_registry_is_compiled_from_authored_scenarios() -> None:

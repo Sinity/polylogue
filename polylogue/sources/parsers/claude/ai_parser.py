@@ -6,8 +6,8 @@ from collections.abc import Mapping
 
 from pydantic import ValidationError
 
+from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.providers.claude_ai import ClaudeAISession
-from polylogue.types import BlockType, Provider
 
 from ..base import (
     ParsedContentBlock,

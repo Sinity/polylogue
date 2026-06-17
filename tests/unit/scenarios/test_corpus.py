@@ -203,9 +203,9 @@ def test_build_demo_corpus_specs_declares_release_fixture_world() -> None:
 
 def test_build_demo_corpus_specs_materializes_with_synthetic_generator(tmp_path: Path) -> None:
     from polylogue.config import Source
+    from polylogue.core.enums import BlockType
     from polylogue.schemas.synthetic import SyntheticCorpus
     from polylogue.sources import iter_source_sessions
-    from polylogue.types import BlockType
 
     written = SyntheticCorpus.write_specs_artifacts(
         build_demo_corpus_specs(),

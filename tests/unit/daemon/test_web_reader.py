@@ -153,8 +153,8 @@ _SEED_SPECS = [
 
 
 def _origin_for(provider: str) -> str:
+    from polylogue.core.enums import Provider
     from polylogue.core.sources import origin_from_provider
-    from polylogue.types import Provider
 
     return origin_from_provider(Provider.from_string(provider)).value
 
@@ -186,9 +186,9 @@ def _seed_empty_schema(workspace: dict[str, Path]) -> None:
 def _seed_test_db(workspace: dict[str, Path]) -> None:
     """Seed a archive with three single-message sessions."""
     from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import BlockType, Provider
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.types import BlockType, Provider
 
     workspace["archive_root"].mkdir(parents=True, exist_ok=True)
     with ArchiveStore(workspace["archive_root"]) as archive:
@@ -215,9 +215,9 @@ def _seed_test_db(workspace: dict[str, Path]) -> None:
 
 def _seed_archive_test_archive(workspace: dict[str, Path]) -> str:
     from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import BlockType, Provider
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.types import BlockType, Provider
 
     workspace["archive_root"].mkdir(parents=True, exist_ok=True)
     with ArchiveStore(workspace["archive_root"]) as archive:
@@ -477,9 +477,9 @@ class TestReaderSessionState:
 
     def test_session_messages_apply_content_projection_flags(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.archive.message.roles import Role
+        from polylogue.core.enums import BlockType, Provider
         from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-        from polylogue.types import BlockType, Provider
 
         _seed_test_db(workspace_env)
         with ArchiveStore(workspace_env["archive_root"]) as archive:

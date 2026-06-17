@@ -4,6 +4,7 @@ import sqlite3
 from pathlib import Path
 
 from polylogue.archive.message.roles import Role
+from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
     ParsedContentBlock,
@@ -21,7 +22,6 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     upsert_session_work_event,
     write_parsed_session_to_archive,
 )
-from polylogue.types import BlockType, Provider
 
 
 def test_archive_tiers_archive_self_verify_envelope_is_stable(tmp_path: Path) -> None:

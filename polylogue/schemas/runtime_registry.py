@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from polylogue.archive.raw_payload.decode import JSONRecord
+from polylogue.core.enums import Provider
 from polylogue.core.json import json_document
 from polylogue.core.provider_identity import canonical_schema_provider as _canonical_schema_provider
 from polylogue.core.provider_identity import normalize_provider_token
@@ -28,7 +29,6 @@ from polylogue.schemas.packages import (
     SchemaResolutionReason,
     SchemaVersionPackage,
 )
-from polylogue.types import Provider
 
 SCHEMA_DIR = Path(__file__).parent / "providers"
 SchemaProvider = Provider | str

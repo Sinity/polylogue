@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from polylogue.archive.message.roles import Role
+from polylogue.core.enums import BlockType
 from polylogue.core.hashing import hash_text
-from polylogue.types import BlockType
 
 from .base_models import (
     ParsedAttachment,

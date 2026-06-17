@@ -26,8 +26,8 @@ from polylogue.archive.query.search_hits import (
     search_hits_for_plan,
 )
 from polylogue.config import Config, Source
+from polylogue.core.enums import Provider
 from polylogue.protocols import VectorProvider
-from polylogue.types import Provider
 from tests.infra.archive_scenarios import native_session_id_for
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.storage_records import SessionBuilder

@@ -10,12 +10,12 @@ Covers:
 from __future__ import annotations
 
 from polylogue.archive.viewport.viewports import ToolCategory, classify_tool
+from polylogue.core.enums import BlockType
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.pipeline.semantic_capture import extract_subagent_spawns, parse_git_operation
 from polylogue.pipeline.semantic_metadata import extract_tool_metadata
 from polylogue.sources.parsers.base_models import ParsedContentBlock
 from polylogue.storage.sqlite.archive_tiers.write import _semantic_type
-from polylogue.types import BlockType
 
 
 def _payload(data: object) -> JSONDocument:

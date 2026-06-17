@@ -13,13 +13,13 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.core.enums import ArtifactSupportStatus, Provider
 from polylogue.storage.artifacts.inspection import (
     _INSPECTION_PREFIX_BYTES,
     inspect_raw_artifact,
 )
 from polylogue.storage.blob_store import BlobStore, reset_blob_store
 from polylogue.storage.runtime import RawSessionRecord
-from polylogue.types import ArtifactSupportStatus, Provider
 
 
 @pytest.fixture

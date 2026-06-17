@@ -464,8 +464,9 @@ class TestProfileCompactionCounting:
         from polylogue.archive.session.domain_models import Session
         from polylogue.archive.session.events import SessionEvent
         from polylogue.archive.session.runtime import build_session_profile
+        from polylogue.core.enums import Provider
         from polylogue.core.sources import origin_from_provider
-        from polylogue.types import Provider, SessionEventId, SessionId
+        from polylogue.types import SessionEventId, SessionId
 
         session = Session(
             id=SessionId("claude-code:session-1"),

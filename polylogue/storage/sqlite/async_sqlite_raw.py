@@ -9,13 +9,13 @@ from typing import TYPE_CHECKING
 
 import aiosqlite
 
+from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
 from polylogue.core.sources import origin_from_provider
 from polylogue.storage.raw.models import RawSessionState, RawSessionStateUpdate
 from polylogue.storage.runtime import ArtifactObservationRecord, RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.write import _timestamp_ms
 from polylogue.storage.sqlite.queries import artifacts as artifacts_q
 from polylogue.storage.sqlite.queries import raw as raw_queries
-from polylogue.types import Provider, ValidationMode, ValidationStatus
 
 if TYPE_CHECKING:
     from pathlib import Path

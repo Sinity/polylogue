@@ -992,10 +992,10 @@ def test_daemon_cli_active_archive_uses_index_when_db_anchor_exists(
 
 def test_daemon_cli_heartbeat_counts_archive(tmp_path: Path) -> None:
     from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import BlockType, Provider
     from polylogue.daemon import cli as daemon_cli
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.types import BlockType, Provider
 
     archive_root = tmp_path
     with ArchiveStore(archive_root) as archive:
@@ -1022,10 +1022,10 @@ def test_ensure_fts_startup_readiness_handles_archive(
     tmp_path: Path,
 ) -> None:
     from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import BlockType, Provider
     from polylogue.daemon import cli as daemon_cli
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.types import BlockType, Provider
 
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
     with ArchiveStore(tmp_path) as archive:
@@ -1064,10 +1064,10 @@ def test_ensure_fts_startup_readiness_uses_extended_write_timeout(
 ) -> None:
     import polylogue.daemon.fts_startup as fts_startup
     from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import BlockType, Provider
     from polylogue.daemon import cli as daemon_cli
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.types import BlockType, Provider
 
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
     with ArchiveStore(tmp_path) as archive:

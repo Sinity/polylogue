@@ -5,12 +5,12 @@ from __future__ import annotations
 import pytest
 
 from polylogue.archive.message.roles import Role
+from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import (
     session_content_hash,
     session_id,
 )
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
-from polylogue.types import Provider
 
 
 def _parsed_message(provider_message_id: str, role: str, text: str, timestamp: str | None) -> ParsedMessage:

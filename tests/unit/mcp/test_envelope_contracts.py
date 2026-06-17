@@ -529,9 +529,9 @@ class TestNativeReadSurfaceHonorsContract:
     @staticmethod
     def _seed(archive_root: Path) -> str:
         from polylogue.archive.message.roles import Role
+        from polylogue.core.enums import BlockType, Provider
         from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-        from polylogue.types import BlockType, Provider
 
         with ArchiveStore(archive_root) as archive:
             return archive.write_parsed(

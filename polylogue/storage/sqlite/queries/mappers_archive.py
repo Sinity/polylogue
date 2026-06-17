@@ -8,7 +8,14 @@ from datetime import datetime, timezone
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
-from polylogue.core.enums import Origin
+from polylogue.core.enums import (
+    ArtifactSupportStatus,
+    BlockType,
+    Origin,
+    SemanticBlockType,
+    ValidationMode,
+    ValidationStatus,
+)
 from polylogue.core.sources import provider_from_origin
 from polylogue.storage.runtime import (
     ArtifactObservationRecord,
@@ -25,15 +32,7 @@ from polylogue.storage.sqlite.queries.mappers_support import (
     _row_int,
     _row_text,
 )
-from polylogue.types import (
-    ArtifactSupportStatus,
-    BlockType,
-    MessageId,
-    SemanticBlockType,
-    SessionId,
-    ValidationMode,
-    ValidationStatus,
-)
+from polylogue.types import MessageId, SessionId
 
 
 def _row_to_session(row: sqlite3.Row) -> SessionRecord:

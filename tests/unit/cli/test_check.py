@@ -12,6 +12,7 @@ from click.testing import CliRunner
 from polylogue.cli import cli
 from polylogue.cli.shared.check_workflow import CheckCommandOptions, run_check_workflow
 from polylogue.cli.shared.types import AppEnv
+from polylogue.core.enums import ArtifactSupportStatus, Provider
 from polylogue.core.json import JSONDocument
 from polylogue.readiness import ReadinessCheck, ReadinessReport, VerifyStatus
 from polylogue.schemas.operator.models import (
@@ -27,7 +28,6 @@ from polylogue.schemas.validation.models import (
 )
 from polylogue.storage.artifacts.views import ArtifactCohortSummary
 from polylogue.storage.runtime import ArtifactObservationRecord
-from polylogue.types import ArtifactSupportStatus, Provider
 from polylogue.ui import create_ui
 from tests.infra.archive_scenarios import open_index_db
 from tests.infra.json_contracts import (

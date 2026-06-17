@@ -16,6 +16,7 @@ import pytest
 
 import polylogue.pipeline.services.ingest_batch._core as ingest_batch_core
 from polylogue.archive.message.roles import Role
+from polylogue.core.enums import BlockType, Provider
 from polylogue.pipeline.services.ingest_batch import (
     _build_batch_memory_observation,
     _drain_ready_session_entries,
@@ -51,7 +52,7 @@ from polylogue.storage.search.cache import get_cache_stats
 from polylogue.storage.search.runtime import search_messages
 from polylogue.storage.sqlite.archive_tiers.write import _attachment_id
 from polylogue.storage.sqlite.connection import open_connection
-from polylogue.types import BlockType, Provider, SessionId
+from polylogue.types import SessionId
 
 BlockSpec: TypeAlias = tuple[str, ParsedContentBlock]
 AttachmentRefSpec: TypeAlias = tuple[str, str]

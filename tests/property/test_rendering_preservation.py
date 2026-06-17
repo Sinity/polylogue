@@ -17,10 +17,11 @@ from hypothesis import HealthCheck, given, settings
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.roles import Role
 from polylogue.archive.models import Message, Session
+from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.rendering.core_markdown import format_session_markdown
 from polylogue.rendering.formatting import format_session
-from polylogue.types import Provider, SessionId
+from polylogue.types import SessionId
 from tests.infra.strategies.messages import session_strategy
 
 

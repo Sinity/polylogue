@@ -162,8 +162,8 @@ ATT_RAWHTML = _attachment_native_id(READER_C1_M1, "att-rawhtml")
 def _build_reader_c1(workspace: ReaderWorkspace, *, attachments: bool = False) -> None:
     """(Re)ingest the ``reader-c1`` session, optionally with the six
     MK3-state attachments linked to its first message."""
+    from polylogue.core.enums import BlockType
     from polylogue.daemon.web_shell_attachments import PREVIEW_SIZE_BUDGET
-    from polylogue.types import BlockType
     from tests.infra.storage_records import SessionBuilder
 
     builder = (

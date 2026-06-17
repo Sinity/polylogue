@@ -13,9 +13,9 @@ from datetime import datetime
 
 import aiosqlite
 
+from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.storage.runtime import ArtifactObservationRecord
-from polylogue.types import Provider
 
 __all__ = [
     "RAW_ARTIFACT_UPSERT_SQL",

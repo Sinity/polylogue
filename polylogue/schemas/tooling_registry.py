@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, TypeAlias
 
+from polylogue.core.enums import Provider
 from polylogue.core.json import json_document, json_document_list, require_json_value
 from polylogue.schemas.observation import schema_cluster_id
 from polylogue.schemas.observation_models import SchemaClusterPayload
@@ -20,7 +21,6 @@ from polylogue.schemas.runtime_registry import (
 )
 from polylogue.schemas.tooling_diff import diff_schemas
 from polylogue.schemas.tooling_models import ClusterManifest, PropertyChange, SchemaCluster, SchemaDiff
-from polylogue.types import Provider
 
 SchemaPayload: TypeAlias = SchemaInputDocument
 ObservedSchemaSample: TypeAlias = object

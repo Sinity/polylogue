@@ -15,9 +15,9 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
+from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.schemas.synthetic.core import SyntheticCorpus
-from polylogue.types import Provider
 from tests.infra.pipeline_roundtrip import parse_payload_roundtrip, write_and_hydrate
 from tests.infra.storage_records import db_setup
 

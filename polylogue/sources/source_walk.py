@@ -7,8 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from polylogue.config import Source
+from polylogue.core.enums import Provider
 from polylogue.storage.cursor_state import CursorStatePayload
-from polylogue.types import Provider
 
 from . import cursor as _cursor
 from .assembly import SidecarData, get_assembly_spec

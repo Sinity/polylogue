@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import pytest
 
+from polylogue.core.enums import Provider
 from polylogue.sources.dispatch import detect_provider
-from polylogue.types import Provider
 
 
 def _payload(obj: object) -> object:

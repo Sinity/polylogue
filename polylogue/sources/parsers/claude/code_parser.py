@@ -10,10 +10,9 @@ from polylogue.archive.message.artifacts import classify_text_message_type
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
-from polylogue.core.enums import PasteBoundary
+from polylogue.core.enums import BlockType, PasteBoundary, Provider
 from polylogue.logging import get_logger
 from polylogue.pipeline.semantic_capture import detect_context_compaction
-from polylogue.types import BlockType, Provider
 
 from ..base import (
     ParsedContentBlock,

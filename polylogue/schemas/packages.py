@@ -6,8 +6,8 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Literal, TypeAlias
 
+from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, json_document, json_document_list
-from polylogue.types import Provider
 
 
 def _provider_value(provider: str | Provider) -> str:

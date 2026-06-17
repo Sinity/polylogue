@@ -29,6 +29,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.archive.message.roles import Role
+from polylogue.core.enums import Provider
 from polylogue.core.hashing import hash_text
 from polylogue.pipeline.ids import (
     _normalize_for_hash,
@@ -40,7 +41,6 @@ from polylogue.storage.index import rebuild_index
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.search import search_messages
 from polylogue.storage.search.query_support import escape_fts5_query
-from polylogue.types import Provider
 from tests.infra.storage_records import make_message, make_session, save_current_archive_records
 
 # ---------------------------------------------------------------------------

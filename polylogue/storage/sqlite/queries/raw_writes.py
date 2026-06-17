@@ -6,10 +6,10 @@ import hashlib
 
 import aiosqlite
 
+from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.write import _timestamp_ms
-from polylogue.types import Provider
 
 
 async def save_raw_session(

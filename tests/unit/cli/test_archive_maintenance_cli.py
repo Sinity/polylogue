@@ -9,6 +9,7 @@ from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
 from polylogue.cli.commands import maintenance
+from polylogue.core.enums import Provider
 from polylogue.storage.blob_gc import read_gc_history
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
 from polylogue.storage.sqlite.archive_tiers.archive_init import (
@@ -16,7 +17,6 @@ from polylogue.storage.sqlite.archive_tiers.archive_init import (
     ArchiveTierInitResult,
 )
 from polylogue.storage.sqlite.archive_tiers.archive_plan import ArchiveInitAction, ArchiveInitPlan
-from polylogue.types import Provider
 
 _ARCHIVE_TIERS = ("source.db", "index.db", "embeddings.db", "ops.db", "user.db")
 

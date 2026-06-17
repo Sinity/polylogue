@@ -7,10 +7,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from polylogue.core.enums import Provider
 from polylogue.logging import get_logger
 from polylogue.sources.assembly import SidecarData
 from polylogue.storage.cursor_state import CursorFailurePayload, CursorStatePayload
-from polylogue.types import Provider
 
 logger = get_logger(__name__)
 

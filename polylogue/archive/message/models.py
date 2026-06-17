@@ -10,7 +10,7 @@ from polylogue.archive.attachment.models import Attachment
 from polylogue.archive.message.model_runtime import MessageRuntimeMixin
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
-from polylogue.types import Provider
+from polylogue.core.enums import Provider
 
 
 class Message(MessageRuntimeMixin, BaseModel):

@@ -6,7 +6,7 @@ from collections.abc import Sequence
 
 from pydantic import BaseModel, Field, field_validator
 
-from polylogue.types import ArtifactSupportStatus, Provider
+from polylogue.core.enums import ArtifactSupportStatus, Provider
 
 
 class ArtifactCohortSummary(BaseModel):

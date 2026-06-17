@@ -14,9 +14,10 @@ from polylogue.archive.query.facets import (
     compute_idf,
 )
 from polylogue.archive.session.domain_models import SessionSummary
+from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.surfaces.payloads import FacetBucketsPayload, FacetsResponse
-from polylogue.types import Provider, SessionId
+from polylogue.types import SessionId
 
 
 def _summary(

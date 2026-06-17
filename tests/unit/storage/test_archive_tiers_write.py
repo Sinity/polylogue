@@ -6,7 +6,7 @@ from pathlib import Path
 
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
-from polylogue.core.enums import TitleSource
+from polylogue.core.enums import BlockType, Provider, TitleSource
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
     ParsedContentBlock,
@@ -37,7 +37,6 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     upsert_session_work_event,
     write_parsed_session_to_archive,
 )
-from polylogue.types import BlockType, Provider
 
 
 def _connect(path: Path) -> sqlite3.Connection:

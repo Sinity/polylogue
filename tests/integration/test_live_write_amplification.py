@@ -90,8 +90,8 @@ def _bootstrap_archive(root: Path) -> Path:
 def _make_parsed_session(session_id: str, n_messages: int = 5) -> Any:
     """Build a minimal ParsedSession with ``n_messages`` user messages."""
     from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import Provider
     from polylogue.sources.parsers.base_models import ParsedMessage, ParsedSession
-    from polylogue.types import Provider
 
     messages = [
         ParsedMessage(

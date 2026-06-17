@@ -12,6 +12,7 @@ import pytest
 from hypothesis import HealthCheck, assume, given, settings
 from hypothesis import strategies as st
 
+from polylogue.core.enums import Provider
 from polylogue.core.json import json_document
 from polylogue.schemas.operator.schema_inference import (
     _remove_nested_required,
@@ -22,7 +23,6 @@ from polylogue.schemas.operator.schema_inference import (
     load_samples_from_sessions,
 )
 from polylogue.schemas.validator import SchemaValidator
-from polylogue.types import Provider
 from tests.infra.schema_access import schema_node, schema_properties
 from tests.infra.strategies import (
     SessionJsonlFileSpec,

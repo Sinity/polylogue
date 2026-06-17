@@ -9,10 +9,10 @@ from pathlib import Path
 from typing import IO
 
 from polylogue.archive.artifact_taxonomy import classify_artifact_path
+from polylogue.core.enums import Provider
 from polylogue.logging import get_logger
 from polylogue.storage.blob_store import get_blob_store
 from polylogue.storage.cursor_state import CursorStatePayload
-from polylogue.types import Provider
 
 from .cursor import _record_cursor_failure
 from .parsers.base import ParsedSession, RawSessionData

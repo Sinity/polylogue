@@ -9,7 +9,7 @@ from typing import Protocol, TypeAlias, TypeVar, runtime_checkable
 from unittest.mock import AsyncMock, MagicMock
 
 from polylogue.archive.models import Session
-from polylogue.types import Provider
+from polylogue.core.enums import Provider
 from tests.infra.builders import make_conv, make_msg
 
 EXPECTED_TOOL_NAMES = {

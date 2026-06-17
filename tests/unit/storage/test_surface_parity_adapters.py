@@ -25,9 +25,9 @@ from pathlib import Path
 import pytest
 
 from polylogue.api import Polylogue
+from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.types import Provider
 from tests.infra.storage_records import SessionBuilder, _record_to_parsed_session, db_setup
 
 # ---------------------------------------------------------------------------
@@ -146,8 +146,8 @@ class _SubstrateSurface:
                 return tuple(sorted({hit.session_id for hit in hits}))
             origin = None
             if case.provider is not None:
+                from polylogue.core.enums import Provider
                 from polylogue.core.sources import origin_from_provider
-                from polylogue.types import Provider
 
                 origin = origin_from_provider(Provider.from_string(case.provider)).value
             summaries = archive.list_summaries(

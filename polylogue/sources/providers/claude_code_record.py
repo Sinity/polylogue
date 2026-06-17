@@ -22,9 +22,9 @@ from polylogue.archive.viewport.viewports import (
     TokenUsage,
     ToolCall,
 )
+from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, JSONDocumentList, json_document, json_document_list
 from polylogue.core.timestamps import parse_timestamp
-from polylogue.types import Provider
 
 from .claude_code_models import ClaudeCodeMessageContent, ClaudeCodeUsage, ClaudeCodeUserMessage
 

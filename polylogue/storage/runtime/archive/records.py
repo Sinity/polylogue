@@ -9,20 +9,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
-from polylogue.core.enums import Origin
+from polylogue.core.enums import BlockType, Origin, SemanticBlockType
 from polylogue.core.hashing import hash_text
 from polylogue.core.json import json_document
 from polylogue.core.security import sanitize_path as _sanitize_path_helper
 from polylogue.core.timestamps import canonical_timestamp_text
-from polylogue.types import (
-    AttachmentId,
-    BlockType,
-    ContentHash,
-    MessageId,
-    SemanticBlockType,
-    SessionEventId,
-    SessionId,
-)
+from polylogue.types import AttachmentId, ContentHash, MessageId, SessionEventId, SessionId
 
 JSONObject = dict[str, object]
 

@@ -3,8 +3,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from polylogue.archive.message.roles import Role
+from polylogue.core.enums import BlockType, Provider
 from polylogue.core.timestamps import parse_timestamp
-from polylogue.types import BlockType, Provider
 
 from .base import ParsedAttachment, ParsedContentBlock, ParsedMessage, ParsedSession
 

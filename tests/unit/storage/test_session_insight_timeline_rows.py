@@ -5,13 +5,13 @@ from pathlib import Path
 
 from polylogue.archive.models import Session
 from polylogue.archive.session.session_profile import build_session_analysis, build_session_profile
+from polylogue.core.enums import Provider
 from polylogue.storage.insights.session.timeline_rows import (
     build_session_phase_records,
     build_session_work_event_records,
     hydrate_session_phase,
     hydrate_work_event,
 )
-from polylogue.types import Provider
 from tests.infra.builders import make_conv, make_msg
 
 REPO_ROOT = Path(__file__).resolve().parents[3]

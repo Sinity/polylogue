@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from polylogue.core.enums import Origin
+from polylogue.core.enums import Origin, Provider
 from polylogue.core.sources import (
     ALL_SOURCES,
     Source,
@@ -14,7 +14,6 @@ from polylogue.core.sources import (
     source_for_family,
     source_to_provider,
 )
-from polylogue.types import Provider
 
 
 def test_every_provider_has_source() -> None:

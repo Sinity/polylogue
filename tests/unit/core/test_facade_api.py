@@ -354,9 +354,9 @@ class TestPolylogueReadSurfaces:
 
     @pytest.mark.asyncio
     async def test_get_raw_artifacts_resolves_id_and_handles_missing(self: object, tmp_path: Path) -> None:
+        from polylogue.core.enums import Provider
         from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-        from polylogue.types import Provider
 
         archive = _archive(tmp_path)
 

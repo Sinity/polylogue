@@ -14,6 +14,7 @@ import pytest
 
 import polylogue.daemon.convergence_stages as stages
 from polylogue.archive.message.roles import Role
+from polylogue.core.enums import BlockType, Provider
 from polylogue.daemon.convergence_stages import (
     make_default_convergence_stages,
     make_embed_stage,
@@ -28,7 +29,6 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.connection import open_connection
-from polylogue.types import BlockType, Provider
 from tests.infra.frozen_clock import FrozenClock
 
 

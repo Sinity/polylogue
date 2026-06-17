@@ -42,6 +42,7 @@ from devtools.pipeline_probe.staging import (
     _write_probe_sources,
 )
 from polylogue.config import Config, Source
+from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, is_json_document, loads, require_json_document
 from polylogue.core.metrics import PipelineMetrics
 from polylogue.paths import active_index_db_path, blob_store_root
@@ -59,7 +60,6 @@ from polylogue.storage.sqlite import SQLiteBackend, create_backend
 from polylogue.storage.sqlite.archive_tiers.archive import _provider_for_origin
 from polylogue.storage.sqlite.connection import open_connection
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
-from polylogue.types import Provider
 
 
 def _safe_git_commit() -> str | None:

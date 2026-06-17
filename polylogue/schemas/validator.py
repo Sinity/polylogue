@@ -15,9 +15,9 @@ except ImportError:
     Draft202012Validator = None
 
 from polylogue.archive.raw_payload import extract_payload_samples
+from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, JSONValue, is_json_value, json_document
 from polylogue.schemas.runtime_registry import SchemaRegistry
-from polylogue.types import Provider
 
 from .validator_resolution import (
     available_providers as _available_providers,

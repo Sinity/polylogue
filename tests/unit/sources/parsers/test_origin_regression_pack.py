@@ -54,7 +54,7 @@ from typing import Any
 import pytest
 
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import Origin, Provider
+from polylogue.core.enums import BlockType, Origin, Provider
 from polylogue.core.json import JSONDocument
 from polylogue.core.sources import origin_from_provider
 from polylogue.sources.dispatch import detect_provider, parse_payload
@@ -81,7 +81,6 @@ from polylogue.sources.parsers.local_agent import (
     parse_gemini_cli,
     parse_hermes,
 )
-from polylogue.types import BlockType
 
 # ---------------------------------------------------------------------------
 # Sentinel for "not applicable for this origin"

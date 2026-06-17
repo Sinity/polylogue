@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from polylogue.archive.message.roles import Role
+from polylogue.core.enums import BlockType, Provider
 from polylogue.core.json import JSONDocument
 from polylogue.sources.parsers.antigravity import (
     BRAIN_METADATA_FRAGMENT_FLAG,
@@ -11,7 +12,6 @@ from polylogue.sources.parsers.antigravity import (
     parse_brain_metadata,
     parse_markdown_export,
 )
-from polylogue.types import BlockType, Provider
 
 
 def test_parse_markdown_export_splits_known_sections() -> None:

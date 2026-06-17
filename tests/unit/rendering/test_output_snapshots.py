@@ -26,9 +26,9 @@ syrupy = pytest.importorskip("syrupy")
 
 from polylogue.archive.attachment.models import Attachment
 from polylogue.archive.models import Message, Session
+from polylogue.core.enums import BlockType
 from polylogue.rendering.core_markdown import format_session_markdown
 from polylogue.rendering.renderers.html import render_session_html
-from polylogue.types import BlockType
 from tests.infra.builders import make_conv as build_conv
 from tests.infra.builders import make_msg as build_msg
 

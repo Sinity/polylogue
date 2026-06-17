@@ -5,6 +5,7 @@ from pathlib import Path
 
 from polylogue.archive.models import Session
 from polylogue.archive.session.session_profile import build_session_analysis, build_session_profile
+from polylogue.core.enums import Provider
 from polylogue.storage.insights.session.profiles import (
     assistant_turn_texts,
     blocker_texts,
@@ -15,7 +16,6 @@ from polylogue.storage.insights.session.profiles import (
     session_enrichment_payload,
     user_turn_texts,
 )
-from polylogue.types import Provider
 from tests.infra.builders import make_conv, make_msg
 
 REPO_ROOT = Path(__file__).resolve().parents[3]

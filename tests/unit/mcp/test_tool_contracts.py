@@ -26,7 +26,7 @@ from polylogue.archive.semantic.pricing import CostEstimatePayload, CostUsagePay
 from polylogue.archive.session.neighbor_candidates import NeighborReason, SessionNeighborCandidate
 from polylogue.archive.stats import ArchiveStats
 from polylogue.archive.viewport import read_view_profile_payloads
-from polylogue.core.enums import Origin
+from polylogue.core.enums import BlockType, Origin, Provider
 from polylogue.core.outcomes import OutcomeCheck, OutcomeStatus
 from polylogue.insights.archive import (
     ArchiveCoverageInsight,
@@ -61,7 +61,7 @@ from polylogue.mcp.archive_support import (
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.surfaces.payloads import TagMutationResult
-from polylogue.types import BlockType, Provider, SessionId
+from polylogue.types import SessionId
 from tests.infra.mcp import (
     MCPServerUnderTest,
     invoke_surface,

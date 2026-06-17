@@ -8,8 +8,8 @@ from polylogue.api import Polylogue
 from polylogue.browser_capture.models import BrowserCaptureEnvelope
 from polylogue.browser_capture.receiver import write_capture_envelope
 from polylogue.config import Source, get_config
+from polylogue.core.enums import Provider
 from polylogue.sources.dispatch import detect_provider, parse_payload
-from polylogue.types import Provider
 from tests.infra.archive_scenarios import open_index_db
 
 

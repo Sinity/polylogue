@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from polylogue.core.enums import Provider
 from polylogue.sources.dispatch import _payload_record, _payload_sequence, parse_payload
-from polylogue.types import Provider
 
 
 def test_payload_sequence_normalizes_streaming_decimals() -> None:

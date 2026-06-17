@@ -14,6 +14,7 @@ import pytest
 
 from polylogue.archive.raw_payload.decode import JSONValue
 from polylogue.config import Config, Source
+from polylogue.core.enums import Provider
 from polylogue.errors import DatabaseError
 from polylogue.pipeline.payload_types import ParseBatchObservation
 from polylogue.pipeline.services.acquisition import AcquireResult, AcquisitionService
@@ -25,7 +26,6 @@ from polylogue.sources.parsers.base import RawSessionData
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-from polylogue.types import Provider
 
 WorkspacePaths = dict[str, Path]
 SessionPayload = dict[str, JSONValue]

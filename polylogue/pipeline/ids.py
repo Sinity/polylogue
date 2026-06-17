@@ -5,12 +5,13 @@ from __future__ import annotations
 import unicodedata
 from typing import TypeAlias
 
+from polylogue.core.enums import Provider
 from polylogue.core.hashing import hash_payload
 from polylogue.core.json import JSONValue
 from polylogue.core.sources import origin_from_provider
 from polylogue.sources import ParsedMessage, ParsedSession
 from polylogue.sources.parsers.base import ParsedContentBlock
-from polylogue.types import ContentHash, MessageId, Provider, SessionEventId, SessionId
+from polylogue.types import ContentHash, MessageId, SessionEventId, SessionId
 
 # Sentinel values to distinguish None from empty in hash computations
 _NULL_SENTINEL = "__POLYLOGUE_NULL__"

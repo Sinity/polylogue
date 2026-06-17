@@ -13,10 +13,10 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.provider.semantics import extract_codex_text
 from polylogue.archive.session.branch_type import BranchType
+from polylogue.core.enums import BlockType, Provider
 from polylogue.core.timestamps import parse_timestamp_pair
 from polylogue.logging import get_logger
 from polylogue.sources.providers.codex import CodexRecord
-from polylogue.types import BlockType, Provider
 
 from .base import (
     ParsedContentBlock,

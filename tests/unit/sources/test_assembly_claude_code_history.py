@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.archive.message.roles import Role
+from polylogue.core.enums import Provider
 from polylogue.sources.assembly import SidecarData
 from polylogue.sources.assembly_claude_code import ClaudeCodeAssemblySpec
 from polylogue.sources.parsers.base import (
@@ -23,7 +24,6 @@ from polylogue.sources.parsers.base import (
     ParsedSession,
 )
 from polylogue.sources.parsers.claude.history import HistoryEntry, HistoryPaste
-from polylogue.types import Provider
 
 
 def _iso(ts_ms: int) -> str:

@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.core.enums import Provider
 from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
 from polylogue.schemas.runtime_registry import (
     SchemaRegistry,
@@ -15,7 +16,6 @@ from polylogue.schemas.runtime_registry import (
     _resolved_package_version,
     canonical_schema_provider,
 )
-from polylogue.types import Provider
 
 
 def _package(

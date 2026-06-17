@@ -40,10 +40,10 @@ def _insert_raw_record(
     raw_content: bytes,
 ) -> str:
     """Insert a raw record, writing content to blob store. Returns actual raw_id (hash)."""
+    from polylogue.core.enums import Provider
     from polylogue.core.sources import origin_from_provider
     from polylogue.storage.blob_store import get_blob_store
     from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session_blob_ref
-    from polylogue.types import Provider
 
     blob_store = get_blob_store()
     raw_id, blob_size = blob_store.write_from_bytes(raw_content)

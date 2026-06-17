@@ -4,9 +4,9 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
+from polylogue.core.enums import Provider
 from polylogue.logging import get_logger
 from polylogue.storage.cursor_state import CursorStatePayload
-from polylogue.types import Provider
 
 from ...assets import asset_path
 from ...config import Source
