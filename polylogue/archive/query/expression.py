@@ -60,8 +60,14 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 from lark import Lark, Token, Transformer, v_args
-from lark.exceptions import UnexpectedInput
+from lark.exceptions import UnexpectedInput, VisitError
 
+from polylogue.archive.query.predicate import (
+    QueryBoolPredicate,
+    QueryFieldPredicate,
+    QueryNotPredicate,
+    QueryPredicate,
+)
 from polylogue.archive.query.spec import (
     QUERY_ACTION_TYPES,
     SessionQuerySpec,
@@ -261,6 +267,7 @@ class QueryExpressionAST:
     """Parsed query expression before lowering into ``SessionQuerySpec``."""
 
     clauses: tuple[_LexToken, ...]
+    boolean_predicate: QueryPredicate | None = None
 
 
 ExplainClauseKind = Literal["field", "count", "text", "json"]
@@ -305,11 +312,13 @@ class QueryExpressionExplanation:
     lowered_spec: SessionQuerySpec
     plan_description: tuple[str, ...]
     unsupported_nodes: tuple[str, ...] = ()
+    predicate: QueryPredicate | None = None
 
     def to_payload(self) -> dict[str, object]:
         return {
             "source_text": self.source_text,
             "clauses": [clause.to_payload() for clause in self.clauses],
+            "predicate": self.predicate.to_payload() if self.predicate is not None else None,
             "lowerer": self.lowerer,
             "plan_description": list(self.plan_description),
             "unsupported_nodes": list(self.unsupported_nodes),
@@ -344,6 +353,35 @@ _QUERY_GRAMMAR = r"""
 
 _QUERY_PARSER = Lark(_QUERY_GRAMMAR, parser="lalr", maybe_placeholders=False)
 
+_BOOLEAN_QUERY_GRAMMAR = r"""
+    start: session_prefix? expr
+
+    session_prefix: SESSIONS WHERE
+
+    ?expr: or_expr
+    ?or_expr: and_expr (OR and_expr)*      -> or_expr
+    ?and_expr: not_expr (AND not_expr)*    -> and_expr
+    ?not_expr: NOT not_expr                -> not_expr
+        | atom
+    ?atom: COUNT_CLAUSE                    -> count_leaf
+        | FIELD_CLAUSE                     -> field_leaf
+        | "(" expr ")"
+
+    SESSIONS: /sessions/i
+    WHERE: /where/i
+    OR: /or/i
+    AND: /and/i
+    NOT: /not/i
+    COUNT_CLAUSE.5: /(messages|words):(>=|<=|=)\d+(?!\S)/
+    FIELD_CLAUSE.4: /-?[a-zA-Z_][a-zA-Z0-9_]*:(?:"(\\.|[^"\\])*"|\([^)]*\)|[^\s"()\[\]{}]+)/
+
+    %import common.WS
+    %ignore WS
+"""
+
+
+_BOOLEAN_QUERY_PARSER = Lark(_BOOLEAN_QUERY_GRAMMAR, parser="lalr", maybe_placeholders=False)
+
 _COUNT_CLAUSE_RE = re.compile(r"^(messages|words):(>=|<=|=)(\d+)$")
 _FIELD_CLAUSE_RE = re.compile(
     r"""
@@ -361,6 +399,24 @@ _FIELD_CLAUSE_RE = re.compile(
     """,
     re.VERBOSE,
 )
+
+_BOOLEAN_TRIGGER_RE = re.compile(r"^\s*\(|^\s*sessions\s+where\b|\b(?:and|or|not)\b", re.IGNORECASE)
+_BOOLEAN_SUPPORTED_FIELDS = {
+    "repo",
+    "origin",
+    "tag",
+    "path",
+    "cwd",
+    "tool",
+    "action",
+    "has",
+    "id",
+    "title",
+    "since",
+    "until",
+    "messages",
+    "words",
+}
 
 
 def _decode_escaped_string(token: Token) -> str:
@@ -430,16 +486,131 @@ class _QueryTransformer(Transformer[Token, _LexToken | str | QueryExpressionAST]
 _QUERY_TRANSFORMER = _QueryTransformer()
 
 
+def _field_token_to_predicate(token: _FieldToken) -> QueryPredicate:
+    field_name = token.field
+    if field_name not in EXPRESSION_FIELD_REGISTRY:
+        recognized = sorted(EXPRESSION_FIELD_REGISTRY)
+        raise ExpressionCompileError(
+            f"unknown query field {field_name!r}; recognized fields: " + ", ".join(recognized),
+            field=field_name,
+        )
+    if field_name not in _BOOLEAN_SUPPORTED_FIELDS:
+        raise ExpressionCompileError(
+            f"field {field_name!r} is not supported inside Boolean SQL predicates yet",
+            field=field_name,
+        )
+
+    values = _split_alternation(token.raw_value) if token.raw_value else ()
+    if field_name == "origin":
+        known_origins = {o.value for o in Origin}
+        for value in values:
+            if value not in known_origins:
+                raise ExpressionCompileError(
+                    f"unknown origin {value!r}; recognized: " + ", ".join(sorted(known_origins)),
+                    field="origin",
+                )
+    elif field_name == "action":
+        for value in values:
+            candidate = value.strip().lower()
+            if candidate not in QUERY_ACTION_TYPES:
+                raise ExpressionCompileError(
+                    f"unknown action {value!r}; recognized: " + ", ".join(QUERY_ACTION_TYPES),
+                    field="action",
+                )
+        values = tuple(value.strip().lower() for value in values if value.strip())
+    elif field_name == "tool" or field_name == "has":
+        values = tuple(value.strip().lower() for value in values if value.strip())
+    elif field_name in {"since", "until"} and values:
+        values = (_parse_relative_date(values[-1]),)
+
+    predicate: QueryPredicate = QueryFieldPredicate(field=field_name, values=values)
+    return QueryNotPredicate(predicate) if token.negated else predicate
+
+
+def _count_token_to_predicate(token: _CountToken) -> QueryFieldPredicate:
+    return QueryFieldPredicate(field=token.field, values=(str(token.number),), op=token.op)
+
+
+def _merge_bool_children(op: Literal["and", "or"], children: tuple[QueryPredicate, ...]) -> QueryPredicate:
+    flattened: list[QueryPredicate] = []
+    for child in children:
+        if isinstance(child, QueryBoolPredicate) and child.op == op:
+            flattened.extend(child.children)
+        else:
+            flattened.append(child)
+    if len(flattened) == 1:
+        return flattened[0]
+    return QueryBoolPredicate(op=op, children=tuple(flattened))
+
+
+def _predicate_children(items: tuple[object, ...]) -> tuple[QueryPredicate, ...]:
+    return tuple(
+        item for item in items if isinstance(item, QueryFieldPredicate | QueryBoolPredicate | QueryNotPredicate)
+    )
+
+
+@v_args(inline=True)
+class _BooleanQueryTransformer(Transformer[Token, QueryPredicate]):
+    def start(self, *items: object) -> QueryPredicate:
+        predicates = _predicate_children(items)
+        if len(predicates) != 1:
+            raise ExpressionCompileError("Boolean query did not produce exactly one predicate", field=None)
+        return predicates[0]
+
+    def session_prefix(self, *_items: object) -> object:
+        return Token("SESSION_PREFIX", "sessions where")
+
+    def or_expr(self, *items: object) -> QueryPredicate:
+        return _merge_bool_children("or", _predicate_children(items))
+
+    def and_expr(self, *items: object) -> QueryPredicate:
+        return _merge_bool_children("and", _predicate_children(items))
+
+    def not_expr(self, *_items: object) -> QueryPredicate:
+        predicates = _predicate_children(_items)
+        if len(predicates) != 1:
+            raise ExpressionCompileError("NOT must wrap exactly one predicate", field=None)
+        return QueryNotPredicate(predicates[0])
+
+    def count_leaf(self, token: Token) -> QueryPredicate:
+        return _count_token_to_predicate(_QUERY_TRANSFORMER.count_clause(token))
+
+    def field_leaf(self, token: Token) -> QueryPredicate:
+        return _field_token_to_predicate(_QUERY_TRANSFORMER.field_clause(token))
+
+
+_BOOLEAN_QUERY_TRANSFORMER = _BooleanQueryTransformer()
+
+
+def _is_boolean_expression(expression: str) -> bool:
+    if re.search(r"^\s*\(|^\s*sessions\s+where\b", expression, re.IGNORECASE):
+        return True
+    return ":" in expression and bool(re.search(r"\b(?:and|or|not)\b", expression, re.IGNORECASE))
+
+
+def _parse_boolean_predicate(expression: str) -> QueryPredicate:
+    try:
+        tree = _BOOLEAN_QUERY_PARSER.parse(expression)
+    except UnexpectedInput as exc:
+        raise ExpressionCompileError(_parse_error_message(expression, exc), field=None) from exc
+    try:
+        transformed = _BOOLEAN_QUERY_TRANSFORMER.transform(tree)
+    except VisitError as exc:
+        if isinstance(exc.orig_exc, ExpressionCompileError):
+            raise exc.orig_exc from exc
+        raise
+    if not isinstance(transformed, QueryFieldPredicate | QueryBoolPredicate | QueryNotPredicate):
+        raise ExpressionCompileError("Boolean query did not produce a predicate", field=None)
+    return transformed
+
+
 def parse_expression_ast(expression: str) -> QueryExpressionAST:
     """Parse a query expression into the typed AST without lowering it."""
     expression = expression.strip()
     if not expression:
         return QueryExpressionAST(())
-    if expression.startswith("("):
-        raise ExpressionCompileError(
-            "cross-field OR / parentheses are not supported; use field:(a|b|c)",
-            field=None,
-        )
+    if _is_boolean_expression(expression):
+        return QueryExpressionAST((), boolean_predicate=_parse_boolean_predicate(expression))
     try:
         tree = _QUERY_PARSER.parse(expression)
     except UnexpectedInput as exc:
@@ -452,7 +623,10 @@ def parse_expression_ast(expression: str) -> QueryExpressionAST:
 
 def _lex(expression: str) -> list[_LexToken]:
     """Project the canonical Lark AST into the current clause lowerer input."""
-    return list(parse_expression_ast(expression).clauses)
+    ast = parse_expression_ast(expression)
+    if ast.boolean_predicate is not None:
+        raise ExpressionCompileError("Boolean query cannot be projected to flat clauses", field=None)
+    return list(ast.clauses)
 
 
 def _explain_clause(token: _LexToken) -> QueryExpressionExplainClause:
@@ -498,6 +672,7 @@ def explain_expression(expression: str) -> QueryExpressionExplanation:
     return QueryExpressionExplanation(
         source_text=source_text,
         clauses=tuple(_explain_clause(clause) for clause in ast.clauses),
+        predicate=ast.boolean_predicate,
         lowerer="lark-query-expression-to-session-query-spec",
         lowered_spec=lowered,
         plan_description=tuple(lowered.to_plan().describe()),
@@ -862,6 +1037,8 @@ def compile_expression(expression: str) -> SessionQuerySpec:
         return _compile_json_spec(expression)
 
     ast = parse_expression_ast(expression)
+    if ast.boolean_predicate is not None:
+        return SessionQuerySpec(boolean_predicate=ast.boolean_predicate)
     tokens = list(ast.clauses)
 
     # Check for JSON tokens (should only appear alone; mixed is an error)
@@ -911,6 +1088,11 @@ def compile_expression_into(expression: str, base: SessionQuerySpec) -> SessionQ
         ExpressionCompileError: Same conditions as :func:`compile_expression`.
     """
     expr_spec = compile_expression(expression)
+    boolean_predicate = expr_spec.boolean_predicate
+    if base.boolean_predicate is not None and boolean_predicate is not None:
+        boolean_predicate = QueryBoolPredicate("and", (base.boolean_predicate, boolean_predicate))
+    elif boolean_predicate is None:
+        boolean_predicate = base.boolean_predicate
     acc = _SpecAccumulator()
     acc.merge_from_spec(base)
     acc.merge_from_spec(expr_spec)
@@ -932,6 +1114,7 @@ def compile_expression_into(expression: str, base: SessionQuerySpec) -> SessionQ
         else base.since_session_id,
         offset=base.offset if base.offset else expr_spec.offset,
         cursor=expr_spec.cursor if expr_spec.cursor is not None else base.cursor,
+        boolean_predicate=boolean_predicate,
     )
 
 
