@@ -370,6 +370,7 @@ surfaces.</p>
 <ul>
 <li><a href="#retrieval-lanes">Retrieval Lanes</a> — <code>dialogue</code>, <code>actions</code>, <code>hybrid</code>,
 <code>semantic</code>, and how <code>auto</code> elevates.</li>
+<li><a href="#terminal-unit-queries">Terminal Unit Queries</a> — <code>messages/actions/blocks where ...</code> row results.</li>
 <li><a href="#ranking-policy">Ranking Policy</a> — current <code>mixed-bm25-rrf-vector</code>
 policy and version contract.</li>
 <li><a href="#searchenvelope-contract">SearchEnvelope Contract</a> — the typed
@@ -387,6 +388,22 @@ repeated with <code>--contains</code>)</li>
 <li><strong>filters</strong>: <code>--flag</code> filters that narrow the session set</li>
 <li><strong>verb</strong>: optional trailing subcommand (<code>list</code>, <code>stats</code>, <code>count</code>, etc.)</li>
 </ul>
+<h2>Terminal Unit Queries</h2>
+<p>Most query expressions select sessions. Explicit unit sources select terminal
+rows instead:</p>
+<pre><code class="language-bash">polylogue --format json messages where role:assistant AND text:timeout
+polylogue --format ndjson actions where action:file_edit AND path:polylogue/archive
+polylogue --format yaml blocks where type:code AND text:sqlite
+</code></pre>
+<p>The row shape is the shared <code>QueryUnitEnvelope</code> used by CLI JSON/NDJSON/YAML,
+Python <code>Polylogue.query_units()</code>, MCP <code>query_units</code>, and daemon
+<code>GET /api/query-units?expression=...</code>. Plain and CSV CLI output are
+transport-specific renderings of the same message/action/block row payloads.</p>
+<p>Session filters such as <code>--origin</code>, <code>--tag</code>, <code>--repo</code>, <code>--since</code>, and <code>--until</code>
+still narrow the owning sessions before rows are returned. Session-only actions
+and result-shaping modes that do not have row semantics yet, such as
+<code>delete</code>, <code>open</code>, <code>stats</code>, <code>count</code>, <code>--cursor</code>, and custom sort/reverse modes,
+are rejected instead of silently coercing row queries back to session queries.</p>
 <h2>Filters</h2>
 <h3>Identity and content</h3>
 <table>

@@ -502,6 +502,11 @@ FTS readiness, and insight freshness.</p>
 <p>Get a single session by ID.</p>
 <h3>GET /api/sessions/:id/messages</h3>
 <p>Get messages for a session. Query params: <code>limit</code>, <code>offset</code>.</p>
+<h3>GET /api/query-units</h3>
+<p>Return terminal rows for explicit query-unit expressions. Query params:
+<code>expression</code>, <code>limit</code>, <code>offset</code>. <code>expression</code> must be a
+<code>messages/actions/blocks where ...</code> query and returns the shared
+<code>QueryUnitEnvelope</code>.</p>
 <h3>GET /api/facets</h3>
 <p>Query faceted aggregations.</p>
 <h3>GET /api/sources</h3>
