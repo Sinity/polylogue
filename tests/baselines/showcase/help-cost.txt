@@ -11,4 +11,3 @@ Options:
 
 Commands:
   outlook  Project the current billing cycle for a subscription plan.
-  rollup   Flat cost rollup (legacy surface).

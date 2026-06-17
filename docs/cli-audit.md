@@ -53,7 +53,7 @@ Registered in `polylogue/cli/click_command_registration.py`.
 | `correlate` | Insights | **Keep** | Git commit/GitHub ref correlation. Distinct capability. |
 | `facets` | Insights | **Keep** | Scoped/global facet aggregates. Distinct capability. |
 | `neighbors` | Insights | **Keep** | Semantic neighbor candidates. Distinct capability. |
-| `cost` | Analytics | **Keep** | Subscription usage and cost telemetry. Subcommands: `outlook`, `rollup`. |
+| `cost` | Analytics | **Keep** | Subscription usage and cost telemetry. Subcommand: `outlook`. |
 | `insights` | Insights | **Keep (restructure)** | 14 subcommands. Needs grouping — see Subcommand Grouping below. |
 | `diagnostics` | Diagnostics | **Keep** | Temporal session diagnostics. Subcommands: `pace`, `tools`, `turns`. |
 | `embed` | Embeddings | **Keep** | Embedding pipeline management. Subcommands: `activate`, `backfill`, `disable`, `enable`, `preflight`, `status`. |
@@ -86,12 +86,11 @@ Registered in `polylogue/cli/click_command_registration.py`.
 
 Rename `insights tags` to `insights tag-rollups` to resolve collision with `polylogue tags`.
 
-#### `cost` (2 subcommands)
+#### `cost` (1 subcommand)
 
 | Subcommand | Recommendation | Notes |
 |-----------|---------------|-------|
 | `outlook` | **Keep** | Cycle projection for subscription plan. |
-| `rollup` | **Keep** | Flat cost rollup (legacy). |
 
 #### `maintenance` (5 subcommands)
 
@@ -299,8 +298,8 @@ Commands that produce structured output use one of two conventions:
    `docs/schemas/cli-output/machine-error.schema.json`.
 
 2. **Raw JSON dump**: Used by commands that always succeed or whose output
-   is a simple Pydantic `model_dump(mode="json")` (facets, status, config,
-   cost rollup). These do not wrap in the machine envelope.
+   is a simple Pydantic `model_dump(mode="json")` (facets, status, config).
+   These do not wrap in the machine envelope.
 
 ### Stable JSON Output (Snapshot-Covered)
 
@@ -331,7 +330,6 @@ coverage of their result payloads.
 | `schema explain` | `polylogue schema explain --provider <p> --format json` | `TestSchemaExplainJsonContract` |
 | `schema list` | `polylogue schema list --format json` | `TestAllJsonCommandsProduceValidJson` |
 | `config` | `polylogue config --format json` | `TestConfigJsonContract` |
-| `cost rollup` | `polylogue cost rollup --format json` | `TestCostJsonContract` |
 
 ### Crash-Free (Parametrized Test)
 

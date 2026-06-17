@@ -454,45 +454,6 @@ class TestConfigJsonContract:
 
 
 # ---------------------------------------------------------------------------
-# cost --format json
-# ---------------------------------------------------------------------------
-
-
-class TestCostJsonContract:
-    """cost rollup --format json emits raw JSON (Pydantic model dump, no envelope)."""
-
-    @pytest.mark.contract
-    def test_cost_json_is_valid_json_object(
-        self: object,
-        monkeypatch: pytest.MonkeyPatch,
-        workspace_env: dict[str, Path],
-    ) -> None:
-        """polylogue cost rollup --format json outputs a valid JSON object."""
-        exit_code, output = _invoke_raw_json_command(["cost", "rollup", "--format", "json"], monkeypatch)
-        assert exit_code == 0, f"cost rollup --format json exited {exit_code}: {output!r}"
-        assert TRACEBACK_SENTINEL not in output
-        parsed = json.loads(output)
-        assert isinstance(parsed, dict)
-
-    def test_cost_json_invalid_plan_exits_cleanly(
-        self: object,
-        monkeypatch: pytest.MonkeyPatch,
-        workspace_env: dict[str, Path],
-    ) -> None:
-        """cost rollup with an unknown plan falls back gracefully without traceback.
-
-        The legacy ``cost rollup`` plan name is free-form text, so passing an
-        arbitrary string should not crash — the implementation will default
-        or skip quota math.
-        """
-        exit_code, output = _invoke_raw_json_command(
-            ["cost", "rollup", "--plan", "nonexistent_plan_xyz", "--format", "json"], monkeypatch
-        )
-        # Must not produce traceback regardless of exit code
-        assert TRACEBACK_SENTINEL not in output
-
-
-# ---------------------------------------------------------------------------
 # schema explain --format json
 # ---------------------------------------------------------------------------
 
