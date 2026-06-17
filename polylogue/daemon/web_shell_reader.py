@@ -424,9 +424,8 @@ function renderMessageBlocks(messages) {
     }
     else body = _polyBodyHtml(m);
     // MK3 attachment strip (#1199). Prepended above the body so the
-    // cards stay visible regardless of fold variant. The hook is
-    // optional so legacy harnesses without the attachment slice still
-    // render cleanly.
+    // cards stay visible regardless of fold variant. The hook stays
+    // optional because not every message renderer includes attachments.
     var attachmentStrip = (typeof _polyAttachmentStripHtml === 'function')
       ? _polyAttachmentStripHtml(m) : '';
     if (attachmentStrip) body = attachmentStrip + body;

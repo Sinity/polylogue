@@ -507,15 +507,6 @@ def _user_config_path() -> Path | None:
     return None
 
 
-def _config_file_path() -> Path | None:
-    """Back-compat alias for :func:`_user_config_path`.
-
-    Retained because earlier tests reference it indirectly via the loader's
-    behavior; new callers should pick the explicit user/site helper.
-    """
-    return _user_config_path()
-
-
 def _default_config_values() -> dict[str, object]:
     """Built-in defaults (layer 1).
 

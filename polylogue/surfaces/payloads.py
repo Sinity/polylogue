@@ -218,9 +218,9 @@ class ReaderActionAvailabilityPayload(SurfacePayloadModel):
 
     Reader actions surface seven distinct states (see :data:`ReaderActionState`)
     so the UI can render "disabled because X" / "loading" / "dangerous"
-    without conflating them under a single boolean (#1488). ``enabled``
-    is kept as a back-compat alias derived from ``state`` so existing
-    call sites that only know about enabled/disabled continue to work.
+    without conflating them under a single boolean (#1488). ``enabled`` is the
+    compact actionability bit consumed by current reader clients; ``state`` is
+    the richer reason category.
     """
 
     enabled: bool = True

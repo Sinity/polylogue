@@ -2,7 +2,7 @@
   "$defs": {
     "ReaderActionAvailabilityPayload": {
       "additionalProperties": false,
-      "description": "Per-target reader action availability with explicit disabled reason.\n\nReader actions surface seven distinct states (see :data:`ReaderActionState`)\nso the UI can render \"disabled because X\" / \"loading\" / \"dangerous\"\nwithout conflating them under a single boolean (#1488). ``enabled``\nis kept as a back-compat alias derived from ``state`` so existing\ncall sites that only know about enabled/disabled continue to work.",
+      "description": "Per-target reader action availability with explicit disabled reason.\n\nReader actions surface seven distinct states (see :data:`ReaderActionState`)\nso the UI can render \"disabled because X\" / \"loading\" / \"dangerous\"\nwithout conflating them under a single boolean (#1488). ``enabled`` is the\ncompact actionability bit consumed by current reader clients; ``state`` is\nthe richer reason category.",
       "properties": {
         "disabled_reason": {
           "anyOf": [

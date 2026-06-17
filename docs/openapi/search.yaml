@@ -359,11 +359,11 @@ components:
 
         so the UI can render "disabled because X" / "loading" / "dangerous"
 
-        without conflating them under a single boolean (#1488). ``enabled``
+        without conflating them under a single boolean (#1488). ``enabled`` is the
 
-        is kept as a back-compat alias derived from ``state`` so existing
+        compact actionability bit consumed by current reader clients; ``state`` is
 
-        call sites that only know about enabled/disabled continue to work.'
+        the richer reason category.'
       properties:
         enabled:
           default: true

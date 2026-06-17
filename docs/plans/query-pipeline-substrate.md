@@ -57,6 +57,5 @@ micro-slices. Each phase should land useful executable queries and tests.
 - Unsupported forms fail with typed errors and do not broaden results.
 - CLI, daemon, MCP, web, and completion can share the same parser and AST.
 - Natural-language query tools target the AST.
-- Query surfaces can keep using compatibility function names such as
-  `compile_expression`, but their bodies delegate to this grammar/AST/lowering
-  path rather than forming a separate legacy compiler.
+- Query surfaces should name and call the grammar/AST/lowering path directly.
+  There is no separate compatibility compiler or floor grammar.

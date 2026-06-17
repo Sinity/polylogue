@@ -196,12 +196,6 @@ def frozen_clock_fixture(request: pytest.FixtureRequest) -> Iterator[FrozenClock
         yield clock
 
 
-@pytest.fixture(name="clock")
-def clock_fixture(frozen_clock: FrozenClock) -> FrozenClock:
-    """Back-compat alias for the original ``clock`` fixture (#1300)."""
-    return frozen_clock
-
-
 def pytest_configure(config: pytest.Config) -> None:
     """Register the ``frozen_clock_modules`` marker.
 
@@ -217,7 +211,6 @@ def pytest_configure(config: pytest.Config) -> None:
 __all__ = [
     "DEFAULT_FROZEN_EPOCH",
     "FrozenClock",
-    "clock_fixture",
     "fixed_now",
     "freeze_clock",
     "frozen_clock_fixture",
