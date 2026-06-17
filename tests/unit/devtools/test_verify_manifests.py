@@ -475,22 +475,6 @@ def test_test_quality_ci_gate_rejects_unbacked_claim(tmp_path: Path) -> None:
     assert "ci_gate=true but no workflow run step invokes" in errors[0]
 
 
-def test_assurance_domains_accept_documentation_inventory(tmp_path: Path) -> None:
-    plans = tmp_path
-    (plans / "assurance-domains.yaml").write_text(
-        """description: Documentation inventory
-domains:
-  parser_correctness:
-    description: Provider parser crashlessness and fidelity
-    notes: >
-      Executable evidence lives in parser property tests and schema fixtures.
-""",
-        encoding="utf-8",
-    )
-
-    assert verify_manifests.check_assurance_domains(plans) == []
-
-
 # ---------------------------------------------------------------------------
 # Pack C: campaign test-path and freshness/artifact existence enforcement
 # ---------------------------------------------------------------------------

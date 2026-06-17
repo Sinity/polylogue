@@ -2,8 +2,8 @@
 #
 # Declares verification scenario families and their subject coverage.
 # Each family groups scenarios that exercise a common surface or
-# concern. Seed state: families are documented but not yet linked
-# to assurance-domain maturity levels.
+# concern. Verification closure comes from executable scenarios and
+# coverage gaps, not maturity self-declarations.
 #
 # Updated 2026-04-29 from realized codebase state.
 

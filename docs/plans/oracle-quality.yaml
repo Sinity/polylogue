@@ -42,8 +42,8 @@ oracles:
     typical_use: >
       Validates that the codebase matches declared structural
       expectations: topology projection, file-size budgets,
-      test-ownership manifests, assurance-domain maturity
-      self-declarations, retirement completeness.
+      test-ownership manifests, coverage-gap ownership,
+      retirement completeness.
       Consumes YAML manifests under docs/plans/. Cannot detect
       semantic errors but acts as a structured-coherence gate.
 
