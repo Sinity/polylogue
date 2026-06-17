@@ -12,7 +12,11 @@ import click
 from click.testing import CliRunner
 from rich.console import Console
 
-from polylogue.cli.action_contracts import (
+from polylogue.cli.click_app import cli
+from polylogue.cli.command_inventory import CommandPath, iter_command_paths
+from polylogue.cli.commands.config import config_command
+from polylogue.cli.query_group import _split_query_mode_args
+from polylogue.operations.action_contracts import (
     ACTION_CONTRACT_BY_PATH,
     ACTION_CONTRACTS,
     PUBLIC_ACTION_FLOOR,
@@ -20,10 +24,6 @@ from polylogue.cli.action_contracts import (
     CliActionContract,
     action_completion_contexts,
 )
-from polylogue.cli.click_app import cli
-from polylogue.cli.command_inventory import CommandPath, iter_command_paths
-from polylogue.cli.commands.config import config_command
-from polylogue.cli.query_group import _split_query_mode_args
 from tests.infra.app_env import make_app_env
 
 SCHEMAS_DIR = Path("docs/schemas/cli-output")

@@ -27,8 +27,8 @@ from click.shell_completion import (
     ZshComplete,
 )
 
-from polylogue.cli.action_contracts import CompletionContext, action_completion_contexts
 from polylogue.cli.click_app import cli
+from polylogue.operations.action_contracts import CompletionContext, action_completion_contexts
 
 SUPPORTED_SHELLS: tuple[tuple[str, type[ShellComplete]], ...] = (
     ("bash", BashComplete),

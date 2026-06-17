@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from devtools.render_cli_output_schemas import SCHEMAS, CliOutputSchema
-from polylogue.cli.action_contracts import ACTION_CONTRACTS
+from polylogue.operations.action_contracts import ACTION_CONTRACTS
 
 
 def _path_cell(path: tuple[str, ...]) -> str:
@@ -73,7 +73,7 @@ def render_action_contract_report() -> str:
     lines = [
         "## Public Action Contracts",
         "",
-        "This section is generated from `polylogue.cli.action_contracts.ACTION_CONTRACTS`.",
+        "This section is generated from `polylogue.operations.action_contracts.ACTION_CONTRACTS`.",
         "It records the public action floor, not every utility command in the Click tree.",
         "",
         *_contract_rows(),

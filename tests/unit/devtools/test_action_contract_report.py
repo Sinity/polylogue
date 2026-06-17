@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from devtools.action_contract_report import render_action_contract_report
 from devtools.render_cli_output_schemas import SCHEMAS
-from polylogue.cli.action_contracts import ACTION_CONTRACTS
+from polylogue.operations.action_contracts import ACTION_CONTRACTS
 
 
 def test_report_is_derived_from_action_contracts() -> None:
