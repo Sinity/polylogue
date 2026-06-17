@@ -4270,6 +4270,14 @@ def _field_predicate_clause(
         kwargs["has_types"] = tuple(has_types)
     elif field == "title":
         kwargs["title"] = " ".join(values)
+    elif field == "date":
+        if values:
+            if predicate.op == ">=":
+                kwargs["since_ms"] = _date_ms(values[-1], field="date")
+            elif predicate.op == "<=":
+                kwargs["until_ms"] = _date_ms(values[-1], field="date")
+            else:
+                raise ValueError("unsupported Boolean query operator for date")
     elif field == "since":
         if values:
             kwargs["since_ms"] = _date_ms(values[-1], field="since")
