@@ -7,7 +7,7 @@ future surfaces that wire in).
 Current executable grammar
 --------------------------
 The executable language is the Lark-backed query grammar in this module. It
-currently accepts the historical flat session query form:
+currently accepts the compact session query form:
 
     repo:polylogue since:7d "json envelope"
     origin:(codex-session|claude-code-session) has:paste
@@ -34,9 +34,9 @@ and explicit Boolean session predicates:
     repo:polylogue OR repo:sinex
 
 Unknown fields and unsupported structured forms fail loudly. The Lark grammar
-in this module is the query grammar; historical flat lowering is compatibility
-plumbing to be absorbed and deleted as #2006 grows the AST lowerers, not a
-separate long-lived "floor grammar."
+in this module is the query grammar. Compact field/text clauses and explicit
+Boolean predicates are two entry shapes in that grammar, not separate languages
+or a preserved legacy compiler.
 
 Field registry
 --------------
@@ -55,7 +55,7 @@ Public API
 
 :class:`ExpressionCompileError`
     Typed compile-time error with a ``field`` attribute (``None`` for
-    structural errors such as cross-field OR).
+    structural errors such as malformed Boolean syntax).
 """
 
 from __future__ import annotations
@@ -98,7 +98,7 @@ class ExpressionCompileError(PolylogueError):
 
     Attributes:
         field: The DSL field token that caused the error, or ``None`` for
-               structural errors (cross-field OR, unclosed quotes, etc.).
+               structural errors (malformed Boolean syntax, unclosed quotes, etc.).
     """
 
     http_status_code = 400
@@ -382,7 +382,7 @@ _QUERY_GRAMMAR = r"""
     EXISTS: /exists/i
     SEQ: /seq/i
     ARROW: "->"
-    STRUCT_UNIT: /(message|action)/i
+    STRUCT_UNIT: /(message|action|block)/i
     OR: /or/i
     AND: /and/i
     NOT: /not/i
@@ -458,6 +458,7 @@ _STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS = {
 }
 _MESSAGE_STRUCTURAL_FIELDS = {"role", "type", "text", "tool", "action", "command", "path", "output", "words"}
 _ACTION_STRUCTURAL_FIELDS = {"tool", "action", "type", "command", "path", "output", "text"}
+_BLOCK_STRUCTURAL_FIELDS = {"type", "text", "tool", "action", "command", "path"}
 
 
 def _unknown_query_field_message(field_name: str, *, include_structural: bool = False) -> str:
@@ -617,14 +618,18 @@ def _predicate_children(items: tuple[object, ...]) -> tuple[QueryPredicate, ...]
     )
 
 
-def _validate_predicate_context(predicate: QueryPredicate, *, unit: Literal["session", "message", "action"]) -> None:
+def _validate_predicate_context(
+    predicate: QueryPredicate, *, unit: Literal["session", "message", "action", "block"]
+) -> None:
     if isinstance(predicate, QueryFieldPredicate):
         if unit == "session":
             supported = _BOOLEAN_SUPPORTED_FIELDS
         elif unit == "message":
             supported = _MESSAGE_STRUCTURAL_FIELDS
-        else:
+        elif unit == "action":
             supported = _ACTION_STRUCTURAL_FIELDS
+        else:
+            supported = _BLOCK_STRUCTURAL_FIELDS
         if predicate.field not in supported:
             raise ExpressionCompileError(
                 f"field {predicate.field!r} is not supported for {unit} predicates",
@@ -732,9 +737,9 @@ class _BooleanQueryTransformer(Transformer[Token, QueryPredicate]):
 
     def exists_leaf(self, _exists: Token, unit: Token, child: QueryPredicate) -> QueryPredicate:
         unit_value = str(unit).lower()
-        if unit_value not in {"message", "action"}:
+        if unit_value not in {"message", "action", "block"}:
             raise ExpressionCompileError(f"unsupported structural query unit {unit_value!r}", field=None)
-        return QueryExistsPredicate(unit=cast(Literal["message", "action"], unit_value), child=child)
+        return QueryExistsPredicate(unit=cast(Literal["message", "action", "block"], unit_value), child=child)
 
     def sequence_step(self, token: Token) -> QueryPredicate:
         predicate = _field_token_to_predicate(_QUERY_TRANSFORMER.field_clause(token))
@@ -1268,8 +1273,8 @@ def compile_expression(expression: str) -> SessionQuerySpec:
         A ``SessionQuerySpec`` representing the compiled query.
 
     Raises:
-        ExpressionCompileError: On unknown fields, cross-field OR, unclosed
-            strings, or invalid values.
+        ExpressionCompileError: On unknown fields, malformed Boolean syntax,
+            unclosed strings, or invalid values.
     """
     expression = expression.strip()
     if not expression:
@@ -1295,13 +1300,14 @@ def compile_expression(expression: str) -> SessionQuerySpec:
             field=None,
         )
 
-    # Detect cross-field OR patterns: top-level OR keyword
+    # In compact query mode, bare OR is ambiguous text. Explicit Boolean
+    # queries are supported through field clauses or ``sessions where ...``.
     word_texts = [t.text.upper() for t in tokens if isinstance(t, _TextToken) and not t.quoted]
     if "OR" in word_texts:
         raise ExpressionCompileError(
-            "cross-field OR is not supported in this version; express as separate queries "
-            "or use field:(a|b|c) for in-field OR. "
-            "Boolean-tree queries are tracked in issue #2006.",
+            "bare OR is ambiguous in compact text queries; use explicit Boolean syntax "
+            "(for example: sessions where repo:polylogue OR origin:chatgpt-export), "
+            'quote it as "OR", or use field:(a|b|c) for in-field alternatives.',
             field=None,
         )
 

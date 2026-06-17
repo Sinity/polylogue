@@ -46,7 +46,7 @@ class QueryBoolPredicate:
 class QueryExistsPredicate:
     """Correlated structural predicate over a child archive unit."""
 
-    unit: Literal["message", "action"]
+    unit: Literal["message", "action", "block"]
     child: QueryPredicate
 
     def to_payload(self) -> dict[str, object]:

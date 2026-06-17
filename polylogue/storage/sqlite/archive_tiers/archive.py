@@ -4427,6 +4427,26 @@ def _action_field_predicate_clause(action_alias: str, predicate: QueryFieldPredi
     raise ValueError(f"unsupported action predicate field: {field}")
 
 
+def _block_field_predicate_clause(block_alias: str, predicate: QueryFieldPredicate) -> tuple[str, list[object]]:
+    field = predicate.field
+    if field == "type":
+        return _in_or_equals_clause(f"{block_alias}.block_type", predicate.values, lower=True)
+    if field == "text":
+        return _like_clause(f"COALESCE({block_alias}.search_text, '')", predicate.values)
+    if field == "tool":
+        return _in_or_equals_clause(f"{block_alias}.tool_name", predicate.values, lower=True)
+    if field in {"action", "command", "path"}:
+        column = {
+            "action": f"{block_alias}.semantic_type",
+            "command": f"COALESCE({block_alias}.tool_command, '')",
+            "path": f"REPLACE(COALESCE({block_alias}.tool_path, ''), char(92), '/')",
+        }[field]
+        if field == "action":
+            return _in_or_equals_clause(column, predicate.values, lower=True)
+        return _like_clause(column, predicate.values)
+    raise ValueError(f"unsupported block predicate field: {field}")
+
+
 def _structural_predicate_clause(
     unit: str,
     row_alias: str,
@@ -4437,6 +4457,8 @@ def _structural_predicate_clause(
             return _message_field_predicate_clause(row_alias, predicate)
         if unit == "action":
             return _action_field_predicate_clause(row_alias, predicate)
+        if unit == "block":
+            return _block_field_predicate_clause(row_alias, predicate)
     if isinstance(predicate, QueryNotPredicate):
         clause, params = _structural_predicate_clause(unit, row_alias, predicate.child)
         return (f"NOT ({clause})" if clause else "", params)
@@ -4478,6 +4500,20 @@ def _exists_predicate_clause(table_alias: str, predicate: QueryExistsPredicate) 
             EXISTS (
                 SELECT 1
                 FROM actions {row_alias}
+                WHERE {row_alias}.session_id = {table_alias}.session_id
+                  AND {child_clause}
+            )
+            """.strip(),
+            params,
+        )
+    if predicate.unit == "block":
+        row_alias = "exists_blocks"
+        child_clause, params = _structural_predicate_clause(predicate.unit, row_alias, predicate.child)
+        return (
+            f"""
+            EXISTS (
+                SELECT 1
+                FROM blocks {row_alias}
                 WHERE {row_alias}.session_id = {table_alias}.session_id
                   AND {child_clause}
             )
