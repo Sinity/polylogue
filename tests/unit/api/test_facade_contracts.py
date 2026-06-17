@@ -670,7 +670,7 @@ async def test_list_read_view_profiles_exposes_shared_profile_payloads(tmp_path:
 
 
 async def test_explain_query_expression_exposes_shared_query_payload(tmp_path: Path) -> None:
-    """``explain_query_expression`` exposes the canonical query compiler payload."""
+    """``explain_query_expression`` exposes the canonical query AST payload."""
     archive = _archive(tmp_path)
     try:
         payload = await archive.explain_query_expression("sessions where exists block(type:code) AND messages > 10")

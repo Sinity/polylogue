@@ -473,10 +473,10 @@ class SessionQuerySpec:
 
     @classmethod
     def from_expression(cls, expression: str) -> SessionQuerySpec:
-        """Compile a DSL query expression string into a ``SessionQuerySpec``.
+        """Parse and lower a DSL query expression into a ``SessionQuerySpec``.
 
         This is the Python-facade entry point for the shared expression
-        compiler.  Field clauses such as ``repo:polylogue``, ``since:7d``,
+        parser/lowerer.  Field clauses such as ``repo:polylogue``, ``since:7d``,
         or ``origin:(claude-code-session|codex-session)`` are mapped to the
         corresponding spec fields.  Bare words and quoted phrases go to
         ``query_terms`` (FTS).

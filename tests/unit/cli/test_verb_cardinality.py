@@ -627,13 +627,13 @@ class TestResolveIdsUsesCompiledSpec:
         from polylogue.cli.verb_cardinality import _async_resolve_ids
 
         src = inspect.getsource(_async_resolve_ids)
-        # After the fix the function must call query_spec() for DSL compilation.
+        # After the fix the function must call query_spec() for DSL parsing.
         assert "query_spec()" in src, "_async_resolve_ids must call request.query_spec()"
         # The old broken path used build_query_execution_plan(request.query_params()).
         assert "build_query_execution_plan" not in src, (
             "_async_resolve_ids must not use build_query_execution_plan (passes raw text as FTS)"
         )
-        assert "query_params()" not in src, "_async_resolve_ids must not call query_params() (bypasses DSL compiler)"
+        assert "query_params()" not in src, "_async_resolve_ids must not call query_params() (bypasses DSL parsing)"
 
 
 # ---------------------------------------------------------------------------

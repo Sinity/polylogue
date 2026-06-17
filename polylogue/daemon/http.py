@@ -1286,7 +1286,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         # Build the flag-derived base spec (all params except the free-text
         # query string), then route the query string through the shared
-        # expression compiler so structured clauses like
+        # expression parser/lowerer so structured clauses like
         # ``origin:codex has:paste since:7d`` resolve to the correct spec
         # fields rather than being passed as literal FTS terms (#1860).
         query_str = str(query_params.get("query") or "").strip()
@@ -1401,11 +1401,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         from polylogue.archive.query.spec import QuerySpecError, parse_query_date
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-        # Compile only the ``query`` param through the shared expression compiler
+        # Parse/lower only the ``query`` param through the shared expression path
         # so DSL clauses like ``origin:codex has:paste since:7d`` map to the
         # correct ArchiveStore filter arguments rather than being passed as
         # literal FTS text (#1860).  The ``contains`` param is a legacy
-        # content-substring filter that must NOT be compiled — routing it through
+        # content-substring filter that must NOT be parsed as DSL — routing it through
         # compile_expression() causes ExpressionCompileError when the value
         # contains spaces or field-like tokens (#1873 Bug 7).
         query_str = self._get_param(params, "query") or ""

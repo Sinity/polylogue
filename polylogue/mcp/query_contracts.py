@@ -42,7 +42,7 @@ def build_query_spec(**params: object) -> SessionQuerySpec:
     """Build a SessionQuerySpec from MCP-facing query kwargs.
 
     When a ``query`` string is present it is routed through the shared
-    query-expression compiler (:func:`~polylogue.archive.query.expression.compile_expression_into`)
+    query-expression parser/lowerer (:func:`~polylogue.archive.query.expression.compile_expression_into`)
     so structured clauses such as ``origin:codex has:paste since:7d`` map to
     the correct spec fields, mirroring the CLI bare-query path in
     :meth:`~polylogue.cli.root_request.RootModeRequest.query_spec`.
@@ -51,8 +51,8 @@ def build_query_spec(**params: object) -> SessionQuerySpec:
     if normalized.get("message_type") is not None:
         normalized["message_type"] = validate_message_type_filter(normalized["message_type"]).value
 
-    # Extract the free-text query string for compiler routing.
-    # ``from_params`` would treat it as a literal FTS term; the compiler
+    # Extract the free-text query string for DSL parsing/lowering.
+    # ``from_params`` would treat it as a literal FTS term; the parser/lowerer
     # resolves field clauses to the appropriate spec fields first.
     query_str = str(normalized.pop("query", None) or "").strip()
     base = SessionQuerySpec.from_params(normalized)
