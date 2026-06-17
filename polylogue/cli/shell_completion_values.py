@@ -20,10 +20,13 @@ from click.shell_completion import CompletionItem
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.query.expression import (
     COUNT_QUERY_FIELD_REGISTRY,
+    DATE_QUERY_FIELD_REGISTRY,
     EXPRESSION_FIELD_REGISTRY,
     STRUCTURAL_QUERY_UNIT_REGISTRY,
     count_query_fields,
     count_query_operators,
+    date_query_fields,
+    date_query_operators,
     structural_query_fields,
     structural_query_units,
 )
@@ -258,6 +261,33 @@ def query_count_operator_candidates(field: str, incomplete: str) -> list[QueryCo
                 group=f"{field_name} count operators",
                 description=f"{info.description} Example: {info.example}",
                 source="COUNT_QUERY_FIELD_REGISTRY",
+            )
+        )
+    return candidates
+
+
+def query_date_operator_candidates(field: str, incomplete: str) -> list[QueryCompletionCandidate]:
+    """Return readable date operators accepted by the query grammar."""
+
+    field_name = field.lower()
+    if field_name not in date_query_fields():
+        return []
+    current = incomplete.strip().lower()
+    info = DATE_QUERY_FIELD_REGISTRY[field_name]
+    candidates: list[QueryCompletionCandidate] = []
+    for operator in date_query_operators(field_name):
+        if current and not operator.startswith(current):
+            continue
+        insert = f"{operator} " if operator == info.range_keyword else operator
+        candidates.append(
+            QueryCompletionCandidate(
+                value=operator,
+                insert=insert,
+                display=insert,
+                kind="query-date-operator",
+                group=f"{field_name} date operators",
+                description=f"{info.description} Example: {info.example}",
+                source="DATE_QUERY_FIELD_REGISTRY",
             )
         )
     return candidates
@@ -614,6 +644,7 @@ __all__ = [
     "complete_tool_values",
     "query_action_candidates",
     "query_count_operator_candidates",
+    "query_date_operator_candidates",
     "query_field_candidates",
     "query_structural_field_candidates",
     "query_structural_unit_candidates",
