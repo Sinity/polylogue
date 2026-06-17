@@ -6,7 +6,8 @@ future surfaces that wire in).
 
 Current executable grammar
 --------------------------
-An expression is a whitespace-separated sequence of *clauses*, all AND'd:
+The executable language is the Lark-backed query grammar in this module. It
+currently accepts the historical flat session query form:
 
     repo:polylogue since:7d "json envelope"
     origin:(codex-session|claude-code-session) has:paste
@@ -27,10 +28,15 @@ Clause forms:
 - ``words:>=N``            — count comparison (min_words)
 - ``{...}``                — direct JSON spec (validated into SessionQuerySpec)
 
-Cross-field OR and nested Boolean groups are **rejected loudly** until #2006
-adds executable Boolean AST lowerers. Unknown fields also fail loudly. The
-Lark grammar in this module is the query grammar; there is no separate
-long-lived "floor grammar."
+and explicit Boolean session predicates:
+
+    sessions where (repo:polylogue OR origin:chatgpt-export) AND NOT tag:stale
+    repo:polylogue OR repo:sinex
+
+Unknown fields and unsupported structured forms fail loudly. The Lark grammar
+in this module is the query grammar; historical flat lowering is compatibility
+plumbing to be absorbed and deleted as #2006 grows the AST lowerers, not a
+separate long-lived "floor grammar."
 
 Field registry
 --------------
@@ -57,16 +63,18 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field, replace
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from lark import Lark, Token, Transformer, v_args
 from lark.exceptions import UnexpectedInput, VisitError
 
 from polylogue.archive.query.predicate import (
     QueryBoolPredicate,
+    QueryExistsPredicate,
     QueryFieldPredicate,
     QueryNotPredicate,
     QueryPredicate,
+    QuerySequencePredicate,
 )
 from polylogue.archive.query.spec import (
     QUERY_ACTION_TYPES,
@@ -363,12 +371,19 @@ _BOOLEAN_QUERY_GRAMMAR = r"""
     ?and_expr: not_expr (AND not_expr)*    -> and_expr
     ?not_expr: NOT not_expr                -> not_expr
         | atom
-    ?atom: COUNT_CLAUSE                    -> count_leaf
+    ?atom: EXISTS STRUCT_UNIT "(" expr ")" -> exists_leaf
+        | SEQ "(" sequence_step (ARROW sequence_step)+ ")" -> sequence_leaf
+        | COUNT_CLAUSE                     -> count_leaf
         | FIELD_CLAUSE                     -> field_leaf
         | "(" expr ")"
+    sequence_step: FIELD_CLAUSE
 
     SESSIONS: /sessions/i
     WHERE: /where/i
+    EXISTS: /exists/i
+    SEQ: /seq/i
+    ARROW: "->"
+    STRUCT_UNIT: /(message|action)/i
     OR: /or/i
     AND: /and/i
     NOT: /not/i
@@ -417,6 +432,19 @@ _BOOLEAN_SUPPORTED_FIELDS = {
     "messages",
     "words",
 }
+_STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS = {
+    "role",
+    "type",
+    "text",
+    "tool",
+    "action",
+    "command",
+    "path",
+    "output",
+    "words",
+}
+_MESSAGE_STRUCTURAL_FIELDS = {"role", "type", "text", "tool", "action", "command", "path", "output", "words"}
+_ACTION_STRUCTURAL_FIELDS = {"tool", "action", "type", "command", "path", "output", "text"}
 
 
 def _decode_escaped_string(token: Token) -> str:
@@ -431,11 +459,7 @@ def _decode_escaped_string(token: Token) -> str:
 
 def _parse_error_message(expression: str, exc: UnexpectedInput) -> str:
     if expression.lstrip().startswith("("):
-        return (
-            "cross-field OR parentheses are not supported; express as separate queries "
-            "or use field:(a|b|c) for in-field OR. "
-            "Boolean-tree queries are tracked in issue #2006."
-        )
+        return f"invalid Boolean query expression near column {exc.column}"
     if '"' in expression:
         return "unclosed quoted string"
     return f"invalid query expression near column {exc.column}"
@@ -488,13 +512,16 @@ _QUERY_TRANSFORMER = _QueryTransformer()
 
 def _field_token_to_predicate(token: _FieldToken) -> QueryPredicate:
     field_name = token.field
-    if field_name not in EXPRESSION_FIELD_REGISTRY:
+    if field_name not in EXPRESSION_FIELD_REGISTRY and field_name not in _STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS:
         recognized = sorted(EXPRESSION_FIELD_REGISTRY)
         raise ExpressionCompileError(
-            f"unknown query field {field_name!r}; recognized fields: " + ", ".join(recognized),
+            f"unknown query field {field_name!r}; recognized fields: "
+            + ", ".join(recognized)
+            + "; structural fields: "
+            + ", ".join(sorted(_STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS)),
             field=field_name,
         )
-    if field_name not in _BOOLEAN_SUPPORTED_FIELDS:
+    if field_name not in _BOOLEAN_SUPPORTED_FIELDS and field_name not in _STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS:
         raise ExpressionCompileError(
             f"field {field_name!r} is not supported inside Boolean SQL predicates yet",
             field=field_name,
@@ -518,7 +545,7 @@ def _field_token_to_predicate(token: _FieldToken) -> QueryPredicate:
                     field="action",
                 )
         values = tuple(value.strip().lower() for value in values if value.strip())
-    elif field_name == "tool" or field_name == "has":
+    elif field_name in {"tool", "has", "role", "type", "command", "path", "output"}:
         values = tuple(value.strip().lower() for value in values if value.strip())
     elif field_name in {"since", "until"} and values:
         values = (_parse_relative_date(values[-1]),)
@@ -545,8 +572,61 @@ def _merge_bool_children(op: Literal["and", "or"], children: tuple[QueryPredicat
 
 def _predicate_children(items: tuple[object, ...]) -> tuple[QueryPredicate, ...]:
     return tuple(
-        item for item in items if isinstance(item, QueryFieldPredicate | QueryBoolPredicate | QueryNotPredicate)
+        item
+        for item in items
+        if isinstance(
+            item,
+            QueryFieldPredicate
+            | QueryBoolPredicate
+            | QueryNotPredicate
+            | QueryExistsPredicate
+            | QuerySequencePredicate,
+        )
     )
+
+
+def _validate_predicate_context(predicate: QueryPredicate, *, unit: Literal["session", "message", "action"]) -> None:
+    if isinstance(predicate, QueryFieldPredicate):
+        if unit == "session":
+            supported = _BOOLEAN_SUPPORTED_FIELDS
+        elif unit == "message":
+            supported = _MESSAGE_STRUCTURAL_FIELDS
+        else:
+            supported = _ACTION_STRUCTURAL_FIELDS
+        if predicate.field not in supported:
+            raise ExpressionCompileError(
+                f"field {predicate.field!r} is not supported for {unit} predicates",
+                field=predicate.field,
+            )
+        if (
+            predicate.field in {"role", "type", "text", "tool", "action", "command", "path", "output"}
+            and not predicate.values
+        ):
+            raise ExpressionCompileError(f"field {predicate.field!r} requires a value", field=predicate.field)
+        if predicate.field == "words":
+            if not predicate.values:
+                raise ExpressionCompileError("field 'words' requires a numeric value", field="words")
+            try:
+                int(predicate.values[-1])
+            except ValueError as exc:
+                raise ExpressionCompileError("field 'words' requires a numeric value", field="words") from exc
+        return
+    if isinstance(predicate, QueryNotPredicate):
+        _validate_predicate_context(predicate.child, unit=unit)
+        return
+    if isinstance(predicate, QueryBoolPredicate):
+        for child in predicate.children:
+            _validate_predicate_context(child, unit=unit)
+        return
+    if isinstance(predicate, QueryExistsPredicate):
+        if unit != "session":
+            raise ExpressionCompileError("exists predicates are only supported from sessions", field=None)
+        _validate_predicate_context(predicate.child, unit=predicate.unit)
+        return
+    if isinstance(predicate, QuerySequencePredicate):
+        if unit != "session":
+            raise ExpressionCompileError("seq predicates are only supported from sessions", field=None)
+        return
 
 
 @v_args(inline=True)
@@ -578,12 +658,36 @@ class _BooleanQueryTransformer(Transformer[Token, QueryPredicate]):
     def field_leaf(self, token: Token) -> QueryPredicate:
         return _field_token_to_predicate(_QUERY_TRANSFORMER.field_clause(token))
 
+    def exists_leaf(self, _exists: Token, unit: Token, child: QueryPredicate) -> QueryPredicate:
+        unit_value = str(unit).lower()
+        if unit_value not in {"message", "action"}:
+            raise ExpressionCompileError(f"unsupported structural query unit {unit_value!r}", field=None)
+        return QueryExistsPredicate(unit=cast(Literal["message", "action"], unit_value), child=child)
+
+    def sequence_step(self, token: Token) -> QueryPredicate:
+        predicate = _field_token_to_predicate(_QUERY_TRANSFORMER.field_clause(token))
+        if not isinstance(predicate, QueryFieldPredicate) or predicate.field != "action" or predicate.op != "=":
+            raise ExpressionCompileError("seq() currently supports action:<kind> steps", field=None)
+        if len(predicate.values) != 1:
+            raise ExpressionCompileError("seq() action steps must name exactly one action", field="action")
+        return predicate
+
+    def sequence_leaf(self, _seq: Token, *items: object) -> QueryPredicate:
+        steps = [item for item in items if isinstance(item, QueryFieldPredicate)]
+        if len(steps) < 2:
+            raise ExpressionCompileError("seq() requires at least two action steps", field=None)
+        return QuerySequencePredicate(action_terms=tuple(step.values[0] for step in steps))
+
 
 _BOOLEAN_QUERY_TRANSFORMER = _BooleanQueryTransformer()
 
 
 def _is_boolean_expression(expression: str) -> bool:
-    if re.search(r"^\s*\(|^\s*sessions\s+where\b", expression, re.IGNORECASE):
+    if re.search(
+        r"^\s*\(|^\s*sessions\s+where\b|^\s*exists\s+(?:message|action)\s*\(|^\s*seq\s*\(",
+        expression,
+        re.IGNORECASE,
+    ):
         return True
     return ":" in expression and bool(re.search(r"\b(?:and|or|not)\b", expression, re.IGNORECASE))
 
@@ -599,8 +703,12 @@ def _parse_boolean_predicate(expression: str) -> QueryPredicate:
         if isinstance(exc.orig_exc, ExpressionCompileError):
             raise exc.orig_exc from exc
         raise
-    if not isinstance(transformed, QueryFieldPredicate | QueryBoolPredicate | QueryNotPredicate):
+    if not isinstance(
+        transformed,
+        QueryFieldPredicate | QueryBoolPredicate | QueryNotPredicate | QueryExistsPredicate | QuerySequencePredicate,
+    ):
         raise ExpressionCompileError("Boolean query did not produce a predicate", field=None)
+    _validate_predicate_context(transformed, unit="session")
     return transformed
 
 
