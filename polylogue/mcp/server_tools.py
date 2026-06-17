@@ -687,6 +687,16 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
         return await hooks.async_safe_call("list_read_view_profiles", run)
 
+    @mcp.tool()
+    async def explain_query_expression(expression: str) -> str:
+        """Explain query DSL parsing and lowering through the shared grammar."""
+
+        async def run() -> str:
+            explanation = await hooks.get_polylogue().explain_query_expression(expression)
+            return hooks.json_payload(MCPRootPayload(root=cast(dict[str, object], {"query_explanation": explanation})))
+
+        return await hooks.async_safe_call("explain_query_expression", run)
+
 
 def register_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     register_query_tools(mcp, hooks)

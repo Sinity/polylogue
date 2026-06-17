@@ -1101,6 +1101,12 @@ class PolylogueArchiveMixin:
 
         return list(read_view_profile_payloads())
 
+    async def explain_query_expression(self, expression: str) -> JSONDocument:
+        """Explain query DSL parsing, AST metadata, and lowering details."""
+        from polylogue.archive.query.expression import explain_expression
+
+        return cast(JSONDocument, explain_expression(expression).to_payload())
+
     async def get_sessions(
         self,
         session_ids: list[str],

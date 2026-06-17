@@ -809,6 +809,28 @@ class TestReadViewProfilesTool:
         assert {profile["view_id"] for profile in body["read_views"]} >= {"raw", "summary", "recovery"}
 
 
+class TestQueryExplanationTool:
+    def test_explain_query_expression_uses_facade_contract(self, mcp_server: MCPServerUnderTest) -> None:
+        explanation = {
+            "source_text": "sessions where repo:polylogue",
+            "selected_units": ["sessions"],
+            "execution_legs": ["sql"],
+        }
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.explain_query_expression = AsyncMock(return_value=explanation)
+            mock_get_polylogue.return_value = mock_poly
+
+            result = invoke_surface(
+                mcp_server._tool_manager._tools["explain_query_expression"].fn,
+                expression="sessions where repo:polylogue",
+            )
+
+        body = json.loads(result)
+        assert body["query_explanation"] == explanation
+        mock_poly.explain_query_expression.assert_awaited_once_with("sessions where repo:polylogue")
+
+
 class TestInsightTools:
     @pytest.mark.asyncio
     async def test_session_profile_tool_uses_archive_insight_contract(self, mcp_server: MCPServerUnderTest) -> None:
