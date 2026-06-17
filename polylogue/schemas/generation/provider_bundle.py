@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from polylogue.core.enums import Provider
 from polylogue.paths import db_path as index_db_path
 from polylogue.schemas.generation.cluster_collection import (
     _collect_cluster_accumulators,
@@ -25,7 +26,6 @@ from polylogue.schemas.generation.support import GENSON_AVAILABLE
 from polylogue.schemas.observation import PROVIDERS, ProviderConfig, resolve_provider_config
 from polylogue.schemas.privacy_config import SchemaPrivacyConfig
 from polylogue.schemas.registry import ClusterManifest, SchemaCluster
-from polylogue.types import Provider
 
 
 def build_provider_error_bundle(

@@ -25,7 +25,7 @@ from polylogue.archive.actions.fields import (
 )
 from polylogue.archive.actions.parsing import build_tool_calls_from_content_blocks
 from polylogue.archive.viewport.viewports import ToolCall, ToolCategory
-from polylogue.types import Provider
+from polylogue.core.enums import Provider
 
 _CANONICAL_TOOL_NAMES = {
     "bash": "bash",

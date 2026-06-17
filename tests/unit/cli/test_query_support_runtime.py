@@ -19,8 +19,9 @@ from polylogue.cli import query_output, query_semantic, query_stats
 from polylogue.cli.query_actions import apply_modifiers, apply_transform, delete_sessions, resolve_stream_target
 from polylogue.cli.query_contracts import QueryDeliveryTarget, QueryMutationSpec, QueryOutputSpec
 from polylogue.cli.shared.types import AppEnv
+from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
-from polylogue.types import Provider, SessionId
+from polylogue.types import SessionId
 from tests.infra.builders import make_conv, make_msg
 
 

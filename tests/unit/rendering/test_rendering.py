@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 import pytest
 
 from polylogue.archive.models import Message, Session, SessionSummary
-from polylogue.core.enums import Origin
+from polylogue.core.enums import BlockType, Origin, Provider
 from polylogue.rendering.block_models import RenderableBlock
 from polylogue.rendering.blocks import (
     render_blocks_html,
@@ -23,7 +23,7 @@ from polylogue.rendering.renderers.html import (
     _attach_branches,
     render_session_html,
 )
-from polylogue.types import BlockType, Provider, SessionId
+from polylogue.types import SessionId
 from polylogue.ui.facade_console import PlainConsole
 from tests.infra.builders import make_conv, make_msg
 

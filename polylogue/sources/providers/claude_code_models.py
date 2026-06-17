@@ -7,8 +7,8 @@ from typing import Literal, TypeAlias
 from pydantic import BaseModel, ConfigDict, Field
 
 from polylogue.archive.viewport.viewports import ReasoningTrace, TokenUsage, ToolCall, classify_tool
+from polylogue.core.enums import Provider
 from polylogue.core.json import json_document
-from polylogue.types import Provider
 
 ClaudeCodeBlockRecord: TypeAlias = dict[str, object]
 ClaudeCodeContentBlocks: TypeAlias = list[ClaudeCodeBlockRecord]

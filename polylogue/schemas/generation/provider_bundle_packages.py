@@ -6,6 +6,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.schemas.generation.cluster_support import (
     _artifact_priority,
@@ -37,7 +38,6 @@ from polylogue.schemas.packages import (
 from polylogue.schemas.privacy_config import SchemaPrivacyConfig
 from polylogue.schemas.redaction_report import SchemaReport
 from polylogue.schemas.registry import ClusterManifest, SchemaCluster
-from polylogue.types import Provider
 
 
 @dataclass(frozen=True)

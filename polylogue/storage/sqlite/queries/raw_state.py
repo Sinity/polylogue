@@ -6,11 +6,11 @@ from datetime import datetime, timezone
 
 import aiosqlite
 
+from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
 from polylogue.core.sources import origin_from_provider
 from polylogue.storage.raw.models import UNSET, RawSessionStateUpdate, _RawStateUnset
 from polylogue.storage.sqlite.archive_tiers.write import _timestamp_ms
 from polylogue.storage.sqlite.connection import _build_source_scope_filter
-from polylogue.types import Provider, ValidationMode, ValidationStatus
 
 # raw_sessions carries a single ``origin`` column (#1743). Provider-token
 # filters translate the token to its canonical origin value before matching.

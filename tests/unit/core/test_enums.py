@@ -13,8 +13,8 @@ from polylogue.core.enums import (
     sql_check_in,
     sql_value_list,
 )
-from polylogue.types import BlockType as TypesBlockType
-from polylogue.types import Provider as LegacyProvider
+from polylogue.core.enums import BlockType as TypesBlockType
+from polylogue.core.enums import Provider as LegacyProvider
 
 
 def test_core_enums_preserve_legacy_import_identity() -> None:

@@ -6,8 +6,8 @@ import json
 from collections.abc import Mapping
 
 from polylogue.archive.message.roles import Role
+from polylogue.core.enums import BlockType, Provider
 from polylogue.core.json import JSONDocument, json_document
-from polylogue.types import BlockType, Provider
 
 from .base import ParsedContentBlock, ParsedMessage, ParsedSession
 

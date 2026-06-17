@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.archive.artifact_taxonomy import ArtifactClassification, ArtifactKind
+from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
 from polylogue.pipeline.services.ingest_worker import (
     _IngestContext,
     _ParsePlan,
@@ -29,7 +30,6 @@ from polylogue.pipeline.services.ingest_worker import (
 from polylogue.storage.artifacts.inspection import inspect_raw_artifact
 from polylogue.storage.blob_store import BlobStore, reset_blob_store
 from polylogue.storage.runtime import RawSessionRecord
-from polylogue.types import Provider, ValidationMode, ValidationStatus
 
 
 @pytest.fixture

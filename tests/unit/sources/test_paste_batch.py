@@ -13,12 +13,12 @@ import sqlite3
 from pathlib import Path
 
 from polylogue.archive.message.roles import Role
+from polylogue.core.enums import Provider
 from polylogue.sources.dispatch import parse_payload
 from polylogue.sources.parsers.base import ParsedMessage, ParsedPasteEvidence, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
-from polylogue.types import Provider
 
 
 def _connect(path: Path) -> sqlite3.Connection:

@@ -14,10 +14,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.insights.archive import SessionTagRollupInsight
 from polylogue.insights.archive_models import ArchiveInsightProvenance
-from polylogue.types import Provider
 
 if TYPE_CHECKING:
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore

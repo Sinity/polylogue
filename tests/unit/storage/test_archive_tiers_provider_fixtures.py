@@ -5,6 +5,7 @@ import sqlite3
 from pathlib import Path
 from typing import cast
 
+from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument
 from polylogue.sources.dispatch import parse_payload
 from polylogue.sources.parsers import antigravity
@@ -15,7 +16,6 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     search_archive_blocks,
     write_parsed_session_to_archive,
 )
-from polylogue.types import Provider
 
 
 def _connect(path: Path) -> sqlite3.Connection:

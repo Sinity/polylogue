@@ -10,11 +10,11 @@ import pytest
 
 from polylogue.api import Polylogue
 from polylogue.archive.message.roles import Role
+from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import archive_tier_spec
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.types import BlockType, Provider
 
 USER_STATE_SESSION_ID = "claude-code-session:conv-user-state"
 ARCHIVE_USER_STATE_SESSION_ID = "claude-code-session:conv-v1-user-state"

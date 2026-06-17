@@ -9,11 +9,11 @@ import pytest
 
 import polylogue.pipeline.services.ingest_batch._core as ingest_batch_core
 from polylogue.archive.message.roles import Role
+from polylogue.core.enums import Provider
 from polylogue.pipeline.services.ingest_batch import _IngestWorkerRequest, _iter_ingest_results_sync
 from polylogue.pipeline.services.ingest_worker import IngestRecordResult, SessionWritePayload
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.runtime import RawSessionRecord
-from polylogue.types import Provider
 
 
 def _large_raw_record() -> RawSessionRecord:

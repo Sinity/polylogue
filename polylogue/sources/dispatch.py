@@ -10,10 +10,10 @@ from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypeAlias
 
+from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, JSONValue, is_json_document, is_json_value, normalize_json_decimal
 from polylogue.core.payload_coercion import optional_string
 from polylogue.logging import get_logger
-from polylogue.types import Provider
 
 from .decoders import _decode_json_bytes, _iter_json_stream
 from .parsers import antigravity, browser_capture, chatgpt, claude, codex, drive, local_agent

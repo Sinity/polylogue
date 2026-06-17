@@ -6,8 +6,8 @@ import json
 import zipfile
 from pathlib import Path
 
+from polylogue.core.enums import Provider
 from polylogue.sources.import_preflight import ImportPreflightStatus, preflight_import_source
-from polylogue.types import Provider
 
 
 def _chatgpt_payload() -> dict[str, object]:

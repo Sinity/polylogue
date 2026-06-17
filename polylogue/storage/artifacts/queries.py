@@ -12,10 +12,10 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 from polylogue.archive.artifact_taxonomy import ArtifactKind
+from polylogue.core.enums import ArtifactSupportStatus, Provider
 from polylogue.storage.artifacts.views import ArtifactCohortSummary
 from polylogue.storage.query_models import ArtifactObservationListQuery
 from polylogue.storage.runtime import ArtifactObservationRecord
-from polylogue.types import ArtifactSupportStatus, Provider
 
 _MAX_SAMPLE_PATHS = 5
 

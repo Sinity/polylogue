@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from polylogue.core.enums import ValidationStatus
 from polylogue.storage.raw.models import RawSessionState
-from polylogue.types import ValidationStatus
 
 _PARSEABLE_VALIDATION_STATUSES = (
     ValidationStatus.PASSED,

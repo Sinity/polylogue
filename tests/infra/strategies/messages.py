@@ -12,8 +12,9 @@ from typing import TYPE_CHECKING, TypeAlias
 from hypothesis import strategies as st
 
 from polylogue.archive.message.roles import Role
+from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
-from polylogue.types import Provider, SessionId
+from polylogue.types import SessionId
 
 if TYPE_CHECKING:
     from polylogue.archive.models import Message, Session

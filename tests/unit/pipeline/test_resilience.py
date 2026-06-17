@@ -24,6 +24,7 @@ from typing_extensions import TypedDict
 from polylogue.archive.message.roles import Role
 from polylogue.archive.raw_payload.decode import JSONValue
 from polylogue.config import Source
+from polylogue.core.enums import BlockType, Provider, ValidationStatus
 from polylogue.pipeline.services.acquisition import AcquisitionService
 from polylogue.pipeline.services.parsing import ParseResult, ParsingService
 from polylogue.pipeline.services.validation import ValidationService
@@ -38,7 +39,6 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-from polylogue.types import BlockType, Provider, ValidationStatus
 from tests.infra.strategies import (
     AcquisitionInputSpec,
     ParseMergeEvent,

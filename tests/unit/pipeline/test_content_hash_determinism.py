@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 
 from polylogue.archive.message.roles import Role
+from polylogue.core.enums import BlockType, Provider
 from polylogue.core.hashing import hash_payload, hash_text
 from polylogue.pipeline.ids import (
     _normalize_for_hash,
@@ -17,7 +18,6 @@ from polylogue.pipeline.ids import (
 )
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.sources.parsers.base_models import ParsedSessionEvent
-from polylogue.types import BlockType, Provider
 
 
 def _msg(provider_id: str, role: str, text: str, timestamp: str | None = "2024-01-01T00:00:00Z") -> ParsedMessage:

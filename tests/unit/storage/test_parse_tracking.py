@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.core.enums import Provider
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL
@@ -25,7 +26,6 @@ from polylogue.storage.sqlite.schema import (
     SCHEMA_VERSION,
     _ensure_schema,
 )
-from polylogue.types import Provider
 
 # ─── Backend method tests ──────────────────────────────────────────────────
 

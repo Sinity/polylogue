@@ -33,8 +33,8 @@ def _sorted_unique(values: list[str] | tuple[str, ...] | set[str]) -> tuple[str,
 
 
 def _origin_for_provider_token(provider: str) -> str:
+    from polylogue.core.enums import Provider
     from polylogue.core.sources import origin_from_provider
-    from polylogue.types import Provider
 
     return origin_from_provider(Provider.from_string(provider)).value
 

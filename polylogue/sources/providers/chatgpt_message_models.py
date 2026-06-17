@@ -16,8 +16,8 @@ from polylogue.archive.viewport.viewports import (
     ReasoningTrace,
     ToolCall,
 )
+from polylogue.core.enums import Provider
 from polylogue.core.timestamps import parse_timestamp
-from polylogue.types import Provider
 
 ChatGPTMetadata: TypeAlias = dict[str, object]
 ChatGPTPartValue: TypeAlias = object

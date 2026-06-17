@@ -8,12 +8,12 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from polylogue.config import Source
+from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.sources import DriveFile, download_drive_files, iter_drive_sessions
 from polylogue.sources.drive import _apply_drive_attachments
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedSession
 from polylogue.storage.cursor_state import CursorStatePayload
-from polylogue.types import Provider
 
 
 def _attachment(

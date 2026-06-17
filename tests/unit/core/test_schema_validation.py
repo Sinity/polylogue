@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
+from polylogue.core.enums import Provider
 from polylogue.core.json import json_document
 from polylogue.scenarios import CorpusSpec
 from polylogue.schemas import ValidationResult
@@ -19,7 +20,6 @@ from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.schemas.validation.corpus import verify_raw_corpus
 from polylogue.schemas.validation.requests import SchemaVerificationRequest
 from polylogue.schemas.validator import SchemaValidator, _normalize_empty_arrays, validate_provider_export
-from polylogue.types import Provider
 
 if TYPE_CHECKING:
     from polylogue.config import Source

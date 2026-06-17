@@ -6,10 +6,11 @@ from datetime import datetime
 
 import aiosqlite
 
+from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.storage.runtime import AttachmentRecord
 from polylogue.storage.search.models import SessionSearchEvidenceRow
-from polylogue.types import Provider, SessionId
+from polylogue.types import SessionId
 
 
 def _row_value(row: aiosqlite.Row, key: str) -> object | None:

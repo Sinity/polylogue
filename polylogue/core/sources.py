@@ -32,9 +32,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Final
 
-from polylogue.core.enums import Origin
+from polylogue.core.enums import Origin, Provider
 from polylogue.core.provider_identity import CORE_SCHEMA_PROVIDERS
-from polylogue.types import Provider
 
 __all__ = [
     "ALL_SOURCES",

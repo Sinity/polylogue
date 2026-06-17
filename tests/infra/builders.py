@@ -22,8 +22,9 @@ from collections.abc import Sequence
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.roles import Role
 from polylogue.archive.models import Message, Session
+from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
-from polylogue.types import Provider, SessionId
+from polylogue.types import SessionId
 
 
 def make_msg(

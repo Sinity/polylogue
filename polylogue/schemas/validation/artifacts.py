@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from polylogue.archive.artifact_taxonomy import ArtifactKind
+from polylogue.core.enums import ArtifactSupportStatus, Provider
 from polylogue.storage.artifacts.persistence import materialize_artifact_observations
 from polylogue.storage.artifacts.queries import (
     filter_artifact_observations,
@@ -14,7 +15,6 @@ from polylogue.storage.artifacts.views import ArtifactCohortSummary
 from polylogue.storage.query_models import ArtifactObservationListQuery
 from polylogue.storage.runtime import ArtifactObservationRecord
 from polylogue.storage.sqlite.connection import open_connection
-from polylogue.types import ArtifactSupportStatus, Provider
 
 from .models import ArtifactCoverageReport, ProviderArtifactCoverage
 from .requests import ArtifactCoverageRequest, ArtifactObservationQuery, bounded_window

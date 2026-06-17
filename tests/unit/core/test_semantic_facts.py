@@ -25,10 +25,10 @@ from polylogue.archive.session import extraction as work_event_extraction
 from polylogue.archive.session import runtime as session_profile_runtime
 from polylogue.archive.session.events import SessionEvent
 from polylogue.archive.session.session_profile import build_session_profile
-from polylogue.core.enums import Origin
+from polylogue.core.enums import Origin, Provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.storage.archive_views import SessionRenderProjection
-from polylogue.types import Provider, SessionEventId, SessionId
+from polylogue.types import SessionEventId, SessionId
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.storage_records import make_attachment, make_message, make_session
 

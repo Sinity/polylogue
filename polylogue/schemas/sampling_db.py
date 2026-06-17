@@ -11,7 +11,7 @@ from typing import Literal, TypeAlias, overload
 
 from polylogue.archive.raw_payload import extract_record_samples_from_raw_content
 from polylogue.archive.raw_payload.decode import RawPayloadEnvelope
-from polylogue.core.enums import Origin
+from polylogue.core.enums import Origin, Provider
 from polylogue.core.json import JSONDocument
 from polylogue.core.provider_identity import (
     canonical_runtime_provider,
@@ -28,7 +28,6 @@ from polylogue.schemas.observation import (
 )
 from polylogue.storage.blob_store import get_blob_store
 from polylogue.storage.sqlite.connection_profile import connection_context
-from polylogue.types import Provider
 
 logger = get_logger(__name__)
 

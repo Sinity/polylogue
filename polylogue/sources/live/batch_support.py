@@ -14,11 +14,11 @@ from typing import Protocol, cast
 import orjson
 
 from polylogue.archive.artifact_taxonomy import classify_artifact, classify_artifact_path
+from polylogue.core.enums import Provider
 from polylogue.core.json import JSONValue
 from polylogue.pipeline.services.ingest_batch._core import _select_ingest_worker_count
 from polylogue.sources.dispatch import _detect_provider_from_raw_bytes, detect_provider
 from polylogue.storage.runtime import RawSessionRecord
-from polylogue.types import Provider
 
 _LARGE_FULL_PARSE_PROGRESS_BYTES = 64 * 1024 * 1024
 _SMALL_FULL_PARSE_PROGRESS_MAX_BYTES = 64 * 1024 * 1024

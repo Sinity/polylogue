@@ -14,8 +14,8 @@ from polylogue.archive.query.search_hits import (
     session_search_hit_from_summary,
 )
 from polylogue.archive.session.domain_models import Session, SessionSummary
-from polylogue.core.enums import Origin
-from polylogue.types import Provider, SessionId
+from polylogue.core.enums import Origin, Provider
+from polylogue.types import SessionId
 
 
 def _session() -> Session:

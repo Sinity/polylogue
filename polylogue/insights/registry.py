@@ -22,7 +22,7 @@ from typing import Any, TypeAlias, cast
 
 import click
 
-from polylogue.core.enums import Origin
+from polylogue.core.enums import Origin, Provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.errors import PolylogueError
 from polylogue.insights.archive import (
@@ -38,7 +38,6 @@ from polylogue.insights.archive import (
     ThreadInsightQuery,
 )
 from polylogue.insights.tool_usage import ToolUsageInsightQuery
-from polylogue.types import Provider
 
 InsightAccessor: TypeAlias = Callable[[ArchiveInsightModel], str]
 

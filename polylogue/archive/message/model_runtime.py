@@ -10,7 +10,7 @@ from functools import cached_property
 from polylogue.archive.attachment.models import Attachment
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
-from polylogue.types import Provider
+from polylogue.core.enums import Provider
 
 
 def _block_texts(blocks: Iterable[Mapping[str, object]], *, block_type: str) -> list[str]:

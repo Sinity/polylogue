@@ -11,8 +11,8 @@ import builtins
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
+from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
 from polylogue.core.json import JSONDocument, JSONValue
-from polylogue.types import Provider, ValidationMode, ValidationStatus
 
 if TYPE_CHECKING:
     import aiosqlite

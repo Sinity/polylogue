@@ -6,12 +6,12 @@ import pytest
 
 from polylogue.archive.artifact_taxonomy import classify_artifact, classify_artifact_path
 from polylogue.config import Source
+from polylogue.core.enums import BlockType, Provider
 from polylogue.core.json import JSONDocument
 from polylogue.sources.dispatch import detect_provider, parse_payload
 from polylogue.sources.parsers import antigravity
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.source_parsing import iter_source_sessions
-from polylogue.types import BlockType, Provider
 
 
 def test_gemini_cli_session_document_parses_through_dispatch() -> None:

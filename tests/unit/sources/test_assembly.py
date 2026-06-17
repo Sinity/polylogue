@@ -9,7 +9,7 @@ import pytest
 
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
-from polylogue.core.enums import TitleSource
+from polylogue.core.enums import Provider, TitleSource
 from polylogue.sources.assembly import SidecarData, get_assembly_spec
 from polylogue.sources.assembly_claude_code import ClaudeCodeAssemblySpec
 from polylogue.sources.assembly_codex import CodexAssemblySpec, _parse_codex_session_index
@@ -20,7 +20,6 @@ from polylogue.sources.parsers.claude.index import (
     _looks_like_git_branch,
     enrich_session_from_index,
 )
-from polylogue.types import Provider
 
 
 def _parsed_message(provider_message_id: str, role: str, text: str) -> ParsedMessage:

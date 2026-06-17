@@ -23,12 +23,12 @@ import pytest
 
 from polylogue.api import Polylogue
 from polylogue.config import Config, Source
+from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument
 from polylogue.core.sources import origin_from_provider
 from polylogue.pipeline.services.parsing import ParsingService
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-from polylogue.types import Provider
 
 pytestmark = pytest.mark.slow
 

@@ -845,7 +845,7 @@ def test_code_interpreter_content_is_preserved() -> None:
     assert "print(1)" in texts
     assert "1\n" in texts
     # Content-block types reflect the code-interpreter semantics.
-    from polylogue.types import BlockType
+    from polylogue.core.enums import BlockType
 
     code_msg = next(m for m in conv.messages if m.text == "print(1)")
     assert any(b.type == BlockType.CODE for b in code_msg.blocks)

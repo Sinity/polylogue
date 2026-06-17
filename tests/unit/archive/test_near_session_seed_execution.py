@@ -21,13 +21,12 @@ from polylogue.archive.query.expression import ExpressionCompileError, compile_e
 from polylogue.archive.query.plan import SessionQueryPlan
 from polylogue.archive.query.search_hits import plan_has_search_hit_evidence, search_hits_for_plan
 from polylogue.config import Config, Source
-from polylogue.core.enums import Origin
+from polylogue.core.enums import Origin, Provider
 from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.embedding_write import upsert_message_embedding
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDING_DIMENSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.types import Provider
 from tests.infra.storage_records import SessionBuilder
 
 

@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from polylogue.browser_capture.models import BrowserCaptureEnvelope, looks_like_browser_capture
+from polylogue.core.enums import Provider
 from polylogue.sources.parsers.base_models import ParsedAttachment, ParsedMessage, ParsedSession
-from polylogue.types import Provider
 
 
 def looks_like(payload: object) -> bool:

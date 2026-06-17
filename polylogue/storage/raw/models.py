@@ -7,7 +7,7 @@ from typing import Final
 
 from pydantic import BaseModel, field_validator
 
-from polylogue.types import Provider, ValidationMode, ValidationStatus
+from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
 
 
 class RawSessionState(BaseModel):

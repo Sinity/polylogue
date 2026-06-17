@@ -12,9 +12,9 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.core.enums import Provider
 from polylogue.schemas.observation import PROVIDERS, ProviderConfig
 from polylogue.schemas.sampling import load_samples_from_db, load_samples_from_sessions
-from polylogue.types import Provider
 from tests.infra.schema_access import schema_node
 
 

@@ -35,11 +35,10 @@ import pytest
 from polylogue import Polylogue
 from polylogue.api.archive import SessionNotFoundError
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import Origin
+from polylogue.core.enums import BlockType, Origin, Provider
 from polylogue.errors import DatabaseError, PolylogueError
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.types import BlockType, Provider
 from tests.infra.storage_records import db_setup
 
 # ---------------------------------------------------------------------------
@@ -265,9 +264,9 @@ def _archive(tmp_path: Path) -> Polylogue:
 async def test_archive_tiers_facade_reads_active_db_override_root(tmp_path: Path) -> None:
     """Archive facade reads open the active index root, not just config.archive_root."""
     from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import BlockType
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.types import BlockType
 
     configured_root = tmp_path / "configured"
     active_root = tmp_path / "active"
@@ -1160,6 +1159,7 @@ async def test_archive_tiers_api_reads_native_sessions(tmp_path: Path) -> None:
     from polylogue.archive.message.roles import Role
     from polylogue.archive.message.types import MessageType
     from polylogue.archive.query.spec import SessionQuerySpec
+    from polylogue.core.enums import BlockType
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import (
         ArchiveSessionSearchHit,
@@ -1167,7 +1167,6 @@ async def test_archive_tiers_api_reads_native_sessions(tmp_path: Path) -> None:
         ArchiveStore,
     )
     from polylogue.storage.sqlite.archive_tiers.write import ArchiveSessionEnvelope
-    from polylogue.types import BlockType
 
     archive = _archive(tmp_path)
     session = ParsedSession(
@@ -1390,9 +1389,9 @@ async def test_archive_tiers_api_reads_session_topology(tmp_path: Path) -> None:
     """Topology facade helpers project parent/session rows."""
     from polylogue.archive.message.roles import Role
     from polylogue.archive.session.branch_type import BranchType
+    from polylogue.core.enums import BlockType
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.types import BlockType
 
     archive = _archive(tmp_path)
     root = ParsedSession(
@@ -1509,9 +1508,9 @@ async def test_archive_tiers_api_user_mutations_write_user_tier(tmp_path: Path) 
     import sqlite3
 
     from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import BlockType
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.types import BlockType
 
     archive = _archive(tmp_path)
     session = ParsedSession(
@@ -1577,11 +1576,11 @@ async def test_archive_tiers_api_tag_rollups_read_index_and_user_tiers(tmp_path:
     import sqlite3
 
     from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import BlockType
     from polylogue.insights.archive import SessionTagRollupQuery
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.archive_tiers.write import upsert_session_tag
-    from polylogue.types import BlockType
 
     archive = _archive(tmp_path)
     first = ParsedSession(
@@ -1645,11 +1644,11 @@ async def test_archive_tiers_api_archive_coverage_reads_index_tier(tmp_path: Pat
     import sqlite3
 
     from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import BlockType
     from polylogue.insights.archive import ArchiveCoverageInsightQuery
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.archive_tiers.write import upsert_session_profile_costs, upsert_session_work_event
-    from polylogue.types import BlockType
 
     archive = _archive(tmp_path)
     codex = ParsedSession(
@@ -1769,10 +1768,10 @@ async def test_archive_tiers_api_archive_coverage_reads_index_tier(tmp_path: Pat
 async def test_archive_tiers_api_tool_usage_reads_index_actions(tmp_path: Path) -> None:
     """Tool-usage API reads archive ``actions`` instead of retired action tables."""
     from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import BlockType
     from polylogue.insights.tool_usage import ToolUsageInsightQuery
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.types import BlockType
 
     archive = _archive(tmp_path)
     codex = ParsedSession(
@@ -1851,9 +1850,9 @@ async def test_archive_tiers_api_delete_uses_index_tier_and_keeps_user_overlay(t
     import sqlite3
 
     from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import BlockType
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.types import BlockType
 
     archive = _archive(tmp_path)
     session = ParsedSession(
@@ -1895,9 +1894,9 @@ async def test_archive_tiers_api_delete_uses_index_tier_and_keeps_user_overlay(t
 async def test_archive_tiers_api_raw_artifacts_read_source_tier(tmp_path: Path) -> None:
     """Raw artifact facade reads ``source.db`` rows."""
     from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import BlockType
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.types import BlockType
 
     archive = _archive(tmp_path)
     payload = b'{"session":"raw-artifact-v1"}'
@@ -1947,6 +1946,7 @@ async def test_archive_tiers_api_timeline_insights_read_index_tier(tmp_path: Pat
     import sqlite3
 
     from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import BlockType
     from polylogue.insights.archive import SessionPhaseInsightQuery, SessionWorkEventInsightQuery
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -1955,7 +1955,6 @@ async def test_archive_tiers_api_timeline_insights_read_index_tier(tmp_path: Pat
         upsert_session_phase,
         upsert_session_work_event,
     )
-    from polylogue.types import BlockType
 
     archive = _archive(tmp_path)
     session = ParsedSession(
@@ -2061,6 +2060,7 @@ async def test_archive_tiers_api_threads_read_index_tier(tmp_path: Path) -> None
 
     from polylogue.archive.message.roles import Role
     from polylogue.archive.session.branch_type import BranchType
+    from polylogue.core.enums import BlockType
     from polylogue.insights.archive import ThreadInsightQuery
     from polylogue.insights.audit import InsightRigorAuditQuery
     from polylogue.insights.export_bundles import InsightExportBundleRequest
@@ -2068,7 +2068,6 @@ async def test_archive_tiers_api_threads_read_index_tier(tmp_path: Path) -> None
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.archive_tiers.write import upsert_insight_materialization
-    from polylogue.types import BlockType
 
     archive = _archive(tmp_path)
     parent = ParsedSession(
@@ -2256,6 +2255,7 @@ async def test_archive_tiers_api_session_costs_read_index_tier(tmp_path: Path) -
     import sqlite3
 
     from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import BlockType
     from polylogue.insights.archive import CostRollupInsightQuery, SessionCostInsightQuery
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -2263,7 +2263,6 @@ async def test_archive_tiers_api_session_costs_read_index_tier(tmp_path: Path) -
         upsert_insight_materialization,
         upsert_session_profile_costs,
     )
-    from polylogue.types import BlockType
 
     archive = _archive(tmp_path)
     priced_session = ParsedSession(
@@ -2370,11 +2369,11 @@ async def test_archive_tiers_api_latency_profiles_read_index_tier(tmp_path: Path
     import sqlite3
 
     from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import BlockType
     from polylogue.insights.archive import SessionLatencyProfileInsightQuery
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.archive_tiers.write import upsert_insight_materialization
-    from polylogue.types import BlockType
 
     archive = _archive(tmp_path)
     session = ParsedSession(
@@ -2464,10 +2463,10 @@ async def test_archive_tiers_api_archive_debt_reads_archive_consistency(tmp_path
     import sqlite3
 
     from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import BlockType
     from polylogue.insights.archive import ArchiveDebtInsightQuery
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.types import BlockType
 
     archive = _archive(tmp_path)
     session = ParsedSession(
@@ -2519,11 +2518,11 @@ async def test_archive_tiers_api_session_profiles_read_index_tier(tmp_path: Path
     import sqlite3
 
     from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import BlockType
     from polylogue.insights.archive import SessionProfileInsightQuery
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.archive_tiers.write import upsert_insight_materialization
-    from polylogue.types import BlockType
 
     archive = _archive(tmp_path)
     session = ParsedSession(
@@ -2634,10 +2633,10 @@ async def test_archive_tiers_api_session_insight_status_reads_index_tier(tmp_pat
     import sqlite3
 
     from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import BlockType
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.archive_tiers.write import upsert_insight_materialization
-    from polylogue.types import BlockType
 
     archive = _archive(tmp_path)
     first = ParsedSession(
@@ -2730,9 +2729,9 @@ async def test_archive_tiers_api_marks_and_annotations_write_user_tier(tmp_path:
     import sqlite3
 
     from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import BlockType
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.types import BlockType
 
     archive = _archive(tmp_path)
     session = ParsedSession(
@@ -2807,9 +2806,9 @@ async def test_archive_tiers_api_reader_artifacts_write_user_tier(tmp_path: Path
     import sqlite3
 
     from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import BlockType
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.types import BlockType
 
     archive = _archive(tmp_path)
     session = ParsedSession(
@@ -2933,10 +2932,10 @@ async def test_archive_tiers_api_corrections_write_user_tier(tmp_path: Path) -> 
     import sqlite3
 
     from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import BlockType
     from polylogue.insights.feedback import CorrectionKind
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.types import BlockType
 
     archive = _archive(tmp_path)
     session = ParsedSession(

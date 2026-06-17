@@ -4,6 +4,7 @@ import sqlite3
 from pathlib import Path
 
 from polylogue.archive.message.roles import Role
+from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -14,7 +15,6 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     upsert_session_work_event,
     write_parsed_session_to_archive,
 )
-from polylogue.types import BlockType, Provider
 
 
 def _connect(path: Path, tier: ArchiveTier) -> sqlite3.Connection:

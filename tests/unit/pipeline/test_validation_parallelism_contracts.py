@@ -31,6 +31,7 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
+from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
 from polylogue.pipeline.services.validation_flow import evaluate_raw_artifacts
 from polylogue.pipeline.services.validation_runtime import (
     _validate_record_sync,
@@ -38,7 +39,6 @@ from polylogue.pipeline.services.validation_runtime import (
 )
 from polylogue.pipeline.stage_models import ValidateResult
 from polylogue.storage.runtime import RawSessionRecord
-from polylogue.types import Provider, ValidationMode, ValidationStatus
 
 # ---------------------------------------------------------------------------
 # Helpers

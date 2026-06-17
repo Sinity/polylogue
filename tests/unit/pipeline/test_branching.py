@@ -12,6 +12,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.models import Session
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.config import Source
+from polylogue.core.enums import Provider
 from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.sources import origin_from_provider
 from polylogue.sources import iter_source_sessions
@@ -19,7 +20,6 @@ from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import open_connection
-from polylogue.types import Provider
 from tests.infra.archive_scenarios import archive_for_scenario_db
 from tests.infra.live_ingest import ingest_session
 from tests.infra.storage_records import SessionBuilder, db_setup

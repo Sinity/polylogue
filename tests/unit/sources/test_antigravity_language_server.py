@@ -16,6 +16,7 @@ from urllib.error import URLError
 
 import pytest
 
+from polylogue.core.enums import Provider
 from polylogue.sources.parsers import antigravity
 from polylogue.sources.parsers.antigravity import (
     AntigravityExportError,
@@ -24,7 +25,6 @@ from polylogue.sources.parsers.antigravity import (
     discover_language_server,
     iter_language_server_exports,
 )
-from polylogue.types import Provider
 
 
 class _FakeHTTPResponse:

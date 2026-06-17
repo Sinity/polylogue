@@ -14,9 +14,10 @@ import pytest
 from polylogue.archive.message.roles import Role
 from polylogue.archive.models import Session, SessionSummary
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
+from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.types import BlockType, Provider, SessionId
+from polylogue.types import SessionId
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.mcp import (
     EXPECTED_PROMPT_NAMES,

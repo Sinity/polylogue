@@ -17,8 +17,8 @@ from polylogue.archive.artifact_taxonomy.support import (
     normalize_source_path,
     path_only_sidecar_reason,
 )
+from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, JSONValue, json_document
-from polylogue.types import Provider
 
 
 def classify_artifact_path(

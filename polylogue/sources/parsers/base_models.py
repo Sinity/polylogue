@@ -9,10 +9,9 @@ from pydantic import AliasChoices, BaseModel, Field, field_validator, model_vali
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
-from polylogue.core.enums import TitleSource
+from polylogue.core.enums import BlockType, Provider, TitleSource
 from polylogue.core.security import sanitize_path as _sanitize_path_helper
 from polylogue.core.timestamps import parse_timestamp
-from polylogue.types import BlockType, Provider
 
 
 class ParsedContentBlock(BaseModel):

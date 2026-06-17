@@ -7,10 +7,10 @@ from pathlib import Path
 import pytest
 
 from polylogue.config import Source
+from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument
 from polylogue.pipeline.services import acquisition_streams
 from polylogue.sources.parsers.base import RawSessionData
-from polylogue.types import Provider
 
 
 async def test_iter_raw_record_stream_logs_make_raw_record_value_errors(

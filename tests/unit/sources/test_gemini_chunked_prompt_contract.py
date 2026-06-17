@@ -29,11 +29,11 @@ from typing import cast
 import pytest
 
 from polylogue.archive.message.roles import Role
+from polylogue.core.enums import BlockType, Provider
 from polylogue.core.json import JSONDocument
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.parsers.drive import looks_like as _looks_like_impl
 from polylogue.sources.parsers.drive import parse_chunked_prompt
-from polylogue.types import BlockType, Provider
 
 CATALOG_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "gemini_chunked_prompt"
 CATALOG_FIXTURES = (

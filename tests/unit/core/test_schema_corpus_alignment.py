@@ -17,6 +17,7 @@ from polylogue.archive.raw_payload.sampling_extract import (
     extract_payload_samples,
     extract_record_samples_from_raw_content,
 )
+from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, JSONValue, json_document
 from polylogue.schemas.field_stats.stats import FieldStats
 from polylogue.schemas.generation.schema_builder import (
@@ -34,7 +35,6 @@ from polylogue.schemas.inference.semantic.runtime import (
 )
 from polylogue.schemas.observation_models import ProviderConfig
 from polylogue.schemas.operator.annotations import build_review_evidence
-from polylogue.types import Provider
 
 
 def _payload_documents(records: list[dict[str, str]]) -> list[JSONValue]:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from polylogue.core.enums import ValidationMode
 from polylogue.pipeline.services.validation_flow import (
     evaluate_raw_artifacts as _evaluate_raw_artifacts,
 )
@@ -17,7 +18,6 @@ from polylogue.pipeline.services.validation_flow import (
 from polylogue.pipeline.stage_models import ValidateResult
 from polylogue.protocols import ProgressCallback
 from polylogue.storage.runtime import RawSessionRecord
-from polylogue.types import ValidationMode
 
 if TYPE_CHECKING:
     from polylogue.storage.repository import SessionRepository

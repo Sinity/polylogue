@@ -8,8 +8,9 @@ from datetime import datetime, timedelta, timezone
 from hypothesis import strategies as st
 
 from polylogue.archive.models import SessionSummary
+from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
-from polylogue.types import Provider, SessionId
+from polylogue.types import SessionId
 
 _PROVIDERS = ("claude-ai", "chatgpt", "gemini", "codex", "claude-code")
 _SLUG_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789-"

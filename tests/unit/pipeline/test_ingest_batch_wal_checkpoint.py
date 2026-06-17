@@ -7,13 +7,13 @@ from pathlib import Path
 import pytest
 
 import polylogue.pipeline.services.ingest_batch._core as ingest_batch_core
+from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.pipeline.services.ingest_batch import _process_ingest_batch_sync
 from polylogue.pipeline.services.ingest_worker import IngestRecordResult
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.connection import open_connection
 from polylogue.storage.sqlite.wal_checkpoint import WalCheckpointObservation, maybe_checkpoint_wal
-from polylogue.types import Provider
 
 
 def test_process_ingest_batch_sync_records_wal_checkpoint_observation(

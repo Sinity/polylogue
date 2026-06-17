@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from polylogue.core.enums import Provider
 from polylogue.schemas.observation import ProviderConfig, extract_schema_units_from_payload
-from polylogue.types import Provider
 
 
 class TestExtractSchemaUnitsFromPayload:

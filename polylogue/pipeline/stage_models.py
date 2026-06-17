@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from polylogue.core.enums import Provider, ValidationStatus
 from polylogue.pipeline.payload_types import AcquireDiagnostics
-from polylogue.types import Provider, ValidationStatus
 
 if TYPE_CHECKING:
     from polylogue.sources.parsers.base import ParsedSession

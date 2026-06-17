@@ -23,8 +23,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Literal, TypeAlias
 
+from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, json_document, json_document_list
-from polylogue.types import Provider
 
 logger = logging.getLogger(__name__)
 

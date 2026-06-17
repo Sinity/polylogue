@@ -7,13 +7,13 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Protocol
 
+from polylogue.core.enums import Provider
 from polylogue.logging import get_logger
 from polylogue.paths import blob_store_root
 from polylogue.sources.live.batch_support import _AppendPlan, _AppendResult
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from polylogue.types import Provider
 
 logger = get_logger(__name__)
 

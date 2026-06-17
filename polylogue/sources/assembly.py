@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Protocol, TypeAlias
 
 from typing_extensions import TypedDict
 
-from polylogue.types import Provider
+from polylogue.core.enums import Provider
 
 from .parsers.base import ParsedSession
 

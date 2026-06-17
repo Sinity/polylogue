@@ -29,11 +29,11 @@ from hypothesis.strategies import SearchStrategy
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.roles import Role
 from polylogue.archive.models import Message, Session, SessionSummary
-from polylogue.core.enums import Origin
+from polylogue.core.enums import Origin, Provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.sources.providers.gemini import GeminiMessage, GeminiPart
-from polylogue.types import Provider, SessionId
+from polylogue.types import SessionId
 
 TimestampInput: TypeAlias = str | int | float | None
 SparseProviderMeta: TypeAlias = dict[str, object] | None

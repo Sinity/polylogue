@@ -44,9 +44,9 @@ def native_session_id_for(provider: str, session_id: str) -> str:
     session with ``provider_session_id = "ext-<session_id>"``
     and the origin derived from ``provider``.
     """
+    from polylogue.core.enums import Provider
     from polylogue.core.identity_law import session_id as archive_session_id
     from polylogue.core.sources import origin_from_provider
-    from polylogue.types import Provider
 
     origin = origin_from_provider(Provider.from_string(provider))
     return archive_session_id(origin.value, f"ext-{session_id}")

@@ -23,7 +23,7 @@ from polylogue.archive.query.spec import normalize_action_sequence, normalize_ac
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.session.domain_models import Session, SessionSummary
-from polylogue.core.enums import Origin
+from polylogue.core.enums import Origin, Provider
 from polylogue.core.json import JSONDocument
 from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.core.user_state_targets import TARGET_MESSAGE, TARGET_SESSION
@@ -48,7 +48,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveSessionEnvelope,
 )
 from polylogue.storage.sqlite.queries.message_query_reads import MessageTypeName
-from polylogue.types import Provider, SessionId
+from polylogue.types import SessionId
 
 if TYPE_CHECKING:
     from polylogue.archive.filter.filters import SessionFilter

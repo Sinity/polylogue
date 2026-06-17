@@ -6,11 +6,10 @@ from typing import cast
 from pydantic import ValidationError
 
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import TitleSource
+from polylogue.core.enums import Provider, TitleSource
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.logging import get_logger
 from polylogue.sources.providers.gemini import GeminiMessage
-from polylogue.types import Provider
 
 from .base import ParsedAttachment, ParsedMessage, ParsedSession
 from .drive_support import (

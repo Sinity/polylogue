@@ -8,8 +8,8 @@ from typing import ClassVar, TypeVar
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing_extensions import TypedDict
 
+from polylogue.core.enums import PlanStage
 from polylogue.storage.cursor_state import CursorFailurePayload, CursorStatePayload
-from polylogue.types import PlanStage
 
 _PayloadModelT = TypeVar("_PayloadModelT", bound=BaseModel)
 

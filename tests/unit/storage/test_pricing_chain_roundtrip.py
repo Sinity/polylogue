@@ -21,11 +21,11 @@ from polylogue.archive.semantic.pricing import (
     PRICING,
     estimate_cost,
 )
+from polylogue.core.enums import Provider
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.pricing_seed import _catalog_id
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
-from polylogue.types import Provider
 
 
 def _make_archive(tmp_path: Path) -> sqlite3.Connection:

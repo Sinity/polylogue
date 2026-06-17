@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument
 from polylogue.scenarios import CorpusScenario, CorpusSpec, build_corpus_scenarios, build_inferred_corpus_specs
 from polylogue.schemas.audit.models import AuditReport
@@ -24,7 +25,6 @@ from polylogue.schemas.operator.registry import SchemaRegistryLike, schema_regis
 from polylogue.schemas.packages import SchemaPackageCatalog
 from polylogue.schemas.privacy_config import PrivacyConfig, PrivacyLevel
 from polylogue.schemas.tooling_models import ClusterManifest
-from polylogue.types import Provider
 
 
 def _typed_registry() -> SchemaRegistryLike:

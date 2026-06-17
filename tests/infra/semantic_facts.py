@@ -13,11 +13,10 @@ from dataclasses import dataclass
 
 from polylogue.archive.models import Session
 from polylogue.archive.semantic.facts import build_session_semantic_facts
-from polylogue.core.enums import Origin
+from polylogue.core.enums import Origin, Provider
 from polylogue.core.json import JSONDocument, json_document_list
 from polylogue.core.sources import provider_from_origin
 from polylogue.storage.runtime import AttachmentRecord, MessageRecord, SessionRecord
-from polylogue.types import Provider
 
 
 def _string_value(value: object) -> str:

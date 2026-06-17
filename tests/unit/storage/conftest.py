@@ -12,8 +12,8 @@ from pathlib import Path
 import pytest
 
 from polylogue.archive.message.roles import Role
+from polylogue.core.enums import Provider
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
-from polylogue.types import Provider
 
 
 @pytest.fixture

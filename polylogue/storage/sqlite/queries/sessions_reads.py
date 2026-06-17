@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import aiosqlite
 
+from polylogue.core.enums import Provider
 from polylogue.storage.runtime import SessionRecord
 from polylogue.storage.sqlite.queries.filter_builder import _build_session_filters, _needs_stats_join
 from polylogue.storage.sqlite.queries.mappers import _row_to_session
-from polylogue.types import Provider
 
 _SESSION_RECORD_SELECT = """
     session_id,

@@ -11,12 +11,12 @@ from typing import IO, TypeAlias
 
 from polylogue.archive.artifact_taxonomy import classify_artifact
 from polylogue.config import Source
+from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, JSONValue, is_json_value, normalize_json_decimal
 from polylogue.core.json import dumps_bytes as json_dumps_bytes
 from polylogue.core.metrics import read_current_rss_mb, read_peak_rss_self_mb
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.cursor_state import CursorStatePayload
-from polylogue.types import Provider
 
 from . import decoders as _decoders
 from .decoders import _zip_entry_provider_hint

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, field_validator
 
-from polylogue.types import ArtifactSupportStatus, Provider, ValidationMode, ValidationStatus
+from polylogue.core.enums import ArtifactSupportStatus, Provider, ValidationMode, ValidationStatus
 
 
 class RawSessionRecord(BaseModel):

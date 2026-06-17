@@ -39,9 +39,9 @@ from tests.infra.strategies import fts5_match_text_strategy, search_query_strate
 
 
 def _archive_session_id(source_name: str, provider_session_id: str) -> str:
+    from polylogue.core.enums import Provider
     from polylogue.core.identity_law import session_id as make_archive_session_id
     from polylogue.core.sources import origin_from_provider
-    from polylogue.types import Provider
 
     return make_archive_session_id(origin_from_provider(Provider.from_string(source_name)).value, provider_session_id)
 

@@ -6,8 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, TypeAlias
 
+from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocumentList, JSONValue
-from polylogue.types import Provider
 
 SchemaSampleGranularity: TypeAlias = Literal["document", "record"]
 SchemaClusterPayload: TypeAlias = JSONValue

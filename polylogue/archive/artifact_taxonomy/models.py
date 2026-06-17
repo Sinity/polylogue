@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-from polylogue.types import Provider
+from polylogue.core.enums import Provider
 
 
 class ArtifactKind(StrEnum):

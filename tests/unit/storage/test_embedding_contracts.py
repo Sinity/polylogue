@@ -620,9 +620,9 @@ def test_provider_error_records_error_status_and_clears_retry(tmp_path: Path) ->
 
 def test_archive_pending_window_and_embedding_success(tmp_path: Path) -> None:
     from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import BlockType, Provider
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.types import BlockType, Provider
 
     archive_root = tmp_path / "archive"
     long_text = "This archive message is long enough to embed for semantic search."
@@ -689,9 +689,9 @@ def test_archive_pending_window_and_embedding_success(tmp_path: Path) -> None:
 
 def test_archive_embedding_error_records_retryable_status(tmp_path: Path) -> None:
     from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import BlockType, Provider
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.types import BlockType, Provider
 
     class ErrorProvider(_FakeV1VectorProvider):
         def _get_embeddings(self, texts: list[str], input_type: str = "document") -> list[list[float]]:

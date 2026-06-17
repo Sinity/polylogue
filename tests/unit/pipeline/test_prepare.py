@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.api import Polylogue
+from polylogue.core.enums import Provider
 from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.json import dumps
 from polylogue.core.sources import origin_from_provider
@@ -15,7 +16,6 @@ from polylogue.rendering.renderers.html import render_session_html
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.runtime import SessionRecord
 from polylogue.storage.sqlite.connection import open_connection
-from polylogue.types import Provider
 from tests.infra.archive_scenarios import native_session_id_for
 from tests.infra.storage_records import (
     SessionBuilder,

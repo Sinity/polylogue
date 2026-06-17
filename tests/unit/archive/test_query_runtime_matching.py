@@ -16,8 +16,8 @@ from polylogue.archive.query.runtime_matching import (
 )
 from polylogue.archive.session.domain_models import Session
 from polylogue.archive.viewport.enums import ToolCategory
-from polylogue.core.enums import Origin
-from polylogue.types import Provider, SessionId
+from polylogue.core.enums import Origin, Provider
+from polylogue.types import SessionId
 
 
 def _session() -> Session:

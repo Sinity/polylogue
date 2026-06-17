@@ -6,7 +6,7 @@ import json
 from collections.abc import Mapping
 
 from polylogue.archive.message.roles import Role
-from polylogue.types import BlockType
+from polylogue.core.enums import BlockType
 
 from ..base import (
     ParsedAttachment,

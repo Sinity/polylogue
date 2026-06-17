@@ -17,8 +17,8 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from polylogue.archive.message.roles import Role
+from polylogue.core.enums import BlockType, Provider
 from polylogue.core.json import JSONDocument, dumps_bytes, loads
-from polylogue.types import BlockType, Provider
 
 from .base import ParsedContentBlock, ParsedMessage, ParsedSession
 
