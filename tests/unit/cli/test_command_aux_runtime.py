@@ -150,6 +150,16 @@ def test_query_field_candidates_include_readable_operator_fields() -> None:
     assert "messages between 5 and 20" in message_candidate.description
 
 
+def test_query_field_candidates_disappear_with_registry_entry(monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.archive.query.expression import EXPRESSION_FIELD_REGISTRY
+
+    monkeypatch.delitem(EXPRESSION_FIELD_REGISTRY, "repo")
+
+    candidates = shell_completion_values.query_field_candidates("re")
+
+    assert "repo" not in {candidate.value for candidate in candidates}
+
+
 def test_query_structural_unit_candidates_come_from_expression_registry() -> None:
     candidates = shell_completion_values.query_structural_unit_candidates("b")
     assert [candidate.value for candidate in candidates] == ["block"]
