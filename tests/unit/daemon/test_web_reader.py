@@ -433,6 +433,52 @@ class TestReaderSessionState:
         assert message["actions"]["annotate"]["enabled"] is True
         assert message["actions"]["annotate"]["state"] == "enabled"
 
+    def test_session_messages_apply_content_projection_flags(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.archive.message.roles import Role
+        from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from polylogue.types import BlockType, Provider
+
+        _seed_test_db(workspace_env)
+        with ArchiveStore(workspace_env["archive_root"]) as archive:
+            session_id = archive.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="projection-c1",
+                    title="Projection fixture",
+                    created_at="2026-01-01T00:00:00+00:00",
+                    updated_at="2026-01-01T00:01:00+00:00",
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id="projection-m1",
+                            role=Role.ASSISTANT,
+                            text="Visible prose\nprint('secret')\nTool call hidden",
+                            timestamp="2026-01-01T00:00:00+00:00",
+                            blocks=[
+                                ParsedContentBlock(type=BlockType.TEXT, text="Visible prose"),
+                                ParsedContentBlock(type=BlockType.CODE, text="print('secret')"),
+                                ParsedContentBlock(type=BlockType.TOOL_USE, text="Tool call hidden", tool_id="tool-1"),
+                                ParsedContentBlock(
+                                    type=BlockType.TOOL_RESULT,
+                                    text="Tool output hidden",
+                                    tool_id="tool-1",
+                                ),
+                            ],
+                        )
+                    ],
+                )
+            )
+
+        with _running_server(workspace_env, seeded=False) as (_, base_url):
+            payload = _get_json(base_url, f"/api/sessions/{session_id}/messages?prose_only=1")
+
+        result = cast(dict[str, object], payload)
+        messages = cast(list[dict[str, object]], result["messages"])
+        assert result["total"] == 1
+        assert messages[0]["text"] == "Visible prose"
+        assert "secret" not in str(messages[0]["text"])
+        assert "Tool" not in str(messages[0]["text"])
+
     def test_archive_file_set_session_detail_and_messages_from_archive_tiers(
         self,
         workspace_env: dict[str, Path],
