@@ -10,6 +10,7 @@ import io
 from typing import TYPE_CHECKING, cast
 
 import click
+from click.shell_completion import CompletionItem
 
 if TYPE_CHECKING:
     from polylogue.archive.session.domain_models import Session, SessionSummary
@@ -17,7 +18,7 @@ if TYPE_CHECKING:
     from polylogue.cli.root_request import RootModeRequest
     from polylogue.insights.transforms import RecoveryReportPreset
 
-from polylogue.archive.viewport import read_view_choices
+from polylogue.archive.viewport import READ_VIEW_PROFILES, read_view_choices
 from polylogue.cli.click_option_groups import _LazyChoice
 from polylogue.cli.shared.types import AppEnv
 from polylogue.cli.verb_names import VERB_NAMES
@@ -60,6 +61,17 @@ _READ_VIEW_HELP = "What to render (" + ", ".join(_READ_VIEWS) + ")."
 _READ_DESTINATIONS = ("terminal", "stdout", "browser", "clipboard", "file")
 _READ_FORMATS = ("text", "markdown", "json", "ndjson", "yaml", "html", "obsidian", "org", "csv")
 _RECOVERY_REPORT_PRESETS = ("continue", "blame")
+
+
+def _complete_read_view(ctx: click.Context, param: click.Parameter, incomplete: str) -> list[CompletionItem]:
+    """Complete read-view ids from the shared view-profile registry."""
+
+    needle = incomplete.lower()
+    return [
+        CompletionItem(profile.view_id, help=f"{profile.label}: {profile.purpose}")
+        for profile in READ_VIEW_PROFILES
+        if profile.view_id.startswith(needle)
+    ]
 
 
 @click.command("list")
@@ -152,6 +164,7 @@ def recent_verb(
     type=click.Choice(_READ_VIEWS),
     default="summary",
     show_default=True,
+    shell_complete=_complete_read_view,
     help=_READ_VIEW_HELP,
 )
 @click.option(

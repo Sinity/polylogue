@@ -108,6 +108,17 @@ def test_read_view_click_choices_come_from_view_profiles() -> None:
     assert tuple(option.type.choices) == read_view_choices()
 
 
+def test_read_view_completion_comes_from_view_profiles() -> None:
+    option = next(param for param in query_verbs.read_verb.params if param.name == "view")
+
+    items = option.shell_complete(click.Context(query_verbs.read_verb), "rec")
+
+    assert [item.value for item in items] == ["recovery"]
+    assert items[0].help is not None
+    assert "Recovery:" in items[0].help
+    assert "successor-agent recovery digest" in items[0].help
+
+
 def _read_verb_kwargs(**overrides: object) -> dict[str, object]:
     """Full default kwargs for the read_verb callback (keyword-robust to signature growth)."""
     defaults: dict[str, object] = {
