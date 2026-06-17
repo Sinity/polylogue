@@ -11,6 +11,7 @@ VERB_NAMES: frozenset[str] = frozenset(
         "mark",
         "read",
         "recent",
+        "select",
         "stats",
     }
 )

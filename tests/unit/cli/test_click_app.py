@@ -712,6 +712,7 @@ class TestCliMetadata:
             "count",
             "stats",
             "read",
+            "select",
             "delete",
             "mark",
             "analyze",
