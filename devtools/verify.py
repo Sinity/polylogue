@@ -26,8 +26,10 @@ import hashlib
 import json
 import os
 import re
+import selectors
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -133,7 +135,11 @@ TESTMON_SEED_STAMP = Path(".cache/testmon/seed.json")
 PYTEST_REPORT_DIR = Path(".cache/verify")
 PYTEST_REPORT_PATH = PYTEST_REPORT_DIR / "last-pytest.json"
 PYTEST_HEARTBEAT_ENV = "POLYLOGUE_VERIFY_HEARTBEAT_S"
+PYTEST_TIMEOUT_ENV = "POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S"
+PYTEST_STALL_TIMEOUT_ENV = "POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S"
 DEFAULT_PYTEST_HEARTBEAT_S = 30.0
+DEFAULT_PYTEST_TIMEOUT_S = 45 * 60.0
+DEFAULT_PYTEST_STALL_TIMEOUT_S = 10 * 60.0
 
 
 def _load_history() -> list[dict[str, Any]]:
@@ -277,15 +283,41 @@ def _process_status(pid: int) -> dict[str, str | int | None]:
     return status
 
 
-def _pytest_heartbeat_interval() -> float:
-    raw = os.environ.get(PYTEST_HEARTBEAT_ENV)
+def _float_env(name: str, default: float) -> float:
+    raw = os.environ.get(name)
     if raw is None:
-        return DEFAULT_PYTEST_HEARTBEAT_S
+        return default
     try:
         value = float(raw)
     except ValueError:
-        return DEFAULT_PYTEST_HEARTBEAT_S
+        return default
     return max(value, 0.0)
+
+
+def _pytest_heartbeat_interval() -> float:
+    return _float_env(PYTEST_HEARTBEAT_ENV, DEFAULT_PYTEST_HEARTBEAT_S)
+
+
+def _pytest_timeout_s() -> float:
+    return _float_env(PYTEST_TIMEOUT_ENV, DEFAULT_PYTEST_TIMEOUT_S)
+
+
+def _pytest_stall_timeout_s() -> float:
+    return _float_env(PYTEST_STALL_TIMEOUT_ENV, DEFAULT_PYTEST_STALL_TIMEOUT_S)
+
+
+def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(process.pid, signal.SIGTERM)
+    try:
+        process.wait(timeout=5)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(process.pid, signal.SIGKILL)
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        process.wait(timeout=5)
 
 
 def _run_pytest_with_heartbeat(
@@ -296,6 +328,8 @@ def _run_pytest_with_heartbeat(
     t0: float,
 ) -> subprocess.CompletedProcess[str]:
     heartbeat_s = _pytest_heartbeat_interval()
+    timeout_s = _pytest_timeout_s()
+    stall_timeout_s = _pytest_stall_timeout_s()
     sys.stderr.write(f"\n    command: {shlex.join(cmd)}\n")
     sys.stderr.flush()
     process = subprocess.Popen(
@@ -304,31 +338,79 @@ def _run_pytest_with_heartbeat(
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
+        start_new_session=True,
     )
+    assert process.stdout is not None
+    assert process.stderr is not None
+    selector = selectors.DefaultSelector()
+    selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+    selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+    output: dict[str, list[bytes]] = {"stdout": [], "stderr": []}
     last_cpu = _process_cpu_seconds(process.pid)
     last_sample = time.monotonic()
+    last_output = last_sample
+    termination_reason: str | None = None
     while True:
-        try:
-            stdout, stderr = process.communicate(timeout=heartbeat_s if heartbeat_s > 0 else None)
-            return subprocess.CompletedProcess(cmd, process.returncode or 0, stdout, stderr)
-        except subprocess.TimeoutExpired:
-            now = time.monotonic()
+        now = time.monotonic()
+        elapsed = now - t0
+        idle = now - last_output
+        if timeout_s > 0 and elapsed >= timeout_s:
+            termination_reason = f"pytest runtime exceeded {timeout_s:g}s"
+        elif stall_timeout_s > 0 and idle >= stall_timeout_s:
+            termination_reason = f"pytest produced no output for {stall_timeout_s:g}s"
+        if termination_reason is not None:
+            _terminate_process_group(process)
+            break
+
+        timeout = heartbeat_s if heartbeat_s > 0 else None
+        if timeout is not None:
+            if timeout_s > 0:
+                timeout = min(timeout, max(timeout_s - elapsed, 0.0))
+            if stall_timeout_s > 0:
+                timeout = min(timeout, max(stall_timeout_s - idle, 0.0))
+        events = selector.select(timeout=timeout)
+        if events:
+            for selector_key, _mask in events:
+                chunk = os.read(selector_key.fd, 65536)
+                if chunk:
+                    stream_name = str(selector_key.data)
+                    output[stream_name].append(chunk)
+                    last_output = time.monotonic()
+                else:
+                    selector.unregister(selector_key.fileobj)
+        else:
             status = _process_status(process.pid)
             cpu_now = _process_cpu_seconds(process.pid)
             cpu_pct = None
-            if cpu_now is not None and last_cpu is not None and now > last_sample:
-                cpu_pct = ((cpu_now - last_cpu) / (now - last_sample)) * 100.0
+            sample_now = time.monotonic()
+            if cpu_now is not None and last_cpu is not None and sample_now > last_sample:
+                cpu_pct = ((cpu_now - last_cpu) / (sample_now - last_sample)) * 100.0
             last_cpu = cpu_now
-            last_sample = now
+            last_sample = sample_now
             rss = status["rss_kb"]
             rss_text = f", rss={int(rss) // 1024} MiB" if isinstance(rss, int) else ""
             cpu_text = f", cpu={cpu_pct:.0f}%" if cpu_pct is not None else ""
             state_text = f", state={status['state']}" if status["state"] is not None else ""
             sys.stderr.write(
-                f"    still running: pid={process.pid}, elapsed={now - t0:.0f}s{state_text}{cpu_text}{rss_text}\n"
+                f"    still running: pid={process.pid}, elapsed={sample_now - t0:.0f}s, "
+                f"idle={sample_now - last_output:.0f}s{state_text}{cpu_text}{rss_text}\n"
             )
             sys.stderr.flush()
+        if process.poll() is not None and not selector.get_map():
+            break
+
+    for stream in (process.stdout, process.stderr):
+        with contextlib.suppress(OSError):
+            remaining = stream.read()
+        if remaining:
+            stream_name = "stdout" if stream is process.stdout else "stderr"
+            output[stream_name].append(remaining)
+    stdout = b"".join(output["stdout"]).decode(errors="replace")
+    stderr = b"".join(output["stderr"]).decode(errors="replace")
+    if termination_reason is not None:
+        stderr = f"{stderr}\nverify: {termination_reason}; terminated pytest process group {process.pid}\n"
+        return subprocess.CompletedProcess(cmd, 124, stdout, stderr)
+    return subprocess.CompletedProcess(cmd, process.returncode or 0, stdout, stderr)
 
 
 def _run(label: str, cmd: list[str], *, cwd: str | None = None) -> tuple[int, float, dict[str, Any]]:
@@ -348,6 +430,8 @@ def _run(label: str, cmd: list[str], *, cwd: str | None = None) -> tuple[int, fl
     if is_pytest:
         metadata.update(_pytest_command_metadata(cmd))
         metadata["heartbeat_s"] = _pytest_heartbeat_interval()
+        metadata["timeout_s"] = _pytest_timeout_s()
+        metadata["stall_timeout_s"] = _pytest_stall_timeout_s()
         report = _read_pytest_report()
         if report is not None:
             metadata.update(_pytest_metadata_from_report(report))

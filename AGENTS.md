@@ -484,6 +484,15 @@ Polylogue does not maintain a parallel changed-file router for helper/config
 paths; explicit full collection is limited to `devtools verify --seed-testmon`
 for dependency-database refreshes and `devtools verify --all` for diagnostics.
 
+`devtools verify` treats the pytest subprocess as a bounded child workload, not
+an unowned shell. It prints periodic heartbeat lines, drains pytest output
+incrementally so real progress resets the stall clock, and terminates the whole
+pytest process group if the step exceeds
+`POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S` (default 45 minutes) or produces no output
+for `POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S` (default 10 minutes). Set either
+variable to `0` only for an explicit diagnostic run where an unusually long
+full-suite pass is expected and supervised.
+
 For the generated validation-lane, mutation-campaign, and benchmark inventory,
 see [docs/test-quality-workflows.md](docs/test-quality-workflows.md).
 
