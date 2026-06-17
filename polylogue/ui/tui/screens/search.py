@@ -62,7 +62,7 @@ class Search(RepositoryBoundContainer):
                 row.id,
                 row.origin,
                 row.title or "Untitled",
-                row.date or "",
+                row.created_at or "",
                 key=row.id,
             )
 

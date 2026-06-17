@@ -481,14 +481,9 @@ class SessionListRowPayload(SurfacePayloadModel):
     target_ref: TargetRefPayload | None = None
     anchor: str | None = None
     actions: dict[str, ReaderActionAvailabilityPayload] = Field(default_factory=reader_session_actions)
-    # #1673 (field-name harmonization): created_at/updated_at replace the
-    # single ``date`` field; ``message_count`` replaces ``messages``.
-    # Old keys are kept for one release cycle so consumers can move.
     created_at: str | None = None
     updated_at: str | None = None
-    date: str | None = None  # deprecated — use created_at
     message_count: int = 0
-    messages: int = 0  # deprecated — use message_count
     tags: tuple[str, ...] = ()
     summary: str | None = None
     words: int | None = None
@@ -501,7 +496,6 @@ class SessionListRowPayload(SurfacePayloadModel):
         session_id = str(session.id)
         created_at = session.created_at.isoformat() if session.created_at else None
         updated_at = session.updated_at.isoformat() if session.updated_at else None
-        display_date = session.display_date.isoformat() if session.display_date else None
         msg_count = len(session.messages)
         return cls(
             id=session_id,
@@ -511,9 +505,7 @@ class SessionListRowPayload(SurfacePayloadModel):
             anchor=reader_anchor("session", session_id),
             created_at=created_at,
             updated_at=updated_at,
-            date=display_date,  # deprecated — kept for one release cycle
             message_count=msg_count,
-            messages=msg_count,  # deprecated — kept for one release cycle
             tags=tuple(session.tags),
             summary=session.summary,
             words=sum(message.word_count for message in session.messages),
@@ -536,7 +528,6 @@ class SessionListRowPayload(SurfacePayloadModel):
         session_id = str(summary.id)
         created_at = summary.created_at.isoformat() if summary.created_at else None
         updated_at = summary.updated_at.isoformat() if summary.updated_at else None
-        display_date = summary.display_date.isoformat() if summary.display_date else None
         return cls(
             id=session_id,
             origin=summary.origin,
@@ -545,9 +536,7 @@ class SessionListRowPayload(SurfacePayloadModel):
             anchor=reader_anchor("session", session_id),
             created_at=created_at,
             updated_at=updated_at,
-            date=display_date,  # deprecated — kept for one release cycle
             message_count=message_count,
-            messages=message_count,  # deprecated — kept for one release cycle
             tags=tuple(summary.tags),
             summary=summary.summary,
             words=word_count,

@@ -1299,7 +1299,7 @@ class TestSharedQueryPayloads:
             title="Reader contract",
             target_ref=TargetRefPayload.session("c1"),
             anchor="session-c1",
-            messages=1,
+            message_count=1,
         )
         message = SessionMessagePayload(
             id="m-c1",

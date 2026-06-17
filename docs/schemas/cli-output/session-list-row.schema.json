@@ -207,18 +207,6 @@
       "default": null,
       "title": "Cwd Display"
     },
-    "date": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null,
-      "title": "Date"
-    },
     "flags": {
       "anyOf": [
         {
@@ -237,11 +225,6 @@
     "message_count": {
       "default": 0,
       "title": "Message Count",
-      "type": "integer"
-    },
-    "messages": {
-      "default": 0,
-      "title": "Messages",
       "type": "integer"
     },
     "origin": {

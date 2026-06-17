@@ -517,7 +517,7 @@ class TestListFormatting:
             payload = json.loads(rendered)
             # #1618: envelope shape, not bare array.
             assert payload["items"][0]["id"] == "conv-summary-1"
-            assert payload["items"][0]["messages"] == 7
+            assert payload["items"][0]["message_count"] == 7
             assert payload["items"][0]["tags"] == ["alpha", "beta"]
             assert payload["total"] == 1
         elif output_format == "yaml":

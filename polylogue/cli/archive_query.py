@@ -1639,7 +1639,6 @@ def _summary_payload(summary: ArchiveSessionSummary) -> dict[str, object]:
                 created_at=summary.created_at,
                 updated_at=summary.updated_at,
                 message_count=summary.message_count,
-                messages=summary.message_count,
                 tags=summary.tags,
                 words=summary.word_count,
                 repo=summary.git_repository_url,
