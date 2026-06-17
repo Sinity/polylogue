@@ -130,6 +130,25 @@ def test_query_field_candidates_come_from_expression_registry() -> None:
     assert click_item.type == "plain"
 
 
+def test_query_expression_value_completion_uses_field_completion_source() -> None:
+    ctx, param = _ctx_param()
+
+    origin_items = shell_completion_values.complete_query_expression_fields(ctx, param, "origin:cla")
+    assert [item.value for item in origin_items] == ["origin:claude-ai-export", "origin:claude-code-session"]
+
+    with (
+        patch("polylogue.cli.shell_completion_values._db_exists", return_value=True),
+        patch("polylogue.cli.shell_completion_values._run_completion") as run_completion,
+    ):
+        mock_archive = MagicMock()
+        mock_archive.stats_by.return_value = {"polylogue": 4}
+        run_completion.side_effect = lambda action: list(action(mock_archive))
+        repo_items = shell_completion_values.complete_query_expression_fields(ctx, param, "repo:poly")
+
+    assert [item.value for item in repo_items] == ["repo:polylogue"]
+    assert repo_items[0].help == "4 sessions"
+
+
 @pytest.fixture
 def cli_runner() -> CliRunner:
     return CliRunner()
