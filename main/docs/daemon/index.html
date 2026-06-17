@@ -489,6 +489,52 @@ stays running until interrupted.</p>
 </table>
 <h2>HTTP API Endpoints</h2>
 <p>The HTTP API server runs by default. Pass <code>--no-api</code> to disable it. The endpoints below are exposed under the configured <code>--api-host:--api-port</code>.</p>
+<p>Route contract metadata lives in <code>polylogue/daemon/route_contracts.py</code>.
+Dispatch still happens in <code>polylogue/daemon/http.py</code>, but tests and docs use
+the metadata module as the durable route-classification source so stable
+routes, shell-only helpers, operational probes, and mutation routes do not drift
+silently.</p>
+<table>
+<thead>
+<tr>
+<th>Route class</th>
+<th>Auth policy</th>
+<th>Examples</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Browser shell bootstrap</td>
+<td>unauthenticated loopback HTML</td>
+<td><code>GET /</code>, <code>GET /s/:id</code>, <code>GET /p</code>, <code>GET /a</code></td>
+</tr>
+<tr>
+<td>Operational probes</td>
+<td>unauthenticated loopback probe/scrape</td>
+<td><code>GET /healthz/live</code>, <code>GET /healthz/ready</code>, <code>GET /metrics</code></td>
+</tr>
+<tr>
+<td>Stable read/query API</td>
+<td>bearer token when configured</td>
+<td><code>GET /api/sessions</code>, <code>GET /api/query-units</code>, <code>GET /api/sessions/:id</code>, <code>GET /api/sessions/:id/provenance</code></td>
+</tr>
+<tr>
+<td>User overlay reads</td>
+<td>bearer token when configured</td>
+<td><code>GET /api/user/marks</code>, <code>GET /api/user/saved-views/:id</code></td>
+</tr>
+<tr>
+<td>Browser-accessible mutations</td>
+<td>bearer token plus same-origin browser request</td>
+<td><code>POST /api/user/marks</code>, <code>DELETE /api/user/saved-views/:id</code>, <code>POST /api/maintenance/run</code></td>
+</tr>
+<tr>
+<td>Observability ingest</td>
+<td>explicit config flag plus loopback-or-bearer policy</td>
+<td><code>POST /v1/traces</code>, <code>POST /v1/metrics</code>, <code>POST /v1/logs</code></td>
+</tr>
+</tbody>
+</table>
 <h3>GET /api/health</h3>
 <p>Health check with database statistics.</p>
 <pre><code class="language-json">{&quot;ok&quot;: true, &quot;db_size_bytes&quot;: 52428800, &quot;wal_size_bytes&quot;: 4096, &quot;disk_free_bytes&quot;: 107374182400, &quot;quick_check&quot;: &quot;pass&quot;}
@@ -519,10 +565,14 @@ FTS readiness, and insight freshness.</p>
 <p>Web shell (localhost-only, no auth). A lightweight browser interface for
 querying the archive through the daemon.</p>
 <h3>Authentication</h3>
-<p>Auth is required for non-loopback requests. Pass the daemon token as a Bearer
-token:</p>
+<p>When an API auth token is configured, <code>/api/*</code> routes require it even from
+loopback. Pass it as a Bearer token:</p>
 <pre><code class="language-bash">curl -H &quot;Authorization: Bearer &lt;token&gt;&quot; http://host:8766/api/status
 </code></pre>
+<p>Mutating browser-accessible routes also reject cross-origin <code>Origin</code> headers,
+even when the Bearer token is valid. <code>GET /healthz/*</code> and <code>GET /metrics</code> remain
+unauthenticated so health checks and Prometheus scrapers can operate without
+credentials.</p>
 <h2>Browser Capture Receiver</h2>
 <p>The browser capture receiver accepts chat session payloads from local browser
 extensions. It stores artifacts in the spool directory and triggers ingestion
