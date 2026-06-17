@@ -1355,7 +1355,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         # vector provider (raising the typed readiness error when embeddings
         # are not ready), which daemon_safe_handler maps to its 409 status
         # instead of falling through to a generic ValueError (#1749).
-        if spec.similar_text:
+        if spec.similar_text or spec.similar_session_id:
             return await self._do_search_list(poly, spec, limit, offset)
 
         filter_obj = spec.build_filter(poly.config)

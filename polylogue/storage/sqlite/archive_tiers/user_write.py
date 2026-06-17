@@ -665,8 +665,22 @@ def _read_assertion_by_kind_key(
     kind: str,
     key: str,
 ) -> ArchiveAssertionEnvelope | None:
-    matches = [envelope for envelope in list_assertions_by_kind(conn, kind) if envelope.key == key]
-    return matches[0] if matches else None
+    if not _table_exists(conn, "assertions"):
+        return None
+    row = conn.execute(
+        f"""
+        SELECT {_ASSERTION_COLUMNS}
+        FROM assertions
+        WHERE kind = ?
+          AND key = ?
+          AND COALESCE(status, '') != 'deleted'
+        ORDER BY updated_at_ms DESC, assertion_id
+        """,
+        (kind, key),
+    ).fetchone()
+    if row is None:
+        return None
+    return _assertion_row_to_envelope(row)
 
 
 def _blackboard_envelope_from_assertion(assertion: ArchiveAssertionEnvelope) -> ArchiveBlackboardNoteEnvelope:

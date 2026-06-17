@@ -248,6 +248,29 @@ async def test_user_state_target_resolution_reads_archive_file_set_from_archive_
 
 
 @pytest.mark.asyncio
+async def test_user_state_targets_reject_contradictory_identifiers(workspace_env: dict[str, Path]) -> None:
+    archive_root = workspace_env["archive_root"]
+    _session_id, message_id = _seed_user_state_session(archive_root)
+
+    async with Polylogue(db_path=archive_root / "index.db", archive_root=archive_root) as poly:
+        with pytest.raises(ValueError, match="message target_id must match message_id"):
+            await poly.add_mark(
+                USER_STATE_SESSION_ID,
+                "pin",
+                target_type="message",
+                target_id="other-message",
+                message_id=message_id,
+            )
+        with pytest.raises(ValueError, match="canonical non-negative block_index"):
+            await poly.add_mark(
+                USER_STATE_SESSION_ID,
+                "pin",
+                target_type="block",
+                target_id=f"{message_id}:00",
+            )
+
+
+@pytest.mark.asyncio
 async def test_message_target_user_state_rejects_unknown_messages(workspace_env: dict[str, Path]) -> None:
     archive_root = workspace_env["archive_root"]
     _seed_user_state_session(archive_root)

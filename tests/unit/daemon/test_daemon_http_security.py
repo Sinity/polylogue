@@ -68,6 +68,12 @@ ENDPOINTS_POST = _paths_for("POST", "bearer_and_same_origin")
 ENDPOINTS_DELETE = _paths_for("DELETE", "bearer_and_same_origin")
 
 
+def test_route_contract_security_matrices_are_non_empty() -> None:
+    assert ENDPOINTS_GET
+    assert ENDPOINTS_POST
+    assert ENDPOINTS_DELETE
+
+
 # ---------------------------------------------------------------------------
 # Pure-logic auth: the function called by every route's _check_auth()
 # ---------------------------------------------------------------------------

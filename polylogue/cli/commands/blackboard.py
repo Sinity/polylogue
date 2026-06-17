@@ -13,6 +13,7 @@ from polylogue.paths import archive_file_set_root_for_paths, archive_root, db_pa
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import (
+    ArchiveBlackboardNoteEnvelope,
     list_archive_blackboard_note_envelopes,
     upsert_blackboard_note,
 )
@@ -120,7 +121,7 @@ def blackboard_list(
             env.ui.console.print("[dim]No blackboard notes yet.[/dim]")
             return
 
-        filtered = []
+        filtered: list[tuple[ArchiveBlackboardNoteEnvelope, _ParsedBlackboardBody]] = []
         for note in notes:
             parsed = _parse_blackboard_body(note.body)
             if kind and parsed["kind"] != kind:
@@ -129,9 +130,9 @@ def blackboard_list(
                 continue
             if unresolved and parsed["kind"] not in {"blocker", "question"}:
                 continue
-            filtered.append((note, parsed))
             if len(filtered) >= limit:
                 break
+            filtered.append((note, parsed))
 
         if not filtered:
             env.ui.console.print("[dim]No matching notes.[/dim]")

@@ -216,6 +216,13 @@ async def resolve_insight_target(
         if not target_id:
             raise ValueError("block target requires target_id 'message_id:block_index'")
         msg_id, block_part = parse_block_target_id(target_id)
+        try:
+            block_index = int(block_part)
+        except ValueError:
+            raise ValueError("block target_id must be 'message_id:block_index'") from None
+        if block_index < 0 or str(block_index) != block_part:
+            raise ValueError("block target_id must use a canonical non-negative block_index")
+        canonical_target_id = f"{msg_id}:{block_index}"
         effective_message_id = message_id or msg_id
         if effective_message_id != msg_id:
             raise ValueError("block message_id must match the message_id in target_id")
@@ -223,28 +230,26 @@ async def resolve_insight_target(
             archive_root,
             session_id=session_id,
             message_id=effective_message_id,
-            block_index_token=block_part,
+            block_index_token=str(block_index),
         ):
             raise ValueError(f"block {target_id!r} is not present in session {session_id!r}")
         return {
             "target_type": TARGET_BLOCK,
-            "target_id": target_id,
+            "target_id": canonical_target_id,
             "session_id": session_id,
             "message_id": effective_message_id,
             "identity_key": identity_key(
                 TARGET_BLOCK,
                 session_id=session_id,
-                target_id=target_id,
+                target_id=canonical_target_id,
             ),
         }
 
     if target_type == TARGET_ATTACHMENT:
         if not target_id:
             raise ValueError("attachment target requires target_id")
-        # Attachments live as content blocks of kind 'tool_result' or as raw
-        # blob refs; the durable identity contract is "non-empty token, scoped
-        # to a session". A stronger FK lands when attachment identity is
-        # promoted to a first-class table.
+        # Attachments currently resolve as non-empty tokens scoped to a
+        # session; first-class attachment refs belong with #1845.
         return {
             "target_type": TARGET_ATTACHMENT,
             "target_id": target_id,

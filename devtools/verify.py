@@ -24,6 +24,7 @@ import argparse
 import contextlib
 import hashlib
 import json
+import math
 import os
 import re
 import selectors
@@ -291,6 +292,8 @@ def _float_env(name: str, default: float) -> float:
         value = float(raw)
     except ValueError:
         return default
+    if not math.isfinite(value):
+        return default
     return max(value, 0.0)
 
 
@@ -362,12 +365,14 @@ def _run_pytest_with_heartbeat(
             _terminate_process_group(process)
             break
 
-        timeout = heartbeat_s if heartbeat_s > 0 else None
-        if timeout is not None:
-            if timeout_s > 0:
-                timeout = min(timeout, max(timeout_s - elapsed, 0.0))
-            if stall_timeout_s > 0:
-                timeout = min(timeout, max(stall_timeout_s - idle, 0.0))
+        deadlines: list[float] = []
+        if heartbeat_s > 0:
+            deadlines.append(heartbeat_s)
+        if timeout_s > 0:
+            deadlines.append(max(timeout_s - elapsed, 0.0))
+        if stall_timeout_s > 0:
+            deadlines.append(max(stall_timeout_s - idle, 0.0))
+        timeout = min(deadlines) if deadlines else None
         events = selector.select(timeout=timeout)
         if events:
             for selector_key, _mask in events:

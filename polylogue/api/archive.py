@@ -2411,6 +2411,10 @@ class PolylogueArchiveMixin:
 
         resolved_session_id = await self._resolve_user_state_session_id(session_id)
         if target_type == TARGET_SESSION:
+            if target_id:
+                resolved_target_id = await self._resolve_user_state_session_id(target_id)
+                if resolved_target_id != resolved_session_id:
+                    raise ValueError("session target_id must match session_id")
             return {
                 "target_type": TARGET_SESSION,
                 "target_id": resolved_session_id,
@@ -2418,6 +2422,8 @@ class PolylogueArchiveMixin:
                 "message_id": None,
             }
         if target_type == TARGET_MESSAGE:
+            if target_id and message_id and target_id != message_id:
+                raise ValueError("message target_id must match message_id")
             resolved_message_id = message_id or target_id
             if not resolved_message_id:
                 raise ValueError("message target requires message_id or target_id")

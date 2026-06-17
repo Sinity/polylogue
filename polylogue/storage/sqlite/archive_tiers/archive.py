@@ -1750,19 +1750,13 @@ class ArchiveStore:
             found_target_type, found_target_id = _split_user_target_ref(assertion.target_ref)
             if annotation_id and found_annotation_id != annotation_id:
                 continue
-            if (
-                session_id
-                and target_type is None
-                and target_id is None
-                and not (
-                    (found_target_type == "session" and found_target_id == session_id)
-                    or (
-                        found_target_type == "message"
-                        and (found_target_id == session_id or found_target_id.startswith(f"{session_id}:"))
-                    )
+            if session_id and target_id is None:
+                belongs_to_session = (found_target_type == "session" and found_target_id == session_id) or (
+                    found_target_type == "message"
+                    and (found_target_id == session_id or found_target_id.startswith(f"{session_id}:"))
                 )
-            ):
-                continue
+                if not belongs_to_session:
+                    continue
             if target_type and found_target_type != target_type:
                 continue
             if target_id and found_target_id != target_id:
@@ -5414,6 +5408,16 @@ def _archive_user_overlay_debt(conn: sqlite3.Connection, user_db_path: Path) -> 
             "AND u.target_ref LIKE 'session:%' "
             "AND COALESCE(u.status, '') != 'deleted' "
             "AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.session_id = substr(u.target_ref, 9))",
+            "SELECT COUNT(*) FROM user_debt.assertions u "
+            "WHERE u.kind IN ('mark', 'annotation', 'note', 'suppression') "
+            "AND u.target_ref LIKE 'message:%' "
+            "AND COALESCE(u.status, '') != 'deleted' "
+            "AND NOT EXISTS ("
+            "  SELECT 1 FROM sessions s "
+            "  WHERE substr(u.target_ref, 9) = s.session_id "
+            "     OR (substr(substr(u.target_ref, 9), 1, length(s.session_id)) = s.session_id "
+            "         AND substr(substr(u.target_ref, 9), length(s.session_id) + 1, 1) = ':')"
+            ")",
             "SELECT COUNT(*) FROM user_debt.assertions u "
             "WHERE u.kind = 'correction' "
             "AND u.target_ref LIKE 'insight:%' "
