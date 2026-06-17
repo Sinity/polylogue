@@ -157,7 +157,7 @@ READ_VIEW_PROFILES: tuple[SessionViewProfile, ...] = (
             "decision candidates",
             "forensic index",
             "resume bundle",
-            "continue/blame reports",
+            "continue/blame/work-packet reports",
         ),
         lossiness="derived",
         evidence_policy="required",
