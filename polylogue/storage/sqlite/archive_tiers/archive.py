@@ -15,6 +15,7 @@ from polylogue.archive.query.predicate import (
     QueryBoolPredicate,
     QueryExistsPredicate,
     QueryFieldPredicate,
+    QueryLineagePredicate,
     QueryNotPredicate,
     QueryPredicate,
     QuerySequencePredicate,
@@ -4505,6 +4506,22 @@ def _fts_predicate_clause(table_alias: str, predicate: QueryTextPredicate) -> tu
     )
 
 
+def _lineage_predicate_clause(table_alias: str, predicate: QueryLineagePredicate) -> tuple[str, list[object]]:
+    seed_session_id = predicate.seed_session_id.strip()
+    if not seed_session_id:
+        raise ValueError("lineage predicate requires a session id")
+    return (
+        f"""
+        COALESCE({table_alias}.root_session_id, {table_alias}.session_id) = (
+            SELECT COALESCE(seed.root_session_id, seed.session_id)
+            FROM sessions seed
+            WHERE seed.session_id = ?
+        )
+        """.strip(),
+        [seed_session_id],
+    )
+
+
 def _boolean_predicate_clause(
     table_alias: str,
     predicate: QueryPredicate,
@@ -4519,6 +4536,8 @@ def _boolean_predicate_clause(
         return _action_sequence_clause(table_alias, predicate.action_terms)
     if isinstance(predicate, QueryTextPredicate):
         return _fts_predicate_clause(table_alias, predicate)
+    if isinstance(predicate, QueryLineagePredicate):
+        return _lineage_predicate_clause(table_alias, predicate)
     if isinstance(predicate, QueryNotPredicate):
         clause, params = _boolean_predicate_clause(table_alias, predicate.child, tags_relation=tags_relation)
         return (f"NOT ({clause})" if clause else "", params)

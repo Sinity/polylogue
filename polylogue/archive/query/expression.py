@@ -72,6 +72,7 @@ from polylogue.archive.query.predicate import (
     QueryBoolPredicate,
     QueryExistsPredicate,
     QueryFieldPredicate,
+    QueryLineagePredicate,
     QueryNotPredicate,
     QueryPredicate,
     QuerySemanticPredicate,
@@ -219,6 +220,12 @@ EXPRESSION_FIELD_REGISTRY: dict[str, dict[str, str]] = {
         "spec_field": "retrieval_lane",
         "negatable": "no",
         "example": "lane:dialogue",
+    },
+    "lineage": {
+        "description": "Filter to sessions sharing a logical lineage with a seed session id",
+        "spec_field": "boolean_predicate",
+        "negatable": "no",
+        "example": "lineage:id:chatgpt-export:ext-root",
     },
 }
 
@@ -441,6 +448,7 @@ _BOOLEAN_SUPPORTED_FIELDS = {
     "until",
     "messages",
     "words",
+    "lineage",
 }
 _STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS = {
     "role",
@@ -559,6 +567,15 @@ def _field_token_to_predicate(token: _FieldToken) -> QueryPredicate:
         values = tuple(value.strip().lower() for value in values if value.strip())
     elif field_name in {"since", "until"} and values:
         values = (_parse_relative_date(values[-1]),)
+    elif field_name == "lineage":
+        if token.negated:
+            raise ExpressionCompileError("negation is not supported for 'lineage'", field=field_name)
+        seed = values[-1].strip() if values else ""
+        if seed.startswith("id:"):
+            seed = seed[len("id:") :].strip()
+        if not seed:
+            raise ExpressionCompileError("lineage:id: requires a session id", field=field_name)
+        return QueryLineagePredicate(seed_session_id=seed)
 
     predicate: QueryPredicate = QueryFieldPredicate(field=field_name, values=values)
     return QueryNotPredicate(predicate) if token.negated else predicate
@@ -590,6 +607,7 @@ def _predicate_children(items: tuple[object, ...]) -> tuple[QueryPredicate, ...]
             | QueryBoolPredicate
             | QueryNotPredicate
             | QueryExistsPredicate
+            | QueryLineagePredicate
             | QuerySequencePredicate
             | QueryTextPredicate
             | QuerySemanticPredicate,
@@ -634,6 +652,12 @@ def _validate_predicate_context(predicate: QueryPredicate, *, unit: Literal["ses
         if unit != "session":
             raise ExpressionCompileError("exists predicates are only supported from sessions", field=None)
         _validate_predicate_context(predicate.child, unit=predicate.unit)
+        return
+    if isinstance(predicate, QueryLineagePredicate):
+        if unit != "session":
+            raise ExpressionCompileError("lineage predicates are only supported from sessions", field=None)
+        if not predicate.seed_session_id.strip():
+            raise ExpressionCompileError("lineage predicate requires a session id", field="lineage")
         return
     if isinstance(predicate, QuerySequencePredicate):
         if unit != "session":
@@ -730,7 +754,7 @@ _BOOLEAN_QUERY_TRANSFORMER = _BooleanQueryTransformer()
 
 def _is_boolean_expression(expression: str) -> bool:
     if re.search(
-        r"^\s*\(|^\s*sessions\s+where\b|^\s*exists\s+(?:message|action)\s*\(|^\s*seq\s*\(",
+        r"^\s*\(|^\s*sessions\s+where\b|^\s*exists\s+(?:message|action)\s*\(|^\s*seq\s*\(|^\s*lineage:",
         expression,
         re.IGNORECASE,
     ):
@@ -759,6 +783,7 @@ def _parse_boolean_predicate(expression: str) -> QueryPredicate:
         | QueryBoolPredicate
         | QueryNotPredicate
         | QueryExistsPredicate
+        | QueryLineagePredicate
         | QuerySequencePredicate
         | QueryTextPredicate
         | QuerySemanticPredicate,
