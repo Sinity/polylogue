@@ -2,7 +2,7 @@
 
 The standalone ``context-pack`` command was absorbed into the read-view surface
 (#1842): ``read --view context-pack``. The pack logic lives in
-``polylogue.cli.commands.context_pack.run_context_pack_view``; the MCP
+``polylogue.context.pack.run_context_pack_view``; the MCP
 ``build_context_pack`` tool exposes the same capability programmatically.
 """
 
@@ -17,8 +17,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from polylogue.archive.message.roles import Role
-from polylogue.cli.commands.context_pack import run_context_pack_view
 from polylogue.cli.shared.types import AppEnv
+from polylogue.context.pack import run_context_pack_view
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore

@@ -1,24 +1,17 @@
-"""Context preamble composition for the ``read --view context`` surface.
-
-The capability behind ``read --view context`` (#1842): it absorbed the former
-standalone ``context compose`` command (#1494). The MCP
-``compose_context_preamble`` tool exposes the same capability programmatically.
-"""
+"""Context preamble composition for the ``read --view context`` surface."""
 
 from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
-from polylogue.cli.shared.types import AppEnv
+if TYPE_CHECKING:
+    from polylogue.cli.shared.types import AppEnv
 
 
-def run_context_compose(env: AppEnv, *, session_id: str, related_limit: int = 5) -> str:
-    """Compose a context preamble JSON document for a seed session (#1494).
-
-    Resolves the session's lineage (from topology), recent related sessions,
-    and project state into a single preamble and returns it as a JSON string.
-    """
+def compose_context_preamble(env: AppEnv, *, session_id: str, related_limit: int = 5) -> str:
+    """Compose a context preamble JSON document for a seed session (#1494)."""
     from polylogue.api.sync.bridge import run_coroutine_sync
 
     conv = run_coroutine_sync(env.polylogue.get_session(session_id))
@@ -26,7 +19,6 @@ def run_context_compose(env: AppEnv, *, session_id: str, related_limit: int = 5)
         env.ui.error(f"Session not found: {session_id}")
         raise SystemExit(1)
 
-    # Session lineage from topology.
     lineage: dict[str, object] = {}
     try:
         topology = run_coroutine_sync(env.polylogue.get_session_topology(session_id))
@@ -38,7 +30,6 @@ def run_context_compose(env: AppEnv, *, session_id: str, related_limit: int = 5)
     except Exception:
         pass
 
-    # Recent related sessions.
     related: list[dict[str, object]] = []
     try:
         repo: object = getattr(conv, "git_repository_url", None)
@@ -59,7 +50,6 @@ def run_context_compose(env: AppEnv, *, session_id: str, related_limit: int = 5)
     except Exception:
         pass
 
-    # Project state.
     project: dict[str, object] = {}
     git_repo = getattr(conv, "git_repository_url", None)
     git_branch = getattr(conv, "git_branch", None)

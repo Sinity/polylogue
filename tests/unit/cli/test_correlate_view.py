@@ -2,7 +2,7 @@
 
 The standalone ``correlate`` command was absorbed into the read-view surface
 (#1842): ``find <seed> then read --view correlation``. The correlation logic
-lives in ``polylogue.cli.commands.correlate.run_correlation_view`` and
+lives in ``polylogue.insights.correlation_view.run_correlation_view`` and
 ``polylogue.insights.session_commit``; the MCP ``correlate_session(s)`` tools
 expose the same capability programmatically.
 """
@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from polylogue.cli.commands.correlate import run_correlation_view
+from polylogue.insights.correlation_view import run_correlation_view
 from polylogue.insights.session_commit import SessionCorrelationResult
 
 
