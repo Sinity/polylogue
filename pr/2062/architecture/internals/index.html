@@ -853,7 +853,7 @@ verification (<a href="https://github.com/Sinity/polylogue/issues/818">#818</a>)
 <p><code>devtools daemon-workload-probe</code> produces a stable, JSON-serializable
 snapshot of daemon-relevant state read directly from the archive SQLite
 database. The probe is read-only and does not talk to the running daemon.</p>
-<p>For #845-style before/after convergence proofs:</p>
+<p>For #845-style before/after convergence evidence snapshots:</p>
 <pre><code class="language-bash">devtools daemon-workload-probe --json &gt; before.json
 # ...run convergence work (e.g. polylogued runs, ingest, debt drain)...
 devtools daemon-workload-probe --json &gt; after.json
