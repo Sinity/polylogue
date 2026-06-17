@@ -83,6 +83,16 @@ class QuerySemanticPredicate:
         return {"kind": "semantic", "unit": "session", "text": self.text}
 
 
+@dataclass(frozen=True)
+class QueryLineagePredicate:
+    """Session-topology predicate selecting the seed's logical lineage."""
+
+    seed_session_id: str
+
+    def to_payload(self) -> dict[str, object]:
+        return {"kind": "lineage", "unit": "session", "seed_session_id": self.seed_session_id}
+
+
 QueryPredicate: TypeAlias = (
     QueryFieldPredicate
     | QueryNotPredicate
@@ -91,6 +101,7 @@ QueryPredicate: TypeAlias = (
     | QuerySequencePredicate
     | QueryTextPredicate
     | QuerySemanticPredicate
+    | QueryLineagePredicate
 )
 
 
@@ -100,6 +111,7 @@ __all__ = [
     "QueryCompareOp",
     "QueryExistsPredicate",
     "QueryFieldPredicate",
+    "QueryLineagePredicate",
     "QueryNotPredicate",
     "QueryPredicate",
     "QuerySemanticPredicate",

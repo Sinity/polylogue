@@ -40,6 +40,7 @@ from polylogue.archive.query.predicate import (
     QueryBoolPredicate,
     QueryExistsPredicate,
     QueryFieldPredicate,
+    QueryLineagePredicate,
     QueryNotPredicate,
     QuerySemanticPredicate,
     QuerySequencePredicate,
@@ -663,6 +664,46 @@ class TestBooleanQueryExpression:
 
         assert [row.id for row in rows] == ["chatgpt-export:ext-hit"]
 
+    def test_lineage_predicate_ast_exposes_seed(self) -> None:
+        ast = parse_expression_ast("lineage:id:chatgpt-export:ext-root")
+
+        assert ast.boolean_predicate == QueryLineagePredicate(seed_session_id="chatgpt-export:ext-root")
+
+    def test_lineage_predicate_executes_against_archive(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (SessionBuilder(index_db, "root").provider("chatgpt").title("root").add_message("m-root", text="root").save())
+        (
+            SessionBuilder(index_db, "child")
+            .provider("chatgpt")
+            .title("child")
+            .parent_session("ext-root")
+            .add_message("m-child", text="child")
+            .save()
+        )
+        (
+            SessionBuilder(index_db, "other")
+            .provider("chatgpt")
+            .title("other")
+            .add_message("m-other", text="other")
+            .save()
+        )
+
+        spec = compile_expression("lineage:id:chatgpt-export:ext-child")
+        assert spec.boolean_predicate == QueryLineagePredicate(seed_session_id="chatgpt-export:ext-child")
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            rows = archive.list_summaries(
+                limit=100,
+                boolean_predicate=spec.boolean_predicate,
+            )
+
+        assert sorted(row.session_id for row in rows) == [
+            "chatgpt-export:ext-child",
+            "chatgpt-export:ext-root",
+        ]
+
 
 # ---------------------------------------------------------------------------
 # Compiler field-mapping tests
@@ -1096,6 +1137,11 @@ class TestFieldRegistry:
         "messages": ("messages:>=10", "min_messages", 10),
         "words": ("words:>=200", "min_words", 200),
         "lane": ("lane:dialogue", "retrieval_lane", "dialogue"),
+        "lineage": (
+            "lineage:id:chatgpt-export:ext-root",
+            "boolean_predicate",
+            QueryLineagePredicate(seed_session_id="chatgpt-export:ext-root"),
+        ),
     }
 
     def test_registry_has_required_fields(self) -> None:
