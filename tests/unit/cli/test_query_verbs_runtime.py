@@ -7,6 +7,7 @@ from unittest.mock import patch
 import click
 import pytest
 
+from polylogue.archive.viewport import read_view_choices
 from polylogue.cli import query_verbs
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
@@ -98,6 +99,13 @@ def test_stats_verb_toggles_stats_only_and_updates_grouping() -> None:
     assert grouped_request.query_params()["stats_by"] == "origin"
     assert grouped_request.query_params()["output_format"] == "markdown"
     assert grouped_request.query_params()["limit"] == 3
+
+
+def test_read_view_click_choices_come_from_view_profiles() -> None:
+    option = next(param for param in query_verbs.read_verb.params if param.name == "view")
+
+    assert isinstance(option.type, click.Choice)
+    assert tuple(option.type.choices) == read_view_choices()
 
 
 def _read_verb_kwargs(**overrides: object) -> dict[str, object]:

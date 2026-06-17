@@ -289,7 +289,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/expression.py
-    loc: 1402
+    loc: 1395
     target: polylogue/archive/query/expression.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -575,7 +575,7 @@ files:
     target: polylogue/archive/topology/edge.py
     owner: stable
   - path: polylogue/archive/viewport/__init__.py
-    loc: 0
+    loc: 17
     target: polylogue/archive/viewport/__init__.py
     owner: archive-viewport
     reason: archive-domain semantics
@@ -587,6 +587,11 @@ files:
   - path: polylogue/archive/viewport/models.py
     loc: 168
     target: polylogue/archive/viewport/models.py
+    owner: archive-viewport
+    reason: archive-domain semantics
+  - path: polylogue/archive/viewport/profiles.py
+    loc: 191
+    target: polylogue/archive/viewport/profiles.py
     owner: archive-viewport
     reason: archive-domain semantics
   - path: polylogue/archive/viewport/tools.py
@@ -765,7 +770,7 @@ files:
     target: polylogue/cli/commands/paths.py
     owner: stable
   - path: polylogue/cli/commands/query_explain.py
-    loc: 56
+    loc: 96
     target: polylogue/cli/commands/query_explain.py
     owner: stable
   - path: polylogue/cli/commands/reset.py
@@ -837,7 +842,7 @@ files:
     target: polylogue/cli/query_feedback.py
     owner: stable
   - path: polylogue/cli/query_group.py
-    loc: 254
+    loc: 267
     target: polylogue/cli/query_group.py
     owner: stable
   - path: polylogue/cli/query_output.py
@@ -857,7 +862,7 @@ files:
     target: polylogue/cli/query_stats.py
     owner: stable
   - path: polylogue/cli/query_verbs.py
-    loc: 1144
+    loc: 1134
     target: polylogue/cli/query_verbs.py
     owner: stable
   - path: polylogue/cli/root_request.py
@@ -983,7 +988,7 @@ files:
     target: polylogue/cli/shared/types.py
     owner: stable
   - path: polylogue/cli/shell_completion_values.py
-    loc: 311
+    loc: 479
     target: polylogue/cli/shell_completion_values.py
     owner: stable
   - path: polylogue/cli/verb_cardinality.py
