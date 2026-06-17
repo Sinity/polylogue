@@ -382,7 +382,7 @@ _QUERY_GRAMMAR = r"""
     EXISTS: /exists/i
     SEQ: /seq/i
     ARROW: "->"
-    STRUCT_UNIT: /(message|action)/i
+    STRUCT_UNIT: /(message|action|block)/i
     OR: /or/i
     AND: /and/i
     NOT: /not/i
@@ -458,6 +458,7 @@ _STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS = {
 }
 _MESSAGE_STRUCTURAL_FIELDS = {"role", "type", "text", "tool", "action", "command", "path", "output", "words"}
 _ACTION_STRUCTURAL_FIELDS = {"tool", "action", "type", "command", "path", "output", "text"}
+_BLOCK_STRUCTURAL_FIELDS = {"type", "text", "tool", "action", "command", "path"}
 
 
 def _unknown_query_field_message(field_name: str, *, include_structural: bool = False) -> str:
@@ -617,14 +618,18 @@ def _predicate_children(items: tuple[object, ...]) -> tuple[QueryPredicate, ...]
     )
 
 
-def _validate_predicate_context(predicate: QueryPredicate, *, unit: Literal["session", "message", "action"]) -> None:
+def _validate_predicate_context(
+    predicate: QueryPredicate, *, unit: Literal["session", "message", "action", "block"]
+) -> None:
     if isinstance(predicate, QueryFieldPredicate):
         if unit == "session":
             supported = _BOOLEAN_SUPPORTED_FIELDS
         elif unit == "message":
             supported = _MESSAGE_STRUCTURAL_FIELDS
-        else:
+        elif unit == "action":
             supported = _ACTION_STRUCTURAL_FIELDS
+        else:
+            supported = _BLOCK_STRUCTURAL_FIELDS
         if predicate.field not in supported:
             raise ExpressionCompileError(
                 f"field {predicate.field!r} is not supported for {unit} predicates",
@@ -732,9 +737,9 @@ class _BooleanQueryTransformer(Transformer[Token, QueryPredicate]):
 
     def exists_leaf(self, _exists: Token, unit: Token, child: QueryPredicate) -> QueryPredicate:
         unit_value = str(unit).lower()
-        if unit_value not in {"message", "action"}:
+        if unit_value not in {"message", "action", "block"}:
             raise ExpressionCompileError(f"unsupported structural query unit {unit_value!r}", field=None)
-        return QueryExistsPredicate(unit=cast(Literal["message", "action"], unit_value), child=child)
+        return QueryExistsPredicate(unit=cast(Literal["message", "action", "block"], unit_value), child=child)
 
     def sequence_step(self, token: Token) -> QueryPredicate:
         predicate = _field_token_to_predicate(_QUERY_TRANSFORMER.field_clause(token))

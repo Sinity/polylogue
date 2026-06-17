@@ -225,6 +225,20 @@ class TestBooleanQueryExpression:
             ),
         )
 
+    def test_block_exists_ast_exposes_child_unit_predicate(self) -> None:
+        ast = parse_expression_ast("exists block(type:code AND text:timeout)")
+
+        assert ast.boolean_predicate == QueryExistsPredicate(
+            unit="block",
+            child=QueryBoolPredicate(
+                op="and",
+                children=(
+                    QueryFieldPredicate(field="type", values=("code",)),
+                    QueryFieldPredicate(field="text", values=("timeout",)),
+                ),
+            ),
+        )
+
     def test_sequence_ast_exposes_ordered_action_terms(self) -> None:
         ast = parse_expression_ast("seq(action:file_edit -> action:shell -> action:file_edit)")
 
@@ -465,6 +479,96 @@ class TestBooleanQueryExpression:
             rows = archive.list_summaries(limit=100, boolean_predicate=spec.boolean_predicate)
 
         assert [row.session_id for row in rows] == ["claude-code-session:ext-windows-path"]
+
+    def test_exists_block_predicate_executes_against_archive(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "hit")
+            .provider("chatgpt")
+            .title("block hit")
+            .add_message(
+                "m-hit",
+                role="assistant",
+                text="assistant response",
+                blocks=[{"type": "code", "text": "def query_timeout_guard(): pass"}],
+            )
+            .save()
+        )
+        (
+            SessionBuilder(index_db, "miss")
+            .provider("chatgpt")
+            .title("block miss")
+            .add_message(
+                "m-miss",
+                role="assistant",
+                text="assistant response",
+                blocks=[{"type": "text", "text": "timeout appears outside code"}],
+            )
+            .save()
+        )
+
+        spec = compile_expression("exists block(type:code AND text:timeout)")
+        assert spec.boolean_predicate is not None
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            rows = archive.list_summaries(limit=100, boolean_predicate=spec.boolean_predicate)
+
+        assert [row.session_id for row in rows] == ["chatgpt-export:ext-hit"]
+
+    def test_exists_block_tool_predicate_executes_against_archive(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "hit")
+            .provider("claude-code")
+            .title("block tool hit")
+            .add_message(
+                "m-hit",
+                role="assistant",
+                text="edited file",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Edit",
+                        "tool_id": "tool-hit",
+                        "input": {"file_path": "polylogue/archive/query/expression.py"},
+                        "semantic_type": "file_edit",
+                    }
+                ],
+            )
+            .save()
+        )
+        (
+            SessionBuilder(index_db, "miss")
+            .provider("claude-code")
+            .title("block tool miss")
+            .add_message(
+                "m-miss",
+                role="assistant",
+                text="read file",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Read",
+                        "tool_id": "tool-miss",
+                        "input": {"file_path": "polylogue/archive/query/expression.py"},
+                        "semantic_type": "file_read",
+                    }
+                ],
+            )
+            .save()
+        )
+
+        spec = compile_expression("exists block(action:file_edit AND path:archive/query)")
+        assert spec.boolean_predicate is not None
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            rows = archive.list_summaries(limit=100, boolean_predicate=spec.boolean_predicate)
+
+        assert [row.session_id for row in rows] == ["claude-code-session:ext-hit"]
 
     def test_sequence_predicate_executes_in_order_against_archive(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore

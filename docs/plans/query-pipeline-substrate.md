@@ -8,7 +8,7 @@ Polylogue needs a richer query language without becoming its own query engine. T
 
 ## Current limitation
 
-The current implemented query substrate already handles compact session filters, grouped Boolean predicates, message/action `exists` predicates, ordered action sequences, FTS predicates, lineage predicates, and a semantic seed plus residual filter. Remaining scope is broader unit coverage and pipeline execution: blocks, runs/events/assertions, aggregation, unit-changing traversal, terminal read/analyze/bundle stages, and shared completion/query-builder metadata.
+The current implemented query substrate already handles compact session filters, grouped Boolean predicates, message/action/block `exists` predicates, ordered action sequences, FTS predicates, lineage predicates, and a semantic seed plus residual filter. Remaining scope is broader unit coverage and pipeline execution: runs/events/assertions, aggregation, unit-changing traversal, terminal read/analyze/bundle stages, and shared completion/query-builder metadata.
 
 ## Design decision
 
@@ -18,9 +18,9 @@ Predicate nodes: And, Or, Not, Leaf, Fts, Semantic, Structural, Sequence, Lineag
 
 Pipeline stages: source or filter, traverse, transform, aggregate, terminal action.
 
-Implemented units: session, message, action, lineage.
+Implemented units: session, message, action, block, lineage.
 
-Target units still needing real lowerers: block, run, observed event, assertion, context snapshot, bundle/work packet, external work refs, phase, thread, span.
+Target units still needing real lowerers: run, observed event, assertion, context snapshot, bundle/work packet, external work refs, phase, thread, span.
 
 ## Surface ladder
 
@@ -32,12 +32,11 @@ Power examples: grouped conditions, numeric operators, semantic clauses, message
 
 1. Keep compact and explicit Boolean syntax on the same Lark grammar and AST path.
 2. Extend explain output to show unsupported unit/pipeline stages, not just the lowered `SessionQuerySpec`.
-3. Add block predicates under message/action structural queries where archive rows support them.
-4. Add run/event/assertion/context units only with real lowerers and fixtures.
-5. Add traversal stages that change the active unit and lower to SQL/recursive CTEs or existing read models.
-6. Add aggregation/sort/limit stages over supported units.
-7. Lower terminal stages through existing read/analyze/bundle/action contracts.
-8. Add completion/query-builder metadata from the same grammar, unit, field, operator, and action registries.
+3. Add run/event/assertion/context units only with real lowerers and fixtures.
+4. Add traversal stages that change the active unit and lower to SQL/recursive CTEs or existing read models.
+5. Add aggregation/sort/limit stages over supported units.
+6. Lower terminal stages through existing read/analyze/bundle/action contracts.
+7. Add completion/query-builder metadata from the same grammar, unit, field, operator, and action registries.
 
 ## Acceptance criteria
 
