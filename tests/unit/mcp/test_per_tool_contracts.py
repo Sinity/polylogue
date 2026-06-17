@@ -25,10 +25,13 @@ from __future__ import annotations
 
 import inspect
 import json
+import re
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, patch
 
+import jsonschema
 import pytest
 
 from polylogue.operations import build_runtime_operation_catalog
@@ -80,6 +83,23 @@ def _discover_mutation_tool_names() -> frozenset[str]:
 
 
 MUTATION_TOOL_NAMES: frozenset[str] = _discover_mutation_tool_names()
+_MUTATION_SCHEMA = Path("docs/schemas/cli-output/mutation-result.schema.json")
+
+
+def _discover_mutation_result_tool_names() -> frozenset[str]:
+    """Discover mutation tools whose success path emits MutationResultPayload."""
+    from polylogue.mcp import server_mutation_tools
+
+    src = inspect.getsource(server_mutation_tools)
+    names: set[str] = set()
+    for chunk in src.split("    @mcp.tool()"):
+        match = re.search(r"async def ([a-zA-Z_][a-zA-Z0-9_]*)\(", chunk)
+        if match and "MutationResultPayload(" in chunk:
+            names.add(match.group(1))
+    return frozenset(names)
+
+
+MUTATION_RESULT_TOOL_NAMES: frozenset[str] = _discover_mutation_result_tool_names()
 
 
 # ---------------------------------------------------------------------------
@@ -298,6 +318,13 @@ class TestMutationToolDiscovery:
         # tags, metadata, delete_session, learning corrections).
         assert len(MUTATION_TOOL_NAMES) >= 20, sorted(MUTATION_TOOL_NAMES)
 
+    def test_every_mutation_result_tool_is_in_matrix(self) -> None:
+        missing = MUTATION_RESULT_TOOL_NAMES - set(TOOL_MATRIX)
+        assert not missing, (
+            f"MutationResultPayload tools missing TOOL_MATRIX rows: {sorted(missing)}. "
+            "Add happy-path kwargs so the shared schema parity test can execute them."
+        )
+
     @pytest.mark.parametrize("spec", _MCP_MUTATION_OPERATION_SPECS, ids=lambda spec: spec.name)
     def test_mcp_mutation_operation_spec_names_registered_tool(self, spec: Any) -> None:
         tool_refs = tuple(ref for ref in spec.code_refs if ref.startswith("polylogue.mcp.server_mutation_tools."))
@@ -393,6 +420,26 @@ class TestMutationToolArgumentContracts:
         assert isinstance(result, str)
         parsed = json.loads(result)
         assert isinstance(parsed, (dict, list))
+
+    @pytest.mark.parametrize("tool_name", sorted(MUTATION_RESULT_TOOL_NAMES))
+    def test_happy_path_validates_against_shared_mutation_schema(
+        self,
+        admin_server: MCPServerUnderTest,
+        patched_mutation_seam: Any,
+        tool_name: str,
+    ) -> None:
+        """Every MCP tool that emits MutationResultPayload must match the
+        published shared mutation-result schema, not just tag mutations.
+        """
+        poly = patched_mutation_seam
+        _arrange_poly_for(poly, tool_name)
+        fn = admin_server._tool_manager._tools[tool_name].fn
+        result = invoke_surface(fn, **TOOL_MATRIX[tool_name]["happy"])
+        parsed = json.loads(result)
+        assert isinstance(parsed, dict), f"{tool_name}: expected JSON object, got {parsed!r}"
+        assert "is_error" not in parsed, f"{tool_name}: happy path returned error envelope: {parsed}"
+        schema = json.loads(_MUTATION_SCHEMA.read_text(encoding="utf-8"))
+        jsonschema.validate(instance=parsed, schema=schema)
 
     @pytest.mark.parametrize(
         "tool_name",
