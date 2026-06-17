@@ -361,11 +361,12 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             
 <p><a href="README.md">← Back to Docs</a></p>
 <h1>Search &amp; Query Reference</h1>
-<p>Polylogue uses a query-first CLI grammar: bare tokens are search terms, flags
-are filters, and trailing subcommands are verbs. The same query semantics —
-filters, retrieval lanes, ranking policy, and the typed <code>SearchEnvelope</code>
-response shape — apply across the CLI, MCP, Python API, and daemon HTTP
-surfaces.</p>
+<p>Polylogue uses a query-first grammar over archive units. Bare tokens are
+full-text terms, field clauses narrow the selected unit, explicit
+<code>sessions/messages/actions/blocks where ...</code> forms opt into Boolean predicates,
+and trailing CLI verbs render or mutate the selected session set. The same
+query semantics — filters, retrieval lanes, ranking policy, and typed response
+payloads — apply across the CLI, MCP, Python API, and daemon HTTP surfaces.</p>
 <p>Quick links:</p>
 <ul>
 <li><a href="#retrieval-lanes">Retrieval Lanes</a> — <code>dialogue</code>, <code>actions</code>, <code>hybrid</code>,
@@ -380,14 +381,192 @@ response shape shared across surfaces (<a href="https://github.com/Sinity/polylo
 counts with both views (<a href="https://github.com/Sinity/polylogue/issues/1269">#1269</a>).</li>
 </ul>
 <h2>Grammar</h2>
-<pre><code>polylogue [&lt;terms&gt;] [filters] [verb]
+<p>The canonical parser is the Lark grammar in
+<code>polylogue/archive/query/expression.py</code>. It has two entry shapes that lower
+through the same typed AST and query planner:</p>
+<pre><code class="language-text">compact-query      ::= compact-clause*
+boolean-query      ::= [&quot;sessions&quot; &quot;where&quot;] predicate
+unit-query         ::= (&quot;messages&quot; | &quot;actions&quot; | &quot;blocks&quot;) &quot;where&quot; predicate
+
+compact-clause     ::= field-clause
+                     | quoted-text | bare-text
+                     | &quot;-&quot; quoted-text | &quot;-&quot; bare-text
+                     | count-comparison | count-range
+                     | date-comparison | date-range
+
+predicate          ::= predicate &quot;OR&quot; predicate
+                     | predicate &quot;AND&quot; predicate
+                     | &quot;NOT&quot; predicate
+                     | &quot;(&quot; predicate &quot;)&quot;
+                     | field-clause
+                     | count-comparison | count-range
+                     | date-comparison | date-range
+                     | fts-leaf | semantic-leaf
+                     | &quot;exists&quot; structural-unit &quot;(&quot; predicate &quot;)&quot;
+                     | &quot;seq&quot; &quot;(&quot; sequence-step &quot;-&gt;&quot; sequence-step+ &quot;)&quot;
+
+structural-unit    ::= &quot;message&quot; | &quot;action&quot; | &quot;block&quot;
 </code></pre>
-<ul>
-<li><strong>terms</strong>: space-separated words matched by full-text search (AND when
-repeated with <code>--contains</code>)</li>
-<li><strong>filters</strong>: <code>--flag</code> filters that narrow the session set</li>
-<li><strong>verb</strong>: optional trailing subcommand (<code>list</code>, <code>stats</code>, <code>count</code>, etc.)</li>
-</ul>
+<p>Compact queries select sessions:</p>
+<pre><code class="language-bash">polylogue repo:polylogue tag:active -&quot;stale plan&quot; &quot;query envelope&quot;
+polylogue origin:(codex-session|claude-code-session) messages:&gt;=10 words:&lt;=2000
+polylogue near:id:codex-session:abc123
+</code></pre>
+<p>Explicit Boolean session queries also select sessions:</p>
+<pre><code class="language-bash">polylogue sessions where '(repo:polylogue OR repo:sinex) AND NOT tag:stale'
+polylogue sessions where 'exists message(role:assistant AND text:timeout)'
+polylogue sessions where 'seq(action:file_edit -&gt; action:shell)'
+</code></pre>
+<p>Unit queries select terminal rows instead of sessions:</p>
+<pre><code class="language-bash">polylogue messages where 'role:assistant AND text:timeout'
+polylogue actions where 'action:file_edit AND path:polylogue/archive'
+polylogue blocks where 'type:code AND text:sqlite'
+</code></pre>
+<p>Unsupported forms raise typed <code>ExpressionCompileError</code>s and must not broaden
+into looser full-text search. In particular, reserved unit prefixes such as
+<code>messages where</code> are errors when malformed; they are not treated as ordinary
+text terms.</p>
+<h3>DSL Fields</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Meaning</th>
+<th>Example</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>repo</code></td>
+<td>Repository substring</td>
+<td><code>repo:polylogue</code></td>
+</tr>
+<tr>
+<td><code>origin</code></td>
+<td>Source origin</td>
+<td><code>origin:claude-code-session</code></td>
+</tr>
+<tr>
+<td><code>tag</code></td>
+<td>User/session tag</td>
+<td><code>tag:review</code></td>
+</tr>
+<tr>
+<td><code>path</code></td>
+<td>Referenced file path substring</td>
+<td><code>path:polylogue/cli</code></td>
+</tr>
+<tr>
+<td><code>cwd</code></td>
+<td>Working-directory prefix</td>
+<td><code>cwd:/realm/project</code></td>
+</tr>
+<tr>
+<td><code>tool</code></td>
+<td>Tool name used in the session</td>
+<td><code>tool:bash</code></td>
+</tr>
+<tr>
+<td><code>action</code></td>
+<td>Semantic action category</td>
+<td><code>action:file_edit</code></td>
+</tr>
+<tr>
+<td><code>has</code></td>
+<td>Content presence (<code>paste</code>, <code>tools</code>, <code>thinking</code>, or stored type)</td>
+<td><code>has:paste</code></td>
+</tr>
+<tr>
+<td><code>id</code></td>
+<td>Session id or prefix</td>
+<td><code>id:codex-session:abc</code></td>
+</tr>
+<tr>
+<td><code>title</code></td>
+<td>Session title substring</td>
+<td><code>title:refactor</code></td>
+</tr>
+<tr>
+<td><code>since</code> / <code>until</code></td>
+<td>Session time bounds, ISO or relative</td>
+<td><code>since:7d</code></td>
+</tr>
+<tr>
+<td><code>contains</code></td>
+<td>Exact content substring filter</td>
+<td><code>contains:sqlite</code></td>
+</tr>
+<tr>
+<td><code>near</code></td>
+<td>Vector similarity from text or a session id</td>
+<td><code>near:&quot;semantic search&quot;</code> / <code>near:id:&lt;session&gt;</code></td>
+</tr>
+<tr>
+<td><code>lane</code></td>
+<td>Retrieval lane</td>
+<td><code>lane:dialogue</code></td>
+</tr>
+<tr>
+<td><code>lineage</code></td>
+<td>Sessions sharing topology with a seed</td>
+<td><code>lineage:id:&lt;session&gt;</code></td>
+</tr>
+</tbody>
+</table>
+<p>Field values support quoted strings and in-field alternatives:</p>
+<pre><code class="language-bash">polylogue 'origin:(codex-session|claude-code-session) title:&quot;query DSL&quot;'
+polylogue 'tool:bash AND NOT tag:stale'
+</code></pre>
+<p>Negation is supported for fields that are semantically safe to negate, such as
+<code>origin</code>, <code>tag</code>, <code>tool</code>, and <code>action</code>.</p>
+<h3>Comparisons And Ranges</h3>
+<p>Readable comparisons are supported for message counts, word counts, and dates:</p>
+<pre><code class="language-bash">polylogue 'messages &gt;= 5 AND messages &lt;= 20'
+polylogue 'words between 100 and 500'
+polylogue 'date between 2026-06-01 and 2026-06-17'
+</code></pre>
+<p>Compact count syntax is equivalent where available:</p>
+<pre><code class="language-bash">polylogue messages:&gt;=5 words:&lt;=500
+</code></pre>
+<h3>Structural Predicates</h3>
+<p><code>exists &lt;unit&gt;(...)</code> keeps the selected unit as <code>sessions</code> but requires at least
+one child row matching the nested predicate.</p>
+<table>
+<thead>
+<tr>
+<th>Unit</th>
+<th>Accepted fields</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>message</code></td>
+<td><code>action</code>, <code>command</code>, <code>output</code>, <code>path</code>, <code>role</code>, <code>text</code>, <code>tool</code>, <code>type</code>, <code>words</code></td>
+</tr>
+<tr>
+<td><code>action</code></td>
+<td><code>action</code>, <code>command</code>, <code>output</code>, <code>path</code>, <code>text</code>, <code>tool</code>, <code>type</code></td>
+</tr>
+<tr>
+<td><code>block</code></td>
+<td><code>action</code>, <code>command</code>, <code>path</code>, <code>text</code>, <code>tool</code>, <code>type</code></td>
+</tr>
+</tbody>
+</table>
+<p>Examples:</p>
+<pre><code class="language-bash">polylogue sessions where 'exists action(tool:bash AND text:pytest)'
+polylogue sessions where 'exists block(type:code AND text:timeout)'
+</code></pre>
+<h3>FTS And Semantic Leaves</h3>
+<p>Inside Boolean predicates, <code>~</code> marks an explicit FTS leaf and <code>semantic:</code> /
+<code>near:text:</code> mark semantic-vector leaves:</p>
+<pre><code class="language-bash">polylogue sessions where '~&quot;null pointer&quot; AND repo:polylogue'
+polylogue sessions where 'semantic:&quot;query compiler failure&quot;'
+polylogue sessions where 'near:text:timeout'
+</code></pre>
+<p>Semantic leaves require embeddings to be configured and available. When vectors
+are unavailable, the query fails with a typed semantic/vector availability
+error instead of falling back to broad lexical search.</p>
 <h2>Terminal Unit Queries</h2>
 <p>Most query expressions select sessions. Explicit unit sources select terminal
 rows instead:</p>
