@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from polylogue.archive.query.expression import QueryUnitSource
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.surfaces.payloads import (
@@ -20,12 +22,18 @@ def query_unit_rows(
     query: str,
     limit: int,
     offset: int = 0,
+    session_filters: Mapping[str, object] | None = None,
 ) -> QueryUnitEnvelope:
     """Execute an explicit ``messages/actions/blocks where`` source query."""
 
     fetch_limit = limit + 1
     if source.unit == "message":
-        message_rows = archive.query_messages(source.predicate, limit=fetch_limit, offset=offset)
+        message_rows = archive.query_messages(
+            source.predicate,
+            limit=fetch_limit,
+            offset=offset,
+            session_filters=session_filters,
+        )
         return build_query_unit_envelope(
             tuple(MessageQueryRowPayload.from_row(row) for row in message_rows[:limit]),
             unit=source.unit,
@@ -35,7 +43,12 @@ def query_unit_rows(
             has_next=len(message_rows) > limit,
         )
     if source.unit == "action":
-        action_rows = archive.query_actions(source.predicate, limit=fetch_limit, offset=offset)
+        action_rows = archive.query_actions(
+            source.predicate,
+            limit=fetch_limit,
+            offset=offset,
+            session_filters=session_filters,
+        )
         return build_query_unit_envelope(
             tuple(ActionQueryRowPayload.from_row(row) for row in action_rows[:limit]),
             unit=source.unit,
@@ -44,7 +57,12 @@ def query_unit_rows(
             offset=offset,
             has_next=len(action_rows) > limit,
         )
-    block_rows = archive.query_blocks(source.predicate, limit=fetch_limit, offset=offset)
+    block_rows = archive.query_blocks(
+        source.predicate,
+        limit=fetch_limit,
+        offset=offset,
+        session_filters=session_filters,
+    )
     return build_query_unit_envelope(
         tuple(BlockQueryRowPayload.from_row(row) for row in block_rows[:limit]),
         unit=source.unit,

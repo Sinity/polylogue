@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, TypedDict, cast
 
 from polylogue.archive.query.path_prefix import escaped_sql_path_prefix_patterns
 from polylogue.archive.query.predicate import (
@@ -3344,12 +3345,17 @@ class ArchiveStore:
         *,
         limit: int = 50,
         offset: int = 0,
+        session_filters: Mapping[str, object] | None = None,
     ) -> list[ArchiveMessageQueryRow]:
         """Return message rows matching a unit-scoped query predicate."""
 
         normalized_limit = max(int(limit), 0)
         normalized_offset = max(int(offset), 0)
         clause, params = _structural_predicate_clause("message", "m", predicate)
+        session_clause = ""
+        session_params: list[object] = []
+        if session_filters:
+            session_clause, session_params = cast(Any, _session_filter_clause)("s", prefix="AND", **session_filters)
         rows = self._conn.execute(
             f"""
             SELECT
@@ -3374,10 +3380,11 @@ class ArchiveStore:
             FROM messages m
             JOIN sessions s ON s.session_id = m.session_id
             WHERE {clause}
+            {session_clause}
             ORDER BY COALESCE(m.occurred_at_ms, s.sort_key_ms, 0), m.message_id
             LIMIT ? OFFSET ?
             """,
-            [*params, normalized_limit, normalized_offset],
+            [*params, *session_params, normalized_limit, normalized_offset],
         ).fetchall()
         return [
             ArchiveMessageQueryRow(
@@ -3400,12 +3407,17 @@ class ArchiveStore:
         *,
         limit: int = 50,
         offset: int = 0,
+        session_filters: Mapping[str, object] | None = None,
     ) -> list[ArchiveActionQueryRow]:
         """Return action rows matching a unit-scoped query predicate."""
 
         normalized_limit = max(int(limit), 0)
         normalized_offset = max(int(offset), 0)
         clause, params = _structural_predicate_clause("action", "a", predicate)
+        session_clause = ""
+        session_params: list[object] = []
+        if session_filters:
+            session_clause, session_params = cast(Any, _session_filter_clause)("s", prefix="AND", **session_filters)
         rows = self._conn.execute(
             f"""
             SELECT
@@ -3424,10 +3436,11 @@ class ArchiveStore:
             JOIN sessions s ON s.session_id = a.session_id
             JOIN messages m ON m.message_id = a.message_id
             WHERE {clause}
+            {session_clause}
             ORDER BY COALESCE(m.occurred_at_ms, s.sort_key_ms, 0), a.tool_use_block_id
             LIMIT ? OFFSET ?
             """,
-            [*params, normalized_limit, normalized_offset],
+            [*params, *session_params, normalized_limit, normalized_offset],
         ).fetchall()
         return [
             ArchiveActionQueryRow(
@@ -3454,12 +3467,17 @@ class ArchiveStore:
         *,
         limit: int = 50,
         offset: int = 0,
+        session_filters: Mapping[str, object] | None = None,
     ) -> list[ArchiveBlockQueryRow]:
         """Return content-block rows matching a unit-scoped query predicate."""
 
         normalized_limit = max(int(limit), 0)
         normalized_offset = max(int(offset), 0)
         clause, params = _structural_predicate_clause("block", "b", predicate)
+        session_clause = ""
+        session_params: list[object] = []
+        if session_filters:
+            session_clause, session_params = cast(Any, _session_filter_clause)("s", prefix="AND", **session_filters)
         rows = self._conn.execute(
             f"""
             SELECT
@@ -3479,10 +3497,11 @@ class ArchiveStore:
             JOIN sessions s ON s.session_id = b.session_id
             JOIN messages m ON m.message_id = b.message_id
             WHERE {clause}
+            {session_clause}
             ORDER BY COALESCE(m.occurred_at_ms, s.sort_key_ms, 0), b.block_id
             LIMIT ? OFFSET ?
             """,
-            [*params, normalized_limit, normalized_offset],
+            [*params, *session_params, normalized_limit, normalized_offset],
         ).fetchall()
         return [
             ArchiveBlockQueryRow(

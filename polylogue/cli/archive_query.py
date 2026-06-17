@@ -7,7 +7,7 @@ import io
 import json
 import sqlite3
 import webbrowser
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import redirect_stdout
 from dataclasses import replace
 from pathlib import Path
@@ -268,7 +268,6 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     with ArchiveStore.open_existing(archive_root) as archive:
         unit_source = parse_unit_source_expression(query) if query and not similar_text else None
         if unit_source is not None:
-            unsupported_unit_filters = any(value not in (None, False, (), "") for value in filter_kwargs.values())
             if any(
                 (
                     params.get("stats_only"),
@@ -282,15 +281,15 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                     transform is not None,
                     params.get("conv_id"),
                     sample_count is not None,
-                    unsupported_unit_filters,
+                    since_session_id is not None,
                     cursor is not None,
                     sort is not None,
                     reverse,
                 )
             ):
                 raise click.UsageError(
-                    f"{unit_source.unit}s where queries return {unit_source.unit} rows and only combine "
-                    "with pagination, output format, and field projection options."
+                    f"{unit_source.unit}s where queries return {unit_source.unit} rows and do not combine "
+                    "with session-only actions, aggregate modes, sort, reverse, or cursor."
                 )
             _emit_unit_source_rows(
                 archive,
@@ -298,6 +297,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                 query=query,
                 limit=limit,
                 offset=page_offset,
+                session_filters=_unit_source_session_filters(filter_kwargs),
                 output_format=output_format,
                 fields=fields,
             )
@@ -1530,10 +1530,18 @@ def _emit_unit_source_rows(
     query: str,
     limit: int,
     offset: int,
+    session_filters: Mapping[str, object] | None = None,
     output_format: str,
     fields: str | None,
 ) -> None:
-    envelope_model = query_unit_rows(archive, source, query=query, limit=limit, offset=offset)
+    envelope_model = query_unit_rows(
+        archive,
+        source,
+        query=query,
+        limit=limit,
+        offset=offset,
+        session_filters=session_filters,
+    )
     envelope = envelope_model.model_dump(mode="json")
     items = [item.model_dump(mode="json") for item in envelope_model.items]
     if source.unit == "message":
@@ -1548,6 +1556,12 @@ def _emit_unit_source_rows(
     if not items:
         _emit_unit_no_results(envelope, unit=source.unit, output_format=output_format)
     _emit_rows(envelope, items, output_format=output_format, text_line=text_line, fields=fields)
+
+
+def _unit_source_session_filters(filter_kwargs: _ArchiveFilterKwargs) -> dict[str, object]:
+    filters = dict(filter_kwargs)
+    filters.pop("since_session_id", None)
+    return filters
 
 
 def _emit_unit_no_results(envelope: dict[str, object], *, unit: str, output_format: str) -> NoReturn:
