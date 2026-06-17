@@ -29,6 +29,8 @@ from polylogue.archive.query.expression import (
     ExpressionCompileError,
     _CountRangeToken,
     _CountToken,
+    _DateComparisonToken,
+    _DateRangeToken,
     _FieldToken,
     _TextToken,
     compile_expression,
@@ -260,6 +262,38 @@ class TestBooleanQueryExpression:
             ),
         )
 
+    def test_parse_expression_ast_exposes_readable_date_clauses(self) -> None:
+        ast = parse_expression_ast("date >= 2026-01-01 date between 2026-01-01 and 2026-02-01")
+
+        assert ast.clauses == (
+            _DateComparisonToken(op=">=", value="2026-01-01"),
+            _DateRangeToken(min_value="2026-01-01", max_value="2026-02-01"),
+        )
+
+    def test_boolean_ast_exposes_readable_date_comparisons(self) -> None:
+        ast = parse_expression_ast("sessions where date >= 2026-01-01 AND repo:polylogue")
+
+        assert ast.clauses == ()
+        assert ast.boolean_predicate == QueryBoolPredicate(
+            op="and",
+            children=(
+                QueryFieldPredicate(field="date", values=("2026-01-01",), op=">="),
+                QueryFieldPredicate(field="repo", values=("polylogue",)),
+            ),
+        )
+
+    def test_boolean_ast_exposes_readable_date_range(self) -> None:
+        ast = parse_expression_ast("sessions where date between 2026-01-01 and 2026-02-01")
+
+        assert ast.clauses == ()
+        assert ast.boolean_predicate == QueryBoolPredicate(
+            op="and",
+            children=(
+                QueryFieldPredicate(field="date", values=("2026-01-01",), op=">="),
+                QueryFieldPredicate(field="date", values=("2026-02-01",), op="<="),
+            ),
+        )
+
     def test_boolean_not_wraps_leaf_predicate(self) -> None:
         ast = parse_expression_ast("origin:chatgpt-export AND NOT title:slop")
 
@@ -405,6 +439,37 @@ class TestBooleanQueryExpression:
             rows = archive.list_summaries(limit=100, boolean_predicate=spec.boolean_predicate)
 
         assert [row.session_id for row in rows] == ["chatgpt-export:ext-keep"]
+
+    def test_boolean_date_predicate_executes_against_archive(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "old")
+            .provider("chatgpt")
+            .created_at("2026-01-01T00:00:00+00:00")
+            .updated_at("2026-01-01T00:00:00+00:00")
+            .title("old")
+            .add_message("m-old", role="user", text="old")
+            .save()
+        )
+        (
+            SessionBuilder(index_db, "new")
+            .provider("chatgpt")
+            .created_at("2026-02-01T00:00:00+00:00")
+            .updated_at("2026-02-01T00:00:00+00:00")
+            .title("new")
+            .add_message("m-new", role="user", text="new")
+            .save()
+        )
+
+        spec = compile_expression("sessions where date >= 2026-02-01 AND origin:chatgpt-export")
+        assert spec.boolean_predicate is not None
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            rows = archive.list_summaries(limit=100, boolean_predicate=spec.boolean_predicate)
+
+        assert [row.session_id for row in rows] == ["chatgpt-export:ext-new"]
 
     def test_exists_message_predicate_executes_against_archive(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -1057,6 +1122,28 @@ class TestCompilerFieldMapping:
     def test_readable_count_range_rejects_inverted_bounds(self) -> None:
         with pytest.raises(ExpressionCompileError, match="lower bound 20 is greater than upper bound 5"):
             compile_expression("messages between 20 and 5")
+
+    def test_readable_date_range(self) -> None:
+        spec = compile_expression("date between 2026-01-01 and 2026-02-01")
+
+        assert spec.since == "2026-01-01"
+        assert spec.until == "2026-02-01"
+
+    def test_readable_date_gte(self) -> None:
+        spec = compile_expression("date >= 2026-01-01")
+
+        assert spec.since == "2026-01-01"
+        assert spec.until is None
+
+    def test_readable_date_lte(self) -> None:
+        spec = compile_expression("date <= 2026-02-01")
+
+        assert spec.until == "2026-02-01"
+        assert spec.since is None
+
+    def test_readable_date_equality_raises(self) -> None:
+        with pytest.raises(ExpressionCompileError, match="date equality is not supported"):
+            compile_expression("date = 2026-01-01")
 
     def test_words_gte(self) -> None:
         spec = compile_expression("words:>=200")

@@ -15,6 +15,7 @@ currently accepts the compact session query form:
     near:"semantic search prompt"
     -id:bad tag:review
     messages:>=10 words:>=200
+    date between 2026-01-01 and 2026-02-01
 
 Clause forms:
 - ``field:value``          — single-value field clause
@@ -28,6 +29,8 @@ Clause forms:
 - ``messages >= N``        — readable count comparison syntax
 - ``messages between A and B`` — readable count range syntax
 - ``words:>=N``            — count comparison (min_words)
+- ``date >= ISO_OR_REL``   — readable date lower bound (since)
+- ``date between A and B`` — readable date range (since/until)
 - ``{...}``                — direct JSON spec (validated into SessionQuerySpec)
 
 and explicit Boolean session predicates:
@@ -275,6 +278,22 @@ class _CountRangeToken:
 
 
 @dataclass(frozen=True)
+class _DateComparisonToken:
+    """``date >= 2026-01-01`` or ``date < 7d``."""
+
+    op: Literal[">=", "<="]
+    value: str
+
+
+@dataclass(frozen=True)
+class _DateRangeToken:
+    """``date between 2026-01-01 and 2026-02-01``."""
+
+    min_value: str
+    max_value: str
+
+
+@dataclass(frozen=True)
 class _TextToken:
     """A bare word or quoted phrase."""
 
@@ -290,7 +309,9 @@ class _JsonToken:
     raw: str
 
 
-_LexToken = _FieldToken | _CountToken | _CountRangeToken | _TextToken | _JsonToken
+_LexToken = (
+    _FieldToken | _CountToken | _CountRangeToken | _DateComparisonToken | _DateRangeToken | _TextToken | _JsonToken
+)
 
 
 @dataclass(frozen=True)
@@ -301,7 +322,7 @@ class QueryExpressionAST:
     boolean_predicate: QueryPredicate | None = None
 
 
-ExplainClauseKind = Literal["field", "count", "count_range", "text", "json"]
+ExplainClauseKind = Literal["field", "count", "count_range", "date", "date_range", "text", "json"]
 
 
 @dataclass(frozen=True)
@@ -317,6 +338,8 @@ class QueryExpressionExplainClause:
     number: int | None = None
     min_number: int | None = None
     max_number: int | None = None
+    min_value: str | None = None
+    max_value: str | None = None
 
     def to_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {"kind": self.kind}
@@ -336,6 +359,10 @@ class QueryExpressionExplainClause:
             payload["min_number"] = self.min_number
         if self.max_number is not None:
             payload["max_number"] = self.max_number
+        if self.min_value is not None:
+            payload["min_value"] = self.min_value
+        if self.max_value is not None:
+            payload["max_value"] = self.max_value
         return payload
 
 
@@ -376,6 +403,8 @@ _QUERY_GRAMMAR = r"""
     ?flat_clause: COUNT_CLAUSE       -> count_clause
         | COUNT_FIELD BETWEEN INT AND INT -> count_between_clause
         | COUNT_FIELD COMP_OP INT    -> count_compare_clause
+        | DATE_FIELD BETWEEN DATE_VALUE AND DATE_VALUE -> date_between_clause
+        | DATE_FIELD DATE_COMP_OP DATE_VALUE -> date_compare_clause
         | FIELD_CLAUSE          -> field_clause
         | NEG_QUOTED_TEXT       -> neg_quoted_text
         | QUOTED_TEXT           -> quoted_text
@@ -400,6 +429,8 @@ _QUERY_GRAMMAR = r"""
         | COUNT_CLAUSE                     -> count_leaf
         | COUNT_FIELD BETWEEN INT AND INT  -> count_between_leaf
         | COUNT_FIELD COMP_OP INT          -> count_compare_leaf
+        | DATE_FIELD BETWEEN DATE_VALUE AND DATE_VALUE -> date_between_leaf
+        | DATE_FIELD DATE_COMP_OP DATE_VALUE -> date_compare_leaf
         | FIELD_CLAUSE                     -> field_leaf
         | "(" expr ")"
     sequence_step: FIELD_CLAUSE
@@ -415,7 +446,10 @@ _QUERY_GRAMMAR = r"""
     NOT: /not/i
     BETWEEN.6: /between/i
     COUNT_FIELD.6: /(messages|words)/i
+    DATE_FIELD.6: /date/i
+    DATE_COMP_OP: ">=" | "<=" | "=" | ">" | "<"
     COMP_OP: ">=" | "<=" | "=" | ">" | "<"
+    DATE_VALUE: /[^\s"()]+/
     SEMANTIC_QUOTED_TEXT.7: /(?:semantic|near:text):"(\\.|[^"\\])*"/i
     SEMANTIC_BARE_TEXT.6: /(?:semantic|near:text):[^\s"()]+/i
     FTS_QUOTED_TEXT.6: /~"(\\.|[^"\\])*"/
@@ -470,6 +504,7 @@ _BOOLEAN_SUPPORTED_FIELDS = {
     "has",
     "id",
     "title",
+    "date",
     "since",
     "until",
     "messages",
@@ -597,11 +632,28 @@ def _decode_escaped_string(token: Token) -> str:
 
 
 def _parse_error_message(expression: str, exc: UnexpectedInput) -> str:
+    structural_words = re.search(r"\bexists\s+message\(.*\bwords:", expression, re.IGNORECASE)
+    if structural_words is not None:
+        return "field 'words' requires a numeric value"
+    malformed_count = re.search(r"\b(messages|words):", expression, re.IGNORECASE)
+    if malformed_count is not None:
+        field = malformed_count.group(1).lower()
+        return f"use comparison operator for {field!r}: e.g. {field}:>=10"
     if expression.lstrip().startswith("("):
         return f"invalid Boolean query expression near column {exc.column}"
     if '"' in expression:
         return "unclosed quoted string"
     return f"invalid query expression near column {exc.column}"
+
+
+def _parse_error_field(expression: str) -> str | None:
+    structural_words = re.search(r"\bexists\s+message\(.*\bwords:", expression, re.IGNORECASE)
+    if structural_words is not None:
+        return "words"
+    malformed_count = re.search(r"\b(messages|words):", expression, re.IGNORECASE)
+    if malformed_count is not None:
+        return malformed_count.group(1).lower()
+    return None
 
 
 def _normalize_count_comparison(
@@ -633,6 +685,18 @@ def _normalize_count_range(field_name: str, min_text: str, max_text: str) -> _Co
     return _CountRangeToken(field=field, min_number=min_number, max_number=max_number)
 
 
+def _normalize_date_comparison(op_text: str, value_text: str) -> _DateComparisonToken:
+    if op_text in {">=", ">"}:
+        return _DateComparisonToken(op=">=", value=_parse_relative_date(value_text))
+    if op_text in {"<=", "<"}:
+        return _DateComparisonToken(op="<=", value=_parse_relative_date(value_text))
+    raise ExpressionCompileError("date equality is not supported; use date between A and B", field="date")
+
+
+def _normalize_date_range(min_text: str, max_text: str) -> _DateRangeToken:
+    return _DateRangeToken(min_value=_parse_relative_date(min_text), max_value=_parse_relative_date(max_text))
+
+
 @v_args(inline=True)
 class _QueryTransformer(Transformer[Token, _LexToken | str | QueryExpressionAST]):
     def flat_query(self, *clauses: _LexToken) -> QueryExpressionAST:
@@ -656,6 +720,19 @@ class _QueryTransformer(Transformer[Token, _LexToken | str | QueryExpressionAST]
         max_number: Token,
     ) -> _CountRangeToken:
         return _normalize_count_range(str(field_name), str(min_number), str(max_number))
+
+    def date_compare_clause(self, _field_name: Token, op: Token, value: Token) -> _DateComparisonToken:
+        return _normalize_date_comparison(str(op), str(value))
+
+    def date_between_clause(
+        self,
+        _field_name: Token,
+        _between: Token,
+        min_value: Token,
+        _and: Token,
+        max_value: Token,
+    ) -> _DateRangeToken:
+        return _normalize_date_range(str(min_value), str(max_value))
 
     def field_clause(self, token: Token) -> _FieldToken:
         matched = _FIELD_CLAUSE_RE.match(str(token))
@@ -752,6 +829,20 @@ def _count_range_token_to_predicate(token: _CountRangeToken) -> QueryPredicate:
     )
 
 
+def _date_token_to_predicate(token: _DateComparisonToken) -> QueryFieldPredicate:
+    return QueryFieldPredicate(field="date", values=(token.value,), op=token.op)
+
+
+def _date_range_token_to_predicate(token: _DateRangeToken) -> QueryPredicate:
+    return QueryBoolPredicate(
+        op="and",
+        children=(
+            QueryFieldPredicate(field="date", values=(token.min_value,), op=">="),
+            QueryFieldPredicate(field="date", values=(token.max_value,), op="<="),
+        ),
+    )
+
+
 def _merge_bool_children(op: Literal["and", "or"], children: tuple[QueryPredicate, ...]) -> QueryPredicate:
     flattened: list[QueryPredicate] = []
     for child in children:
@@ -804,6 +895,11 @@ def _validate_predicate_context(
             and not predicate.values
         ):
             raise ExpressionCompileError(f"field {predicate.field!r} requires a value", field=predicate.field)
+        if predicate.field == "date":
+            if not predicate.values:
+                raise ExpressionCompileError("field 'date' requires a value", field="date")
+            if predicate.op not in {">=", "<="}:
+                raise ExpressionCompileError("field 'date' supports only >=, <=, >, <, and between", field="date")
         if predicate.field == "words":
             if not predicate.values:
                 raise ExpressionCompileError("field 'words' requires a numeric value", field="words")
@@ -889,6 +985,19 @@ class _BooleanQueryTransformer(Transformer[Token, QueryPredicate]):
             _normalize_count_range(str(field_name), str(min_number), str(max_number))
         )
 
+    def date_compare_leaf(self, _field_name: Token, op: Token, value: Token) -> QueryPredicate:
+        return _date_token_to_predicate(_normalize_date_comparison(str(op), str(value)))
+
+    def date_between_leaf(
+        self,
+        _field_name: Token,
+        _between: Token,
+        min_value: Token,
+        _and: Token,
+        max_value: Token,
+    ) -> QueryPredicate:
+        return _date_range_token_to_predicate(_normalize_date_range(str(min_value), str(max_value)))
+
     def field_leaf(self, token: Token) -> QueryPredicate:
         return _field_token_to_predicate(_QUERY_TRANSFORMER.field_clause(token))
 
@@ -952,6 +1061,9 @@ def _is_boolean_expression(expression: str) -> bool:
     if re.search(r"\b(?:messages|words)\b\s*(?:>=|<=|=|>|<|between\b)", expression, re.IGNORECASE):
         count_range_masked = re.sub(r"\bbetween\s+\d+\s+and\s+\d+\b", "between_range", expression, flags=re.IGNORECASE)
         return bool(re.search(r"\b(?:and|or|not)\b", count_range_masked, re.IGNORECASE))
+    if re.search(r"\bdate\b\s*(?:>=|<=|>|<|between\b)", expression, re.IGNORECASE):
+        date_range_masked = re.sub(r"\bbetween\s+\S+\s+and\s+\S+\b", "between_range", expression, flags=re.IGNORECASE)
+        return bool(re.search(r"\b(?:and|or|not)\b", date_range_masked, re.IGNORECASE))
     return ":" in expression and bool(re.search(r"\b(?:and|or|not)\b", expression, re.IGNORECASE))
 
 
@@ -959,7 +1071,9 @@ def _parse_boolean_predicate(expression: str) -> QueryPredicate:
     try:
         tree = _QUERY_PARSER.parse(expression, start="boolean_query")
     except UnexpectedInput as exc:
-        raise ExpressionCompileError(_parse_error_message(expression, exc), field=None) from exc
+        raise ExpressionCompileError(
+            _parse_error_message(expression, exc), field=_parse_error_field(expression)
+        ) from exc
     try:
         transformed = _BOOLEAN_QUERY_TRANSFORMER.transform(tree)
     except VisitError as exc:
@@ -1053,7 +1167,9 @@ def parse_expression_ast(expression: str) -> QueryExpressionAST:
     try:
         tree = _QUERY_PARSER.parse(expression, start="flat_query")
     except UnexpectedInput as exc:
-        raise ExpressionCompileError(_parse_error_message(expression, exc), field=None) from exc
+        raise ExpressionCompileError(
+            _parse_error_message(expression, exc), field=_parse_error_field(expression)
+        ) from exc
     try:
         transformed = _QUERY_TRANSFORMER.transform(tree)
     except VisitError as exc:
@@ -1086,6 +1202,20 @@ def _explain_clause(token: _LexToken) -> QueryExpressionExplainClause:
             field=token.field,
             min_number=token.min_number,
             max_number=token.max_number,
+        )
+    if isinstance(token, _DateComparisonToken):
+        return QueryExpressionExplainClause(
+            kind="date",
+            field="date",
+            op=token.op,
+            value=token.value,
+        )
+    if isinstance(token, _DateRangeToken):
+        return QueryExpressionExplainClause(
+            kind="date_range",
+            field="date",
+            min_value=token.min_value,
+            max_value=token.max_value,
         )
     if isinstance(token, _TextToken):
         return QueryExpressionExplainClause(
@@ -1294,6 +1424,18 @@ class _SpecAccumulator:
             elif tok.field == "words":
                 self.min_words = tok.min_number
                 self.max_words = tok.max_number
+            return
+
+        if isinstance(tok, _DateComparisonToken):
+            if tok.op == ">=":
+                self.since = tok.value
+            else:
+                self.until = tok.value
+            return
+
+        if isinstance(tok, _DateRangeToken):
+            self.since = tok.min_value
+            self.until = tok.max_value
             return
 
         # _FieldToken
