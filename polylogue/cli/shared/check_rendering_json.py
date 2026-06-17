@@ -17,8 +17,8 @@ def emit_json_output(result: CheckCommandResult, options: CheckCommandOptions) -
         out["daemon"] = json_document(result.daemon_report)
     if result.schema_report is not None:
         out["schema_verification"] = json_document(result.schema_report.to_dict())
-    if result.proof_report is not None:
-        out["artifact_proof"] = json_document(result.proof_report.to_dict())
+    if result.coverage_report is not None:
+        out["artifact_coverage"] = json_document(result.coverage_report.to_dict())
     if result.artifact_rows is not None:
         out["artifact_observations"] = json_document(
             {

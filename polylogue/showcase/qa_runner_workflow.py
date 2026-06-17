@@ -11,7 +11,7 @@ from polylogue.showcase.invariants import check_invariants
 from polylogue.showcase.qa_runner_models import QAResult
 from polylogue.showcase.qa_runner_reporting import save_qa_reports
 from polylogue.showcase.qa_runner_request import QASessionRequest, QAWorkspaceMode
-from polylogue.showcase.qa_runner_stages import generate_extra_exercises, populate_proof
+from polylogue.showcase.qa_runner_stages import generate_extra_exercises, populate_artifact_coverage
 from polylogue.showcase.runner import ShowcaseRunner
 from polylogue.showcase.workspace import (
     create_verification_workspace,
@@ -104,8 +104,8 @@ def _run_audit_stage(
         result.audit_report = audit_provider(request.provider) if request.provider else audit_all_providers()
     except Exception as exc:
         result.audit_error = str(exc)
-        if not request.skip_proof:
-            populate_proof(result, workspace_env=workspace_env)
+        if not request.skip_coverage:
+            populate_artifact_coverage(result, workspace_env=workspace_env)
         result.exercises_skipped = True
         result.invariants_skipped = True
         return _persist_and_return(result, report_dir=report_dir)
@@ -113,8 +113,8 @@ def _run_audit_stage(
     if result.audit_report.all_passed:
         return None
 
-    if not request.skip_proof:
-        populate_proof(result, workspace_env=workspace_env)
+    if not request.skip_coverage:
+        populate_artifact_coverage(result, workspace_env=workspace_env)
     result.exercises_skipped = True
     result.invariants_skipped = True
     if request.verbose:
@@ -125,7 +125,7 @@ def _run_audit_stage(
 def run_qa_session(request: QASessionRequest) -> QAResult:
     """Execute a composable QA session."""
     result = QAResult(report_dir=request.report_dir)
-    result.proof_skipped = request.skip_proof
+    result.coverage_skipped = request.skip_coverage
     runtime = _prepare_runtime(request)
     plan = request.execution_plan
 
@@ -141,8 +141,8 @@ def run_qa_session(request: QASessionRequest) -> QAResult:
     if early_result is not None:
         return early_result
 
-    if not request.skip_proof:
-        populate_proof(result, workspace_env=runtime.workspace_env)
+    if not request.skip_coverage:
+        populate_artifact_coverage(result, workspace_env=runtime.workspace_env)
 
     if request.skip_exercises:
         result.exercises_skipped = True

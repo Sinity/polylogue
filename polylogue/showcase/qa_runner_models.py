@@ -12,7 +12,7 @@ from polylogue.showcase.runner import ShowcaseResult
 
 if TYPE_CHECKING:
     from polylogue.schemas.audit.models import AuditReport
-    from polylogue.schemas.validation.models import ArtifactProofReport
+    from polylogue.schemas.validation.models import ArtifactCoverageReport
 
 
 @dataclass
@@ -22,9 +22,9 @@ class QAResult:
     audit_report: AuditReport | None = None
     audit_error: str | None = None
     audit_skipped: bool = False
-    proof_report: ArtifactProofReport | None = None
-    proof_error: str | None = None
-    proof_skipped: bool = False
+    coverage_report: ArtifactCoverageReport | None = None
+    coverage_error: str | None = None
+    coverage_skipped: bool = False
     showcase_result: ShowcaseResult | None = None
     exercises_skipped: bool = False
     invariant_results: list[InvariantResult] = field(default_factory=list)
@@ -35,7 +35,7 @@ class QAResult:
         """Return stable stage-name to status mapping for reporting surfaces."""
         return {
             "audit": self.audit_status,
-            "proof": self.proof_status,
+            "artifact_coverage": self.coverage_status,
             "showcase": self.showcase_status,
             "invariants": self.invariant_status,
         }
@@ -57,12 +57,12 @@ class QAResult:
         return self.audit_status is OutcomeStatus.OK
 
     @property
-    def proof_status(self) -> OutcomeStatus:
-        if self.proof_skipped:
+    def coverage_status(self) -> OutcomeStatus:
+        if self.coverage_skipped:
             return OutcomeStatus.SKIP
-        if self.proof_error is not None or self.proof_report is None:
+        if self.coverage_error is not None or self.coverage_report is None:
             return OutcomeStatus.ERROR
-        return OutcomeStatus.OK if self.proof_report.is_clean else OutcomeStatus.ERROR
+        return OutcomeStatus.OK if self.coverage_report.is_clean else OutcomeStatus.ERROR
 
     @property
     def showcase_status(self) -> OutcomeStatus:

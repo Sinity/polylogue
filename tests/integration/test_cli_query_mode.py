@@ -1,4 +1,4 @@
-"""End-to-end subprocess proofs for query-first CLI route selection."""
+"""End-to-end subprocess evidence snapshots for query-first CLI route selection."""
 
 from __future__ import annotations
 

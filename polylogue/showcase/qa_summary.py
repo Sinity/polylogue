@@ -33,34 +33,36 @@ def generate_qa_summary(result: QAResult, *, session: QASessionRecord | None = N
             showcase_session=showcase_session,
         )
     lines: list[str] = []
-    proof_report = session.proof.report
-    proof_summary = (
-        require_payload_mapping(proof_report["summary"], context="proof.summary") if proof_report is not None else None
+    coverage_report = session.artifact_coverage.report
+    coverage_summary = (
+        require_payload_mapping(coverage_report["summary"], context="artifact_coverage.summary")
+        if coverage_report is not None
+        else None
     )
 
     lines.append(f"Schema Audit: {status_label(result.audit_status)}")
-    if result.proof_error:
-        lines.append(f"Artifact Proof: FAIL ({result.proof_error})")
-    elif proof_summary is not None:
+    if result.coverage_error:
+        lines.append(f"Artifact Coverage: FAIL ({result.coverage_error})")
+    elif coverage_summary is not None:
         lines.append(
-            "Artifact Proof: "
-            f"contract_backed={proof_summary['contract_backed_records']}, "
-            f"unsupported={proof_summary['unsupported_parseable_records']}, "
-            f"non_parseable={proof_summary['recognized_non_parseable_records']}, "
-            f"unknown={proof_summary['unknown_records']}, "
-            f"decode_errors={proof_summary['decode_errors']}"
+            "Artifact Coverage: "
+            f"contract_backed={coverage_summary['contract_backed_records']}, "
+            f"unsupported={coverage_summary['unsupported_parseable_records']}, "
+            f"non_parseable={coverage_summary['recognized_non_parseable_records']}, "
+            f"unknown={coverage_summary['unknown_records']}, "
+            f"decode_errors={coverage_summary['decode_errors']}"
         )
         package_versions = payload_count_mapping(
-            proof_summary.get("package_versions", {}),
-            context="proof.summary.package_versions",
+            coverage_summary.get("package_versions", {}),
+            context="artifact_coverage.summary.package_versions",
         )
         element_kinds = payload_count_mapping(
-            proof_summary.get("element_kinds", {}),
-            context="proof.summary.element_kinds",
+            coverage_summary.get("element_kinds", {}),
+            context="artifact_coverage.summary.element_kinds",
         )
         resolution_reasons = payload_count_mapping(
-            proof_summary.get("resolution_reasons", {}),
-            context="proof.summary.resolution_reasons",
+            coverage_summary.get("resolution_reasons", {}),
+            context="artifact_coverage.summary.resolution_reasons",
         )
         if package_versions:
             lines.append(f"  Packages: {format_count_mapping(package_versions)}")

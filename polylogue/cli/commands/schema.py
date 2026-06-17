@@ -99,7 +99,7 @@ def schema_compare(
 @click.option("--element", "element_kind", default=None, help="Element kind inside the package")
 @click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None, help="Output format")
 @click.option("--verbose", "-v", is_flag=True, help="Show semantic roles and coverage")
-@click.option("--proof", is_flag=True, help="Show proof surface for role assignment decisions")
+@click.option("--review-evidence", is_flag=True, help="Show evidence for role assignment decisions")
 @click.pass_obj
 def schema_explain(
     env: AppEnv,
@@ -108,7 +108,7 @@ def schema_explain(
     element_kind: str | None,
     output_format: str | None,
     verbose: bool,
-    proof: bool,
+    review_evidence: bool,
 ) -> None:
     """Explain a package element schema with evidence and annotations."""
     del env
@@ -119,7 +119,7 @@ def schema_explain(
                 provider=provider,
                 version=version,
                 element_kind=element_kind,
-                proof=proof,
+                review_evidence=review_evidence,
             )
         ),
     )

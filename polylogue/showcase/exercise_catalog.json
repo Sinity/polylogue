@@ -733,16 +733,16 @@
       "needs_data": true
     },
     {
-      "name": "doctor-proof-json",
+      "name": "doctor-artifact-coverage-json",
       "group": "subcommands",
-      "description": "Artifact proof as JSON",
+      "description": "Artifact coverage as JSON",
       "execution": {
         "kind": "polylogue",
         "argv": [
           "doctor",
           "--format",
           "json",
-          "--proof"
+          "--artifact-coverage"
         ]
       },
       "assertion": {

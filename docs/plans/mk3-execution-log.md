@@ -12,7 +12,7 @@ Updated: 2026-05-15
 
 | Lane | Issue owners | Status | Next action | Verification lane |
 |------|--------------|--------|-------------|-------------------|
-| Runtime convergence and host proof | #845, #996, #999, #829, #869 | Ready for deployment/proof slice | Ensure packaged daemon is latest through Sinnix, run real archive convergence, record residual workload | service status, daemon logs, real archive convergence report, targeted daemon tests |
+| Runtime convergence and host evidence | #845, #996, #999, #829, #869 | Ready for deployment/evidence slice | Ensure packaged daemon is latest through Sinnix, run real archive convergence, record residual workload | service status, daemon logs, real archive convergence report, targeted daemon tests |
 | Reader contract spine | #859, #873, #839, #864, #1022, #1041, #1027 | Ready to start | Define TargetRef/message anchors and typed reader envelopes | daemon HTTP contract tests, CLI/MCP/API parity tests, privacy tests |
 | Reader evidence shell | #848, #865, #956, #993 | Blocked on enough contract stability for full UI, but evidence harness can advance | Expand synthetic reader DOM/browser smoke toward MK3 states | `pytest tests/unit/daemon/test_web_reader.py`, future browser lane, `devtools verify --quick` |
 | Paste/attachment/provenance | #839, #864, #848, #993 | Blocked on message envelope/provenance vocabulary | Implement paste-span projection MVP after contract spine | focused storage/payload tests, daemon API tests, visual state tests |
@@ -321,7 +321,7 @@ Outcome:
 - Convergence-debt retry tests now record source-path and conversation-subject
   retry evidence: debt before/after, retry count, and source cursor cleanup.
 - Artifacts are written through `tests/infra/contract_evidence.py`, so the
-  mechanism remains pytest-native and does not create a parallel proof layer.
+  mechanism remains pytest-native and does not create a parallel evidence layer.
 
 Artifact examples:
 
@@ -852,7 +852,7 @@ Verification:
 
 Target:
 
-- Stop treating proof/catalog rows as the verification authority.
+- Stop treating evidence/catalog rows as the verification authority.
 - Realize the first reusable pytest artifact mechanism for contract tests.
 - Reframe planning docs and issues around pytest/coverage/benchmark/CI/runtime
   artifacts.
@@ -877,7 +877,7 @@ Outcome:
 - Wired the CLI JSON envelope matrix to emit `cli.json_envelope` evidence.
 - Wired MCP surface-registration contract tests to emit evidence for tools,
   resources, resource templates, and prompts.
-- Marked proof-era manifests as transitional inventories, not verification
+- Marked evidence-era manifests as transitional inventories, not verification
   closure.
 - Updated #1058/#1059/#1060/#1062/#1063/#1064/#594/#997/#999 issue bodies so
   each points at standard mechanisms and concrete owner surfaces.

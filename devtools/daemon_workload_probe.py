@@ -600,7 +600,7 @@ def _cursor_lag_baselines(conn: sqlite3.Connection, *, ops_db: Path | None = Non
     ``live_cursor_lag_sample``. Returns the same per-family snapshot the
     anomaly check uses: sample-count, time range, p50, p95.
     Stable JSON shape so before/after probes can detect baseline drift in
-    convergence proofs (e.g. *"after this run, claude-code-session's
+    convergence evidence snapshots (e.g. *"after this run, claude-code-session's
     rolling p95 dropped from 600s to 12s — convergence is healthy"*).
     """
     ops_baselines = _ops_cursor_lag_baselines(ops_db)

@@ -1,4 +1,4 @@
-"""Subprocess proofs for the root CLI machine-error contract."""
+"""Subprocess evidence snapshots for the root CLI machine-error contract."""
 
 from __future__ import annotations
 
@@ -54,7 +54,7 @@ def test_module_entrypoint_command_validation_emits_json_error(tmp_path: Path) -
     workspace = setup_isolated_workspace(tmp_path)
 
     result = run_cli(
-        ["doctor", "--format", "json", "--proof", "--artifact-limit", "0"],
+        ["doctor", "--format", "json", "--artifact-coverage", "--artifact-limit", "0"],
         env=workspace["env"],
         cwd=tmp_path,
         entrypoint="module",

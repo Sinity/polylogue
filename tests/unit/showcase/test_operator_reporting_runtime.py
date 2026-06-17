@@ -116,12 +116,12 @@ def test_report_common_helpers_serialize_and_format() -> None:
 def test_generate_qa_summary_uses_provided_session_and_all_branches(tmp_path: object) -> None:
     result = QAResult(
         audit_report=SimpleNamespace(all_passed=True),
-        proof_report=SimpleNamespace(is_clean=True),
+        coverage_report=SimpleNamespace(is_clean=True),
         showcase_result=SimpleNamespace(failed=1),
         report_dir=tmp_path,
     )
     session = SimpleNamespace(
-        proof=SimpleNamespace(
+        artifact_coverage=SimpleNamespace(
             report={
                 "summary": {
                     "contract_backed_records": 3,
@@ -144,7 +144,7 @@ def test_generate_qa_summary_uses_provided_session_and_all_branches(tmp_path: ob
     summary = generate_qa_summary(result, session=session)
 
     assert "Schema Audit: PASS" in summary
-    assert "Artifact Proof: contract_backed=3, unsupported=1, non_parseable=0, unknown=0, decode_errors=0" in summary
+    assert "Artifact Coverage: contract_backed=3, unsupported=1, non_parseable=0, unknown=0, decode_errors=0" in summary
     assert "Packages: v1=2" in summary
     assert "Elements: session_document=3" in summary
     assert "Reasons: supported=3" in summary
@@ -157,12 +157,12 @@ def test_generate_qa_summary_uses_provided_session_and_all_branches(tmp_path: ob
 def test_generate_qa_summary_builds_session_when_missing_and_handles_skips() -> None:
     result = QAResult(
         audit_error="audit failed",
-        proof_error="proof failed",
+        coverage_error="artifact_coverage failed",
         exercises_skipped=True,
         invariants_skipped=True,
     )
     session = SimpleNamespace(
-        proof=SimpleNamespace(report=None),
+        artifact_coverage=SimpleNamespace(report=None),
         showcase=SimpleNamespace(summary=None),
         invariants=SimpleNamespace(skipped=True, summary=SimpleNamespace(passed=0, failed=0, skipped=0)),
     )
@@ -176,7 +176,7 @@ def test_generate_qa_summary_builds_session_when_missing_and_handles_skips() -> 
     mock_session.assert_called_once()
     mock_showcase.assert_not_called()
     assert "Schema Audit: FAIL" in summary
-    assert "Artifact Proof: FAIL (proof failed)" in summary
+    assert "Artifact Coverage: FAIL (artifact_coverage failed)" in summary
     assert "Exercises: SKIPPED" in summary
     assert "Invariants: SKIPPED" in summary
     assert "Overall: FAIL" in summary
@@ -189,7 +189,7 @@ def test_save_qa_reports_writes_success_and_error_payloads(tmp_path: object) -> 
     )
     result = QAResult(
         audit_report=SimpleNamespace(to_json=lambda: {"audit": "ok"}),
-        proof_report=SimpleNamespace(to_dict=lambda: {"proof": "ok"}),
+        coverage_report=SimpleNamespace(to_dict=lambda: {"artifact_coverage": "ok"}),
         showcase_result=SimpleNamespace(),
     )
 
@@ -204,14 +204,14 @@ def test_save_qa_reports_writes_success_and_error_payloads(tmp_path: object) -> 
         save_qa_reports(result, tmp_path)
 
     assert json.loads((tmp_path / "schema-audit.json").read_text()) == {"audit": "ok"}
-    assert json.loads((tmp_path / "artifact-proof.json").read_text()) == {"proof": "ok"}
+    assert json.loads((tmp_path / "artifact-coverage.json").read_text()) == {"artifact_coverage": "ok"}
     assert json.loads((tmp_path / "qa-session.json").read_text()) == {"status": "ok"}
     assert json.loads((tmp_path / "invariant-checks.json").read_text()) == [{"name": "inv"}]
     assert (tmp_path / "qa-session.md").read_text() == "# QA report"
     mock_save_reports.assert_called_once_with(result.showcase_result)
 
     error_dir = tmp_path / "errors"
-    error_result = QAResult(audit_error="audit failed", proof_error="proof failed")
+    error_result = QAResult(audit_error="audit failed", coverage_error="artifact_coverage failed")
     qa_session = SimpleNamespace(
         to_payload=lambda: {"status": "error"},
         invariants=SimpleNamespace(checks=[]),
@@ -225,7 +225,7 @@ def test_save_qa_reports_writes_success_and_error_payloads(tmp_path: object) -> 
         save_qa_reports(error_result, error_dir)
 
     assert json.loads((error_dir / "schema-audit.json").read_text()) == {"error": "audit failed"}
-    assert json.loads((error_dir / "artifact-proof.json").read_text()) == {"error": "proof failed"}
+    assert json.loads((error_dir / "artifact-coverage.json").read_text()) == {"error": "artifact_coverage failed"}
     mock_save_reports.assert_not_called()
 
 

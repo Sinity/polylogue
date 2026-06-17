@@ -1,4 +1,4 @@
-"""Direct tests for schema verification and artifact-proof workflows."""
+"""Direct tests for schema verification and artifact-coverage workflows."""
 
 from __future__ import annotations
 
@@ -10,20 +10,20 @@ import pytest
 
 from polylogue.schemas.packages import SchemaElementManifest, SchemaResolution, SchemaVersionPackage
 from polylogue.schemas.validation.artifacts import (
+    inspect_raw_artifact_coverage,
     list_artifact_cohort_rows,
     list_artifact_observation_rows,
-    prove_raw_artifact_coverage,
 )
 from polylogue.schemas.validation.corpus import verify_raw_corpus
 from polylogue.schemas.validation.models import (
-    ArtifactProofReport,
-    ProviderArtifactProof,
+    ArtifactCoverageReport,
+    ProviderArtifactCoverage,
     ProviderSchemaVerification,
     SchemaVerificationReport,
 )
 from polylogue.schemas.validation.requests import (
+    ArtifactCoverageRequest,
     ArtifactObservationQuery,
-    ArtifactProofRequest,
     SchemaVerificationRequest,
 )
 from polylogue.storage.artifacts.inspection import artifact_observation_id
@@ -190,9 +190,9 @@ class TestSchemaVerificationReport:
         assert d["record_limit"] == "all"
 
 
-class TestProviderArtifactProof:
+class TestProviderArtifactCoverage:
     def test_to_dict(self) -> None:
-        report = ProviderArtifactProof(
+        report = ProviderArtifactCoverage(
             provider="claude-code",
             total_records=4,
             contract_backed_records=1,
@@ -219,11 +219,11 @@ class TestProviderArtifactProof:
         assert data["sidecar_agent_types"] == {"general-purpose": 1}
 
 
-class TestArtifactProofReport:
+class TestArtifactCoverageReport:
     def test_to_dict_structure(self) -> None:
-        report = ArtifactProofReport(
+        report = ArtifactCoverageReport(
             providers={
-                "chatgpt": ProviderArtifactProof(
+                "chatgpt": ProviderArtifactCoverage(
                     provider="chatgpt",
                     total_records=1,
                     contract_backed_records=1,
@@ -366,11 +366,11 @@ class TestVerifyRawCorpus:
             assert hasattr(stat, "decode_errors")
 
 
-class TestProveRawArtifactCoverage:
+class TestInspectRawArtifactCoverage:
     def test_nonexistent_db_returns_empty(self, tmp_path: Path) -> None:
-        report = prove_raw_artifact_coverage(
+        report = inspect_raw_artifact_coverage(
             db_path=tmp_path / "missing.db",
-            request=ArtifactProofRequest(),
+            request=ArtifactCoverageRequest(),
         )
         assert report.total_records == 0
         assert report.providers == {}
@@ -474,9 +474,9 @@ class TestProveRawArtifactCoverage:
         monkeypatch.setattr("polylogue.storage.artifacts.inspection.SchemaRegistry.resolve_payload", _resolve_payload)
         monkeypatch.setattr("polylogue.storage.artifacts.inspection.SchemaRegistry.get_package", _get_package)
 
-        report = prove_raw_artifact_coverage(
+        report = inspect_raw_artifact_coverage(
             db_path=db_path,
-            request=ArtifactProofRequest(),
+            request=ArtifactCoverageRequest(),
         )
 
         assert report.total_records == 5
@@ -619,21 +619,21 @@ class TestProveRawArtifactCoverage:
         monkeypatch.setattr("polylogue.storage.artifacts.inspection.SchemaRegistry.resolve_payload", _resolve_payload)
         monkeypatch.setattr("polylogue.storage.artifacts.inspection.SchemaRegistry.get_package", _get_package)
 
-        report = prove_raw_artifact_coverage(
+        report = inspect_raw_artifact_coverage(
             db_path=db_path,
-            request=ArtifactProofRequest(),
+            request=ArtifactCoverageRequest(),
         )
 
         assert report.total_records == 1
         assert report.contract_backed_records == 1
         # Resolved schema-package fidelity is recomputed on read (raw_artifacts
-        # does not store it) and surfaces through the proof report.
+        # does not store it) and surfaces through the coverage report.
         assert report.providers["chatgpt"].package_versions == {"v1": 1}
         assert report.providers["chatgpt"].element_kinds == {"session_document": 1}
         assert report.providers["chatgpt"].resolution_reasons == {"exact_structure": 1}
 
         # The durable raw_artifacts row is refreshed in place: its stale
-        # support_status flips from unsupported to supported on re-proof.
+        # support_status flips from unsupported to supported on re-inspection.
         with open_connection(db_path) as conn:
             refreshed = conn.execute(
                 """
@@ -832,9 +832,9 @@ class TestProveRawArtifactCoverage:
         monkeypatch.setattr("polylogue.storage.artifacts.inspection.SchemaRegistry.resolve_payload", _resolve_payload)
         monkeypatch.setattr("polylogue.storage.artifacts.inspection.SchemaRegistry.get_package", _get_package)
 
-        report = prove_raw_artifact_coverage(
+        report = inspect_raw_artifact_coverage(
             db_path=db_path,
-            request=ArtifactProofRequest(providers=["claude-ai"]),
+            request=ArtifactCoverageRequest(providers=["claude-ai"]),
         )
 
         assert report.total_records == 1

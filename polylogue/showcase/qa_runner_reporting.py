@@ -18,13 +18,13 @@ def save_qa_reports(result: QAResult, report_dir: Path) -> None:
     elif result.audit_error:
         (report_dir / "schema-audit.json").write_text(json.dumps({"error": result.audit_error}, indent=2))
 
-    if result.proof_report is not None:
-        (report_dir / "artifact-proof.json").write_text(
-            json.dumps(result.proof_report.to_dict(), indent=2, sort_keys=True)
+    if result.coverage_report is not None:
+        (report_dir / "artifact-coverage.json").write_text(
+            json.dumps(result.coverage_report.to_dict(), indent=2, sort_keys=True)
         )
-    elif result.proof_error is not None:
-        (report_dir / "artifact-proof.json").write_text(
-            json.dumps({"error": result.proof_error}, indent=2, sort_keys=True)
+    elif result.coverage_error is not None:
+        (report_dir / "artifact-coverage.json").write_text(
+            json.dumps({"error": result.coverage_error}, indent=2, sort_keys=True)
         )
 
     from polylogue.showcase.qa_markdown import generate_qa_markdown

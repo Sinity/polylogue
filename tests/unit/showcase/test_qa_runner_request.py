@@ -25,7 +25,7 @@ def test_build_qa_session_request_defaults_to_fresh_synthetic_full_run() -> None
     assert request.fresh is True
     assert request.ingest is True
     assert request.skip_audit is False
-    assert request.skip_proof is False
+    assert request.skip_coverage is False
     assert request.skip_exercises is False
     assert request.skip_invariants is False
     assert request.corpus_request.count == 3
@@ -71,7 +71,7 @@ def test_build_qa_session_request_audit_only_skips_follow_on_work() -> None:
     )
 
     assert request.skip_audit is False
-    assert request.skip_proof is True
+    assert request.skip_coverage is True
     assert request.skip_exercises is True
     assert request.skip_invariants is True
 

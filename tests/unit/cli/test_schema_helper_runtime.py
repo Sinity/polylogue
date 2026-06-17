@@ -30,9 +30,9 @@ from polylogue.schemas.operator.models import (
     SchemaListResult,
     SchemaPromoteResult,
     SchemaProviderSnapshot,
-    SchemaReviewProof,
+    SchemaReviewEvidence,
     SchemaRoleAssignment,
-    SchemaRoleProofEntry,
+    SchemaRoleEvidenceEntry,
 )
 from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
 from polylogue.schemas.privacy_config import PrivacyConfig
@@ -178,7 +178,7 @@ def _schema_payload() -> JSONDocument:
     }
 
 
-def _explain_result(*, review_proof: SchemaReviewProof | None = None) -> SchemaExplainResult:
+def _explain_result(*, review_evidence: SchemaReviewEvidence | None = None) -> SchemaExplainResult:
     return SchemaExplainResult(
         provider="chatgpt",
         version="v1",
@@ -186,7 +186,7 @@ def _explain_result(*, review_proof: SchemaReviewProof | None = None) -> SchemaE
         package=_package(),
         schema=_schema_payload(),
         annotations=_annotation_summary(),
-        review_proof=review_proof,
+        review_evidence=review_evidence,
     )
 
 
@@ -262,7 +262,7 @@ def test_render_schema_explain_result_json_and_verbose_text_paths() -> None:
     render_verbose.assert_called_once_with(result)
 
 
-def test_render_explain_verbose_and_review_proof_surfaces() -> None:
+def test_render_explain_verbose_and_review_evidence_surfaces() -> None:
     result = _explain_result()
 
     with patch("click.echo") as echo:
@@ -273,13 +273,13 @@ def test_render_explain_verbose_and_review_proof_surfaces() -> None:
     assert any("message_role -> $.messages[*].role" in line for line in echoed)
     assert any("Annotation Coverage (10 fields):" in line for line in echoed)
 
-    proof_result = _explain_result(
-        review_proof=SchemaReviewProof(
+    evidence_result = _explain_result(
+        review_evidence=SchemaReviewEvidence(
             artifact_kind="session_document",
             eligible_roles=["message_role", "message_text"],
             ineligible_roles=["message_tokens"],
             roles=[
-                SchemaRoleProofEntry(
+                SchemaRoleEvidenceEntry(
                     role="message_role",
                     chosen_path="$.messages[*].role",
                     chosen_score=0.97,
@@ -287,7 +287,7 @@ def test_render_explain_verbose_and_review_proof_surfaces() -> None:
                     evidence={"name_similarity": 1.0},
                     abstained=False,
                 ),
-                SchemaRoleProofEntry(
+                SchemaRoleEvidenceEntry(
                     role="message_text",
                     chosen_path=None,
                     chosen_score=0.0,
@@ -301,14 +301,14 @@ def test_render_explain_verbose_and_review_proof_surfaces() -> None:
     )
 
     with patch("click.echo") as echo:
-        render_schema_explain_result(result=proof_result, json_output=False, verbose=False)
+        render_schema_explain_result(result=evidence_result, json_output=False, verbose=False)
 
-    proof_lines = [call.args[0] for call in echo.call_args_list if call.args]
-    assert "Schema Review Proof: chatgpt v1" in proof_lines
-    assert any("message_role: $.messages[*].role" in line for line in proof_lines)
-    assert any("competing (1):" in line for line in proof_lines)
-    assert any("message_text: ABSTAINED" in line for line in proof_lines)
-    assert any("reason: no plausible path" in line for line in proof_lines)
+    evidence_lines = [call.args[0] for call in echo.call_args_list if call.args]
+    assert "Schema Review Evidence: chatgpt v1" in evidence_lines
+    assert any("message_role: $.messages[*].role" in line for line in evidence_lines)
+    assert any("competing (1):" in line for line in evidence_lines)
+    assert any("message_text: ABSTAINED" in line for line in evidence_lines)
+    assert any("reason: no plausible path" in line for line in evidence_lines)
 
 
 def test_render_schema_generate_result_covers_plain_and_json_paths(tmp_path: Path) -> None:

@@ -148,7 +148,7 @@ def test_prepare_runtime_rejects_unexpected_workspace_mode(tmp_path: Path) -> No
             return_value=QASessionPlan(
                 workspace_mode=QAWorkspaceMode.LIVE_INGEST,
                 run_audit=True,
-                run_proof=True,
+                run_artifact_coverage=True,
                 run_exercises=True,
                 run_invariants=True,
             ),
@@ -220,7 +220,7 @@ def test_run_audit_stage_records_exception_and_returns_early_result(tmp_path: Pa
 
     with (
         patch("polylogue.schemas.audit.workflow.audit_all_providers", side_effect=RuntimeError("boom")),
-        patch("polylogue.showcase.qa_runner_workflow.populate_proof") as mock_proof,
+        patch("polylogue.showcase.qa_runner_workflow.populate_artifact_coverage") as mock_artifact_coverage,
         patch("polylogue.showcase.qa_runner_workflow.save_qa_reports") as mock_save,
     ):
         returned = _run_audit_stage(
@@ -235,7 +235,7 @@ def test_run_audit_stage_records_exception_and_returns_early_result(tmp_path: Pa
     assert result.exercises_skipped is True
     assert result.invariants_skipped is True
     assert result.report_dir == tmp_path / "report"
-    mock_proof.assert_called_once_with(result, workspace_env={"XDG_CONFIG_HOME": str(tmp_path / "config")})
+    mock_artifact_coverage.assert_called_once_with(result, workspace_env={"XDG_CONFIG_HOME": str(tmp_path / "config")})
     mock_save.assert_called_once_with(result, tmp_path / "report")
 
 
@@ -266,7 +266,7 @@ def test_run_audit_stage_persists_failed_audit_and_prints_verbose_output(capsys:
         patch(
             "polylogue.schemas.audit.workflow.audit_all_providers", return_value=_make_audit_report(all_passed=False)
         ),
-        patch("polylogue.showcase.qa_runner_workflow.populate_proof") as mock_proof,
+        patch("polylogue.showcase.qa_runner_workflow.populate_artifact_coverage") as mock_artifact_coverage,
     ):
         returned = _run_audit_stage(
             result,
@@ -280,7 +280,7 @@ def test_run_audit_stage_persists_failed_audit_and_prints_verbose_output(capsys:
     assert result.exercises_skipped is True
     assert result.invariants_skipped is True
     assert "audit report" in captured.err
-    mock_proof.assert_called_once_with(result, workspace_env=None)
+    mock_artifact_coverage.assert_called_once_with(result, workspace_env=None)
 
 
 def test_run_qa_session_returns_early_audit_result(tmp_path: Path) -> None:
@@ -313,7 +313,7 @@ def test_run_qa_session_executes_full_success_path(tmp_path: Path) -> None:
     with (
         patch("polylogue.showcase.qa_runner_workflow._prepare_runtime", return_value=runtime),
         patch("polylogue.showcase.qa_runner_workflow._run_audit_stage", return_value=None),
-        patch("polylogue.showcase.qa_runner_workflow.populate_proof") as mock_proof,
+        patch("polylogue.showcase.qa_runner_workflow.populate_artifact_coverage") as mock_artifact_coverage,
         patch("polylogue.showcase.qa_runner_workflow.ShowcaseRunner", return_value=runner) as mock_runner_class,
         patch(
             "polylogue.showcase.qa_runner_workflow.check_invariants", return_value=[invariant_result]
@@ -322,7 +322,7 @@ def test_run_qa_session_executes_full_success_path(tmp_path: Path) -> None:
     ):
         result = run_qa_session(request)
 
-    mock_proof.assert_called_once_with(result, workspace_env=runtime.workspace_env)
+    mock_artifact_coverage.assert_called_once_with(result, workspace_env=runtime.workspace_env)
     mock_runner_class.assert_called_once_with(
         live=False,
         output_dir=runtime.report_dir,
@@ -344,7 +344,7 @@ def test_run_qa_session_respects_skip_flags_and_live_ingest() -> None:
     request = QASessionRequest(
         live=True,
         ingest=True,
-        skip_proof=True,
+        skip_coverage=True,
         skip_exercises=True,
         skip_invariants=True,
     )
@@ -353,16 +353,16 @@ def test_run_qa_session_respects_skip_flags_and_live_ingest() -> None:
         patch("polylogue.showcase.qa_runner_workflow._prepare_runtime", return_value=PreparedQARuntime()),
         patch("polylogue.showcase.qa_runner_workflow._run_live_ingest") as mock_ingest,
         patch("polylogue.showcase.qa_runner_workflow._run_audit_stage", return_value=None),
-        patch("polylogue.showcase.qa_runner_workflow.populate_proof") as mock_proof,
+        patch("polylogue.showcase.qa_runner_workflow.populate_artifact_coverage") as mock_artifact_coverage,
         patch("polylogue.showcase.qa_runner_workflow.ShowcaseRunner") as mock_runner_class,
         patch("polylogue.showcase.qa_runner_workflow.check_invariants") as mock_invariants,
     ):
         result = run_qa_session(request)
 
     mock_ingest.assert_called_once_with(request)
-    mock_proof.assert_not_called()
+    mock_artifact_coverage.assert_not_called()
     mock_runner_class.assert_not_called()
     mock_invariants.assert_not_called()
-    assert result.proof_skipped is True
+    assert result.coverage_skipped is True
     assert result.exercises_skipped is True
     assert result.invariants_skipped is True

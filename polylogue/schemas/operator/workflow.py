@@ -32,7 +32,7 @@ from polylogue.schemas.operator.verification import (
     list_artifact_observations as _list_artifact_observations,
 )
 from polylogue.schemas.operator.verification import (
-    run_artifact_proof as _run_artifact_proof,
+    run_artifact_coverage as _run_artifact_coverage,
 )
 from polylogue.schemas.operator.verification import (
     run_schema_verification as _run_schema_verification,
@@ -46,7 +46,7 @@ explain_schema = _explain_schema
 resolve_schema_payload = _resolve_schema_payload
 audit_schemas = _audit_schemas
 run_schema_verification = _run_schema_verification
-run_artifact_proof = _run_artifact_proof
+run_artifact_coverage = _run_artifact_coverage
 list_artifact_observations = _list_artifact_observations
 list_artifact_cohorts = _list_artifact_cohorts
 

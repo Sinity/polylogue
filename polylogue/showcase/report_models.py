@@ -193,7 +193,7 @@ class QAAuditRecord:
 
 
 @dataclass(frozen=True, slots=True)
-class QAProofRecord:
+class QAArtifactCoverageRecord:
     status: str
     skipped: bool
     report: Mapping[str, object] | None = None
@@ -248,7 +248,7 @@ class QASessionRecord:
 
     timestamp: str
     audit: QAAuditRecord
-    proof: QAProofRecord
+    artifact_coverage: QAArtifactCoverageRecord
     showcase: QAShowcaseRecord
     invariants: QAInvariantRecord
     overall_status: str
@@ -274,11 +274,11 @@ class QASessionRecord:
                 report=result.audit_report.to_json() if result.audit_report is not None else None,
                 error=result.audit_error,
             ),
-            proof=QAProofRecord(
-                status=result.proof_status.value,
-                skipped=result.proof_skipped,
-                report=result.proof_report.to_dict() if result.proof_report is not None else None,
-                error=result.proof_error,
+            artifact_coverage=QAArtifactCoverageRecord(
+                status=result.coverage_status.value,
+                skipped=result.coverage_skipped,
+                report=result.coverage_report.to_dict() if result.coverage_report is not None else None,
+                error=result.coverage_error,
             ),
             showcase=QAShowcaseRecord(
                 status=result.showcase_status.value,
@@ -303,7 +303,7 @@ class QASessionRecord:
             "schema_version": self.schema_version,
             "timestamp": self.timestamp,
             "audit": self.audit.to_payload(),
-            "proof": self.proof.to_payload(),
+            "artifact_coverage": self.artifact_coverage.to_payload(),
             "showcase": self.showcase.to_payload(),
             "invariants": self.invariants.to_payload(),
             "overall_status": self.overall_status,
@@ -330,7 +330,7 @@ def canonical_qa_session(
 __all__ = [
     "QAAuditRecord",
     "QAInvariantRecord",
-    "QAProofRecord",
+    "QAArtifactCoverageRecord",
     "QASessionRecord",
     "QAShowcaseRecord",
     "ShowcaseExerciseRecord",

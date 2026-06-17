@@ -637,12 +637,12 @@ class TestResolveIdsUsesCompiledSpec:
 
 
 # ---------------------------------------------------------------------------
-# Non-mocked >50-session delete cardinality proof (#1873 recovery pack)
+# Non-mocked >50-session delete cardinality evidence (#1873 recovery pack)
 # ---------------------------------------------------------------------------
 
 
 class TestDeleteCardinalityLargeNonMocked:
-    """End-to-end proof over a real seeded archive (no mocks on resolution/delete).
+    """End-to-end evidence over a real seeded archive (no mocks on resolution/delete).
 
     The invariant that makes ``delete --yes --all`` safe is that three sets are
     identical and none is silently page-limited:

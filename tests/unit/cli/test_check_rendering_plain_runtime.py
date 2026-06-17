@@ -41,7 +41,7 @@ def _options(**overrides: object) -> CheckCommandOptions:
         "check_blob": False,
         "blob_integrity_full": False,
         "check_schemas": False,
-        "check_proof": False,
+        "check_artifact_coverage": False,
         "check_artifacts": False,
         "check_cohorts": False,
         "schema_providers": (),
@@ -104,7 +104,7 @@ def test_build_report_lines_renders_all_sections_and_breakdowns() -> None:
             )
         },
     )
-    proof_report = SimpleNamespace(
+    coverage_report = SimpleNamespace(
         total_records=12,
         contract_backed_records=9,
         unsupported_parseable_records=1,
@@ -167,7 +167,7 @@ def test_build_report_lines_renders_all_sections_and_breakdowns() -> None:
         report=report,
         runtime_report=runtime_report,
         schema_report=schema_report,
-        proof_report=proof_report,
+        coverage_report=coverage_report,
         artifact_rows=artifact_rows,
         cohort_rows=cohort_rows,
         daemon_report={
@@ -191,7 +191,7 @@ def test_build_report_lines_renders_all_sections_and_breakdowns() -> None:
     assert "Summary: 1 ok, 1 warnings, 0 errors (source=live)" in rendered
     assert "Derived Models:" in rendered
     assert "Schema verification: 42 raw records" in rendered
-    assert "Artifact proof: 12 artifact observations" in rendered
+    assert "Artifact coverage: 12 artifact observations" in rendered
     assert "Claude subagents: linked_sidecars=3 orphan_sidecars=4 streams=2" in rendered
     assert "Artifact observations: 2 rows" in rendered
     assert "payload.json -> v1/tool_use [schema]" in rendered

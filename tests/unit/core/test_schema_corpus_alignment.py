@@ -3,7 +3,7 @@
 Covers:
   1. Full-corpus mode bypasses sample caps
   2. Record-stream artifacts abstain from title inference
-  3. Proof surface contains expected fields
+  3. Evidence surface contains expected fields
   4. x-polylogue-confidence → x-polylogue-score rename completeness
 """
 
@@ -33,7 +33,7 @@ from polylogue.schemas.inference.semantic.runtime import (
     infer_semantic_roles,
 )
 from polylogue.schemas.observation_models import ProviderConfig
-from polylogue.schemas.operator.annotations import build_review_proof
+from polylogue.schemas.operator.annotations import build_review_evidence
 from polylogue.types import Provider
 
 
@@ -227,12 +227,12 @@ class TestRecordStreamTitleAbstention:
 
 
 # ---------------------------------------------------------------------------
-# 3. Proof surface output contains expected fields
+# 3. Evidence surface output contains expected fields
 # ---------------------------------------------------------------------------
 
 
-class TestProofSurface:
-    """Schema review proof surface has required structure."""
+class TestEvidenceSurface:
+    """Schema review review evidence surface has required structure."""
 
     @pytest.fixture()
     def schema_with_roles(self) -> JSONDocument:
@@ -270,44 +270,44 @@ class TestProofSurface:
             },
         }
 
-    def test_proof_contains_all_semantic_roles(self, schema_with_roles: JSONDocument) -> None:
-        """Proof has an entry for every semantic role."""
-        proof = build_review_proof(schema_with_roles)
-        proof_roles = {entry.role for entry in proof.roles}
-        assert proof_roles == set(SEMANTIC_ROLES)
+    def test_evidence_contains_all_semantic_roles(self, schema_with_roles: JSONDocument) -> None:
+        """Evidence has an entry for every semantic role."""
+        evidence = build_review_evidence(schema_with_roles)
+        evidence_roles = {entry.role for entry in evidence.roles}
+        assert evidence_roles == set(SEMANTIC_ROLES)
 
-    def test_proof_entry_fields(self, schema_with_roles: JSONDocument) -> None:
-        """Each proof entry has required fields."""
-        proof = build_review_proof(schema_with_roles)
-        for entry in proof.roles:
+    def test_evidence_entry_fields(self, schema_with_roles: JSONDocument) -> None:
+        """Each evidence entry has required fields."""
+        evidence = build_review_evidence(schema_with_roles)
+        for entry in evidence.roles:
             assert isinstance(entry.role, str)
             assert isinstance(entry.abstained, bool)
             assert isinstance(entry.chosen_score, float)
             assert isinstance(entry.competing, list)
             assert isinstance(entry.evidence, dict)
 
-    def test_proof_chosen_path_for_assigned_roles(self, schema_with_roles: JSONDocument) -> None:
+    def test_evidence_chosen_path_for_assigned_roles(self, schema_with_roles: JSONDocument) -> None:
         """Assigned roles have a chosen_path."""
-        proof = build_review_proof(schema_with_roles)
-        title_entry = next(e for e in proof.roles if e.role == "session_title")
+        evidence = build_review_evidence(schema_with_roles)
+        title_entry = next(e for e in evidence.roles if e.role == "session_title")
         assert title_entry.chosen_path == "$.title"
         assert title_entry.chosen_score == pytest.approx(0.72)
         assert not title_entry.abstained
 
-    def test_proof_abstained_roles(self, schema_with_roles: JSONDocument) -> None:
+    def test_evidence_abstained_roles(self, schema_with_roles: JSONDocument) -> None:
         """Roles with no candidates are marked as abstained."""
-        proof = build_review_proof(schema_with_roles)
+        evidence = build_review_evidence(schema_with_roles)
         # message_container and message_timestamp have no assignment in the fixture
-        container_entry = next(e for e in proof.roles if e.role == "message_container")
+        container_entry = next(e for e in evidence.roles if e.role == "message_container")
         assert container_entry.abstained
         assert container_entry.abstain_reason is not None
 
-    def test_proof_to_dict_roundtrip(self, schema_with_roles: JSONDocument) -> None:
+    def test_evidence_to_dict_roundtrip(self, schema_with_roles: JSONDocument) -> None:
         """to_dict produces JSON-serializable output."""
         import json
 
-        proof = build_review_proof(schema_with_roles)
-        d = proof.to_dict()
+        evidence = build_review_evidence(schema_with_roles)
+        d = evidence.to_dict()
         # Should be JSON-serializable
         serialized = json.dumps(d)
         assert serialized
@@ -317,13 +317,13 @@ class TestProofSurface:
         assert "eligible_roles" in parsed
         assert "ineligible_roles" in parsed
 
-    def test_proof_eligible_roles_for_document(self, schema_with_roles: JSONDocument) -> None:
+    def test_evidence_eligible_roles_for_document(self, schema_with_roles: JSONDocument) -> None:
         """session_document has all roles eligible."""
-        proof = build_review_proof(schema_with_roles)
-        assert proof.eligible_roles == list(SEMANTIC_ROLES)
-        assert proof.ineligible_roles == []
+        evidence = build_review_evidence(schema_with_roles)
+        assert evidence.eligible_roles == list(SEMANTIC_ROLES)
+        assert evidence.ineligible_roles == []
 
-    def test_proof_record_stream_ineligible_roles(self) -> None:
+    def test_evidence_record_stream_ineligible_roles(self) -> None:
         """Record-stream schemas show title as ineligible."""
         schema: JSONDocument = {
             "type": "object",
@@ -337,9 +337,9 @@ class TestProofSurface:
                 },
             },
         }
-        proof = build_review_proof(schema)
-        assert "session_title" in proof.ineligible_roles
-        title_entry = next(e for e in proof.roles if e.role == "session_title")
+        evidence = build_review_evidence(schema)
+        assert "session_title" in evidence.ineligible_roles
+        title_entry = next(e for e in evidence.roles if e.role == "session_title")
         assert title_entry.abstained
         assert "excludes" in (title_entry.abstain_reason or "")
 

@@ -53,7 +53,7 @@ def test_archive_tiers_writer_materializes_codex_session(tmp_path: Path) -> None
     session = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="codex-session-1",
-        title="Writer proof",
+        title="Writer evidence",
         created_at="2026-01-01T00:00:00+00:00",
         updated_at="2026-01-01T00:00:02+00:00",
         messages=[

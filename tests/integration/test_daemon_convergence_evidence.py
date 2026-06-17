@@ -1,4 +1,4 @@
-"""Production convergence proof for the daemon (#1245, slice B of #845).
+"""Production convergence evidence for the daemon (#1245, slice B of #845).
 
 Drives a real-shape synthetic corpus through ``LiveBatchProcessor`` +
 ``DaemonConverger`` (the same primitives ``polylogued run`` wires up at
@@ -24,7 +24,7 @@ but never landed as a final acceptance test. The shape proved here:
 
 3. The ``compare()`` diff between the two probe snapshots is the
    structured evidence artifact requested by the issue and is written
-   to ``.local/convergence-proof/`` for later auditing.
+   to ``.local/convergence-evidence/`` for later auditing.
 
 The test runs the same primitives that ``polylogued run`` instantiates,
 not a subprocess: ``polylogued`` adds watchfiles + HTTP surfaces on top
@@ -106,15 +106,15 @@ class _MinimalPolylogue:
 # ---------------------------------------------------------------------------
 
 
-def _write_proof_artifact(
+def _write_evidence_artifact(
     before: dict[str, Any],
     after: dict[str, Any],
     diff: dict[str, Any],
 ) -> Path | None:
-    """Persist the before/after/diff snapshots to .local/convergence-proof/.
+    """Persist the before/after/diff snapshots to .local/convergence-evidence/.
 
     The issue requires the evidence to be "committed as a
-    ``.local/convergence-proof/`` artifact (gitignored, but referenced in
+    ``.local/convergence-evidence/`` artifact (gitignored, but referenced in
     PR)". When running outside a polylogue checkout (or in a sandbox
     that forbids writes there) we silently skip — the assertions still
     run on the in-memory snapshots.
@@ -122,7 +122,7 @@ def _write_proof_artifact(
     try:
         # Repo root is two levels up from tests/integration/.
         repo_root = Path(__file__).resolve().parents[2]
-        out_dir = repo_root / ".local" / "convergence-proof"
+        out_dir = repo_root / ".local" / "convergence-evidence"
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "before.json").write_text(json.dumps(before, indent=2))
         (out_dir / "after.json").write_text(json.dumps(after, indent=2))
@@ -133,7 +133,7 @@ def _write_proof_artifact(
 
 
 # ---------------------------------------------------------------------------
-# The proof
+# The evidence
 # ---------------------------------------------------------------------------
 
 
@@ -141,11 +141,11 @@ SESSION_COUNT = 5
 MESSAGES_PER_SESSION = 12
 
 
-def test_daemon_convergence_proof_full_archive_state(
+def test_daemon_convergence_evidence_full_archive_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """End-to-end convergence proof against a real-shape Claude Code corpus.
+    """End-to-end convergence evidence against a real-shape Claude Code corpus.
 
     Drives ``LiveBatchProcessor`` + ``DaemonConverger`` (the same primitives
     ``polylogued run`` wires up at
@@ -191,7 +191,7 @@ def test_daemon_convergence_proof_full_archive_state(
         cast(Any, polylogue),
         (WatchSource(name="claude-code", root=corpus_root),),
         cursor=CursorStore(db_path),
-        parser_fingerprint="convergence-proof-v1",
+        parser_fingerprint="convergence-evidence-v1",
         converger=converger,
     )
 
@@ -207,10 +207,10 @@ def test_daemon_convergence_proof_full_archive_state(
 
     # ── Ingest completeness ─────────────────────────────────────────
     assert metrics.failed_file_count == 0, (
-        f"convergence proof failed: {metrics.failed_file_count} file(s) failed ingest"
+        f"convergence evidence failed: {metrics.failed_file_count} file(s) failed ingest"
     )
     assert metrics.succeeded_file_count == len(files), (
-        f"convergence proof: expected {len(files)} successes, got {metrics.succeeded_file_count}"
+        f"convergence evidence: expected {len(files)} successes, got {metrics.succeeded_file_count}"
     )
 
     # ── AFTER snapshot ──────────────────────────────────────────────
@@ -222,7 +222,7 @@ def test_daemon_convergence_proof_full_archive_state(
     assert diff["ok"] is True, diff.get("error")
 
     # Persist the structured evidence artifact (issue requirement).
-    _write_proof_artifact(before, after, diff)
+    _write_evidence_artifact(before, after, diff)
 
     after_counts = after["boundary_table_counts"]
 

@@ -1,4 +1,4 @@
-"""Typed result models for artifact-proof and corpus-verification workflows."""
+"""Typed result models for artifact-coverage and corpus-verification workflows."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from typing_extensions import TypedDict
 CountPayload: TypeAlias = dict[str, int]
 AllLiteral: TypeAlias = Literal["all"]
 LimitPayload: TypeAlias = int | AllLiteral
-ArtifactProofCountKind: TypeAlias = Literal[
+ArtifactCoverageCountKind: TypeAlias = Literal[
     "artifact_counts",
     "package_versions",
     "element_kinds",
@@ -38,7 +38,7 @@ class SchemaVerificationReportPayload(TypedDict):
     providers: dict[str, ProviderSchemaVerificationPayload]
 
 
-class ProviderArtifactProofPayload(TypedDict):
+class ProviderArtifactCoveragePayload(TypedDict):
     provider: str
     total_records: int
     contract_backed_records: int
@@ -57,7 +57,7 @@ class ProviderArtifactProofPayload(TypedDict):
     sidecar_agent_types: CountPayload
 
 
-class ArtifactProofSummaryPayload(TypedDict):
+class ArtifactCoverageSummaryPayload(TypedDict):
     contract_backed_records: int
     unsupported_parseable_records: int
     recognized_non_parseable_records: int
@@ -74,12 +74,12 @@ class ArtifactProofSummaryPayload(TypedDict):
     clean: bool
 
 
-class ArtifactProofReportPayload(TypedDict):
+class ArtifactCoverageReportPayload(TypedDict):
     record_limit: LimitPayload
     record_offset: int
     total_records: int
-    summary: ArtifactProofSummaryPayload
-    providers: dict[str, ProviderArtifactProofPayload]
+    summary: ArtifactCoverageSummaryPayload
+    providers: dict[str, ProviderArtifactCoveragePayload]
 
 
 def _limit_payload(value: int | None) -> LimitPayload:
@@ -137,8 +137,8 @@ class SchemaVerificationReport:
 
 
 @dataclass
-class ProviderArtifactProof:
-    """Per-provider proof of raw artifact support and linkage."""
+class ProviderArtifactCoverage:
+    """Per-provider evidence of raw artifact support and linkage."""
 
     provider: str
     total_records: int = 0
@@ -157,7 +157,7 @@ class ProviderArtifactProof:
     streams_with_sidecars: int = 0
     sidecar_agent_types: CountPayload = field(default_factory=dict)
 
-    def to_dict(self) -> ProviderArtifactProofPayload:
+    def to_dict(self) -> ProviderArtifactCoveragePayload:
         return {
             "provider": self.provider,
             "total_records": self.total_records,
@@ -178,7 +178,7 @@ class ProviderArtifactProof:
         }
 
 
-def _provider_artifact_counts(stats: ProviderArtifactProof, *, kind: ArtifactProofCountKind) -> Mapping[str, int]:
+def _provider_artifact_counts(stats: ProviderArtifactCoverage, *, kind: ArtifactCoverageCountKind) -> Mapping[str, int]:
     if kind == "artifact_counts":
         return stats.artifact_counts
     if kind == "package_versions":
@@ -188,7 +188,9 @@ def _provider_artifact_counts(stats: ProviderArtifactProof, *, kind: ArtifactPro
     return stats.resolution_reasons
 
 
-def _aggregate_counts(providers: Mapping[str, ProviderArtifactProof], *, kind: ArtifactProofCountKind) -> CountPayload:
+def _aggregate_counts(
+    providers: Mapping[str, ProviderArtifactCoverage], *, kind: ArtifactCoverageCountKind
+) -> CountPayload:
     aggregated: CountPayload = {}
     for stats in providers.values():
         for key, count in _provider_artifact_counts(stats, kind=kind).items():
@@ -197,10 +199,10 @@ def _aggregate_counts(providers: Mapping[str, ProviderArtifactProof], *, kind: A
 
 
 @dataclass
-class ArtifactProofReport:
-    """Aggregate proof report over the raw artifact corpus."""
+class ArtifactCoverageReport:
+    """Aggregate coverage report over the raw artifact corpus."""
 
-    providers: dict[str, ProviderArtifactProof]
+    providers: dict[str, ProviderArtifactCoverage]
     total_records: int
     record_limit: int | None = None
     record_offset: int = 0
@@ -261,7 +263,7 @@ class ArtifactProofReport:
     def is_clean(self) -> bool:
         return self.unsupported_parseable_records == 0 and self.unknown_records == 0 and self.decode_errors == 0
 
-    def to_dict(self) -> ArtifactProofReportPayload:
+    def to_dict(self) -> ArtifactCoverageReportPayload:
         return {
             "record_limit": _limit_payload(self.record_limit),
             "record_offset": self.record_offset,
@@ -287,8 +289,8 @@ class ArtifactProofReport:
 
 
 __all__ = [
-    "ArtifactProofReport",
-    "ProviderArtifactProof",
+    "ArtifactCoverageReport",
+    "ProviderArtifactCoverage",
     "ProviderSchemaVerification",
     "SchemaVerificationReport",
 ]

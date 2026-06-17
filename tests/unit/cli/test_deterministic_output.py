@@ -26,7 +26,7 @@ from polylogue.core.json import JSONDocument
 from polylogue.core.outcomes import OutcomeCheck, OutcomeStatus
 from polylogue.scenarios import polylogue_execution
 from polylogue.schemas.audit.models import AuditReport
-from polylogue.schemas.validation.models import ArtifactProofReport, ProviderArtifactProof
+from polylogue.schemas.validation.models import ArtifactCoverageReport, ProviderArtifactCoverage
 from polylogue.showcase.exercises import Exercise
 from polylogue.showcase.invariants import InvariantResult
 from polylogue.showcase.qa_runner import QAResult
@@ -146,9 +146,9 @@ class TestFrozenClockShowcaseReport:
                     OutcomeCheck(name="privacy", status=OutcomeStatus.OK, summary="ok"),
                 ]
             ),
-            proof_report=ArtifactProofReport(
+            coverage_report=ArtifactCoverageReport(
                 providers={
-                    "chatgpt": ProviderArtifactProof(
+                    "chatgpt": ProviderArtifactCoverage(
                         provider="chatgpt",
                         total_records=1,
                         contract_backed_records=1,

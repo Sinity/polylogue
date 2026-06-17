@@ -8,7 +8,7 @@ from pathlib import Path
 from polylogue.core.outcomes import OutcomeCheck, OutcomeStatus
 from polylogue.scenarios import AssertionSpec, polylogue_execution
 from polylogue.schemas.audit.models import AuditReport
-from polylogue.schemas.validation.models import ArtifactProofReport, ProviderArtifactProof
+from polylogue.schemas.validation.models import ArtifactCoverageReport, ProviderArtifactCoverage
 from polylogue.showcase.exercises import Exercise
 from polylogue.showcase.invariants import InvariantResult
 from polylogue.showcase.qa_runner import QAResult, _save_qa_reports
@@ -47,9 +47,9 @@ def test_save_qa_reports_writes_composed_session_artifacts(tmp_path: Path) -> No
                 OutcomeCheck(name="privacy", status=OutcomeStatus.OK, summary="ok"),
             ]
         ),
-        proof_report=ArtifactProofReport(
+        coverage_report=ArtifactCoverageReport(
             providers={
-                "chatgpt": ProviderArtifactProof(
+                "chatgpt": ProviderArtifactCoverage(
                     provider="chatgpt",
                     total_records=1,
                     contract_backed_records=1,
@@ -70,26 +70,26 @@ def test_save_qa_reports_writes_composed_session_artifacts(tmp_path: Path) -> No
     _save_qa_reports(qa_result, report_dir)
 
     qa_session = json.loads((report_dir / "qa-session.json").read_text())
-    proof_payload = json.loads((report_dir / "artifact-proof.json").read_text())
+    evidence_payload = json.loads((report_dir / "artifact-coverage.json").read_text())
     invariant_checks = json.loads((report_dir / "invariant-checks.json").read_text())
 
     assert qa_session["audit"]["status"] == "ok"
-    assert qa_session["proof"]["status"] == "ok"
+    assert qa_session["artifact_coverage"]["status"] == "ok"
     assert qa_session["showcase"]["summary"]["passed"] == 1
     assert qa_session["invariants"]["summary"] == {"failed": 0, "passed": 1, "skipped": 0}
-    assert proof_payload["summary"]["contract_backed_records"] == 1
-    assert proof_payload["summary"]["package_versions"] == {"v1": 1}
-    assert proof_payload["summary"]["element_kinds"] == {"session_document": 1}
+    assert evidence_payload["summary"]["contract_backed_records"] == 1
+    assert evidence_payload["summary"]["package_versions"] == {"v1": 1}
+    assert evidence_payload["summary"]["element_kinds"] == {"session_document": 1}
     assert invariant_checks == [
         {"exercise": "test-help", "invariant": "json_valid", "status": "ok"},
     ]
-    assert (report_dir / "artifact-proof.json").exists()
+    assert (report_dir / "artifact-coverage.json").exists()
     assert (report_dir / "schema-audit.json").exists()
     assert (report_dir / "showcase-report.json").exists()
     assert (report_dir / "qa-session.md").exists()
 
 
-def test_qa_result_marks_skipped_proof_as_non_failing(tmp_path: Path) -> None:
+def test_qa_result_marks_skipped_evidence_as_non_failing(tmp_path: Path) -> None:
     report_dir = tmp_path / "qa"
     qa_result = QAResult(
         audit_report=AuditReport(
@@ -97,7 +97,7 @@ def test_qa_result_marks_skipped_proof_as_non_failing(tmp_path: Path) -> None:
                 OutcomeCheck(name="privacy", status=OutcomeStatus.OK, summary="ok"),
             ]
         ),
-        proof_skipped=True,
+        coverage_skipped=True,
         showcase_result=_make_showcase_result(report_dir),
         invariant_results=[
             InvariantResult("json_valid", "test-help", OutcomeStatus.OK),
@@ -109,5 +109,5 @@ def test_qa_result_marks_skipped_proof_as_non_failing(tmp_path: Path) -> None:
 
     qa_session = json.loads((report_dir / "qa-session.json").read_text())
     assert qa_result.all_passed is True
-    assert qa_session["proof"]["status"] == "skip"
-    assert qa_session["proof"]["skipped"] is True
+    assert qa_session["artifact_coverage"]["status"] == "skip"
+    assert qa_session["artifact_coverage"]["skipped"] is True

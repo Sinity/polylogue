@@ -31,18 +31,22 @@ def validate_check_options(options: CheckCommandOptions) -> None:
         fail("doctor", "--schema-record-offset requires --schemas")
     if options.schema_quarantine_malformed and not options.check_schemas:
         fail("doctor", "--schema-quarantine-malformed requires --schemas")
-    if options.artifact_providers and not (options.check_proof or options.check_artifacts or options.check_cohorts):
-        fail("doctor", "--artifact-provider requires --proof, --artifacts, or --cohorts")
+    if options.artifact_providers and not (
+        options.check_artifact_coverage or options.check_artifacts or options.check_cohorts
+    ):
+        fail("doctor", "--artifact-provider requires --artifact-coverage, --artifacts, or --cohorts")
     if options.artifact_statuses and not (options.check_artifacts or options.check_cohorts):
         fail("doctor", "--artifact-status requires --artifacts or --cohorts")
     if options.artifact_kinds and not (options.check_artifacts or options.check_cohorts):
         fail("doctor", "--artifact-kind requires --artifacts or --cohorts")
     if options.artifact_limit is not None and not (
-        options.check_proof or options.check_artifacts or options.check_cohorts
+        options.check_artifact_coverage or options.check_artifacts or options.check_cohorts
     ):
-        fail("doctor", "--artifact-limit requires --proof, --artifacts, or --cohorts")
-    if options.artifact_offset != 0 and not (options.check_proof or options.check_artifacts or options.check_cohorts):
-        fail("doctor", "--artifact-offset requires --proof, --artifacts, or --cohorts")
+        fail("doctor", "--artifact-limit requires --artifact-coverage, --artifacts, or --cohorts")
+    if options.artifact_offset != 0 and not (
+        options.check_artifact_coverage or options.check_artifacts or options.check_cohorts
+    ):
+        fail("doctor", "--artifact-offset requires --artifact-coverage, --artifacts, or --cohorts")
     if options.schema_record_limit is not None and options.schema_record_limit <= 0:
         fail("doctor", "--schema-record-limit must be a positive integer")
     if options.schema_record_offset < 0:

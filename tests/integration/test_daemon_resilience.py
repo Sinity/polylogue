@@ -11,7 +11,7 @@ durability, and OS-level resource enforcement.
 
 - ``workspace_env`` fixture for isolated XDG/archive roots.
 - ``_write_claude_code_session`` mirrors the helper from
-  ``tests/integration/test_daemon_convergence_proof.py``.
+  ``tests/integration/test_daemon_convergence_evidence.py``.
 - ``_wait_for_messages`` polls ``sqlite3`` directly so the test does
   not depend on the HTTP API being enabled.
 - Subprocess cleanup: every test uses ``try/finally`` with
@@ -34,7 +34,7 @@ import pytest
 pytestmark = [pytest.mark.slow, pytest.mark.integration]
 
 # ---------------------------------------------------------------------------
-# Session file writer (matches test_daemon_convergence_proof.py)
+# Session file writer (matches test_daemon_convergence_evidence.py)
 # ---------------------------------------------------------------------------
 
 

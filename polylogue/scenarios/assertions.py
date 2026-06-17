@@ -47,7 +47,7 @@ class AssertionSpec:
     """Expected success criteria for an authored executable scenario.
 
     The default AssertionSpec(exit_code=0) only checks that the process exits
-    cleanly - it is a smoke/process check, not semantic proof.  Semantic
+    cleanly - it is a smoke/process check, not semantic evidence.  Semantic
     assertions require explicit stdout_contains, stdout_not_contains,
     stdout_is_valid_json, or custom fields.
     """

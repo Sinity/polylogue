@@ -82,9 +82,9 @@ README should show the product story, not every feature:
 2. Local web reader: search + conversation reader + provenance.
 3. Live/capture/doctor status strip.
 4. Fuzzy selector or command palette.
-5. One short proof/confidence/verification visual only for contributors.
+5. One short confidence/verification visual only for contributors.
 
-Do not lead with proof jargon. The verification story appears as “generated from real scenario evidence,” not “look at our obligation graph.”
+Do not lead with verification jargon. The verification story appears as “generated from real scenario evidence,” not “look at our obligation graph.”
 
 ## Verification commands
 

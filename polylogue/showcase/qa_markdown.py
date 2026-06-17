@@ -46,7 +46,7 @@ def generate_qa_markdown(
     lines.append("| Stage | Status |")
     lines.append("| --- | --- |")
     lines.append(f"| Schema Audit | {status_label(result.audit_status)} |")
-    lines.append(f"| Artifact Proof | {status_label(result.proof_status)} |")
+    lines.append(f"| Artifact Coverage | {status_label(result.coverage_status)} |")
     lines.append(f"| Exercises | {status_label(result.showcase_status)} |")
     lines.append(f"| Invariants | {status_label(result.invariant_status)} |")
     lines.append(f"| Overall | {status_label(result.overall_status)} |")
@@ -68,42 +68,42 @@ def generate_qa_markdown(
         lines.append(f"- Error: {result.audit_error}")
         lines.append("")
 
-    proof_report = session.proof.report
-    if proof_report is not None:
-        proof_summary = require_payload_mapping(proof_report["summary"], context="proof.summary")
+    coverage_report = session.artifact_coverage.report
+    if coverage_report is not None:
+        coverage_summary = require_payload_mapping(coverage_report["summary"], context="artifact_coverage.summary")
         package_versions = require_payload_mapping(
-            proof_summary.get("package_versions", {}),
-            context="proof.summary.package_versions",
+            coverage_summary.get("package_versions", {}),
+            context="artifact_coverage.summary.package_versions",
         )
         element_kinds = require_payload_mapping(
-            proof_summary.get("element_kinds", {}),
-            context="proof.summary.element_kinds",
+            coverage_summary.get("element_kinds", {}),
+            context="artifact_coverage.summary.element_kinds",
         )
         resolution_reasons = require_payload_mapping(
-            proof_summary.get("resolution_reasons", {}),
-            context="proof.summary.resolution_reasons",
+            coverage_summary.get("resolution_reasons", {}),
+            context="artifact_coverage.summary.resolution_reasons",
         )
         providers = {
-            provider: require_payload_mapping(stats, context=f"proof.providers.{provider}")
+            provider: require_payload_mapping(stats, context=f"artifact_coverage.providers.{provider}")
             for provider, stats in require_payload_mapping(
-                proof_report.get("providers", {}),
-                context="proof.providers",
+                coverage_report.get("providers", {}),
+                context="artifact_coverage.providers",
             ).items()
         }
         lines.extend(
             [
-                "## Artifact Proof",
+                "## Artifact Coverage",
                 "",
                 "| Metric | Value |",
                 "| --- | ---: |",
-                f"| Total raw records | {proof_report['total_records']} |",
-                f"| Contract-backed | {proof_summary['contract_backed_records']} |",
-                f"| Unsupported parseable | {proof_summary['unsupported_parseable_records']} |",
-                f"| Recognized non-parseable | {proof_summary['recognized_non_parseable_records']} |",
-                f"| Unknown | {proof_summary['unknown_records']} |",
-                f"| Decode errors | {proof_summary['decode_errors']} |",
-                f"| Linked sidecars | {proof_summary['linked_sidecars']} |",
-                f"| Orphan sidecars | {proof_summary['orphan_sidecars']} |",
+                f"| Total raw records | {coverage_report['total_records']} |",
+                f"| Contract-backed | {coverage_summary['contract_backed_records']} |",
+                f"| Unsupported parseable | {coverage_summary['unsupported_parseable_records']} |",
+                f"| Recognized non-parseable | {coverage_summary['recognized_non_parseable_records']} |",
+                f"| Unknown | {coverage_summary['unknown_records']} |",
+                f"| Decode errors | {coverage_summary['decode_errors']} |",
+                f"| Linked sidecars | {coverage_summary['linked_sidecars']} |",
+                f"| Orphan sidecars | {coverage_summary['orphan_sidecars']} |",
                 "",
             ]
         )
@@ -138,8 +138,8 @@ def generate_qa_markdown(
                     f"{stats['unknown_records']} | {stats['decode_errors']} |"
                 )
             lines.append("")
-    elif result.proof_error:
-        lines.extend(["## Artifact Proof", "", f"- Error: {result.proof_error}", ""])
+    elif result.coverage_error:
+        lines.extend(["## Artifact Coverage", "", f"- Error: {result.coverage_error}", ""])
 
     showcase_summary = session.showcase.summary
     if showcase_summary is not None:

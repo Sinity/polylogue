@@ -12,7 +12,7 @@ scripts and agents.
 repo readiness: generated-surface rendering, baseline verification, validation
 lane dispatch, package/build checks, and branch/PR readiness gates.
 
-Domain proof semantics belong in the verification-lab, schema, scenario,
+Domain validation semantics belong in the verification-lab, schema, scenario,
 or insight modules first. A `devtools` command may expose them only as a thin
 operator entrypoint that delegates to the owning lab or insight implementation.
 
@@ -149,7 +149,7 @@ These are the commands worth remembering during normal repo work:
 
 <!-- END GENERATED: devtools-command-catalog -->
 
-## Validation and Proof
+## Validation and Evidence
 
 When changing semantics, validation, or surfaces:
 

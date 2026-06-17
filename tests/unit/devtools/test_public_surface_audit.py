@@ -6,7 +6,7 @@ stale schema-v1 vocabulary (``conversation`` / ``conversation_id`` /
 surface, while allowing it in provider-wire parsers, internal storage/core,
 tests, and historical/tombstone docs.
 
-It also rejects stale proof/QA/showcase/static-site product wording from the
+It also rejects stale evidence/QA/showcase/static-site product wording from the
 README/getting-started style public docs while allowing those terms in
 devtools/test-quality internals.
 """
@@ -105,7 +105,7 @@ def test_audit_honors_inline_allow_marker(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("needle", "replacement"),
     [
-        ("The current deterministic archive proof is complete.", "evidence or verification result"),
+        ("The current deterministic archive evidence is complete.", "evidence or verification result"),
         ("QA entrypoints are documented here.", "verification or test workflow"),
         ("Use the showcase product UI.", "demo fixture or verification-lab baseline"),
         ("Publish the static site as the product UI.", "read/export output or documentation site"),
