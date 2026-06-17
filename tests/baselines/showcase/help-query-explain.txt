@@ -1,0 +1,7 @@
+Usage: polylogue query-explain [OPTIONS] EXPRESSION...
+
+  Explain how a query expression parses and lowers before execution.
+
+Options:
+  --format [plain|json]  Output format.  [default: plain]
+  -h, --help             Show this message and exit.

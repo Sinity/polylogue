@@ -289,7 +289,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/expression.py
-    loc: 1151
+    loc: 1402
     target: polylogue/archive/query/expression.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -329,7 +329,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/predicate.py
-    loc: 55
+    loc: 120
     target: polylogue/archive/query/predicate.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -669,7 +669,7 @@ files:
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
-    loc: 181
+    loc: 183
     target: polylogue/cli/click_command_registration.py
     owner: stable
   - path: polylogue/cli/click_option_groups.py
@@ -763,6 +763,10 @@ files:
   - path: polylogue/cli/commands/paths.py
     loc: 311
     target: polylogue/cli/commands/paths.py
+    owner: stable
+  - path: polylogue/cli/commands/query_explain.py
+    loc: 56
+    target: polylogue/cli/commands/query_explain.py
     owner: stable
   - path: polylogue/cli/commands/reset.py
     loc: 335
@@ -3162,7 +3166,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/__init__.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive.py
-    loc: 5356
+    loc: 5586
     target: polylogue/storage/sqlite/archive_tiers/archive.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive_init.py
