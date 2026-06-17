@@ -174,6 +174,7 @@ METADATA_MUTATION_METHODS: frozenset[str] = frozenset(
 # parametrized contract families because they take complex args).
 BESPOKE_METHODS: frozenset[str] = frozenset(
     {
+        "explain_query_expression",
         "get_sessions",
         "get_actions_batch",
         "query_sessions",
@@ -664,6 +665,25 @@ async def test_list_read_view_profiles_exposes_shared_profile_payloads(tmp_path:
         formats = views["recovery"]["formats"]
         assert isinstance(formats, list)
         assert "markdown" in formats
+    finally:
+        await archive.close()
+
+
+async def test_explain_query_expression_exposes_shared_query_payload(tmp_path: Path) -> None:
+    """``explain_query_expression`` exposes the canonical query compiler payload."""
+    archive = _archive(tmp_path)
+    try:
+        payload = await archive.explain_query_expression("sessions where exists block(type:code) AND messages > 10")
+
+        assert payload["source_text"] == "sessions where exists block(type:code) AND messages > 10"
+        selected_units = payload["selected_units"]
+        execution_legs = payload["execution_legs"]
+        assert isinstance(selected_units, list)
+        assert isinstance(execution_legs, list)
+        assert selected_units == ["block", "session"]
+        assert "exists-block" in execution_legs
+        assert "sql" in execution_legs
+        assert payload["predicate"]
     finally:
         await archive.close()
 
