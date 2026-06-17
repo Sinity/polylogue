@@ -1,4 +1,4 @@
-"""Pydantic v2 models for all 17 YAML manifests under docs/plans/.
+"""Pydantic v2 models for all 16 YAML manifests under docs/plans/.
 
 Every manifest type from the topology projection to the oracle-quality taxonomy
 gets its own validated model.  Models use ``extra='forbid'`` so unknown fields
@@ -34,28 +34,6 @@ class TopologyManifest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     files: list[TopologyEntry]
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Assurance-domains manifest  (assurance-domains.yaml)
-# ──────────────────────────────────────────────────────────────────────
-
-
-class AssuranceDomainEntry(BaseModel):
-    """A single assurance-domain record."""
-
-    model_config = ConfigDict(extra="forbid")
-    description: str
-    notes: str | None = None
-    coverage_gaps: list[str] = Field(default_factory=list)
-
-
-class AssuranceDomainsManifest(BaseModel):
-    """Root of assurance-domains.yaml."""
-
-    model_config = ConfigDict(extra="forbid")
-    description: str | None = None
-    domains: dict[str, AssuranceDomainEntry]
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -616,7 +594,6 @@ class TestQualityCoverageManifest(BaseModel):
 # Maps YAML filename → Pydantic model class for structural validation.
 MANIFEST_MODELS: dict[str, type[BaseModel]] = {
     "topology-target.yaml": TopologyManifest,
-    "assurance-domains.yaml": AssuranceDomainsManifest,
     "lint-escalation.yaml": LintEscalationManifest,
     "scenario-coverage.yaml": ScenarioCoverageManifest,
     "campaign-coverage.yaml": CampaignCoverageManifest,
@@ -677,8 +654,6 @@ def _format_pydantic_errors(path: str, exc: Exception) -> list[str]:
 
 __all__ = [
     "ApiParityManifest",
-    "AssuranceDomainEntry",
-    "AssuranceDomainsManifest",
     "BenchmarkCampaignEntry",
     "CampaignCoverageManifest",
     "CoverageGap",

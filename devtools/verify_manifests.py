@@ -93,33 +93,6 @@ def check_lint_escalation(plans_dir: Path) -> list[str]:
     return errors
 
 
-def check_assurance_domains(plans_dir: Path) -> list[str]:
-    """Validate assurance-domains.yaml stays a documentation inventory."""
-    errors: list[str] = []
-    path = plans_dir / "assurance-domains.yaml"
-    if not path.exists():
-        return errors  # optional, may not yet exist
-
-    try:
-        data = load_manifest(path)
-    except ValueError as exc:
-        return [str(exc)]
-
-    domains = data.get("domains")
-    if not isinstance(domains, dict):
-        errors.append(f"{path}: 'domains' must be a mapping")
-        return errors
-
-    for name, domain in domains.items():
-        if not isinstance(domain, dict):
-            errors.append(f"{path}: domain {name!r} is not a mapping")
-            continue
-        if "description" not in domain:
-            errors.append(f"{path}: domain {name!r} missing description")
-
-    return errors
-
-
 def check_coverage_gaps(plans_dir: Path) -> list[str]:
     """Validate that passive coverage gaps are tracked as actionable records."""
     errors: list[str] = []
@@ -776,7 +749,6 @@ def main(argv: list[str] | None = None) -> int:
     for check in (
         check_pydantic_models,
         check_lint_escalation,
-        check_assurance_domains,
         check_coverage_gaps,
         check_coverage_references,
         check_coverage_status_claims,
