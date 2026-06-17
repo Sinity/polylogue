@@ -143,7 +143,7 @@ def test_read_view_completion_comes_from_view_profiles() -> None:
     assert [item.value for item in items] == ["recovery"]
     assert items[0].help is not None
     assert "Recovery:" in items[0].help
-    assert "successor-agent recovery digest" in items[0].help
+    assert "successor-agent recovery transform" in items[0].help
 
 
 def test_read_format_click_choices_come_from_view_profiles() -> None:
