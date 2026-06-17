@@ -8,6 +8,7 @@ import functools
 import json
 import os
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -53,12 +54,13 @@ from polylogue.surfaces.payloads import (
 if TYPE_CHECKING:
     from polylogue.api import Polylogue
     from polylogue.archive.query.spec import SessionQuerySpec
+    from polylogue.archive.semantic.content_projection import ContentProjectionSpec
     from polylogue.storage.sqlite.archive_tiers.archive import (
         ArchiveSessionSearchHit,
         ArchiveSessionSummary,
         ArchiveStore,
     )
-    from polylogue.storage.sqlite.archive_tiers.write import ArchiveMessageRow
+    from polylogue.storage.sqlite.archive_tiers.write import ArchiveBlockRow, ArchiveMessageRow
     from polylogue.surfaces.payloads import FacetBucketsPayload
 
 logger = get_logger(__name__)
@@ -103,6 +105,20 @@ def _csv_values(params: dict[str, list[str]], key: str) -> tuple[str, ...]:
     for value in params.get(key) or []:
         values.extend(token.strip() for token in value.split(",") if token.strip())
     return tuple(dict.fromkeys(values))
+
+
+def _content_projection_from_params(params: dict[str, list[str]]) -> ContentProjectionSpec:
+    from polylogue.archive.semantic.content_projection import ContentProjectionSpec
+
+    return ContentProjectionSpec.from_params(
+        {
+            "no_code_blocks": bool(params.get("no_code_blocks")),
+            "no_tool_calls": bool(params.get("no_tool_calls")),
+            "no_tool_outputs": bool(params.get("no_tool_outputs")),
+            "no_file_reads": bool(params.get("no_file_reads")),
+            "prose_only": bool(params.get("prose_only")),
+        }
+    )
 
 
 def _archive_datetime_to_ms(value: datetime | None) -> int | None:
@@ -1832,6 +1848,75 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             for att in message.attachments
         ]
 
+    def _project_text_block(self, text: str | None, projection: ContentProjectionSpec) -> str | None:
+        if text is None:
+            return None
+        if (
+            projection.include_prose
+            and projection.include_code
+            and projection.include_reasoning
+            and projection.include_system_noise
+        ):
+            return text
+
+        from polylogue.archive.message.models import Message
+        from polylogue.archive.message.roles import Role
+        from polylogue.archive.semantic.content_projection import project_message_content
+
+        projected = project_message_content(
+            [Message(id="archive-block", role=Role.ASSISTANT, text=text, blocks=[])],
+            projection,
+        )
+        if not projected:
+            return None
+        return projected[0].text
+
+    def _project_archive_message(
+        self,
+        message: ArchiveMessageRow,
+        projection: ContentProjectionSpec,
+    ) -> ArchiveMessageRow | None:
+        if projection.is_default():
+            return message
+        tool_semantics = {
+            block.tool_id: block.semantic_type
+            for block in message.blocks
+            if block.block_type == "tool_use" and block.tool_id and block.semantic_type
+        }
+        blocks: list[ArchiveBlockRow] = []
+        for block in message.blocks:
+            if block.block_type == "thinking" and not projection.include_reasoning:
+                continue
+            if block.block_type == "code" and not projection.include_code:
+                continue
+            if block.block_type == "tool_use" and not projection.include_tool_calls:
+                continue
+            if block.block_type == "tool_result":
+                semantic_type = tool_semantics.get(block.tool_id or "", block.semantic_type or "")
+                if semantic_type == "file_read" and not (
+                    projection.include_file_reads and projection.include_tool_outputs
+                ):
+                    continue
+                if semantic_type != "file_read" and not projection.include_tool_outputs:
+                    continue
+            if block.block_type in {"image", "document", "file"} and not projection.include_attachments:
+                continue
+            if block.block_type == "text":
+                text = self._project_text_block(block.text, projection)
+                if text is None:
+                    continue
+                blocks.append(replace(block, text=text))
+                continue
+            if (
+                block.block_type not in {"thinking", "code", "tool_use", "tool_result", "image", "document", "file"}
+                and not projection.include_prose
+            ):
+                continue
+            blocks.append(block)
+        if not blocks and projection.filters_content():
+            return None
+        return replace(message, blocks=tuple(blocks))
+
     def _archive_message_payload(self, session_id: str, message: ArchiveMessageRow) -> dict[str, object]:
         message_id = str(message.message_id)
         text = "\n\n".join(str(block.text) for block in message.blocks if block.text)
@@ -2233,20 +2318,35 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     def _handle_get_messages(self, conv_id: str, params: dict[str, list[str]]) -> None:
         limit = self._get_int(params, "limit", 50)
         offset = self._get_int(params, "offset", 0)
+        projection = _content_projection_from_params(params)
 
         archive_root = _web_reader_archive_root()
         if archive_root is not None:
-            self._send_json(HTTPStatus.OK, self._do_archive_get_messages(archive_root, conv_id, limit, offset))
+            self._send_json(
+                HTTPStatus.OK, self._do_archive_get_messages(archive_root, conv_id, limit, offset, projection)
+            )
             return
 
         async def _get(poly: Polylogue) -> object:
-            return await self._do_get_messages(poly, conv_id, limit, offset)
+            return await self._do_get_messages(poly, conv_id, limit, offset, projection)
 
         result = self._sync_run(_get)
         self._send_json(HTTPStatus.OK, result)
 
-    async def _do_get_messages(self, poly: Polylogue, conv_id: str, limit: int, offset: int) -> object:
-        messages, total = await poly.get_messages_paginated(conv_id, limit=limit, offset=offset)
+    async def _do_get_messages(
+        self,
+        poly: Polylogue,
+        conv_id: str,
+        limit: int,
+        offset: int,
+        projection: ContentProjectionSpec,
+    ) -> object:
+        messages, total = await poly.get_messages_paginated(
+            conv_id,
+            limit=limit,
+            offset=offset,
+            content_projection=projection,
+        )
         session_id = str(conv_id)
         return {
             "messages": [
@@ -2268,7 +2368,14 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             "offset": offset,
         }
 
-    def _do_archive_get_messages(self, archive_root: Path, conv_id: str, limit: int, offset: int) -> object:
+    def _do_archive_get_messages(
+        self,
+        archive_root: Path,
+        conv_id: str,
+        limit: int,
+        offset: int,
+        projection: ContentProjectionSpec,
+    ) -> object:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         with ArchiveStore.open_existing(archive_root) as archive:
@@ -2277,7 +2384,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 envelope = archive.read_session(session_id)
             except KeyError:
                 return {"messages": [], "total": 0, "limit": limit, "offset": offset}
-        messages = list(envelope.messages)
+        messages = [
+            message
+            for message in (self._project_archive_message(message, projection) for message in envelope.messages)
+            if message
+        ]
         page = messages[offset : offset + limit]
         return {
             "messages": [self._archive_message_payload(envelope.session_id, message) for message in page],
