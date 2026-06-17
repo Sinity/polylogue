@@ -225,6 +225,24 @@ class TestExplainExpression:
         assert sequence.selected_units == ("action", "session")
         assert sequence.execution_legs == ("sequence-action",)
 
+    def test_explain_expression_reports_terminal_unit_source(self) -> None:
+        explanation = explain_expression("messages where role:assistant AND text:timeout")
+
+        assert explanation.lowerer == "lark-query-unit-source-to-terminal-unit"
+        assert explanation.selected_units == ("message",)
+        assert explanation.execution_legs == ("sql", "terminal-message-rows")
+        assert explanation.plan_description == (
+            "terminal unit source: message",
+            "compatibility session selector: exists message(...)",
+        )
+        assert explanation.predicate == QueryBoolPredicate(
+            op="and",
+            children=(
+                QueryFieldPredicate(field="role", values=("assistant",)),
+                QueryFieldPredicate(field="text", values=("timeout",)),
+            ),
+        )
+
 
 class TestBooleanQueryExpression:
     def test_boolean_ast_exposes_predicate_tree(self) -> None:
