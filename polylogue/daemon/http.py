@@ -825,6 +825,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._handle_list_sessions(params)
         elif path == ["api", "facets"]:
             self._handle_facets(params)
+        elif path == ["api", "query-completions"]:
+            self._handle_query_completions(params)
         elif path == ["api", "paste-browser"]:
             self._handle_paste_browser(params)
         elif path == ["api", "attachments"]:
@@ -2131,6 +2133,23 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         from polylogue.daemon.thread_continue import build_templates_envelope
 
         self._send_json(HTTPStatus.OK, build_templates_envelope())
+
+    @daemon_safe_handler
+    def _handle_query_completions(self, params: dict[str, list[str]]) -> None:
+        """``GET /api/query-completions`` exposes shared query metadata."""
+
+        from polylogue.archive.query.completions import QueryCompletionError, query_completion_payload
+
+        kind = self._get_param(params, "kind") or "field"
+        incomplete = self._get_param(params, "incomplete") or ""
+        unit = self._get_param(params, "unit")
+        field = self._get_param(params, "field")
+        try:
+            payload = query_completion_payload(kind, incomplete=incomplete, unit=unit, field=field)
+        except QueryCompletionError as exc:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid_query_completion", "message": str(exc)})
+            return
+        self._send_json(HTTPStatus.OK, {"query_completions": payload})
 
     # ------------------------------------------------------------------
     # Handlers: per-session embedding similarity (#1123)
