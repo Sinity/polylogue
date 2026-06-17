@@ -234,6 +234,24 @@ def test_query_explain_json_outputs_ast_payload(cli_runner: CliRunner) -> None:
     assert payload["unsupported_nodes"] == []
 
 
+def test_query_explain_json_outputs_terminal_unit_payload(cli_runner: CliRunner) -> None:
+    result = cli_runner.invoke(
+        click_cli,
+        ["--plain", "query-explain", "--format", "json", "messages where role:assistant AND text:timeout"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["lowerer"] == "lark-query-unit-source-to-terminal-unit"
+    assert payload["selected_units"] == ["message"]
+    assert payload["execution_legs"] == ["sql", "terminal-message-rows"]
+    assert payload["plan_description"] == [
+        "terminal unit source: message",
+        "compatibility session selector: exists message(...)",
+    ]
+    assert payload["predicate"]["kind"] == "and"
+
+
 def test_query_explain_plain_outputs_plan(cli_runner: CliRunner) -> None:
     result = cli_runner.invoke(click_cli, ["--plain", "query-explain", 'repo:polylogue "json envelope"'])
 

@@ -1419,6 +1419,11 @@ def _explain_execution_legs(spec: SessionQuerySpec) -> tuple[str, ...]:
     return tuple(sorted(legs))
 
 
+def _explain_unit_source_execution_legs(source: QueryUnitSource) -> tuple[str, ...]:
+    legs = {"sql", f"terminal-{source.unit}-rows", *_predicate_execution_legs(source.predicate)}
+    return tuple(sorted(legs))
+
+
 def explain_expression(expression: str) -> QueryExpressionExplanation:
     """Explain parser output, lowering path, and execution-plan descriptions."""
     source_text = expression
@@ -1433,6 +1438,24 @@ def explain_expression(expression: str) -> QueryExpressionExplanation:
             selected_units=("session",),
             execution_legs=_explain_execution_legs(lowered),
             plan_description=tuple(lowered.to_plan().describe()),
+        )
+    unit_source = parse_unit_source_expression(stripped)
+    if unit_source is not None:
+        lowered = SessionQuerySpec(
+            boolean_predicate=QueryExistsPredicate(unit=unit_source.unit, child=unit_source.predicate)
+        )
+        return QueryExpressionExplanation(
+            source_text=source_text,
+            clauses=(),
+            predicate=unit_source.predicate,
+            lowerer="lark-query-unit-source-to-terminal-unit",
+            lowered_spec=lowered,
+            selected_units=(unit_source.unit,),
+            execution_legs=_explain_unit_source_execution_legs(unit_source),
+            plan_description=(
+                f"terminal unit source: {unit_source.unit}",
+                f"compatibility session selector: exists {unit_source.unit}(...)",
+            ),
         )
     ast = parse_expression_ast(stripped)
     lowered = compile_expression(stripped)

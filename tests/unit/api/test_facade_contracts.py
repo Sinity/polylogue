@@ -760,6 +760,24 @@ async def test_explain_query_expression_exposes_shared_query_payload(tmp_path: P
         await archive.close()
 
 
+async def test_explain_query_expression_exposes_terminal_unit_payload(tmp_path: Path) -> None:
+    """Unit-source explain output reports the terminal row unit."""
+    archive = _archive(tmp_path)
+    try:
+        payload = await archive.explain_query_expression("actions where action:file_edit AND path:polylogue")
+
+        assert payload["lowerer"] == "lark-query-unit-source-to-terminal-unit"
+        assert payload["selected_units"] == ["action"]
+        assert payload["execution_legs"] == ["sql", "terminal-action-rows"]
+        assert payload["plan_description"] == [
+            "terminal unit source: action",
+            "compatibility session selector: exists action(...)",
+        ]
+        assert payload["predicate"]
+    finally:
+        await archive.close()
+
+
 async def test_query_completions_exposes_shared_completion_payload(tmp_path: Path) -> None:
     """``query_completions`` exposes registry-backed query metadata."""
     archive = _archive(tmp_path)
