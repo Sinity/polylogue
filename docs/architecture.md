@@ -261,7 +261,7 @@ The `polylogue embed` group is the operator-facing onboarding surface:
 | Command | Purpose |
 |---------|---------|
 | `polylogue embed preflight` | Count pending messages + Voyage cost estimate without contacting the provider. |
-| `polylogue embed enable` (alias `activate`) | Verify `sqlite-vec`, capture the Voyage key, print the cost preflight, and on confirmation persist `[embedding] enabled = true` (and the API key unless `--no-store-key`) into the user `polylogue.toml`. |
+| `polylogue embed enable` | Verify `sqlite-vec`, capture the Voyage key, print the cost preflight, and on confirmation persist `[embedding] enabled = true` (and the API key unless `--no-store-key`) into the user `polylogue.toml`. |
 | `polylogue embed backfill` | Run a bounded, resumable embedding batch with per-session cost feedback; honours `embedding_max_cost_usd` as a soft cap and persists run progress. |
 | `polylogue embed disable` | Flip `embedding.enabled = false` without dropping existing embeddings — previously-embedded messages remain queryable via `--similar`. |
 | `polylogue embed status` | Coverage / freshness / configured model+cap / latest catch-up / next-action snapshot via `embedding_status_payload`. Use `--detail` for exact pending-message and retrieval-band accounting. |

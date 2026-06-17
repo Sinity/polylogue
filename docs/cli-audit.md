@@ -56,7 +56,7 @@ Registered in `polylogue/cli/click_command_registration.py`.
 | `cost` | Analytics | **Keep** | Subscription usage and cost telemetry. Subcommand: `outlook`. |
 | `insights` | Insights | **Keep (restructure)** | 14 subcommands. Needs grouping — see Subcommand Grouping below. |
 | `diagnostics` | Diagnostics | **Keep** | Temporal session diagnostics. Subcommands: `pace`, `tools`, `turns`. |
-| `embed` | Embeddings | **Keep** | Embedding pipeline management. Subcommands: `activate`, `backfill`, `disable`, `enable`, `preflight`, `status`. |
+| `embed` | Embeddings | **Keep** | Embedding pipeline management. Subcommands: `backfill`, `disable`, `enable`, `preflight`, `status`. |
 | `feedback` | User-State | **Keep** | Learning corrections for derived insights. Subcommands: `clear`, `list`, `record`. |
 | `schema` | Schema | **Keep** | Schema package inspection. Subcommands: `compare`, `explain`, `list`. |
 | `tags` | User-State | **Keep** | Tag management. Flat command with list/add/remove. Works as-is in the query-first model. |
@@ -110,11 +110,10 @@ Rename `insights tags` to `insights tag-rollups` to resolve collision with `poly
 | `tools` | **Keep** | Top tools by invocation count. |
 | `turns` | **Keep** | Per-turn cost and duration. |
 
-#### `embed` (6 subcommands)
+#### `embed` (5 subcommands)
 
 | Subcommand | Recommendation | Notes |
 |-----------|---------------|-------|
-| `activate` | **Keep (alias)** | Alias for `enable`. Keep both — `activate` is the user-facing verb, `enable` is the config verb. |
 | `backfill` | **Keep** | Run embedding batch. |
 | `disable` | **Keep** | Disable pipeline without dropping embeddings. |
 | `enable` | **Keep** | Turn on pipeline. |
