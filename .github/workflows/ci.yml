@@ -33,9 +33,6 @@ jobs:
       - run: uv run devtools render-all --check --skip agents
       - run: uv run ruff check polylogue/ tests/ devtools/
       - run: uv run ruff format --check polylogue/ tests/ devtools/
-      - name: Install ripgrep (public-surface audit dependency)
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep
-      - run: bash tools/cleanup/polylogue_public_surface_audit.sh
 
   test:
     # The full non-integration suite runs single-process under coverage

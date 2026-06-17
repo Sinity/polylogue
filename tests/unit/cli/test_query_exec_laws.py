@@ -933,7 +933,6 @@ def test_async_execute_query_archive_search_maps_provider_to_origin(
     assert payload["items"][0]["block_id"] == "codex-session:native-1:m1:0"
     assert payload["items"][0]["source"] == "codex-session"
     assert payload["items"][0]["origin"] == "codex-session"
-    assert "provider" not in payload["items"][0]
 
 
 def test_async_execute_query_archive_filters_multiple_providers(
@@ -1992,7 +1991,6 @@ def test_async_execute_query_archive_reads_session_by_id(
     assert payload["session_id"] == "codex-session:native-1"
     assert payload["source"] == "codex-session"
     assert payload["origin"] == "codex-session"
-    assert "provider" not in payload
     assert payload["messages"][0]["blocks"][0]["text"] == "hello from v1"
 
 

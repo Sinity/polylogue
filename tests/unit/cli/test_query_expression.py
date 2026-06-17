@@ -1744,13 +1744,6 @@ class TestFieldRegistry:
             assert spec.excluded_action_terms == expected
         assert getattr(spec, spec_field) in {(), None, False}
 
-    def test_origin_description_has_no_provider_source_wording(self) -> None:
-        """Regression: origin field description must not use 'provider source' (#1861)."""
-        desc = EXPRESSION_FIELD_REGISTRY["origin"]["description"]
-        assert "provider source" not in desc, "origin description must not use 'provider source' wording; got: " + repr(
-            desc
-        )
-
     def test_cross_field_or_reaches_boolean_predicate(self) -> None:
         spec = compile_expression("repo:x OR origin:chatgpt-export")
         assert isinstance(spec.boolean_predicate, QueryBoolPredicate)

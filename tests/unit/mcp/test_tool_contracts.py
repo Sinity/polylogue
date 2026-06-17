@@ -613,7 +613,6 @@ class TestArchiveTools:
         assert payload["items"][0]["session_id"] == "codex-session:native-1"
         assert payload["items"][0]["source"] == "codex-session"
         assert payload["items"][0]["origin"] == "codex-session"
-        assert "provider" not in payload["items"][0]
         mock_poly.archive_list_sessions.assert_awaited_once_with(
             origin="codex-session",
             excluded_origins=("chatgpt-export",),

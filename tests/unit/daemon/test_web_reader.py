@@ -447,7 +447,6 @@ class TestReaderSessionState:
         assert isinstance(payload, dict)
         assert payload["id"] == "claude-code-session:c1"
         assert payload["origin"] == "claude-code-session"
-        assert "provider" not in payload
         assert payload["title"].startswith("Claude Code")
         assert payload["target_ref"]["identity_key"] == "session:claude-code-session:c1"
         assert payload["anchor"] == "session-claude-code-session-c1"

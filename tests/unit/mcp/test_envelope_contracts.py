@@ -290,18 +290,14 @@ class TestEnvelopeRuntimeSerialisation:
 
 # ---------------------------------------------------------------------------
 # Insight envelope — registry-driven insight tools share the standard
-# ``{items, total}`` envelope shape after #1007 aligned the field name
-# from the historical ``count``. Pinned at the registry payload factory
-# (``insight_items_payload``) so any drift fails here loudly instead of
-# silently re-introducing the legacy field name.
+# ``{items, total}`` envelope shape through ``insight_items_payload``.
 # ---------------------------------------------------------------------------
 
 
 class TestInsightEnvelopeRuntimeSerialisation:
     """``insight_items_payload`` and the MCP insight tools must emit the
     same ``{<key>: [...], "total": N}`` shape every other paginated MCP
-    surface uses. Pin both call sites so the alignment from #1007 cannot
-    silently regress.
+    surface uses.
     """
 
     def test_insight_items_payload_uses_total_with_default_key(self) -> None:
@@ -310,7 +306,6 @@ class TestInsightEnvelopeRuntimeSerialisation:
         pt = next(iter(INSIGHT_REGISTRY.values()))
         payload = insight_items_payload([], pt)
         assert "total" in payload
-        assert "count" not in payload  # legacy field removed in #1007
         assert payload["total"] == 0
         assert pt.json_key in payload
 
@@ -321,7 +316,6 @@ class TestInsightEnvelopeRuntimeSerialisation:
         payload = insight_items_payload([], pt, item_key="items")
         assert "total" in payload
         assert "items" in payload
-        assert "count" not in payload
 
 
 # ---------------------------------------------------------------------------

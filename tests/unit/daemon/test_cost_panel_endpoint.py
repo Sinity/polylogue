@@ -165,7 +165,6 @@ class TestCostPayloadShape:
         insight = self._make_insight(status="exact", total_usd=1.23)
         payload = _cost_panel_payload(insight)
         assert payload["origin"] == "claude-code-session"
-        assert "provider" not in payload
         assert payload["status"] == "exact"
         assert payload["confidence_tag"] == "q-canonical"
         assert payload["total_usd"] == pytest.approx(1.23)

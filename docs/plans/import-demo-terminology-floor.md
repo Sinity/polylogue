@@ -15,6 +15,6 @@ through the daemon-backed import path.
 Remaining work: end-to-end demo archive convergence evidence, README-ready
 commands against the generated demo archive, parser regression pack for
 advertised origins, truthful import operation status, early unsupported-shape
-classification, and stale public vocabulary audit.
+classification.
 
 Acceptance: public examples use import/session/origin; demo mode never touches the real archive or configured source roots; parser outputs expose normalized terms; import status is visible in CLI status and web home.
