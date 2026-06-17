@@ -29,6 +29,7 @@ from polylogue.mcp.payloads import (
     MCPRawArtifactPayload,
     MCPRawArtifactsListPayload,
     MCPReadinessReportPayload,
+    MCPRootPayload,
     MCPStatsByPayload,
     logical_session_payload,
     neighbor_candidates_payload,
@@ -673,6 +674,18 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             )
 
         return hooks.safe_call("readiness_check", run)
+
+    @mcp.tool()
+    async def list_read_view_profiles() -> str:
+        """List executable read-view profile metadata for agents."""
+
+        async def run() -> str:
+            profiles = await hooks.get_polylogue().list_read_view_profiles()
+            return hooks.json_payload(
+                MCPRootPayload(root=cast(dict[str, object], {"read_views": profiles, "total": len(profiles)}))
+            )
+
+        return await hooks.async_safe_call("list_read_view_profiles", run)
 
 
 def register_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:

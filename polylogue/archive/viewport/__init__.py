@@ -6,6 +6,7 @@ from polylogue.archive.viewport.profiles import (
     SessionViewProfile,
     get_read_view_profile,
     read_view_choices,
+    read_view_profile_payloads,
 )
 
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "SessionViewProfile",
     "get_read_view_profile",
     "read_view_choices",
+    "read_view_profile_payloads",
 ]

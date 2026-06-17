@@ -24,6 +24,7 @@ from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.session.domain_models import Session, SessionSummary
 from polylogue.core.enums import Origin
+from polylogue.core.json import JSONDocument
 from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.errors import PolylogueError
 from polylogue.insights.archive import (
@@ -1093,6 +1094,12 @@ class PolylogueArchiveMixin:
         if digest is None:
             return None
         return digest.report_markdown(preset)
+
+    async def list_read_view_profiles(self) -> list[JSONDocument]:
+        """List executable read-view profile metadata."""
+        from polylogue.archive.viewport import read_view_profile_payloads
+
+        return list(read_view_profile_payloads())
 
     async def get_sessions(
         self,

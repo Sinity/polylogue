@@ -60,6 +60,7 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
         frozenset({"session_id", "root_id", "thread", "siblings", "descendants", "cycle_detected"}),
     ),
     "get_messages": ("envelope", frozenset({"messages", "total"})),
+    "list_read_view_profiles": ("envelope", frozenset({"read_views", "total"})),
     "raw_artifacts": ("envelope", frozenset({"raw_artifacts", "total"})),
     "archive_list_sessions": ("envelope", frozenset({"items", "total", "limit", "offset"})),
     "archive_search_sessions": ("envelope", frozenset({"items", "total", "limit", "query"})),
