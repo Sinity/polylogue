@@ -8,14 +8,16 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
-from typing import Any, TypedDict
+from typing import Any, Literal, TypedDict
 
 from polylogue.archive.query.path_prefix import escaped_sql_path_prefix_patterns
 from polylogue.archive.query.predicate import (
     QueryBoolPredicate,
+    QueryExistsPredicate,
     QueryFieldPredicate,
     QueryNotPredicate,
     QueryPredicate,
+    QuerySequencePredicate,
 )
 from polylogue.archive.semantic.pricing import (
     CostBasisPayload,
@@ -4300,6 +4302,189 @@ def _field_predicate_clause(
     return _clause_without_prefix(where, prefix="WHERE"), params
 
 
+def _in_or_equals_clause(column: str, values: tuple[str, ...], *, lower: bool = False) -> tuple[str, list[object]]:
+    normalized = tuple(value.strip().lower() if lower else value.strip() for value in values if value.strip())
+    if not normalized:
+        return "", []
+    expression = f"lower({column})" if lower else column
+    if len(normalized) == 1:
+        return f"{expression} = ?", [normalized[0]]
+    placeholders = ", ".join("?" for _ in normalized)
+    return f"{expression} IN ({placeholders})", list(normalized)
+
+
+def _count_predicate_clause(column: str, predicate: QueryFieldPredicate) -> tuple[str, list[object]]:
+    if not predicate.values:
+        return "", []
+    value = int(predicate.values[-1])
+    if predicate.op == ">=":
+        return f"{column} >= ?", [value]
+    if predicate.op == "<=":
+        return f"{column} <= ?", [value]
+    return f"{column} = ?", [value]
+
+
+def _like_clause(
+    expression: str,
+    values: tuple[str, ...],
+    *,
+    joiner: Literal["AND", "OR"] = "OR",
+) -> tuple[str, list[object]]:
+    normalized = tuple(value.strip().lower() for value in values if value.strip())
+    if not normalized:
+        return "", []
+    clauses = [f"lower({expression}) LIKE ?" for _ in normalized]
+    joined = f" {joiner} ".join(clauses)
+    return (f"({joined})" if len(clauses) > 1 else joined), [f"%{value}%" for value in normalized]
+
+
+def _message_field_predicate_clause(message_alias: str, predicate: QueryFieldPredicate) -> tuple[str, list[object]]:
+    field = predicate.field
+    if field == "role":
+        return _in_or_equals_clause(f"{message_alias}.role", predicate.values, lower=True)
+    if field == "type":
+        return _in_or_equals_clause(f"{message_alias}.message_type", predicate.values, lower=True)
+    if field == "words":
+        return _count_predicate_clause(f"{message_alias}.word_count", predicate)
+    if field in {"text", "command", "path", "output", "tool", "action"}:
+        action_clause = ""
+        params: list[object] = []
+        if field == "text":
+            block_clause, params = _like_clause("COALESCE(filter_blocks.search_text, '')", predicate.values)
+            action_clause = f"""
+                EXISTS (
+                    SELECT 1
+                    FROM blocks filter_blocks
+                    WHERE filter_blocks.message_id = {message_alias}.message_id
+                      AND {block_clause}
+                )
+            """.strip()
+        elif field == "tool":
+            inner_clause, params = _in_or_equals_clause("filter_actions.tool_name", predicate.values, lower=True)
+            action_clause = f"""
+                EXISTS (
+                    SELECT 1
+                    FROM actions filter_actions
+                    WHERE filter_actions.message_id = {message_alias}.message_id
+                      AND {inner_clause}
+                )
+            """.strip()
+        elif field == "action":
+            inner_clause, params = _in_or_equals_clause("filter_actions.semantic_type", predicate.values, lower=True)
+            action_clause = f"""
+                EXISTS (
+                    SELECT 1
+                    FROM actions filter_actions
+                    WHERE filter_actions.message_id = {message_alias}.message_id
+                      AND {inner_clause}
+                )
+            """.strip()
+        else:
+            action_column = {
+                "command": "COALESCE(filter_actions.tool_command, '')",
+                "path": "REPLACE(COALESCE(filter_actions.tool_path, ''), char(92), '/')",
+                "output": "COALESCE(filter_actions.output_text, '')",
+            }[field]
+            inner_clause, params = _like_clause(action_column, predicate.values)
+            action_clause = f"""
+                EXISTS (
+                    SELECT 1
+                    FROM actions filter_actions
+                    WHERE filter_actions.message_id = {message_alias}.message_id
+                      AND {inner_clause}
+                )
+            """.strip()
+        return action_clause, params
+    raise ValueError(f"unsupported message predicate field: {field}")
+
+
+def _action_field_predicate_clause(action_alias: str, predicate: QueryFieldPredicate) -> tuple[str, list[object]]:
+    field = predicate.field
+    if field == "tool":
+        return _in_or_equals_clause(f"{action_alias}.tool_name", predicate.values, lower=True)
+    if field in {"action", "type"}:
+        return _in_or_equals_clause(f"{action_alias}.semantic_type", predicate.values, lower=True)
+    if field == "command":
+        return _like_clause(f"COALESCE({action_alias}.tool_command, '')", predicate.values)
+    if field == "path":
+        return _like_clause(f"REPLACE(COALESCE({action_alias}.tool_path, ''), char(92), '/')", predicate.values)
+    if field == "output":
+        return _like_clause(f"COALESCE({action_alias}.output_text, '')", predicate.values)
+    if field == "text":
+        return _like_clause(
+            f"""
+            COALESCE({action_alias}.tool_name, '') || ' ' ||
+            COALESCE({action_alias}.semantic_type, '') || ' ' ||
+            COALESCE({action_alias}.tool_command, '') || ' ' ||
+            COALESCE({action_alias}.tool_path, '') || ' ' ||
+            COALESCE({action_alias}.tool_input, '') || ' ' ||
+            COALESCE({action_alias}.output_text, '')
+            """.strip(),
+            predicate.values,
+        )
+    raise ValueError(f"unsupported action predicate field: {field}")
+
+
+def _structural_predicate_clause(
+    unit: str,
+    row_alias: str,
+    predicate: QueryPredicate,
+) -> tuple[str, list[object]]:
+    if isinstance(predicate, QueryFieldPredicate):
+        if unit == "message":
+            return _message_field_predicate_clause(row_alias, predicate)
+        if unit == "action":
+            return _action_field_predicate_clause(row_alias, predicate)
+    if isinstance(predicate, QueryNotPredicate):
+        clause, params = _structural_predicate_clause(unit, row_alias, predicate.child)
+        return (f"NOT ({clause})" if clause else "", params)
+    if isinstance(predicate, QueryBoolPredicate):
+        child_clauses: list[str] = []
+        merged_params: list[object] = []
+        for child in predicate.children:
+            clause, child_params = _structural_predicate_clause(unit, row_alias, child)
+            if clause:
+                child_clauses.append(f"({clause})")
+                merged_params.extend(child_params)
+        if not child_clauses:
+            return "", merged_params
+        joiner = " OR " if predicate.op == "or" else " AND "
+        return joiner.join(child_clauses), merged_params
+    raise ValueError(f"unsupported nested structural predicate for {unit}: {predicate!r}")
+
+
+def _exists_predicate_clause(table_alias: str, predicate: QueryExistsPredicate) -> tuple[str, list[object]]:
+    if predicate.unit == "message":
+        row_alias = "exists_messages"
+        child_clause, params = _structural_predicate_clause(predicate.unit, row_alias, predicate.child)
+        return (
+            f"""
+            EXISTS (
+                SELECT 1
+                FROM messages {row_alias}
+                WHERE {row_alias}.session_id = {table_alias}.session_id
+                  AND {child_clause}
+            )
+            """.strip(),
+            params,
+        )
+    if predicate.unit == "action":
+        row_alias = "exists_actions"
+        child_clause, params = _structural_predicate_clause(predicate.unit, row_alias, predicate.child)
+        return (
+            f"""
+            EXISTS (
+                SELECT 1
+                FROM actions {row_alias}
+                WHERE {row_alias}.session_id = {table_alias}.session_id
+                  AND {child_clause}
+            )
+            """.strip(),
+            params,
+        )
+    raise ValueError(f"unsupported structural query unit: {predicate.unit}")
+
+
 def _boolean_predicate_clause(
     table_alias: str,
     predicate: QueryPredicate,
@@ -4308,6 +4493,10 @@ def _boolean_predicate_clause(
 ) -> tuple[str, list[object]]:
     if isinstance(predicate, QueryFieldPredicate):
         return _field_predicate_clause(table_alias, predicate, tags_relation=tags_relation)
+    if isinstance(predicate, QueryExistsPredicate):
+        return _exists_predicate_clause(table_alias, predicate)
+    if isinstance(predicate, QuerySequencePredicate):
+        return _action_sequence_clause(table_alias, predicate.action_terms)
     if isinstance(predicate, QueryNotPredicate):
         clause, params = _boolean_predicate_clause(table_alias, predicate.child, tags_relation=tags_relation)
         return (f"NOT ({clause})" if clause else "", params)

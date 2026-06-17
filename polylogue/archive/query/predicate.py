@@ -42,14 +42,39 @@ class QueryBoolPredicate:
         return {"kind": self.op, "children": [child.to_payload() for child in self.children]}
 
 
-QueryPredicate: TypeAlias = QueryFieldPredicate | QueryNotPredicate | QueryBoolPredicate
+@dataclass(frozen=True)
+class QueryExistsPredicate:
+    """Correlated structural predicate over a child archive unit."""
+
+    unit: Literal["message", "action"]
+    child: QueryPredicate
+
+    def to_payload(self) -> dict[str, object]:
+        return {"kind": "exists", "unit": self.unit, "child": self.child.to_payload()}
+
+
+@dataclass(frozen=True)
+class QuerySequencePredicate:
+    """Ordered action-sequence predicate over a session."""
+
+    action_terms: tuple[str, ...]
+
+    def to_payload(self) -> dict[str, object]:
+        return {"kind": "sequence", "unit": "action", "actions": list(self.action_terms)}
+
+
+QueryPredicate: TypeAlias = (
+    QueryFieldPredicate | QueryNotPredicate | QueryBoolPredicate | QueryExistsPredicate | QuerySequencePredicate
+)
 
 
 __all__ = [
     "QueryBoolOp",
     "QueryBoolPredicate",
     "QueryCompareOp",
+    "QueryExistsPredicate",
     "QueryFieldPredicate",
     "QueryNotPredicate",
     "QueryPredicate",
+    "QuerySequencePredicate",
 ]
