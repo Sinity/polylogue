@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import fields
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -18,15 +19,23 @@ import pytest
 from mcp.server.fastmcp import FastMCP
 
 from polylogue.archive.query.fields import mcp_query_field_names
+from polylogue.archive.query.plan import SessionQueryPlan
+from polylogue.mcp.archive_support import archive_query_filters, archive_search_payload, archive_session_list_payload
 from polylogue.mcp.query_contracts import MCPSessionQueryRequest
 from polylogue.mcp.server_tools import register_query_tools
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
+from polylogue.types import Provider
 
 SchemaMap = dict[str, dict[str, Any]]
 
 
+def _clamp_limit(value: int | object) -> int:
+    return value if isinstance(value, int) and value > 0 else 10
+
+
 def _registered_schemas() -> SchemaMap:
     hooks = MagicMock()
-    hooks.clamp_limit = lambda value: int(value) if value else 10
+    hooks.clamp_limit = _clamp_limit
 
     server = FastMCP("schema-derivation-test")
     register_query_tools(server, hooks)
@@ -107,3 +116,85 @@ def test_limit_and_offset_preserve_pydantic_constraints(schemas: SchemaMap) -> N
         offset = properties["offset"]
         assert isinstance(limit, dict) and limit.get("minimum") == 1, f"{name}: limit lost ge=1 constraint"
         assert isinstance(offset, dict) and offset.get("minimum") == 0, f"{name}: offset lost ge=0 constraint"
+
+
+def test_archive_query_filters_forward_max_words() -> None:
+    spec = MCPSessionQueryRequest(max_words=12).build_spec(_clamp_limit)
+
+    assert archive_query_filters(spec)["max_words"] == 12
+
+
+def test_archive_list_sessions_routes_near_session_to_query_executor(monkeypatch: pytest.MonkeyPatch) -> None:
+    observed: dict[str, object] = {}
+
+    def fake_archive_search_hits(
+        plan: SessionQueryPlan,
+        **kwargs: object,
+    ) -> tuple[list[tuple[ArchiveSessionSearchHit, ArchiveSessionSummary]], str]:
+        observed["similar_session_id"] = plan.similar_session_id
+        observed["archive_root"] = kwargs["archive_root"]
+        return [], "semantic"
+
+    monkeypatch.setattr("polylogue.archive.query.archive_execution.archive_search_hits", fake_archive_search_hits)
+    archive = MagicMock()
+    archive.archive_root = Path("/archive")
+    spec = MCPSessionQueryRequest(similar_session_id="seed-session", limit=5).build_spec(_clamp_limit)
+
+    payload = archive_session_list_payload(archive, spec, archive_root=Path("/archive"))
+
+    assert observed == {"similar_session_id": "seed-session", "archive_root": Path("/archive")}
+    assert payload.items == ()
+    assert payload.total == 0
+
+
+def test_archive_search_routes_near_session_to_query_executor(monkeypatch: pytest.MonkeyPatch) -> None:
+    summary = ArchiveSessionSummary(
+        session_id="codex-session:near-result",
+        native_id="near-result",
+        origin="codex-session",
+        provider=Provider.CODEX,
+        title="Nearby",
+        created_at=None,
+        updated_at=None,
+        message_count=1,
+        word_count=10,
+        tags=(),
+    )
+    hit = ArchiveSessionSearchHit(
+        rank=1,
+        session_id=summary.session_id,
+        block_id="block-1",
+        message_id="message-1",
+        origin=summary.origin,
+        provider=Provider.CODEX,
+        title=summary.title,
+        snippet="nearby match",
+    )
+
+    def fake_archive_search_hits(
+        plan: SessionQueryPlan,
+        **kwargs: object,
+    ) -> tuple[list[tuple[ArchiveSessionSearchHit, ArchiveSessionSummary]], str]:
+        assert plan.similar_session_id == "seed-session"
+        assert kwargs["archive_root"] == Path("/archive")
+        return [(hit, summary)], "semantic"
+
+    monkeypatch.setattr("polylogue.archive.query.archive_execution.archive_search_hits", fake_archive_search_hits)
+    archive = MagicMock()
+    archive.archive_root = Path("/archive")
+    archive.read_summary.return_value = summary
+    spec = MCPSessionQueryRequest(similar_session_id="seed-session", limit=5).build_spec(_clamp_limit)
+
+    payload = archive_search_payload(
+        archive,
+        spec,
+        query="",
+        limit=5,
+        offset=0,
+        retrieval_lane="semantic",
+        sort=None,
+        archive_root=Path("/archive"),
+    )
+
+    assert payload.retrieval_lane == "semantic"
+    assert [hit.session.id for hit in payload.hits] == ["codex-session:near-result"]

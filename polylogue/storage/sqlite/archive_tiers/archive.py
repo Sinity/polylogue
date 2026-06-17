@@ -89,6 +89,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import (
+    ArchiveAssertionEnvelope,
     ArchiveBlackboardNoteEnvelope,
     AssertionKind,
     assertion_id_for_annotation,
@@ -1802,9 +1803,13 @@ class ArchiveStore:
         initialize_archive_database(self.user_db_path, ArchiveTier.USER)
         user_conn = sqlite3.connect(self.user_db_path)
         try:
-            assertion = read_assertion_envelope(user_conn, assertion_id_for_saved_view(view_id))
-            exists = assertion is not None and assertion.status != "deleted"
+            assertion_id = assertion_id_for_saved_view(view_id)
+            assertion = read_assertion_envelope(user_conn, assertion_id)
+            name_assertion = _active_assertion_by_kind_key(user_conn, AssertionKind.SAVED_QUERY, normalized_name)
+            exists = (assertion is not None and assertion.status != "deleted") or name_assertion is not None
             with user_conn:
+                if name_assertion is not None and name_assertion.assertion_id != assertion_id:
+                    mark_assertion_status(user_conn, name_assertion.assertion_id, "deleted")
                 upsert_saved_view(user_conn, normalized_name, query, view_id=view_id)
             return not exists
         finally:
@@ -1945,9 +1950,13 @@ class ArchiveStore:
         initialize_archive_database(self.user_db_path, ArchiveTier.USER)
         user_conn = sqlite3.connect(self.user_db_path)
         try:
-            assertion = read_assertion_envelope(user_conn, assertion_id_for_workspace(workspace_id))
-            exists = assertion is not None and assertion.status != "deleted"
+            assertion_id = assertion_id_for_workspace(workspace_id)
+            assertion = read_assertion_envelope(user_conn, assertion_id)
+            name_assertion = _active_assertion_by_kind_key(user_conn, AssertionKind.WORKSPACE_NOTE, name)
+            exists = (assertion is not None and assertion.status != "deleted") or name_assertion is not None
             with user_conn:
+                if name_assertion is not None and name_assertion.assertion_id != assertion_id:
+                    mark_assertion_status(user_conn, name_assertion.assertion_id, "deleted")
                 upsert_workspace(user_conn, name, settings, workspace_id=workspace_id)
             return not exists
         finally:
@@ -3773,6 +3782,17 @@ def _split_user_target_ref(target_ref: str) -> tuple[str, str]:
 
 def _id_from_target_ref(target_ref: str, prefix: str) -> str:
     return target_ref[len(prefix) :] if target_ref.startswith(prefix) else target_ref
+
+
+def _active_assertion_by_kind_key(
+    conn: sqlite3.Connection,
+    kind: str,
+    key: str,
+) -> ArchiveAssertionEnvelope | None:
+    for assertion in list_assertions_by_kind(conn, kind):
+        if assertion.key == key:
+            return assertion
+    return None
 
 
 def _user_mark_session_id(target_type: str, target_id: str) -> str:

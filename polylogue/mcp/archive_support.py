@@ -64,6 +64,7 @@ class ArchiveQueryFilters(TypedDict):
     min_messages: int | None
     max_messages: int | None
     min_words: int | None
+    max_words: int | None
     since_ms: int | None
     until_ms: int | None
     since_session_id: str | None
@@ -116,6 +117,7 @@ def archive_query_filters(spec: SessionQuerySpec) -> ArchiveQueryFilters:
         "min_messages": spec.min_messages,
         "max_messages": spec.max_messages,
         "min_words": spec.min_words,
+        "max_words": spec.max_words,
         "since_ms": _date_ms(spec.since),
         "until_ms": _date_ms(spec.until),
         "since_session_id": spec.since_session_id,
@@ -265,6 +267,8 @@ def archive_session_list_payload(
     archive: ArchiveStore,
     spec: SessionQuerySpec,
     *,
+    config: Config | None = None,
+    archive_root: Path | None = None,
     default_limit: int = 10,
 ) -> MCPPaginatedQueryResultPayload:
     """Build the generic MCP list-sessions envelope from the archive."""
@@ -272,6 +276,28 @@ def archive_session_list_payload(
 
     limit = spec.limit or default_limit
     offset = max(0, spec.offset)
+    if spec.similar_session_id is not None:
+        from polylogue.archive.query.archive_execution import archive_search_hits
+        from polylogue.archive.query.spec import query_spec_to_plan
+
+        resolved_archive_root = archive_root or archive.archive_root
+        plan = query_spec_to_plan(replace(spec, limit=limit, offset=offset))
+        pairs, _resolved_lane = archive_search_hits(
+            plan,
+            archive_root=resolved_archive_root,
+            config=config,
+            default_limit=default_limit,
+        )
+        summaries = [summary for _hit, summary in pairs]
+        total = offset + len(summaries) + (1 if len(summaries) == limit else 0)
+        next_offset = offset + len(summaries) if len(summaries) == limit else None
+        return MCPPaginatedQueryResultPayload(
+            items=tuple(archive_summary_payload(summary) for summary in summaries),
+            total=total,
+            limit=limit,
+            offset=offset,
+            next_offset=next_offset,
+        )
     filters = archive_query_filters(spec)
     text_query = _archive_text_query(spec)
     if text_query is None:
@@ -316,9 +342,33 @@ def archive_search_payload(
     offset: int,
     retrieval_lane: str,
     sort: str | None,
+    config: Config | None = None,
+    archive_root: Path | None = None,
 ) -> SearchEnvelope:
     """Build the generic MCP search envelope from archive block search."""
     from polylogue.surfaces.payloads import build_search_envelope
+
+    if spec.similar_session_id is not None:
+        from polylogue.archive.query.archive_execution import archive_search_hits
+        from polylogue.archive.query.spec import query_spec_to_plan
+
+        resolved_archive_root = archive_root or archive.archive_root
+        plan = query_spec_to_plan(replace(spec, limit=limit, offset=offset))
+        pairs, resolved_lane = archive_search_hits(
+            plan,
+            archive_root=resolved_archive_root,
+            config=config,
+            default_limit=limit,
+        )
+        return build_search_envelope(
+            tuple(archive_search_hit_payload(hit, archive=archive) for hit, _summary in pairs),
+            total=offset + len(pairs) + (1 if len(pairs) == limit else 0),
+            limit=limit,
+            offset=offset,
+            query=query,
+            retrieval_lane=resolved_lane,
+            sort=sort,
+        )
 
     filters = archive_query_filters(spec)
     hits = archive.search_summaries(

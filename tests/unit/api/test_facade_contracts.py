@@ -2830,7 +2830,9 @@ async def test_archive_tiers_api_reader_artifacts_write_user_tier(tmp_path: Path
 
         view_created = await archive.save_view("view-v1", "Needs Review", '{"provider":"codex"}')
         view_updated = await archive.save_view("view-v1", "Needs Review", '{"provider":"codex","tag":"review"}')
+        view_renamed_id = await archive.save_view("view-v2", "Needs Review", '{"provider":"codex","tag":"second"}')
         view = await archive.get_view("view-v1")
+        replaced_view = await archive.get_view("view-v2")
         view_by_name = await archive.get_view_by_name("Needs Review")
         views = await archive.list_views()
 
@@ -2863,15 +2865,26 @@ async def test_archive_tiers_api_reader_artifacts_write_user_tier(tmp_path: Path
             json.dumps({"panes": 2}),
             "{}",
         )
+        workspace_renamed_id = await archive.save_workspace(
+            "workspace-v2",
+            "Review Workspace",
+            "tabs",
+            json.dumps([{"target_type": "session", "session_id": session_id}]),
+            json.dumps({"panes": 3}),
+            "{}",
+        )
         workspace = await archive.get_workspace("workspace-v1")
+        replaced_workspace = await archive.get_workspace("workspace-v2")
         workspaces = await archive.list_workspaces()
 
         assert view_created is True
         assert view_updated is False
-        assert view is not None
-        assert view_by_name == view
-        assert views == [view]
-        assert json.loads(view["query_json"]) == {"provider": "codex", "tag": "review"}
+        assert view_renamed_id is False
+        assert view is None
+        assert replaced_view is not None
+        assert view_by_name == replaced_view
+        assert views == [replaced_view]
+        assert json.loads(replaced_view["query_json"]) == {"provider": "codex", "tag": "second"}
         assert pack_created is True
         assert pack_updated is False
         assert pack is not None
@@ -2880,17 +2893,19 @@ async def test_archive_tiers_api_reader_artifacts_write_user_tier(tmp_path: Path
         assert json.loads(pack["payload_json"])["resolved_count"] == 1
         assert workspace_created is True
         assert workspace_updated is False
-        assert workspace is not None
-        assert workspaces == [workspace]
-        assert workspace["mode"] == "stack"
-        assert json.loads(workspace["layout_json"]) == {"panes": 2}
+        assert workspace_renamed_id is False
+        assert workspace is None
+        assert replaced_workspace is not None
+        assert workspaces == [replaced_workspace]
+        assert replaced_workspace["mode"] == "tabs"
+        assert json.loads(replaced_workspace["layout_json"]) == {"panes": 3}
 
-        assert await archive.delete_view("view-v1") is True
-        assert await archive.delete_view("view-v1") is False
+        assert await archive.delete_view("view-v2") is True
+        assert await archive.delete_view("view-v2") is False
         assert await archive.delete_recall_pack("pack-v1") is True
         assert await archive.delete_recall_pack("pack-v1") is False
-        assert await archive.delete_workspace("workspace-v1") is True
-        assert await archive.delete_workspace("workspace-v1") is False
+        assert await archive.delete_workspace("workspace-v2") is True
+        assert await archive.delete_workspace("workspace-v2") is False
 
         assert await archive.list_views() == []
         assert await archive.list_recall_packs() == []
