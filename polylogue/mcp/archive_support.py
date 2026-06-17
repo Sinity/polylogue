@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -345,6 +346,7 @@ def archive_query_unit_payload(
     expression: str,
     limit: int,
     offset: int,
+    session_filters: Mapping[str, object] | None = None,
 ) -> QueryUnitEnvelope:
     """Build the shared terminal query-unit envelope from an archive."""
     from polylogue.archive.query.expression import ExpressionCompileError, parse_unit_source_expression
@@ -356,7 +358,9 @@ def archive_query_unit_payload(
             "query_units requires an explicit messages/actions/blocks where expression",
             field=None,
         )
-    return query_unit_rows(archive, source, query=expression, limit=limit, offset=offset)
+    return query_unit_rows(
+        archive, source, query=expression, limit=limit, offset=offset, session_filters=session_filters
+    )
 
 
 def archive_messages_payload(

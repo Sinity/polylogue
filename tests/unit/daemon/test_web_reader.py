@@ -1052,6 +1052,17 @@ class TestReaderQueryUnits:
             "claude-ai-export:c3",
         }
 
+    def test_query_units_endpoint_applies_session_scope_filters(self, workspace_env: dict[str, Path]) -> None:
+        expression = quote("messages where text:Hello")
+        with _running_server(workspace_env) as (_, base_url):
+            payload = cast(
+                dict[str, object],
+                _get_json(base_url, f"/api/query-units?expression={expression}&origin=chatgpt-export"),
+            )
+
+        items = cast(list[dict[str, object]], payload["items"])
+        assert [item["session_id"] for item in items] == [C2]
+
     def test_query_units_endpoint_rejects_session_expression(self, workspace_env: dict[str, Path]) -> None:
         expression = quote("repo:polylogue")
         with _running_server(workspace_env) as (_, base_url):

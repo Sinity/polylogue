@@ -26,7 +26,7 @@ from polylogue.archive.query.spec import (
     normalize_action_terms,
     parse_query_date,
 )
-from polylogue.archive.query.unit_results import query_unit_rows
+from polylogue.archive.query.unit_results import query_unit_rows, query_unit_session_filters
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.archive.stats import ArchiveStats
 from polylogue.cli.query_contracts import QueryOutputSpec
@@ -1561,7 +1561,7 @@ def _emit_unit_source_rows(
 def _unit_source_session_filters(filter_kwargs: _ArchiveFilterKwargs) -> dict[str, object]:
     filters = dict(filter_kwargs)
     filters.pop("since_session_id", None)
-    return filters
+    return query_unit_session_filters(**filters)
 
 
 def _emit_unit_no_results(envelope: dict[str, object], *, unit: str, output_format: str) -> NoReturn:

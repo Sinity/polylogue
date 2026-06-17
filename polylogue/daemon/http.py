@@ -2268,7 +2268,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         from polylogue.archive.query.expression import ExpressionCompileError, parse_unit_source_expression
         from polylogue.archive.query.spec import clamp_query_limit
-        from polylogue.archive.query.unit_results import query_unit_rows
+        from polylogue.archive.query.unit_results import query_unit_rows, query_unit_session_filters
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         expression = self._get_param(params, "expression") or ""
@@ -2289,13 +2289,44 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         limit = clamp_query_limit(self._get_int(params, "limit", 50), default=50)
         offset = max(0, self._get_int(params, "offset", 0))
+        session_filters = query_unit_session_filters(
+            origin=self._get_param(params, "origin"),
+            origins=_csv_values(params, "origins"),
+            exclude_origin=self._get_param(params, "exclude_origin"),
+            tag=self._get_param(params, "tag"),
+            exclude_tag=self._get_param(params, "exclude_tag"),
+            repo=self._get_param(params, "repo"),
+            has_type=self._get_param(params, "has_type"),
+            referenced_path=self._get_param(params, "referenced_path"),
+            cwd_prefix=self._get_param(params, "cwd_prefix"),
+            action=self._get_param(params, "action"),
+            exclude_action=self._get_param(params, "exclude_action"),
+            action_sequence=self._get_param(params, "action_sequence"),
+            action_text=self._get_param(params, "action_text"),
+            tool=self._get_param(params, "tool"),
+            exclude_tool=self._get_param(params, "exclude_tool"),
+            title=self._get_param(params, "title"),
+            since=self._get_param(params, "since"),
+            until=self._get_param(params, "until"),
+            has_tool_use=self._get_bool(params, "has_tool_use"),
+            has_thinking=self._get_bool(params, "has_thinking"),
+            has_paste=self._get_bool(params, "has_paste"),
+            typed_only=self._get_bool(params, "typed_only"),
+            min_messages=self._get_param(params, "min_messages"),
+            max_messages=self._get_param(params, "max_messages"),
+            min_words=self._get_param(params, "min_words"),
+            max_words=self._get_param(params, "max_words"),
+            message_type=self._get_param(params, "message_type"),
+        )
         archive_root = _web_reader_archive_root()
         if archive_root is None:
             self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "archive_unavailable")
             return
 
         with ArchiveStore.open_existing(archive_root) as archive:
-            payload = query_unit_rows(archive, source, query=expression, limit=limit, offset=offset)
+            payload = query_unit_rows(
+                archive, source, query=expression, limit=limit, offset=offset, session_filters=session_filters
+            )
 
         self._send_json(HTTPStatus.OK, payload.model_dump(mode="json"))
 

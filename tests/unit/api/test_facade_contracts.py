@@ -1090,6 +1090,49 @@ async def test_query_units_returns_typed_envelope_on_empty_archive(tmp_path: Pat
         await archive.close()
 
 
+async def test_query_units_applies_session_scope_filters(tmp_path: Path) -> None:
+    """``query_units()`` applies surrounding session filters before returning rows."""
+    archive = _archive(tmp_path)
+    try:
+        with ArchiveStore(archive.config.archive_root) as archive_db:
+            archive_db.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="unit-filter-codex",
+                    title="Unit filter Codex",
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id="m1",
+                            role=Role.USER,
+                            text="shared terminal needle",
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="shared terminal needle")],
+                        )
+                    ],
+                )
+            )
+            archive_db.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CHATGPT,
+                    provider_session_id="unit-filter-chatgpt",
+                    title="Unit filter ChatGPT",
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id="m1",
+                            role=Role.USER,
+                            text="shared terminal needle",
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="shared terminal needle")],
+                        )
+                    ],
+                )
+            )
+
+        envelope = await archive.query_units("messages where text:needle", origin="codex-session")
+
+        assert [item.session_id for item in envelope.items] == ["codex-session:unit-filter-codex"]
+    finally:
+        await archive.close()
+
+
 async def test_query_units_rejects_session_expression(tmp_path: Path) -> None:
     """``query_units()`` is only for terminal source expressions."""
     from polylogue.archive.query.expression import ExpressionCompileError

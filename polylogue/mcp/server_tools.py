@@ -38,6 +38,7 @@ from polylogue.mcp.payloads import (
     session_tree_payload,
 )
 from polylogue.mcp.query_contracts import (
+    MCPCountBound,
     MCPToolLimit,
     MCPToolOffset,
     build_session_query_request,
@@ -125,13 +126,68 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         expression: str,
         limit: MCPToolLimit = 10,
         offset: MCPToolOffset = 0,
+        origin: str | None = None,
+        exclude_origin: str | None = None,
+        tag: str | None = None,
+        exclude_tag: str | None = None,
+        repo: str | None = None,
+        has_type: str | None = None,
+        referenced_path: str | None = None,
+        cwd_prefix: str | None = None,
+        action: str | None = None,
+        exclude_action: str | None = None,
+        action_sequence: str | None = None,
+        action_text: str | None = None,
+        tool: str | None = None,
+        exclude_tool: str | None = None,
+        title: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        has_tool_use: bool = False,
+        has_thinking: bool = False,
+        has_paste: bool = False,
+        typed_only: bool = False,
+        min_messages: MCPCountBound = None,
+        max_messages: MCPCountBound = None,
+        min_words: MCPCountBound = None,
+        max_words: MCPCountBound = None,
+        message_type: str | None = None,
     ) -> str:
         """Return terminal rows for ``messages/actions/blocks where`` query expressions."""
 
         async def run() -> str:
             from polylogue.archive.query.expression import ExpressionCompileError
+            from polylogue.archive.query.unit_results import query_unit_session_filters
 
             config = hooks.get_config()
+            session_filters = query_unit_session_filters(
+                origin=origin,
+                exclude_origin=exclude_origin,
+                tag=tag,
+                exclude_tag=exclude_tag,
+                repo=repo,
+                has_type=has_type,
+                referenced_path=referenced_path,
+                cwd_prefix=cwd_prefix,
+                action=action,
+                exclude_action=exclude_action,
+                action_sequence=action_sequence,
+                action_text=action_text,
+                tool=tool,
+                exclude_tool=exclude_tool,
+                title=title,
+                since=since,
+                until=until,
+                has_tool_use=has_tool_use,
+                has_thinking=has_thinking,
+                has_paste=has_paste,
+                typed_only=typed_only,
+                min_messages=min_messages,
+                max_messages=max_messages,
+                min_words=min_words,
+                max_words=max_words,
+                message_type=message_type,
+            )
             with ArchiveStore.open_existing(active_archive_root(config) or config.archive_root) as archive:
                 try:
                     return hooks.json_payload(
@@ -140,6 +196,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                             expression=expression,
                             limit=hooks.clamp_limit(limit),
                             offset=max(0, offset),
+                            session_filters=session_filters,
                         )
                     )
                 except ExpressionCompileError as exc:

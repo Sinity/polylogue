@@ -41,12 +41,14 @@ def _write_archive_session(
     native_id: str,
     title: str = "Native session",
     text: str = "archive message",
+    working_directories: list[str] | None = None,
 ) -> str:
     return archive.write_parsed(
         ParsedSession(
             source_name=provider,
             provider_session_id=native_id,
             title=title,
+            working_directories=working_directories or [],
             messages=[
                 ParsedMessage(
                     provider_message_id=f"{native_id}-m1",
@@ -601,6 +603,43 @@ class TestArchiveGenericToolSurfaces:
         assert payload["unit"] == "message"
         assert payload["items"][0]["session_id"] == session_id
         assert payload["items"][0]["unit"] == "message"
+
+    @pytest.mark.asyncio
+    async def test_query_units_tool_applies_session_scope_filters(
+        self: object, mcp_server: MCPServerUnderTest, tmp_path: Path
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        with ArchiveStore(archive_root) as archive:
+            kept_id = _write_archive_session(
+                archive,
+                native_id="tool-query-units-repo-kept",
+                text="shared terminal row",
+                working_directories=["/realm/project/polylogue"],
+            )
+            _write_archive_session(
+                archive,
+                native_id="tool-query-units-repo-dropped",
+                text="shared terminal row",
+                working_directories=["/realm/project/sinex"],
+            )
+
+        with (
+            patch("polylogue.mcp.server._get_config") as mock_get_config,
+            patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
+        ):
+            mock_get_config.return_value = SimpleNamespace(
+                archive_root=archive_root,
+                db_path=archive_root / "index.db",
+            )
+            mock_get_polylogue.side_effect = AssertionError("query_units tool must not open archive operations")
+            result = await invoke_surface_async(
+                mcp_server._tool_manager._tools["query_units"].fn,
+                expression="messages where text:terminal",
+                repo="polylogue",
+            )
+
+        payload = json.loads(result)
+        assert [item["session_id"] for item in payload["items"]] == [kept_id]
 
     @pytest.mark.asyncio
     async def test_query_units_tool_rejects_session_expression(self: object, mcp_server: MCPServerUnderTest) -> None:
