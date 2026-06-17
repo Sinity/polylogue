@@ -1,0 +1,7 @@
+Usage: polylogue read-views [OPTIONS]
+
+  List executable read-view profile metadata.
+
+Options:
+  -f, --format [plain|json]
+  -h, --help                 Show this message and exit.

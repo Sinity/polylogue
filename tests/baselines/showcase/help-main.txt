@@ -177,6 +177,7 @@ Commands:
   paths              Print canonical archive paths and bind-mount detection.
   query-explain      Explain query DSL parsing and lowering.
   read               Read matched sessions (route to view/destination).
+  read-views         List executable read-view profiles.
   recent             List the most recently updated sessions.
   reset              Reset local archive state.
   resume             Resume from recent session context.
