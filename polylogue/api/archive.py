@@ -63,7 +63,7 @@ if TYPE_CHECKING:
     from polylogue.insights.export_bundles import InsightExportBundleRequest, InsightExportBundleResult
     from polylogue.insights.readiness import InsightReadinessQuery, InsightReadinessReport
     from polylogue.insights.resume import ResumeBrief, ResumeCandidate
-    from polylogue.insights.transforms import RecoveryDigest, RecoveryReportPreset
+    from polylogue.insights.transforms import RecoveryDigest, RecoveryReportPreset, RecoveryWorkPacket
     from polylogue.operations import ArchiveStats
     from polylogue.protocols import ProgressCallback, SessionQueryRuntimeStore
     from polylogue.readiness import ReadinessReport
@@ -1111,6 +1111,13 @@ class PolylogueArchiveMixin:
         if digest is None:
             return None
         return digest.report_markdown(preset)
+
+    async def recovery_work_packet(self, session_id: str) -> RecoveryWorkPacket | None:
+        """Return the storage-free continuation packet DTO for a session."""
+        digest = await self.recovery_digest(session_id)
+        if digest is None:
+            return None
+        return digest.work_packet()
 
     async def list_read_view_profiles(self) -> list[JSONDocument]:
         """List executable read-view profile metadata."""

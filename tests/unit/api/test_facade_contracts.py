@@ -807,15 +807,25 @@ async def test_recovery_report_renders_seeded_session_presets(tmp_path: Path) ->
     try:
         continue_report = await archive.recovery_report("claude-ai-export:conv-alpha", "continue")
         blame_report = await archive.recovery_report("claude-ai-export:conv-alpha", "blame")
+        work_packet_report = await archive.recovery_report("claude-ai-export:conv-alpha", "work-packet")
+        work_packet = await archive.recovery_work_packet("claude-ai-export:conv-alpha")
 
         assert continue_report is not None
         assert blame_report is not None
+        assert work_packet_report is not None
+        assert work_packet is not None
         assert continue_report.startswith("# Continue: Alpha")
         assert blame_report.startswith("# Blame: Alpha")
+        assert work_packet_report.startswith("# Resume: Alpha")
+        assert work_packet.session_id == "claude-ai-export:conv-alpha"
+        assert work_packet.render_markdown() == work_packet_report
         assert continue_report != blame_report
+        assert work_packet_report not in {continue_report, blame_report}
         assert "[evidence:" in continue_report
         assert "[evidence:" in blame_report
+        assert "## Evidence" in work_packet_report
         assert await archive.recovery_report("nonexistent", "continue") is None
+        assert await archive.recovery_work_packet("nonexistent") is None
     finally:
         await archive.close()
 

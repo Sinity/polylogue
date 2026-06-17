@@ -143,7 +143,7 @@ def test_read_view_completion_comes_from_view_profiles() -> None:
     assert [item.value for item in items] == ["recovery"]
     assert items[0].help is not None
     assert "Recovery:" in items[0].help
-    assert "successor-agent recovery digest" in items[0].help
+    assert "successor-agent recovery transform" in items[0].help
 
 
 def test_read_format_click_choices_come_from_view_profiles() -> None:
@@ -268,26 +268,23 @@ def test_read_verb_context_pack_invokes_pack_view() -> None:
 
 
 def test_read_verb_recovery_compiles_digest() -> None:
-    """read --view recovery renders the deterministic recovery digest (#1880)."""
+    """read --view recovery renders the facade-compiled recovery digest (#1880)."""
     _, child = _context_pair(params={"conv_id": "codex-session:abc123"}, query_terms=())
     child.obj.polylogue = SimpleNamespace()
     wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
     assert callable(wrapped)
 
-    async def get_session(session_id: str) -> SimpleNamespace:
-        return SimpleNamespace(id=session_id)
+    async def recovery_digest(session_id: str) -> SimpleNamespace:
+        assert session_id == "codex-session:abc123"
+        return SimpleNamespace(resume_markdown="# Resume: demo\n")
 
-    child.obj.polylogue.get_session = get_session
-    digest = SimpleNamespace(resume_markdown="# Resume: demo\n")
+    child.obj.polylogue.recovery_digest = recovery_digest
 
     with (
-        patch("polylogue.insights.transforms.compile_recovery_digest", return_value=digest) as compile_digest,
         patch("polylogue.cli.query_verbs._deliver_content") as deliver,
     ):
         wrapped(child, **_read_verb_kwargs(view="recovery"))
 
-    compile_digest.assert_called_once()
-    assert compile_digest.call_args.args[0].id == "codex-session:abc123"
     deliver.assert_called_once_with(child.obj, "# Resume: demo\n", destination="terminal", out_path=None)
 
 
@@ -298,17 +295,18 @@ def test_read_verb_recovery_default_ignores_report_renderer() -> None:
     wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
     assert callable(wrapped)
 
-    async def get_session(session_id: str) -> SimpleNamespace:
-        return SimpleNamespace(id=session_id)
-
-    child.obj.polylogue.get_session = get_session
     digest = SimpleNamespace(
         resume_markdown="# Resume: demo\n",
         report_markdown=lambda preset: f"# {preset.title()}: demo [evidence: E1]\n",
     )
 
+    async def recovery_digest(session_id: str) -> SimpleNamespace:
+        assert session_id == "codex-session:abc123"
+        return digest
+
+    child.obj.polylogue.recovery_digest = recovery_digest
+
     with (
-        patch("polylogue.insights.transforms.compile_recovery_digest", return_value=digest),
         patch("polylogue.cli.query_verbs._deliver_content") as deliver,
     ):
         wrapped(child, **_read_verb_kwargs(view="recovery"))
@@ -317,45 +315,48 @@ def test_read_verb_recovery_default_ignores_report_renderer() -> None:
 
 
 def test_read_verb_recovery_report_selector_renders_presets() -> None:
-    """read --view recovery --report exposes distinct continue/blame reports."""
+    """read --view recovery --report exposes distinct recovery reports."""
     _, child = _context_pair(params={"conv_id": "codex-session:abc123"}, query_terms=())
     child.obj.polylogue = SimpleNamespace()
     wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
     assert callable(wrapped)
 
-    async def get_session(session_id: str) -> SimpleNamespace:
-        return SimpleNamespace(id=session_id)
-
-    child.obj.polylogue.get_session = get_session
     reports = {
         "continue": "# Continue: demo [evidence: E1]\n",
         "blame": "# Blame: demo [evidence: E2]\n",
+        "work-packet": "# Resume: demo\n\n## Evidence\n",
     }
-    digest = SimpleNamespace(
-        resume_markdown="# Resume: demo\n",
-        report_markdown=lambda preset: reports[preset],
-    )
+
+    async def recovery_report(session_id: str, preset: str) -> str:
+        assert session_id == "codex-session:abc123"
+        return reports[preset]
+
+    child.obj.polylogue.recovery_report = recovery_report
 
     with (
-        patch("polylogue.insights.transforms.compile_recovery_digest", return_value=digest),
         patch("polylogue.cli.query_verbs._deliver_content") as deliver,
     ):
         wrapped(child, **_read_verb_kwargs(view="recovery", recovery_report="continue"))
         wrapped(child, **_read_verb_kwargs(view="recovery", recovery_report="blame"))
+        wrapped(child, **_read_verb_kwargs(view="recovery", recovery_report="work-packet"))
 
     continue_report = deliver.call_args_list[0].args[1]
     blame_report = deliver.call_args_list[1].args[1]
+    work_packet_report = deliver.call_args_list[2].args[1]
     assert continue_report.startswith("# Continue:")
     assert blame_report.startswith("# Blame:")
+    assert work_packet_report.startswith("# Resume:")
     assert continue_report != blame_report
+    assert work_packet_report not in {continue_report, blame_report}
     assert "[evidence: E1]" in continue_report
     assert "[evidence: E2]" in blame_report
+    assert "## Evidence" in work_packet_report
 
 
 def test_read_verb_recovery_report_selector_rejects_unknown() -> None:
     option = next(param for param in query_verbs.read_verb.params if param.name == "recovery_report")
 
-    with pytest.raises(click.BadParameter, match="'incident' is not one of 'continue', 'blame'"):
+    with pytest.raises(click.BadParameter, match="'incident' is not one of 'continue', 'blame', 'work-packet'"):
         option.type.convert("incident", option, click.Context(query_verbs.read_verb))
 
 
@@ -363,14 +364,13 @@ def test_read_view_recovery_json_uses_success_envelope(capsys: pytest.CaptureFix
     """The recovery read view exposes the typed digest under the machine envelope."""
 
     class _API:
-        async def get_session(self, session_id: str) -> SimpleNamespace:
-            return SimpleNamespace(id=session_id)
+        async def recovery_digest(self, session_id: str) -> SimpleNamespace:
+            assert session_id == "s1"
+            return SimpleNamespace(resume_markdown="# Resume\n")
 
     env = SimpleNamespace(polylogue=_API())
-    digest = SimpleNamespace(resume_markdown="# Resume\n")
 
     with (
-        patch("polylogue.insights.transforms.compile_recovery_digest", return_value=digest),
         patch("polylogue.surfaces.payloads.model_json_document", return_value={"session_id": "s1"}),
     ):
         query_verbs._run_read_recovery(
@@ -387,6 +387,31 @@ def test_read_view_recovery_json_uses_success_envelope(capsys: pytest.CaptureFix
     assert '"recovery"' in output
 
 
+def test_read_view_recovery_work_packet_json_uses_success_envelope(capsys: pytest.CaptureFixture[str]) -> None:
+    """The recovery work-packet report exposes its DTO under machine output."""
+
+    class _API:
+        async def recovery_work_packet(self, session_id: str) -> SimpleNamespace:
+            assert session_id == "s1"
+            return SimpleNamespace(session_id=session_id, entries=())
+
+    env = SimpleNamespace(polylogue=_API())
+
+    with patch("polylogue.surfaces.payloads.model_json_document", return_value={"session_id": "s1"}):
+        query_verbs._run_read_recovery(
+            cast(AppEnv, env),
+            session_id="s1",
+            output_format="json",
+            report="work-packet",
+            destination="terminal",
+            out_path=None,
+        )
+
+    output = capsys.readouterr().out
+    assert '"status": "ok"' in output
+    assert '"recovery_work_packet"' in output
+
+
 def test_read_view_recovery_honors_root_json_format() -> None:
     """Root --json applies to recovery output when the verb has no local format."""
     _, child = _context_pair(params={"conv_id": "codex-session:abc123", "output_format": "json"}, query_terms=())
@@ -394,14 +419,13 @@ def test_read_view_recovery_honors_root_json_format() -> None:
     wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
     assert callable(wrapped)
 
-    async def get_session(session_id: str) -> SimpleNamespace:
-        return SimpleNamespace(id=session_id)
+    async def recovery_digest(session_id: str) -> SimpleNamespace:
+        assert session_id == "codex-session:abc123"
+        return SimpleNamespace(resume_markdown="# Resume\n")
 
-    child.obj.polylogue.get_session = get_session
-    digest = SimpleNamespace(resume_markdown="# Resume\n")
+    child.obj.polylogue.recovery_digest = recovery_digest
 
     with (
-        patch("polylogue.insights.transforms.compile_recovery_digest", return_value=digest),
         patch("polylogue.surfaces.payloads.model_json_document", return_value={"session_id": "codex-session:abc123"}),
         patch("polylogue.cli.query_verbs._deliver_content") as deliver,
     ):
