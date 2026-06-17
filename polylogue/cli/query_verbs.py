@@ -707,6 +707,13 @@ def _run_read_recovery(
     if session_id is None:
         fail("read", "read --view recovery requires a session ID (use --id, id:prefix, or --latest).")
     if report is not None:
+        if report == "work-packet" and output_format == "json":
+            packet = run_coroutine_sync(env.polylogue.recovery_work_packet(session_id))
+            if packet is None:
+                fail("read", f"Session not found: {session_id}")
+            payload = success({"recovery_work_packet": model_json_document(packet, exclude_none=True)}).to_json()
+            _deliver_content(env, payload + "\n", destination=destination, out_path=out_path)
+            return
         rendered_report = run_coroutine_sync(
             env.polylogue.recovery_report(session_id, cast("RecoveryReportPreset", report))
         )

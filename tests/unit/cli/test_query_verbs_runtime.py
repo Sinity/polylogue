@@ -387,6 +387,31 @@ def test_read_view_recovery_json_uses_success_envelope(capsys: pytest.CaptureFix
     assert '"recovery"' in output
 
 
+def test_read_view_recovery_work_packet_json_uses_success_envelope(capsys: pytest.CaptureFixture[str]) -> None:
+    """The recovery work-packet report exposes its DTO under machine output."""
+
+    class _API:
+        async def recovery_work_packet(self, session_id: str) -> SimpleNamespace:
+            assert session_id == "s1"
+            return SimpleNamespace(session_id=session_id, entries=())
+
+    env = SimpleNamespace(polylogue=_API())
+
+    with patch("polylogue.surfaces.payloads.model_json_document", return_value={"session_id": "s1"}):
+        query_verbs._run_read_recovery(
+            cast(AppEnv, env),
+            session_id="s1",
+            output_format="json",
+            report="work-packet",
+            destination="terminal",
+            out_path=None,
+        )
+
+    output = capsys.readouterr().out
+    assert '"status": "ok"' in output
+    assert '"recovery_work_packet"' in output
+
+
 def test_read_view_recovery_honors_root_json_format() -> None:
     """Root --json applies to recovery output when the verb has no local format."""
     _, child = _context_pair(params={"conv_id": "codex-session:abc123", "output_format": "json"}, query_terms=())
