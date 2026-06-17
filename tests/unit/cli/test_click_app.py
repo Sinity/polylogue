@@ -221,7 +221,7 @@ def test_read_verb_messages_requires_id(cli_runner: CliRunner) -> None:
 def test_query_explain_json_outputs_ast_payload(cli_runner: CliRunner) -> None:
     result = cli_runner.invoke(
         click_cli,
-        ["--plain", "query-explain", "sessions where repo:polylogue OR origin:chatgpt-export", "--format", "json"],
+        ["--plain", "query-explain", "--format", "json", "sessions where repo:polylogue OR origin:chatgpt-export"],
     )
 
     assert result.exit_code == 0, result.output
@@ -240,6 +240,23 @@ def test_query_explain_plain_outputs_plan(cli_runner: CliRunner) -> None:
     assert "lowerer: lark-query-expression-to-session-query-spec" in result.output
     assert "clauses:" in result.output
     assert "plan:" in result.output
+
+
+def test_query_explain_accepts_negated_dsl_tokens(cli_runner: CliRunner) -> None:
+    result = cli_runner.invoke(
+        click_cli,
+        ["--plain", "query-explain", "--format", "json", "repo:polylogue", "-tag:stale"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["source_text"] == "repo:polylogue -tag:stale"
+    assert payload["clauses"][1] == {
+        "field": "tag",
+        "kind": "field",
+        "negated": True,
+        "value": "stale",
+    }
 
 
 def test_read_verb_raw_view_forwards_options(cli_runner: CliRunner) -> None:

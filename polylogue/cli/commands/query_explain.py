@@ -10,8 +10,48 @@ import click
 from polylogue.archive.query.expression import explain_expression
 
 
-@click.command("query-explain")
-@click.argument("expression", nargs=-1, required=True)
+class QueryExplainCommand(click.Command):
+    """Click command that treats query words as opaque DSL input."""
+
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        if any(arg in {"--help", "-h"} for arg in args):
+            return super().parse_args(ctx, args)
+
+        output_format = "plain"
+        expression: list[str] = []
+        index = 0
+        while index < len(args):
+            arg = args[index]
+            if arg == "--":
+                expression.extend(args[index + 1 :])
+                break
+            if arg == "--format":
+                index += 1
+                if index >= len(args):
+                    raise click.UsageError("--format requires an argument")
+                output_format = args[index]
+            elif arg.startswith("--format="):
+                output_format = arg.split("=", 1)[1]
+            else:
+                expression.append(arg)
+            index += 1
+
+        choices = {"plain", "json"}
+        if output_format not in choices:
+            raise click.BadParameter(
+                f"{output_format!r} is not one of {'; '.join(sorted(choices))}",
+                param_hint="--format",
+            )
+        if not expression:
+            raise click.UsageError("Missing argument 'EXPRESSION...'.")
+
+        ctx.params["output_format"] = output_format
+        ctx.params["expression"] = tuple(expression)
+        return []
+
+
+@click.command("query-explain", cls=QueryExplainCommand)
+@click.argument("expression", nargs=-1, required=True, type=click.UNPROCESSED)
 @click.option(
     "--format",
     "output_format",
