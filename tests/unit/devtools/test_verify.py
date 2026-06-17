@@ -329,6 +329,14 @@ def test_pytest_run_emits_heartbeat_for_long_silent_child(
     assert "elapsed=" in captured.err
 
 
+def test_pytest_run_streams_child_output_live(capsys: pytest.CaptureFixture[str]) -> None:
+    rc, _elapsed, _metadata = _run("pytest output", [sys.executable, "-c", "print('pytest-progress')"])
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "pytest-progress" in captured.err
+
+
 def test_pytest_run_terminates_after_runtime_budget(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

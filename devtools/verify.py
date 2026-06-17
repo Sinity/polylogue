@@ -380,6 +380,8 @@ def _run_pytest_with_heartbeat(
                 if chunk:
                     stream_name = str(selector_key.data)
                     output[stream_name].append(chunk)
+                    sys.stderr.write(chunk.decode(errors="replace"))
+                    sys.stderr.flush()
                     last_output = time.monotonic()
                 else:
                     selector.unregister(selector_key.fileobj)
