@@ -633,7 +633,7 @@ function renderSessions() {
     var sel = state.selected && state.selected.id === c.id ? ' selected' : '';
     var bulkSel = isBulkSelected(c.id) ? ' bulk-selected' : '';
     var title = esc((c.title || 'Untitled').substring(0, 100));
-    var date = c.date ? new Date(c.date).toLocaleDateString() : (c.created_at ? new Date(c.created_at).toLocaleDateString() : '');
+    var date = c.created_at ? new Date(c.created_at).toLocaleDateString() : '';
     var p = c.origin || 'unknown';
     var dotColor = 'var(--provider-' + p.replace(/_/g, '-') + ', var(--text-dim))';
     var flagsHtml = '';

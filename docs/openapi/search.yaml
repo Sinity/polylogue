@@ -997,19 +997,9 @@ components:
           - type: 'null'
           default: null
           title: Updated At
-        date:
-          anyOf:
-          - type: string
-          - type: 'null'
-          default: null
-          title: Date
         message_count:
           default: 0
           title: Message Count
-          type: integer
-        messages:
-          default: 0
-          title: Messages
           type: integer
         tags:
           default: []
