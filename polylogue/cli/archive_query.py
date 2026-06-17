@@ -19,14 +19,14 @@ from typing_extensions import TypedDict
 
 from polylogue.archive.message.roles import MessageRoleFilter, Role, normalize_message_roles
 from polylogue.archive.message.types import validate_message_type_filter
-from polylogue.archive.query.expression import parse_unit_source_expression
-from polylogue.archive.query.predicate import QueryPredicate
+from polylogue.archive.query.expression import QueryUnitSource, parse_unit_source_expression
 from polylogue.archive.query.spec import (
     QuerySpecError,
     normalize_action_sequence,
     normalize_action_terms,
     parse_query_date,
 )
+from polylogue.archive.query.unit_results import query_unit_rows
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.archive.stats import ArchiveStats
 from polylogue.cli.query_contracts import QueryOutputSpec
@@ -41,9 +41,6 @@ from polylogue.config import Config
 from polylogue.paths import archive_file_set_root_for_paths
 from polylogue.storage.search_providers import create_vector_provider, reciprocal_rank_fusion
 from polylogue.storage.sqlite.archive_tiers.archive import (
-    ArchiveActionQueryRow,
-    ArchiveBlockQueryRow,
-    ArchiveMessageQueryRow,
     ArchiveSessionSearchHit,
     ArchiveSessionSummary,
     ArchiveStore,
@@ -292,8 +289,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                 )
             _emit_unit_source_rows(
                 archive,
-                unit=unit_source.unit,
-                predicate=unit_source.predicate,
+                source=unit_source,
                 query=query,
                 limit=limit,
                 offset=page_offset,
@@ -1525,45 +1521,27 @@ def _emit_rows(
 def _emit_unit_source_rows(
     archive: ArchiveStore,
     *,
-    unit: str,
-    predicate: QueryPredicate,
+    source: QueryUnitSource,
     query: str,
     limit: int,
     offset: int,
     output_format: str,
     fields: str | None,
 ) -> None:
-    fetch_limit = limit + 1
-    if unit == "message":
-        message_rows = archive.query_messages(predicate, limit=fetch_limit, offset=offset)
-        items = [_message_query_payload(row) for row in message_rows[:limit]]
+    envelope_model = query_unit_rows(archive, source, query=query, limit=limit, offset=offset)
+    envelope = envelope_model.model_dump(mode="json")
+    items = [item.model_dump(mode="json") for item in envelope_model.items]
+    if source.unit == "message":
         text_line = _message_query_line
-        has_next = len(message_rows) > limit
-    elif unit == "action":
-        action_rows = archive.query_actions(predicate, limit=fetch_limit, offset=offset)
-        items = [_action_query_payload(row) for row in action_rows[:limit]]
+    elif source.unit == "action":
         text_line = _action_query_line
-        has_next = len(action_rows) > limit
-    elif unit == "block":
-        block_rows = archive.query_blocks(predicate, limit=fetch_limit, offset=offset)
-        items = [_block_query_payload(row) for row in block_rows[:limit]]
+    elif source.unit == "block":
         text_line = _block_query_line
-        has_next = len(block_rows) > limit
     else:
-        raise click.UsageError(f"Unsupported query unit: {unit}")
+        raise click.UsageError(f"Unsupported query unit: {source.unit}")
 
-    envelope: dict[str, object] = {
-        "mode": "query-unit",
-        "unit": unit,
-        "query": query,
-        "items": items,
-        "total": len(items),
-        "limit": limit,
-        "offset": offset,
-        "next_offset": offset + limit if has_next else None,
-    }
     if not items:
-        _emit_unit_no_results(envelope, unit=unit, output_format=output_format)
+        _emit_unit_no_results(envelope, unit=source.unit, output_format=output_format)
     _emit_rows(envelope, items, output_format=output_format, text_line=text_line, fields=fields)
 
 
@@ -1580,56 +1558,6 @@ def _emit_unit_no_results(envelope: dict[str, object], *, unit: str, output_form
     else:
         click.echo(f"No {unit}s matched.")
     raise SystemExit(2)
-
-
-def _message_query_payload(row: ArchiveMessageQueryRow) -> dict[str, object]:
-    return {
-        "unit": "message",
-        "message_id": row.message_id,
-        "session_id": row.session_id,
-        "origin": row.origin,
-        "title": row.title,
-        "role": row.role,
-        "message_type": row.message_type,
-        "position": row.position,
-        "word_count": row.word_count,
-        "text": row.text,
-    }
-
-
-def _action_query_payload(row: ArchiveActionQueryRow) -> dict[str, object]:
-    return {
-        "unit": "action",
-        "session_id": row.session_id,
-        "message_id": row.message_id,
-        "origin": row.origin,
-        "title": row.title,
-        "tool_use_block_id": row.tool_use_block_id,
-        "tool_result_block_id": row.tool_result_block_id,
-        "tool_name": row.tool_name,
-        "semantic_type": row.semantic_type,
-        "tool_command": row.tool_command,
-        "tool_path": row.tool_path,
-        "output_text": row.output_text,
-    }
-
-
-def _block_query_payload(row: ArchiveBlockQueryRow) -> dict[str, object]:
-    return {
-        "unit": "block",
-        "block_id": row.block_id,
-        "message_id": row.message_id,
-        "session_id": row.session_id,
-        "origin": row.origin,
-        "title": row.title,
-        "block_type": row.block_type,
-        "position": row.position,
-        "text": row.text,
-        "tool_name": row.tool_name,
-        "semantic_type": row.semantic_type,
-        "tool_command": row.tool_command,
-        "tool_path": row.tool_path,
-    }
 
 
 def _snippet(value: object, *, max_chars: int = 96) -> str:

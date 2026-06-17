@@ -569,6 +569,51 @@ class TestArchiveGenericToolSurfaces:
         assert payload["hits"][0]["session"]["id"] == session_id
         assert payload["hits"][0]["match"]["message_id"]
 
+    @pytest.mark.asyncio
+    async def test_query_units_tool_reads_archive_file_set(
+        self: object, mcp_server: MCPServerUnderTest, tmp_path: Path
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        with ArchiveStore(archive_root) as archive:
+            session_id = _write_archive_session(
+                archive,
+                native_id="tool-query-units-v1",
+                title="Tool query units v1",
+                text="needle terminal row from archive index",
+            )
+
+        with (
+            patch("polylogue.mcp.server._get_config") as mock_get_config,
+            patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
+        ):
+            mock_get_config.return_value = SimpleNamespace(
+                archive_root=archive_root,
+                db_path=archive_root / "index.db",
+            )
+            mock_get_polylogue.side_effect = AssertionError("query_units tool must not open archive operations")
+            result = await invoke_surface_async(
+                mcp_server._tool_manager._tools["query_units"].fn,
+                expression="messages where text:needle",
+            )
+
+        payload = json.loads(result)
+        assert payload["mode"] == "query-unit"
+        assert payload["unit"] == "message"
+        assert payload["items"][0]["session_id"] == session_id
+        assert payload["items"][0]["unit"] == "message"
+
+    @pytest.mark.asyncio
+    async def test_query_units_tool_rejects_session_expression(self: object, mcp_server: MCPServerUnderTest) -> None:
+        result = await invoke_surface_async(
+            mcp_server._tool_manager._tools["query_units"].fn,
+            expression="repo:polylogue",
+        )
+
+        payload = json.loads(result)
+        assert payload["is_error"] is True
+        assert payload["tool"] == "query_units"
+        assert payload["code"] == "invalid_query"
+
     def test_get_session_tools_read_archive_file_set(
         self: object, mcp_server: MCPServerUnderTest, tmp_path: Path
     ) -> None:
