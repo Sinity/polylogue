@@ -69,6 +69,25 @@ class TestBackfillKindCoverage:
         payload = op.to_dict()
         assert payload["kind"] == kind.value
 
+    @pytest.mark.parametrize(
+        ("stored_kind", "expected"),
+        [
+            ("backfill", BackfillKind.DERIVED_REBUILD),
+            ("rebuild", BackfillKind.DERIVED_REBUILD),
+            ("reindex", BackfillKind.INDEX_REPAIR),
+            ("reset", BackfillKind.CONFIG_DRIVEN),
+        ],
+    )
+    def test_retired_stored_kind_values_rehydrate_to_typed_kind(self, stored_kind: str, expected: BackfillKind) -> None:
+        op = BackfillOperation.from_dict(
+            {
+                "operation_id": "op-1",
+                "kind": stored_kind,
+                "targets": ["session_insights"],
+            }
+        )
+        assert op.kind is expected
+
 
 class TestInvalidationReasonCoverage:
     """Every InvalidationReason value from #1144 must be representable

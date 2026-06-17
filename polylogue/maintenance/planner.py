@@ -109,6 +109,22 @@ class BackfillKind(str, Enum):
     CONFIG_DRIVEN = "config-driven"
 
 
+_RETIRED_STORED_KIND_MAP: dict[str, BackfillKind] = {
+    "backfill": BackfillKind.DERIVED_REBUILD,
+    "rebuild": BackfillKind.DERIVED_REBUILD,
+    "reindex": BackfillKind.INDEX_REPAIR,
+    "reset": BackfillKind.CONFIG_DRIVEN,
+}
+
+
+def _coerce_backfill_kind(value: object) -> BackfillKind:
+    text = str(value)
+    try:
+        return BackfillKind(text)
+    except ValueError:
+        return _RETIRED_STORED_KIND_MAP.get(text, BackfillKind.DERIVED_REBUILD)
+
+
 class BackfillStatus(str, Enum):
     """Lifecycle status of a backfill operation."""
 
@@ -285,11 +301,7 @@ class BackfillOperation:
         """
 
         op_id = str(payload.get("operation_id", ""))
-        kind_raw = str(payload.get("kind", BackfillKind.DERIVED_REBUILD.value))
-        try:
-            kind = BackfillKind(kind_raw)
-        except ValueError:
-            kind = BackfillKind.DERIVED_REBUILD
+        kind = _coerce_backfill_kind(payload.get("kind", BackfillKind.DERIVED_REBUILD.value))
         status_raw = str(payload.get("status", BackfillStatus.PENDING.value))
         try:
             status = BackfillStatus(status_raw)
