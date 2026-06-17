@@ -74,8 +74,14 @@ def query_explain_command(expression: tuple[str, ...], output_format: str) -> No
     click.echo(f"lowerer: {payload['lowerer']}")
     predicate = payload["predicate"]
     clauses = cast(list[object], payload["clauses"])
+    selected_units = cast(list[str], payload["selected_units"])
+    execution_legs = cast(list[str], payload["execution_legs"])
     plan_description = cast(list[str], payload["plan_description"])
     unsupported_nodes = cast(list[str], payload["unsupported_nodes"])
+    if selected_units:
+        click.echo("units: " + ", ".join(selected_units))
+    if execution_legs:
+        click.echo("execution legs: " + ", ".join(execution_legs))
     if predicate is not None:
         click.echo("predicate:")
         click.echo(json.dumps(predicate, indent=2, sort_keys=True))

@@ -157,6 +157,8 @@ class TestExplainExpression:
         assert explanation.source_text == 'repo:polylogue has:paste "json envelope"'
         assert explanation.lowerer == "lark-query-expression-to-session-query-spec"
         assert explanation.unsupported_nodes == ()
+        assert explanation.selected_units == ("session",)
+        assert explanation.execution_legs == ("fts", "sql")
         assert explanation.lowered_spec.repo_names == ("polylogue",)
         assert explanation.lowered_spec.filter_has_paste is True
         assert explanation.clauses[0].to_payload() == {
@@ -178,7 +180,26 @@ class TestExplainExpression:
         assert explanation.lowered_spec.repo_names == ("polylogue",)
         assert explanation.lowered_spec.limit == 5
         assert explanation.clauses[0].kind == "json"
+        assert explanation.selected_units == ("session",)
+        assert explanation.execution_legs == ("sql",)
         assert explanation.to_payload()["unsupported_nodes"] == []
+
+    def test_explain_expression_reports_boolean_units_and_legs(self) -> None:
+        explanation = explain_expression("sessions where exists block(type:code) AND lineage:id:root")
+
+        assert explanation.selected_units == ("block", "lineage", "session")
+        assert explanation.execution_legs == ("exists-block", "lineage-recursive-cte", "sql")
+        payload = explanation.to_payload()
+        assert payload["selected_units"] == ["block", "lineage", "session"]
+        assert payload["execution_legs"] == ["exists-block", "lineage-recursive-cte", "sql"]
+
+    def test_explain_expression_reports_semantic_and_sequence_legs(self) -> None:
+        semantic = explain_expression('sessions where semantic:"query compiler" AND title:hit')
+        sequence = explain_expression("sessions where seq(action:file_edit -> action:shell)")
+
+        assert semantic.execution_legs == ("sql", "vector")
+        assert sequence.selected_units == ("action", "session")
+        assert sequence.execution_legs == ("sequence-action",)
 
 
 class TestBooleanQueryExpression:
