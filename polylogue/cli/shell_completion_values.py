@@ -61,7 +61,7 @@ class QueryCompletionCandidate:
     def to_click_item(self) -> CompletionItem:
         return CompletionItem(
             self.insert,
-            type=self.kind,
+            type="plain",
             help=self.description,
         )
 

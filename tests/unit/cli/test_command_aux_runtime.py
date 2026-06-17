@@ -125,6 +125,9 @@ def test_query_field_candidates_come_from_expression_registry() -> None:
     assert repo_candidate.kind == "query-field"
     assert repo_candidate.source == "EXPRESSION_FIELD_REGISTRY"
     assert EXPRESSION_FIELD_REGISTRY["repo"]["description"] in repo_candidate.description
+    click_item = repo_candidate.to_click_item()
+    assert click_item.value == "repo:"
+    assert click_item.type == "plain"
 
 
 @pytest.fixture
