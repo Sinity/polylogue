@@ -26,3 +26,9 @@ def test_legacy_qa_report_aggregator_is_removed() -> None:
     """QA report behavior lives in owned payload, Markdown, and summary modules."""
 
     assert not (ROOT / "polylogue" / "showcase" / "qa_report.py").exists()
+
+
+def test_legacy_output_assurance_registry_is_removed() -> None:
+    """Action contracts and generated schemas own machine-output coverage."""
+
+    assert not (ROOT / "polylogue" / "cli" / "output_assurance.py").exists()
