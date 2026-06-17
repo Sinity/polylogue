@@ -194,6 +194,7 @@ Commands:
   resume             Resume from recent session context.
   resume-candidates  Rank resume candidates for the current context.
   schema             Inspect and audit provider schemas.
+  select
   stats              Show statistics for matched sessions.
   status             Show daemon and archive status.
   tags               Manage session tags.
@@ -600,6 +601,7 @@ It records the public action floor, not every utility command in the Click tree.
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `polylogue find` | `read` | `none` | `any` | `human`, `json`, `ndjson` | `human` | `result_set` | `explicit_query_intent` | `query_expression` |
 | `polylogue read` | `read` | `query_result_set` | `explicit_multi` | `human`, `json`, `ndjson` | `human` | `item` | `single_match_unless_all`, `file_destination_requires_out` | `session_id` |
+| `polylogue select` | `read` | `query_result_set` | `singleton` | `human`, `json` | `human` | `item` | - | `session_id` |
 | `polylogue mark` | `write` | `query_result_set` | `explicit_multi` | `human` | `human` | `mutation` | `single_match_unless_all_or_first` | `session_id` |
 | `polylogue analyze` | `read` | `query_result_set` | `any` | `human`, `json`, `ndjson` | `human` | `result_set` | - | `query_expression` |
 | `polylogue delete` | `destructive` | `query_result_set` | `destructive_multi` | `human` | `human` | `mutation` | `dry_run_or_yes_required`, `single_match_unless_all` | `session_id` |

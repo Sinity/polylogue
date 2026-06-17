@@ -347,11 +347,11 @@ def test_query_then_action_completion_per_shell(
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
 
-    items = _run_completion_for_partial(shell, comp_cls, ["find", "id:abc", "then"], "r")
+    items = _run_completion_for_partial(shell, comp_cls, ["find", "id:abc", "then"], "s")
     item_map = dict(items)
 
-    assert "read" in item_map
-    assert item_map["read"] is not None and "input=query_result_set" in item_map["read"]
+    assert "select" in item_map
+    assert item_map["select"] is not None and "input=query_result_set" in item_map["select"]
     assert "read-views" not in item_map
     assert "repo:" not in item_map
     assert "reset" not in item_map

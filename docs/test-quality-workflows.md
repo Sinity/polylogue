@@ -14,10 +14,10 @@ Current registry snapshot:
 - mutation campaigns: `19`
 - benchmark campaigns: `7`
 - synthetic benchmark campaigns: `6`
-- scenario projections: `270`
+- scenario projections: `271`
 - inferred corpus scenarios: `8`
   - benchmark-campaign: `7`
-  - exercise: `163`
+  - exercise: `164`
   - inferred-corpus-scenario: `8`
   - mutation-campaign: `19`
   - synthetic-benchmark: `6`
@@ -419,6 +419,7 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-schema-compare` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | schema compare help |
 | `exercise` | `help-schema-explain` | `schema-explain-query-loop` | `schema_packages`<br>`schema_explanation_results` | `cli.help`<br>`query-schema-explanations` | — | `generated`<br>`help`<br>`structural` | schema explain help |
 | `exercise` | `help-schema-list` | `schema-list-query-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios`<br>`schema_list_results` | `cli.help`<br>`query-schema-catalog` | — | `generated`<br>`help`<br>`structural` | schema list help |
+| `exercise` | `help-select` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | select help |
 | `exercise` | `help-stats` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | stats help |
 | `exercise` | `help-status` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | status help |
 | `exercise` | `help-tags` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | tags help |

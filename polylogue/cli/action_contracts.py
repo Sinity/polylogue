@@ -53,6 +53,7 @@ VIRTUAL_ACTION_PATHS: frozenset[tuple[str, ...]] = frozenset(
 
 PUBLIC_ACTION_FLOOR: tuple[tuple[str, ...], ...] = (
     ("find",),
+    ("select",),
     ("read",),
     ("mark",),
     ("analyze",),
@@ -90,6 +91,17 @@ ACTION_CONTRACTS: tuple[CliActionContract, ...] = (
         machine_envelope="item",
         requires_daemon=False,
         guards=("single_match_unless_all", "file_destination_requires_out"),
+        completion_context="session_id",
+    ),
+    CliActionContract(
+        path=("select",),
+        effect="read",
+        input_unit="query_result_set",
+        cardinality="singleton",
+        formats=frozenset({"human", "json"}),
+        default_format="human",
+        machine_envelope="item",
+        requires_daemon=False,
         completion_context="session_id",
     ),
     CliActionContract(

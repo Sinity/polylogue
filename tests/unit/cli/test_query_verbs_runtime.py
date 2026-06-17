@@ -101,6 +101,33 @@ def test_stats_verb_toggles_stats_only_and_updates_grouping() -> None:
     assert grouped_request.query_params()["limit"] == 3
 
 
+def test_select_verb_invokes_query_backed_selector() -> None:
+    _, child = _context_pair(params={"origin": "chatgpt-export"}, query_terms=("alpha",))
+    wrapped = getattr(query_verbs.select_verb.callback, "__wrapped__", None)
+    assert callable(wrapped)
+
+    with patch("polylogue.cli.select.run_select") as run_select:
+        wrapped(child, 7, "title", False)
+
+    request = run_select.call_args.args[1]
+    assert run_select.call_args.args[0] is child.obj
+    assert isinstance(request, RootModeRequest)
+    assert request.query_params()["origin"] == "chatgpt-export"
+    assert request.query_params()["query"] == ("alpha",)
+    assert run_select.call_args.kwargs == {"limit": 7, "print_field": "title"}
+
+
+def test_select_verb_json_flag_overrides_print_field() -> None:
+    _, child = _context_pair(query_terms=("alpha",))
+    wrapped = getattr(query_verbs.select_verb.callback, "__wrapped__", None)
+    assert callable(wrapped)
+
+    with patch("polylogue.cli.select.run_select") as run_select:
+        wrapped(child, 5, "id", True)
+
+    assert run_select.call_args.kwargs == {"limit": 5, "print_field": "json"}
+
+
 def test_read_view_click_choices_come_from_view_profiles() -> None:
     option = next(param for param in query_verbs.read_verb.params if param.name == "view")
 

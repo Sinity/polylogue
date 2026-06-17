@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from polylogue.archive.session.domain_models import Session, SessionSummary
     from polylogue.archive.session.neighbor_candidates import SessionNeighborCandidate
     from polylogue.cli.root_request import RootModeRequest
+    from polylogue.cli.select import SelectPrintField
     from polylogue.insights.transforms import RecoveryReportPreset
 
 from polylogue.archive.viewport import READ_VIEW_PROFILE_BY_ID, READ_VIEW_PROFILES, read_view_choices
@@ -125,6 +126,28 @@ def list_verb(ctx: click.Context, output_format: str | None, fields: str | None,
 def count_verb(ctx: click.Context) -> None:
     """Print count of matched sessions."""
     _execute_query_verb(ctx, _parent_request(ctx).with_param_updates(count_only=True))
+
+
+@click.command("select")
+@click.option(
+    "--limit", "-n", default=20, show_default=True, type=click.IntRange(min=1), help="Max candidate sessions."
+)
+@click.option(
+    "--print",
+    "print_field",
+    type=click.Choice(["id", "title", "origin"]),
+    default="id",
+    show_default=True,
+    help="Field to print for the selected session.",
+)
+@click.option("--json", "json_output", is_flag=True, help="Print the selected session as one JSON object.")
+@click.pass_context
+def select_verb(ctx: click.Context, limit: int, print_field: str, json_output: bool) -> None:
+    """Select one matched session with fzf/prompt fallback."""
+    from polylogue.cli.select import run_select
+
+    field: SelectPrintField = "json" if json_output else cast("SelectPrintField", print_field)
+    run_select(ctx.obj, _parent_request(ctx), limit=limit, print_field=field)
 
 
 @click.command("stats")
@@ -1150,6 +1173,7 @@ QUERY_VERBS = (
     count_verb,
     stats_verb,
     recent_verb,
+    select_verb,
     read_verb,
     delete_verb,
     mark_verb,
@@ -1167,5 +1191,6 @@ __all__ = [
     "mark_verb",
     "read_verb",
     "recent_verb",
+    "select_verb",
     "stats_verb",
 ]
