@@ -1124,10 +1124,45 @@ class PolylogueArchiveMixin:
 
         return cast(JSONDocument, explain_expression(expression).to_payload())
 
-    async def query_units(self, expression: str, *, limit: int = 50, offset: int = 0) -> QueryUnitEnvelope:
+    async def query_units(
+        self,
+        expression: str,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        origin: str | None = None,
+        origins: tuple[str, ...] = (),
+        excluded_origins: tuple[str, ...] = (),
+        tag: str | None = None,
+        tags: tuple[str, ...] = (),
+        excluded_tags: tuple[str, ...] = (),
+        repo: str | None = None,
+        repo_names: tuple[str, ...] = (),
+        has_types: tuple[str, ...] = (),
+        tool_terms: tuple[str, ...] = (),
+        excluded_tool_terms: tuple[str, ...] = (),
+        action_terms: tuple[str, ...] = (),
+        excluded_action_terms: tuple[str, ...] = (),
+        action_sequence: tuple[str, ...] = (),
+        action_text_terms: tuple[str, ...] = (),
+        referenced_paths: tuple[str, ...] = (),
+        cwd_prefix: str | None = None,
+        title: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        has_tool_use: bool = False,
+        has_thinking: bool = False,
+        has_paste: bool = False,
+        typed_only: bool = False,
+        min_messages: int | None = None,
+        max_messages: int | None = None,
+        min_words: int | None = None,
+        max_words: int | None = None,
+        message_type: str | None = None,
+    ) -> QueryUnitEnvelope:
         """Execute a terminal ``messages/actions/blocks where`` query."""
         from polylogue.archive.query.expression import ExpressionCompileError, parse_unit_source_expression
-        from polylogue.archive.query.unit_results import query_unit_rows
+        from polylogue.archive.query.unit_results import query_unit_rows, query_unit_session_filters
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         source = parse_unit_source_expression(expression)
@@ -1136,8 +1171,40 @@ class PolylogueArchiveMixin:
                 "query_units requires an explicit messages/actions/blocks where expression",
                 field=None,
             )
+        session_filters = query_unit_session_filters(
+            origin=origin,
+            origins=origins,
+            tags=(tag,) if tag else tags,
+            excluded_tags=excluded_tags,
+            excluded_origins=excluded_origins,
+            repo=repo,
+            repo_names=repo_names,
+            has_types=has_types,
+            tool_terms=tool_terms,
+            excluded_tool_terms=excluded_tool_terms,
+            action_terms=action_terms,
+            excluded_action_terms=excluded_action_terms,
+            action_sequence=action_sequence,
+            action_text_terms=action_text_terms,
+            referenced_paths=referenced_paths,
+            cwd_prefix=cwd_prefix,
+            title=title,
+            since=since,
+            until=until,
+            has_tool_use=has_tool_use,
+            has_thinking=has_thinking,
+            has_paste=has_paste,
+            typed_only=typed_only,
+            min_messages=min_messages,
+            max_messages=max_messages,
+            min_words=min_words,
+            max_words=max_words,
+            message_type=message_type,
+        )
         with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return query_unit_rows(archive, source, query=expression, limit=limit, offset=offset)
+            return query_unit_rows(
+                archive, source, query=expression, limit=limit, offset=offset, session_filters=session_filters
+            )
 
     async def query_completions(
         self,

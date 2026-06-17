@@ -177,6 +177,9 @@ The row shape is the shared `QueryUnitEnvelope` used by CLI JSON/NDJSON/YAML,
 Python `Polylogue.query_units()`, MCP `query_units`, and daemon
 `GET /api/query-units?expression=...`. Plain and CSV CLI output are
 transport-specific renderings of the same message/action/block row payloads.
+Those surfaces share the same session-scoping filters for the row source
+where applicable, such as origin, tag, repo, title, date bounds, message-type
+and tool/paste/thinking feature filters.
 
 Session filters such as `--origin`, `--tag`, `--repo`, `--since`, and `--until`
 still narrow the owning sessions before rows are returned. Session-only actions
