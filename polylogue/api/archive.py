@@ -166,6 +166,7 @@ def _archive_query_kwargs(spec: SessionQuerySpec, *, default_limit: int | None) 
         "min_messages": spec.min_messages,
         "max_messages": spec.max_messages,
         "min_words": spec.min_words,
+        "max_words": spec.max_words,
         "since_ms": _archive_query_date_ms("since", spec.since),
         "until_ms": _archive_query_date_ms("until", spec.until),
         "since_session_id": spec.since_session_id,
@@ -721,6 +722,7 @@ class _ArchiveNeighborRuntime:
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
+        max_words: int | None = None,
         message_type: str | None = None,
     ) -> builtins.list[Session]:
         sessions: builtins.list[Session] = []
@@ -743,6 +745,7 @@ class _ArchiveNeighborRuntime:
             min_messages=min_messages,
             max_messages=max_messages,
             min_words=min_words,
+            max_words=max_words,
             message_type=message_type,
         ):
             session = await self.get(str(summary.id))
@@ -771,6 +774,7 @@ class _ArchiveNeighborRuntime:
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
+        max_words: int | None = None,
         message_type: str | None = None,
     ) -> builtins.list[SessionSummary]:
         del source
@@ -795,6 +799,7 @@ class _ArchiveNeighborRuntime:
                 min_messages=min_messages,
                 max_messages=max_messages,
                 min_words=min_words,
+                max_words=max_words,
                 since_ms=_archive_query_date_ms("since", since),
                 until_ms=_archive_query_date_ms("until", until),
             )
@@ -818,6 +823,7 @@ class _ArchiveNeighborRuntime:
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
+        max_words: int | None = None,
         message_type: str | None = None,
     ) -> int:
         origin, origins = self._provider_filters(provider=provider, providers=providers)
@@ -839,6 +845,7 @@ class _ArchiveNeighborRuntime:
                 min_messages=min_messages,
                 max_messages=max_messages,
                 min_words=min_words,
+                max_words=max_words,
                 since_ms=_archive_query_date_ms("since", since),
                 until_ms=_archive_query_date_ms("until", until),
             ),
@@ -958,6 +965,7 @@ class _ArchiveNeighborRuntime:
             "min_messages": getattr(query, "min_messages", None),
             "max_messages": getattr(query, "max_messages", None),
             "min_words": getattr(query, "min_words", None),
+            "max_words": getattr(query, "max_words", None),
             "since_ms": _archive_query_date_ms("since", getattr(query, "since", None)),
             "until_ms": _archive_query_date_ms("until", getattr(query, "until", None)),
         }
@@ -1659,6 +1667,7 @@ class PolylogueArchiveMixin:
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
+        max_words: int | None = None,
         since: str | None = None,
         until: str | None = None,
         limit: int = 20,
@@ -1693,6 +1702,7 @@ class PolylogueArchiveMixin:
                     min_messages=min_messages,
                     max_messages=max_messages,
                     min_words=min_words,
+                    max_words=max_words,
                     since_ms=_archive_query_date_ms("since", since),
                     until_ms=_archive_query_date_ms("until", until),
                     limit=limit,
