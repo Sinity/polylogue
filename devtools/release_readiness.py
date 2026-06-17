@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -66,6 +67,38 @@ REQUIRED_RELEASE_BODY_FIELDS: tuple[str, ...] = (
     "- Known caveats scoped out:",
 )
 
+STATUS_SATISFIED_HEADING = "Satisfied:"
+STATUS_BLOCKING_HEADING = "Still blocking external release claims:"
+RETIRED_ISSUE_REFS = ("#1839",)
+_STATUS_CAVEAT_RE = re.compile(
+    r"\b(do not advertise|scoped out|unless|if the release claims|if claimed|caveat)\b", re.I
+)
+_ISSUE_REF_RE = re.compile(r"#\d+")
+
+
+def _status_list(text: str, *, heading: str) -> list[str]:
+    """Extract top-level bullet lines under a release-status heading."""
+
+    if heading not in text:
+        return []
+    after_heading = text.split(heading, 1)[1]
+    bullets: list[str] = []
+    for line in after_heading.splitlines():
+        if line.startswith("## ") or (line in {STATUS_SATISFIED_HEADING, STATUS_BLOCKING_HEADING} and line != heading):
+            break
+        if line.startswith("- "):
+            bullets.append(line[2:].strip())
+        elif bullets and line.startswith("  "):
+            bullets[-1] = f"{bullets[-1]} {line.strip()}"
+    return bullets
+
+
+def _issue_refs(lines: list[str]) -> set[str]:
+    refs: set[str] = set()
+    for line in lines:
+        refs.update(_ISSUE_REF_RE.findall(line))
+    return refs
+
 
 def build_report(*, gate_doc: Path = GATE_DOC) -> dict[str, Any]:
     """Return a JSON-serializable release-gate definition report."""
@@ -73,6 +106,8 @@ def build_report(*, gate_doc: Path = GATE_DOC) -> dict[str, Any]:
 
     errors: list[str] = []
     text = gate_doc.read_text(encoding="utf-8") if gate_doc.exists() else ""
+    satisfied = _status_list(text, heading=STATUS_SATISFIED_HEADING)
+    blocking = _status_list(text, heading=STATUS_BLOCKING_HEADING)
     if not text:
         errors.append(f"missing gate document: {gate_doc}")
 
@@ -90,10 +125,22 @@ def build_report(*, gate_doc: Path = GATE_DOC) -> dict[str, Any]:
         if command.argv[0] == "devtools" and command.argv[1] not in COMMANDS:
             errors.append(f"unknown devtools command in release gate: {command_text}")
 
-    if "Satisfied:" not in text:
+    if STATUS_SATISFIED_HEADING not in text:
         errors.append("gate document missing satisfied release-status list")
-    if "Still blocking external release claims:" not in text:
+    if STATUS_BLOCKING_HEADING not in text:
         errors.append("gate document missing blocking release-status list")
+    for retired_ref in RETIRED_ISSUE_REFS:
+        if retired_ref in text:
+            errors.append(f"release gate references retired issue: {retired_ref}")
+
+    satisfied_refs = _issue_refs(satisfied)
+    for line in blocking:
+        overlapping_refs = sorted(satisfied_refs.intersection(_ISSUE_REF_RE.findall(line)))
+        if overlapping_refs and _STATUS_CAVEAT_RE.search(line) is None:
+            errors.append(
+                "blocking release-status line also cites satisfied issue(s) "
+                f"{', '.join(overlapping_refs)} without scoped-out/caveat wording"
+            )
 
     return {
         "ok": not errors,
@@ -101,6 +148,10 @@ def build_report(*, gate_doc: Path = GATE_DOC) -> dict[str, Any]:
         "required_commands": [command.to_dict() for command in REQUIRED_COMMANDS],
         "focused_commands": [command.to_dict() for command in FOCUSED_COMMANDS],
         "required_release_body_fields": list(REQUIRED_RELEASE_BODY_FIELDS),
+        "release_status": {
+            "satisfied": satisfied,
+            "blocking_external_claims": blocking,
+        },
         "errors": errors,
     }
 
@@ -115,6 +166,9 @@ def _print_human(report: dict[str, Any]) -> None:
     print("focused commands:")
     for command in report["focused_commands"]:
         print(f"  {' '.join(command['argv'])}  # {command['reason']}")
+    print("release status:")
+    print(f"  satisfied: {len(report['release_status']['satisfied'])}")
+    print(f"  blocking external claims: {len(report['release_status']['blocking_external_claims'])}")
     if report["errors"]:
         print("errors:")
         for error in report["errors"]:

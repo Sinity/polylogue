@@ -54,8 +54,8 @@ nix flake check
 | Machine output | JSON is finite, NDJSON is streaming, mutation/error envelopes are typed, and machine-output prompts do not block. | #1818, #1816 |
 | README commands | README examples resolve against live commands and do not cite stale APIs. | #1841 |
 | Import/demo | Public import vocabulary is stable and demo mode has deterministic private-data-free fixtures. | #1815, #1843 |
-| Recovery/digest | Agent-session recovery views are available only to the extent claimed by README/release notes. | #1880 |
-| Assertion/user state | User-tier note/assertion data is preserved and reset/delete flows are guarded. | #1883, #1839 |
+| Recovery/digest | Agent-session recovery views are available only to the extent claimed by README/release notes. | #1880, #1838 |
+| Assertion/user state | User-tier assertion data is preserved and reset/delete flows are guarded. | #1883 |
 | Public vocabulary | Public surfaces use session/origin vocabulary; provider/conversation terms are raw-source or historical only. | #1810 |
 | Web/API | Any advertised web/API surface has stable DTOs, auth posture, and route vocabulary. | #1847, #1846 |
 | Static/docs surface | Generated docs, pages, media, and topology status are current. | #1848, #1849 |
@@ -88,22 +88,27 @@ Satisfied:
   `verify-doc-commands`.
 - #1878 benchmark convergence flake is closed.
 - #1880 has recovery digest registry, extraction, CLI read view, Python API
-  facade, and GitHub/check event extraction slices.
+  facade, GitHub/check event extraction slices, and source-aligned query DSL
+  documentation for currently shipped recovery/query behavior.
 - #1883 has the assertions table, write-through adapters, delete/status
   transitions, reset user.db guard, and blackboard assertion metadata slices.
 - #1843 has deterministic demo corpus specs and the `polylogue import --demo`
-  scheduling surface.
+  scheduling surface plus fixture-world convergence coverage.
+- #1848 static/rendering redundancy pruning is closed.
 
 Still blocking external release claims:
 
-- #1843 still needs end-to-end demo archive convergence evidence and
-  README-ready commands against the generated demo archive.
 - #1847/#1846 web/API release scope is not settled.
-- #1848/#1849 static/docs/proof pruning is not fully settled; do not advertise
-  any confidence layer that is not generated from live code, fixtures, or
-  schemas.
-- #1880 persisted transform outputs and `continue`/`blame` report presets are
-  not landed; do not advertise them as shipped.
+- #1849 public docs/proof vocabulary is not fully settled; do not advertise any
+  confidence layer that is not generated from live code, fixtures, schemas, or
+  benchmark artifacts.
+- #2006 advanced query language claims are scoped to shipped Lark grammar,
+  lowerers, typed errors, docs, and fixture coverage; do not advertise future
+  pipeline/run/event/assertion query units until they land.
+- #1825 MCP/Python parity must be proven for any command/read/query/mutation
+  behavior advertised as cross-surface.
+- #1838 work-packet/bundle release claims are scoped out unless on-demand
+  evidence-bundle rendering lands with raw-ref/lossiness semantics.
 
 ## Release PR Body Requirements
 

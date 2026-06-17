@@ -27,7 +27,11 @@ def _valid_gate_text() -> str:
 
 Satisfied:
 
+- #1 landed.
+
 Still blocking external release claims:
+
+- #2 blocks a release claim.
 
 ```text
 {fields}
@@ -43,6 +47,8 @@ def test_release_readiness_report_validates_committed_gate() -> None:
     assert ["devtools", "verify", "--quick"] in [command["argv"] for command in report["required_commands"]]
     assert ["devtools", "build-package"] in [command["argv"] for command in report["required_commands"]]
     assert "- Known caveats scoped out:" in report["required_release_body_fields"]
+    assert report["release_status"]["satisfied"]
+    assert report["release_status"]["blocking_external_claims"]
     assert report["errors"] == []
 
 
@@ -52,6 +58,7 @@ def test_release_readiness_json_cli(capsys: pytest.CaptureFixture[str]) -> None:
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is True
     assert payload["required_commands"][0]["argv"] == ["devtools", "release-readiness"]
+    assert "release_status" in payload
 
 
 def test_release_readiness_rejects_missing_required_command(tmp_path: Path) -> None:
@@ -72,3 +79,41 @@ def test_release_readiness_rejects_missing_status_lists(tmp_path: Path) -> None:
 
     assert report["ok"] is False
     assert any("blocking release-status list" in error for error in report["errors"])
+
+
+def test_release_readiness_rejects_retired_issue_refs(tmp_path: Path) -> None:
+    gate_doc = tmp_path / "release-readiness-gate.md"
+    _write_gate(gate_doc, _valid_gate_text().replace("#1 landed.", "#1839 was folded elsewhere."))
+
+    report = release_readiness.build_report(gate_doc=gate_doc)
+
+    assert report["ok"] is False
+    assert "release gate references retired issue: #1839" in report["errors"]
+
+
+def test_release_readiness_rejects_satisfied_issue_as_blocker_without_caveat(tmp_path: Path) -> None:
+    gate_doc = tmp_path / "release-readiness-gate.md"
+    _write_gate(
+        gate_doc,
+        _valid_gate_text().replace("#2 blocks a release claim.", "#1 still blocks the release."),
+    )
+
+    report = release_readiness.build_report(gate_doc=gate_doc)
+
+    assert report["ok"] is False
+    assert any("also cites satisfied issue(s) #1" in error for error in report["errors"])
+
+
+def test_release_readiness_allows_satisfied_issue_in_scoped_caveat(tmp_path: Path) -> None:
+    gate_doc = tmp_path / "release-readiness-gate.md"
+    _write_gate(
+        gate_doc,
+        _valid_gate_text().replace(
+            "#2 blocks a release claim.",
+            "#1 is scoped out: do not advertise the unshipped extension.",
+        ),
+    )
+
+    report = release_readiness.build_report(gate_doc=gate_doc)
+
+    assert report["ok"] is True
