@@ -12,6 +12,8 @@ Quick links:
 
 - [Retrieval Lanes](#retrieval-lanes) — `dialogue`, `actions`, `hybrid`,
   `semantic`, and how `auto` elevates.
+- [Terminal Unit Queries](#terminal-unit-queries) — `messages/actions/blocks
+  where ...` row results.
 - [Ranking Policy](#ranking-policy) — current `mixed-bm25-rrf-vector`
   policy and version contract.
 - [SearchEnvelope Contract](#searchenvelope-contract) — the typed
@@ -30,6 +32,28 @@ polylogue [<terms>] [filters] [verb]
   repeated with `--contains`)
 - **filters**: `--flag` filters that narrow the session set
 - **verb**: optional trailing subcommand (`list`, `stats`, `count`, etc.)
+
+## Terminal Unit Queries
+
+Most query expressions select sessions. Explicit unit sources select terminal
+rows instead:
+
+```bash
+polylogue --format json messages where role:assistant AND text:timeout
+polylogue --format ndjson actions where action:file_edit AND path:polylogue/archive
+polylogue --format yaml blocks where type:code AND text:sqlite
+```
+
+The row shape is the shared `QueryUnitEnvelope` used by CLI JSON/NDJSON/YAML,
+Python `Polylogue.query_units()`, MCP `query_units`, and daemon
+`GET /api/query-units?expression=...`. Plain and CSV CLI output are
+transport-specific renderings of the same message/action/block row payloads.
+
+Session filters such as `--origin`, `--tag`, `--repo`, `--since`, and `--until`
+still narrow the owning sessions before rows are returned. Session-only actions
+and result-shaping modes that do not have row semantics yet, such as
+`delete`, `open`, `stats`, `count`, `--cursor`, and custom sort/reverse modes,
+are rejected instead of silently coercing row queries back to session queries.
 
 ## Filters
 

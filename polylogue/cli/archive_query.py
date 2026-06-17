@@ -7,7 +7,7 @@ import io
 import json
 import sqlite3
 import webbrowser
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import redirect_stdout
 from dataclasses import replace
 from pathlib import Path
@@ -19,12 +19,14 @@ from typing_extensions import TypedDict
 
 from polylogue.archive.message.roles import MessageRoleFilter, Role, normalize_message_roles
 from polylogue.archive.message.types import validate_message_type_filter
+from polylogue.archive.query.expression import QueryUnitSource, parse_unit_source_expression
 from polylogue.archive.query.spec import (
     QuerySpecError,
     normalize_action_sequence,
     normalize_action_terms,
     parse_query_date,
 )
+from polylogue.archive.query.unit_results import query_unit_rows
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.archive.stats import ArchiveStats
 from polylogue.cli.query_contracts import QueryOutputSpec
@@ -264,6 +266,42 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
         raise click.UsageError("Root query cannot combine delete with --set.")
 
     with ArchiveStore.open_existing(archive_root) as archive:
+        unit_source = parse_unit_source_expression(query) if query and not similar_text else None
+        if unit_source is not None:
+            if any(
+                (
+                    params.get("stats_only"),
+                    params.get("stats_by"),
+                    params.get("count_only"),
+                    stream,
+                    tags_to_add,
+                    metadata_to_set,
+                    delete_matched,
+                    params.get("open_result"),
+                    transform is not None,
+                    params.get("conv_id"),
+                    sample_count is not None,
+                    since_session_id is not None,
+                    cursor is not None,
+                    sort is not None,
+                    reverse,
+                )
+            ):
+                raise click.UsageError(
+                    f"{unit_source.unit}s where queries return {unit_source.unit} rows and do not combine "
+                    "with session-only actions, aggregate modes, sort, reverse, or cursor."
+                )
+            _emit_unit_source_rows(
+                archive,
+                source=unit_source,
+                query=query,
+                limit=limit,
+                offset=page_offset,
+                session_filters=_unit_source_session_filters(filter_kwargs),
+                output_format=output_format,
+                fields=fields,
+            )
+            return
         if params.get("stats_only") or params.get("stats_by"):
             if sample_count is not None:
                 raise click.UsageError("Root query does not combine --sample with stats.")
@@ -1483,6 +1521,84 @@ def _emit_rows(
     if output_format not in {"markdown", "plaintext"}:
         raise click.UsageError(f"Root query does not support --format {output_format}.")
     click.echo("\n".join(text_line(item) for item in items))
+
+
+def _emit_unit_source_rows(
+    archive: ArchiveStore,
+    *,
+    source: QueryUnitSource,
+    query: str,
+    limit: int,
+    offset: int,
+    session_filters: Mapping[str, object] | None = None,
+    output_format: str,
+    fields: str | None,
+) -> None:
+    envelope_model = query_unit_rows(
+        archive,
+        source,
+        query=query,
+        limit=limit,
+        offset=offset,
+        session_filters=session_filters,
+    )
+    envelope = envelope_model.model_dump(mode="json")
+    items = [item.model_dump(mode="json") for item in envelope_model.items]
+    if source.unit == "message":
+        text_line = _message_query_line
+    elif source.unit == "action":
+        text_line = _action_query_line
+    elif source.unit == "block":
+        text_line = _block_query_line
+    else:
+        raise click.UsageError(f"Unsupported query unit: {source.unit}")
+
+    if not items:
+        _emit_unit_no_results(envelope, unit=source.unit, output_format=output_format)
+    _emit_rows(envelope, items, output_format=output_format, text_line=text_line, fields=fields)
+
+
+def _unit_source_session_filters(filter_kwargs: _ArchiveFilterKwargs) -> dict[str, object]:
+    filters = dict(filter_kwargs)
+    filters.pop("since_session_id", None)
+    return filters
+
+
+def _emit_unit_no_results(envelope: dict[str, object], *, unit: str, output_format: str) -> NoReturn:
+    empty = {**envelope, "items": [], "total": 0}
+    if output_format == "json":
+        click.echo(json.dumps(empty, indent=2, sort_keys=True))
+    elif output_format == "yaml":
+        import yaml
+
+        click.echo(yaml.safe_dump(empty, sort_keys=False, allow_unicode=True), nl=False)
+    elif output_format in {"ndjson", "csv"}:
+        pass
+    else:
+        click.echo(f"No {unit}s matched.")
+    raise SystemExit(2)
+
+
+def _snippet(value: object, *, max_chars: int = 96) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= max_chars:
+        return text
+    return f"{text[: max_chars - 3]}..."
+
+
+def _message_query_line(item: dict[str, object]) -> str:
+    return f"{item['message_id']} [{item['role']}] {_snippet(item.get('text'))}"
+
+
+def _action_query_line(item: dict[str, object]) -> str:
+    action = item.get("semantic_type") or item.get("tool_name") or "action"
+    detail = item.get("tool_path") or item.get("tool_command") or item.get("output_text") or ""
+    return f"{item['tool_use_block_id']} [{action}] {_snippet(detail)}"
+
+
+def _block_query_line(item: dict[str, object]) -> str:
+    detail = item.get("text") or item.get("tool_path") or item.get("tool_command") or ""
+    return f"{item['block_id']} [{item['block_type']}] {_snippet(detail)}"
 
 
 def _project_payload(payload: dict[str, object], fields: str | None) -> dict[str, object]:

@@ -1,0 +1,395 @@
+{
+  "$defs": {
+    "ActionQueryRowPayload": {
+      "additionalProperties": false,
+      "description": "Shared terminal-query row for normalized tool/action evidence.",
+      "properties": {
+        "message_id": {
+          "title": "Message Id",
+          "type": "string"
+        },
+        "origin": {
+          "title": "Origin",
+          "type": "string"
+        },
+        "output_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output Text"
+        },
+        "semantic_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Semantic Type"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        },
+        "tool_command": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Command"
+        },
+        "tool_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Name"
+        },
+        "tool_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Path"
+        },
+        "tool_result_block_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Result Block Id"
+        },
+        "tool_use_block_id": {
+          "title": "Tool Use Block Id",
+          "type": "string"
+        },
+        "unit": {
+          "const": "action",
+          "default": "action",
+          "title": "Unit",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "message_id",
+        "origin",
+        "tool_use_block_id"
+      ],
+      "title": "ActionQueryRowPayload",
+      "type": "object"
+    },
+    "BlockQueryRowPayload": {
+      "additionalProperties": false,
+      "description": "Shared terminal-query row for archive content blocks.",
+      "properties": {
+        "block_id": {
+          "title": "Block Id",
+          "type": "string"
+        },
+        "block_type": {
+          "title": "Block Type",
+          "type": "string"
+        },
+        "message_id": {
+          "title": "Message Id",
+          "type": "string"
+        },
+        "origin": {
+          "title": "Origin",
+          "type": "string"
+        },
+        "position": {
+          "title": "Position",
+          "type": "integer"
+        },
+        "semantic_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Semantic Type"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Text"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        },
+        "tool_command": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Command"
+        },
+        "tool_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Name"
+        },
+        "tool_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Path"
+        },
+        "unit": {
+          "const": "block",
+          "default": "block",
+          "title": "Unit",
+          "type": "string"
+        }
+      },
+      "required": [
+        "block_id",
+        "message_id",
+        "session_id",
+        "origin",
+        "block_type",
+        "position"
+      ],
+      "title": "BlockQueryRowPayload",
+      "type": "object"
+    },
+    "MessageQueryRowPayload": {
+      "additionalProperties": false,
+      "description": "Shared terminal-query row for archive messages.",
+      "properties": {
+        "message_id": {
+          "title": "Message Id",
+          "type": "string"
+        },
+        "message_type": {
+          "title": "Message Type",
+          "type": "string"
+        },
+        "origin": {
+          "title": "Origin",
+          "type": "string"
+        },
+        "position": {
+          "title": "Position",
+          "type": "integer"
+        },
+        "role": {
+          "title": "Role",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        },
+        "unit": {
+          "const": "message",
+          "default": "message",
+          "title": "Unit",
+          "type": "string"
+        },
+        "word_count": {
+          "title": "Word Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "message_id",
+        "session_id",
+        "origin",
+        "role",
+        "message_type",
+        "position",
+        "word_count",
+        "text"
+      ],
+      "title": "MessageQueryRowPayload",
+      "type": "object"
+    }
+  },
+  "$id": "https://polylogue.dev/schemas/cli-output/query-unit-envelope.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Terminal message/action/block row envelope for explicit `messages/actions/blocks where ...` query-unit expressions. Shared by CLI JSON output, Python API, MCP, and daemon HTTP.\n\nGenerated from `polylogue.surfaces.payloads.QueryUnitEnvelope` by `devtools render-cli-output-schemas`. Do not edit by hand.",
+  "properties": {
+    "items": {
+      "items": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/MessageQueryRowPayload"
+          },
+          {
+            "$ref": "#/$defs/ActionQueryRowPayload"
+          },
+          {
+            "$ref": "#/$defs/BlockQueryRowPayload"
+          }
+        ]
+      },
+      "title": "Items",
+      "type": "array"
+    },
+    "limit": {
+      "title": "Limit",
+      "type": "integer"
+    },
+    "mode": {
+      "const": "query-unit",
+      "default": "query-unit",
+      "title": "Mode",
+      "type": "string"
+    },
+    "next_offset": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Next Offset"
+    },
+    "offset": {
+      "title": "Offset",
+      "type": "integer"
+    },
+    "query": {
+      "title": "Query",
+      "type": "string"
+    },
+    "total": {
+      "title": "Total",
+      "type": "integer"
+    },
+    "unit": {
+      "enum": [
+        "message",
+        "action",
+        "block"
+      ],
+      "title": "Unit",
+      "type": "string"
+    }
+  },
+  "required": [
+    "unit",
+    "query",
+    "items",
+    "total",
+    "limit",
+    "offset"
+  ],
+  "title": "Query Unit Envelope",
+  "type": "object",
+  "x-polylogue-cli-surfaces": [
+    "polylogue --format json messages where ...",
+    "polylogue --format json actions where ...",
+    "polylogue --format json blocks where ...",
+    "Polylogue.query_units(...)",
+    "MCP query_units",
+    "GET /api/query-units?expression=..."
+  ],
+  "x-polylogue-source-model": "QueryUnitEnvelope"
+}

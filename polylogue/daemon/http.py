@@ -849,6 +849,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._handle_list_sessions(params)
         elif path == ["api", "facets"]:
             self._handle_facets(params)
+        elif path == ["api", "query-units"]:
+            self._handle_query_units(params)
         elif path == ["api", "query-completions"]:
             self._handle_query_completions(params)
         elif path == ["api", "read-view-profiles"]:
@@ -2247,6 +2249,43 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         from polylogue.daemon.thread_continue import build_templates_envelope
 
         self._send_json(HTTPStatus.OK, build_templates_envelope())
+
+    @daemon_safe_handler
+    def _handle_query_units(self, params: dict[str, list[str]]) -> None:
+        """``GET /api/query-units`` returns terminal message/action/block rows."""
+
+        from polylogue.archive.query.expression import ExpressionCompileError, parse_unit_source_expression
+        from polylogue.archive.query.spec import clamp_query_limit
+        from polylogue.archive.query.unit_results import query_unit_rows
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+        expression = self._get_param(params, "expression") or ""
+        try:
+            source = parse_unit_source_expression(expression)
+        except ExpressionCompileError as exc:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid_query", "message": str(exc)})
+            return
+        if source is None:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {
+                    "error": "invalid_query",
+                    "message": "query-units requires a messages/actions/blocks where expression",
+                },
+            )
+            return
+
+        limit = clamp_query_limit(self._get_int(params, "limit", 50), default=50)
+        offset = max(0, self._get_int(params, "offset", 0))
+        archive_root = _web_reader_archive_root()
+        if archive_root is None:
+            self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "archive_unavailable")
+            return
+
+        with ArchiveStore.open_existing(archive_root) as archive:
+            payload = query_unit_rows(archive, source, query=expression, limit=limit, offset=offset)
+
+        self._send_json(HTTPStatus.OK, payload.model_dump(mode="json"))
 
     @daemon_safe_handler
     def _handle_query_completions(self, params: dict[str, list[str]]) -> None:

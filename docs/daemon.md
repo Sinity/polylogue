@@ -96,6 +96,13 @@ Get a single session by ID.
 
 Get messages for a session. Query params: `limit`, `offset`.
 
+### GET /api/query-units
+
+Return terminal rows for explicit query-unit expressions. Query params:
+`expression`, `limit`, `offset`. `expression` must be a
+`messages/actions/blocks where ...` query and returns the shared
+`QueryUnitEnvelope`.
+
 ### GET /api/facets
 
 Query faceted aggregations.

@@ -31,7 +31,7 @@ if TYPE_CHECKING:
         ArchiveStore,
     )
     from polylogue.storage.sqlite.archive_tiers.write import ArchiveBlockRow, ArchiveMessageRow, ArchiveSessionEnvelope
-    from polylogue.surfaces.payloads import SearchEnvelope, SessionSearchHitPayload
+    from polylogue.surfaces.payloads import QueryUnitEnvelope, SearchEnvelope, SessionSearchHitPayload
 
 
 def _real_path(value: object) -> Path | None:
@@ -339,6 +339,26 @@ def archive_search_payload(
     )
 
 
+def archive_query_unit_payload(
+    archive: ArchiveStore,
+    *,
+    expression: str,
+    limit: int,
+    offset: int,
+) -> QueryUnitEnvelope:
+    """Build the shared terminal query-unit envelope from an archive."""
+    from polylogue.archive.query.expression import ExpressionCompileError, parse_unit_source_expression
+    from polylogue.archive.query.unit_results import query_unit_rows
+
+    source = parse_unit_source_expression(expression)
+    if source is None:
+        raise ExpressionCompileError(
+            "query_units requires an explicit messages/actions/blocks where expression",
+            field=None,
+        )
+    return query_unit_rows(archive, source, query=expression, limit=limit, offset=offset)
+
+
 def archive_messages_payload(
     session: ArchiveSessionEnvelope,
     *,
@@ -422,6 +442,7 @@ __all__ = [
     "archive_message_payload",
     "archive_messages_payload",
     "archive_query_filters",
+    "archive_query_unit_payload",
     "archive_search_hit_payload",
     "archive_search_payload",
     "archive_summary_payload",

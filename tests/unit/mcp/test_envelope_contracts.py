@@ -48,6 +48,7 @@ ToolKind = EnvelopeSpec | str
 TOOL_CONTRACT: dict[str, ToolKind] = {
     # ------- search and list (envelope) -------
     "search": ("envelope", frozenset({"hits", "total"})),
+    "query_units": ("envelope", frozenset({"items", "total", "unit", "limit", "offset"})),
     "list_sessions": ("envelope", frozenset({"items", "total"})),
     "neighbor_candidates": ("envelope", frozenset({"items", "total", "limit"})),
     "get_session_tree": ("envelope", frozenset({"items", "total"})),
@@ -212,9 +213,11 @@ def _build_typed_envelope_classes() -> dict[str, type[BaseModel]]:
         MCPSessionTopologyPayload,
         MCPSessionTreePayload,
     )
+    from polylogue.surfaces.payloads import QueryUnitEnvelope
 
     return {
         "search": MCPPaginatedSearchResultPayload,
+        "query_units": QueryUnitEnvelope,
         "list_sessions": MCPPaginatedQueryResultPayload,
         "neighbor_candidates": MCPNeighborCandidatesPayload,
         "get_session_tree": MCPSessionTreePayload,
@@ -558,6 +561,7 @@ class TestNativeReadSurfaceHonorsContract:
         ("tool_name", "kwargs"),
         [
             ("search", {"query": "needle", "limit": 10}),
+            ("query_units", {"expression": "messages where text:needle", "limit": 10}),
             ("list_sessions", {"limit": 10}),
             ("get_session", {}),  # id filled from seeded session
             ("get_session_summary", {}),

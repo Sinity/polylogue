@@ -133,7 +133,7 @@ READ_NULLARY_METHODS: frozenset[str] = frozenset(
 
 # Query methods that take a free-text query string and produce a search
 # envelope or result set.
-SEARCH_METHODS: frozenset[str] = frozenset({"search", "search_envelope"})
+SEARCH_METHODS: frozenset[str] = frozenset({"search", "search_envelope", "query_units"})
 
 # Methods that mutate state by session ID. Calling them with an
 # unknown ID should raise ``SessionNotFoundError`` (a typed
@@ -987,6 +987,33 @@ async def test_search_envelope_returns_typed_envelope_on_empty_archive(
         await archive.close()
 
 
+async def test_query_units_returns_typed_envelope_on_empty_archive(tmp_path: Path) -> None:
+    """``query_units()`` returns a typed terminal-unit envelope even with no rows."""
+    from polylogue.surfaces.payloads import QueryUnitEnvelope
+
+    archive = _archive(tmp_path)
+    try:
+        envelope = await archive.query_units("messages where text:missing")
+        assert isinstance(envelope, QueryUnitEnvelope)
+        assert envelope.mode == "query-unit"
+        assert envelope.unit == "message"
+        assert envelope.items == ()
+    finally:
+        await archive.close()
+
+
+async def test_query_units_rejects_session_expression(tmp_path: Path) -> None:
+    """``query_units()`` is only for terminal source expressions."""
+    from polylogue.archive.query.expression import ExpressionCompileError
+
+    archive = _archive(tmp_path)
+    try:
+        with pytest.raises(ExpressionCompileError):
+            await archive.query_units("repo:polylogue")
+    finally:
+        await archive.close()
+
+
 async def test_archive_tiers_api_reads_native_sessions(tmp_path: Path) -> None:
     """Archive API opt-in methods read index.db files directly."""
     from polylogue.archive.message.roles import Role
@@ -1132,6 +1159,7 @@ async def test_archive_tiers_api_reads_native_sessions(tmp_path: Path) -> None:
         rebuilt_status = await archive.get_session_insight_status()
         normal_search = await archive.search("needle")
         normal_envelope = await archive.search_envelope("needle", limit=1, origin="codex-session")
+        unit_envelope = await archive.query_units("messages where text:needle", limit=5)
         normal_neighbors = await archive.neighbor_candidates(
             query="needle",
             provider=Provider.CODEX.value,
@@ -1190,6 +1218,11 @@ async def test_archive_tiers_api_reads_native_sessions(tmp_path: Path) -> None:
         assert normal_envelope.retrieval_lane == "dialogue"
         assert [hit.session.id for hit in normal_envelope.hits] == [session_id]
         assert normal_envelope.hits[0].match.message_id == f"{session_id}:m1"
+        assert unit_envelope.mode == "query-unit"
+        assert unit_envelope.unit == "message"
+        assert unit_envelope.total == 1
+        assert unit_envelope.items[0].unit == "message"
+        assert unit_envelope.items[0].session_id == session_id
         assert [candidate.session_id for candidate in normal_neighbors] == [session_id]
         assert normal_neighbors[0].summary.message_count == 1
         assert {reason.kind for reason in normal_neighbors[0].reasons} >= {"query_match", "content_similarity"}

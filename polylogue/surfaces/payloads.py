@@ -22,6 +22,11 @@ if TYPE_CHECKING:
     from polylogue.archive.models import Message, Session, SessionSummary
     from polylogue.archive.query.search_hits import SessionSearchHit
     from polylogue.archive.session.neighbor_candidates import NeighborReason, SessionNeighborCandidate
+    from polylogue.storage.sqlite.archive_tiers.archive import (
+        ArchiveActionQueryRow,
+        ArchiveBlockQueryRow,
+        ArchiveMessageQueryRow,
+    )
 
 
 def serialize_surface_payload(payload: BaseModel, *, exclude_none: bool = False) -> str:
@@ -834,6 +839,148 @@ class SearchEnvelope(SurfacePayloadModel):
     diagnostics: QueryMissDiagnosticsPayload | None = None
 
 
+QueryUnitKind: TypeAlias = Literal["message", "action", "block"]
+"""Terminal query source unit exposed by query-unit envelopes."""
+
+
+class MessageQueryRowPayload(SurfacePayloadModel):
+    """Shared terminal-query row for archive messages."""
+
+    unit: Literal["message"] = "message"
+    message_id: str
+    session_id: str
+    origin: str
+    title: str | None = None
+    role: str
+    message_type: str
+    position: int
+    word_count: int
+    text: str
+
+    @classmethod
+    def from_row(cls, row: ArchiveMessageQueryRow) -> MessageQueryRowPayload:
+        return cls(
+            message_id=row.message_id,
+            session_id=row.session_id,
+            origin=row.origin,
+            title=row.title,
+            role=row.role,
+            message_type=row.message_type,
+            position=row.position,
+            word_count=row.word_count,
+            text=row.text,
+        )
+
+
+class ActionQueryRowPayload(SurfacePayloadModel):
+    """Shared terminal-query row for normalized tool/action evidence."""
+
+    unit: Literal["action"] = "action"
+    session_id: str
+    message_id: str
+    origin: str
+    title: str | None = None
+    tool_use_block_id: str
+    tool_result_block_id: str | None = None
+    tool_name: str | None = None
+    semantic_type: str | None = None
+    tool_command: str | None = None
+    tool_path: str | None = None
+    output_text: str | None = None
+
+    @classmethod
+    def from_row(cls, row: ArchiveActionQueryRow) -> ActionQueryRowPayload:
+        return cls(
+            session_id=row.session_id,
+            message_id=row.message_id,
+            origin=row.origin,
+            title=row.title,
+            tool_use_block_id=row.tool_use_block_id,
+            tool_result_block_id=row.tool_result_block_id,
+            tool_name=row.tool_name,
+            semantic_type=row.semantic_type,
+            tool_command=row.tool_command,
+            tool_path=row.tool_path,
+            output_text=row.output_text,
+        )
+
+
+class BlockQueryRowPayload(SurfacePayloadModel):
+    """Shared terminal-query row for archive content blocks."""
+
+    unit: Literal["block"] = "block"
+    block_id: str
+    message_id: str
+    session_id: str
+    origin: str
+    title: str | None = None
+    block_type: str
+    position: int
+    text: str | None = None
+    tool_name: str | None = None
+    semantic_type: str | None = None
+    tool_command: str | None = None
+    tool_path: str | None = None
+
+    @classmethod
+    def from_row(cls, row: ArchiveBlockQueryRow) -> BlockQueryRowPayload:
+        return cls(
+            block_id=row.block_id,
+            message_id=row.message_id,
+            session_id=row.session_id,
+            origin=row.origin,
+            title=row.title,
+            block_type=row.block_type,
+            position=row.position,
+            text=row.text,
+            tool_name=row.tool_name,
+            semantic_type=row.semantic_type,
+            tool_command=row.tool_command,
+            tool_path=row.tool_path,
+        )
+
+
+QueryUnitRowPayload: TypeAlias = MessageQueryRowPayload | ActionQueryRowPayload | BlockQueryRowPayload
+"""Union of terminal row payloads returned by explicit unit-source queries."""
+
+
+class QueryUnitEnvelope(SurfacePayloadModel):
+    """Shared envelope for ``messages/actions/blocks where ...`` query results."""
+
+    mode: Literal["query-unit"] = "query-unit"
+    unit: QueryUnitKind
+    query: str
+    items: tuple[QueryUnitRowPayload, ...]
+    total: int
+    """Number of terminal rows returned in this page."""
+    limit: int
+    offset: int
+    next_offset: int | None = None
+
+
+def build_query_unit_envelope(
+    items: Sequence[QueryUnitRowPayload],
+    *,
+    unit: QueryUnitKind,
+    query: str,
+    limit: int,
+    offset: int,
+    has_next: bool,
+) -> QueryUnitEnvelope:
+    """Construct the canonical terminal query-unit response envelope."""
+
+    items_tuple = tuple(items)
+    return QueryUnitEnvelope(
+        unit=unit,
+        query=query,
+        items=items_tuple,
+        total=len(items_tuple),
+        limit=limit,
+        offset=offset,
+        next_offset=offset + limit if has_next else None,
+    )
+
+
 #: Cursor envelope version. Bump when the encoded shape changes in a way
 #: that earlier decoders cannot tolerate; consumers that pin a version
 #: can detect skew. archive carries ``r`` (anchor rank within the current
@@ -1387,6 +1534,8 @@ def validate_metadata_key(key: object) -> str | None:
 
 
 __all__ = [
+    "ActionQueryRowPayload",
+    "BlockQueryRowPayload",
     "BulkTagMutationResult",
     "SessionDetailPayload",
     "SessionDetailResponse",
@@ -1422,6 +1571,9 @@ __all__ = [
     "DeleteSessionResult",
     "MutationResultPayload",
     "QueryErrorPayload",
+    "QueryUnitEnvelope",
+    "QueryUnitKind",
+    "QueryUnitRowPayload",
     "QueryMissDiagnosticsPayload",
     "QueryMissReasonPayload",
     "RANKING_POLICY_MIXED",
@@ -1430,6 +1582,7 @@ __all__ = [
     "SEARCH_CURSOR_VERSION",
     "SearchCursor",
     "SearchEnvelope",
+    "MessageQueryRowPayload",
     "InvalidSearchCursorError",
     "SurfacePayloadModel",
     "TagMutationOutcome",
@@ -1440,6 +1593,7 @@ __all__ = [
     "apply_search_cursor",
     "build_search_cursor",
     "build_search_envelope",
+    "build_query_unit_envelope",
     "decode_search_cursor",
     "model_json_document",
     "normalize_role",

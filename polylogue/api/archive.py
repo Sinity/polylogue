@@ -77,6 +77,7 @@ if TYPE_CHECKING:
         DeleteSessionResult,
         FacetsResponse,
         MetadataMutationResult,
+        QueryUnitEnvelope,
         SearchEnvelope,
         SessionSearchHitPayload,
         TagMutationResult,
@@ -1106,6 +1107,21 @@ class PolylogueArchiveMixin:
         from polylogue.archive.query.expression import explain_expression
 
         return cast(JSONDocument, explain_expression(expression).to_payload())
+
+    async def query_units(self, expression: str, *, limit: int = 50, offset: int = 0) -> QueryUnitEnvelope:
+        """Execute a terminal ``messages/actions/blocks where`` query."""
+        from polylogue.archive.query.expression import ExpressionCompileError, parse_unit_source_expression
+        from polylogue.archive.query.unit_results import query_unit_rows
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+        source = parse_unit_source_expression(expression)
+        if source is None:
+            raise ExpressionCompileError(
+                "query_units requires an explicit messages/actions/blocks where expression",
+                field=None,
+            )
+        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
+            return query_unit_rows(archive, source, query=expression, limit=limit, offset=offset)
 
     async def query_completions(
         self,

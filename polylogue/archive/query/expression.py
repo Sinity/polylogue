@@ -42,10 +42,10 @@ and explicit Boolean session predicates:
     blocks where type:code AND text:timeout
 
 Unit-scoped ``messages/actions/blocks where ...`` predicates are executable
-session selectors: they lower to the same correlated ``exists <unit>(...)``
-predicates as the explicit structural form. They do not yet change the terminal
-result unit to raw message/action/block rows; terminal unit-changing pipelines
-are a later layer over the same AST/lowerer.
+in two shared paths: ``compile_expression`` keeps the compatibility session
+selector behavior by lowering them to correlated ``exists <unit>(...)``
+predicates, while terminal query-unit surfaces preserve the selected unit and
+return raw message/action/block rows from the same predicate semantics.
 
 Unknown fields and unsupported structured forms fail loudly. The Lark grammar
 in this module is the query grammar. Compact field/text clauses and explicit
@@ -330,6 +330,14 @@ class QueryExpressionAST:
 
     clauses: tuple[_LexToken, ...]
     boolean_predicate: QueryPredicate | None = None
+
+
+@dataclass(frozen=True)
+class QueryUnitSource:
+    """Explicit unit-changing source parsed from ``<unit>s where ...``."""
+
+    unit: Literal["message", "action", "block"]
+    predicate: QueryPredicate
 
 
 ExplainClauseKind = Literal["field", "count", "count_range", "date", "date_range", "text", "json"]
@@ -1177,7 +1185,14 @@ def _parse_boolean_predicate(expression: str) -> QueryPredicate:
     return transformed
 
 
-def _parse_source_where_predicate(expression: str) -> QueryExistsPredicate | None:
+def parse_unit_source_expression(expression: str) -> QueryUnitSource | None:
+    """Parse ``messages/actions/blocks where ...`` as a terminal unit source.
+
+    ``compile_expression`` still lowers these forms to session selectors for
+    existing surfaces. Terminal query execution uses this helper to preserve
+    the selected unit and return row-level results.
+    """
+
     stripped = expression.strip()
     lower = stripped.lower()
     source_match: tuple[str, Literal["message", "action", "block"], str] | None = None
@@ -1196,7 +1211,14 @@ def _parse_source_where_predicate(expression: str) -> QueryExistsPredicate | Non
         raise ExpressionCompileError(f"{unit}s where requires a predicate", field=None)
     transformed = _transform_boolean_predicate(inner)
     _validate_predicate_context(transformed, unit=unit)
-    return QueryExistsPredicate(unit=unit, child=transformed)
+    return QueryUnitSource(unit=unit, predicate=transformed)
+
+
+def _parse_source_where_predicate(expression: str) -> QueryExistsPredicate | None:
+    source = parse_unit_source_expression(expression)
+    if source is None:
+        return None
+    return QueryExistsPredicate(unit=source.unit, child=source.predicate)
 
 
 def _contains_semantic_predicate(predicate: QueryPredicate) -> bool:
@@ -1925,7 +1947,9 @@ __all__ = [
     "QueryExpressionExplainClause",
     "QueryExpressionExplanation",
     "QueryExpressionAST",
+    "QueryUnitSource",
     "_HAS_BOOL_MAP",
+    "parse_unit_source_expression",
     "parse_expression_ast",
     "structural_query_fields",
     "structural_query_units",

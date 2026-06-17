@@ -11,6 +11,7 @@ from polylogue.core.sources import provider_from_origin
 from polylogue.mcp.archive_support import (
     active_archive_root,
     archive_messages_payload,
+    archive_query_unit_payload,
     archive_search_payload,
     archive_session_list_payload,
     archive_summary_payload,
@@ -118,6 +119,33 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         "Filter parameters mirror ``MCPSessionQueryRequest`` fields."
     )
     mcp.tool()(_search)
+
+    @mcp.tool()
+    async def query_units(
+        expression: str,
+        limit: MCPToolLimit = 10,
+        offset: MCPToolOffset = 0,
+    ) -> str:
+        """Return terminal rows for ``messages/actions/blocks where`` query expressions."""
+
+        async def run() -> str:
+            from polylogue.archive.query.expression import ExpressionCompileError
+
+            config = hooks.get_config()
+            with ArchiveStore.open_existing(active_archive_root(config) or config.archive_root) as archive:
+                try:
+                    return hooks.json_payload(
+                        archive_query_unit_payload(
+                            archive,
+                            expression=expression,
+                            limit=hooks.clamp_limit(limit),
+                            offset=max(0, offset),
+                        )
+                    )
+                except ExpressionCompileError as exc:
+                    return hooks.error_json(str(exc), code="invalid_query", tool="query_units")
+
+        return await hooks.async_safe_call("query_units", run)
 
     async def _list_sessions(**kwargs: object) -> str:
         request = build_session_query_request(**kwargs)

@@ -14,6 +14,7 @@ from tests.infra.builders import make_conv, make_msg
 
 EXPECTED_TOOL_NAMES = {
     "search",
+    "query_units",
     "list_sessions",
     "build_context_pack",
     "blackboard_list",

@@ -28,6 +28,7 @@ from polylogue.surfaces.payloads import (
     MachineSuccessPayload,
     MutationResultPayload,
     QueryErrorPayload,
+    QueryUnitEnvelope,
     SearchEnvelope,
     SessionListRowPayload,
     SessionMessageRowPayload,
@@ -127,6 +128,24 @@ SCHEMAS: tuple[CliOutputSchema, ...] = (
         surfaces=(
             "polylogue --format json <query>",
             "GET /api/sessions?query=...",
+        ),
+    ),
+    CliOutputSchema(
+        name="query-unit-envelope",
+        title="Query Unit Envelope",
+        description=(
+            "Terminal message/action/block row envelope for explicit "
+            "`messages/actions/blocks where ...` query-unit expressions. "
+            "Shared by CLI JSON output, Python API, MCP, and daemon HTTP."
+        ),
+        model=QueryUnitEnvelope,
+        surfaces=(
+            "polylogue --format json messages where ...",
+            "polylogue --format json actions where ...",
+            "polylogue --format json blocks where ...",
+            "Polylogue.query_units(...)",
+            "MCP query_units",
+            "GET /api/query-units?expression=...",
         ),
     ),
     CliOutputSchema(
