@@ -722,6 +722,7 @@ class TestBooleanQueryExpression:
 
         source = parse_unit_source_expression("actions where action:file_edit AND path:archive/query")
         assert source is not None
+        assert source.unit == "action"
         with ArchiveStore.open_existing(index_db.parent) as archive:
             rows = archive.query_actions(source.predicate, limit=100)
 
@@ -824,6 +825,7 @@ class TestBooleanQueryExpression:
 
         source = parse_unit_source_expression("blocks where type:code AND text:timeout")
         assert source is not None
+        assert source.unit == "block"
         with ArchiveStore.open_existing(index_db.parent) as archive:
             rows = archive.query_blocks(source.predicate, limit=100)
 

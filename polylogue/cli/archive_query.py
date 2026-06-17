@@ -268,6 +268,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     with ArchiveStore.open_existing(archive_root) as archive:
         unit_source = parse_unit_source_expression(query) if query and not similar_text else None
         if unit_source is not None:
+            unsupported_unit_filters = any(value not in (None, False, (), "") for value in filter_kwargs.values())
             if any(
                 (
                     params.get("stats_only"),
@@ -281,11 +282,15 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                     transform is not None,
                     params.get("conv_id"),
                     sample_count is not None,
+                    unsupported_unit_filters,
+                    cursor is not None,
+                    sort is not None,
+                    reverse,
                 )
             ):
                 raise click.UsageError(
-                    f"{unit_source.unit}s where queries return {unit_source.unit} rows and do not combine "
-                    "with session-only actions or aggregate modes."
+                    f"{unit_source.unit}s where queries return {unit_source.unit} rows and only combine "
+                    "with pagination, output format, and field projection options."
                 )
             _emit_unit_source_rows(
                 archive,

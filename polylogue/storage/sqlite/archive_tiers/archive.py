@@ -3347,6 +3347,8 @@ class ArchiveStore:
     ) -> list[ArchiveMessageQueryRow]:
         """Return message rows matching a unit-scoped query predicate."""
 
+        normalized_limit = max(int(limit), 0)
+        normalized_offset = max(int(offset), 0)
         clause, params = _structural_predicate_clause("message", "m", predicate)
         rows = self._conn.execute(
             f"""
@@ -3360,10 +3362,14 @@ class ArchiveStore:
                 m.position,
                 m.word_count,
                 COALESCE((
-                    SELECT group_concat(b.search_text, char(10))
-                    FROM blocks b
-                    WHERE b.message_id = m.message_id
-                      AND b.search_text IS NOT NULL
+                    SELECT group_concat(ordered.search_text, char(10))
+                    FROM (
+                        SELECT b.search_text
+                        FROM blocks b
+                        WHERE b.message_id = m.message_id
+                          AND b.search_text IS NOT NULL
+                        ORDER BY b.position, b.block_id
+                    ) AS ordered
                 ), '') AS text
             FROM messages m
             JOIN sessions s ON s.session_id = m.session_id
@@ -3371,7 +3377,7 @@ class ArchiveStore:
             ORDER BY COALESCE(m.occurred_at_ms, s.sort_key_ms, 0), m.message_id
             LIMIT ? OFFSET ?
             """,
-            [*params, limit, offset],
+            [*params, normalized_limit, normalized_offset],
         ).fetchall()
         return [
             ArchiveMessageQueryRow(
@@ -3397,6 +3403,8 @@ class ArchiveStore:
     ) -> list[ArchiveActionQueryRow]:
         """Return action rows matching a unit-scoped query predicate."""
 
+        normalized_limit = max(int(limit), 0)
+        normalized_offset = max(int(offset), 0)
         clause, params = _structural_predicate_clause("action", "a", predicate)
         rows = self._conn.execute(
             f"""
@@ -3419,7 +3427,7 @@ class ArchiveStore:
             ORDER BY COALESCE(m.occurred_at_ms, s.sort_key_ms, 0), a.tool_use_block_id
             LIMIT ? OFFSET ?
             """,
-            [*params, limit, offset],
+            [*params, normalized_limit, normalized_offset],
         ).fetchall()
         return [
             ArchiveActionQueryRow(
@@ -3449,6 +3457,8 @@ class ArchiveStore:
     ) -> list[ArchiveBlockQueryRow]:
         """Return content-block rows matching a unit-scoped query predicate."""
 
+        normalized_limit = max(int(limit), 0)
+        normalized_offset = max(int(offset), 0)
         clause, params = _structural_predicate_clause("block", "b", predicate)
         rows = self._conn.execute(
             f"""
@@ -3472,7 +3482,7 @@ class ArchiveStore:
             ORDER BY COALESCE(m.occurred_at_ms, s.sort_key_ms, 0), b.block_id
             LIMIT ? OFFSET ?
             """,
-            [*params, limit, offset],
+            [*params, normalized_limit, normalized_offset],
         ).fetchall()
         return [
             ArchiveBlockQueryRow(

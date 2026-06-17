@@ -2430,6 +2430,31 @@ class TestSearchQueryContracts:
         elif expectation == "markdown":
             assert "#" in result.output or "Rust" in result.output, case_id
 
+    def test_unit_source_rejects_session_filters(self, search_workspace: SearchWorkspace) -> None:
+        """Terminal row queries reject session-only filters until they are wired."""
+        from polylogue.cli import cli
+
+        del search_workspace
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "--plain",
+                "find",
+                "messages",
+                "where",
+                "text:Python",
+                "--origin",
+                "claude-code-session",
+                "-f",
+                "json",
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert "only combine with pagination" in result.output
+
 
 class TestSearchEdgeCases:
     """Tests for edge cases and error handling."""
