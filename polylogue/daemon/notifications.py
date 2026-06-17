@@ -165,9 +165,8 @@ def _parse_backend_spec(spec: object) -> list[str]:
 def _resolve_backend(backend_name: str, config: dict[str, object] | None = None) -> NotificationBackend:
     """Resolve a single backend name to an instance.
 
-    Accepts a comma-separated string or a single name; if more than one
-    name resolves, returns a :class:`FanOutNotificationBackend`. Kept as a
-    private name for back-compat with existing test imports.
+    Accepts a comma-separated string or a single name; if more than one name
+    resolves, returns a :class:`FanOutNotificationBackend`.
     """
     names = _parse_backend_spec(backend_name)
     if not names:

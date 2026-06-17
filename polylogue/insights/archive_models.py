@@ -17,8 +17,8 @@ ARCHIVE_INSIGHT_CONTRACT_VERSION = 9
 class ArchiveInsightModel(BaseModel):
     """Shared base for public archive insight payloads."""
 
-    # extra="ignore" tolerates legacy fields from older materialized records
-    # (e.g. primary_work_kind, decisions removed in the March 2026 cleanup)
+    # Materialized insight records are sparse across materializer versions;
+    # readers ignore unknown payload keys and consume the typed fields below.
     model_config = ConfigDict(extra="ignore", frozen=True, protected_namespaces=())
 
     def to_json(self, *, exclude_none: bool = False) -> str:

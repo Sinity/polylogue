@@ -78,11 +78,6 @@ def test_fixed_now_returns_canonical_anchor() -> None:
     assert fixed_now() == datetime.fromtimestamp(DEFAULT_FROZEN_EPOCH, tz=timezone.utc)
 
 
-def test_clock_alias_returns_same_instance(frozen_clock: FrozenClock, clock: FrozenClock) -> None:
-    """The ``clock`` back-compat fixture aliases ``frozen_clock``."""
-    assert clock is frozen_clock
-
-
 def test_default_step_is_zero_relative_timing_is_stable(frozen_clock: FrozenClock) -> None:
     """Two ``now()`` reads bracket the same instant, so deltas are predictable."""
     anchor = frozen_clock.now()

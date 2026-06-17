@@ -1,18 +1,4 @@
-"""Reader action vocabulary contract (#1488).
-
-Pins:
-
-1. ``READER_ACTION_IDS`` is a closed registry the UI can rely on.
-2. ``ReaderActionState`` covers the seven canonical states required
-   by the issue (enabled, disabled, partial, dangerous, loading,
-   target, unavailable).
-3. ``ReaderActionAvailabilityPayload`` accepts every state value and
-   surfaces ``disabled_reason``, ``repair_path``, ``inspect_path``
-   when supplied.
-4. Back-compat: existing callers that construct the payload with
-   only ``enabled=True`` or ``enabled=False`` still work and the
-   default ``state`` is ``"enabled"``.
-"""
+"""Reader action vocabulary contract (#1488)."""
 
 from __future__ import annotations
 
@@ -109,7 +95,7 @@ def test_payload_rejects_unknown_state() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Back-compat contract: existing call sites continue to work
+# Default payload contract
 # ---------------------------------------------------------------------------
 
 
@@ -120,8 +106,7 @@ def test_default_payload_is_enabled_state() -> None:
     assert payload.state == "enabled"
 
 
-def test_enabled_false_back_compat_still_constructs() -> None:
-    """Existing callers that pass only ``enabled=False`` are unbroken."""
+def test_enabled_false_can_carry_disabled_reason() -> None:
     payload = ReaderActionAvailabilityPayload(enabled=False, disabled_reason="paste unknown")
     assert payload.enabled is False
     assert payload.disabled_reason == "paste unknown"

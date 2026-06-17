@@ -427,8 +427,8 @@ class TestQueryTools:
         parsed = json.loads(result)
         assert parsed["hits"] == []
         assert parsed["total"] == 0
-        # Archive search has no legacy miss-diagnostics path; the envelope still
-        # carries the field, defaulted to null.
+        # Archive search has no miss-diagnostics payload for an empty result;
+        # the envelope carries the field, defaulted to null.
         assert parsed["diagnostics"] is None
 
     @pytest.mark.asyncio

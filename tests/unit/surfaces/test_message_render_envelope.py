@@ -192,13 +192,11 @@ def test_from_message_omits_target_ref_when_no_session_id() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Back-compat with the existing test_web_reader contract test
+# Minimal construction contract
 # ---------------------------------------------------------------------------
 
 
-def test_construction_with_only_legacy_fields_still_works() -> None:
-    """The roundtrip pattern from ``test_reader_target_ref_and_action_payloads_roundtrip``
-    in tests/unit/daemon/test_web_reader.py must still construct cleanly."""
+def test_minimal_message_payload_constructs() -> None:
     payload = SessionMessagePayload(
         id="m-c1",
         role="user",
