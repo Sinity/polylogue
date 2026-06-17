@@ -14,10 +14,10 @@ Current registry snapshot:
 - mutation campaigns: `19`
 - benchmark campaigns: `7`
 - synthetic benchmark campaigns: `6`
-- scenario projections: `271`
+- scenario projections: `270`
 - inferred corpus scenarios: `8`
   - benchmark-campaign: `7`
-  - exercise: `164`
+  - exercise: `163`
   - inferred-corpus-scenario: `8`
   - mutation-campaign: `19`
   - synthetic-benchmark: `6`
@@ -365,7 +365,6 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-diagnostics-turns` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | diagnostics turns help |
 | `exercise` | `help-doctor` | `message-fts-readiness-loop`<br>`retrieval-band-readiness-loop` | `message_fts`<br>`session_insight_readiness`<br>`retrieval_band_readiness`<br>`archive_readiness` | `cli.help`<br>`project-archive-readiness` | — | `generated`<br>`help`<br>`structural` | doctor help |
 | `exercise` | `help-embed` | `embedding-materialization-loop` | `archive_session_rows`<br>`embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors` | `cli.help`<br>`materialize-transcript-embeddings` | — | `generated`<br>`help`<br>`structural` | embed help |
-| `exercise` | `help-embed-activate` | `embedding-materialization-loop` | `archive_session_rows`<br>`embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors` | `cli.help`<br>`materialize-transcript-embeddings` | — | `generated`<br>`help`<br>`structural` | embed activate help |
 | `exercise` | `help-embed-backfill` | `embedding-materialization-loop` | `archive_session_rows`<br>`embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors` | `cli.help`<br>`materialize-transcript-embeddings` | — | `generated`<br>`help`<br>`structural` | embed backfill help |
 | `exercise` | `help-embed-disable` | `embedding-materialization-loop` | `archive_session_rows`<br>`embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors` | `cli.help`<br>`materialize-transcript-embeddings` | — | `generated`<br>`help`<br>`structural` | embed disable help |
 | `exercise` | `help-embed-enable` | `embedding-materialization-loop` | `archive_session_rows`<br>`embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors` | `cli.help`<br>`materialize-transcript-embeddings` | — | `generated`<br>`help`<br>`structural` | embed enable help |

@@ -2,11 +2,11 @@
 
 This is the operator-facing onboarding surface for the embedding pipeline
 described in [`docs/architecture.md`](../../../docs/architecture.md) —
-``polylogue embed enable`` (alias: ``activate``) writes the config flip and
-records the Voyage API key in ``polylogue.toml``; ``polylogue embed preflight``
-counts the sessions that would be embedded plus the Voyage cost estimate
-without contacting the provider; ``polylogue embed backfill`` runs the first
-batch with per-session cost feedback against the cost cap; and
+``polylogue embed enable`` writes the config flip and records the Voyage API
+key in ``polylogue.toml``; ``polylogue embed preflight`` counts the sessions
+that would be embedded plus the Voyage cost estimate without contacting the
+provider; ``polylogue embed backfill`` runs the first batch with per-session
+cost feedback against the cost cap; and
 ``polylogue embed disable`` flips the gate back off without dropping any
 existing embeddings.
 
@@ -37,11 +37,11 @@ from polylogue.storage.embeddings.preflight import (
 )
 
 # Resolution order for the API key:
-#   1. explicit --voyage-api-key flag on the activate command
+#   1. explicit --voyage-api-key flag on the enable command
 #   2. existing voyage_api_key in user TOML (set by a prior activation)
 #   3. VOYAGE_API_KEY environment variable
-# Only #1 and #3 are accepted by ``activate``; #2 is reused on the second
-# activation so existing keys are not lost.
+# Only #1 and #3 are accepted by ``enable``; #2 is reused on the second
+# enable run so existing keys are not lost.
 
 
 def _effective_cost_cap(config_cap_usd: float, run_cap_usd: float | None) -> float:
@@ -191,7 +191,7 @@ def _splice_embedding_section(
 
 
 def _resolve_user_config_path() -> Path:
-    """Return the user TOML path the activate flow should write to.
+    """Return the user TOML path the enable flow should write to.
 
     Honors ``POLYLOGUE_CONFIG`` so tests and per-project setups can redirect
     the write; otherwise falls back to the XDG starter path.
@@ -303,13 +303,6 @@ def enable_subcommand(
     if no_store_key:
         click.echo("API key not stored in config; ensure VOYAGE_API_KEY remains set for daemon and CLI.")
     click.echo("Run [bold]polylogue embed backfill[/bold] to start the first embedding batch, or restart polylogued.")
-
-
-@embed_command.command("activate")
-@click.pass_context
-def activate_subcommand(ctx: click.Context) -> None:
-    """Alias for ``embed enable`` retained as a discoverable verb."""
-    ctx.forward(enable_subcommand)
 
 
 @embed_command.command("disable")
@@ -615,7 +608,6 @@ def status_subcommand(env: AppEnv, output_format: str, detail: bool) -> None:
 
 __all__ = [
     "PreflightReport",
-    "activate_subcommand",
     "backfill_subcommand",
     "disable_subcommand",
     "embed_command",

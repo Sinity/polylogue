@@ -1,6 +1,0 @@
-Usage: polylogue embed activate [OPTIONS]
-
-  Alias for ``embed enable`` retained as a discoverable verb.
-
-Options:
-  -h, --help  Show this message and exit.
