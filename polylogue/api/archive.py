@@ -1081,13 +1081,29 @@ class PolylogueArchiveMixin:
             return session.with_content_projection(content_projection)
 
     async def recovery_digest(self, session_id: str) -> RecoveryDigest | None:
-        """Compile one session into the deterministic recovery digest transform."""
+        """Compile one resolved session and its child links into a recovery digest."""
         from polylogue.insights.transforms import compile_recovery_digest
+        from polylogue.storage.query_models import SessionRecordQuery
 
         session = await self.get_session(session_id)
         if session is None:
             return None
-        return compile_recovery_digest(session)
+        resolved_session_id = str(session.id)
+        session_links: list[dict[str, object]] = await self.repository.queries.list_session_links_for_session(
+            resolved_session_id
+        )
+        children = await self.repository.queries.list_sessions(SessionRecordQuery(parent_id=resolved_session_id))
+        session_links.extend(
+            {
+                "dst_origin": child.origin.value,
+                "dst_native_id": child.native_id,
+                "resolved_dst_session_id": str(child.session_id),
+                "status": "resolved",
+                "link_type": child.branch_type.value if child.branch_type is not None else "child",
+            }
+            for child in children
+        )
+        return compile_recovery_digest(session, session_links=session_links)
 
     async def recovery_report(self, session_id: str, preset: RecoveryReportPreset) -> str | None:
         """Render one deterministic recovery report preset for a session."""

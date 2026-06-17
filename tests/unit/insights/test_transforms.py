@@ -215,6 +215,29 @@ def test_every_extracted_claim_carries_raw_refs() -> None:
         assert all(ref.session_id == digest.session_id for ref in candidate.raw_refs)
 
 
+def test_recovery_digest_enriches_subagent_reports_from_session_links() -> None:
+    digest = compile_recovery_digest(
+        _session(),
+        session_links=(
+            {
+                "dst_origin": "codex-session",
+                "dst_native_id": "child-42",
+                "resolved_dst_session_id": "codex-session:child-42",
+                "status": "resolved",
+                "link_type": "subagent",
+            },
+        ),
+    )
+
+    [subagent] = digest.subagent_reports
+    assert subagent.child_session_id == "codex-session:child-42"
+    assert subagent.child_link_status == "resolved"
+    assert subagent.child_link_type == "subagent"
+    assert subagent.resolved_child_session_id == "codex-session:child-42"
+    assert "child_link_status=resolved" in digest.resume_markdown
+    assert "resolved_child_session_id=codex-session:child-42" in digest.resume_markdown
+
+
 def test_forensic_index_groups_claims_by_raw_ref() -> None:
     digest = compile_recovery_digest(_session())
     entries = {entry.evidence_id: entry for entry in digest.forensic_index.entries}
