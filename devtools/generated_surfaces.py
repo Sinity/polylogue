@@ -72,7 +72,7 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
     GeneratedSurface(
         name="openapi",
         label="OpenAPI schema",
-        description="Render docs/openapi/search.yaml from the SearchEnvelope Pydantic models (#1266).",
+        description="Render docs/openapi/search.yaml from typed daemon query payload models.",
         command=control_plane_argv("render-openapi"),
         main=render_openapi.main,
         inputs=("polylogue/surfaces/payloads.py", "devtools/render_openapi.py"),
