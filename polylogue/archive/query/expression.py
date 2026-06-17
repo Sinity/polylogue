@@ -75,6 +75,7 @@ from polylogue.archive.query.predicate import (
     QueryNotPredicate,
     QueryPredicate,
     QuerySequencePredicate,
+    QueryTextPredicate,
 )
 from polylogue.archive.query.spec import (
     QUERY_ACTION_TYPES,
@@ -373,6 +374,8 @@ _BOOLEAN_QUERY_GRAMMAR = r"""
         | atom
     ?atom: EXISTS STRUCT_UNIT "(" expr ")" -> exists_leaf
         | SEQ "(" sequence_step (ARROW sequence_step)+ ")" -> sequence_leaf
+        | FTS_QUOTED_TEXT                  -> fts_quoted_leaf
+        | FTS_BARE_TEXT                    -> fts_bare_leaf
         | COUNT_CLAUSE                     -> count_leaf
         | FIELD_CLAUSE                     -> field_leaf
         | "(" expr ")"
@@ -387,6 +390,8 @@ _BOOLEAN_QUERY_GRAMMAR = r"""
     OR: /or/i
     AND: /and/i
     NOT: /not/i
+    FTS_QUOTED_TEXT.6: /~"(\\.|[^"\\])*"/
+    FTS_BARE_TEXT.5: /~[^\s"()]+/
     COUNT_CLAUSE.5: /(messages|words):(>=|<=|=)\d+(?!\S)/
     FIELD_CLAUSE.4: /-?[a-zA-Z_][a-zA-Z0-9_]*:(?:"(\\.|[^"\\])*"|\([^)]*\)|[^\s"()\[\]{}]+)/
 
@@ -580,7 +585,8 @@ def _predicate_children(items: tuple[object, ...]) -> tuple[QueryPredicate, ...]
             | QueryBoolPredicate
             | QueryNotPredicate
             | QueryExistsPredicate
-            | QuerySequencePredicate,
+            | QuerySequencePredicate
+            | QueryTextPredicate,
         )
     )
 
@@ -627,6 +633,12 @@ def _validate_predicate_context(predicate: QueryPredicate, *, unit: Literal["ses
         if unit != "session":
             raise ExpressionCompileError("seq predicates are only supported from sessions", field=None)
         return
+    if isinstance(predicate, QueryTextPredicate):
+        if unit != "session":
+            raise ExpressionCompileError("FTS predicates are only supported from sessions", field=None)
+        if not predicate.text.strip():
+            raise ExpressionCompileError("FTS predicate requires text", field=None)
+        return
 
 
 @v_args(inline=True)
@@ -657,6 +669,15 @@ class _BooleanQueryTransformer(Transformer[Token, QueryPredicate]):
 
     def field_leaf(self, token: Token) -> QueryPredicate:
         return _field_token_to_predicate(_QUERY_TRANSFORMER.field_clause(token))
+
+    def fts_quoted_leaf(self, token: Token) -> QueryPredicate:
+        return QueryTextPredicate(text=_decode_escaped_string(Token("ESCAPED_STRING", str(token)[1:])))
+
+    def fts_bare_leaf(self, token: Token) -> QueryPredicate:
+        value = str(token)[1:].strip()
+        if not value:
+            raise ExpressionCompileError("FTS predicate requires text", field=None)
+        return QueryTextPredicate(text=value)
 
     def exists_leaf(self, _exists: Token, unit: Token, child: QueryPredicate) -> QueryPredicate:
         unit_value = str(unit).lower()
@@ -689,6 +710,8 @@ def _is_boolean_expression(expression: str) -> bool:
         re.IGNORECASE,
     ):
         return True
+    if "~" in expression:
+        return True
     return ":" in expression and bool(re.search(r"\b(?:and|or|not)\b", expression, re.IGNORECASE))
 
 
@@ -705,7 +728,12 @@ def _parse_boolean_predicate(expression: str) -> QueryPredicate:
         raise
     if not isinstance(
         transformed,
-        QueryFieldPredicate | QueryBoolPredicate | QueryNotPredicate | QueryExistsPredicate | QuerySequencePredicate,
+        QueryFieldPredicate
+        | QueryBoolPredicate
+        | QueryNotPredicate
+        | QueryExistsPredicate
+        | QuerySequencePredicate
+        | QueryTextPredicate,
     ):
         raise ExpressionCompileError("Boolean query did not produce a predicate", field=None)
     _validate_predicate_context(transformed, unit="session")
