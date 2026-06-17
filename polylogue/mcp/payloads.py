@@ -9,6 +9,7 @@ from pydantic import RootModel
 from typing_extensions import TypedDict
 
 from polylogue.core.json import JSONDocument
+from polylogue.core.user_state_targets import TARGET_SESSION
 from polylogue.mcp.context_pack import (
     ContextPackActionSummary as MCPContextPackActionSummary,
 )
@@ -718,7 +719,7 @@ class MCPEmbeddingPreflightPayload(SurfacePayloadModel):
 
 
 class MCPUserMarkPayload(SurfacePayloadModel):
-    target_type: str = "session"
+    target_type: str = TARGET_SESSION
     target_id: str
     session_id: str
     message_id: str | None = None

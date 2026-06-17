@@ -12,7 +12,10 @@ from polylogue.cli.shared.types import AppEnv
 from polylogue.paths import archive_file_set_root_for_paths, archive_root, db_path
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.user_write import upsert_blackboard_note
+from polylogue.storage.sqlite.archive_tiers.user_write import (
+    list_archive_blackboard_note_envelopes,
+    upsert_blackboard_note,
+)
 
 _KIND_CHOICES = ("finding", "blocker", "decision", "handoff", "question", "observation")
 _KIND_RE = re.compile(r"^\[([^\]]+)\]\s*(.*)$")
@@ -112,31 +115,21 @@ def blackboard_list(
 
     conn = sqlite3.connect(f"file:{user_db}?mode=ro", uri=True)
     try:
-        if not _table_exists(conn, "blackboard_notes"):
-            env.ui.console.print("[dim]No blackboard notes yet.[/dim]")
-            return
-
-        rows = conn.execute(
-            """
-            SELECT note_id, target_type, target_id, body, created_at_ms
-            FROM blackboard_notes
-            ORDER BY created_at_ms DESC, note_id DESC
-            """
-        ).fetchall()
-        if not rows:
+        notes = list_archive_blackboard_note_envelopes(conn)
+        if not notes:
             env.ui.console.print("[dim]No blackboard notes yet.[/dim]")
             return
 
         filtered = []
-        for row in rows:
-            parsed = _parse_blackboard_body(str(row[3]))
+        for note in notes:
+            parsed = _parse_blackboard_body(note.body)
             if kind and parsed["kind"] != kind:
                 continue
             if scope_repo and parsed["scope_repo"] != scope_repo:
                 continue
             if unresolved and parsed["kind"] not in {"blocker", "question"}:
                 continue
-            filtered.append((row, parsed))
+            filtered.append((note, parsed))
             if len(filtered) >= limit:
                 break
 
@@ -144,21 +137,16 @@ def blackboard_list(
             env.ui.console.print("[dim]No matching notes.[/dim]")
             return
 
-        for row, parsed in filtered:
+        for note, parsed in filtered:
             status = "[green]open[/green]"
             content = parsed["content"]
             env.ui.console.print(
                 f"[bold]{parsed['kind']}[/bold] {status}  {parsed['title']}\n"
                 f"  {content[:120]}{'...' if len(content) > 120 else ''}\n"
-                f"  id={row[0]}  repo={parsed['scope_repo'] or '-'}  created_ms={row[4]}\n"
+                f"  id={note.note_id}  repo={parsed['scope_repo'] or '-'}  created_ms={note.created_at_ms}\n"
             )
     finally:
         conn.close()
-
-
-def _table_exists(conn: object, table: str) -> bool:
-    row = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1", (table,)).fetchone()  # type: ignore[attr-defined]
-    return row is not None
 
 
 def _user_db_path() -> Path:

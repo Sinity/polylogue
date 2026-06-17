@@ -96,12 +96,6 @@ async def build_compare_payload(
 
 
 def dispatch_get(handler: object, path: list[str], params: dict[str, list[str]]) -> bool:
-    if path == ["api", "stack"]:
-        handle_stack(handler, params)
-        return True
-    if path == ["api", "compare"]:
-        handle_compare(handler, params)
-        return True
     return False
 
 

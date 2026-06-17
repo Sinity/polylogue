@@ -12,9 +12,9 @@ helper-function level:
 3. ``OPTIONS`` requests return ``405 Method Not Allowed`` (no CORS
    preflight is advertised by design — see ``docs/security.md``).
 
-The parametrized matrix replaces ad-hoc per-endpoint tests so the cost
-of adding a new endpoint includes adding it to ``ENDPOINTS_GET`` /
-``ENDPOINTS_POST`` and getting full security coverage automatically.
+The parametrized matrix derives from ``ROUTE_CONTRACTS`` so adding a new
+authenticated route to the daemon contract registry automatically adds the
+same security coverage.
 """
 
 from __future__ import annotations
@@ -32,51 +32,40 @@ import pytest
 
 from polylogue.core.loopback import is_loopback_host
 from polylogue.daemon.http import _check_auth_logic
+from polylogue.daemon.route_contracts import ROUTE_CONTRACTS, RouteContract
 
 if TYPE_CHECKING:
     from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
 
 
 # ---------------------------------------------------------------------------
-# Endpoint tables — extend here when new routes are added
+# Endpoint tables derived from route contracts
 # ---------------------------------------------------------------------------
 
-ENDPOINTS_GET = [
-    "/api/health/check",
-    "/api/health",
-    "/api/status",
-    "/api/sessions",
-    "/api/facets",
-    "/api/sources",
-    "/api/sessions/some-id",
-    "/api/sessions/some-id/raw",
-    "/api/sessions/some-id/messages",
-    "/api/raw_artifacts/some-hash",
-]
 
-ENDPOINTS_POST = [
-    "/api/reset",
-    "/api/ingest",
-    "/api/maintenance/plan",
-    "/api/maintenance/run",
-    # User-state write routes — delegated via dispatch_post, still gated by
-    # _check_auth and _check_cross_origin at the do_POST level.
-    "/api/user/marks",
-    "/api/user/annotations",
-    "/api/user/saved-views",
-    "/api/user/recall-packs",
-    "/api/user/workspaces",
-]
+def _route_sample_path(route: RouteContract) -> str:
+    parts = []
+    for part in route.pattern.strip("/").split("/"):
+        if part.startswith(":"):
+            parts.append("some-id")
+        else:
+            parts.append(part)
+    return "/" + "/".join(parts) if parts else "/"
 
-ENDPOINTS_DELETE = [
-    # User-state delete routes — gated by _check_auth and _check_cross_origin
-    # at the do_DELETE level.
-    "/api/user/marks",
-    "/api/user/annotations/some-id",
-    "/api/user/saved-views/some-id",
-    "/api/user/recall-packs/some-id",
-    "/api/user/workspaces/some-id",
-]
+
+def _paths_for(method: str, auth_policy: str) -> list[str]:
+    return [
+        _route_sample_path(route)
+        for route in ROUTE_CONTRACTS
+        if route.method == method and route.auth_policy == auth_policy
+    ]
+
+
+ENDPOINTS_GET = _paths_for("GET", "bearer_if_configured")
+
+ENDPOINTS_POST = _paths_for("POST", "bearer_and_same_origin")
+
+ENDPOINTS_DELETE = _paths_for("DELETE", "bearer_and_same_origin")
 
 
 # ---------------------------------------------------------------------------
@@ -259,27 +248,9 @@ class TestGetEndpointAuthGate:
         send_error.assert_called_once_with(HTTPStatus.UNAUTHORIZED, "unauthorized")
 
     def test_valid_token_passes_auth(self, path: str) -> None:
-        """Auth gate admits the request — handler runs (or the route is
-        not found, in which case 404, but never 401)."""
+        """Auth gate admits the request for every authenticated GET path."""
         handler = _make_handler("GET", path, auth_header="Bearer secret")
-        send_error, send_json = _capture_responses(handler)
-        # Patch the actual handlers to avoid touching the DB / archive.
-        with (
-            patch.object(handler, "_handle_health_check"),
-            patch.object(handler, "_handle_health"),
-            patch.object(handler, "_handle_status"),
-            patch.object(handler, "_handle_list_sessions"),
-            patch.object(handler, "_handle_facets"),
-            patch.object(handler, "_handle_sources"),
-            patch.object(handler, "_handle_get_session"),
-            patch.object(handler, "_handle_get_messages"),
-            patch.object(handler, "_handle_get_session_raw"),
-            patch.object(handler, "_handle_get_raw_artifact"),
-        ):
-            handler.do_GET()
-        # If 401 was sent, auth gate failed. We assert the negative.
-        for call in send_error.call_args_list:
-            assert call.args[0] != HTTPStatus.UNAUTHORIZED, f"Endpoint {path} returned 401 with valid token"
+        assert handler._check_auth() is True
 
 
 @pytest.mark.parametrize("path", ENDPOINTS_POST)

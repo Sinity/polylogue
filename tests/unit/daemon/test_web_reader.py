@@ -39,6 +39,48 @@ import pytest
 POLYLOGUE_LOCAL_PATH_PREFIXES = ("/home/", "/Users/", "/realm/", "/var/", "/etc/")
 
 
+class _QueryParamBuilderHandler:
+    @staticmethod
+    def _get_param(params: dict[str, list[str]], key: str, default: str | None = None) -> str | None:
+        values = params.get(key)
+        if values:
+            return values[0]
+        return default
+
+    def _get_int(self, params: dict[str, list[str]], key: str, default: int = 0) -> int:
+        val = self._get_param(params, key)
+        if val is not None:
+            try:
+                return int(val)
+            except (ValueError, TypeError):
+                pass
+        return default
+
+    def _get_bool(self, params: dict[str, list[str]], key: str) -> bool:
+        val = self._get_param(params, key)
+        return val is not None and val.lower() in ("1", "true", "yes", "on")
+
+
+def test_query_spec_param_builder_uses_canonical_query_fields() -> None:
+    from polylogue.daemon.http import _build_query_spec_params
+
+    params = {
+        "origin": ["codex-session"],
+        "exclude_origin": ["chatgpt-export"],
+        "max_words": ["100"],
+        "similar_session_id": ["codex-session:seed"],
+        "filter_has_tool_use": ["true"],
+    }
+
+    result = _build_query_spec_params(params, _QueryParamBuilderHandler())  # type: ignore[arg-type]
+
+    assert result["origin"] == "codex-session"
+    assert result["exclude_origin"] == "chatgpt-export"
+    assert result["max_words"] == 100
+    assert result["similar_session_id"] == "codex-session:seed"
+    assert result["filter_has_tool_use"] is True
+
+
 @contextmanager
 def _running_server(
     workspace: dict[str, Path],

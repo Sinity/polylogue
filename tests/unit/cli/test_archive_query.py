@@ -81,14 +81,6 @@ class TestResolveOrigins:
         result = _resolve_origins({})
         assert result == ()
 
-    def test_provider_param_is_ignored(self) -> None:
-        """The public root query surface speaks origin only (#1810).
-
-        The legacy ``provider`` -> origin fallback was removed; a provider
-        token on the root query no longer resolves to any origin.
-        """
-        assert _resolve_origins({"provider": "claude-code"}) == ()
-
 
 # Tests for _resolve_excluded_origins
 class TestResolveExcludedOrigins:
@@ -99,10 +91,6 @@ class TestResolveExcludedOrigins:
         params: dict[str, object] = {"exclude_origin": "claude-code-session,chatgpt-export"}
         result = _resolve_excluded_origins(params)
         assert result == ("claude-code-session", "chatgpt-export")
-
-    def test_exclude_provider_param_is_ignored(self) -> None:
-        """Excluded-provider fallback removed: origin vocabulary only (#1810)."""
-        assert _resolve_excluded_origins({"exclude_provider": "claude-code"}) == ()
 
     def test_empty_params(self) -> None:
         """Empty params returns empty tuple."""

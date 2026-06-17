@@ -1222,6 +1222,7 @@ async def test_archive_tiers_api_reads_native_sessions(tmp_path: Path) -> None:
             typed_only=True,
             message_type="tool-use",
             title="API",
+            max_words=10,
         )
         summaries = await archive.archive_list_sessions(
             origin="codex-session",
@@ -1242,6 +1243,7 @@ async def test_archive_tiers_api_reads_native_sessions(tmp_path: Path) -> None:
             typed_only=True,
             message_type="tool-use",
             title="API",
+            max_words=10,
             limit=5,
         )
         hits = await archive.archive_search_sessions(
@@ -2753,6 +2755,8 @@ async def test_archive_tiers_api_marks_and_annotations_write_user_tier(tmp_path:
         marks = await archive.list_marks(session_id=session_id)
         mark_removed = await archive.remove_mark(session_id, "star")
         mark_missing = await archive.remove_mark(session_id, "star")
+        with pytest.raises(ValueError, match="mark_type must be one of"):
+            await archive.add_mark(session_id, "bogus")
         annotation_created = await archive.save_annotation("ann-v1", session_id, "needs follow-up")
         annotation_updated = await archive.save_annotation("ann-v1", session_id, "resolved")
         annotation = await archive.get_annotation("ann-v1")
@@ -2775,9 +2779,9 @@ async def test_archive_tiers_api_marks_and_annotations_write_user_tier(tmp_path:
         assert annotation_deleted is True
         assert annotation_missing is False
 
+        marks_after_delete = await archive.list_marks(session_id=session_id)
+        annotations_after_delete = await archive.list_annotations(session_id=session_id)
         with sqlite3.connect(tmp_path / "user.db") as conn:
-            mark_count = conn.execute("SELECT COUNT(*) FROM marks").fetchone()[0]
-            annotation_count = conn.execute("SELECT COUNT(*) FROM annotations").fetchone()[0]
             assertion_statuses = conn.execute(
                 """
                 SELECT kind, key, status
@@ -2787,10 +2791,10 @@ async def test_archive_tiers_api_marks_and_annotations_write_user_tier(tmp_path:
                 """,
                 (f"session:{session_id}",),
             ).fetchall()
-        assert mark_count == 0
-        assert annotation_count == 0
+        assert marks_after_delete == []
+        assert annotations_after_delete == []
         assert assertion_statuses == [
-            ("annotation", None, "deleted"),
+            ("annotation", "ann-v1", "deleted"),
             ("mark", "star", "deleted"),
         ]
     finally:
@@ -2888,10 +2892,10 @@ async def test_archive_tiers_api_reader_artifacts_write_user_tier(tmp_path: Path
         assert await archive.delete_workspace("workspace-v1") is True
         assert await archive.delete_workspace("workspace-v1") is False
 
+        assert await archive.list_views() == []
+        assert await archive.list_recall_packs() == []
+        assert await archive.list_workspaces() == []
         with sqlite3.connect(tmp_path / "user.db") as conn:
-            assert conn.execute("SELECT COUNT(*) FROM saved_views").fetchone()[0] == 0
-            assert conn.execute("SELECT COUNT(*) FROM recall_packs").fetchone()[0] == 0
-            assert conn.execute("SELECT COUNT(*) FROM workspaces").fetchone()[0] == 0
             assertion_statuses = conn.execute(
                 """
                 SELECT target_ref, kind, status
@@ -2961,8 +2965,8 @@ async def test_archive_tiers_api_corrections_write_user_tier(tmp_path: Path) -> 
         assert missing_delete is False
         assert cleared == 1
 
+        assert await archive.list_corrections(session_id=session_id) == []
         with sqlite3.connect(tmp_path / "user.db") as conn:
-            assert conn.execute("SELECT COUNT(*) FROM corrections").fetchone()[0] == 0
             assertion_statuses = conn.execute(
                 """
                 SELECT key, status, json_extract(value_json, '$.payload.tag'), json_extract(value_json, '$.payload.summary')

@@ -284,18 +284,18 @@ class TestFeedbackStorage:
 
 
 # ---------------------------------------------------------------------------
-# Defense-in-depth — user_corrections is in canonical DDL
+# Defense-in-depth — correction assertions are in canonical DDL
 # ---------------------------------------------------------------------------
 
 
 def test_corrections_ddl_is_in_user_tier_ddl() -> None:
-    # The learning-corrections table lives in the user-durability tier
-    # (``user.db``) by construction — it carries irreplaceable human input and
-    # sits outside the content-hash boundary (#1131). The canonical table is
-    # named ``corrections`` in the split-file archive.
+    # Learning corrections live in the user-durability tier (``user.db``) by
+    # construction: they carry irreplaceable human input and sit outside the
+    # content-hash boundary (#1131). Their canonical storage is the assertion
+    # substrate.
     from polylogue.storage.sqlite.archive_tiers.user import USER_DDL
 
-    assert "CREATE TABLE IF NOT EXISTS corrections" in USER_DDL
+    assert "CREATE TABLE IF NOT EXISTS assertions" in USER_DDL
 
 
 def _suppress_unused_import_warning() -> None:

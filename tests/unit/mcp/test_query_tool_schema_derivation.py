@@ -17,6 +17,7 @@ from unittest.mock import MagicMock
 import pytest
 from mcp.server.fastmcp import FastMCP
 
+from polylogue.archive.query.fields import mcp_query_field_names
 from polylogue.mcp.query_contracts import MCPSessionQueryRequest
 from polylogue.mcp.server_tools import register_query_tools
 
@@ -72,6 +73,12 @@ def test_facets_schema_matches_dataclass_fields(schemas: SchemaMap) -> None:
         f"missing={sorted(_dataclass_field_names() - properties)}, "
         f"extra={sorted(properties - _dataclass_field_names())}"
     )
+
+
+def test_mcp_query_request_matches_canonical_query_field_registry() -> None:
+    """MCP request fields stay aligned with query fields marked MCP-capable."""
+
+    assert mcp_query_field_names() <= _dataclass_field_names()
 
 
 def test_search_marks_query_required(schemas: SchemaMap) -> None:

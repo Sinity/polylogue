@@ -242,9 +242,10 @@ def test_archive_tiers_database_split_keeps_source_index_embeddings_user_and_ops
     for expected in ("message_embeddings", "message_embeddings_meta"):
         assert expected in embeddings
         assert expected not in index
-    for expected in ("marks", "suppressions"):
+    for expected in ("assertions", "session_metadata"):
         assert expected in user
         assert expected not in index
+    assert "session_tags" in user
     for expected in ("ingest_cursor", "embedding_catchup_runs"):
         assert expected in ops
         assert expected not in index

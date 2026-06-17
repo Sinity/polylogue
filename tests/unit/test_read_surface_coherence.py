@@ -13,7 +13,7 @@ accidental reversions are caught immediately. Coverage map:
           layer and surfaces EmbeddingRetrievalNotReadyError as HTTP 409.
   AC#6 — retrieval_lane: unknown values ("bogus", dead "semantic") are rejected.
   Footgun — negative min_messages/max_messages/min_words rejected by spec builder.
-  Footgun — since_session alias removed; only since_session_id remains.
+  Cursor — since_session_id is the query pagination cursor.
 """
 
 from __future__ import annotations
@@ -355,26 +355,12 @@ class TestNegativeCountBoundsRejected:
 
 
 # ---------------------------------------------------------------------------
-# Footgun — since_session collapsed to single since_session_id field
+# Query pagination cursor — since_session_id field
 # ---------------------------------------------------------------------------
 
 
-class TestSinceSessionCollapsed:
-    """The redundant ``since_session`` alias is removed (#1749 footgun).
-
-    ``since_session`` and ``since_session_id`` were two names for the same
-    field in MCPSessionQueryRequest. The former is removed; callers
-    must use ``since_session_id``.
-    """
-
-    def test_since_session_field_removed_from_mcp_request(self) -> None:
-        """MCPSessionQueryRequest no longer has a since_session field."""
-        from dataclasses import fields
-
-        from polylogue.mcp.query_contracts import MCPSessionQueryRequest
-
-        field_names = {f.name for f in fields(MCPSessionQueryRequest)}
-        assert "since_session" not in field_names, "since_session was removed in #1749; use since_session_id"
+class TestSinceSessionId:
+    """The MCP request and query spec expose the pagination cursor field."""
 
     def test_since_session_id_still_present(self) -> None:
         from dataclasses import fields
@@ -383,13 +369,6 @@ class TestSinceSessionCollapsed:
 
         field_names = {f.name for f in fields(MCPSessionQueryRequest)}
         assert "since_session_id" in field_names
-
-    def test_since_session_removed_from_spec_builder_recognized_params(self) -> None:
-        """since_session is no longer a recognized param in strict mode."""
-        from polylogue.archive.query.spec import QuerySpecError, SessionQuerySpec
-
-        with pytest.raises(QuerySpecError):
-            SessionQuerySpec.from_params({"since_session": "conv-123"}, strict=True)
 
     def test_since_session_id_still_accepted(self) -> None:
         from polylogue.archive.query.spec import SessionQuerySpec

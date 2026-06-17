@@ -265,6 +265,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
+        max_words: int | None = None,
         since: str | None = None,
         until: str | None = None,
         limit: MCPToolLimit = 10,
@@ -313,6 +314,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 min_messages=min_messages,
                 max_messages=max_messages,
                 min_words=min_words,
+                max_words=max_words,
                 since=since,
                 until=until,
                 limit=clamped_limit,
@@ -343,6 +345,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 min_messages=min_messages,
                 max_messages=max_messages,
                 min_words=min_words,
+                max_words=max_words,
                 since=since,
                 until=until,
             )

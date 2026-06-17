@@ -67,9 +67,8 @@ def test_fresh_user_tier_creates_assertions_table(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "user.db")
     try:
         assert _table_exists(conn, "assertions")
-        # The table is purely additive: the legacy overlays still exist.
-        assert _table_exists(conn, "marks")
-        assert _table_exists(conn, "blackboard_notes")
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == USER_SCHEMA_VERSION
+        assert USER_SCHEMA_VERSION == 2
     finally:
         conn.close()
 
@@ -269,58 +268,6 @@ def test_assertion_targets_various_ref_shapes(tmp_path: Path) -> None:
             assert stored.target_ref == ref
     finally:
         conn.close()
-
-
-def test_assertions_table_added_additively_without_version_bump(tmp_path: Path) -> None:
-    """A pre-existing v1 user.db lacking the table gains it on next open with no wipe."""
-    path = tmp_path / "user.db"
-    conn = _connect(path)
-    try:
-        # Seed irreplaceable user data, then simulate an older DB that predates
-        # the assertions table by dropping it. user_version stays at 1.
-        upsert_assertion(
-            conn,
-            assertion_id="seed",
-            target_ref="session:keep-me",
-            kind=AssertionKind.LESSON,
-            body_text="irreplaceable user input",
-            now_ms=1_700_000_000_000,
-        )
-        conn.execute("DROP TABLE assertions")
-        conn.commit()
-        assert not _table_exists(conn, "assertions")
-        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == USER_SCHEMA_VERSION
-    finally:
-        conn.close()
-
-    # Re-open the existing v1 file and re-apply the tier DDL idempotently.
-    conn2 = sqlite3.connect(path)
-    conn2.row_factory = sqlite3.Row
-    try:
-        version_before = int(conn2.execute("PRAGMA user_version").fetchone()[0])
-        assert version_before == USER_SCHEMA_VERSION
-        # Pre-existing irreplaceable rows must survive the re-open.
-        assert _table_exists(conn2, "marks")
-
-        initialize_archive_tier(conn2, ArchiveTier.USER)
-
-        assert _table_exists(conn2, "assertions")
-        version_after = int(conn2.execute("PRAGMA user_version").fetchone()[0])
-        assert version_after == USER_SCHEMA_VERSION
-        assert USER_SCHEMA_VERSION == 1
-
-        # The freshly-added table is usable.
-        restored = upsert_assertion(
-            conn2,
-            assertion_id="post-additive",
-            target_ref="session:keep-me",
-            kind=AssertionKind.NOTE,
-            body_text="written after additive open",
-            now_ms=1_700_000_009_000,
-        )
-        assert restored.assertion_id == "post-additive"
-    finally:
-        conn2.close()
 
 
 def test_recovery_digest_candidates_write_transform_candidate_assertions(tmp_path: Path) -> None:

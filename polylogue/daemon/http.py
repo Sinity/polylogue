@@ -548,6 +548,7 @@ def _build_query_spec_params(
         "until",
         "sort",
         "similar_text",
+        "similar_session_id",
         "since_session_id",
         "message_type",
     ):
@@ -555,9 +556,14 @@ def _build_query_spec_params(
         if val is not None:
             spec_params[key] = val
 
+    origin = handler._get_param(params, "origin")
+    if origin is not None:
+        spec_params["origin"] = origin
+    exclude_origin = handler._get_param(params, "exclude_origin")
+    if exclude_origin is not None:
+        spec_params["exclude_origin"] = exclude_origin
+
     for key in (
-        "provider",
-        "exclude_provider",
         "tag",
         "exclude_tag",
         "repo",
@@ -584,7 +590,7 @@ def _build_query_spec_params(
         if handler._get_bool(params, key):
             spec_params[key] = True
 
-    for key in ("min_messages", "max_messages", "min_words", "sample"):
+    for key in ("min_messages", "max_messages", "min_words", "max_words", "sample"):
         val = handler._get_param(params, key)
         if val is not None:
             with contextlib.suppress(ValueError, TypeError):
@@ -1446,7 +1452,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         # Parse/lower only the ``query`` param through the shared expression path
         # so DSL clauses like ``origin:codex has:paste since:7d`` map to the
         # correct ArchiveStore filter arguments rather than being passed as
-        # literal FTS text (#1860).  The ``contains`` param is a legacy
+        # literal FTS text (#1860).  The ``contains`` param is a literal
         # content-substring filter that must NOT be parsed as DSL — routing it through
         # compile_expression() causes ExpressionCompileError when the value
         # contains spaces or field-like tokens (#1873 Bug 7).
@@ -1461,7 +1467,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         else:
             spec = None
             fts_terms = ()
-        # ``?contains=`` is the legacy literal content filter. It must still
+        # ``?contains=`` is the literal content filter. It must still
         # filter results, but must NOT be compiled as DSL (a value with spaces or
         # field-like tokens would raise ExpressionCompileError, #1873 Bug 7). Wire
         # it as a literal FTS term so ``GET /api/sessions?contains=foo`` with no
@@ -1479,11 +1485,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         # Merge DSL-compiled spec filters with HTTP-param-based filters.
         origins = tuple(dict.fromkeys((spec.origins if spec else ()) + http_origins))
         excluded_origins = tuple(
-            dict.fromkeys(
-                (spec.excluded_origins if spec else ())
-                + _csv_values(params, "exclude_origin")
-                + _csv_values(params, "exclude_provider")
-            )
+            dict.fromkeys((spec.excluded_origins if spec else ()) + _csv_values(params, "exclude_origin"))
         )
         tags = tuple(dict.fromkeys((spec.tags if spec else ()) + http_tags))
         excluded_tags = tuple(dict.fromkeys((spec.excluded_tags if spec else ()) + _csv_values(params, "exclude_tag")))
@@ -1531,7 +1533,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         min_messages = (spec.min_messages if spec else None) or self._get_int(params, "min_messages", 0) or None
         max_messages = (spec.max_messages if spec else None) or self._get_int(params, "max_messages", 0) or None
         min_words = (spec.min_words if spec else None) or self._get_int(params, "min_words", 0) or None
-        max_words = None
+        max_words = (spec.max_words if spec else None) or self._get_int(params, "max_words", 0) or None
         # session_id is passed separately to list_summaries/search_summaries
         # (count_sessions does not accept this param, so it cannot go in _filter_kw).
         spec_session_id = spec.session_id if spec else None

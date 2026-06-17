@@ -109,16 +109,9 @@ _ARCHIVE_OBSERVABILITY_TABLES: dict[ArchiveTier, tuple[str, ...]] = {
         "embedding_status",
     ),
     ArchiveTier.USER: (
-        "marks",
-        "annotations",
-        "corrections",
-        "suppressions",
+        "assertions",
         "session_tags",
         "session_metadata",
-        "saved_views",
-        "recall_packs",
-        "workspaces",
-        "blackboard_notes",
     ),
     ArchiveTier.OPS: (
         "ingest_cursor",
@@ -1347,7 +1340,7 @@ def _archive_missing_materialization_counts(conn: sqlite3.Connection) -> dict[st
 
 
 def _archive_user_overlay_orphans(root: Path) -> dict[str, Any]:
-    """Count user-tier rows that point at sessions absent from index.db."""
+    """Count user-tier references that point at sessions absent from index.db."""
 
     user_db = root / ARCHIVE_TIER_SPECS[ArchiveTier.USER].filename
     index_db = root / ARCHIVE_TIER_SPECS[ArchiveTier.INDEX].filename
@@ -1362,24 +1355,29 @@ def _archive_user_overlay_orphans(root: Path) -> dict[str, Any]:
     try:
         conn.execute("ATTACH DATABASE ? AS index_tier", (f"file:{index_db}?mode=ro",))
         checks = {
-            "marks": (
-                "SELECT COUNT(*) FROM marks AS u "
-                "WHERE u.target_type = 'session' "
-                "AND NOT EXISTS (SELECT 1 FROM index_tier.sessions AS s WHERE s.session_id = u.target_id)"
+            "assertion_marks": (
+                "SELECT COUNT(*) FROM assertions AS u "
+                "WHERE u.kind = 'mark' AND u.target_ref LIKE 'session:%' "
+                "AND COALESCE(u.status, '') != 'deleted' "
+                "AND NOT EXISTS (SELECT 1 FROM index_tier.sessions AS s WHERE s.session_id = substr(u.target_ref, 9))"
             ),
-            "annotations": (
-                "SELECT COUNT(*) FROM annotations AS u "
-                "WHERE u.target_type = 'session' "
-                "AND NOT EXISTS (SELECT 1 FROM index_tier.sessions AS s WHERE s.session_id = u.target_id)"
+            "assertion_annotations": (
+                "SELECT COUNT(*) FROM assertions AS u "
+                "WHERE u.kind = 'annotation' AND u.target_ref LIKE 'session:%' "
+                "AND COALESCE(u.status, '') != 'deleted' "
+                "AND NOT EXISTS (SELECT 1 FROM index_tier.sessions AS s WHERE s.session_id = substr(u.target_ref, 9))"
             ),
-            "corrections": (
-                "SELECT COUNT(*) FROM corrections AS u "
-                "WHERE u.target_type = 'session' "
-                "AND NOT EXISTS (SELECT 1 FROM index_tier.sessions AS s WHERE s.session_id = u.target_id)"
+            "assertion_corrections": (
+                "SELECT COUNT(*) FROM assertions AS u "
+                "WHERE u.kind = 'correction' AND u.target_ref LIKE 'insight:%' "
+                "AND COALESCE(u.status, '') != 'deleted' "
+                "AND NOT EXISTS (SELECT 1 FROM index_tier.sessions AS s WHERE s.session_id = substr(u.target_ref, 9))"
             ),
-            "suppressions": (
-                "SELECT COUNT(*) FROM suppressions AS u "
-                "WHERE NOT EXISTS (SELECT 1 FROM index_tier.sessions AS s WHERE s.session_id = u.session_id)"
+            "assertion_suppressions": (
+                "SELECT COUNT(*) FROM assertions AS u "
+                "WHERE u.kind = 'suppression' AND u.target_ref LIKE 'session:%' "
+                "AND COALESCE(u.status, '') != 'deleted' "
+                "AND NOT EXISTS (SELECT 1 FROM index_tier.sessions AS s WHERE s.session_id = substr(u.target_ref, 9))"
             ),
             "session_tags": (
                 "SELECT COUNT(*) FROM session_tags AS u "
@@ -1389,13 +1387,20 @@ def _archive_user_overlay_orphans(root: Path) -> dict[str, Any]:
                 "SELECT COUNT(*) FROM session_metadata AS u "
                 "WHERE NOT EXISTS (SELECT 1 FROM index_tier.sessions AS s WHERE s.session_id = u.session_id)"
             ),
-            "blackboard_notes": (
-                "SELECT COUNT(*) FROM blackboard_notes AS u "
-                "WHERE u.target_type = 'session' "
-                "AND NOT EXISTS (SELECT 1 FROM index_tier.sessions AS s WHERE s.session_id = u.target_id)"
+            "assertion_notes": (
+                "SELECT COUNT(*) FROM assertions AS u "
+                "WHERE u.kind = 'note' AND u.target_ref LIKE 'session:%' "
+                "AND COALESCE(u.status, '') != 'deleted' "
+                "AND NOT EXISTS (SELECT 1 FROM index_tier.sessions AS s WHERE s.session_id = substr(u.target_ref, 9))"
             ),
         }
-        counts = {table: _scalar_int(conn, sql) if _table_exists(conn, table) else -1 for table, sql in checks.items()}
+        counts = {
+            name: _scalar_int(conn, sql)
+            if (name.startswith("assertion_") and _table_exists(conn, "assertions"))
+            or (not name.startswith("assertion_") and _table_exists(conn, name))
+            else -1
+            for name, sql in checks.items()
+        }
         total = sum(count for count in counts.values() if count > 0)
         return {
             "checked": True,

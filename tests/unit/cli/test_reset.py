@@ -332,8 +332,8 @@ class TestResetCommandDeletion:
             assert conn.execute("SELECT COUNT(*) FROM sessions WHERE session_id = ?", (session_id,)).fetchone()[0] == 0
         with sqlite3.connect(archive_root / "user.db") as conn:
             row = conn.execute(
-                "SELECT reason, mode FROM suppressions WHERE session_id = ?",
-                (session_id,),
+                "SELECT body_text, json_extract(value_json, '$.mode') FROM assertions WHERE kind = 'suppression' AND target_ref = ?",
+                (f"session:{session_id}",),
             ).fetchone()
         assert row == ("reset --session", "hide")
 
@@ -374,9 +374,10 @@ class TestResetCommandDeletion:
             )
         with sqlite3.connect(archive_root / "user.db") as conn:
             assert (
-                conn.execute("SELECT COUNT(*) FROM suppressions WHERE session_id = ?", (child_session_id,)).fetchone()[
-                    0
-                ]
+                conn.execute(
+                    "SELECT COUNT(*) FROM assertions WHERE kind = 'suppression' AND target_ref = ?",
+                    (f"session:{child_session_id}",),
+                ).fetchone()[0]
                 == 1
             )
 

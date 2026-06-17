@@ -793,7 +793,7 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         blocks_sql_count=True,
         completion_source="session_id",
         completion_label="session",
-        mcp_names=("since_session", "since_session_id"),
+        mcp_names=("since_session_id",),
     ),
     QueryFieldDescriptor(
         name="message_type",

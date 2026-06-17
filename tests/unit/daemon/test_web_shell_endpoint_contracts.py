@@ -481,13 +481,10 @@ class TestWebShellWorkspaceAssetContract:
 
     # ---- /api/stack contract -------------------------------------------
 
-    def test_api_stack_dispatch_routes_to_handler(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        called = MagicMock()
-        monkeypatch.setattr(workspace_routes, "handle_stack", called)
+    def test_api_stack_dispatch_is_owned_by_http_handler(self) -> None:
         handler = _make_handler("GET", "/api/stack?ids=a,b")
         ok = workspace_routes.dispatch_get(handler, ["api", "stack"], {"ids": ["a,b"]})
-        assert ok is True
-        called.assert_called_once()
+        assert ok is False
 
     def test_api_stack_requires_ids(self) -> None:
         handler = _make_handler("GET", "/api/stack")
@@ -506,17 +503,14 @@ class TestWebShellWorkspaceAssetContract:
 
     # ---- /api/compare contract -----------------------------------------
 
-    def test_api_compare_dispatch_routes_to_handler(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        called = MagicMock()
-        monkeypatch.setattr(workspace_routes, "handle_compare", called)
+    def test_api_compare_dispatch_is_owned_by_http_handler(self) -> None:
         handler = _make_handler("GET", "/api/compare?left=a&right=b")
         ok = workspace_routes.dispatch_get(
             handler,
             ["api", "compare"],
             {"left": ["a"], "right": ["b"]},
         )
-        assert ok is True
-        called.assert_called_once()
+        assert ok is False
 
     @pytest.mark.parametrize(
         "params",
