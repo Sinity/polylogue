@@ -900,9 +900,19 @@ class TestRejection:
             compile_expression("nosuchfield:value")
         assert exc_info.value.field == "nosuchfield"
 
+    def test_unknown_field_suggests_close_registry_match(self) -> None:
+        with pytest.raises(ExpressionCompileError, match="did you mean: origin") as exc_info:
+            compile_expression("origon:chatgpt-export")
+        assert exc_info.value.field == "origon"
+
     def test_unknown_field_message_lists_recognized(self) -> None:
         with pytest.raises(ExpressionCompileError, match="recognized fields"):
             compile_expression("xyz:value")
+
+    def test_boolean_unknown_field_suggests_close_registry_match(self) -> None:
+        with pytest.raises(ExpressionCompileError, match="did you mean: origin") as exc_info:
+            compile_expression("sessions where origon:chatgpt-export")
+        assert exc_info.value.field == "origon"
 
     def test_cross_field_or_compiles_to_boolean_predicate(self) -> None:
         spec = compile_expression("repo:polylogue OR repo:sinex")
