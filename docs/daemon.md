@@ -71,6 +71,21 @@ By default `polylogued run` enables every component (watch, browser capture, HTT
 
 The HTTP API server runs by default. Pass `--no-api` to disable it. The endpoints below are exposed under the configured `--api-host:--api-port`.
 
+Route contract metadata lives in `polylogue/daemon/route_contracts.py`.
+Dispatch still happens in `polylogue/daemon/http.py`, but tests and docs use
+the metadata module as the durable route-classification source so stable
+routes, shell-only helpers, operational probes, and mutation routes do not drift
+silently.
+
+| Route class | Auth policy | Examples |
+|-------------|-------------|----------|
+| Browser shell bootstrap | unauthenticated loopback HTML | `GET /`, `GET /s/:id`, `GET /p`, `GET /a` |
+| Operational probes | unauthenticated loopback probe/scrape | `GET /healthz/live`, `GET /healthz/ready`, `GET /metrics` |
+| Stable read/query API | bearer token when configured | `GET /api/sessions`, `GET /api/query-units`, `GET /api/sessions/:id`, `GET /api/sessions/:id/provenance` |
+| User overlay reads | bearer token when configured | `GET /api/user/marks`, `GET /api/user/saved-views/:id` |
+| Browser-accessible mutations | bearer token plus same-origin browser request | `POST /api/user/marks`, `DELETE /api/user/saved-views/:id`, `POST /api/maintenance/run` |
+| Observability ingest | explicit config flag plus loopback-or-bearer policy | `POST /v1/traces`, `POST /v1/metrics`, `POST /v1/logs` |
+
 ### GET /api/health
 
 Health check with database statistics.
@@ -126,12 +141,17 @@ querying the archive through the daemon.
 
 ### Authentication
 
-Auth is required for non-loopback requests. Pass the daemon token as a Bearer
-token:
+When an API auth token is configured, `/api/*` routes require it even from
+loopback. Pass it as a Bearer token:
 
 ```bash
 curl -H "Authorization: Bearer <token>" http://host:8766/api/status
 ```
+
+Mutating browser-accessible routes also reject cross-origin `Origin` headers,
+even when the Bearer token is valid. `GET /healthz/*` and `GET /metrics` remain
+unauthenticated so health checks and Prometheus scrapers can operate without
+credentials.
 
 ## Browser Capture Receiver
 

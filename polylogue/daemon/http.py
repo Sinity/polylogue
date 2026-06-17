@@ -16,7 +16,7 @@ from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import parse_qs, urlparse
 
-from polylogue.core.loopback import is_loopback_origin
+from polylogue.core.loopback import is_loopback_host, is_loopback_origin
 from polylogue.core.sources import source_name_to_origin
 from polylogue.daemon import user_state_http, workspace_routes
 from polylogue.daemon.events import (
@@ -788,6 +788,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             or (len(path) == 2 and path[0] == "s" and bool(path[1]))
             or (len(path) == 2 and path[0] == "w" and path[1] in workspace_routes.WORKSPACE_SHELL_MODES)
         ):
+            if not self._check_shell_bootstrap_access():
+                return
             self._serve_web_shell()
             return
 
@@ -796,6 +798,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         # shell because the daemon binds to loopback by default and the
         # page only embeds JS that calls the authenticated archive API.
         if path == ["p"]:
+            if not self._check_shell_bootstrap_access():
+                return
             self._serve_paste_browser_page()
             return
 
@@ -803,6 +807,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         # auth posture as ``/p`` — the page only embeds JS that calls
         # the authenticated archive API.
         if path == ["a"]:
+            if not self._check_shell_bootstrap_access():
+                return
             self._serve_attachment_library_page()
             return
 
@@ -927,6 +933,13 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         self._send_error(HTTPStatus.FORBIDDEN, "cross_origin_denied")
         return False
 
+    def _check_shell_bootstrap_access(self) -> bool:
+        """Allow unauthenticated shell HTML only on loopback deployments."""
+
+        if is_loopback_host(self._api_host) and is_loopback_host(self._client_host):
+            return True
+        return self._check_auth()
+
     def do_POST(self) -> None:
         try:
             self._do_post_impl()
@@ -945,7 +958,6 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         # credentials are the only safe non-loopback case.
         if path == ["v1", "traces"] or path == ["v1", "metrics"] or path == ["v1", "logs"]:
             from polylogue.config import load_polylogue_config
-            from polylogue.core.loopback import is_loopback_host
 
             if not load_polylogue_config().observability_enabled:
                 self._send_error(HTTPStatus.NOT_FOUND, "not_found")
