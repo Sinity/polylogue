@@ -29,7 +29,6 @@ from polylogue.archive.query.expression import (
     ExpressionCompileError,
     _CountToken,
     _FieldToken,
-    _lex,
     _TextToken,
     compile_expression,
     compile_expression_into,
@@ -59,6 +58,11 @@ def _spec(**kwargs: Any) -> SessionQuerySpec:
     return SessionQuerySpec(**kwargs)
 
 
+def _clauses(expression: str) -> list[object]:
+    """Return parsed flat-query clauses through the canonical AST entry point."""
+    return list(parse_expression_ast(expression).clauses)
+
+
 # ---------------------------------------------------------------------------
 # Lexer tests
 # ---------------------------------------------------------------------------
@@ -75,14 +79,14 @@ class TestLexer:
         )
 
     def test_bare_words(self) -> None:
-        tokens = _lex("json envelope")
+        tokens = _clauses("json envelope")
         assert tokens == [
             _TextToken(text="json", quoted=False, negated=False),
             _TextToken(text="envelope", quoted=False, negated=False),
         ]
 
     def test_bare_boolean_words_remain_fts_terms(self) -> None:
-        tokens = _lex("error or timeout not retry")
+        tokens = _clauses("error or timeout not retry")
         assert tokens == [
             _TextToken(text="error", quoted=False, negated=False),
             _TextToken(text="or", quoted=False, negated=False),
@@ -92,7 +96,7 @@ class TestLexer:
         ]
 
     def test_code_like_bare_words(self) -> None:
-        tokens = _lex("foo(bar) array[0] dict{key}")
+        tokens = _clauses("foo(bar) array[0] dict{key}")
         assert tokens == [
             _TextToken(text="foo(bar)", quoted=False, negated=False),
             _TextToken(text="array[0]", quoted=False, negated=False),
@@ -100,32 +104,32 @@ class TestLexer:
         ]
 
     def test_quoted_phrase(self) -> None:
-        tokens = _lex('"json envelope"')
+        tokens = _clauses('"json envelope"')
         assert tokens == [_TextToken(text="json envelope", quoted=True, negated=False)]
 
     def test_negated_quoted_phrase(self) -> None:
-        tokens = _lex('-"bad phrase"')
+        tokens = _clauses('-"bad phrase"')
         assert tokens == [_TextToken(text="bad phrase", quoted=True, negated=True)]
 
     def test_field_bare(self) -> None:
-        tokens = _lex("repo:polylogue")
+        tokens = _clauses("repo:polylogue")
         assert tokens == [_FieldToken(field="repo", raw_value="polylogue", negated=False)]
 
     def test_field_negated(self) -> None:
-        tokens = _lex("-origin:chatgpt-export")
+        tokens = _clauses("-origin:chatgpt-export")
         assert tokens == [_FieldToken(field="origin", raw_value="chatgpt-export", negated=True)]
 
     def test_field_quoted_value(self) -> None:
-        tokens = _lex('near:"semantic search"')
+        tokens = _clauses('near:"semantic search"')
         assert tokens == [_FieldToken(field="near", raw_value="semantic search", negated=False)]
 
     def test_field_paren_alternation(self) -> None:
-        tokens = _lex("origin:(claude-code-session|codex-session)")
+        tokens = _clauses("origin:(claude-code-session|codex-session)")
         assert tokens == [_FieldToken(field="origin", raw_value="claude-code-session|codex-session", negated=False)]
 
     def test_unclosed_quote_raises(self) -> None:
         with pytest.raises(ExpressionCompileError, match="unclosed quoted"):
-            _lex('"not closed')
+            parse_expression_ast('"not closed')
 
     def test_cross_field_or_paren_builds_boolean_ast(self) -> None:
         ast = parse_expression_ast("(origin:claude-code-session OR origin:chatgpt-export)")
@@ -140,10 +144,10 @@ class TestLexer:
         )
 
     def test_empty_expression(self) -> None:
-        assert _lex("") == []
+        assert _clauses("") == []
 
     def test_whitespace_only(self) -> None:
-        assert _lex("   ") == []
+        assert _clauses("   ") == []
 
 
 class TestExplainExpression:

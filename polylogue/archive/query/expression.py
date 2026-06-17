@@ -873,14 +873,6 @@ def parse_expression_ast(expression: str) -> QueryExpressionAST:
     return transformed
 
 
-def _lex(expression: str) -> list[_LexToken]:
-    """Project the canonical Lark AST into the current clause lowerer input."""
-    ast = parse_expression_ast(expression)
-    if ast.boolean_predicate is not None:
-        raise ExpressionCompileError("Boolean query cannot be projected to flat clauses", field=None)
-    return list(ast.clauses)
-
-
 def _explain_clause(token: _LexToken) -> QueryExpressionExplainClause:
     if isinstance(token, _FieldToken):
         return QueryExpressionExplainClause(
