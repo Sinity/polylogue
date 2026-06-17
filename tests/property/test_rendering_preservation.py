@@ -1,6 +1,6 @@
 """Property tests for semantic preservation across rendering surfaces.
 
-These tests replace the runtime semantic proof infrastructure (35 deleted files)
+These tests replace the runtime semantic evidence infrastructure (35 deleted files)
 with Hypothesis-driven verification that runs in CI. They check the same
 invariants: message counts, role distributions, timestamps, and cross-surface
 agreement.

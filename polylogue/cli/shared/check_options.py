@@ -48,7 +48,9 @@ CHECK_COMMAND_OPTION_DECORATORS: tuple[CheckCommandDecorator, ...] = (
     ),
     click.option("--full", "blob_integrity_full", is_flag=True, help="Run full blob-integrity scan (requires --blob)"),
     click.option("--schemas", "check_schemas", is_flag=True, help="Run raw-corpus schema verification (non-mutating)"),
-    click.option("--proof", "check_proof", is_flag=True, help="Run durable artifact support proof"),
+    click.option(
+        "--artifact-coverage", "check_artifact_coverage", is_flag=True, help="Inspect durable artifact coverage"
+    ),
     click.option("--artifacts", "check_artifacts", is_flag=True, help="List durable artifact observations"),
     click.option("--cohorts", "check_cohorts", is_flag=True, help="Summarize durable artifact cohorts"),
     click.option(
@@ -61,7 +63,7 @@ CHECK_COMMAND_OPTION_DECORATORS: tuple[CheckCommandDecorator, ...] = (
         "--artifact-provider",
         "artifact_providers",
         multiple=True,
-        help="Limit artifact proof/listing/cohorting to effective provider (repeatable)",
+        help="Limit artifact coverage/listing/cohorting to effective provider (repeatable)",
     ),
     click.option(
         "--artifact-status",
@@ -76,14 +78,17 @@ CHECK_COMMAND_OPTION_DECORATORS: tuple[CheckCommandDecorator, ...] = (
         help="Limit artifact listing/cohorting to artifact kind (repeatable)",
     ),
     click.option(
-        "--artifact-limit", type=int, default=None, help="Limit artifact proof/listing/cohorting to N observation rows"
+        "--artifact-limit",
+        type=int,
+        default=None,
+        help="Limit artifact coverage/listing/cohorting to N observation rows",
     ),
     click.option(
         "--artifact-offset",
         type=int,
         default=0,
         show_default=True,
-        help="Start offset for artifact proof/listing/cohorting",
+        help="Start offset for artifact coverage/listing/cohorting",
     ),
     click.option(
         "--schema-samples",

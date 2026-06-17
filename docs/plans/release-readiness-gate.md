@@ -99,7 +99,7 @@ Satisfied:
 Still blocking external release claims:
 
 - #1847/#1846 web/API release scope is not settled.
-- #1849 public docs/proof vocabulary is not fully settled; do not advertise any
+- #1849 public docs/evidence vocabulary is not fully settled; do not advertise any
   confidence layer that is not generated from live code, fixtures, schemas, or
   benchmark artifacts.
 - #2006 advanced query language claims are scoped to shipped Lark grammar,

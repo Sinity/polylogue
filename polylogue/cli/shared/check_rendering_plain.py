@@ -156,34 +156,34 @@ def append_schema_lines(lines: list[str], result: CheckCommandResult) -> None:
         )
 
 
-def append_artifact_proof_lines(lines: list[str], result: CheckCommandResult) -> None:
-    if result.proof_report is None:
+def append_artifact_coverage_lines(lines: list[str], result: CheckCommandResult) -> None:
+    if result.coverage_report is None:
         return
-    proof_report = result.proof_report
+    coverage_report = result.coverage_report
     lines.extend(
         [
             "",
-            f"Artifact proof: {proof_report.total_records:,} artifact observations "
-            f"(contract_backed={proof_report.contract_backed_records:,}, "
-            f"unsupported={proof_report.unsupported_parseable_records:,}, "
-            f"non_parseable={proof_report.recognized_non_parseable_records:,}, "
-            f"unknown={proof_report.unknown_records:,}, "
-            f"decode_errors={proof_report.decode_errors:,})",
+            f"Artifact coverage: {coverage_report.total_records:,} artifact observations "
+            f"(contract_backed={coverage_report.contract_backed_records:,}, "
+            f"unsupported={coverage_report.unsupported_parseable_records:,}, "
+            f"non_parseable={coverage_report.recognized_non_parseable_records:,}, "
+            f"unknown={coverage_report.unknown_records:,}, "
+            f"decode_errors={coverage_report.decode_errors:,})",
         ]
     )
-    if proof_report.subagent_streams:
+    if coverage_report.subagent_streams:
         lines.append(
-            f"  Claude subagents: linked_sidecars={proof_report.linked_sidecars:,} "
-            f"orphan_sidecars={proof_report.orphan_sidecars:,} "
-            f"streams={proof_report.subagent_streams:,}"
+            f"  Claude subagents: linked_sidecars={coverage_report.linked_sidecars:,} "
+            f"orphan_sidecars={coverage_report.orphan_sidecars:,} "
+            f"streams={coverage_report.subagent_streams:,}"
         )
-    if proof_report.package_versions:
-        lines.append(f"  Resolved packages: {format_count_mapping(proof_report.package_versions)}")
-    if proof_report.element_kinds:
-        lines.append(f"  Resolved elements: {format_count_mapping(proof_report.element_kinds)}")
-    if proof_report.resolution_reasons:
-        lines.append(f"  Resolution reasons: {format_count_mapping(proof_report.resolution_reasons)}")
-    for provider, stats in sorted(proof_report.providers.items()):
+    if coverage_report.package_versions:
+        lines.append(f"  Resolved packages: {format_count_mapping(coverage_report.package_versions)}")
+    if coverage_report.element_kinds:
+        lines.append(f"  Resolved elements: {format_count_mapping(coverage_report.element_kinds)}")
+    if coverage_report.resolution_reasons:
+        lines.append(f"  Resolution reasons: {format_count_mapping(coverage_report.resolution_reasons)}")
+    for provider, stats in sorted(coverage_report.providers.items()):
         lines.append(
             f"  {provider}: contract_backed={stats.contract_backed_records:,} "
             f"unsupported={stats.unsupported_parseable_records:,} "
@@ -236,7 +236,7 @@ def build_report_lines(
     lines = build_readiness_lines(env, result, options)
     append_derived_model_lines(lines, result)
     append_schema_lines(lines, result)
-    append_artifact_proof_lines(lines, result)
+    append_artifact_coverage_lines(lines, result)
     append_artifact_observation_lines(lines, result)
     append_runtime_lines(lines, result, plain=env.ui.plain)
     append_daemon_lines(lines, result)

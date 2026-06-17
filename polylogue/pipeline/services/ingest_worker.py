@@ -411,7 +411,7 @@ def _validate_parse_plan(
         # WARNING level so it is not silently dropped (#1745). The accurate
         # whole-file count is also persisted on the durable artifact
         # observation (storage/artifacts/inspection.py full-scan) and is
-        # rolled into the artifact proof's decode-error tally.
+        # rolled into the artifact coverage's decode-error tally.
         logger.warning(
             "Malformed JSONL lines counted in advisory mode for %s: %s",
             context.raw_record.source_path or context.raw_record.raw_id,

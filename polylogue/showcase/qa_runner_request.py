@@ -29,7 +29,7 @@ class QASessionPlan:
 
     workspace_mode: QAWorkspaceMode
     run_audit: bool
-    run_proof: bool
+    run_artifact_coverage: bool
     run_exercises: bool
     run_invariants: bool
 
@@ -48,7 +48,7 @@ class QASessionRequest:
     source_names: tuple[str, ...] | None = None
     regenerate_schemas: bool = False
     skip_audit: bool = False
-    skip_proof: bool = False
+    skip_coverage: bool = False
     skip_exercises: bool = False
     skip_invariants: bool = False
     workspace_dir: Path | None = None
@@ -77,7 +77,7 @@ class QASessionRequest:
         return QASessionPlan(
             workspace_mode=workspace_mode,
             run_audit=not self.skip_audit,
-            run_proof=not self.skip_proof,
+            run_artifact_coverage=not self.skip_coverage,
             run_exercises=not self.skip_exercises,
             run_invariants=not self.skip_invariants,
         )
@@ -128,7 +128,7 @@ def build_qa_session_request(
             run_exercises = False
         if QAStage.INVARIANTS in skip_stages:
             run_invariants = False
-    run_proof = only_stage is None and run_audit
+    run_artifact_coverage = only_stage is None and run_audit
 
     return QASessionRequest(
         live=live,
@@ -137,7 +137,7 @@ def build_qa_session_request(
         source_names=source_names,
         regenerate_schemas=regenerate_schemas,
         skip_audit=not run_audit,
-        skip_proof=not run_proof,
+        skip_coverage=not run_artifact_coverage,
         skip_exercises=not run_exercises,
         skip_invariants=not run_invariants,
         workspace_dir=workspace,

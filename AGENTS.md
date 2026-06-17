@@ -1388,7 +1388,7 @@ generation recorded, the static `MIN_AGE_S` floor applies on its own.
 snapshot of daemon-relevant state read directly from the archive SQLite
 database. The probe is read-only and does not talk to the running daemon.
 
-For #845-style before/after convergence proofs:
+For #845-style before/after convergence evidence snapshots:
 
 ```bash
 devtools daemon-workload-probe --json > before.json
@@ -1514,7 +1514,7 @@ scripts and agents.
 repo readiness: generated-surface rendering, baseline verification, validation
 lane dispatch, package/build checks, and branch/PR readiness gates.
 
-Domain proof semantics belong in the verification-lab, schema, scenario,
+Domain validation semantics belong in the verification-lab, schema, scenario,
 or insight modules first. A `devtools` command may expose them only as a thin
 operator entrypoint that delegates to the owning lab or insight implementation.
 
@@ -1651,7 +1651,7 @@ These are the commands worth remembering during normal repo work:
 
 <!-- END GENERATED: devtools-command-catalog -->
 
-## Validation and Proof
+## Validation and Evidence
 
 When changing semantics, validation, or surfaces:
 

@@ -5,7 +5,7 @@ covering every file.
 
 Role: **codebase navigator**. The projection declares where each file lives
 and where it should live under planned placement rules. It is not a behavior
-proof — it does not encode source/provider semantics, correctness contracts,
+evidence — it does not encode source/provider semantics, correctness contracts,
 or import-boundary enforcement. Those concerns belong to tests, verify-layering,
 and verification-lab scenarios.
 

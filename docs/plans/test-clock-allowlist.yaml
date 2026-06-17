@@ -43,8 +43,6 @@ files:
     reason: "Verification-report timestamps use real now to assert ordering across artifacts."
   - path: tests/unit/devtools/test_verify_manifests.py
     reason: "Manifest-suppression expiry checks intentionally read the host date to validate the live policy decision."
-  - path: tests/unit/proof/test_suppressions.py
-    reason: "Suppression-expiry tests read the host clock to assert that expired entries are rejected today."
 
   # --- Pipeline / storage acquired_at timestamps (no production now() comparison) ---
   - path: tests/unit/pipeline/test_async_index.py

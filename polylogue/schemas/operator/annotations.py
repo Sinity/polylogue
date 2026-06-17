@@ -15,9 +15,9 @@ from polylogue.schemas.operator.models import (
 from polylogue.schemas.operator.models import (
     SchemaAnnotationSummary,
     SchemaCoverageSummary,
-    SchemaReviewProof,
+    SchemaReviewEvidence,
     SchemaRoleAssignment,
-    SchemaRoleProofEntry,
+    SchemaRoleEvidenceEntry,
     operator_json_document,
 )
 
@@ -141,8 +141,8 @@ def collect_annotation_summary(schema: Mapping[str, object]) -> SchemaAnnotation
     )
 
 
-def build_review_proof(schema: Mapping[str, object]) -> SchemaReviewProof:
-    """Build a proof surface from a schema's semantic annotations and field stats.
+def build_review_evidence(schema: Mapping[str, object]) -> SchemaReviewEvidence:
+    """Build a review evidence surface from a schema's semantic annotations and field stats.
 
     Re-runs inference from the schema's own samples metadata to produce
     full candidate lists, competing paths, and abstention details.
@@ -168,12 +168,12 @@ def build_review_proof(schema: Mapping[str, object]) -> SchemaReviewProof:
     role_entries: dict[str, list[_RoleCandidate]] = {}
     _collect_role_candidates_from_schema(schema_node, "$", role_entries)
 
-    # Build proof entries for each semantic role
-    proof_entries: list[SchemaRoleProofEntry] = []
+    # Build evidence entries for each semantic role
+    evidence_entries: list[SchemaRoleEvidenceEntry] = []
     for role in SEMANTIC_ROLES:
         if role in ineligible_roles:
-            proof_entries.append(
-                SchemaRoleProofEntry(
+            evidence_entries.append(
+                SchemaRoleEvidenceEntry(
                     role=role,
                     chosen_path=None,
                     chosen_score=0.0,
@@ -187,8 +187,8 @@ def build_review_proof(schema: Mapping[str, object]) -> SchemaReviewProof:
 
         candidates = role_entries.get(role, [])
         if not candidates:
-            proof_entries.append(
-                SchemaRoleProofEntry(
+            evidence_entries.append(
+                SchemaRoleEvidenceEntry(
                     role=role,
                     chosen_path=None,
                     chosen_score=0.0,
@@ -202,8 +202,8 @@ def build_review_proof(schema: Mapping[str, object]) -> SchemaReviewProof:
 
         chosen = candidates[0]
         competing: OperatorJSONDocumentList = [candidate.to_payload() for candidate in candidates[1:]]
-        proof_entries.append(
-            SchemaRoleProofEntry(
+        evidence_entries.append(
+            SchemaRoleEvidenceEntry(
                 role=role,
                 chosen_path=chosen.path,
                 chosen_score=chosen.score,
@@ -213,8 +213,8 @@ def build_review_proof(schema: Mapping[str, object]) -> SchemaReviewProof:
             )
         )
 
-    return SchemaReviewProof(
-        roles=proof_entries,
+    return SchemaReviewEvidence(
+        roles=evidence_entries,
         artifact_kind=artifact_kind,
         eligible_roles=eligible_roles,
         ineligible_roles=ineligible_roles,
@@ -262,4 +262,4 @@ def _collect_role_candidates_from_schema(
                     _collect_role_candidates_from_schema(child_node, path, role_entries)
 
 
-__all__ = ["build_review_proof", "collect_annotation_summary"]
+__all__ = ["build_review_evidence", "collect_annotation_summary"]

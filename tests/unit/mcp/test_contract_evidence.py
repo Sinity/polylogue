@@ -18,7 +18,7 @@ Five contract families are pinned here:
 4. Privacy envelopes — error envelopes never leak absolute home/repo paths,
    raw exception messages, or secret-shaped credentials.
 5. Registration drift detector — the registered surface set is captured as
-   evidence so any silent addition or removal is visible in the proof pack.
+   evidence so any silent addition or removal is visible in the evidence pack.
 
 Existing coverage in ``test_server_surfaces.py``, ``test_envelope_contracts.py``,
 ``test_tool_schema_witness.py``, and ``test_mcp_edge_cases.py`` already pins

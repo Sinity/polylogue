@@ -313,9 +313,9 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `daemon-embedding-readiness` | — | — | — | — | — | Embedding readiness surfaced in daemon status |
 | `exercise` | `delete-dry-run` | — | — | — | — | — | Dry-run delete |
 | `exercise` | `delete-one` | — | — | — | — | — | Delete one session |
+| `exercise` | `doctor-artifact-coverage-json` | — | — | — | — | — | Artifact coverage as JSON |
 | `exercise` | `doctor-cohorts-json` | — | — | — | — | — | Artifact cohorts as JSON |
 | `exercise` | `doctor-json` | — | — | — | — | — | Health check as JSON |
-| `exercise` | `doctor-proof-json` | — | — | — | — | — | Artifact proof as JSON |
 | `exercise` | `doctor-readiness` | — | — | — | — | — | Health check |
 | `exercise` | `doctor-verbose` | — | — | — | — | — | Verbose readiness check |
 | `exercise` | `exclude-provider` | — | — | — | — | — | Exclude a provider |

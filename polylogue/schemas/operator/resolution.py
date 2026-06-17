@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from polylogue.schemas.operator.annotations import build_review_proof, collect_annotation_summary
+from polylogue.schemas.operator.annotations import build_review_evidence, collect_annotation_summary
 from polylogue.schemas.operator.models import (
     SchemaExplainRequest,
     SchemaExplainResult,
@@ -26,7 +26,7 @@ def explain_schema(request: SchemaExplainRequest) -> SchemaExplainResult:
             f"No schema found for {request.provider} version={request.version}"
             + (f" element={request.element_kind}" if request.element_kind else "")
         )
-    proof = build_review_proof(schema) if request.proof else None
+    evidence = build_review_evidence(schema) if request.review_evidence else None
     return SchemaExplainResult(
         provider=request.provider,
         version=request.version,
@@ -34,7 +34,7 @@ def explain_schema(request: SchemaExplainRequest) -> SchemaExplainResult:
         package=package,
         schema=operator_json_document(schema),
         annotations=collect_annotation_summary(schema),
-        review_proof=proof,
+        review_evidence=evidence,
     )
 
 

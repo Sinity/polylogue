@@ -1,4 +1,4 @@
-"""Artifact-proof and durable-observation workflows."""
+"""Artifact-evidence and durable-observation workflows."""
 
 from __future__ import annotations
 
@@ -16,8 +16,8 @@ from polylogue.storage.runtime import ArtifactObservationRecord
 from polylogue.storage.sqlite.connection import open_connection
 from polylogue.types import ArtifactSupportStatus, Provider
 
-from .models import ArtifactProofReport, ProviderArtifactProof
-from .requests import ArtifactObservationQuery, ArtifactProofRequest, bounded_window
+from .models import ArtifactCoverageReport, ProviderArtifactCoverage
+from .requests import ArtifactCoverageRequest, ArtifactObservationQuery, bounded_window
 
 
 def _increment_count(counter: dict[str, int], key: str, amount: int = 1) -> None:
@@ -72,22 +72,22 @@ def list_artifact_cohort_rows(
     )
 
 
-def prove_raw_artifact_coverage(
+def inspect_raw_artifact_coverage(
     *,
     db_path: Path,
-    request: ArtifactProofRequest,
-) -> ArtifactProofReport:
+    request: ArtifactCoverageRequest,
+) -> ArtifactCoverageReport:
     """Report durable artifact support, unknowns, and Claude sidecar linkage."""
     bounded_limit, bounded_offset = bounded_window(request.record_limit, request.record_offset)
     if not db_path.exists():
-        return ArtifactProofReport(
+        return ArtifactCoverageReport(
             providers={},
             total_records=0,
             record_limit=bounded_limit,
             record_offset=bounded_offset,
         )
 
-    stats_by_provider: dict[str, ProviderArtifactProof] = {}
+    stats_by_provider: dict[str, ProviderArtifactCoverage] = {}
     linkage_state: dict[str, dict[str, set[str]]] = {}
     observations = list_artifact_observation_rows(
         db_path=db_path,
@@ -103,7 +103,7 @@ def prove_raw_artifact_coverage(
         provider = str(observation.payload_provider or Provider.from_string(observation.source_name))
         stats = stats_by_provider.setdefault(
             provider,
-            ProviderArtifactProof(provider=provider),
+            ProviderArtifactCoverage(provider=provider),
         )
         stats.total_records += 1
         _increment_count(stats.artifact_counts, observation.artifact_kind)
@@ -135,13 +135,13 @@ def prove_raw_artifact_coverage(
             stats.decode_errors += 1
         elif observation.support_status is ArtifactSupportStatus.PARTIAL_DECODE:
             # Partial decode is still record loss — count it as a decode error
-            # so it is never silently absent from the artifact proof (#1745).
+            # so it is never silently absent from the artifact coverage (#1745).
             stats.decode_errors += 1
 
     for provider, state in linkage_state.items():
         stats = stats_by_provider.setdefault(
             provider,
-            ProviderArtifactProof(provider=provider),
+            ProviderArtifactCoverage(provider=provider),
         )
         linked = state["sidecars"] & state["streams"]
         stats.linked_sidecars = len(linked)
@@ -149,7 +149,7 @@ def prove_raw_artifact_coverage(
         stats.subagent_streams = len(state["streams"])
         stats.streams_with_sidecars = len(linked)
 
-    return ArtifactProofReport(
+    return ArtifactCoverageReport(
         providers=stats_by_provider,
         total_records=total_records,
         record_limit=bounded_limit,
@@ -160,5 +160,5 @@ def prove_raw_artifact_coverage(
 __all__ = [
     "list_artifact_cohort_rows",
     "list_artifact_observation_rows",
-    "prove_raw_artifact_coverage",
+    "inspect_raw_artifact_coverage",
 ]

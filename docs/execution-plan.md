@@ -30,7 +30,7 @@ status, test choices, resource constraints, and handoff notes.
 | Content hash idempotency | Done | #838, #421 |
 | Session insights baseline (profiles, work events, phases, threads) | Landed; rigor hardening remains | Multiple PRs, #1019 |
 | Cost/subscription tracking and outlook slice | Landed; product forecasting remains | #938, #943, #995 |
-| Daemon convergence architecture | Landed; production proof and residual workload remain under #845/#996/#999 | #847, #854 |
+| Daemon convergence architecture | Landed; production evidence and residual workload remain under #845/#996/#999 | #847, #854 |
 | Browser extension + receiver | Done | #937, #940 |
 | Identity ledger (stable IDs across re-ingestion) | Done | #775, #963 |
 | MCP server (35+ tools, read/write/admin roles) | Done | Multiple PRs |

@@ -16,12 +16,12 @@ from polylogue.core.json import JSONDocument
 from polylogue.readiness import ReadinessCheck, ReadinessReport, VerifyStatus
 from polylogue.schemas.operator.models import (
     ArtifactCohortListResult,
+    ArtifactCoverageResult,
     ArtifactObservationListResult,
-    ArtifactProofResult,
 )
 from polylogue.schemas.validation.models import (
-    ArtifactProofReport,
-    ProviderArtifactProof,
+    ArtifactCoverageReport,
+    ProviderArtifactCoverage,
     ProviderSchemaVerification,
     SchemaVerificationReport,
 )
@@ -464,7 +464,7 @@ class TestCheckCommand:
             check_blob=False,
             blob_integrity_full=False,
             check_schemas=False,
-            check_proof=False,
+            check_artifact_coverage=False,
             check_artifacts=False,
             check_cohorts=False,
             schema_providers=(),
@@ -994,15 +994,15 @@ class TestCheckCommandSupplementary:
         assert row[5] is None
         assert isinstance(row[6], str) and "Malformed JSONL lines:" in row[6]
 
-    def test_check_proof_json_output(self, cli_workspace: WorkspacePaths) -> None:
-        """--proof adds artifact_proof block to JSON output."""
+    def test_check_artifact_coverage_json_output(self, cli_workspace: WorkspacePaths) -> None:
+        """--artifact-coverage adds artifact_coverage block to JSON output."""
         from click.testing import CliRunner
 
         from polylogue.cli.click_app import cli
 
-        fake_report = ArtifactProofReport(
+        fake_report = ArtifactCoverageReport(
             providers={
-                "claude-code": ProviderArtifactProof(
+                "claude-code": ProviderArtifactCoverage(
                     provider="claude-code",
                     total_records=2,
                     recognized_non_parseable_records=1,
@@ -1019,31 +1019,31 @@ class TestCheckCommandSupplementary:
         )
 
         with patch(
-            "polylogue.cli.shared.check_workflow.run_artifact_proof",
-            return_value=ArtifactProofResult(report=fake_report),
+            "polylogue.cli.shared.check_workflow.run_artifact_coverage",
+            return_value=ArtifactCoverageResult(report=fake_report),
         ):
             runner = CliRunner()
-            result = runner.invoke(cli, ["--plain", "doctor", "--format", "json", "--proof"])
+            result = runner.invoke(cli, ["--plain", "doctor", "--format", "json", "--artifact-coverage"])
 
         assert result.exit_code == 0
         data = _extract_json(result.output)
-        assert "artifact_proof" in data
-        artifact_proof = json_object_field(data, "artifact_proof", context="artifact proof payload")
-        artifact_summary = json_object_field(artifact_proof, "summary", context="artifact proof payload")
-        assert artifact_proof.get("total_records") == 2
+        assert "artifact_coverage" in data
+        artifact_coverage = json_object_field(data, "artifact_coverage", context="artifact coverage payload")
+        artifact_summary = json_object_field(artifact_coverage, "summary", context="artifact coverage payload")
+        assert artifact_coverage.get("total_records") == 2
         assert artifact_summary.get("linked_sidecars") == 1
         assert artifact_summary.get("unsupported_parseable_records") == 1
         assert artifact_summary.get("package_versions") == {"v7": 1}
 
-    def test_check_proof_plain_output(self, cli_workspace: WorkspacePaths) -> None:
-        """--proof renders the artifact proof summary in plain output."""
+    def test_check_artifact_coverage_plain_output(self, cli_workspace: WorkspacePaths) -> None:
+        """--artifact-coverage renders the artifact coverage summary in plain output."""
         from click.testing import CliRunner
 
         from polylogue.cli.click_app import cli
 
-        fake_report = ArtifactProofReport(
+        fake_report = ArtifactCoverageReport(
             providers={
-                "chatgpt": ProviderArtifactProof(
+                "chatgpt": ProviderArtifactCoverage(
                     provider="chatgpt",
                     total_records=1,
                     contract_backed_records=1,
@@ -1056,31 +1056,31 @@ class TestCheckCommandSupplementary:
         )
 
         with patch(
-            "polylogue.cli.shared.check_workflow.run_artifact_proof",
-            return_value=ArtifactProofResult(report=fake_report),
+            "polylogue.cli.shared.check_workflow.run_artifact_coverage",
+            return_value=ArtifactCoverageResult(report=fake_report),
         ):
             runner = CliRunner()
-            result = runner.invoke(cli, ["--plain", "doctor", "--proof"])
+            result = runner.invoke(cli, ["--plain", "doctor", "--artifact-coverage"])
 
         assert result.exit_code == 0
-        assert "Artifact proof:" in result.output
+        assert "Artifact coverage:" in result.output
         assert "Resolved packages: v1=1" in result.output
         assert "Resolved elements: session_document=1" in result.output
         assert "Resolution reasons: exact_structure=1" in result.output
         assert "chatgpt: contract_backed=1" in result.output
         assert "packages: v1=1" in result.output
 
-    def test_check_proof_forwards_artifact_scope(self, cli_workspace: WorkspacePaths) -> None:
-        """Artifact provider/limit/offset are forwarded to the proof workflow."""
+    def test_check_artifact_coverage_forwards_artifact_scope(self, cli_workspace: WorkspacePaths) -> None:
+        """Artifact provider/limit/offset are forwarded to the evidence workflow."""
         from click.testing import CliRunner
 
         from polylogue.cli.click_app import cli
 
-        fake_report = ArtifactProofReport(providers={}, total_records=0)
+        fake_report = ArtifactCoverageReport(providers={}, total_records=0)
 
         with patch(
-            "polylogue.cli.shared.check_workflow.run_artifact_proof",
-            return_value=ArtifactProofResult(report=fake_report),
+            "polylogue.cli.shared.check_workflow.run_artifact_coverage",
+            return_value=ArtifactCoverageResult(report=fake_report),
         ) as mock_prove:
             runner = CliRunner()
             result = runner.invoke(
@@ -1090,7 +1090,7 @@ class TestCheckCommandSupplementary:
                     "doctor",
                     "--format",
                     "json",
-                    "--proof",
+                    "--artifact-coverage",
                     "--artifact-provider",
                     "claude-code",
                     "--artifact-limit",

@@ -404,7 +404,7 @@ generation recorded, the static `MIN_AGE_S` floor applies on its own.
 snapshot of daemon-relevant state read directly from the archive SQLite
 database. The probe is read-only and does not talk to the running daemon.
 
-For #845-style before/after convergence proofs:
+For #845-style before/after convergence evidence snapshots:
 
 ```bash
 devtools daemon-workload-probe --json > before.json

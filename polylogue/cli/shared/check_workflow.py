@@ -26,13 +26,13 @@ from polylogue.readiness import ReadinessReport, get_readiness, run_runtime_read
 from polylogue.schemas.operator.workflow import (
     list_artifact_cohorts,
     list_artifact_observations,
-    run_artifact_proof,
+    run_artifact_coverage,
     run_schema_verification,
 )
 from polylogue.schemas.validation.models import SchemaVerificationReport
 from polylogue.schemas.validation.requests import (
+    ArtifactCoverageRequest,
     ArtifactObservationQuery,
-    ArtifactProofRequest,
     SchemaVerificationRequest,
 )
 from polylogue.storage.repair import run_selected_maintenance
@@ -59,7 +59,7 @@ class CheckCommandOptions:
     check_blob: bool
     blob_integrity_full: bool
     check_schemas: bool
-    check_proof: bool
+    check_artifact_coverage: bool
     check_artifacts: bool
     check_cohorts: bool
     schema_providers: tuple[str, ...]
@@ -97,7 +97,7 @@ def _runtime_only_requested(options: CheckCommandOptions) -> bool:
             options.check_blob,
             options.blob_integrity_full,
             options.check_schemas,
-            options.check_proof,
+            options.check_artifact_coverage,
             options.check_artifacts,
             options.check_cohorts,
         )
@@ -228,9 +228,9 @@ def run_check_workflow(env: AppEnv, options: CheckCommandOptions) -> CheckComman
     if options.check_schemas:
         result.schema_report = _run_schema_verification(options, config)
 
-    if options.check_proof:
-        result.proof_report = run_artifact_proof(
-            ArtifactProofRequest(
+    if options.check_artifact_coverage:
+        result.coverage_report = run_artifact_coverage(
+            ArtifactCoverageRequest(
                 providers=_provider_filter(options.artifact_providers),
                 record_limit=options.artifact_limit,
                 record_offset=options.artifact_offset,

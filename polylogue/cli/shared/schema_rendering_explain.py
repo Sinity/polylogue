@@ -32,8 +32,8 @@ def render_schema_explain_result(*, result: SchemaExplainResult, json_output: bo
         emit_success(result.to_dict())
         return
 
-    if result.review_proof is not None:
-        _render_proof_surface(result)
+    if result.review_evidence is not None:
+        _render_review_evidence_surface(result)
         return
 
     props = _schema_properties(result.schema)
@@ -141,19 +141,19 @@ def render_explain_verbose(result: SchemaExplainResult) -> None:
         )
 
 
-def _render_proof_surface(result: SchemaExplainResult) -> None:
-    """Render the proof surface for schema role assignment decisions."""
-    if result.review_proof is None:
+def _render_review_evidence_surface(result: SchemaExplainResult) -> None:
+    """Render the review evidence surface for schema role assignment decisions."""
+    if result.review_evidence is None:
         return
-    proof = result.review_proof
-    click.echo(f"Schema Review Proof: {result.provider} {result.version}")
-    click.echo(f"  Artifact kind: {proof.artifact_kind or 'unknown'}")
-    click.echo(f"  Eligible roles: {', '.join(proof.eligible_roles)}")
-    if proof.ineligible_roles:
-        click.echo(f"  Ineligible roles: {', '.join(proof.ineligible_roles)}")
+    evidence = result.review_evidence
+    click.echo(f"Schema Review Evidence: {result.provider} {result.version}")
+    click.echo(f"  Artifact kind: {evidence.artifact_kind or 'unknown'}")
+    click.echo(f"  Eligible roles: {', '.join(evidence.eligible_roles)}")
+    if evidence.ineligible_roles:
+        click.echo(f"  Ineligible roles: {', '.join(evidence.ineligible_roles)}")
     click.echo()
 
-    for entry in proof.roles:
+    for entry in evidence.roles:
         if entry.abstained:
             click.echo(f"  {entry.role}: ABSTAINED")
             click.echo(f"    reason: {entry.abstain_reason}")

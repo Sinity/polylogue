@@ -6,7 +6,10 @@ This document is the current top-down execution layer for the open Polylogue iss
 
 Issues should make coding agents instantiate decisions, not rediscover them. Every implementation PR states issue slice, inspected files, contracts or tests added, old surface removed or explicitly retained, verification commands and result, and any mismatch between issue intent and code reality.
 
-Do not preserve stale public aliases. Do not add ceremonial proof, witness, QA, or detached-manifest layers. Prefer code-coupled contracts, generated tests, fixture worlds, typed registries, and explicit negative tests.
+Do not preserve stale public aliases. Do not add ceremonial confidence scores,
+witness ledgers, QA badges, or detached-manifest layers. Prefer code-coupled
+contracts, generated tests, fixture worlds, typed registries, and explicit
+negative tests.
 
 ## Current critical path
 
@@ -27,8 +30,8 @@ inspect real AI work without reading chat logs.
    demonstrable workbench flow over the same query/read/recovery/assertion
    contracts.
 6. #1825 + #1827 + #1849: cross-surface parity, release gate truthfulness, and
-   deletion/folding of any proof or documentation surface that is not coupled
-   to executable behavior.
+   deletion/folding of any detached documentation or evaluation surface that is
+   not coupled to executable behavior.
 
 ## Issue notes
 
@@ -63,9 +66,9 @@ context, assertions, work packets, and reports.
 #1846/#1847 web workbench should inspect the same objects as CLI/MCP and must not create a second query/action/DTO model.
 
 #1849 replaces stale public mental models only when their useful behavior is
-absorbed by read/analyze/web/tests. Replace proof/QA/showcase confidence layers
-with code-coupled contracts, fixture worlds, generated tests, and benchmark
-artifacts that fail on real drift.
+absorbed by read/analyze/web/tests. Replace detached confidence, QA, and
+showcase layers with code-coupled contracts, fixture worlds, generated tests,
+and benchmark artifacts that fail on real drift.
 
 ## Review discipline
 

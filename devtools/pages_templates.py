@@ -108,7 +108,7 @@ DOC_TEMPLATE = """{% extends "base.html" %}
 
 VERIFIABILITY_CATALOG_TEMPLATE = """{% extends "base.html" %}
 {% block content %}
-<h1>Proof Catalog</h1>
+<h1>Evidence Catalog</h1>
 <p class="caption">Last updated: {{ updated_at }}</p>
 <div class="card" style="margin-bottom: 2rem;">
     <strong>{{ claims|length }} claims</strong> &middot;

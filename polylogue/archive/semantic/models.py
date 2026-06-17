@@ -52,7 +52,7 @@ class ProjectionSemanticFacts:
     tool_messages: int
     renderable_role_counts: dict[str, int]
 
-    def to_proof_input(self) -> JSONDocument:
+    def to_evidence_input(self) -> JSONDocument:
         return json_document(
             {
                 "total_messages": self.total_messages,
@@ -95,7 +95,7 @@ class SessionSemanticFacts:
     wall_duration_ms: int
     message_facts: tuple[MessageSemanticFacts, ...]
 
-    def to_proof_input(self) -> JSONDocument:
+    def to_evidence_input(self) -> JSONDocument:
         return json_document(
             {
                 "session_id": self.session_id,
@@ -129,7 +129,7 @@ class SummarySemanticFacts:
     tags: tuple[str, ...]
     summary: str | None
 
-    def to_proof_input(self) -> JSONDocument:
+    def to_evidence_input(self) -> JSONDocument:
         return json_document(
             {
                 "session_id": self.session_id,
@@ -161,7 +161,7 @@ class StreamSemanticFacts:
     message_roles: tuple[str, ...]
     message_limit: int | None
 
-    def to_proof_input(self) -> JSONDocument:
+    def to_evidence_input(self) -> JSONDocument:
         return json_document(
             {
                 "session_id": self.session_id,
@@ -199,7 +199,7 @@ class MCPDetailSemanticFacts:
     tool_messages: int
     branch_messages: int
 
-    def to_proof_input(self) -> JSONDocument:
+    def to_evidence_input(self) -> JSONDocument:
         return json_document(
             {
                 "session_id": self.session_id,
@@ -230,7 +230,7 @@ class MCPSummarySemanticFacts:
     tags: tuple[str, ...]
     summary: str | None
 
-    def to_proof_input(self) -> JSONDocument:
+    def to_evidence_input(self) -> JSONDocument:
         return json_document(
             {
                 "session_id": self.session_id,

@@ -49,10 +49,10 @@ class TestExercisesByGroup:
         total = sum(len(exs) for exs in by_group.values())
         assert total == len(EXERCISES)
 
-    def test_proof_exercises_exist_in_subcommands_group(self) -> None:
+    def test_evidence_exercises_exist_in_subcommands_group(self) -> None:
         names = {exercise.name for exercise in EXERCISES if exercise.group == "subcommands"}
         assert {
-            "doctor-proof-json",
+            "doctor-artifact-coverage-json",
             "doctor-cohorts-json",
         } <= names
 

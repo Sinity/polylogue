@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.readiness import ReadinessReport
-from polylogue.schemas.validation.models import ArtifactProofReport, SchemaVerificationReport
+from polylogue.schemas.validation.models import ArtifactCoverageReport, SchemaVerificationReport
 from polylogue.storage.artifacts.views import ArtifactCohortSummary
 from polylogue.storage.repair import RepairResult
 from polylogue.storage.runtime import ArtifactObservationRecord
@@ -35,7 +35,7 @@ class CheckCommandResult:
     runtime_report: ReadinessReport | None = None
     daemon_report: JSONDocument | None = None
     schema_report: SchemaVerificationReport | None = None
-    proof_report: ArtifactProofReport | None = None
+    coverage_report: ArtifactCoverageReport | None = None
     artifact_rows: list[ArtifactObservationRecord] | None = None
     cohort_rows: list[ArtifactCohortSummary] | None = None
     blob_report: JSONDocument | None = None

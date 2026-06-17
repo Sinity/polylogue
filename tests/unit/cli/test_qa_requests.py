@@ -108,7 +108,7 @@ def test_build_qa_invocation_plan_builds_session_request_for_regular_run() -> No
     assert plan.snapshot_only is False
     assert plan.session_request is not None
     assert plan.session_request.skip_audit is False
-    assert plan.session_request.skip_proof is True
+    assert plan.session_request.skip_coverage is True
     assert plan.finalization_plan.snapshot_plan is not None
 
 

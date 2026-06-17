@@ -849,7 +849,7 @@ def render_stream_transcript(
     message_limit: int | None = None,
     stats: SessionStats | None = None,
 ) -> tuple[str, int]:
-    """Render the full stream transcript deterministically for proof/tests."""
+    """Render the full stream transcript deterministically for evidence/tests."""
     effective_roles = message_roles or (DIALOGUE_MESSAGE_ROLES if dialogue_only else ())
     filtered_messages = [message for message in messages if not effective_roles or message.role in effective_roles]
     parts = [

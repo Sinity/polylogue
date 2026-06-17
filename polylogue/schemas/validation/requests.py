@@ -1,4 +1,4 @@
-"""Typed request objects for artifact-proof and corpus-verification workflows."""
+"""Typed request objects for artifact-coverage and corpus-verification workflows."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ class ArtifactObservationQuery:
 
 
 @dataclass(frozen=True)
-class ArtifactProofRequest:
+class ArtifactCoverageRequest:
     providers: list[str] | None = None
     record_limit: int | None = None
     record_offset: int = 0
@@ -44,7 +44,7 @@ def bounded_window(
 
 __all__ = [
     "ArtifactObservationQuery",
-    "ArtifactProofRequest",
+    "ArtifactCoverageRequest",
     "SchemaVerificationRequest",
     "bounded_window",
 ]

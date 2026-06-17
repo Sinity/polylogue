@@ -11,7 +11,7 @@ from polylogue.scenarios import CorpusScenario, CorpusSpec
 from polylogue.schemas.generation.models import GenerationResult
 from polylogue.schemas.packages import SchemaPackageCatalog, SchemaResolution, SchemaVersionPackage
 from polylogue.schemas.tooling_registry import ClusterManifest, SchemaDiff
-from polylogue.schemas.validation.models import ArtifactProofReport
+from polylogue.schemas.validation.models import ArtifactCoverageReport
 from polylogue.storage.artifacts.views import ArtifactCohortSummary
 from polylogue.storage.runtime import ArtifactObservationRecord
 
@@ -63,7 +63,7 @@ def _role_payloads(roles: list[SchemaRoleAssignment]) -> JSONDocumentList:
     return [role.to_dict() for role in roles]
 
 
-def _proof_role_payloads(roles: list[SchemaRoleProofEntry]) -> JSONDocumentList:
+def _evidence_role_payloads(roles: list[SchemaRoleEvidenceEntry]) -> JSONDocumentList:
     return [role.to_dict() for role in roles]
 
 
@@ -238,8 +238,8 @@ class SchemaAnnotationSummary:
 
 
 @dataclass(frozen=True)
-class SchemaRoleProofEntry:
-    """Proof surface for a single semantic role assignment decision."""
+class SchemaRoleEvidenceEntry:
+    """Evidence surface for a single semantic role assignment decision."""
 
     role: str
     chosen_path: str | None
@@ -262,17 +262,17 @@ class SchemaRoleProofEntry:
 
 
 @dataclass(frozen=True)
-class SchemaReviewProof:
-    """Full proof surface for all semantic role assignment decisions."""
+class SchemaReviewEvidence:
+    """Full review evidence surface for all semantic role assignment decisions."""
 
-    roles: list[SchemaRoleProofEntry]
+    roles: list[SchemaRoleEvidenceEntry]
     artifact_kind: str | None
     eligible_roles: list[str]
     ineligible_roles: list[str]
 
     def to_dict(self) -> JSONDocument:
         return {
-            "roles": _proof_role_payloads(self.roles),
+            "roles": _evidence_role_payloads(self.roles),
             "artifact_kind": self.artifact_kind,
             "eligible_roles": self.eligible_roles,
             "ineligible_roles": self.ineligible_roles,
@@ -284,7 +284,7 @@ class SchemaExplainRequest:
     provider: str
     version: str = "latest"
     element_kind: str | None = None
-    proof: bool = False
+    review_evidence: bool = False
 
 
 @dataclass(frozen=True)
@@ -295,14 +295,14 @@ class SchemaExplainResult:
     package: SchemaVersionPackage | None
     schema: JSONDocument
     annotations: SchemaAnnotationSummary
-    review_proof: SchemaReviewProof | None = None
+    review_evidence: SchemaReviewEvidence | None = None
 
     def to_dict(self) -> JSONDocument:
         payload: JSONDocument = {"schema": self.schema, "annotations": self.annotations.to_dict()}
         if self.package is not None:
             payload["package"] = self.package.to_dict()
-        if self.review_proof is not None:
-            payload["review_proof"] = self.review_proof.to_dict()
+        if self.review_evidence is not None:
+            payload["review_evidence"] = self.review_evidence.to_dict()
         return payload
 
 
@@ -324,8 +324,8 @@ class ArtifactCohortListResult:
 
 
 @dataclass(frozen=True)
-class ArtifactProofResult:
-    report: ArtifactProofReport
+class ArtifactCoverageResult:
+    report: ArtifactCoverageReport
 
 
 @dataclass(frozen=True)

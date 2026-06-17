@@ -19,7 +19,7 @@ from polylogue.core.outcomes import OutcomeCheck, OutcomeStatus
 from polylogue.insights.authored_payloads import require_payload_mapping
 from polylogue.scenarios import CorpusSpec, polylogue_execution
 from polylogue.schemas.audit.models import AuditReport
-from polylogue.schemas.validation.models import ArtifactProofReport, ProviderArtifactProof
+from polylogue.schemas.validation.models import ArtifactCoverageReport, ProviderArtifactCoverage
 from polylogue.showcase.exercise_models import Exercise
 from polylogue.showcase.invariants import InvariantResult
 from polylogue.showcase.qa_markdown import generate_qa_markdown
@@ -248,9 +248,9 @@ def test_full_qa_session_contains_composed_stage_payloads() -> None:
     )
     qa_result = QAResult(
         audit_report=audit,
-        proof_report=ArtifactProofReport(
+        coverage_report=ArtifactCoverageReport(
             providers={
-                "chatgpt": ProviderArtifactProof(
+                "chatgpt": ProviderArtifactCoverage(
                     provider="chatgpt",
                     total_records=2,
                     contract_backed_records=1,
@@ -276,17 +276,17 @@ def test_full_qa_session_contains_composed_stage_payloads() -> None:
     )
     audit_report = require_payload_mapping(session.audit.report, context="audit.report")
     audit_summary = require_payload_mapping(audit_report["summary"], context="audit.summary")
-    proof_report = require_payload_mapping(session.proof.report, context="proof.report")
-    proof_summary = require_payload_mapping(proof_report["summary"], context="proof.summary")
+    coverage_report = require_payload_mapping(session.artifact_coverage.report, context="artifact_coverage.report")
+    coverage_summary = require_payload_mapping(coverage_report["summary"], context="artifact_coverage.summary")
     showcase_summary = session.showcase.summary
 
     assert session.audit.status == "ok"
     assert audit_summary == {"passed": 1, "warned": 0, "failed": 0}
-    assert session.proof.status == "error"
-    assert proof_summary["contract_backed_records"] == 1
-    assert proof_summary["unsupported_parseable_records"] == 1
-    assert proof_summary["package_versions"] == {"v1": 1}
-    assert proof_summary["element_kinds"] == {"session_document": 1}
+    assert session.artifact_coverage.status == "error"
+    assert coverage_summary["contract_backed_records"] == 1
+    assert coverage_summary["unsupported_parseable_records"] == 1
+    assert coverage_summary["package_versions"] == {"v1": 1}
+    assert coverage_summary["element_kinds"] == {"session_document": 1}
     assert showcase_summary is not None
     assert showcase_summary.to_payload() == {
         "total": 2,
@@ -307,9 +307,9 @@ def test_generate_qa_summary_reports_stage_statuses() -> None:
                 OutcomeCheck(name="privacy", status=OutcomeStatus.OK, summary="ok"),
             ]
         ),
-        proof_report=ArtifactProofReport(
+        coverage_report=ArtifactCoverageReport(
             providers={
-                "chatgpt": ProviderArtifactProof(
+                "chatgpt": ProviderArtifactCoverage(
                     provider="chatgpt",
                     total_records=1,
                     contract_backed_records=1,
@@ -327,23 +327,23 @@ def test_generate_qa_summary_reports_stage_statuses() -> None:
     summary = generate_qa_summary(qa_result)
 
     assert "Schema Audit: PASS" in summary
-    assert "Artifact Proof: contract_backed=1" in summary
+    assert "Artifact Coverage: contract_backed=1" in summary
     assert "Packages: v1=1" in summary
     assert "Elements: session_document=1" in summary
     assert "Exercises: SKIPPED" in summary
     assert "Invariants: SKIPPED" in summary
 
 
-def test_generate_qa_markdown_includes_artifact_proof_section() -> None:
+def test_generate_qa_markdown_includes_artifact_coverage_section() -> None:
     qa_result = QAResult(
         audit_report=AuditReport(
             checks=[
                 OutcomeCheck(name="privacy", status=OutcomeStatus.OK, summary="ok"),
             ]
         ),
-        proof_report=ArtifactProofReport(
+        coverage_report=ArtifactCoverageReport(
             providers={
-                "claude-code": ProviderArtifactProof(
+                "claude-code": ProviderArtifactCoverage(
                     provider="claude-code",
                     total_records=2,
                     recognized_non_parseable_records=1,
@@ -364,7 +364,7 @@ def test_generate_qa_markdown_includes_artifact_proof_section() -> None:
 
     markdown = generate_qa_markdown(qa_result)
 
-    assert "## Artifact Proof" in markdown
+    assert "## Artifact Coverage" in markdown
     assert "| Unsupported parseable | 1 |" in markdown
     assert "| v4 | 1 |" in markdown
     assert "| subagent_session_stream | 1 |" in markdown

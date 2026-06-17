@@ -220,7 +220,7 @@ def test_gc_combines_reference_lease_and_generation_guards(
     A generation-safe GC pass must keep referenced blobs, in-flight leased
     blobs, and blobs newer than the previous completed generation while still
     reclaiming old unreferenced blobs in the same run. This is the executable
-    proof for the combined backup/GC safety story rather than independent
+    evidence for the combined backup/GC safety story rather than independent
     unit checks for each predicate.
     """
     blob_dir = tmp_path / "blobs"
