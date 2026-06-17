@@ -32,7 +32,6 @@ def test_backup_command_passes_profile_to_archive_backup(
         {
             "output_dir": tmp_path,
             "check_only": False,
-            "include_blobs": False,
             "verify": False,
             "profile": "full_evidence",
         }

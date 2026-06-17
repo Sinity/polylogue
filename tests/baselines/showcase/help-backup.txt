@@ -7,8 +7,6 @@ Options:
                                   [required]
   --check                         Verify backup prerequisites without creating
                                   a backup.
-  --include-blobs                 Accepted for compatibility; backups copy
-                                  referenced blobs automatically.
   --verify                        Restore the finished backup into a scratch
                                   directory and run smoke checks.
   --profile [full_evidence|user_overlays|rebuildable_cache_exclude|diagnostics_bundle]

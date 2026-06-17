@@ -26,13 +26,6 @@ from polylogue.logging import configure_logging
     help="Verify backup prerequisites without creating a backup.",
 )
 @click.option(
-    "--include-blobs",
-    "include_blobs",
-    is_flag=True,
-    default=False,
-    help="Accepted for compatibility; backups copy referenced blobs automatically.",
-)
-@click.option(
     "--verify",
     "verify",
     is_flag=True,
@@ -49,7 +42,6 @@ from polylogue.logging import configure_logging
 def backup_command(
     output_dir: Path,
     check_only: bool,
-    include_blobs: bool,
     verify: bool,
     profile: BackupProfile,
 ) -> None:
@@ -66,7 +58,6 @@ def backup_command(
     result = backup_archive(
         output_dir=output_dir,
         check_only=check_only,
-        include_blobs=include_blobs,
         verify=verify,
         profile=profile,
     )
