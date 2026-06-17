@@ -41,6 +41,7 @@ class AssertionKind(StrEnum):
     WORKSPACE_NOTE = "workspace_note"
     NOTE = "note"
     DECISION = "decision"
+    CAVEAT = "caveat"
     LESSON = "lesson"
     BLOCKER = "blocker"
     HANDOFF = "handoff"
@@ -956,7 +957,80 @@ def list_assertions_for_target(
     return [_assertion_row_to_envelope(row) for row in rows]
 
 
+ASSERTION_CLAIM_KINDS: tuple[AssertionKind, ...] = (
+    AssertionKind.DECISION,
+    AssertionKind.CAVEAT,
+    AssertionKind.BLOCKER,
+    AssertionKind.LESSON,
+    AssertionKind.RUN_STATE,
+    AssertionKind.TRANSFORM_CANDIDATE,
+)
+
+
+def list_assertion_claims(
+    conn: sqlite3.Connection,
+    *,
+    kinds: Sequence[str | AssertionKind] = ASSERTION_CLAIM_KINDS,
+    target_ref: str | None = None,
+    scope_ref: str | None = None,
+    statuses: Sequence[str] | None = ("active", "candidate"),
+    context_inject: bool | None = None,
+    limit: int | None = None,
+) -> list[ArchiveAssertionEnvelope]:
+    """List lifecycle claims for recovery/work-packet/profile consumers.
+
+    This helper intentionally covers authored/transform claims, not every
+    overlay assertion row. Marks, annotations, saved views, recall packs, and
+    workspaces keep their domain-specific read helpers above.
+    """
+
+    if not _table_exists(conn, "assertions"):
+        return []
+
+    where: list[str] = []
+    params: list[object] = []
+
+    normalized_kinds = tuple(str(kind) for kind in kinds)
+    if normalized_kinds:
+        placeholders = ", ".join("?" for _ in normalized_kinds)
+        where.append(f"kind IN ({placeholders})")
+        params.extend(normalized_kinds)
+    else:
+        return []
+
+    if target_ref is not None:
+        where.append("target_ref = ?")
+        params.append(target_ref)
+    if scope_ref is not None:
+        where.append("scope_ref = ?")
+        params.append(scope_ref)
+    if statuses is not None:
+        if not statuses:
+            return []
+        placeholders = ", ".join("?" for _ in statuses)
+        where.append(f"COALESCE(status, '') IN ({placeholders})")
+        params.extend(str(status) for status in statuses)
+
+    sql = f"SELECT {_ASSERTION_COLUMNS} FROM assertions"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY updated_at_ms DESC, assertion_id"
+
+    rows = conn.execute(sql, tuple(params)).fetchall()
+    claims = [_assertion_row_to_envelope(row) for row in rows]
+    if context_inject is not None:
+        claims = [
+            claim
+            for claim in claims
+            if isinstance(claim.context_policy, dict) and bool(claim.context_policy.get("inject")) is context_inject
+        ]
+    if limit is not None and limit >= 0:
+        return claims[:limit]
+    return claims
+
+
 __all__ = [
+    "ASSERTION_CLAIM_KINDS",
     "ArchiveAnnotationEnvelope",
     "ArchiveAssertionEnvelope",
     "ArchiveBlackboardNoteEnvelope",
@@ -978,6 +1052,7 @@ __all__ = [
     "assertion_id_for_workspace",
     "correction_id_for",
     "list_archive_blackboard_note_envelopes",
+    "list_assertion_claims",
     "list_assertions_by_kind",
     "list_assertions_for_target",
     "mark_assertion_status",

@@ -999,6 +999,7 @@ def _direct_component_readiness(
 
 def _direct_assertion_component(active_root: Path) -> dict[str, Any]:
     from polylogue.readiness.capability import component_from_assertion_substrate
+    from polylogue.storage.sqlite.archive_tiers.user_audit import audit_user_overlay_storage
 
     user_db = active_root / "user.db"
     if not user_db.exists():
@@ -1022,6 +1023,7 @@ def _direct_assertion_component(active_root: Path) -> dict[str, Any]:
                     WHERE status IS NULL OR status IN ('active', 'candidate')
                     """,
                 ),
+                overlay_audit=audit_user_overlay_storage(conn).to_dict(),
             )
         finally:
             conn.close()
