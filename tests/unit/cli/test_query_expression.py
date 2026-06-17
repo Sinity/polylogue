@@ -1215,6 +1215,10 @@ class TestFieldRegistry:
         spec = compile_expression("repo:x OR origin:chatgpt-export")
         assert isinstance(spec.boolean_predicate, QueryBoolPredicate)
 
+    def test_bare_or_text_reports_explicit_boolean_syntax(self) -> None:
+        with pytest.raises(ExpressionCompileError, match="bare OR is ambiguous"):
+            compile_expression("alpha OR beta")
+
 
 # ---------------------------------------------------------------------------
 # MCP surface wiring (#1860)

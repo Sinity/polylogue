@@ -4,42 +4,44 @@ Owning issue: #2006.
 
 ## Purpose
 
-Polylogue needs a richer query ceiling without becoming its own query engine. The surface language should compile onto the archive storage and search layers already present in the project. The old `SessionQuerySpec` / query-expression compiler is the floor; #2006 owns the full DSL ceiling.
+Polylogue needs a richer query language without becoming its own query engine. The surface language should compile onto the archive storage and search layers already present in the project. The Lark grammar in `polylogue/archive/query/expression.py` is the query grammar; compact field/text clauses and explicit Boolean predicates are entry shapes in that grammar, not separate floor/ceiling languages.
 
 ## Current limitation
 
-The current session query shape is a flat conjunction across fields, with alternatives only inside one field. It is a good floor, but it cannot represent grouped conditions, message predicates, sequence patterns, lineage traversal, or mixed lexical and semantic constraints.
+The current implemented query substrate already handles compact session filters, grouped Boolean predicates, message/action `exists` predicates, ordered action sequences, FTS predicates, lineage predicates, and a semantic seed plus residual filter. Remaining scope is broader unit coverage and pipeline execution: blocks, runs/events/assertions, aggregation, unit-changing traversal, terminal read/analyze/bundle stages, and shared completion/query-builder metadata.
 
 ## Design decision
 
 Build a typed AST and lowering layer.
 
-Predicate nodes: And, Or, Not, Leaf, Fts, Semantic, Structural, Relational.
+Predicate nodes: And, Or, Not, Leaf, Fts, Semantic, Structural, Sequence, Lineage, Relational.
 
 Pipeline stages: source or filter, traverse, transform, aggregate, terminal action.
 
-Units: session, message, block, action, phase, thread, lineage, work packet, KV, span, run.
+Implemented units: session, message, action, lineage.
+
+Target units still needing real lowerers: block, run, observed event, assertion, context snapshot, bundle/work packet, external work refs, phase, thread, span.
 
 ## Surface ladder
 
-Floor examples: repo filters, origin filters, tags, date filters, phrases, and the current `find QUERY then ACTION` shape.
+Compact examples: repo filters, origin filters, tags, date filters, phrases, and the current `find QUERY then ACTION` shape.
 
-Ceiling examples: grouped conditions, numeric operators, semantic clauses, message predicates, sequence predicates, lineage predicates, and pipelines that change unit from sessions to messages or lineage and back.
+Power examples: grouped conditions, numeric operators, semantic clauses, message predicates, sequence predicates, lineage predicates, and pipelines that change unit from sessions to messages or lineage and back.
 
 ## Implementation slices
 
-1. Add typed AST objects that can represent today's grammar.
-2. Preserve the current fast path for valid flat queries.
-3. Add explain output that shows parse tree, plan, and unsupported stages.
-4. Add grouped condition lowering for supported fields.
-5. Add lexical and semantic result legs.
-6. Add message predicates and sequence predicates.
-7. Add traversal stages.
-8. Add saved queries and macros after the AST stabilizes.
+1. Keep compact and explicit Boolean syntax on the same Lark grammar and AST path.
+2. Extend explain output to show unsupported unit/pipeline stages, not just the lowered `SessionQuerySpec`.
+3. Add block predicates under message/action structural queries where archive rows support them.
+4. Add run/event/assertion/context units only with real lowerers and fixtures.
+5. Add traversal stages that change the active unit and lower to SQL/recursive CTEs or existing read models.
+6. Add aggregation/sort/limit stages over supported units.
+7. Lower terminal stages through existing read/analyze/bundle/action contracts.
+8. Add completion/query-builder metadata from the same grammar, unit, field, operator, and action registries.
 
 ## Acceptance criteria
 
-- The AST can represent the current grammar and future staged extensions.
+- The AST represents compact and explicit query syntax through one grammar.
 - Unsupported forms fail with typed errors and do not broaden results.
 - CLI, daemon, MCP, web, and completion can share the same parser and AST.
 - Natural-language query tools target the AST.
