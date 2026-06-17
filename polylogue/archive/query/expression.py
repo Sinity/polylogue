@@ -348,31 +348,16 @@ class QueryExpressionExplanation:
 # ---------------------------------------------------------------------------
 
 _QUERY_GRAMMAR = r"""
-    start: clause*
+    flat_query: flat_clause*
 
-    ?clause: COUNT_CLAUSE       -> count_clause
+    ?flat_clause: COUNT_CLAUSE       -> count_clause
         | FIELD_CLAUSE          -> field_clause
         | NEG_QUOTED_TEXT       -> neg_quoted_text
         | QUOTED_TEXT           -> quoted_text
         | NEG_BARE_TEXT         -> neg_bare_text
         | BARE_TEXT             -> bare_text
 
-    COUNT_CLAUSE.5: /(messages|words):(>=|<=|=)\d+(?!\S)/
-    FIELD_CLAUSE.4: /-?[a-zA-Z_][a-zA-Z0-9_]*:(?:"(\\.|[^"\\])*"|\([^)]*\)|[^\s"()\[\]{}]+)/
-    NEG_QUOTED_TEXT.3: /-"(\\.|[^"\\])*"/
-    QUOTED_TEXT.2: /"(\\.|[^"\\])*"/
-    NEG_BARE_TEXT.1: /-[^\s"]+/
-    BARE_TEXT: /[^\s"]+/
-
-    %import common.WS
-    %ignore WS
-"""
-
-
-_QUERY_PARSER = Lark(_QUERY_GRAMMAR, parser="lalr", maybe_placeholders=False)
-
-_BOOLEAN_QUERY_GRAMMAR = r"""
-    start: session_prefix? expr
+    boolean_query: session_prefix? expr
 
     session_prefix: SESSIONS WHERE
 
@@ -407,13 +392,22 @@ _BOOLEAN_QUERY_GRAMMAR = r"""
     FTS_BARE_TEXT.5: /~[^\s"()]+/
     COUNT_CLAUSE.5: /(messages|words):(>=|<=|=)\d+(?!\S)/
     FIELD_CLAUSE.4: /-?[a-zA-Z_][a-zA-Z0-9_]*:(?:"(\\.|[^"\\])*"|\([^)]*\)|[^\s"()\[\]{}]+)/
+    NEG_QUOTED_TEXT.3: /-"(\\.|[^"\\])*"/
+    QUOTED_TEXT.2: /"(\\.|[^"\\])*"/
+    NEG_BARE_TEXT.1: /-[^\s"]+/
+    BARE_TEXT: /[^\s"]+/
 
     %import common.WS
     %ignore WS
 """
 
 
-_BOOLEAN_QUERY_PARSER = Lark(_BOOLEAN_QUERY_GRAMMAR, parser="lalr", maybe_placeholders=False)
+_QUERY_PARSER = Lark(
+    _QUERY_GRAMMAR,
+    parser="lalr",
+    start=["flat_query", "boolean_query"],
+    maybe_placeholders=False,
+)
 
 _COUNT_CLAUSE_RE = re.compile(r"^(messages|words):(>=|<=|=)(\d+)$")
 _FIELD_CLAUSE_RE = re.compile(
@@ -497,7 +491,7 @@ def _parse_error_message(expression: str, exc: UnexpectedInput) -> str:
 
 @v_args(inline=True)
 class _QueryTransformer(Transformer[Token, _LexToken | str | QueryExpressionAST]):
-    def start(self, *clauses: _LexToken) -> QueryExpressionAST:
+    def flat_query(self, *clauses: _LexToken) -> QueryExpressionAST:
         return QueryExpressionAST(tuple(clauses))
 
     def count_clause(self, token: Token) -> _CountToken:
@@ -687,7 +681,7 @@ def _validate_predicate_context(predicate: QueryPredicate, *, unit: Literal["ses
 
 @v_args(inline=True)
 class _BooleanQueryTransformer(Transformer[Token, QueryPredicate]):
-    def start(self, *items: object) -> QueryPredicate:
+    def boolean_query(self, *items: object) -> QueryPredicate:
         predicates = _predicate_children(items)
         if len(predicates) != 1:
             raise ExpressionCompileError("Boolean query did not produce exactly one predicate", field=None)
@@ -776,7 +770,7 @@ def _is_boolean_expression(expression: str) -> bool:
 
 def _parse_boolean_predicate(expression: str) -> QueryPredicate:
     try:
-        tree = _BOOLEAN_QUERY_PARSER.parse(expression)
+        tree = _QUERY_PARSER.parse(expression, start="boolean_query")
     except UnexpectedInput as exc:
         raise ExpressionCompileError(_parse_error_message(expression, exc), field=None) from exc
     try:
@@ -870,7 +864,7 @@ def parse_expression_ast(expression: str) -> QueryExpressionAST:
     if _is_boolean_expression(expression):
         return QueryExpressionAST((), boolean_predicate=_parse_boolean_predicate(expression))
     try:
-        tree = _QUERY_PARSER.parse(expression)
+        tree = _QUERY_PARSER.parse(expression, start="flat_query")
     except UnexpectedInput as exc:
         raise ExpressionCompileError(_parse_error_message(expression, exc), field=None) from exc
     transformed = _QUERY_TRANSFORMER.transform(tree)
