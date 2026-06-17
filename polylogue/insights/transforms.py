@@ -35,7 +35,7 @@ ForensicClaimKind = Literal[
     "event",
     "decision_candidate",
 ]
-RecoveryReportPreset = Literal["continue", "blame"]
+RecoveryReportPreset = Literal["continue", "blame", "work-packet"]
 WorkPacketSection = Literal["events", "subagents", "run_state", "tools", "decisions"]
 SubagentChildLinkStatus = Literal["resolved", "unresolved", "repaired", "quarantined"]
 
@@ -590,12 +590,14 @@ def _to_evidence_refs(refs: Sequence[TransformRawRef]) -> tuple[EvidenceRef, ...
 
 
 def render_recovery_report(digest: RecoveryDigest, *, preset: RecoveryReportPreset) -> str:
-    """Render a deterministic recovery report preset from a compiled digest."""
+    """Render a deterministic recovery report preset from a recovery digest."""
 
     if preset == "continue":
         return _render_continue_report(digest)
     if preset == "blame":
         return _render_blame_report(digest)
+    if preset == "work-packet":
+        return digest.work_packet_markdown()
     raise ValueError(f"unsupported recovery report preset: {preset}")
 
 

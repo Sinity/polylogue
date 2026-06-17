@@ -61,7 +61,7 @@ _READ_VIEWS = read_view_choices()
 _READ_VIEW_HELP = "What to render (" + ", ".join(_READ_VIEWS) + ")."
 _READ_DESTINATIONS = ("terminal", "stdout", "browser", "clipboard", "file")
 _READ_FORMATS = tuple(sorted({fmt for profile in READ_VIEW_PROFILES for fmt in profile.formats}))
-_RECOVERY_REPORT_PRESETS = ("continue", "blame")
+_RECOVERY_REPORT_PRESETS = ("continue", "blame", "work-packet")
 
 
 def _complete_read_view(ctx: click.Context, param: click.Parameter, incomplete: str) -> list[CompletionItem]:
@@ -292,7 +292,7 @@ def recent_verb(
     "recovery_report",
     type=click.Choice(_RECOVERY_REPORT_PRESETS),
     default=None,
-    help="Render a recovery report preset (--view recovery): continue or blame.",
+    help="Render a recovery report preset (--view recovery): continue, blame, or work-packet.",
 )
 @click.option("--project-path", default=None, help="Filter by cwd prefix pattern (--view context-pack).")
 @click.option("--project-repo", default=None, help="Filter by git repo URL or name (--view context-pack).")

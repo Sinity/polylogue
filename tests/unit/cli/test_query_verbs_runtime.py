@@ -315,7 +315,7 @@ def test_read_verb_recovery_default_ignores_report_renderer() -> None:
 
 
 def test_read_verb_recovery_report_selector_renders_presets() -> None:
-    """read --view recovery --report exposes distinct continue/blame reports."""
+    """read --view recovery --report exposes distinct recovery reports."""
     _, child = _context_pair(params={"conv_id": "codex-session:abc123"}, query_terms=())
     child.obj.polylogue = SimpleNamespace()
     wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
@@ -324,6 +324,7 @@ def test_read_verb_recovery_report_selector_renders_presets() -> None:
     reports = {
         "continue": "# Continue: demo [evidence: E1]\n",
         "blame": "# Blame: demo [evidence: E2]\n",
+        "work-packet": "# Resume: demo\n\n## Evidence\n",
     }
 
     async def recovery_report(session_id: str, preset: str) -> str:
@@ -337,20 +338,25 @@ def test_read_verb_recovery_report_selector_renders_presets() -> None:
     ):
         wrapped(child, **_read_verb_kwargs(view="recovery", recovery_report="continue"))
         wrapped(child, **_read_verb_kwargs(view="recovery", recovery_report="blame"))
+        wrapped(child, **_read_verb_kwargs(view="recovery", recovery_report="work-packet"))
 
     continue_report = deliver.call_args_list[0].args[1]
     blame_report = deliver.call_args_list[1].args[1]
+    work_packet_report = deliver.call_args_list[2].args[1]
     assert continue_report.startswith("# Continue:")
     assert blame_report.startswith("# Blame:")
+    assert work_packet_report.startswith("# Resume:")
     assert continue_report != blame_report
+    assert work_packet_report not in {continue_report, blame_report}
     assert "[evidence: E1]" in continue_report
     assert "[evidence: E2]" in blame_report
+    assert "## Evidence" in work_packet_report
 
 
 def test_read_verb_recovery_report_selector_rejects_unknown() -> None:
     option = next(param for param in query_verbs.read_verb.params if param.name == "recovery_report")
 
-    with pytest.raises(click.BadParameter, match="'incident' is not one of 'continue', 'blame'"):
+    with pytest.raises(click.BadParameter, match="'incident' is not one of 'continue', 'blame', 'work-packet'"):
         option.type.convert("incident", option, click.Context(query_verbs.read_verb))
 
 

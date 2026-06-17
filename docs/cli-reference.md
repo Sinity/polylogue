@@ -309,8 +309,9 @@ Options:
                                   (--view correlation).
   --related-limit INTEGER         Number of related sessions to include
                                   (--view context).  [default: 5]
-  --report [continue|blame]       Render a recovery report preset (--view
-                                  recovery): continue or blame.
+  --report [continue|blame|work-packet]
+                                  Render a recovery report preset (--view
+                                  recovery): continue, blame, or work-packet.
   --project-path TEXT             Filter by cwd prefix pattern (--view
                                   context-pack).
   --project-repo TEXT             Filter by git repo URL or name (--view
