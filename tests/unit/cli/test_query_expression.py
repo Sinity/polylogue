@@ -37,6 +37,7 @@ from polylogue.archive.query.expression import (
     compile_expression_into,
     explain_expression,
     parse_expression_ast,
+    parse_unit_source_expression,
 )
 from polylogue.archive.query.predicate import (
     QueryBoolPredicate,
@@ -339,6 +340,19 @@ class TestBooleanQueryExpression:
             ),
         )
 
+    def test_parse_unit_source_expression_preserves_terminal_unit(self) -> None:
+        source = parse_unit_source_expression("messages where role:assistant AND text:timeout")
+
+        assert source is not None
+        assert source.unit == "message"
+        assert source.predicate == QueryBoolPredicate(
+            op="and",
+            children=(
+                QueryFieldPredicate(field="role", values=("assistant",)),
+                QueryFieldPredicate(field="text", values=("timeout",)),
+            ),
+        )
+
     def test_action_source_where_lowers_to_structural_exists(self) -> None:
         ast = parse_expression_ast("actions where action:file_edit AND path:archive/query")
 
@@ -593,6 +607,40 @@ class TestBooleanQueryExpression:
 
         assert [row.session_id for row in rows] == ["chatgpt-export:ext-hit"]
 
+    def test_terminal_message_source_returns_message_rows(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "hit")
+            .provider("chatgpt")
+            .title("message hit")
+            .add_message("m-hit", role="assistant", text="the timeout happened")
+            .save()
+        )
+        (
+            SessionBuilder(index_db, "miss")
+            .provider("chatgpt")
+            .title("message miss")
+            .add_message("m-miss", role="user", text="the timeout happened")
+            .save()
+        )
+
+        source = parse_unit_source_expression("messages where role:assistant AND text:timeout")
+        assert source is not None
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            rows = archive.query_messages(source.predicate, limit=100)
+
+        assert [(row.session_id, row.message_id, row.role, row.text) for row in rows] == [
+            (
+                "chatgpt-export:ext-hit",
+                "chatgpt-export:ext-hit:m-hit",
+                "assistant",
+                "the timeout happened",
+            )
+        ]
+
     def test_exists_action_predicate_executes_against_archive(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
         from tests.infra.storage_records import SessionBuilder
@@ -645,6 +693,46 @@ class TestBooleanQueryExpression:
             rows = archive.list_summaries(limit=100, boolean_predicate=spec.boolean_predicate)
 
         assert [row.session_id for row in rows] == ["claude-code-session:ext-hit"]
+
+    def test_terminal_action_source_returns_action_rows(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "hit")
+            .provider("claude-code")
+            .title("action hit")
+            .add_message(
+                "m-hit",
+                role="assistant",
+                text="edited file",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Edit",
+                        "tool_id": "tool-1",
+                        "input": {"file_path": "polylogue/archive/query/expression.py"},
+                        "semantic_type": "file_edit",
+                    }
+                ],
+            )
+            .save()
+        )
+
+        source = parse_unit_source_expression("actions where action:file_edit AND path:archive/query")
+        assert source is not None
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            rows = archive.query_actions(source.predicate, limit=100)
+
+        assert [(row.session_id, row.message_id, row.semantic_type, row.tool_path) for row in rows] == [
+            (
+                "claude-code-session:ext-hit",
+                "claude-code-session:ext-hit:m-hit",
+                "file_edit",
+                "polylogue/archive/query/expression.py",
+            )
+        ]
 
     def test_exists_action_path_normalizes_backslashes(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -715,6 +803,38 @@ class TestBooleanQueryExpression:
             rows = archive.list_summaries(limit=100, boolean_predicate=spec.boolean_predicate)
 
         assert [row.session_id for row in rows] == ["chatgpt-export:ext-hit"]
+
+    def test_terminal_block_source_returns_block_rows(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "hit")
+            .provider("chatgpt")
+            .title("block hit")
+            .add_message(
+                "m-hit",
+                role="assistant",
+                text="assistant response",
+                blocks=[{"type": "code", "text": "def query_timeout_guard(): pass"}],
+            )
+            .save()
+        )
+
+        source = parse_unit_source_expression("blocks where type:code AND text:timeout")
+        assert source is not None
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            rows = archive.query_blocks(source.predicate, limit=100)
+
+        assert [(row.session_id, row.message_id, row.block_type, row.text) for row in rows] == [
+            (
+                "chatgpt-export:ext-hit",
+                "chatgpt-export:ext-hit:m-hit",
+                "code",
+                "def query_timeout_guard(): pass",
+            )
+        ]
 
     def test_exists_block_tool_predicate_executes_against_archive(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore

@@ -168,6 +168,56 @@ class ArchiveSessionSearchHit:
     snippet: str
 
 
+@dataclass(frozen=True, slots=True)
+class ArchiveMessageQueryRow:
+    """Terminal query projection over archive messages."""
+
+    message_id: str
+    session_id: str
+    origin: str
+    title: str | None
+    role: str
+    message_type: str
+    position: int
+    word_count: int
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveActionQueryRow:
+    """Terminal query projection over normalized tool/action rows."""
+
+    session_id: str
+    message_id: str
+    origin: str
+    title: str | None
+    tool_use_block_id: str
+    tool_result_block_id: str | None
+    tool_name: str | None
+    semantic_type: str | None
+    tool_command: str | None
+    tool_path: str | None
+    output_text: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveBlockQueryRow:
+    """Terminal query projection over archive content blocks."""
+
+    block_id: str
+    message_id: str
+    session_id: str
+    origin: str
+    title: str | None
+    block_type: str
+    position: int
+    text: str | None
+    tool_name: str | None
+    semantic_type: str | None
+    tool_command: str | None
+    tool_path: str | None
+
+
 class ArchiveStore:
     """Minimal archive-root façade for archive source/index/user tiers."""
 
@@ -3287,6 +3337,160 @@ class ArchiveStore:
             )
         page = deduped[offset : offset + limit]
         return [replace(hit, rank=offset + index) for index, hit in enumerate(page, start=1)]
+
+    def query_messages(
+        self,
+        predicate: QueryPredicate,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[ArchiveMessageQueryRow]:
+        """Return message rows matching a unit-scoped query predicate."""
+
+        clause, params = _structural_predicate_clause("message", "m", predicate)
+        rows = self._conn.execute(
+            f"""
+            SELECT
+                m.message_id,
+                m.session_id,
+                s.origin,
+                s.title,
+                m.role,
+                m.message_type,
+                m.position,
+                m.word_count,
+                COALESCE((
+                    SELECT group_concat(b.search_text, char(10))
+                    FROM blocks b
+                    WHERE b.message_id = m.message_id
+                      AND b.search_text IS NOT NULL
+                ), '') AS text
+            FROM messages m
+            JOIN sessions s ON s.session_id = m.session_id
+            WHERE {clause}
+            ORDER BY COALESCE(m.occurred_at_ms, s.sort_key_ms, 0), m.message_id
+            LIMIT ? OFFSET ?
+            """,
+            [*params, limit, offset],
+        ).fetchall()
+        return [
+            ArchiveMessageQueryRow(
+                message_id=str(row["message_id"]),
+                session_id=str(row["session_id"]),
+                origin=str(row["origin"]),
+                title=str(row["title"]) if row["title"] is not None else None,
+                role=str(row["role"]),
+                message_type=str(row["message_type"]),
+                position=int(row["position"]),
+                word_count=int(row["word_count"]),
+                text=str(row["text"] or ""),
+            )
+            for row in rows
+        ]
+
+    def query_actions(
+        self,
+        predicate: QueryPredicate,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[ArchiveActionQueryRow]:
+        """Return action rows matching a unit-scoped query predicate."""
+
+        clause, params = _structural_predicate_clause("action", "a", predicate)
+        rows = self._conn.execute(
+            f"""
+            SELECT
+                a.session_id,
+                a.message_id,
+                s.origin,
+                s.title,
+                a.tool_use_block_id,
+                a.tool_result_block_id,
+                a.tool_name,
+                a.semantic_type,
+                a.tool_command,
+                a.tool_path,
+                a.output_text
+            FROM actions a
+            JOIN sessions s ON s.session_id = a.session_id
+            JOIN messages m ON m.message_id = a.message_id
+            WHERE {clause}
+            ORDER BY COALESCE(m.occurred_at_ms, s.sort_key_ms, 0), a.tool_use_block_id
+            LIMIT ? OFFSET ?
+            """,
+            [*params, limit, offset],
+        ).fetchall()
+        return [
+            ArchiveActionQueryRow(
+                session_id=str(row["session_id"]),
+                message_id=str(row["message_id"]),
+                origin=str(row["origin"]),
+                title=str(row["title"]) if row["title"] is not None else None,
+                tool_use_block_id=str(row["tool_use_block_id"]),
+                tool_result_block_id=str(row["tool_result_block_id"])
+                if row["tool_result_block_id"] is not None
+                else None,
+                tool_name=str(row["tool_name"]) if row["tool_name"] is not None else None,
+                semantic_type=str(row["semantic_type"]) if row["semantic_type"] is not None else None,
+                tool_command=str(row["tool_command"]) if row["tool_command"] is not None else None,
+                tool_path=str(row["tool_path"]) if row["tool_path"] is not None else None,
+                output_text=str(row["output_text"]) if row["output_text"] is not None else None,
+            )
+            for row in rows
+        ]
+
+    def query_blocks(
+        self,
+        predicate: QueryPredicate,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[ArchiveBlockQueryRow]:
+        """Return content-block rows matching a unit-scoped query predicate."""
+
+        clause, params = _structural_predicate_clause("block", "b", predicate)
+        rows = self._conn.execute(
+            f"""
+            SELECT
+                b.block_id,
+                b.message_id,
+                b.session_id,
+                s.origin,
+                s.title,
+                b.block_type,
+                b.position,
+                b.text,
+                b.tool_name,
+                b.semantic_type,
+                b.tool_command,
+                b.tool_path
+            FROM blocks b
+            JOIN sessions s ON s.session_id = b.session_id
+            JOIN messages m ON m.message_id = b.message_id
+            WHERE {clause}
+            ORDER BY COALESCE(m.occurred_at_ms, s.sort_key_ms, 0), b.block_id
+            LIMIT ? OFFSET ?
+            """,
+            [*params, limit, offset],
+        ).fetchall()
+        return [
+            ArchiveBlockQueryRow(
+                block_id=str(row["block_id"]),
+                message_id=str(row["message_id"]),
+                session_id=str(row["session_id"]),
+                origin=str(row["origin"]),
+                title=str(row["title"]) if row["title"] is not None else None,
+                block_type=str(row["block_type"]),
+                position=int(row["position"]),
+                text=str(row["text"]) if row["text"] is not None else None,
+                tool_name=str(row["tool_name"]) if row["tool_name"] is not None else None,
+                semantic_type=str(row["semantic_type"]) if row["semantic_type"] is not None else None,
+                tool_command=str(row["tool_command"]) if row["tool_command"] is not None else None,
+                tool_path=str(row["tool_path"]) if row["tool_path"] is not None else None,
+            )
+            for row in rows
+        ]
 
     def stats(
         self,

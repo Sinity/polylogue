@@ -19,6 +19,8 @@ from typing_extensions import TypedDict
 
 from polylogue.archive.message.roles import MessageRoleFilter, Role, normalize_message_roles
 from polylogue.archive.message.types import validate_message_type_filter
+from polylogue.archive.query.expression import parse_unit_source_expression
+from polylogue.archive.query.predicate import QueryPredicate
 from polylogue.archive.query.spec import (
     QuerySpecError,
     normalize_action_sequence,
@@ -39,6 +41,9 @@ from polylogue.config import Config
 from polylogue.paths import archive_file_set_root_for_paths
 from polylogue.storage.search_providers import create_vector_provider, reciprocal_rank_fusion
 from polylogue.storage.sqlite.archive_tiers.archive import (
+    ArchiveActionQueryRow,
+    ArchiveBlockQueryRow,
+    ArchiveMessageQueryRow,
     ArchiveSessionSearchHit,
     ArchiveSessionSummary,
     ArchiveStore,
@@ -264,6 +269,38 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
         raise click.UsageError("Root query cannot combine delete with --set.")
 
     with ArchiveStore.open_existing(archive_root) as archive:
+        unit_source = parse_unit_source_expression(query) if query and not similar_text else None
+        if unit_source is not None:
+            if any(
+                (
+                    params.get("stats_only"),
+                    params.get("stats_by"),
+                    params.get("count_only"),
+                    stream,
+                    tags_to_add,
+                    metadata_to_set,
+                    delete_matched,
+                    params.get("open_result"),
+                    transform is not None,
+                    params.get("conv_id"),
+                    sample_count is not None,
+                )
+            ):
+                raise click.UsageError(
+                    f"{unit_source.unit}s where queries return {unit_source.unit} rows and do not combine "
+                    "with session-only actions or aggregate modes."
+                )
+            _emit_unit_source_rows(
+                archive,
+                unit=unit_source.unit,
+                predicate=unit_source.predicate,
+                query=query,
+                limit=limit,
+                offset=page_offset,
+                output_format=output_format,
+                fields=fields,
+            )
+            return
         if params.get("stats_only") or params.get("stats_by"):
             if sample_count is not None:
                 raise click.UsageError("Root query does not combine --sample with stats.")
@@ -1483,6 +1520,138 @@ def _emit_rows(
     if output_format not in {"markdown", "plaintext"}:
         raise click.UsageError(f"Root query does not support --format {output_format}.")
     click.echo("\n".join(text_line(item) for item in items))
+
+
+def _emit_unit_source_rows(
+    archive: ArchiveStore,
+    *,
+    unit: str,
+    predicate: QueryPredicate,
+    query: str,
+    limit: int,
+    offset: int,
+    output_format: str,
+    fields: str | None,
+) -> None:
+    fetch_limit = limit + 1
+    if unit == "message":
+        message_rows = archive.query_messages(predicate, limit=fetch_limit, offset=offset)
+        items = [_message_query_payload(row) for row in message_rows[:limit]]
+        text_line = _message_query_line
+        has_next = len(message_rows) > limit
+    elif unit == "action":
+        action_rows = archive.query_actions(predicate, limit=fetch_limit, offset=offset)
+        items = [_action_query_payload(row) for row in action_rows[:limit]]
+        text_line = _action_query_line
+        has_next = len(action_rows) > limit
+    elif unit == "block":
+        block_rows = archive.query_blocks(predicate, limit=fetch_limit, offset=offset)
+        items = [_block_query_payload(row) for row in block_rows[:limit]]
+        text_line = _block_query_line
+        has_next = len(block_rows) > limit
+    else:
+        raise click.UsageError(f"Unsupported query unit: {unit}")
+
+    envelope: dict[str, object] = {
+        "mode": "query-unit",
+        "unit": unit,
+        "query": query,
+        "items": items,
+        "total": len(items),
+        "limit": limit,
+        "offset": offset,
+        "next_offset": offset + limit if has_next else None,
+    }
+    if not items:
+        _emit_unit_no_results(envelope, unit=unit, output_format=output_format)
+    _emit_rows(envelope, items, output_format=output_format, text_line=text_line, fields=fields)
+
+
+def _emit_unit_no_results(envelope: dict[str, object], *, unit: str, output_format: str) -> NoReturn:
+    empty = {**envelope, "items": [], "total": 0}
+    if output_format == "json":
+        click.echo(json.dumps(empty, indent=2, sort_keys=True))
+    elif output_format == "yaml":
+        import yaml
+
+        click.echo(yaml.safe_dump(empty, sort_keys=False, allow_unicode=True), nl=False)
+    elif output_format in {"ndjson", "csv"}:
+        pass
+    else:
+        click.echo(f"No {unit}s matched.")
+    raise SystemExit(2)
+
+
+def _message_query_payload(row: ArchiveMessageQueryRow) -> dict[str, object]:
+    return {
+        "unit": "message",
+        "message_id": row.message_id,
+        "session_id": row.session_id,
+        "origin": row.origin,
+        "title": row.title,
+        "role": row.role,
+        "message_type": row.message_type,
+        "position": row.position,
+        "word_count": row.word_count,
+        "text": row.text,
+    }
+
+
+def _action_query_payload(row: ArchiveActionQueryRow) -> dict[str, object]:
+    return {
+        "unit": "action",
+        "session_id": row.session_id,
+        "message_id": row.message_id,
+        "origin": row.origin,
+        "title": row.title,
+        "tool_use_block_id": row.tool_use_block_id,
+        "tool_result_block_id": row.tool_result_block_id,
+        "tool_name": row.tool_name,
+        "semantic_type": row.semantic_type,
+        "tool_command": row.tool_command,
+        "tool_path": row.tool_path,
+        "output_text": row.output_text,
+    }
+
+
+def _block_query_payload(row: ArchiveBlockQueryRow) -> dict[str, object]:
+    return {
+        "unit": "block",
+        "block_id": row.block_id,
+        "message_id": row.message_id,
+        "session_id": row.session_id,
+        "origin": row.origin,
+        "title": row.title,
+        "block_type": row.block_type,
+        "position": row.position,
+        "text": row.text,
+        "tool_name": row.tool_name,
+        "semantic_type": row.semantic_type,
+        "tool_command": row.tool_command,
+        "tool_path": row.tool_path,
+    }
+
+
+def _snippet(value: object, *, max_chars: int = 96) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= max_chars:
+        return text
+    return f"{text[: max_chars - 3]}..."
+
+
+def _message_query_line(item: dict[str, object]) -> str:
+    return f"{item['message_id']} [{item['role']}] {_snippet(item.get('text'))}"
+
+
+def _action_query_line(item: dict[str, object]) -> str:
+    action = item.get("semantic_type") or item.get("tool_name") or "action"
+    detail = item.get("tool_path") or item.get("tool_command") or item.get("output_text") or ""
+    return f"{item['tool_use_block_id']} [{action}] {_snippet(detail)}"
+
+
+def _block_query_line(item: dict[str, object]) -> str:
+    detail = item.get("text") or item.get("tool_path") or item.get("tool_command") or ""
+    return f"{item['block_id']} [{item['block_type']}] {_snippet(detail)}"
 
 
 def _project_payload(payload: dict[str, object], fields: str | None) -> dict[str, object]:

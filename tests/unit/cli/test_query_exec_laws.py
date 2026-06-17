@@ -2351,6 +2351,11 @@ SEARCH_FILTER_CASES = [
 SEARCH_FORMAT_CASES = [
     ("json_list", ["Python", "list", "-f", "json"], "json_list"),
     ("json_single", ["JavaScript", "-f", "json", "--limit", "1"], "json_single"),
+    (
+        "json_unit_messages",
+        ["-f", "json", "messages", "where", "role:assistant", "AND", "text:Python"],
+        "json_unit_messages",
+    ),
     ("list_mode", ["async", "list"], "plain_list"),
     ("markdown", ["Rust", "-f", "markdown", "--limit", "1"], "markdown"),
 ]
@@ -2414,6 +2419,12 @@ class TestSearchQueryContracts:
         elif expectation == "json_single":
             data = json.loads(result.output)
             assert isinstance(data, (list, dict)), case_id
+        elif expectation == "json_unit_messages":
+            data = json.loads(result.output)
+            assert data["mode"] == "query-unit", case_id
+            assert data["unit"] == "message", case_id
+            assert [item["message_id"] for item in data["items"]] == ["chatgpt-export:ext-conv1:m2"], case_id
+            assert data["items"][0]["role"] == "assistant", case_id
         elif expectation == "plain_list":
             assert result.output.strip(), case_id
         elif expectation == "markdown":
