@@ -93,12 +93,16 @@ class MCPRootPayload(RootModel[TRoot], Generic[TRoot]):
 
 class MCPErrorPayload(SurfacePayloadModel):
     # Canonical machine-error envelope core (#1818): ``status``/``code``/
-    # ``message``/``detail`` match the CLI ``MachineError`` and daemon error
-    # shapes. MCP-specific fields below are additive optional keys.
+    # ``message``/``detail`` match the CLI ``MachineError`` shape. ``ok`` /
+    # ``error`` / ``field`` mirror the shared ``QueryErrorPayload`` core so
+    # agent clients can handle MCP and daemon query failures with one parser.
+    ok: Literal[False] = False
     status: Literal["error"] = "error"
+    error: str = "error"
     message: str
     code: int | str | None = None
     detail: str | None = None
+    field: str | None = None
     tool: str | None = None
     session_id: str | None = None
     # Schema-mismatch surface (#1611): when an MCP tool body raises

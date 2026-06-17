@@ -55,7 +55,9 @@ pytestmark = pytest.mark.contract
 def _structured_error(payload: str) -> dict[str, Any]:
     body = json.loads(payload)
     assert isinstance(body, dict), f"error payload is not a JSON object: {payload!r}"
+    assert body.get("ok") is False, f"missing or true shared 'ok': {body}"
     assert body.get("status") == "error", f"missing/wrong 'status': {body}"
+    assert isinstance(body.get("error"), str) and body["error"], f"missing/empty shared 'error': {body}"
     assert body.get("is_error") is True, f"missing or false 'is_error': {body}"
     assert isinstance(body.get("message"), str) and body["message"], f"missing/empty 'message': {body}"
     return body

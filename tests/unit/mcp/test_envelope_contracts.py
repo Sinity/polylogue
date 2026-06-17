@@ -348,11 +348,14 @@ def _assert_structured_error(payload: str, *, expected_code: str | None = None) 
     """Assert payload is a structured MCPErrorPayload with the canonical
     ``status``/``message`` core (#1818) plus the MCP ``is_error`` flag and code."""
     body = json.loads(payload)
+    assert body.get("ok") is False, f"missing or true shared 'ok': {body}"
     assert body.get("status") == "error", f"missing/wrong 'status': {body}"
+    assert isinstance(body.get("error"), str) and body["error"], f"missing/empty shared 'error': {body}"
     assert "message" in body, f"missing 'message' field: {body}"
     assert body.get("is_error") is True, f"missing or false 'is_error': {body}"
     if expected_code is not None:
         assert body.get("code") == expected_code, f"expected code={expected_code}, got {body.get('code')}"
+        assert body.get("error") == expected_code, f"expected error={expected_code}, got {body.get('error')}"
 
 
 class TestSessionTreeResourceShapeMatchesTool:
