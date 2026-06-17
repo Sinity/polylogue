@@ -19,8 +19,11 @@ from click.shell_completion import CompletionItem
 
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.query.expression import (
+    COUNT_QUERY_FIELD_REGISTRY,
     EXPRESSION_FIELD_REGISTRY,
     STRUCTURAL_QUERY_UNIT_REGISTRY,
+    count_query_fields,
+    count_query_operators,
     structural_query_fields,
     structural_query_units,
 )
@@ -228,6 +231,33 @@ def query_structural_field_candidates(unit: str, incomplete: str) -> list[QueryC
                 group=f"{unit} structural fields",
                 description=f"Field accepted inside exists {unit}(...).",
                 source="STRUCTURAL_QUERY_UNIT_REGISTRY",
+            )
+        )
+    return candidates
+
+
+def query_count_operator_candidates(field: str, incomplete: str) -> list[QueryCompletionCandidate]:
+    """Return readable count operators accepted by the query grammar."""
+
+    field_name = field.lower()
+    if field_name not in count_query_fields():
+        return []
+    current = incomplete.strip().lower()
+    info = COUNT_QUERY_FIELD_REGISTRY[field_name]
+    candidates: list[QueryCompletionCandidate] = []
+    for operator in count_query_operators(field_name):
+        if current and not operator.startswith(current):
+            continue
+        insert = f"{operator} " if operator == info.range_keyword else operator
+        candidates.append(
+            QueryCompletionCandidate(
+                value=operator,
+                insert=insert,
+                display=insert,
+                kind="query-count-operator",
+                group=f"{field_name} count operators",
+                description=f"{info.description} Example: {info.example}",
+                source="COUNT_QUERY_FIELD_REGISTRY",
             )
         )
     return candidates
@@ -583,6 +613,7 @@ __all__ = [
     "complete_tag_values",
     "complete_tool_values",
     "query_action_candidates",
+    "query_count_operator_candidates",
     "query_field_candidates",
     "query_structural_field_candidates",
     "query_structural_unit_candidates",

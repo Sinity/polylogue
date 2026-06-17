@@ -39,6 +39,11 @@ class QueryFirstGroup(QueryFirstGroupBase):
     def shell_complete(self, ctx: click.Context, incomplete: str) -> list[CompletionItem]:
         """Keep query-action completion tied to action contracts after ``then``."""
 
+        count_field = _count_operator_completion_field()
+        if count_field is not None:
+            from polylogue.cli.shell_completion_values import query_count_operator_candidates
+
+            return [candidate.to_click_item() for candidate in query_count_operator_candidates(count_field, incomplete)]
         if _is_after_then_completion():
             from polylogue.cli.shell_completion_values import complete_query_actions
 
@@ -59,6 +64,22 @@ def _completion_words() -> tuple[str, ...]:
 def _is_after_then_completion() -> bool:
     words = _completion_words()
     return len(words) >= 2 and words[-2] == "then"
+
+
+def _count_operator_completion_field() -> str | None:
+    words = _completion_words()
+    raw_words = os.environ.get("COMP_WORDS", "")
+    if raw_words.endswith(" ") and words:
+        previous = words[-1].lower()
+        return previous if previous in {"messages", "words"} else None
+    if len(words) < 2:
+        return None
+    previous = words[-2].lower()
+    if previous not in {"messages", "words"}:
+        return None
+    if len(words) >= 3 and words[-3].lower() == "between":
+        return None
+    return previous
 
 
 def _should_complete_then_connector(incomplete: str) -> bool:
