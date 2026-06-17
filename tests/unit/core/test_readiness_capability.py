@@ -175,6 +175,7 @@ def test_assertion_substrate_maps_missing_ready_and_error_states() -> None:
         assertion_count=4,
         target_count=2,
         active_count=3,
+        overlay_audit={"surfaces": [], "legacy_tables_present": []},
     )
     busy = component_from_assertion_substrate(table_exists=True, error="database is locked")
 
@@ -184,6 +185,8 @@ def test_assertion_substrate_maps_missing_ready_and_error_states() -> None:
     assert ready.scope == "user"
     assert ready.counts == {"assertion_count": 4, "target_count": 2, "active_count": 3}
     assert ready.evidence_refs == ("user.db:assertions",)
+    assert ready.metadata == {"overlay_audit": {"surfaces": [], "legacy_tables_present": []}}
+    assert ready.to_dict()["metadata"] == {"overlay_audit": {"surfaces": [], "legacy_tables_present": []}}
     assert busy.state is CapabilityReadinessState.DEGRADED
     assert busy.caveats == ("database is locked",)
 

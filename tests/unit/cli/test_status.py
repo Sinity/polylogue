@@ -462,9 +462,9 @@ class TestNoArchiveStatus:
                 user_conn,
                 assertion_id="demo-assertion",
                 target_ref="session:demo",
-                key="pytest-triage",
-                kind=AssertionKind.TAG,
-                value={"tag": "pytest-triage"},
+                key="star",
+                kind=AssertionKind.MARK,
+                value={"label": "pytest-triage"},
                 status="active",
                 now_ms=1_700_000_000_000,
             )
@@ -532,6 +532,13 @@ class TestNoArchiveStatus:
         assert assertions["state"] == "ready"
         assert assertions["counts"] == {"assertion_count": 1, "target_count": 1, "active_count": 1}
         assert assertions["evidence_refs"] == ["user.db:assertions"]
+        overlay_audit = assertions["metadata"]["overlay_audit"]
+        assert overlay_audit["legacy_tables_present"] == []
+        surfaces = {surface["name"]: surface for surface in overlay_audit["surfaces"]}
+        assert surfaces["marks"]["storage"] == "assertions"
+        assert surfaces["marks"]["active_count"] == 1
+        assert surfaces["session_tags"]["storage"] == "table"
+        assert "metadata table" in surfaces["session_tags"]["rationale"]
         assert transforms["scope"] == "recovery"
         assert transforms["state"] == "ready"
         assert transforms["counts"]["session_count"] == 3

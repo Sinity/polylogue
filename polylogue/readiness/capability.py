@@ -46,22 +46,24 @@ class ComponentReadiness:
     caveats: tuple[str, ...] = ()
     repair_hint: str | None = None
     evidence_refs: tuple[str, ...] = ()
+    metadata: Mapping[str, object] = field(default_factory=dict)
 
     def to_dict(self) -> JSONDocument:
-        return json_document(
-            {
-                "component": self.component,
-                "scope": self.scope,
-                "state": self.state.value,
-                "summary": self.summary,
-                "last_success": self.last_success,
-                "last_attempt": self.last_attempt,
-                "counts": dict(self.counts),
-                "caveats": list(self.caveats),
-                "repair_hint": self.repair_hint,
-                "evidence_refs": list(self.evidence_refs),
-            }
-        )
+        payload: dict[str, object] = {
+            "component": self.component,
+            "scope": self.scope,
+            "state": self.state.value,
+            "summary": self.summary,
+            "last_success": self.last_success,
+            "last_attempt": self.last_attempt,
+            "counts": dict(self.counts),
+            "caveats": list(self.caveats),
+            "repair_hint": self.repair_hint,
+            "evidence_refs": list(self.evidence_refs),
+        }
+        if self.metadata:
+            payload["metadata"] = dict(self.metadata)
+        return json_document(payload)
 
 
 LEGACY_READINESS_SOURCE_TYPES: tuple[str, ...] = (
@@ -189,6 +191,7 @@ def component_from_assertion_substrate(
     target_count: int = 0,
     active_count: int = 0,
     error: str | None = None,
+    overlay_audit: Mapping[str, object] | None = None,
 ) -> ComponentReadiness:
     """Map the user-tier assertion substrate into the shared DTO."""
 
@@ -219,6 +222,7 @@ def component_from_assertion_substrate(
         caveats=caveats,
         repair_hint=None if table_exists and not error else "polylogue maintenance archive-init --yes",
         evidence_refs=("user.db:assertions",) if table_exists else (),
+        metadata={"overlay_audit": dict(overlay_audit)} if overlay_audit else {},
     )
 
 
