@@ -75,7 +75,7 @@ SCHEMAS: tuple[CliOutputSchema, ...] = (
         model=SessionSummaryPayload,
         surfaces=(
             "polylogue stats --format json (rows)",
-            "polylogue select --format json",
+            "polylogue --format json <query> (hits[].session)",
         ),
     ),
     CliOutputSchema(
@@ -133,10 +133,11 @@ SCHEMAS: tuple[CliOutputSchema, ...] = (
         name="session-neighbor-candidate",
         title="Session Neighbor Candidate",
         description=(
-            "Semantic-neighbor candidate for `polylogue neighbors`: session identity plus per-reason evidence and rank."
+            "Semantic-neighbor candidate for the `read --view neighbors` surface: session identity plus per-reason "
+            "evidence and rank."
         ),
         model=SessionNeighborCandidatePayload,
-        surfaces=("polylogue neighbors --format json",),
+        surfaces=("polylogue read --view neighbors --format json",),
     ),
     CliOutputSchema(
         name="mutation-result",

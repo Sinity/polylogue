@@ -50,10 +50,16 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
     GeneratedSurface(
         name="cli-reference",
         label="CLI docs",
-        description="Render docs/cli-reference.md from live CLI help and output-assurance matrix.",
+        description="Render docs/cli-reference.md from live CLI help and action-contract metadata.",
         command=control_plane_argv("render-cli-reference"),
         main=render_cli_reference.main,
-        inputs=("polylogue/cli/", "devtools/render_cli_reference.py"),
+        inputs=(
+            "polylogue/cli/",
+            "polylogue/surfaces/payloads.py",
+            "devtools/render_cli_reference.py",
+            "devtools/action_contract_report.py",
+            "devtools/render_cli_output_schemas.py",
+        ),
     ),
     GeneratedSurface(
         name="cli-output-schemas",
