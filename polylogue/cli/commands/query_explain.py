@@ -77,6 +77,7 @@ def query_explain_command(expression: tuple[str, ...], output_format: str) -> No
     selected_units = cast(list[str], payload["selected_units"])
     execution_legs = cast(list[str], payload["execution_legs"])
     plan_description = cast(list[str], payload["plan_description"])
+    lowering_plan = cast(dict[str, object] | None, payload["lowering_plan"])
     unsupported_nodes = cast(list[str], payload["unsupported_nodes"])
     if selected_units:
         click.echo("units: " + ", ".join(selected_units))
@@ -89,6 +90,9 @@ def query_explain_command(expression: tuple[str, ...], output_format: str) -> No
         click.echo("clauses:")
         for clause in clauses:
             click.echo(f"  - {json.dumps(clause, sort_keys=True)}")
+    if lowering_plan is not None:
+        click.echo("lowering plan:")
+        click.echo(json.dumps(lowering_plan, indent=2, sort_keys=True))
     if plan_description:
         click.echo("plan:")
         for line in plan_description:

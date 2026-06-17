@@ -397,13 +397,17 @@ class QueryExpressionExplanation:
     execution_legs: tuple[str, ...] = ()
     unsupported_nodes: tuple[str, ...] = ()
     predicate: QueryPredicate | None = None
+    ast: dict[str, object] | None = None
+    lowering_plan: dict[str, object] | None = None
 
     def to_payload(self) -> dict[str, object]:
         return {
             "source_text": self.source_text,
             "clauses": [clause.to_payload() for clause in self.clauses],
             "predicate": self.predicate.to_payload() if self.predicate is not None else None,
+            "ast": self.ast,
             "lowerer": self.lowerer,
+            "lowering_plan": self.lowering_plan,
             "selected_units": list(self.selected_units),
             "execution_legs": list(self.execution_legs),
             "plan_description": list(self.plan_description),
@@ -1424,50 +1428,133 @@ def _explain_unit_source_execution_legs(source: QueryUnitSource) -> tuple[str, .
     return tuple(sorted(legs))
 
 
+def _ast_payload(
+    *,
+    entry: str,
+    clauses: tuple[QueryExpressionExplainClause, ...] = (),
+    predicate: QueryPredicate | None = None,
+    unit_source: QueryUnitSource | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {"entry": entry}
+    if clauses:
+        payload["clauses"] = [clause.to_payload() for clause in clauses]
+    if predicate is not None:
+        payload["predicate"] = predicate.to_payload()
+    if unit_source is not None:
+        payload["unit_source"] = {
+            "unit": unit_source.unit,
+            "predicate": unit_source.predicate.to_payload(),
+        }
+    return payload
+
+
+def _lowering_plan_payload(
+    *,
+    lowerer: str,
+    selected_units: tuple[str, ...],
+    execution_legs: tuple[str, ...],
+    plan_description: tuple[str, ...],
+    compatibility_selector: str | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "lowerer": lowerer,
+        "selected_units": list(selected_units),
+        "execution_legs": list(execution_legs),
+        "plan_description": list(plan_description),
+    }
+    if compatibility_selector is not None:
+        payload["compatibility_selector"] = compatibility_selector
+    return payload
+
+
 def explain_expression(expression: str) -> QueryExpressionExplanation:
     """Explain parser output, lowering path, and execution-plan descriptions."""
     source_text = expression
     stripped = expression.strip()
+    clauses: tuple[QueryExpressionExplainClause, ...]
+    selected_units: tuple[str, ...]
+    execution_legs: tuple[str, ...]
+    plan_description: tuple[str, ...]
     if stripped.startswith("{") or stripped.startswith("["):
         lowered = _compile_json_spec(stripped)
+        clauses = (_explain_clause(_JsonToken(raw=stripped)),)
+        selected_units = ("session",)
+        execution_legs = _explain_execution_legs(lowered)
+        plan_description = tuple(lowered.to_plan().describe())
+        lowerer = "json-spec"
         return QueryExpressionExplanation(
             source_text=source_text,
-            clauses=(_explain_clause(_JsonToken(raw=stripped)),),
-            lowerer="json-spec",
+            clauses=clauses,
+            lowerer=lowerer,
             lowered_spec=lowered,
-            selected_units=("session",),
-            execution_legs=_explain_execution_legs(lowered),
-            plan_description=tuple(lowered.to_plan().describe()),
+            selected_units=selected_units,
+            execution_legs=execution_legs,
+            plan_description=plan_description,
+            ast=_ast_payload(entry="json", clauses=clauses),
+            lowering_plan=_lowering_plan_payload(
+                lowerer=lowerer,
+                selected_units=selected_units,
+                execution_legs=execution_legs,
+                plan_description=plan_description,
+            ),
         )
     unit_source = parse_unit_source_expression(stripped)
     if unit_source is not None:
         lowered = SessionQuerySpec(
             boolean_predicate=QueryExistsPredicate(unit=unit_source.unit, child=unit_source.predicate)
         )
+        selected_units = (unit_source.unit,)
+        execution_legs = _explain_unit_source_execution_legs(unit_source)
+        plan_description = (
+            f"terminal unit source: {unit_source.unit}",
+            f"compatibility session selector: exists {unit_source.unit}(...)",
+        )
+        lowerer = "lark-query-unit-source-to-terminal-unit"
         return QueryExpressionExplanation(
             source_text=source_text,
             clauses=(),
             predicate=unit_source.predicate,
-            lowerer="lark-query-unit-source-to-terminal-unit",
+            lowerer=lowerer,
             lowered_spec=lowered,
-            selected_units=(unit_source.unit,),
-            execution_legs=_explain_unit_source_execution_legs(unit_source),
-            plan_description=(
-                f"terminal unit source: {unit_source.unit}",
-                f"compatibility session selector: exists {unit_source.unit}(...)",
+            selected_units=selected_units,
+            execution_legs=execution_legs,
+            plan_description=plan_description,
+            ast=_ast_payload(entry="unit_source", predicate=unit_source.predicate, unit_source=unit_source),
+            lowering_plan=_lowering_plan_payload(
+                lowerer=lowerer,
+                selected_units=selected_units,
+                execution_legs=execution_legs,
+                plan_description=plan_description,
+                compatibility_selector=f"exists {unit_source.unit}(...)",
             ),
         )
     ast = parse_expression_ast(stripped)
     lowered = compile_expression(stripped)
+    clauses = tuple(_explain_clause(clause) for clause in ast.clauses)
+    selected_units = _explain_selected_units(ast)
+    execution_legs = _explain_execution_legs(lowered)
+    plan_description = tuple(lowered.to_plan().describe())
+    lowerer = "lark-query-expression-to-session-query-spec"
     return QueryExpressionExplanation(
         source_text=source_text,
-        clauses=tuple(_explain_clause(clause) for clause in ast.clauses),
+        clauses=clauses,
         predicate=ast.boolean_predicate,
-        lowerer="lark-query-expression-to-session-query-spec",
+        lowerer=lowerer,
         lowered_spec=lowered,
-        selected_units=_explain_selected_units(ast),
-        execution_legs=_explain_execution_legs(lowered),
-        plan_description=tuple(lowered.to_plan().describe()),
+        selected_units=selected_units,
+        execution_legs=execution_legs,
+        plan_description=plan_description,
+        ast=_ast_payload(
+            entry="boolean" if ast.boolean_predicate is not None else "compact",
+            clauses=clauses,
+            predicate=ast.boolean_predicate,
+        ),
+        lowering_plan=_lowering_plan_payload(
+            lowerer=lowerer,
+            selected_units=selected_units,
+            execution_legs=execution_legs,
+            plan_description=plan_description,
+        ),
     )
 
 

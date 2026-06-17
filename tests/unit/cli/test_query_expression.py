@@ -204,6 +204,26 @@ class TestExplainExpression:
         payload = explanation.to_payload()
         assert payload["selected_units"] == ["block", "lineage", "session"]
         assert payload["execution_legs"] == ["exists-block", "lineage-recursive-cte", "sql"]
+        assert payload["ast"] == {
+            "entry": "boolean",
+            "predicate": {
+                "children": [
+                    {
+                        "child": {"field": "type", "kind": "field", "op": "=", "values": ["code"]},
+                        "kind": "exists",
+                        "unit": "block",
+                    },
+                    {"kind": "lineage", "seed_session_id": "root", "unit": "session"},
+                ],
+                "kind": "and",
+            },
+        }
+        assert payload["lowering_plan"] == {
+            "lowerer": "lark-query-expression-to-session-query-spec",
+            "selected_units": ["block", "lineage", "session"],
+            "execution_legs": ["exists-block", "lineage-recursive-cte", "sql"],
+            "plan_description": explanation.to_payload()["plan_description"],
+        }
 
     def test_explain_expression_reports_readable_count_range_clause(self) -> None:
         explanation = explain_expression("messages between 5 and 20")
@@ -235,6 +255,37 @@ class TestExplainExpression:
             "terminal unit source: message",
             "compatibility session selector: exists message(...)",
         )
+        payload = explanation.to_payload()
+        assert payload["ast"] == {
+            "entry": "unit_source",
+            "predicate": {
+                "children": [
+                    {"field": "role", "kind": "field", "op": "=", "values": ["assistant"]},
+                    {"field": "text", "kind": "field", "op": "=", "values": ["timeout"]},
+                ],
+                "kind": "and",
+            },
+            "unit_source": {
+                "unit": "message",
+                "predicate": {
+                    "children": [
+                        {"field": "role", "kind": "field", "op": "=", "values": ["assistant"]},
+                        {"field": "text", "kind": "field", "op": "=", "values": ["timeout"]},
+                    ],
+                    "kind": "and",
+                },
+            },
+        }
+        assert payload["lowering_plan"] == {
+            "lowerer": "lark-query-unit-source-to-terminal-unit",
+            "selected_units": ["message"],
+            "execution_legs": ["sql", "terminal-message-rows"],
+            "plan_description": [
+                "terminal unit source: message",
+                "compatibility session selector: exists message(...)",
+            ],
+            "compatibility_selector": "exists message(...)",
+        }
         assert explanation.predicate == QueryBoolPredicate(
             op="and",
             children=(
