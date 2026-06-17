@@ -55,6 +55,22 @@ def test_user_overlay_audit_reports_assertion_and_table_backed_surfaces(tmp_path
             status="candidate",
             now_ms=4,
         )
+        upsert_assertion(
+            conn,
+            assertion_id="decision",
+            target_ref="session:s1",
+            kind=AssertionKind.DECISION,
+            status="active",
+            now_ms=5,
+        )
+        upsert_assertion(
+            conn,
+            assertion_id="tag-assertion",
+            target_ref="session:s1",
+            kind=AssertionKind.TAG,
+            status="active",
+            now_ms=6,
+        )
         conn.execute(
             """
             INSERT INTO session_tags (session_id, tag, tag_source, method, confidence, evidence_json)
@@ -64,7 +80,7 @@ def test_user_overlay_audit_reports_assertion_and_table_backed_surfaces(tmp_path
         conn.execute(
             """
             INSERT INTO session_metadata (session_id, key, value_json, created_at_ms, updated_at_ms)
-            VALUES ('s1', 'owner', '{"name":"sinity"}', 5, 5)
+            VALUES ('s1', 'owner', '{"name":"sinity"}', 7, 7)
             """
         )
         conn.commit()
@@ -84,6 +100,16 @@ def test_user_overlay_audit_reports_assertion_and_table_backed_surfaces(tmp_path
     assert candidates["storage"] == "assertions"
     assert candidates["candidate_count"] == 1
 
+    decisions = _surface(payload, "decisions")
+    assert decisions["storage"] == "assertions"
+    assert decisions["assertion_kind"] == "decision"
+    assert decisions["active_count"] == 1
+
+    tag_assertions = _surface(payload, "tag_assertions")
+    assert tag_assertions["storage"] == "assertions"
+    assert tag_assertions["assertion_kind"] == "tag"
+    assert tag_assertions["active_count"] == 1
+
     tags = _surface(payload, "session_tags")
     assert tags["storage"] == "table"
     assert tags["assertion_kind"] is None
@@ -95,3 +121,20 @@ def test_user_overlay_audit_reports_assertion_and_table_backed_surfaces(tmp_path
     assert metadata["total_count"] == 1
 
     assert payload["legacy_tables_present"] == []
+
+
+def test_user_overlay_audit_covers_every_assertion_kind(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "user.db")
+    try:
+        payload = audit_user_overlay_storage(conn).to_dict()
+    finally:
+        conn.close()
+
+    surfaces = payload["surfaces"]
+    assert isinstance(surfaces, list)
+    assertion_kinds = {
+        surface["assertion_kind"]
+        for surface in surfaces
+        if isinstance(surface, dict) and surface["storage"] == "assertions"
+    }
+    assert assertion_kinds == {kind.value for kind in AssertionKind}

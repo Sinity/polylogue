@@ -11,13 +11,23 @@ from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind
 
 _ASSERTION_BACKED_SURFACES: Mapping[str, AssertionKind] = {
     "marks": AssertionKind.MARK,
+    "highlights": AssertionKind.HIGHLIGHT,
     "annotations": AssertionKind.ANNOTATION,
     "suppressions": AssertionKind.SUPPRESSION,
     "corrections": AssertionKind.CORRECTION,
+    "tag_assertions": AssertionKind.TAG,
+    "metadata_assertions": AssertionKind.METADATA,
     "saved_views": AssertionKind.SAVED_QUERY,
     "recall_packs": AssertionKind.RECALL_PACK,
     "workspaces": AssertionKind.WORKSPACE_NOTE,
     "blackboard_notes": AssertionKind.NOTE,
+    "decisions": AssertionKind.DECISION,
+    "caveats": AssertionKind.CAVEAT,
+    "lessons": AssertionKind.LESSON,
+    "blockers": AssertionKind.BLOCKER,
+    "handoffs": AssertionKind.HANDOFF,
+    "run_state": AssertionKind.RUN_STATE,
+    "prompt_evals": AssertionKind.PROMPT_EVAL,
     "transform_candidates": AssertionKind.TRANSFORM_CANDIDATE,
 }
 
