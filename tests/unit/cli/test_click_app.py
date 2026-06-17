@@ -229,6 +229,9 @@ def test_query_explain_json_outputs_ast_payload(cli_runner: CliRunner) -> None:
     assert payload["source_text"] == "sessions where repo:polylogue OR origin:chatgpt-export"
     assert payload["lowerer"] == "lark-query-expression-to-session-query-spec"
     assert payload["predicate"]["kind"] == "or"
+    assert payload["ast"]["entry"] == "boolean"
+    assert payload["ast"]["predicate"]["kind"] == "or"
+    assert payload["lowering_plan"]["lowerer"] == "lark-query-expression-to-session-query-spec"
     assert payload["selected_units"] == ["session"]
     assert payload["execution_legs"] == ["sql"]
     assert payload["unsupported_nodes"] == []
@@ -249,6 +252,9 @@ def test_query_explain_json_outputs_terminal_unit_payload(cli_runner: CliRunner)
         "terminal unit source: message",
         "compatibility session selector: exists message(...)",
     ]
+    assert payload["ast"]["entry"] == "unit_source"
+    assert payload["ast"]["unit_source"]["unit"] == "message"
+    assert payload["lowering_plan"]["compatibility_selector"] == "exists message(...)"
     assert payload["predicate"]["kind"] == "and"
 
 
@@ -261,6 +267,7 @@ def test_query_explain_plain_outputs_plan(cli_runner: CliRunner) -> None:
     assert "units: session" in result.output
     assert "execution legs: fts, sql" in result.output
     assert "clauses:" in result.output
+    assert "lowering plan:" in result.output
     assert "plan:" in result.output
 
 
