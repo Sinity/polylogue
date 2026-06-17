@@ -17,7 +17,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/archive.py
-    loc: 3091
+    loc: 3104
     target: polylogue/api/archive.py
     owner: stable
     cross_cut: { api: async }
@@ -289,7 +289,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/expression.py
-    loc: 1395
+    loc: 1861
     target: polylogue/archive/query/expression.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -575,7 +575,7 @@ files:
     target: polylogue/archive/topology/edge.py
     owner: stable
   - path: polylogue/archive/viewport/__init__.py
-    loc: 17
+    loc: 19
     target: polylogue/archive/viewport/__init__.py
     owner: archive-viewport
     reason: archive-domain semantics
@@ -590,7 +590,7 @@ files:
     owner: archive-viewport
     reason: archive-domain semantics
   - path: polylogue/archive/viewport/profiles.py
-    loc: 191
+    loc: 219
     target: polylogue/archive/viewport/profiles.py
     owner: archive-viewport
     reason: archive-domain semantics
@@ -658,7 +658,7 @@ files:
     target: polylogue/cli/__main__.py
     owner: stable
   - path: polylogue/cli/action_contracts.py
-    loc: 231
+    loc: 243
     target: polylogue/cli/action_contracts.py
     owner: stable
   - path: polylogue/cli/archive_query.py
@@ -670,11 +670,11 @@ files:
     target: polylogue/cli/bulk_export.py
     owner: stable
   - path: polylogue/cli/click_app.py
-    loc: 264
+    loc: 343
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
-    loc: 185
+    loc: 187
     target: polylogue/cli/click_command_registration.py
     owner: stable
   - path: polylogue/cli/click_option_groups.py
@@ -769,12 +769,16 @@ files:
     loc: 311
     target: polylogue/cli/commands/paths.py
     owner: stable
+  - path: polylogue/cli/commands/query_completions.py
+    loc: 103
+    target: polylogue/cli/commands/query_completions.py
+    owner: stable
   - path: polylogue/cli/commands/query_explain.py
-    loc: 96
+    loc: 102
     target: polylogue/cli/commands/query_explain.py
     owner: stable
   - path: polylogue/cli/commands/read_views.py
-    loc: 57
+    loc: 34
     target: polylogue/cli/commands/read_views.py
     owner: stable
   - path: polylogue/cli/commands/reset.py
@@ -866,7 +870,7 @@ files:
     target: polylogue/cli/query_stats.py
     owner: stable
   - path: polylogue/cli/query_verbs.py
-    loc: 1147
+    loc: 1196
     target: polylogue/cli/query_verbs.py
     owner: stable
   - path: polylogue/cli/root_request.py
@@ -992,7 +996,7 @@ files:
     target: polylogue/cli/shared/types.py
     owner: stable
   - path: polylogue/cli/shell_completion_values.py
-    loc: 479
+    loc: 676
     target: polylogue/cli/shell_completion_values.py
     owner: stable
   - path: polylogue/cli/verb_cardinality.py
@@ -1000,7 +1004,7 @@ files:
     target: polylogue/cli/verb_cardinality.py
     owner: stable
   - path: polylogue/cli/verb_names.py
-    loc: 20
+    loc: 21
     target: polylogue/cli/verb_names.py
     owner: stable
   - path: polylogue/config.py
@@ -1568,7 +1572,7 @@ files:
     target: polylogue/mcp/server_support.py
     owner: stable
   - path: polylogue/mcp/server_tools.py
-    loc: 689
+    loc: 712
     target: polylogue/mcp/server_tools.py
     owner: stable
   - path: polylogue/operations/__init__.py
@@ -3175,7 +3179,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/__init__.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive.py
-    loc: 5586
+    loc: 5630
     target: polylogue/storage/sqlite/archive_tiers/archive.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive_init.py
