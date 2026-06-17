@@ -884,9 +884,8 @@ def _deliver_content(env: AppEnv, content: str, *, destination: str, out_path: s
 @click.option("--dry-run", is_flag=True, help="Preview what would be deleted without deleting")
 @click.option("--yes", "yes_flag", is_flag=True, help="Confirm the deletion (required for actual deletion)")
 @click.option("--all", "all_flag", is_flag=True, help="Delete all matched sessions (required when multiple match)")
-@click.option("--force", is_flag=True, hidden=True, help="(legacy alias for --yes) Skip confirmation prompt")
 @click.pass_context
-def delete_verb(ctx: click.Context, dry_run: bool, yes_flag: bool, all_flag: bool, force: bool) -> None:
+def delete_verb(ctx: click.Context, dry_run: bool, yes_flag: bool, all_flag: bool) -> None:
     """Delete matched sessions.
 
     \b
@@ -927,7 +926,7 @@ def delete_verb(ctx: click.Context, dry_run: bool, yes_flag: bool, all_flag: boo
         raise click.UsageError(str(exc)) from exc
 
     # Delete using the pre-resolved IDs so all matched sessions are removed.
-    execute_delete_by_session_ids(env, session_ids, force=yes_flag or force)
+    execute_delete_by_session_ids(env, session_ids, force=yes_flag)
 
 
 @click.command("mark")

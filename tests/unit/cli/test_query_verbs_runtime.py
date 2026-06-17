@@ -491,17 +491,16 @@ def test_resolve_target_session_id_resolves_latest(monkeypatch: pytest.MonkeyPat
     assert captured_limits == [1]
 
 
-def test_delete_verb_updates_force_and_dry_run_flags() -> None:
+def test_delete_verb_updates_confirmation_and_dry_run_flags() -> None:
     _, child = _context_pair(query_terms=("alpha",))
     wrapped = getattr(query_verbs.delete_verb.callback, "__wrapped__", None)
     assert callable(wrapped)
 
-    # Signature is delete_verb(ctx, dry_run, yes_flag, all_flag, force).
     # Dry-run previews the SAME full pre-resolved id set the real delete acts on
     # via execute_delete_by_session_ids(dry_run=True). It must NOT route through
     # _execute_query_verb, which re-runs the query at the default limit of 20 and
-    # would preview fewer sessions than --yes --all deletes (#1873). force is True
-    # so the preview never triggers the interactive confirmation prompt.
+    # would preview fewer sessions than --yes --all deletes (#1873). The preview
+    # uses force=True internally so it never triggers an interactive prompt.
     with (
         patch(
             "polylogue.cli.verb_cardinality.resolve_session_ids_for_verb",
@@ -510,7 +509,7 @@ def test_delete_verb_updates_force_and_dry_run_flags() -> None:
         patch("polylogue.cli.archive_query.execute_delete_by_session_ids") as execute,
         patch("polylogue.cli.query_verbs._execute_query_verb") as legacy,
     ):
-        wrapped(child, True, False, False, False)
+        wrapped(child, True, False, False)
 
     legacy.assert_not_called()
     resolve.assert_called_once()
@@ -518,3 +517,17 @@ def test_delete_verb_updates_force_and_dry_run_flags() -> None:
     assert list(args[1]) == ["alpha-id"]
     assert kwargs.get("dry_run") is True
     assert kwargs.get("force") is True
+
+    with (
+        patch(
+            "polylogue.cli.verb_cardinality.resolve_session_ids_for_verb",
+            return_value=["alpha-id"],
+        ),
+        patch("polylogue.cli.verb_cardinality.check_cardinality"),
+        patch("polylogue.cli.archive_query.execute_delete_by_session_ids") as execute_confirmed,
+    ):
+        wrapped(child, False, True, False)
+
+    _, confirmed_kwargs = execute_confirmed.call_args
+    assert confirmed_kwargs.get("force") is True
+    assert confirmed_kwargs.get("dry_run") is None
