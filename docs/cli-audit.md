@@ -255,33 +255,28 @@ confusing. The `polylogue commands` listing already provides discoverability.
 The following clusters are filed as separate GitHub issues so each can land as
 an independent PR.
 
-1. **[#1723](https://github.com/Sinity/polylogue/issues/1723)** — Deprecate `show` and `select` query verbs
+1. **[#1723](https://github.com/Sinity/polylogue/issues/1723)** — Remove `show` and `select` query verbs after their replacements are wired
 2. **[#1724](https://github.com/Sinity/polylogue/issues/1724)** — Align `doctor`/`check` naming; rename `insights tags` to `insights tag-rollups`
 3. **[#1725](https://github.com/Sinity/polylogue/issues/1725)** — Merge `context-pack` into `context`, `resume-candidates` into `resume`, `bulk-export` into `export`
 4. **[#1726](https://github.com/Sinity/polylogue/issues/1726)** — Add section headers to `insights --help` output
-5. **[#1727](https://github.com/Sinity/polylogue/issues/1727)** — Add deprecation-warning alias infrastructure with one-release grace period
+5. Alias infrastructure is intentionally not a CLI-audit deliverable.
 
 ---
 
-## Backward Compatibility Window
+## Replacement Policy
 
-Per acceptance criterion 5 of #1681:
+Renames and command consolidations are clean breaks in this codebase. Wire the
+replacement fully, update docs/examples/completion/snapshots, and remove the
+old spelling in the same change. Do not add deprecation wrappers, warning
+aliases, or one-release grace-period commands.
 
-1. **Deprecation release**: Renamed commands emit a deprecation warning to
-   stderr listing the replacement, then delegate to the new implementation.
-   The old name continues to work.
-2. **Removal release** (next minor): The old alias raises "unknown command"
-   with a rebuild hint.
-3. **Implementation pattern**: A `DeprecatingCommand` wrapper (similar to
-   `_LazyCommand`) that prints the warning on first invocation.
-
-Commands requiring deprecation aliases:
-- `show` → `list`
-- `select` → `list --json | jq`
+Replacement map:
+- `show` → the current read/list surface selected by the owning issue
+- `select` → the current query/list JSON surface selected by the owning issue
 - `context-pack` → `context pack`
 - `resume-candidates` → `resume --candidates`
 - `bulk-export` → `export bulk`
-- `check` (internal) / `doctor` (CLI): pick one, alias the other
+- `check` / `doctor`: choose one public spelling and remove the other
 
 ---
 

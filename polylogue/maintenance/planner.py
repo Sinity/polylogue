@@ -98,9 +98,7 @@ class BackfillKind(str, Enum):
     """What kind of maintenance operation this is.
 
     The values map to the typed-operation taxonomy the rest of the
-    maintenance cluster expects (see #1144). The compatibility aliases
-    (``REBUILD``, ``REINDEX``, ``RESET``, ``BACKFILL``) are retained as
-    compatibility shims for callers that have not moved yet.
+    maintenance cluster expects (see #1144).
     """
 
     # Typed taxonomy (issue #1144).
@@ -109,12 +107,6 @@ class BackfillKind(str, Enum):
     INDEX_REPAIR = "index-repair"
     SEMANTIC_REMATERIALIZE = "semantic-rematerialize"
     CONFIG_DRIVEN = "config-driven"
-
-    # Legacy aliases — kept so existing surfaces keep round-tripping.
-    REBUILD = "rebuild"
-    REINDEX = "reindex"
-    RESET = "reset"
-    BACKFILL = "backfill"
 
 
 class BackfillStatus(str, Enum):

@@ -111,12 +111,11 @@ def from_score(score: float) -> ConfidenceBand:
     return ConfidenceBand.WEAK
 
 
-def from_legacy(value: str | ConfidenceBand | None) -> ConfidenceBand:
-    """Coerce a legacy string literal into a typed band.
+def confidence_band_from_stored(value: str | ConfidenceBand | None) -> ConfidenceBand:
+    """Coerce a stored string literal into a typed band.
 
-    Accepts the existing wire values verbatim. Unknown strings collapse
-    to ``WEAK`` rather than raising — older stored records and downstream
-    consumers that stored ad-hoc spellings stay readable.
+    Accepts the persisted wire values verbatim. Unknown strings collapse
+    to ``WEAK`` rather than raising so stored records remain readable.
     """
 
     if isinstance(value, ConfidenceBand):
@@ -132,7 +131,7 @@ def from_legacy(value: str | ConfidenceBand | None) -> ConfidenceBand:
 
 __all__ = [
     "ConfidenceBand",
-    "from_legacy",
+    "confidence_band_from_stored",
     "from_score",
     "from_signals",
 ]

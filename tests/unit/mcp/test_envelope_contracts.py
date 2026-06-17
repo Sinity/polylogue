@@ -208,15 +208,14 @@ def _build_typed_envelope_classes() -> dict[str, type[BaseModel]]:
         MCPMessagesListPayload,
         MCPNeighborCandidatesPayload,
         MCPPaginatedQueryResultPayload,
-        MCPPaginatedSearchResultPayload,
         MCPRawArtifactsListPayload,
         MCPSessionTopologyPayload,
         MCPSessionTreePayload,
     )
-    from polylogue.surfaces.payloads import QueryUnitEnvelope
+    from polylogue.surfaces.payloads import QueryUnitEnvelope, SearchEnvelope
 
     return {
-        "search": MCPPaginatedSearchResultPayload,
+        "search": SearchEnvelope,
         "query_units": QueryUnitEnvelope,
         "list_sessions": MCPPaginatedQueryResultPayload,
         "neighbor_candidates": MCPNeighborCandidatesPayload,
