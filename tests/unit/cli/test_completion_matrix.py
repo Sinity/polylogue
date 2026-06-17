@@ -110,6 +110,31 @@ def _run_completion(
     return [(it.value, it.help) for it in items]
 
 
+def _run_completion_for_partial(
+    shell: str,
+    comp_cls: type[ShellComplete],
+    cwords: list[str],
+    incomplete: str,
+) -> list[tuple[str, str | None]]:
+    saved = {k: os.environ.get(k) for k in ("COMP_WORDS", "COMP_CWORD")}
+    os.environ["COMP_WORDS"] = " ".join(["polylogue", *cwords, incomplete])
+    os.environ["COMP_CWORD"] = incomplete if shell == "fish" else str(len(cwords) + 1)
+    try:
+        comp = comp_cls(cli, {}, "polylogue", "_POLYLOGUE_COMPLETE")
+        args, actual_incomplete = comp.get_completion_args()
+        assert actual_incomplete == incomplete
+        items = comp.get_completions(args, actual_incomplete)
+        formatted = [comp.format_completion(item) for item in items]
+        assert all(isinstance(line, str) for line in formatted), shell
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+    return [(it.value, it.help) for it in items]
+
+
 @pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
 @pytest.mark.parametrize("label,cwords", STATIC_COMPLETERS, ids=[label for label, _ in STATIC_COMPLETERS])
 def test_static_completers_per_shell(
@@ -133,6 +158,24 @@ def test_static_completers_per_shell(
 
     items = _run_completion(shell, comp_cls, cwords)
     assert items, f"static completer {label} produced no items on {shell}"
+
+
+@pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
+def test_query_field_completion_per_shell(
+    shell: str,
+    comp_cls: type[ShellComplete],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Root query completion suggests DSL fields from the shared grammar registry."""
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+    items = _run_completion_for_partial(shell, comp_cls, [], "re")
+    values = {value for value, _ in items}
+    assert "repo:" in values
 
 
 @pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])

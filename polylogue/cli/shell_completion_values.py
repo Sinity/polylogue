@@ -10,12 +10,14 @@ yet and degrades to an empty completion list.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
 import click
 from click.shell_completion import CompletionItem
 
 from polylogue.archive.message.types import MessageType
+from polylogue.archive.query.expression import EXPRESSION_FIELD_REGISTRY
 from polylogue.archive.query.fields import CompletionSource
 from polylogue.archive.query.spec import QUERY_ACTION_TYPES, QUERY_RETRIEVAL_LANES, QUERY_SEQUENCE_ACTION_TYPES
 from polylogue.paths import active_index_db_path
@@ -39,6 +41,29 @@ _ORIGIN_DESCRIPTIONS: Final[dict[str, str]] = {
 _MAX_ID_COMPLETIONS = 24
 _MAX_VALUE_COMPLETIONS = 32
 CompletionCallback = Callable[[click.Context, click.Parameter, str], list[CompletionItem]]
+
+
+@dataclass(frozen=True)
+class QueryCompletionCandidate:
+    """Structured query-completion candidate shared by shell adapters."""
+
+    value: str
+    insert: str
+    display: str
+    kind: str
+    group: str
+    description: str
+    source: str
+    stale: bool = False
+    danger: bool = False
+    score: float = 1.0
+
+    def to_click_item(self) -> CompletionItem:
+        return CompletionItem(
+            self.insert,
+            type=self.kind,
+            help=self.description,
+        )
 
 
 def _split_csv_incomplete(incomplete: str) -> tuple[str, str]:
@@ -117,6 +142,48 @@ def _static_completion_items(
     current_lower = current.lower()
     items = [CompletionItem(value) for value in values if not current_lower or value.lower().startswith(current_lower)]
     return _with_csv_prefix(items, prefix) if csv else items
+
+
+def query_field_candidates(incomplete: str) -> list[QueryCompletionCandidate]:
+    """Return DSL field candidates from the shared expression registry."""
+
+    current = incomplete.strip().lstrip("-").lower()
+    if ":" in current:
+        return []
+    candidates: list[QueryCompletionCandidate] = []
+    for field_name, info in sorted(EXPRESSION_FIELD_REGISTRY.items()):
+        if current and not field_name.startswith(current):
+            continue
+        insert = f"{field_name}:"
+        description = info.get("description", "")
+        example = info.get("example")
+        if example:
+            description = f"{description} Example: {example}" if description else f"Example: {example}"
+        candidates.append(
+            QueryCompletionCandidate(
+                value=field_name,
+                insert=insert,
+                display=insert,
+                kind="query-field",
+                group="query fields",
+                description=_trim_help(description),
+                source="EXPRESSION_FIELD_REGISTRY",
+            )
+        )
+    return candidates
+
+
+def complete_query_expression_fields(
+    ctx: click.Context,
+    param: click.Parameter | None,
+    incomplete: str,
+) -> list[CompletionItem]:
+    """Complete query DSL field tokens from the canonical grammar registry."""
+
+    del ctx, param
+    if incomplete.startswith("--"):
+        return []
+    return [candidate.to_click_item() for candidate in query_field_candidates(incomplete)]
 
 
 def complete_origin_values(
@@ -299,6 +366,7 @@ __all__ = [
     "COMPLETION_SOURCE_HANDLERS",
     "complete_action_sequence_values",
     "complete_action_values",
+    "complete_query_expression_fields",
     "complete_session_ids",
     "complete_cwd_prefix_values",
     "complete_message_type_values",
@@ -308,4 +376,6 @@ __all__ = [
     "complete_retrieval_lane_values",
     "complete_tag_values",
     "complete_tool_values",
+    "query_field_candidates",
+    "QueryCompletionCandidate",
 ]
