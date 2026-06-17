@@ -235,6 +235,48 @@ def test_query_structural_field_completion_per_shell(
 
 
 @pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
+def test_query_then_connector_completion_per_shell(
+    shell: str,
+    comp_cls: type[ShellComplete],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Query completion suggests the ``then`` connector after query text."""
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+    items = _run_completion_for_partial(shell, comp_cls, ["find", "id:abc"], "th")
+    item_map = dict(items)
+    assert "then" in item_map
+    assert item_map["then"] == "Connect query results to a verb/action."
+
+
+@pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
+def test_query_then_action_completion_per_shell(
+    shell: str,
+    comp_cls: type[ShellComplete],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After ``then``, completion is action-contract backed, not root-command mixed."""
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+    items = _run_completion_for_partial(shell, comp_cls, ["find", "id:abc", "then"], "r")
+    item_map = dict(items)
+
+    assert "read" in item_map
+    assert item_map["read"] is not None and "input=query_result_set" in item_map["read"]
+    assert "read-views" not in item_map
+    assert "repo:" not in item_map
+    assert "reset" not in item_map
+
+
+@pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
 def test_query_action_completion_marks_destructive_actions_per_shell(
     shell: str,
     comp_cls: type[ShellComplete],

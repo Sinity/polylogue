@@ -8,9 +8,11 @@ The CLI uses a hybrid structure:
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING
 
 import click
+from click.shell_completion import CompletionItem
 
 from polylogue.cli.click_command_registration import _LazyCommand, register_root_commands
 from polylogue.cli.click_option_groups import apply_query_mode_options
@@ -33,6 +35,42 @@ class QueryFirstGroup(QueryFirstGroupBase):
 
     def handle_default_mode(self, ctx: click.Context) -> None:
         _handle_query_mode(ctx)
+
+    def shell_complete(self, ctx: click.Context, incomplete: str) -> list[CompletionItem]:
+        """Keep query-action completion tied to action contracts after ``then``."""
+
+        if _is_after_then_completion():
+            from polylogue.cli.shell_completion_values import complete_query_actions
+
+            return complete_query_actions(ctx, None, incomplete)
+        if _should_complete_then_connector(incomplete):
+            return [CompletionItem("then", help="Connect query results to a verb/action.")]
+        return super().shell_complete(ctx, incomplete)
+
+
+def _completion_words() -> tuple[str, ...]:
+    raw_words = os.environ.get("COMP_WORDS", "")
+    words = tuple(part for part in raw_words.split() if part)
+    if words and words[0] == "polylogue":
+        return words[1:]
+    return words
+
+
+def _is_after_then_completion() -> bool:
+    words = _completion_words()
+    return len(words) >= 2 and words[-2] == "then"
+
+
+def _should_complete_then_connector(incomplete: str) -> bool:
+    if not "then".startswith(incomplete.lower()):
+        return False
+    words = _completion_words()
+    prior = words[:-1]
+    if not prior or "then" in prior:
+        return False
+    if prior[0] in QUERY_VERB_NAMES:
+        return False
+    return prior[0] == "find" or any(":" in word for word in prior)
 
 
 def _handle_query_mode(ctx: click.Context) -> None:
