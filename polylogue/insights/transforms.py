@@ -942,6 +942,8 @@ def _enrich_subagent_reports_with_links(
     reports: Sequence[SubagentReport],
     session_links: Sequence[Mapping[str, object]],
 ) -> tuple[SubagentReport, ...]:
+    """Attach topology/session-link status to extracted subagent reports."""
+
     if not session_links:
         return tuple(reports)
 
@@ -972,6 +974,8 @@ def _enrich_subagent_reports_with_links(
 
 
 def _session_link_child_keys(link: Mapping[str, object]) -> tuple[str, ...]:
+    """Return all child-reference spellings that can identify one link row."""
+
     keys: list[str] = []
     resolved = _optional_text(link.get("resolved_dst_session_id"))
     if resolved:

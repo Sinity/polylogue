@@ -1081,7 +1081,7 @@ class PolylogueArchiveMixin:
             return session.with_content_projection(content_projection)
 
     async def recovery_digest(self, session_id: str) -> RecoveryDigest | None:
-        """Compile one session into the deterministic recovery digest transform."""
+        """Compile one resolved session and its child links into a recovery digest."""
         from polylogue.insights.transforms import compile_recovery_digest
         from polylogue.storage.query_models import SessionRecordQuery
 
