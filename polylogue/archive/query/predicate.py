@@ -73,6 +73,16 @@ class QueryTextPredicate:
         return {"kind": "fts", "unit": "session", "text": self.text}
 
 
+@dataclass(frozen=True)
+class QuerySemanticPredicate:
+    """Semantic vector predicate over session message/block text."""
+
+    text: str
+
+    def to_payload(self) -> dict[str, object]:
+        return {"kind": "semantic", "unit": "session", "text": self.text}
+
+
 QueryPredicate: TypeAlias = (
     QueryFieldPredicate
     | QueryNotPredicate
@@ -80,6 +90,7 @@ QueryPredicate: TypeAlias = (
     | QueryExistsPredicate
     | QuerySequencePredicate
     | QueryTextPredicate
+    | QuerySemanticPredicate
 )
 
 
@@ -91,6 +102,7 @@ __all__ = [
     "QueryFieldPredicate",
     "QueryNotPredicate",
     "QueryPredicate",
+    "QuerySemanticPredicate",
     "QuerySequencePredicate",
     "QueryTextPredicate",
 ]

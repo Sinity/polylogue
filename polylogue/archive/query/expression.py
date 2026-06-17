@@ -74,6 +74,7 @@ from polylogue.archive.query.predicate import (
     QueryFieldPredicate,
     QueryNotPredicate,
     QueryPredicate,
+    QuerySemanticPredicate,
     QuerySequencePredicate,
     QueryTextPredicate,
 )
@@ -374,6 +375,8 @@ _BOOLEAN_QUERY_GRAMMAR = r"""
         | atom
     ?atom: EXISTS STRUCT_UNIT "(" expr ")" -> exists_leaf
         | SEQ "(" sequence_step (ARROW sequence_step)+ ")" -> sequence_leaf
+        | SEMANTIC_QUOTED_TEXT             -> semantic_quoted_leaf
+        | SEMANTIC_BARE_TEXT               -> semantic_bare_leaf
         | FTS_QUOTED_TEXT                  -> fts_quoted_leaf
         | FTS_BARE_TEXT                    -> fts_bare_leaf
         | COUNT_CLAUSE                     -> count_leaf
@@ -390,6 +393,8 @@ _BOOLEAN_QUERY_GRAMMAR = r"""
     OR: /or/i
     AND: /and/i
     NOT: /not/i
+    SEMANTIC_QUOTED_TEXT.7: /(?:semantic|near:text):"(\\.|[^"\\])*"/i
+    SEMANTIC_BARE_TEXT.6: /(?:semantic|near:text):[^\s"()]+/i
     FTS_QUOTED_TEXT.6: /~"(\\.|[^"\\])*"/
     FTS_BARE_TEXT.5: /~[^\s"()]+/
     COUNT_CLAUSE.5: /(messages|words):(>=|<=|=)\d+(?!\S)/
@@ -586,7 +591,8 @@ def _predicate_children(items: tuple[object, ...]) -> tuple[QueryPredicate, ...]
             | QueryNotPredicate
             | QueryExistsPredicate
             | QuerySequencePredicate
-            | QueryTextPredicate,
+            | QueryTextPredicate
+            | QuerySemanticPredicate,
         )
     )
 
@@ -639,6 +645,12 @@ def _validate_predicate_context(predicate: QueryPredicate, *, unit: Literal["ses
         if not predicate.text.strip():
             raise ExpressionCompileError("FTS predicate requires text", field=None)
         return
+    if isinstance(predicate, QuerySemanticPredicate):
+        if unit != "session":
+            raise ExpressionCompileError("semantic predicates are only supported from sessions", field=None)
+        if not predicate.text.strip():
+            raise ExpressionCompileError("semantic predicate requires text", field=None)
+        return
 
 
 @v_args(inline=True)
@@ -679,6 +691,19 @@ class _BooleanQueryTransformer(Transformer[Token, QueryPredicate]):
             raise ExpressionCompileError("FTS predicate requires text", field=None)
         return QueryTextPredicate(text=value)
 
+    def semantic_quoted_leaf(self, token: Token) -> QueryPredicate:
+        raw = str(token)
+        quoted = raw[len("near:text:") :] if raw.lower().startswith("near:text:") else raw[len("semantic:") :]
+        return QuerySemanticPredicate(text=_decode_escaped_string(Token("ESCAPED_STRING", quoted)))
+
+    def semantic_bare_leaf(self, token: Token) -> QueryPredicate:
+        raw = str(token)
+        value = raw[len("near:text:") :] if raw.lower().startswith("near:text:") else raw[len("semantic:") :]
+        value = value.strip()
+        if not value:
+            raise ExpressionCompileError("semantic predicate requires text", field=None)
+        return QuerySemanticPredicate(text=value)
+
     def exists_leaf(self, _exists: Token, unit: Token, child: QueryPredicate) -> QueryPredicate:
         unit_value = str(unit).lower()
         if unit_value not in {"message", "action"}:
@@ -712,6 +737,8 @@ def _is_boolean_expression(expression: str) -> bool:
         return True
     if "~" in expression:
         return True
+    if re.search(r"\b(?:semantic|near:text):", expression, re.IGNORECASE):
+        return True
     return ":" in expression and bool(re.search(r"\b(?:and|or|not)\b", expression, re.IGNORECASE))
 
 
@@ -733,11 +760,73 @@ def _parse_boolean_predicate(expression: str) -> QueryPredicate:
         | QueryNotPredicate
         | QueryExistsPredicate
         | QuerySequencePredicate
-        | QueryTextPredicate,
+        | QueryTextPredicate
+        | QuerySemanticPredicate,
     ):
         raise ExpressionCompileError("Boolean query did not produce a predicate", field=None)
     _validate_predicate_context(transformed, unit="session")
     return transformed
+
+
+def _contains_semantic_predicate(predicate: QueryPredicate) -> bool:
+    if isinstance(predicate, QuerySemanticPredicate):
+        return True
+    if isinstance(predicate, QueryNotPredicate):
+        return _contains_semantic_predicate(predicate.child)
+    if isinstance(predicate, QueryBoolPredicate):
+        return any(_contains_semantic_predicate(child) for child in predicate.children)
+    if isinstance(predicate, QueryExistsPredicate):
+        return _contains_semantic_predicate(predicate.child)
+    return False
+
+
+def _merge_semantic_seed(existing: str | None, new_value: str) -> str:
+    if existing is not None:
+        raise ExpressionCompileError(
+            "only one semantic predicate is supported per query until the ranked planner supports multiple vector legs",
+            field=None,
+        )
+    return new_value
+
+
+def _extract_semantic_seed(predicate: QueryPredicate) -> tuple[str | None, QueryPredicate | None]:
+    """Lift a positive top-level semantic predicate into ``SessionQuerySpec.similar_text``.
+
+    Semantic vector search is rank-producing, not a simple SQL truth predicate.
+    The currently executable shape is therefore ``semantic:"text" AND <filters>``:
+    the vector leg produces ranked message candidates and the residual predicate
+    filters those candidates through existing archive lowerers.
+    """
+
+    if isinstance(predicate, QuerySemanticPredicate):
+        return predicate.text, None
+    if isinstance(predicate, QueryNotPredicate):
+        if _contains_semantic_predicate(predicate.child):
+            raise ExpressionCompileError("semantic predicates are not supported under NOT", field=None)
+        return None, predicate
+    if isinstance(predicate, QueryExistsPredicate):
+        if _contains_semantic_predicate(predicate.child):
+            raise ExpressionCompileError("semantic predicates are only supported at session scope", field=None)
+        return None, predicate
+    if isinstance(predicate, QueryBoolPredicate):
+        if predicate.op != "and":
+            if _contains_semantic_predicate(predicate):
+                raise ExpressionCompileError("semantic predicates are not supported under OR yet", field=None)
+            return None, predicate
+        semantic_text: str | None = None
+        residual_children: list[QueryPredicate] = []
+        for child in predicate.children:
+            child_semantic, residual = _extract_semantic_seed(child)
+            if child_semantic is not None:
+                semantic_text = _merge_semantic_seed(semantic_text, child_semantic)
+            if residual is not None:
+                residual_children.append(residual)
+        if not residual_children:
+            return semantic_text, None
+        if len(residual_children) == 1:
+            return semantic_text, residual_children[0]
+        return semantic_text, QueryBoolPredicate("and", tuple(residual_children))
+    return None, predicate
 
 
 def parse_expression_ast(expression: str) -> QueryExpressionAST:
@@ -1174,7 +1263,8 @@ def compile_expression(expression: str) -> SessionQuerySpec:
 
     ast = parse_expression_ast(expression)
     if ast.boolean_predicate is not None:
-        return SessionQuerySpec(boolean_predicate=ast.boolean_predicate)
+        similar_text, residual_predicate = _extract_semantic_seed(ast.boolean_predicate)
+        return SessionQuerySpec(similar_text=similar_text, boolean_predicate=residual_predicate)
     tokens = list(ast.clauses)
 
     # Check for JSON tokens (should only appear alone; mixed is an error)
