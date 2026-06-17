@@ -648,11 +648,11 @@ files:
     target: polylogue/cli/__main__.py
     owner: stable
   - path: polylogue/cli/action_contracts.py
-    loc: 213
+    loc: 231
     target: polylogue/cli/action_contracts.py
     owner: stable
   - path: polylogue/cli/archive_query.py
-    loc: 1690
+    loc: 1742
     target: polylogue/cli/archive_query.py
     owner: stable
   - path: polylogue/cli/bulk_export.py
@@ -752,7 +752,7 @@ files:
     target: polylogue/cli/commands/insights.py
     owner: stable
   - path: polylogue/cli/commands/maintenance.py
-    loc: 1051
+    loc: 1121
     target: polylogue/cli/commands/maintenance.py
     owner: stable
   - path: polylogue/cli/commands/paths.py
@@ -804,12 +804,8 @@ files:
     target: polylogue/cli/machine_main.py
     owner: stable
   - path: polylogue/cli/messages.py
-    loc: 164
+    loc: 175
     target: polylogue/cli/messages.py
-    owner: stable
-  - path: polylogue/cli/output_assurance.py
-    loc: 567
-    target: polylogue/cli/output_assurance.py
     owner: stable
   - path: polylogue/cli/parser_diagnostics.py
     loc: 118
@@ -1126,7 +1122,7 @@ files:
     target: polylogue/daemon/catchup_status.py
     owner: stable
   - path: polylogue/daemon/cli.py
-    loc: 1163
+    loc: 1235
     target: polylogue/daemon/cli.py
     owner: stable
   - path: polylogue/daemon/compare.py
@@ -1558,7 +1554,7 @@ files:
     target: polylogue/mcp/server_tools.py
     owner: stable
   - path: polylogue/operations/__init__.py
-    loc: 49
+    loc: 51
     target: polylogue/operations/__init__.py
     owner: stable
   - path: polylogue/operations/archive.py
@@ -1582,7 +1578,7 @@ files:
     target: polylogue/operations/operation_contract.py
     owner: stable
   - path: polylogue/operations/specs.py
-    loc: 813
+    loc: 827
     target: polylogue/operations/specs.py
     owner: stable
   - path: polylogue/paths/__init__.py
@@ -2722,7 +2718,7 @@ files:
     target: polylogue/storage/artifacts/views.py
     owner: stable
   - path: polylogue/storage/blob_gc.py
-    loc: 557
+    loc: 641
     target: polylogue/storage/blob_gc.py
     owner: storage-root
     reason: storage-root cross-cutting helper
@@ -3467,7 +3463,7 @@ files:
     target: polylogue/surfaces/__init__.py
     owner: stable
   - path: polylogue/surfaces/payloads.py
-    loc: 1414
+    loc: 1452
     target: polylogue/surfaces/payloads.py
     owner: stable
   - path: polylogue/types.py

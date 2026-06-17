@@ -80,6 +80,9 @@ Before merging a release PR, record the answers in the PR body:
 Satisfied:
 
 - #1810 public session/origin vocabulary sweep is closed.
+- #1816 action-contract coverage is derived from `ACTION_CONTRACTS` and the
+  generated CLI output schemas; the old hand-maintained assurance registry is
+  gone.
 - #1818 machine-output concrete violations are closed.
 - #1841 README cockpit is landed and command examples are checked by
   `verify-doc-commands`.
@@ -95,9 +98,10 @@ Still blocking external release claims:
 
 - #1843 still needs end-to-end demo archive convergence evidence and
   README-ready commands against the generated demo archive.
-- #1816 generated action-contract replacement is not landed.
 - #1847/#1846 web/API release scope is not settled.
-- #1848/#1849 static/docs/proof pruning is not settled.
+- #1848/#1849 static/docs/proof pruning is not fully settled; do not advertise
+  any confidence layer that is not generated from live code, fixtures, or
+  schemas.
 - #1880 persisted transform outputs and `continue`/`blame` report presets are
   not landed; do not advertise them as shipped.
 

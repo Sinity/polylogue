@@ -17,6 +17,8 @@ def test_build_document_includes_sections() -> None:
     assert "## Top-Level Command" in rendered
     assert "Usage: polylogue [OPTIONS] COMMAND [ARGS]..." in rendered
     assert "## Status" in rendered
+    assert "## Public Action Contracts" in rendered
+    assert "## Published Machine Output Schemas" in rendered
 
 
 def test_write_if_changed_reuses_existing_output(tmp_path: Path) -> None:

@@ -224,7 +224,7 @@
   "type": "object",
   "x-polylogue-cli-surfaces": [
     "polylogue stats --format json (rows)",
-    "polylogue select --format json"
+    "polylogue --format json <query> (hits[].session)"
   ],
   "x-polylogue-source-model": "SessionSummaryPayload"
 }
