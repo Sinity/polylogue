@@ -25,6 +25,7 @@ from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.archive.semantic.pricing import CostEstimatePayload, CostUsagePayload
 from polylogue.archive.session.neighbor_candidates import NeighborReason, SessionNeighborCandidate
 from polylogue.archive.stats import ArchiveStats
+from polylogue.archive.viewport import read_view_profile_payloads
 from polylogue.core.enums import Origin
 from polylogue.insights.archive import (
     ArchiveCoverageInsight,
@@ -790,6 +791,22 @@ class TestGetSessionTool:
             )
 
         assert isinstance(json.loads(result), dict)
+
+
+class TestReadViewProfilesTool:
+    def test_list_read_view_profiles_uses_facade_contract(self, mcp_server: MCPServerUnderTest) -> None:
+        profiles = read_view_profile_payloads()
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.list_read_view_profiles = AsyncMock(return_value=profiles)
+            mock_get_polylogue.return_value = mock_poly
+
+            result = invoke_surface(mcp_server._tool_manager._tools["list_read_view_profiles"].fn)
+
+        body = json.loads(result)
+        assert body["read_views"] == profiles
+        assert body["total"] == len(profiles)
+        assert {profile["view_id"] for profile in body["read_views"]} >= {"raw", "summary", "recovery"}
 
 
 class TestInsightTools:

@@ -102,6 +102,7 @@ READ_NULLARY_METHODS: frozenset[str] = frozenset(
         "list_marks",
         "list_annotations",
         "list_views",
+        "list_read_view_profiles",
         "list_recall_packs",
         "list_workspaces",
         "list_corrections",
@@ -642,6 +643,27 @@ async def test_recovery_digest_compiles_seeded_session(tmp_path: Path) -> None:
         assert digest.resume_markdown.startswith("# Resume: Alpha")
         assert digest.raw_refs
         assert await archive.recovery_digest("nonexistent") is None
+    finally:
+        await archive.close()
+
+
+async def test_list_read_view_profiles_exposes_shared_profile_payloads(tmp_path: Path) -> None:
+    """``list_read_view_profiles`` exposes the executable read-view registry."""
+    archive = _archive(tmp_path)
+    try:
+        profiles = await archive.list_read_view_profiles()
+
+        views = {}
+        for profile in profiles:
+            view_id = profile["view_id"]
+            assert isinstance(view_id, str)
+            views[view_id] = profile
+        assert views["raw"]["lossiness"] == "raw"
+        assert views["raw"]["evidence_policy"] == "required"
+        assert views["recovery"]["successor_handoff"] is True
+        formats = views["recovery"]["formats"]
+        assert isinstance(formats, list)
+        assert "markdown" in formats
     finally:
         await archive.close()
 

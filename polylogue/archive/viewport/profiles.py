@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from polylogue.core.json import JSONDocument
+
 ViewEvidencePolicy = Literal["required", "optional", "unavailable", "omitted"]
 ViewLossiness = Literal["raw", "normalized", "filtered", "summarized", "derived", "browse-only"]
 
@@ -31,6 +33,25 @@ class SessionViewProfile:
     machine_payload: str | None
     degraded_states: tuple[str, ...]
     successor_handoff: bool = False
+
+    def to_payload(self) -> JSONDocument:
+        """Return a JSON-native representation for CLI/API/MCP surfaces."""
+
+        return {
+            "view_id": self.view_id,
+            "label": self.label,
+            "owner": self.owner,
+            "purpose": self.purpose,
+            "input_scope": self.input_scope,
+            "included_kinds": list(self.included_kinds),
+            "lossiness": self.lossiness,
+            "evidence_policy": self.evidence_policy,
+            "privacy_policy": self.privacy_policy,
+            "formats": list(self.formats),
+            "machine_payload": self.machine_payload,
+            "degraded_states": list(self.degraded_states),
+            "successor_handoff": self.successor_handoff,
+        }
 
 
 READ_VIEW_PROFILES: tuple[SessionViewProfile, ...] = (
@@ -180,6 +201,12 @@ def get_read_view_profile(view_id: str) -> SessionViewProfile:
     return READ_VIEW_PROFILE_BY_ID[view_id]
 
 
+def read_view_profile_payloads() -> list[JSONDocument]:
+    """Return JSON-native payloads for all executable read-view profiles."""
+
+    return [profile.to_payload() for profile in READ_VIEW_PROFILES]
+
+
 __all__ = [
     "READ_VIEW_PROFILE_BY_ID",
     "READ_VIEW_PROFILES",
@@ -187,5 +214,6 @@ __all__ = [
     "ViewEvidencePolicy",
     "ViewLossiness",
     "get_read_view_profile",
+    "read_view_profile_payloads",
     "read_view_choices",
 ]
