@@ -27,6 +27,7 @@ import pytest
 from polylogue.archive.query.expression import (
     EXPRESSION_FIELD_REGISTRY,
     ExpressionCompileError,
+    _CountRangeToken,
     _CountToken,
     _FieldToken,
     _TextToken,
@@ -76,6 +77,14 @@ class TestLexer:
             _FieldToken(field="repo", raw_value="polylogue", negated=False),
             _TextToken(text="json envelope", quoted=True, negated=False),
             _CountToken(field="messages", op=">=", number=10),
+        )
+
+    def test_parse_expression_ast_exposes_readable_count_clauses(self) -> None:
+        ast = parse_expression_ast("messages >= 10 words between 100 and 500")
+
+        assert ast.clauses == (
+            _CountToken(field="messages", op=">=", number=10),
+            _CountRangeToken(field="words", min_number=100, max_number=500),
         )
 
     def test_bare_words(self) -> None:
@@ -193,6 +202,18 @@ class TestExplainExpression:
         assert payload["selected_units"] == ["block", "lineage", "session"]
         assert payload["execution_legs"] == ["exists-block", "lineage-recursive-cte", "sql"]
 
+    def test_explain_expression_reports_readable_count_range_clause(self) -> None:
+        explanation = explain_expression("messages between 5 and 20")
+
+        assert explanation.lowered_spec.min_messages == 5
+        assert explanation.lowered_spec.max_messages == 20
+        assert explanation.clauses[0].to_payload() == {
+            "kind": "count_range",
+            "field": "messages",
+            "min_number": 5,
+            "max_number": 20,
+        }
+
     def test_explain_expression_reports_semantic_and_sequence_legs(self) -> None:
         semantic = explain_expression('sessions where semantic:"query compiler" AND title:hit')
         sequence = explain_expression("sessions where seq(action:file_edit -> action:shell)")
@@ -212,6 +233,30 @@ class TestBooleanQueryExpression:
             children=(
                 QueryFieldPredicate(field="repo", values=("polylogue",)),
                 QueryFieldPredicate(field="origin", values=("chatgpt-export",)),
+            ),
+        )
+
+    def test_boolean_ast_exposes_readable_count_comparisons(self) -> None:
+        ast = parse_expression_ast("messages >= 5 AND words <= 2000")
+
+        assert ast.clauses == ()
+        assert ast.boolean_predicate == QueryBoolPredicate(
+            op="and",
+            children=(
+                QueryFieldPredicate(field="messages", values=("5",), op=">="),
+                QueryFieldPredicate(field="words", values=("2000",), op="<="),
+            ),
+        )
+
+    def test_boolean_ast_exposes_readable_count_range(self) -> None:
+        ast = parse_expression_ast("sessions where messages between 5 and 20")
+
+        assert ast.clauses == ()
+        assert ast.boolean_predicate == QueryBoolPredicate(
+            op="and",
+            children=(
+                QueryFieldPredicate(field="messages", values=("5",), op=">="),
+                QueryFieldPredicate(field="messages", values=("20",), op="<="),
             ),
         )
 
@@ -988,6 +1033,30 @@ class TestCompilerFieldMapping:
         spec = compile_expression("messages:<=50")
         assert spec.max_messages == 50
         assert spec.min_messages is None
+
+    def test_readable_messages_comparison(self) -> None:
+        spec = compile_expression("messages > 10")
+
+        assert spec.min_messages == 11
+        assert spec.max_messages is None
+
+    def test_readable_words_less_than(self) -> None:
+        spec = compile_expression("words < 500")
+
+        assert spec.max_words == 499
+        assert spec.min_words is None
+
+    def test_readable_count_range(self) -> None:
+        spec = compile_expression("messages between 5 and 20 words between 100 and 500")
+
+        assert spec.min_messages == 5
+        assert spec.max_messages == 20
+        assert spec.min_words == 100
+        assert spec.max_words == 500
+
+    def test_readable_count_range_rejects_inverted_bounds(self) -> None:
+        with pytest.raises(ExpressionCompileError, match="lower bound 20 is greater than upper bound 5"):
+            compile_expression("messages between 20 and 5")
 
     def test_words_gte(self) -> None:
         spec = compile_expression("words:>=200")

@@ -25,6 +25,8 @@ Clause forms:
 - ``bare_word``            — FTS bare word
 - ``messages:>=N``         — count comparison (min_messages)
 - ``messages:<=N``         — count comparison (max_messages)
+- ``messages >= N``        — readable count comparison syntax
+- ``messages between A and B`` — readable count range syntax
 - ``words:>=N``            — count comparison (min_words)
 - ``{...}``                — direct JSON spec (validated into SessionQuerySpec)
 
@@ -264,6 +266,15 @@ class _CountToken:
 
 
 @dataclass(frozen=True)
+class _CountRangeToken:
+    """``messages between 5 and 20`` or ``words between 100 and 500``."""
+
+    field: str
+    min_number: int
+    max_number: int
+
+
+@dataclass(frozen=True)
 class _TextToken:
     """A bare word or quoted phrase."""
 
@@ -279,7 +290,7 @@ class _JsonToken:
     raw: str
 
 
-_LexToken = _FieldToken | _CountToken | _TextToken | _JsonToken
+_LexToken = _FieldToken | _CountToken | _CountRangeToken | _TextToken | _JsonToken
 
 
 @dataclass(frozen=True)
@@ -290,7 +301,7 @@ class QueryExpressionAST:
     boolean_predicate: QueryPredicate | None = None
 
 
-ExplainClauseKind = Literal["field", "count", "text", "json"]
+ExplainClauseKind = Literal["field", "count", "count_range", "text", "json"]
 
 
 @dataclass(frozen=True)
@@ -304,6 +315,8 @@ class QueryExpressionExplainClause:
     quoted: bool = False
     op: Literal[">=", "<=", "="] | None = None
     number: int | None = None
+    min_number: int | None = None
+    max_number: int | None = None
 
     def to_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {"kind": self.kind}
@@ -319,6 +332,10 @@ class QueryExpressionExplainClause:
             payload["op"] = self.op
         if self.number is not None:
             payload["number"] = self.number
+        if self.min_number is not None:
+            payload["min_number"] = self.min_number
+        if self.max_number is not None:
+            payload["max_number"] = self.max_number
         return payload
 
 
@@ -357,6 +374,8 @@ _QUERY_GRAMMAR = r"""
     flat_query: flat_clause*
 
     ?flat_clause: COUNT_CLAUSE       -> count_clause
+        | COUNT_FIELD BETWEEN INT AND INT -> count_between_clause
+        | COUNT_FIELD COMP_OP INT    -> count_compare_clause
         | FIELD_CLAUSE          -> field_clause
         | NEG_QUOTED_TEXT       -> neg_quoted_text
         | QUOTED_TEXT           -> quoted_text
@@ -379,6 +398,8 @@ _QUERY_GRAMMAR = r"""
         | FTS_QUOTED_TEXT                  -> fts_quoted_leaf
         | FTS_BARE_TEXT                    -> fts_bare_leaf
         | COUNT_CLAUSE                     -> count_leaf
+        | COUNT_FIELD BETWEEN INT AND INT  -> count_between_leaf
+        | COUNT_FIELD COMP_OP INT          -> count_compare_leaf
         | FIELD_CLAUSE                     -> field_leaf
         | "(" expr ")"
     sequence_step: FIELD_CLAUSE
@@ -392,17 +413,21 @@ _QUERY_GRAMMAR = r"""
     OR: /or/i
     AND: /and/i
     NOT: /not/i
+    BETWEEN.6: /between/i
+    COUNT_FIELD.6: /(messages|words)/i
+    COMP_OP: ">=" | "<=" | "=" | ">" | "<"
     SEMANTIC_QUOTED_TEXT.7: /(?:semantic|near:text):"(\\.|[^"\\])*"/i
     SEMANTIC_BARE_TEXT.6: /(?:semantic|near:text):[^\s"()]+/i
     FTS_QUOTED_TEXT.6: /~"(\\.|[^"\\])*"/
     FTS_BARE_TEXT.5: /~[^\s"()]+/
-    COUNT_CLAUSE.5: /(messages|words):(>=|<=|=)\d+(?!\S)/
+    COUNT_CLAUSE.8: /(messages|words):(>=|<=|=)\d+(?!\S)/
     FIELD_CLAUSE.4: /-?[a-zA-Z_][a-zA-Z0-9_]*:(?:"(\\.|[^"\\])*"|\([^)]*\)|[^\s"()\[\]{}]+)/
     NEG_QUOTED_TEXT.3: /-"(\\.|[^"\\])*"/
     QUOTED_TEXT.2: /"(\\.|[^"\\])*"/
     NEG_BARE_TEXT.1: /-[^\s"]+/
     BARE_TEXT: /[^\s"]+/
 
+    %import common.INT
     %import common.WS
     %ignore WS
 """
@@ -539,6 +564,35 @@ def _parse_error_message(expression: str, exc: UnexpectedInput) -> str:
     return f"invalid query expression near column {exc.column}"
 
 
+def _normalize_count_comparison(
+    field_name: str,
+    op_text: str,
+    number_text: str,
+) -> _CountToken:
+    field = field_name.lower()
+    number = int(number_text)
+    if op_text == ">":
+        return _CountToken(field=field, op=">=", number=number + 1)
+    if op_text == "<":
+        if number == 0:
+            raise ExpressionCompileError(f"{field} < 0 is not representable as a non-negative count bound", field=field)
+        return _CountToken(field=field, op="<=", number=number - 1)
+    op: Literal[">=", "<=", "="] = ">=" if op_text == ">=" else "<=" if op_text == "<=" else "="
+    return _CountToken(field=field, op=op, number=number)
+
+
+def _normalize_count_range(field_name: str, min_text: str, max_text: str) -> _CountRangeToken:
+    min_number = int(min_text)
+    max_number = int(max_text)
+    field = field_name.lower()
+    if min_number > max_number:
+        raise ExpressionCompileError(
+            f"{field} range lower bound {min_number} is greater than upper bound {max_number}",
+            field=field,
+        )
+    return _CountRangeToken(field=field, min_number=min_number, max_number=max_number)
+
+
 @v_args(inline=True)
 class _QueryTransformer(Transformer[Token, _LexToken | str | QueryExpressionAST]):
     def flat_query(self, *clauses: _LexToken) -> QueryExpressionAST:
@@ -548,9 +602,20 @@ class _QueryTransformer(Transformer[Token, _LexToken | str | QueryExpressionAST]
         matched = _COUNT_CLAUSE_RE.match(str(token))
         if matched is None:
             raise ExpressionCompileError(f"invalid count clause: {token}", field=None)
-        op_text = matched.group(2)
-        op: Literal[">=", "<=", "="] = ">=" if op_text == ">=" else "<=" if op_text == "<=" else "="
-        return _CountToken(field=matched.group(1), op=op, number=int(matched.group(3)))
+        return _normalize_count_comparison(matched.group(1), matched.group(2), matched.group(3))
+
+    def count_compare_clause(self, field_name: Token, op: Token, number: Token) -> _CountToken:
+        return _normalize_count_comparison(str(field_name), str(op), str(number))
+
+    def count_between_clause(
+        self,
+        field_name: Token,
+        _between: Token,
+        min_number: Token,
+        _and: Token,
+        max_number: Token,
+    ) -> _CountRangeToken:
+        return _normalize_count_range(str(field_name), str(min_number), str(max_number))
 
     def field_clause(self, token: Token) -> _FieldToken:
         matched = _FIELD_CLAUSE_RE.match(str(token))
@@ -635,6 +700,16 @@ def _field_token_to_predicate(token: _FieldToken) -> QueryPredicate:
 
 def _count_token_to_predicate(token: _CountToken) -> QueryFieldPredicate:
     return QueryFieldPredicate(field=token.field, values=(str(token.number),), op=token.op)
+
+
+def _count_range_token_to_predicate(token: _CountRangeToken) -> QueryPredicate:
+    return QueryBoolPredicate(
+        op="and",
+        children=(
+            QueryFieldPredicate(field=token.field, values=(str(token.min_number),), op=">="),
+            QueryFieldPredicate(field=token.field, values=(str(token.max_number),), op="<="),
+        ),
+    )
 
 
 def _merge_bool_children(op: Literal["and", "or"], children: tuple[QueryPredicate, ...]) -> QueryPredicate:
@@ -759,6 +834,21 @@ class _BooleanQueryTransformer(Transformer[Token, QueryPredicate]):
     def count_leaf(self, token: Token) -> QueryPredicate:
         return _count_token_to_predicate(_QUERY_TRANSFORMER.count_clause(token))
 
+    def count_compare_leaf(self, field_name: Token, op: Token, number: Token) -> QueryPredicate:
+        return _count_token_to_predicate(_normalize_count_comparison(str(field_name), str(op), str(number)))
+
+    def count_between_leaf(
+        self,
+        field_name: Token,
+        _between: Token,
+        min_number: Token,
+        _and: Token,
+        max_number: Token,
+    ) -> QueryPredicate:
+        return _count_range_token_to_predicate(
+            _normalize_count_range(str(field_name), str(min_number), str(max_number))
+        )
+
     def field_leaf(self, token: Token) -> QueryPredicate:
         return _field_token_to_predicate(_QUERY_TRANSFORMER.field_clause(token))
 
@@ -819,6 +909,9 @@ def _is_boolean_expression(expression: str) -> bool:
         return True
     if re.search(r"\b(?:semantic|near:text):", expression, re.IGNORECASE):
         return True
+    if re.search(r"\b(?:messages|words)\b\s*(?:>=|<=|=|>|<|between\b)", expression, re.IGNORECASE):
+        count_range_masked = re.sub(r"\bbetween\s+\d+\s+and\s+\d+\b", "between_range", expression, flags=re.IGNORECASE)
+        return bool(re.search(r"\b(?:and|or|not)\b", count_range_masked, re.IGNORECASE))
     return ":" in expression and bool(re.search(r"\b(?:and|or|not)\b", expression, re.IGNORECASE))
 
 
@@ -921,7 +1014,12 @@ def parse_expression_ast(expression: str) -> QueryExpressionAST:
         tree = _QUERY_PARSER.parse(expression, start="flat_query")
     except UnexpectedInput as exc:
         raise ExpressionCompileError(_parse_error_message(expression, exc), field=None) from exc
-    transformed = _QUERY_TRANSFORMER.transform(tree)
+    try:
+        transformed = _QUERY_TRANSFORMER.transform(tree)
+    except VisitError as exc:
+        if isinstance(exc.orig_exc, ExpressionCompileError):
+            raise exc.orig_exc from exc
+        raise
     if not isinstance(transformed, QueryExpressionAST):
         raise ExpressionCompileError("query expression did not produce an AST", field=None)
     return transformed
@@ -941,6 +1039,13 @@ def _explain_clause(token: _LexToken) -> QueryExpressionExplainClause:
             field=token.field,
             op=token.op,
             number=token.number,
+        )
+    if isinstance(token, _CountRangeToken):
+        return QueryExpressionExplainClause(
+            kind="count_range",
+            field=token.field,
+            min_number=token.min_number,
+            max_number=token.max_number,
         )
     if isinstance(token, _TextToken):
         return QueryExpressionExplainClause(
@@ -1140,6 +1245,15 @@ class _SpecAccumulator:
                 else:  # "="
                     self.min_words = tok.number
                     self.max_words = tok.number
+            return
+
+        if isinstance(tok, _CountRangeToken):
+            if tok.field == "messages":
+                self.min_messages = tok.min_number
+                self.max_messages = tok.max_number
+            elif tok.field == "words":
+                self.min_words = tok.min_number
+                self.max_words = tok.max_number
             return
 
         # _FieldToken
