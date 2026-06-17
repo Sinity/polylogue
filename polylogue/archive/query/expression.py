@@ -63,6 +63,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field, replace
+from difflib import get_close_matches
 from typing import Any, Literal, cast
 
 from lark import Lark, Token, Transformer, v_args
@@ -465,6 +466,17 @@ _MESSAGE_STRUCTURAL_FIELDS = {"role", "type", "text", "tool", "action", "command
 _ACTION_STRUCTURAL_FIELDS = {"tool", "action", "type", "command", "path", "output", "text"}
 
 
+def _unknown_query_field_message(field_name: str, *, include_structural: bool = False) -> str:
+    recognized = sorted(EXPRESSION_FIELD_REGISTRY)
+    message = f"unknown query field {field_name!r}; recognized fields: " + ", ".join(recognized)
+    suggestions = get_close_matches(field_name, recognized, n=3, cutoff=0.6)
+    if suggestions:
+        message += "; did you mean: " + ", ".join(suggestions)
+    if include_structural:
+        message += "; structural fields: " + ", ".join(sorted(_STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS))
+    return message
+
+
 def _decode_escaped_string(token: Token) -> str:
     try:
         decoded = json.loads(str(token))
@@ -531,12 +543,8 @@ _QUERY_TRANSFORMER = _QueryTransformer()
 def _field_token_to_predicate(token: _FieldToken) -> QueryPredicate:
     field_name = token.field
     if field_name not in EXPRESSION_FIELD_REGISTRY and field_name not in _STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS:
-        recognized = sorted(EXPRESSION_FIELD_REGISTRY)
         raise ExpressionCompileError(
-            f"unknown query field {field_name!r}; recognized fields: "
-            + ", ".join(recognized)
-            + "; structural fields: "
-            + ", ".join(sorted(_STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS)),
+            _unknown_query_field_message(field_name, include_structural=True),
             field=field_name,
         )
     if field_name not in _BOOLEAN_SUPPORTED_FIELDS and field_name not in _STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS:
@@ -1173,9 +1181,8 @@ class _SpecAccumulator:
             )
 
         else:
-            recognized = sorted(EXPRESSION_FIELD_REGISTRY)
             raise ExpressionCompileError(
-                f"unknown query field {fname!r}; recognized fields: " + ", ".join(recognized),
+                _unknown_query_field_message(fname),
                 field=fname,
             )
 
