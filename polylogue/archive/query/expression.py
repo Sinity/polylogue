@@ -331,6 +331,8 @@ class QueryExpressionExplanation:
     lowerer: str
     lowered_spec: SessionQuerySpec
     plan_description: tuple[str, ...]
+    selected_units: tuple[str, ...] = ("session",)
+    execution_legs: tuple[str, ...] = ()
     unsupported_nodes: tuple[str, ...] = ()
     predicate: QueryPredicate | None = None
 
@@ -340,6 +342,8 @@ class QueryExpressionExplanation:
             "clauses": [clause.to_payload() for clause in self.clauses],
             "predicate": self.predicate.to_payload() if self.predicate is not None else None,
             "lowerer": self.lowerer,
+            "selected_units": list(self.selected_units),
+            "execution_legs": list(self.execution_legs),
             "plan_description": list(self.plan_description),
             "unsupported_nodes": list(self.unsupported_nodes),
         }
@@ -948,6 +952,70 @@ def _explain_clause(token: _LexToken) -> QueryExpressionExplainClause:
     return QueryExpressionExplainClause(kind="json", value=token.raw)
 
 
+def _predicate_units(predicate: QueryPredicate) -> set[str]:
+    units = {"session"}
+    if isinstance(predicate, QueryExistsPredicate):
+        units.add(predicate.unit)
+        units.update(_predicate_units(predicate.child))
+    elif isinstance(predicate, QueryBoolPredicate):
+        for child in predicate.children:
+            units.update(_predicate_units(child))
+    elif isinstance(predicate, QueryNotPredicate):
+        units.update(_predicate_units(predicate.child))
+    elif isinstance(predicate, QuerySequencePredicate):
+        units.add("action")
+    elif isinstance(predicate, QueryLineagePredicate):
+        units.add("lineage")
+    return units
+
+
+def _predicate_execution_legs(predicate: QueryPredicate) -> set[str]:
+    if isinstance(predicate, QueryFieldPredicate):
+        return {"sql"}
+    if isinstance(predicate, QueryTextPredicate):
+        return {"fts"}
+    if isinstance(predicate, QuerySemanticPredicate):
+        return {"vector"}
+    if isinstance(predicate, QueryLineagePredicate):
+        return {"lineage-recursive-cte"}
+    if isinstance(predicate, QuerySequencePredicate):
+        return {"sequence-action"}
+    if isinstance(predicate, QueryExistsPredicate):
+        return {f"exists-{predicate.unit}", *_predicate_execution_legs(predicate.child)}
+    if isinstance(predicate, QueryNotPredicate):
+        return _predicate_execution_legs(predicate.child)
+    if isinstance(predicate, QueryBoolPredicate):
+        legs: set[str] = set()
+        for child in predicate.children:
+            legs.update(_predicate_execution_legs(child))
+        return legs
+    return set()
+
+
+def _spec_execution_legs(spec: SessionQuerySpec) -> set[str]:
+    legs: set[str] = set()
+    if spec.query_terms:
+        legs.add("fts")
+    if spec.similar_text or spec.similar_session_id:
+        legs.add("vector")
+    if spec.boolean_predicate is not None:
+        legs.update(_predicate_execution_legs(spec.boolean_predicate))
+    if spec.to_plan().describe():
+        legs.add("sql")
+    return legs
+
+
+def _explain_selected_units(ast: QueryExpressionAST) -> tuple[str, ...]:
+    if ast.boolean_predicate is None:
+        return ("session",)
+    return tuple(sorted(_predicate_units(ast.boolean_predicate)))
+
+
+def _explain_execution_legs(spec: SessionQuerySpec) -> tuple[str, ...]:
+    legs = _spec_execution_legs(spec)
+    return tuple(sorted(legs))
+
+
 def explain_expression(expression: str) -> QueryExpressionExplanation:
     """Explain parser output, lowering path, and execution-plan descriptions."""
     source_text = expression
@@ -959,6 +1027,8 @@ def explain_expression(expression: str) -> QueryExpressionExplanation:
             clauses=(_explain_clause(_JsonToken(raw=stripped)),),
             lowerer="json-spec",
             lowered_spec=lowered,
+            selected_units=("session",),
+            execution_legs=_explain_execution_legs(lowered),
             plan_description=tuple(lowered.to_plan().describe()),
         )
     ast = parse_expression_ast(stripped)
@@ -969,6 +1039,8 @@ def explain_expression(expression: str) -> QueryExpressionExplanation:
         predicate=ast.boolean_predicate,
         lowerer="lark-query-expression-to-session-query-spec",
         lowered_spec=lowered,
+        selected_units=_explain_selected_units(ast),
+        execution_legs=_explain_execution_legs(lowered),
         plan_description=tuple(lowered.to_plan().describe()),
     )
 

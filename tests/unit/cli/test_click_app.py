@@ -229,6 +229,8 @@ def test_query_explain_json_outputs_ast_payload(cli_runner: CliRunner) -> None:
     assert payload["source_text"] == "sessions where repo:polylogue OR origin:chatgpt-export"
     assert payload["lowerer"] == "lark-query-expression-to-session-query-spec"
     assert payload["predicate"]["kind"] == "or"
+    assert payload["selected_units"] == ["session"]
+    assert payload["execution_legs"] == ["sql"]
     assert payload["unsupported_nodes"] == []
 
 
@@ -238,6 +240,8 @@ def test_query_explain_plain_outputs_plan(cli_runner: CliRunner) -> None:
     assert result.exit_code == 0, result.output
     assert 'query: repo:polylogue "json envelope"' in result.output
     assert "lowerer: lark-query-expression-to-session-query-spec" in result.output
+    assert "units: session" in result.output
+    assert "execution legs: fts, sql" in result.output
     assert "clauses:" in result.output
     assert "plan:" in result.output
 
