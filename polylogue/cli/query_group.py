@@ -188,6 +188,15 @@ def _detect_subcommand_and_verb(group: click.Group, args: list[str]) -> tuple[st
 class QueryFirstGroupBase(click.Group):
     """Custom Click group that routes to query mode by default."""
 
+    def shell_complete(self, ctx: click.Context, incomplete: str) -> list[click.shell_completion.CompletionItem]:
+        items = list(super().shell_complete(ctx, incomplete))
+        from polylogue.cli.shell_completion_values import complete_query_expression_fields
+
+        query_items = complete_query_expression_fields(ctx, None, incomplete)
+        existing = {item.value for item in items}
+        items.extend(item for item in query_items if item.value not in existing)
+        return items
+
     def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
         """Parse args, preserving raw query terms."""
         # Capture the raw argv slice up-front so ``--diagnose`` can show it

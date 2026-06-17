@@ -113,6 +113,23 @@ def test_completion_source_registry_covers_descriptor_sources() -> None:
     )
 
 
+def test_query_field_candidates_come_from_expression_registry() -> None:
+    from polylogue.archive.query.expression import EXPRESSION_FIELD_REGISTRY
+
+    candidates = shell_completion_values.query_field_candidates("re")
+    values = {candidate.value for candidate in candidates}
+
+    assert "repo" in values
+    repo_candidate = next(candidate for candidate in candidates if candidate.value == "repo")
+    assert repo_candidate.insert == "repo:"
+    assert repo_candidate.kind == "query-field"
+    assert repo_candidate.source == "EXPRESSION_FIELD_REGISTRY"
+    assert EXPRESSION_FIELD_REGISTRY["repo"]["description"] in repo_candidate.description
+    click_item = repo_candidate.to_click_item()
+    assert click_item.value == "repo:"
+    assert click_item.type == "plain"
+
+
 @pytest.fixture
 def cli_runner() -> CliRunner:
     return CliRunner()
