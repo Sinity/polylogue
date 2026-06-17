@@ -4,7 +4,12 @@ Owning issue: #2006.
 
 ## Purpose
 
-Polylogue needs a richer query language without becoming its own query engine. The surface language should compile onto the archive storage and search layers already present in the project. The Lark grammar in `polylogue/archive/query/expression.py` is the query grammar; compact field/text clauses and explicit Boolean predicates are entry shapes in that grammar, not separate floor/ceiling languages.
+Polylogue needs a richer query language without becoming its own query engine.
+The surface language should lower onto the archive storage and search layers
+already present in the project. The Lark grammar in
+`polylogue/archive/query/expression.py` is the query grammar; compact field/text
+clauses and explicit Boolean predicates are entry shapes in that grammar, not
+separate floor/ceiling languages.
 
 ## Current limitation
 
@@ -16,7 +21,8 @@ Build a typed AST and lowering layer.
 
 Predicate nodes: And, Or, Not, Leaf, Fts, Semantic, Structural, Sequence, Lineage, Relational.
 
-Pipeline stages: source or filter, traverse, transform, aggregate, terminal action.
+Pipeline stages: source or filter, traverse, transform, aggregate, sort/limit,
+and terminal action or view.
 
 Implemented units: session, message, action, block, lineage.
 
@@ -28,15 +34,22 @@ Compact examples: repo filters, origin filters, tags, date filters, phrases, and
 
 Power examples: grouped conditions, numeric operators, semantic clauses, message predicates, sequence predicates, lineage predicates, and pipelines that change unit from sessions to messages or lineage and back.
 
-## Implementation slices
+## Implementation phases
 
-1. Keep compact and explicit Boolean syntax on the same Lark grammar and AST path.
-2. Extend explain output to show unsupported unit/pipeline stages, not just the lowered `SessionQuerySpec`.
+These are coherent PR-sized implementation phases, not conceptual
+micro-slices. Each phase should land useful executable queries and tests.
+
+1. Keep compact and explicit Boolean syntax on the same Lark grammar and AST
+   path.
+2. Extend explain output to show terminal unit sources, unsupported
+   unit/pipeline stages, and the concrete lowerer/execution legs selected.
 3. Add run/event/assertion/context units only with real lowerers and fixtures.
-4. Add traversal stages that change the active unit and lower to SQL/recursive CTEs or existing read models.
+4. Add traversal stages that change the active unit and lower to SQL/recursive
+   CTEs or existing read models.
 5. Add aggregation/sort/limit stages over supported units.
 6. Lower terminal stages through existing read/analyze/bundle/action contracts.
-7. Add completion/query-builder metadata from the same grammar, unit, field, operator, and action registries.
+7. Add completion/query-builder metadata from the same grammar, unit, field,
+   operator, and action registries.
 
 ## Acceptance criteria
 
@@ -44,4 +57,6 @@ Power examples: grouped conditions, numeric operators, semantic clauses, message
 - Unsupported forms fail with typed errors and do not broaden results.
 - CLI, daemon, MCP, web, and completion can share the same parser and AST.
 - Natural-language query tools target the AST.
-- #1842 can ship its command-floor work without waiting for this full ceiling.
+- Query surfaces can keep using compatibility function names such as
+  `compile_expression`, but their bodies delegate to this grammar/AST/lowering
+  path rather than forming a separate legacy compiler.
