@@ -8,7 +8,7 @@ Covers:
 - Relative + absolute date pass-through
 - Exact id query
 - Quoted command-looking phrases ("delete" is a phrase, not an action)
-- Cross-field OR rejection
+- Cross-field OR Boolean predicate lowering
 - Count comparisons (messages:>=N, words:>=N)
 - in-field alternation origin:(a|b)
 - has:paste / has:tools / has:thinking → boolean flags
@@ -36,6 +36,7 @@ from polylogue.archive.query.expression import (
     explain_expression,
     parse_expression_ast,
 )
+from polylogue.archive.query.predicate import QueryBoolPredicate, QueryFieldPredicate, QueryNotPredicate
 from polylogue.archive.query.spec import SessionQuerySpec
 
 # ---------------------------------------------------------------------------
@@ -68,6 +69,16 @@ class TestLexer:
         assert tokens == [
             _TextToken(text="json", quoted=False, negated=False),
             _TextToken(text="envelope", quoted=False, negated=False),
+        ]
+
+    def test_bare_boolean_words_remain_fts_terms(self) -> None:
+        tokens = _lex("error or timeout not retry")
+        assert tokens == [
+            _TextToken(text="error", quoted=False, negated=False),
+            _TextToken(text="or", quoted=False, negated=False),
+            _TextToken(text="timeout", quoted=False, negated=False),
+            _TextToken(text="not", quoted=False, negated=False),
+            _TextToken(text="retry", quoted=False, negated=False),
         ]
 
     def test_code_like_bare_words(self) -> None:
@@ -106,9 +117,9 @@ class TestLexer:
         with pytest.raises(ExpressionCompileError, match="unclosed quoted"):
             _lex('"not closed')
 
-    def test_cross_field_or_paren_raises(self) -> None:
-        with pytest.raises(ExpressionCompileError, match="cross-field OR"):
-            _lex("(origin:x OR origin:y)")
+    def test_cross_field_or_paren_builds_boolean_ast(self) -> None:
+        ast = parse_expression_ast("(origin:claude-code-session OR origin:chatgpt-export)")
+        assert isinstance(ast.boolean_predicate, QueryBoolPredicate)
 
     def test_parse_expression_ast_preserves_escaped_quotes(self) -> None:
         ast = parse_expression_ast(r'near:"say \"hello\"" -"bad \"phrase\""')
@@ -154,6 +165,97 @@ class TestExplainExpression:
         assert explanation.lowered_spec.limit == 5
         assert explanation.clauses[0].kind == "json"
         assert explanation.to_payload()["unsupported_nodes"] == []
+
+
+class TestBooleanQueryExpression:
+    def test_boolean_ast_exposes_predicate_tree(self) -> None:
+        ast = parse_expression_ast("repo:polylogue OR origin:chatgpt-export")
+
+        assert ast.clauses == ()
+        assert ast.boolean_predicate == QueryBoolPredicate(
+            op="or",
+            children=(
+                QueryFieldPredicate(field="repo", values=("polylogue",)),
+                QueryFieldPredicate(field="origin", values=("chatgpt-export",)),
+            ),
+        )
+
+    def test_boolean_not_wraps_leaf_predicate(self) -> None:
+        ast = parse_expression_ast("origin:chatgpt-export AND NOT title:slop")
+
+        assert ast.boolean_predicate == QueryBoolPredicate(
+            op="and",
+            children=(
+                QueryFieldPredicate(field="origin", values=("chatgpt-export",)),
+                QueryNotPredicate(QueryFieldPredicate(field="title", values=("slop",))),
+            ),
+        )
+
+    def test_sessions_where_prefix_is_accepted(self) -> None:
+        spec = compile_expression("sessions where origin:chatgpt-export OR title:needle")
+
+        assert isinstance(spec.boolean_predicate, QueryBoolPredicate)
+        assert spec.query_terms == ()
+
+    def test_boolean_predicate_executes_against_archive(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "claude-hit")
+            .provider("claude-code")
+            .title("ordinary")
+            .add_message("m1", role="user", text="alpha")
+            .save()
+        )
+        (
+            SessionBuilder(index_db, "title-hit")
+            .provider("chatgpt")
+            .title("needle")
+            .add_message("m2", role="user", text="beta")
+            .save()
+        )
+        (
+            SessionBuilder(index_db, "miss")
+            .provider("chatgpt")
+            .title("other")
+            .add_message("m3", role="user", text="gamma")
+            .save()
+        )
+
+        spec = compile_expression("origin:claude-code-session OR title:needle")
+        assert spec.boolean_predicate is not None
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            rows = archive.list_summaries(limit=100, boolean_predicate=spec.boolean_predicate)
+            count = archive.count_sessions(boolean_predicate=spec.boolean_predicate)
+
+        assert {row.session_id for row in rows} == {
+            "claude-code-session:ext-claude-hit",
+            "chatgpt-export:ext-title-hit",
+        }
+        assert count == 2
+
+    def test_boolean_and_not_executes_against_archive(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        for session_id, title in [("keep", "needle"), ("drop", "other")]:
+            (
+                SessionBuilder(index_db, session_id)
+                .provider("chatgpt")
+                .title(title)
+                .add_message(f"m-{session_id}", role="user", text=title)
+                .save()
+            )
+
+        spec = compile_expression("origin:chatgpt-export AND NOT title:other")
+        assert spec.boolean_predicate is not None
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            rows = archive.list_summaries(limit=100, boolean_predicate=spec.boolean_predicate)
+
+        assert [row.session_id for row in rows] == ["chatgpt-export:ext-keep"]
 
 
 # ---------------------------------------------------------------------------
@@ -355,14 +457,14 @@ class TestRejection:
         with pytest.raises(ExpressionCompileError, match="recognized fields"):
             compile_expression("xyz:value")
 
-    def test_cross_field_or_raises(self) -> None:
-        # Top-level OR keyword triggers the cross-field OR error
-        with pytest.raises(ExpressionCompileError, match="cross-field OR"):
-            compile_expression("repo:polylogue OR repo:sinex")
+    def test_cross_field_or_compiles_to_boolean_predicate(self) -> None:
+        spec = compile_expression("repo:polylogue OR repo:sinex")
+        assert isinstance(spec.boolean_predicate, QueryBoolPredicate)
 
-    def test_cross_field_or_mentions_follow_up_issue(self) -> None:
-        with pytest.raises(ExpressionCompileError, match="2006"):
-            compile_expression("repo:polylogue OR origin:claude-code-session")
+    def test_cross_field_or_no_longer_becomes_fts_terms(self) -> None:
+        spec = compile_expression("repo:polylogue OR origin:claude-code-session")
+        assert spec.boolean_predicate is not None
+        assert spec.query_terms == ()
 
     def test_unknown_origin_raises(self) -> None:
         with pytest.raises(ExpressionCompileError, match="unknown origin"):
@@ -643,10 +745,9 @@ class TestFieldRegistry:
             desc
         )
 
-    def test_cross_field_or_error_cites_2006(self) -> None:
-        """Regression: cross-field OR error must cite the full query DSL issue."""
-        with pytest.raises(ExpressionCompileError, match="2006"):
-            compile_expression("repo:x OR origin:y")
+    def test_cross_field_or_reaches_boolean_predicate(self) -> None:
+        spec = compile_expression("repo:x OR origin:chatgpt-export")
+        assert isinstance(spec.boolean_predicate, QueryBoolPredicate)
 
 
 # ---------------------------------------------------------------------------
@@ -695,11 +796,12 @@ class TestMCPWiring:
         with pytest.raises(ExpressionCompileError, match="unknown query field"):
             build_query_spec(query="nosuchfield:value")
 
-    def test_cross_field_or_raises(self) -> None:
+    def test_cross_field_or_compiles(self) -> None:
         from polylogue.mcp.query_contracts import build_query_spec
 
-        with pytest.raises(ExpressionCompileError, match="cross-field OR"):
-            build_query_spec(query="repo:x OR origin:y")
+        spec = build_query_spec(query="repo:x OR origin:chatgpt-export")
+        assert isinstance(spec.boolean_predicate, QueryBoolPredicate)
+        assert spec.query_terms == ()
 
     def test_none_query_returns_base_spec(self) -> None:
         from polylogue.mcp.query_contracts import build_query_spec

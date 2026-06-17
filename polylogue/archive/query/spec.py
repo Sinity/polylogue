@@ -12,6 +12,7 @@ from polylogue.archive.filter.types import SortField
 from polylogue.archive.message.types import validate_message_type_filter
 from polylogue.archive.query.fields import describe_spec_fields, query_spec_has_selection_filters
 from polylogue.archive.query.plan import SessionQueryPlan
+from polylogue.archive.query.predicate import QueryPredicate
 from polylogue.archive.viewport.viewports import ToolCategory
 from polylogue.core.dates import parse_date
 from polylogue.core.enums import Origin
@@ -399,6 +400,7 @@ def query_spec_to_plan(
         message_type=spec.message_type,
         offset=spec.offset,
         cursor=spec.cursor,
+        boolean_predicate=spec.boolean_predicate,
         vector_provider=vector_provider,
     )
     if spec.latest:
@@ -457,6 +459,7 @@ class SessionQuerySpec:
     message_type: str | None = None
     offset: int = 0
     cursor: str | None = None
+    boolean_predicate: QueryPredicate | None = None
 
     @classmethod
     def from_params(cls, params: Mapping[str, object], *, strict: bool = False) -> SessionQuerySpec:

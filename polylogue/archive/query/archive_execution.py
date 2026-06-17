@@ -28,6 +28,7 @@ if TYPE_CHECKING:
 
     from polylogue.archive.message.models import Message
     from polylogue.archive.query.plan import SessionQueryPlan
+    from polylogue.archive.query.predicate import QueryPredicate
     from polylogue.config import Config
     from polylogue.storage.sqlite.archive_tiers.archive import (
         ArchiveSessionSearchHit,
@@ -150,6 +151,7 @@ class _ArchiveFilterKwargs(TypedDict):
     since_ms: int | None
     until_ms: int | None
     since_session_id: str | None
+    boolean_predicate: QueryPredicate | None
 
 
 def _plan_filter_kwargs(plan: SessionQueryPlan) -> _ArchiveFilterKwargs:
@@ -183,6 +185,7 @@ def _plan_filter_kwargs(plan: SessionQueryPlan) -> _ArchiveFilterKwargs:
         "since_ms": _datetime_to_ms(plan.since),
         "until_ms": _datetime_to_ms(plan.until),
         "since_session_id": plan.since_session_id,
+        "boolean_predicate": plan.boolean_predicate,
     }
 
 

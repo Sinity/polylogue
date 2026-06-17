@@ -284,12 +284,12 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/archive_execution.py
-    loc: 607
+    loc: 610
     target: polylogue/archive/query/archive_execution.py
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/expression.py
-    loc: 888
+    loc: 1151
     target: polylogue/archive/query/expression.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -314,7 +314,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/plan.py
-    loc: 281
+    loc: 283
     target: polylogue/archive/query/plan.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -326,6 +326,11 @@ files:
   - path: polylogue/archive/query/plan_execution.py
     loc: 142
     target: polylogue/archive/query/plan_execution.py
+    owner: archive-query
+    reason: archive-domain query semantics
+  - path: polylogue/archive/query/predicate.py
+    loc: 55
+    target: polylogue/archive/query/predicate.py
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/retrieval.py
@@ -374,7 +379,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/spec.py
-    loc: 574
+    loc: 577
     target: polylogue/archive/query/spec.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -3157,7 +3162,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/__init__.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive.py
-    loc: 5213
+    loc: 5356
     target: polylogue/storage/sqlite/archive_tiers/archive.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive_init.py

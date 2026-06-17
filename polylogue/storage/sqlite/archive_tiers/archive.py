@@ -8,9 +8,15 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
-from typing import TypedDict
+from typing import Any, TypedDict
 
 from polylogue.archive.query.path_prefix import escaped_sql_path_prefix_patterns
+from polylogue.archive.query.predicate import (
+    QueryBoolPredicate,
+    QueryFieldPredicate,
+    QueryNotPredicate,
+    QueryPredicate,
+)
 from polylogue.archive.semantic.pricing import (
     CostBasisPayload,
     CostEstimatePayload,
@@ -19,6 +25,7 @@ from polylogue.archive.semantic.pricing import (
     _normalize_model,
 )
 from polylogue.archive.stats import ArchiveStats
+from polylogue.core.dates import parse_date
 from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.insights.archive import (
@@ -2274,6 +2281,7 @@ class ArchiveStore:
         since_ms: int | None = None,
         until_ms: int | None = None,
         since_session_id: str | None = None,
+        boolean_predicate: QueryPredicate | None = None,
     ) -> int:
         """Count sessions in the archive index."""
         where, params = _session_filter_clause(
@@ -2305,6 +2313,7 @@ class ArchiveStore:
             max_words=max_words,
             since_ms=since_ms,
             until_ms=until_ms,
+            boolean_predicate=boolean_predicate,
             tags_relation=self._tags_relation,
         )
         where, params = _with_since_session_filter(self._conn, where, params, "s", since_session_id=since_session_id)
@@ -2848,6 +2857,7 @@ class ArchiveStore:
         since_ms: int | None = None,
         until_ms: int | None = None,
         since_session_id: str | None = None,
+        boolean_predicate: QueryPredicate | None = None,
         sample: bool = False,
         sort: str | None = None,
         reverse: bool = False,
@@ -2882,6 +2892,7 @@ class ArchiveStore:
             max_words=max_words,
             since_ms=since_ms,
             until_ms=until_ms,
+            boolean_predicate=boolean_predicate,
             tags_relation=self._tags_relation,
         )
         where, params = _with_since_session_filter(self._conn, where, params, "s", since_session_id=since_session_id)
@@ -2958,6 +2969,7 @@ class ArchiveStore:
         since_ms: int | None = None,
         until_ms: int | None = None,
         since_session_id: str | None = None,
+        boolean_predicate: QueryPredicate | None = None,
     ) -> list[ArchiveSessionSearchHit]:
         """Search archive block text and return session-level hits with snippets."""
         match_query = normalize_fts5_query(query)
@@ -2999,6 +3011,7 @@ class ArchiveStore:
             max_words=max_words,
             since_ms=since_ms,
             until_ms=until_ms,
+            boolean_predicate=boolean_predicate,
             tags_relation=self._tags_relation,
             prefix="AND",
         )
@@ -3083,6 +3096,7 @@ class ArchiveStore:
         since_ms: int | None = None,
         until_ms: int | None = None,
         since_session_id: str | None = None,
+        boolean_predicate: QueryPredicate | None = None,
     ) -> int:
         """Count distinct sessions matching the archive block FTS search."""
         match_query = normalize_fts5_query(query)
@@ -3117,6 +3131,7 @@ class ArchiveStore:
             max_words=max_words,
             since_ms=since_ms,
             until_ms=until_ms,
+            boolean_predicate=boolean_predicate,
             tags_relation=self._tags_relation,
             prefix="AND",
         )
@@ -3179,6 +3194,7 @@ class ArchiveStore:
         since_ms: int | None = None,
         until_ms: int | None = None,
         since_session_id: str | None = None,
+        boolean_predicate: QueryPredicate | None = None,
     ) -> list[ArchiveSessionSearchHit]:
         """Resolve vector-ranked message ids into filtered session-level hits."""
         if not scored_message_ids:
@@ -3213,6 +3229,7 @@ class ArchiveStore:
             max_words=max_words,
             since_ms=since_ms,
             until_ms=until_ms,
+            boolean_predicate=boolean_predicate,
             tags_relation=self._tags_relation,
         )
         where, params = _with_since_session_filter(self._conn, where, params, "s", since_session_id=since_session_id)
@@ -4193,6 +4210,122 @@ def _stats_by_sql(group_by: str, where: str, *, tags_relation: str = "session_ta
     )
 
 
+def _clause_without_prefix(where: str, *, prefix: str) -> str:
+    stripped = where.strip()
+    marker = f"{prefix} "
+    if stripped.startswith(marker):
+        return stripped[len(marker) :].strip()
+    return stripped
+
+
+def _date_ms(value: str, *, field: str) -> int:
+    parsed = parse_date(value)
+    if parsed is None:
+        raise ValueError(f"invalid {field}: {value}")
+    return int(parsed.timestamp() * 1000)
+
+
+def _field_predicate_clause(
+    table_alias: str,
+    predicate: QueryFieldPredicate,
+    *,
+    tags_relation: str,
+) -> tuple[str, list[object]]:
+    field = predicate.field
+    values = predicate.values
+    kwargs: dict[str, Any] = {}
+    if field == "id":
+        if not values:
+            return "", []
+        return f"{table_alias}.session_id = ?", [values[-1]]
+    if field == "repo":
+        kwargs["repo_names"] = values
+    elif field == "origin":
+        kwargs["origins"] = values
+    elif field == "tag":
+        kwargs["tags"] = values
+    elif field == "path":
+        kwargs["referenced_paths"] = values
+    elif field == "cwd":
+        kwargs["cwd_prefix"] = values[-1] if values else None
+    elif field == "tool":
+        kwargs["tool_terms"] = values
+    elif field == "action":
+        kwargs["action_terms"] = values
+    elif field == "has":
+        has_types: list[str] = []
+        for value in values:
+            if value == "paste":
+                kwargs["has_paste"] = True
+            elif value == "tools":
+                kwargs["has_tool_use"] = True
+            elif value == "thinking":
+                kwargs["has_thinking"] = True
+            else:
+                has_types.append(value)
+        kwargs["has_types"] = tuple(has_types)
+    elif field == "title":
+        kwargs["title"] = " ".join(values)
+    elif field == "since":
+        if values:
+            kwargs["since_ms"] = _date_ms(values[-1], field="since")
+    elif field == "until":
+        if values:
+            kwargs["until_ms"] = _date_ms(values[-1], field="until")
+    elif field == "messages":
+        if not values:
+            return "", []
+        count_value = int(values[-1])
+        if predicate.op == ">=":
+            kwargs["min_messages"] = count_value
+        elif predicate.op == "<=":
+            kwargs["max_messages"] = count_value
+        else:
+            kwargs["min_messages"] = count_value
+            kwargs["max_messages"] = count_value
+    elif field == "words":
+        if not values:
+            return "", []
+        count_value = int(values[-1])
+        if predicate.op == ">=":
+            kwargs["min_words"] = count_value
+        elif predicate.op == "<=":
+            kwargs["max_words"] = count_value
+        else:
+            kwargs["min_words"] = count_value
+            kwargs["max_words"] = count_value
+    else:
+        raise ValueError(f"unsupported Boolean query field: {field}")
+    where, params = _session_filter_clause(table_alias, tags_relation=tags_relation, prefix="WHERE", **kwargs)
+    return _clause_without_prefix(where, prefix="WHERE"), params
+
+
+def _boolean_predicate_clause(
+    table_alias: str,
+    predicate: QueryPredicate,
+    *,
+    tags_relation: str,
+) -> tuple[str, list[object]]:
+    if isinstance(predicate, QueryFieldPredicate):
+        return _field_predicate_clause(table_alias, predicate, tags_relation=tags_relation)
+    if isinstance(predicate, QueryNotPredicate):
+        clause, params = _boolean_predicate_clause(table_alias, predicate.child, tags_relation=tags_relation)
+        return (f"NOT ({clause})" if clause else "", params)
+    if isinstance(predicate, QueryBoolPredicate):
+        child_clauses: list[str] = []
+        merged_params: list[object] = []
+        for child in predicate.children:
+            clause, child_params = _boolean_predicate_clause(table_alias, child, tags_relation=tags_relation)
+            if clause:
+                child_clauses.append(f"({clause})")
+                merged_params.extend(child_params)
+        if not child_clauses:
+            return "", merged_params
+        joiner = " OR " if predicate.op == "or" else " AND "
+        return joiner.join(child_clauses), merged_params
+    raise TypeError(f"unsupported Boolean query predicate: {predicate!r}")
+
+
 def _session_filter_clause(
     table_alias: str,
     *,
@@ -4223,6 +4356,7 @@ def _session_filter_clause(
     max_words: int | None = None,
     since_ms: int | None = None,
     until_ms: int | None = None,
+    boolean_predicate: QueryPredicate | None = None,
     tags_relation: str = "session_tags",
     prefix: str = "WHERE",
 ) -> tuple[str, list[object]]:
@@ -4473,6 +4607,15 @@ def _session_filter_clause(
     if until_ms is not None:
         clauses.append(f"COALESCE({table_alias}.updated_at_ms, {table_alias}.created_at_ms) <= ?")
         params.append(until_ms)
+    if boolean_predicate is not None:
+        boolean_clause, boolean_params = _boolean_predicate_clause(
+            table_alias,
+            boolean_predicate,
+            tags_relation=tags_relation,
+        )
+        if boolean_clause:
+            clauses.append(f"({boolean_clause})")
+            params.extend(boolean_params)
     if not clauses:
         return "", params
     return f"{prefix} " + " AND ".join(clauses), params

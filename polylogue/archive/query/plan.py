@@ -14,6 +14,7 @@ from polylogue.archive.query.fields import (
     sql_pushdown_params_for_plan,
 )
 from polylogue.archive.query.plan_description import describe_plan, effective_fetch_limit, plan_has_filters
+from polylogue.archive.query.predicate import QueryPredicate
 from polylogue.archive.query.retrieval import (
     actions_ready,
     can_use_action_stats_with,
@@ -131,6 +132,7 @@ class SessionQueryPlan:
     message_type: str | None = None
     offset: int = 0
     cursor: str | None = None
+    boolean_predicate: QueryPredicate | None = None
     ranking_policy: str = "default"
     ranking_policy_version: str = "1"
     vector_provider: VectorProvider | None = None
