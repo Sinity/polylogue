@@ -37,6 +37,7 @@ ForensicClaimKind = Literal[
 ]
 RecoveryReportPreset = Literal["continue", "blame"]
 WorkPacketSection = Literal["events", "subagents", "run_state", "tools", "decisions"]
+SubagentChildLinkStatus = Literal["resolved", "unresolved", "repaired", "quarantined"]
 
 _ISSUE_RE = re.compile(r"(?:issues/|issue\s+|closed\s+|#)(?P<number>\d{3,6})", re.IGNORECASE)
 _PR_RE = re.compile(r"(?:pull/|PR\s+|#)(?P<number>\d{3,6})", re.IGNORECASE)
@@ -165,6 +166,9 @@ class SubagentReport(ArchiveInsightModel):
     tool_id: str | None = None
     task_id: str | None = None
     child_session_id: str | None = None
+    child_link_status: SubagentChildLinkStatus | None = None
+    child_link_type: str | None = None
+    resolved_child_session_id: str | None = None
     prompt: str = ""
     final_report_preview: str = ""
     pr_refs: tuple[str, ...] = ()
@@ -327,7 +331,11 @@ TRANSFORM_REGISTRY: dict[str, TransformDescriptor] = {
 }
 
 
-def compile_recovery_digest(session: Session) -> RecoveryDigest:
+def compile_recovery_digest(
+    session: Session,
+    *,
+    session_links: Sequence[Mapping[str, object]] = (),
+) -> RecoveryDigest:
     """Compile a session into a small deterministic recovery/digest bundle."""
 
     messages = list(session.messages)
@@ -339,7 +347,10 @@ def compile_recovery_digest(session: Session) -> RecoveryDigest:
         preview=session.display_title,
     )
     tool_summaries = tuple(_extract_tool_summaries(session, messages))
-    subagent_reports = tuple(_extract_subagent_reports(session, messages))
+    subagent_reports = _enrich_subagent_reports_with_links(
+        tuple(_extract_subagent_reports(session, messages)),
+        session_links,
+    )
     run_state = _extract_run_state(session, messages)
     events = tuple(_extract_events(session, messages))
     decisions = tuple(_extract_decision_candidates(session, messages))
@@ -927,6 +938,53 @@ def _extract_subagent_reports(session: Session, messages: Sequence[Message]) -> 
             )
 
 
+def _enrich_subagent_reports_with_links(
+    reports: Sequence[SubagentReport],
+    session_links: Sequence[Mapping[str, object]],
+) -> tuple[SubagentReport, ...]:
+    if not session_links:
+        return tuple(reports)
+
+    links_by_child_ref: dict[str, Mapping[str, object]] = {}
+    for session_link in session_links:
+        for key in _session_link_child_keys(session_link):
+            links_by_child_ref.setdefault(key, session_link)
+
+    enriched: list[SubagentReport] = []
+    for report in reports:
+        link: Mapping[str, object] | None = links_by_child_ref.get(report.child_session_id or "")
+        if link is None:
+            enriched.append(report)
+            continue
+        status = _optional_text(link.get("status"))
+        enriched.append(
+            report.model_copy(
+                update={
+                    "child_link_status": status
+                    if status in {"resolved", "unresolved", "repaired", "quarantined"}
+                    else None,
+                    "child_link_type": _optional_text(link.get("link_type")),
+                    "resolved_child_session_id": _optional_text(link.get("resolved_dst_session_id")),
+                }
+            )
+        )
+    return tuple(enriched)
+
+
+def _session_link_child_keys(link: Mapping[str, object]) -> tuple[str, ...]:
+    keys: list[str] = []
+    resolved = _optional_text(link.get("resolved_dst_session_id"))
+    if resolved:
+        keys.append(resolved)
+    native = _optional_text(link.get("dst_native_id"))
+    if native:
+        keys.append(native)
+    origin = _optional_text(link.get("dst_origin"))
+    if origin and native:
+        keys.append(f"{origin}:{native}")
+    return tuple(keys)
+
+
 def _extract_events(session: Session, messages: Sequence[Message]) -> Iterable[RecoveryEvent]:
     seen: set[tuple[str, str]] = set()
     for message in messages:
@@ -1279,11 +1337,28 @@ def _subagent_report_metadata(report: SubagentReport) -> dict[str, str]:
         metadata["task_id"] = report.task_id
     if report.child_session_id:
         metadata["child_session_id"] = report.child_session_id
+    if report.child_link_status:
+        metadata["child_link_status"] = report.child_link_status
+    if report.child_link_type:
+        metadata["child_link_type"] = report.child_link_type
+    if report.resolved_child_session_id:
+        metadata["resolved_child_session_id"] = report.resolved_child_session_id
     return metadata
 
 
 def _subagent_metadata_line(metadata: Mapping[str, str]) -> str:
-    parts = [f"{key}={metadata[key]}" for key in ("tool_id", "task_id", "child_session_id") if metadata.get(key)]
+    parts = [
+        f"{key}={metadata[key]}"
+        for key in (
+            "tool_id",
+            "task_id",
+            "child_session_id",
+            "child_link_status",
+            "child_link_type",
+            "resolved_child_session_id",
+        )
+        if metadata.get(key)
+    ]
     return ", ".join(parts)
 
 

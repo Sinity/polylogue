@@ -650,6 +650,71 @@ async def test_recovery_digest_compiles_seeded_session(tmp_path: Path) -> None:
         await archive.close()
 
 
+async def test_recovery_digest_resolves_subagent_child_links(tmp_path: Path) -> None:
+    """Archive-backed recovery enriches raw Task child ids with topology refs."""
+    from polylogue.core.enums import BranchType
+
+    archive = _archive(tmp_path)
+    parent = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="recovery-parent",
+        title="Recovery Parent",
+        messages=[
+            ParsedMessage(
+                provider_message_id="parent-message",
+                role=Role.ASSISTANT,
+                text="Delegating to subagent",
+                blocks=[
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_USE,
+                        tool_name="Task",
+                        tool_id="task-tool",
+                        tool_input={
+                            "taskId": "task-123",
+                            "child_session_id": "codex-session:recovery-child",
+                            "prompt": "Inspect recovery topology.",
+                        },
+                    )
+                ],
+            )
+        ],
+    )
+    child = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="recovery-child",
+        parent_session_provider_id="recovery-parent",
+        branch_type=BranchType.SUBAGENT,
+        title="Recovery Child",
+        messages=[
+            ParsedMessage(
+                provider_message_id="child-message",
+                role=Role.ASSISTANT,
+                text="Child report",
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="Child report")],
+            )
+        ],
+    )
+    try:
+        with ArchiveStore(archive.config.archive_root) as archive_db:
+            parent_id = archive_db.write_parsed(parent)
+            child_id = archive_db.write_parsed(child)
+
+        digest = await archive.recovery_digest(parent_id)
+
+        assert digest is not None
+        [subagent] = digest.subagent_reports
+        assert subagent.child_session_id == child_id
+        assert subagent.child_link_status == "resolved"
+        assert subagent.child_link_type == "subagent"
+        assert subagent.resolved_child_session_id == child_id
+        assert "child_link_status=resolved" in digest.resume_markdown
+        report = await archive.recovery_report(parent_id, "continue")
+        assert report is not None
+        assert "resolved_child_session_id=codex-session:recovery-child" in report
+    finally:
+        await archive.close()
+
+
 async def test_list_read_view_profiles_exposes_shared_profile_payloads(tmp_path: Path) -> None:
     """``list_read_view_profiles`` exposes the executable read-view registry."""
     archive = _archive(tmp_path)
