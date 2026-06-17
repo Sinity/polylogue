@@ -13,9 +13,12 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 from click.testing import CliRunner
 
@@ -326,6 +329,8 @@ class CLISurface:
                 raise AssertionError(f"CLI no-results output is not JSON: {output!r}") from exc
             if isinstance(parsed, dict) and parsed.get("status") == "error" and parsed.get("code") == "no_results":
                 return ()
+            if isinstance(parsed, dict) and parsed.get("items") == [] and parsed.get("total") == 0:
+                return ()
             raise AssertionError(f"CLI exited 2 but envelope is not no_results: {parsed!r}")
         if exit_code != 0:
             raise AssertionError(f"polylogue list --format json exited {exit_code} for {query_case.name!r}: {output!r}")
@@ -413,7 +418,15 @@ class MCPSurface:
         )
         parsed = json.loads(payload_json)
         items = parsed.get("items", [])
-        return _sorted_unique([str(item["id"]) for item in items])
+        ids: list[str] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if "id" in item:
+                ids.append(str(item["id"]))
+            elif isinstance(item.get("session"), dict) and "id" in item["session"]:
+                ids.append(str(item["session"]["id"]))
+        return _sorted_unique(ids)
 
     async def query_count(self, query_case: ArchiveQueryCase) -> int:
         return len(await self.query_ids(query_case))
@@ -423,6 +436,91 @@ class MCPSurface:
 
         await self._services.close()
         _set_runtime_services(None)
+
+
+class DaemonHTTPSurface:
+    """Daemon HTTP adapter projection.
+
+    Starts the production ``DaemonAPIHTTPServer`` against the archive resolved
+    by ``workspace_env`` and projects ``GET /api/sessions`` rows into the
+    canonical id tuple used by the parity harness.
+    """
+
+    name = "daemon-http"
+
+    def __init__(self, *, db_path: Path) -> None:
+        from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
+
+        self._db_path = db_path
+        self._server = DaemonAPIHTTPServer(("127.0.0.1", 0), DaemonAPIHandler)
+        self._server.auth_token = ""
+        self._server.api_host = "127.0.0.1"
+        port = self._server.server_address[1]
+        self._base_url = f"http://127.0.0.1:{port}"
+        self._thread = threading.Thread(target=self._server.serve_forever, name="daemon-http-surface", daemon=True)
+        self._thread.start()
+
+    async def session_facts(self, scenario: ArchiveScenario) -> SessionFacts:
+        raise NotImplementedError("DaemonHTTPSurface only supports query-level projections")
+
+    async def archive_facts(self) -> ArchiveFacts:
+        raise NotImplementedError("DaemonHTTPSurface only supports query-level projections")
+
+    async def query_ids(self, query_case: ArchiveQueryCase) -> tuple[str, ...]:
+        params: dict[str, object] = {}
+        if query_case.provider is not None:
+            params["origin"] = _origin_for_provider_token(query_case.provider)
+        if query_case.search_text is not None:
+            params["contains"] = query_case.search_text
+        if query_case.since is not None:
+            params["since"] = query_case.since
+        if query_case.until is not None:
+            params["until"] = query_case.until
+        if query_case.has_tool_use:
+            params["has_tool_use"] = "true"
+        if query_case.has_thinking:
+            params["has_thinking"] = "true"
+        if query_case.min_messages is not None:
+            params["min_messages"] = query_case.min_messages
+        if query_case.max_messages is not None:
+            params["max_messages"] = query_case.max_messages
+        if query_case.min_words is not None:
+            params["min_words"] = query_case.min_words
+        if query_case.limit is not None:
+            params["limit"] = query_case.limit
+        if query_case.offset:
+            params["offset"] = query_case.offset
+
+        query = urlencode(params)
+        url = f"{self._base_url}/api/sessions"
+        if query:
+            url = f"{url}?{query}"
+        request = Request(url, headers={"Accept": "application/json"})
+        with urlopen(request, timeout=5.0) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        items = []
+        if isinstance(payload, dict):
+            if isinstance(payload.get("items"), list):
+                items = payload["items"]
+            elif isinstance(payload.get("hits"), list):
+                items = payload["hits"]
+        ids: list[str] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if "id" in item:
+                ids.append(str(item["id"]))
+            elif isinstance(item.get("session"), dict) and "id" in item["session"]:
+                ids.append(str(item["session"]["id"]))
+        return _sorted_unique(ids)
+
+    async def query_count(self, query_case: ArchiveQueryCase) -> int:
+        return len(await self.query_ids(query_case))
+
+    async def close(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+        self._thread.join(timeout=2.0)
 
 
 @dataclass(slots=True)
@@ -459,7 +557,7 @@ def build_adapter_surface_set(
     db_path: Path,
     archive_root: Path,
 ) -> ArchiveSurfaceSet:
-    """Build the repo/facade/cli/mcp adapter parity set.
+    """Build the repo/facade/cli/mcp/daemon adapter parity set.
 
     Excludes the raw-SQL projections (``SQLiteRecordSurface``,
     ``SQLiteHydratedSurface``) because they only express provider and
@@ -473,6 +571,7 @@ def build_adapter_surface_set(
         FacadeSurface(archive_root=archive_root, db_path=db_path),
         CLISurface(db_path=db_path),
         MCPSurface(db_path=db_path),
+        DaemonHTTPSurface(db_path=db_path),
     )
     return ArchiveSurfaceSet(surfaces=surfaces)
 
@@ -503,6 +602,7 @@ __all__ = [
     "ArchiveSurfaceAdapter",
     "ArchiveSurfaceSet",
     "CLISurface",
+    "DaemonHTTPSurface",
     "FacadeSurface",
     "MCPSurface",
     "RepositorySurface",

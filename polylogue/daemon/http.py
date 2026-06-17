@@ -97,6 +97,14 @@ def _archive_tag_filter(params: dict[str, list[str]]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(tags))
 
 
+def _csv_values(params: dict[str, list[str]], key: str) -> tuple[str, ...]:
+    """Collect repeated and/or comma-separated query-string values."""
+    values: list[str] = []
+    for value in params.get(key) or []:
+        values.extend(token.strip() for token in value.split(",") if token.strip())
+    return tuple(dict.fromkeys(values))
+
+
 def _archive_datetime_to_ms(value: datetime | None) -> int | None:
     if value is None:
         return None
@@ -1440,9 +1448,15 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         # Merge DSL-compiled spec filters with HTTP-param-based filters.
         origins = tuple(dict.fromkeys((spec.origins if spec else ()) + http_origins))
-        excluded_origins = spec.excluded_origins if spec else ()
+        excluded_origins = tuple(
+            dict.fromkeys(
+                (spec.excluded_origins if spec else ())
+                + _csv_values(params, "exclude_origin")
+                + _csv_values(params, "exclude_provider")
+            )
+        )
         tags = tuple(dict.fromkeys((spec.tags if spec else ()) + http_tags))
-        excluded_tags = spec.excluded_tags if spec else ()
+        excluded_tags = tuple(dict.fromkeys((spec.excluded_tags if spec else ()) + _csv_values(params, "exclude_tag")))
         origin = origins[0] if len(origins) == 1 else None
 
         # Date filters: DSL spec takes precedence over bare HTTP params.
@@ -1456,25 +1470,38 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         since_ms = _archive_datetime_to_ms(since_dt)
         until_ms = _archive_datetime_to_ms(until_dt)
 
-        # Remaining structured filters come directly from the compiled spec.
-        has_paste = spec.filter_has_paste if spec else False
-        has_tool_use = spec.filter_has_tool_use if spec else False
-        has_thinking = spec.filter_has_thinking if spec else False
-        repo_names = spec.repo_names if spec else ()
-        has_types = spec.has_types if spec else ()
-        tool_terms = spec.tool_terms if spec else ()
-        excluded_tool_terms = spec.excluded_tool_terms if spec else ()
-        action_terms = spec.action_terms if spec else ()
-        excluded_action_terms = spec.excluded_action_terms if spec else ()
-        action_sequence = spec.action_sequence if spec else ()
-        action_text_terms = spec.action_text_terms if spec else ()
-        referenced_paths = spec.referenced_path if spec else ()
-        cwd_prefix = spec.cwd_prefix if spec else None
-        title = spec.title if spec else None
-        min_messages = spec.min_messages if spec else None
-        max_messages = spec.max_messages if spec else None
-        min_words = spec.min_words if spec else None
-        max_words = spec.max_words if spec else None
+        # Remaining structured filters come from the compiled spec plus the
+        # stable HTTP query parameters accepted by the shared query builder.
+        # The split-archive fast path does not construct a SessionQuerySpec
+        # directly, so it must mirror those public params here.
+        has_paste = (spec.filter_has_paste if spec else False) or self._get_bool(params, "has_paste")
+        has_tool_use = (spec.filter_has_tool_use if spec else False) or self._get_bool(params, "has_tool_use")
+        has_thinking = (spec.filter_has_thinking if spec else False) or self._get_bool(params, "has_thinking")
+        repo_names = tuple(dict.fromkeys((spec.repo_names if spec else ()) + _csv_values(params, "repo")))
+        has_types = tuple(dict.fromkeys((spec.has_types if spec else ()) + _csv_values(params, "has_type")))
+        tool_terms = tuple(dict.fromkeys((spec.tool_terms if spec else ()) + _csv_values(params, "tool")))
+        excluded_tool_terms = tuple(
+            dict.fromkeys((spec.excluded_tool_terms if spec else ()) + _csv_values(params, "exclude_tool"))
+        )
+        action_terms = tuple(dict.fromkeys((spec.action_terms if spec else ()) + _csv_values(params, "action")))
+        excluded_action_terms = tuple(
+            dict.fromkeys((spec.excluded_action_terms if spec else ()) + _csv_values(params, "exclude_action"))
+        )
+        action_sequence = tuple(
+            dict.fromkeys((spec.action_sequence if spec else ()) + _csv_values(params, "action_sequence"))
+        )
+        action_text_terms = tuple(
+            dict.fromkeys((spec.action_text_terms if spec else ()) + _csv_values(params, "action_text"))
+        )
+        referenced_paths = tuple(
+            dict.fromkeys((spec.referenced_path if spec else ()) + _csv_values(params, "referenced_path"))
+        )
+        cwd_prefix = (spec.cwd_prefix if spec else None) or self._get_param(params, "cwd_prefix")
+        title = (spec.title if spec else None) or self._get_param(params, "title")
+        min_messages = (spec.min_messages if spec else None) or self._get_int(params, "min_messages", 0) or None
+        max_messages = (spec.max_messages if spec else None) or self._get_int(params, "max_messages", 0) or None
+        min_words = (spec.min_words if spec else None) or self._get_int(params, "min_words", 0) or None
+        max_words = None
         # session_id is passed separately to list_summaries/search_summaries
         # (count_sessions does not accept this param, so it cannot go in _filter_kw).
         spec_session_id = spec.session_id if spec else None
