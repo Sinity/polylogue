@@ -41,10 +41,12 @@ from polylogue.archive.query.predicate import (
     QueryExistsPredicate,
     QueryFieldPredicate,
     QueryNotPredicate,
+    QuerySemanticPredicate,
     QuerySequencePredicate,
     QueryTextPredicate,
 )
 from polylogue.archive.query.spec import SessionQuerySpec
+from polylogue.storage.runtime import MessageRecord
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -576,6 +578,90 @@ class TestBooleanQueryExpression:
             rows = archive.list_summaries(limit=100, boolean_predicate=spec.boolean_predicate)
 
         assert [row.session_id for row in rows] == ["chatgpt-export:ext-hit"]
+
+    def test_semantic_predicate_lowers_to_vector_seed_and_residual_filter(self) -> None:
+        spec = compile_expression('sessions where semantic:"query compiler" AND title:hit')
+
+        assert spec.similar_text == "query compiler"
+        assert spec.boolean_predicate == QueryFieldPredicate(field="title", values=("hit",))
+
+    def test_near_text_predicate_is_semantic_alias(self) -> None:
+        ast = parse_expression_ast('sessions where near:text:"query compiler"')
+
+        assert ast.boolean_predicate == QuerySemanticPredicate(text="query compiler")
+        assert compile_expression('sessions where near:text:"query compiler"').similar_text == "query compiler"
+
+    @pytest.mark.parametrize(
+        "expression, message",
+        [
+            ('sessions where semantic:"query compiler" OR title:hit', "under OR"),
+            ('sessions where NOT semantic:"query compiler"', "under NOT"),
+            ('sessions where semantic:"query compiler" AND semantic:"review loop"', "only one semantic"),
+        ],
+    )
+    def test_semantic_predicate_rejects_ranked_boolean_forms(self, expression: str, message: str) -> None:
+        with pytest.raises(ExpressionCompileError, match=message):
+            compile_expression(expression)
+
+    async def test_semantic_predicate_executes_via_vector_plan(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        from polylogue.archive.query.archive_execution import list_summaries_archive
+        from tests.infra.storage_records import SessionBuilder
+
+        class StubVectorProvider:
+            model = "stub"
+
+            def upsert(self, session_id: str, messages: list[MessageRecord]) -> None:
+                raise NotImplementedError
+
+            def query(self, text: str, limit: int = 10) -> list[tuple[str, float]]:
+                assert text == "query compiler"
+                assert limit >= 6
+                return [
+                    ("chatgpt-export:ext-hit:m-hit", 0.01),
+                    ("chatgpt-export:ext-miss:m-miss", 0.02),
+                ]
+
+            def query_by_session(self, session_id: str, limit: int = 10) -> list[tuple[str, float]]:
+                raise NotImplementedError
+
+        archive_root = workspace_env["archive_root"]
+        index_db = archive_root / "index.db"
+        (
+            SessionBuilder(index_db, "hit")
+            .provider("chatgpt")
+            .title("semantic hit")
+            .add_message(
+                "m-hit",
+                role="assistant",
+                text="query compiler plan",
+                blocks=[{"type": "text", "text": "query compiler plan"}],
+            )
+            .save()
+        )
+        (
+            SessionBuilder(index_db, "miss")
+            .provider("chatgpt")
+            .title("semantic miss")
+            .add_message(
+                "m-miss",
+                role="assistant",
+                text="query compiler plan",
+                blocks=[{"type": "text", "text": "query compiler plan"}],
+            )
+            .save()
+        )
+
+        spec = compile_expression('sessions where semantic:"query compiler" AND title:hit')
+        rows = await list_summaries_archive(
+            spec.to_plan(vector_provider=StubVectorProvider()),
+            archive_root=archive_root,
+            config=None,
+        )
+
+        assert [row.id for row in rows] == ["chatgpt-export:ext-hit"]
 
 
 # ---------------------------------------------------------------------------
