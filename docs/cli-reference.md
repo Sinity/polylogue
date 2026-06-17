@@ -596,7 +596,7 @@ Options:
 
 ## Public Action Contracts
 
-This section is generated from `polylogue.cli.action_contracts.ACTION_CONTRACTS`.
+This section is generated from `polylogue.operations.action_contracts.ACTION_CONTRACTS`.
 It records the public action floor, not every utility command in the Click tree.
 
 | Action | Effect | Input | Cardinality | Formats | Default | Machine envelope | Guards | Completion |
