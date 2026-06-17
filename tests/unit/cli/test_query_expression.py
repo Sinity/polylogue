@@ -1,8 +1,8 @@
-"""Unit tests for the query expression compiler (#1812).
+"""Unit tests for the shared Lark query DSL and lowerer (#2006).
 
 Covers:
 - Lexer AST output for key token forms
-- Compiler field mapping (field → spec attribute)
+- Lowerer field mapping (field → spec attribute)
 - Flag ↔ expression equivalence (same spec from --origin x and origin:x)
 - Rejected unknown fields (loud error)
 - Relative + absolute date pass-through
@@ -953,11 +953,11 @@ class TestBooleanQueryExpression:
 
 
 # ---------------------------------------------------------------------------
-# Compiler field-mapping tests
+# Lowerer field-mapping tests
 # ---------------------------------------------------------------------------
 
 
-class TestCompilerFieldMapping:
+class TestLowererFieldMapping:
     def test_repo(self) -> None:
         spec = compile_expression("repo:polylogue")
         assert spec.repo_names == ("polylogue",)
@@ -1515,7 +1515,7 @@ class TestFieldRegistry:
 
 
 class TestMCPWiring:
-    """build_query_spec routes free-text query through the shared compiler."""
+    """build_query_spec routes free-text query through the shared DSL lowerer."""
 
     def test_bare_words_preserved_as_fts(self) -> None:
         from polylogue.mcp.query_contracts import build_query_spec
@@ -1572,7 +1572,7 @@ class TestMCPWiring:
 
 
 # ---------------------------------------------------------------------------
-# Cross-surface parity (#1860 / #1812)
+# Cross-surface parity (#1860 / #2006)
 # ---------------------------------------------------------------------------
 
 
@@ -1584,8 +1584,8 @@ class TestCrossSurfaceParity:
     Daemon path: compile_expression_into(query_str, base_spec)  (same function)
 
     Because all three surfaces ultimately call compile_expression_into, these
-    tests verify that the compiler is wired symmetrically and that no surface
-    silently re-parses the expression through its own ad-hoc logic.
+    tests verify that the Lark-backed lowerer is wired symmetrically and that
+    no surface silently re-parses the expression through its own ad-hoc logic.
     """
 
     _EXPRESSION = "origin:claude-code-session has:paste repo:polylogue"

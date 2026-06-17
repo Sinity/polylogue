@@ -398,9 +398,9 @@ class QueryExpressionExplanation:
 # ---------------------------------------------------------------------------
 
 _QUERY_GRAMMAR = r"""
-    flat_query: flat_clause*
+    compact_query: compact_clause*
 
-    ?flat_clause: COUNT_CLAUSE       -> count_clause
+    ?compact_clause: COUNT_CLAUSE       -> count_clause
         | COUNT_FIELD BETWEEN INT AND INT -> count_between_clause
         | COUNT_FIELD COMP_OP INT    -> count_compare_clause
         | DATE_FIELD BETWEEN DATE_VALUE AND DATE_VALUE -> date_between_clause
@@ -470,7 +470,7 @@ _QUERY_GRAMMAR = r"""
 _QUERY_PARSER = Lark(
     _QUERY_GRAMMAR,
     parser="lalr",
-    start=["flat_query", "boolean_query"],
+    start=["compact_query", "boolean_query"],
     maybe_placeholders=False,
 )
 
@@ -733,7 +733,7 @@ def _normalize_date_range(min_text: str, max_text: str) -> _DateRangeToken:
 
 @v_args(inline=True)
 class _QueryTransformer(Transformer[Token, _LexToken | str | QueryExpressionAST]):
-    def flat_query(self, *clauses: _LexToken) -> QueryExpressionAST:
+    def compact_query(self, *clauses: _LexToken) -> QueryExpressionAST:
         return QueryExpressionAST(tuple(clauses))
 
     def count_clause(self, token: Token) -> _CountToken:
@@ -1199,7 +1199,7 @@ def parse_expression_ast(expression: str) -> QueryExpressionAST:
     if _is_boolean_expression(expression):
         return QueryExpressionAST((), boolean_predicate=_parse_boolean_predicate(expression))
     try:
-        tree = _QUERY_PARSER.parse(expression, start="flat_query")
+        tree = _QUERY_PARSER.parse(expression, start="compact_query")
     except UnexpectedInput as exc:
         raise ExpressionCompileError(
             _parse_error_message(expression, exc), field=_parse_error_field(expression)
@@ -1355,7 +1355,7 @@ def explain_expression(expression: str) -> QueryExpressionExplanation:
 
 
 # ---------------------------------------------------------------------------
-# Compiler
+# Lowering
 # ---------------------------------------------------------------------------
 
 
