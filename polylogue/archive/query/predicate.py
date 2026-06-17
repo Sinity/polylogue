@@ -63,8 +63,23 @@ class QuerySequencePredicate:
         return {"kind": "sequence", "unit": "action", "actions": list(self.action_terms)}
 
 
+@dataclass(frozen=True)
+class QueryTextPredicate:
+    """Lexical FTS predicate over session message/block text."""
+
+    text: str
+
+    def to_payload(self) -> dict[str, object]:
+        return {"kind": "fts", "unit": "session", "text": self.text}
+
+
 QueryPredicate: TypeAlias = (
-    QueryFieldPredicate | QueryNotPredicate | QueryBoolPredicate | QueryExistsPredicate | QuerySequencePredicate
+    QueryFieldPredicate
+    | QueryNotPredicate
+    | QueryBoolPredicate
+    | QueryExistsPredicate
+    | QuerySequencePredicate
+    | QueryTextPredicate
 )
 
 
@@ -77,4 +92,5 @@ __all__ = [
     "QueryNotPredicate",
     "QueryPredicate",
     "QuerySequencePredicate",
+    "QueryTextPredicate",
 ]

@@ -42,6 +42,7 @@ from polylogue.archive.query.predicate import (
     QueryFieldPredicate,
     QueryNotPredicate,
     QuerySequencePredicate,
+    QueryTextPredicate,
 )
 from polylogue.archive.query.spec import SessionQuerySpec
 
@@ -221,6 +222,22 @@ class TestBooleanQueryExpression:
         ast = parse_expression_ast("seq(action:file_edit -> action:shell -> action:file_edit)")
 
         assert ast.boolean_predicate == QuerySequencePredicate(action_terms=("file_edit", "shell", "file_edit"))
+
+    def test_fts_ast_exposes_text_predicate(self) -> None:
+        ast = parse_expression_ast('repo:polylogue AND ~"timeout failure"')
+
+        assert ast.boolean_predicate == QueryBoolPredicate(
+            op="and",
+            children=(
+                QueryFieldPredicate(field="repo", values=("polylogue",)),
+                QueryTextPredicate(text="timeout failure"),
+            ),
+        )
+
+    def test_bare_fts_ast_exposes_text_predicate(self) -> None:
+        ast = parse_expression_ast("~timeout")
+
+        assert ast.boolean_predicate == QueryTextPredicate(text="timeout")
 
     def test_structural_field_at_session_scope_raises(self) -> None:
         with pytest.raises(ExpressionCompileError, match="not supported for session predicates"):
@@ -522,6 +539,43 @@ class TestBooleanQueryExpression:
             rows = archive.list_summaries(limit=100, boolean_predicate=spec.boolean_predicate)
 
         assert [row.session_id for row in rows] == ["claude-code-session:ext-hit"]
+
+    def test_fts_predicate_executes_against_archive(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "hit")
+            .provider("chatgpt")
+            .title("fts hit")
+            .add_message(
+                "m-hit",
+                role="assistant",
+                text="timeout failure",
+                blocks=[{"type": "text", "text": "timeout failure in query pipeline"}],
+            )
+            .save()
+        )
+        (
+            SessionBuilder(index_db, "miss")
+            .provider("chatgpt")
+            .title("fts miss")
+            .add_message(
+                "m-miss",
+                role="assistant",
+                text="ordinary response",
+                blocks=[{"type": "text", "text": "ordinary response"}],
+            )
+            .save()
+        )
+
+        spec = compile_expression('sessions where origin:chatgpt-export AND ~"timeout failure"')
+        assert spec.boolean_predicate is not None
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            rows = archive.list_summaries(limit=100, boolean_predicate=spec.boolean_predicate)
+
+        assert [row.session_id for row in rows] == ["chatgpt-export:ext-hit"]
 
 
 # ---------------------------------------------------------------------------

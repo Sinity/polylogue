@@ -18,6 +18,7 @@ from polylogue.archive.query.predicate import (
     QueryNotPredicate,
     QueryPredicate,
     QuerySequencePredicate,
+    QueryTextPredicate,
 )
 from polylogue.archive.semantic.pricing import (
     CostBasisPayload,
@@ -4485,6 +4486,25 @@ def _exists_predicate_clause(table_alias: str, predicate: QueryExistsPredicate) 
     raise ValueError(f"unsupported structural query unit: {predicate.unit}")
 
 
+def _fts_predicate_clause(table_alias: str, predicate: QueryTextPredicate) -> tuple[str, list[object]]:
+    match_query = normalize_fts5_query(predicate.text)
+    if match_query is None:
+        raise ValueError("FTS predicate requires non-empty text")
+    return (
+        f"""
+        EXISTS (
+            SELECT 1
+            FROM messages_fts
+            JOIN blocks filter_fts_blocks
+              ON filter_fts_blocks.rowid = messages_fts.rowid
+            WHERE filter_fts_blocks.session_id = {table_alias}.session_id
+              AND messages_fts MATCH ?
+        )
+        """.strip(),
+        [match_query],
+    )
+
+
 def _boolean_predicate_clause(
     table_alias: str,
     predicate: QueryPredicate,
@@ -4497,6 +4517,8 @@ def _boolean_predicate_clause(
         return _exists_predicate_clause(table_alias, predicate)
     if isinstance(predicate, QuerySequencePredicate):
         return _action_sequence_clause(table_alias, predicate.action_terms)
+    if isinstance(predicate, QueryTextPredicate):
+        return _fts_predicate_clause(table_alias, predicate)
     if isinstance(predicate, QueryNotPredicate):
         clause, params = _boolean_predicate_clause(table_alias, predicate.child, tags_relation=tags_relation)
         return (f"NOT ({clause})" if clause else "", params)
