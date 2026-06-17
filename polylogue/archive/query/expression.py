@@ -546,6 +546,16 @@ class CountQueryFieldInfo:
     example: str
 
 
+@dataclass(frozen=True)
+class DateQueryFieldInfo:
+    """Completion/query-builder metadata for readable date predicates."""
+
+    description: str
+    operators: tuple[str, ...]
+    range_keyword: str
+    example: str
+
+
 STRUCTURAL_QUERY_UNIT_REGISTRY: dict[str, StructuralQueryUnitInfo] = {
     "action": StructuralQueryUnitInfo(
         description="Match sessions with at least one action row satisfying the child predicate.",
@@ -579,6 +589,15 @@ COUNT_QUERY_FIELD_REGISTRY: dict[str, CountQueryFieldInfo] = {
     ),
 }
 
+DATE_QUERY_FIELD_REGISTRY: dict[str, DateQueryFieldInfo] = {
+    "date": DateQueryFieldInfo(
+        description="Session timestamp predicate over COALESCE(updated_at, created_at).",
+        operators=(">=", "<=", ">", "<"),
+        range_keyword="between",
+        example="date between 2026-01-01 and 2026-02-01",
+    ),
+}
+
 
 def structural_query_units() -> tuple[str, ...]:
     """Return the structural units accepted by the query grammar."""
@@ -605,6 +624,21 @@ def count_query_operators(field: str) -> tuple[str, ...]:
     """Return readable comparison/range operators accepted for a count field."""
 
     info = COUNT_QUERY_FIELD_REGISTRY.get(field.lower())
+    if info is None:
+        return ()
+    return (*info.operators, info.range_keyword)
+
+
+def date_query_fields() -> tuple[str, ...]:
+    """Return date fields with readable comparison/range syntax."""
+
+    return tuple(sorted(DATE_QUERY_FIELD_REGISTRY))
+
+
+def date_query_operators(field: str) -> tuple[str, ...]:
+    """Return readable comparison/range operators accepted for a date field."""
+
+    info = DATE_QUERY_FIELD_REGISTRY.get(field.lower())
     if info is None:
         return ()
     return (*info.operators, info.range_keyword)
@@ -1807,6 +1841,10 @@ __all__ = [
     "COUNT_QUERY_FIELD_REGISTRY",
     "count_query_fields",
     "count_query_operators",
+    "DateQueryFieldInfo",
+    "DATE_QUERY_FIELD_REGISTRY",
+    "date_query_fields",
+    "date_query_operators",
     "explain_expression",
     "ExpressionCompileError",
     "EXPRESSION_FIELD_REGISTRY",

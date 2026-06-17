@@ -44,6 +44,11 @@ class QueryFirstGroup(QueryFirstGroupBase):
             from polylogue.cli.shell_completion_values import query_count_operator_candidates
 
             return [candidate.to_click_item() for candidate in query_count_operator_candidates(count_field, incomplete)]
+        date_field = _date_operator_completion_field()
+        if date_field is not None:
+            from polylogue.cli.shell_completion_values import query_date_operator_candidates
+
+            return [candidate.to_click_item() for candidate in query_date_operator_candidates(date_field, incomplete)]
         if _is_after_then_completion():
             from polylogue.cli.shell_completion_values import complete_query_actions
 
@@ -76,6 +81,21 @@ def _count_operator_completion_field() -> str | None:
         return None
     previous = words[-2].lower()
     if previous not in {"messages", "words"}:
+        return None
+    if len(words) >= 3 and words[-3].lower() == "between":
+        return None
+    return previous
+
+
+def _date_operator_completion_field() -> str | None:
+    words = _completion_words()
+    raw_words = os.environ.get("COMP_WORDS", "")
+    if raw_words.endswith(" ") and words:
+        return "date" if words[-1].lower() == "date" else None
+    if len(words) < 2:
+        return None
+    previous = words[-2].lower()
+    if previous != "date":
         return None
     if len(words) >= 3 and words[-3].lower() == "between":
         return None
