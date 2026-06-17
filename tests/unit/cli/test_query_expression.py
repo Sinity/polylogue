@@ -27,11 +27,14 @@ import pytest
 from polylogue.archive.query.expression import (
     EXPRESSION_FIELD_REGISTRY,
     ExpressionCompileError,
+    _CountToken,
     _FieldToken,
     _lex,
     _TextToken,
     compile_expression,
     compile_expression_into,
+    explain_expression,
+    parse_expression_ast,
 )
 from polylogue.archive.query.spec import SessionQuerySpec
 
@@ -51,11 +54,28 @@ def _spec(**kwargs: Any) -> SessionQuerySpec:
 
 
 class TestLexer:
+    def test_parse_expression_ast_exposes_clauses(self) -> None:
+        ast = parse_expression_ast('repo:polylogue "json envelope" messages:>=10')
+
+        assert ast.clauses == (
+            _FieldToken(field="repo", raw_value="polylogue", negated=False),
+            _TextToken(text="json envelope", quoted=True, negated=False),
+            _CountToken(field="messages", op=">=", number=10),
+        )
+
     def test_bare_words(self) -> None:
         tokens = _lex("json envelope")
         assert tokens == [
             _TextToken(text="json", quoted=False, negated=False),
             _TextToken(text="envelope", quoted=False, negated=False),
+        ]
+
+    def test_code_like_bare_words(self) -> None:
+        tokens = _lex("foo(bar) array[0] dict{key}")
+        assert tokens == [
+            _TextToken(text="foo(bar)", quoted=False, negated=False),
+            _TextToken(text="array[0]", quoted=False, negated=False),
+            _TextToken(text="dict{key}", quoted=False, negated=False),
         ]
 
     def test_quoted_phrase(self) -> None:
@@ -90,11 +110,50 @@ class TestLexer:
         with pytest.raises(ExpressionCompileError, match="cross-field OR"):
             _lex("(origin:x OR origin:y)")
 
+    def test_parse_expression_ast_preserves_escaped_quotes(self) -> None:
+        ast = parse_expression_ast(r'near:"say \"hello\"" -"bad \"phrase\""')
+
+        assert ast.clauses == (
+            _FieldToken(field="near", raw_value='say "hello"', negated=False),
+            _TextToken(text='bad "phrase"', quoted=True, negated=True),
+        )
+
     def test_empty_expression(self) -> None:
         assert _lex("") == []
 
     def test_whitespace_only(self) -> None:
         assert _lex("   ") == []
+
+
+class TestExplainExpression:
+    def test_explain_expression_reports_ast_lowerer_and_plan(self) -> None:
+        explanation = explain_expression('repo:polylogue has:paste "json envelope"')
+
+        assert explanation.source_text == 'repo:polylogue has:paste "json envelope"'
+        assert explanation.lowerer == "lark-query-expression-to-session-query-spec"
+        assert explanation.unsupported_nodes == ()
+        assert explanation.lowered_spec.repo_names == ("polylogue",)
+        assert explanation.lowered_spec.filter_has_paste is True
+        assert explanation.clauses[0].to_payload() == {
+            "kind": "field",
+            "field": "repo",
+            "value": "polylogue",
+        }
+        assert explanation.clauses[2].to_payload() == {
+            "kind": "text",
+            "value": "json envelope",
+            "quoted": True,
+        }
+        assert "repo: polylogue" in explanation.plan_description
+
+    def test_explain_expression_reports_json_spec_mode(self) -> None:
+        explanation = explain_expression('{"repo": "polylogue", "limit": 5}')
+
+        assert explanation.lowerer == "json-spec"
+        assert explanation.lowered_spec.repo_names == ("polylogue",)
+        assert explanation.lowered_spec.limit == 5
+        assert explanation.clauses[0].kind == "json"
+        assert explanation.to_payload()["unsupported_nodes"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -302,7 +361,7 @@ class TestRejection:
             compile_expression("repo:polylogue OR repo:sinex")
 
     def test_cross_field_or_mentions_follow_up_issue(self) -> None:
-        with pytest.raises(ExpressionCompileError, match="1812"):
+        with pytest.raises(ExpressionCompileError, match="2006"):
             compile_expression("repo:polylogue OR origin:claude-code-session")
 
     def test_unknown_origin_raises(self) -> None:
@@ -312,6 +371,12 @@ class TestRejection:
     def test_messages_without_op_raises(self) -> None:
         with pytest.raises(ExpressionCompileError, match="comparison operator"):
             compile_expression("messages:10")
+
+    @pytest.mark.parametrize("expr", ["messages:>=10x", "words:<=5m"])
+    def test_malformed_count_clause_raises_instead_of_broadening(self, expr: str) -> None:
+        with pytest.raises(ExpressionCompileError, match="comparison operator") as exc_info:
+            compile_expression(expr)
+        assert exc_info.value.field in {"messages", "words"}
 
 
 # ---------------------------------------------------------------------------
@@ -578,9 +643,9 @@ class TestFieldRegistry:
             desc
         )
 
-    def test_cross_field_or_error_cites_1812(self) -> None:
-        """Regression: cross-field OR error must cite issue #1812, not #1858 (#1861)."""
-        with pytest.raises(ExpressionCompileError, match="1812"):
+    def test_cross_field_or_error_cites_2006(self) -> None:
+        """Regression: cross-field OR error must cite the full query DSL issue."""
+        with pytest.raises(ExpressionCompileError, match="2006"):
             compile_expression("repo:x OR origin:y")
 
 

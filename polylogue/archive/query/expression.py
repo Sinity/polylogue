@@ -1,11 +1,11 @@
-"""Query expression compiler: DSL string → :class:`SessionQuerySpec`.
+"""Query expression parser/lowerer: DSL string → :class:`SessionQuerySpec`.
 
 This module is the shared front-door for the query-expression language used
 by all Polylogue read surfaces (CLI bare-query path, Python facade, and any
 future surfaces that wire in).
 
-Grammar (flat-conjunction DSL)
---------------------------------
+Current executable grammar
+--------------------------
 An expression is a whitespace-separated sequence of *clauses*, all AND'd:
 
     repo:polylogue since:7d "json envelope"
@@ -27,9 +27,10 @@ Clause forms:
 - ``words:>=N``            — count comparison (min_words)
 - ``{...}``                — direct JSON spec (validated into SessionQuerySpec)
 
-Cross-field OR (``(a origin:x OR origin:y)``) and nested parentheses across
-different fields are **rejected loudly** — they require a boolean-tree spec
-that is tracked in issue #1812.  Unknown fields also fail loudly.
+Cross-field OR and nested Boolean groups are **rejected loudly** until #2006
+adds executable Boolean AST lowerers. Unknown fields also fail loudly. The
+Lark grammar in this module is the query grammar; there is no separate
+long-lived "floor grammar."
 
 Field registry
 --------------
@@ -57,6 +58,9 @@ import json
 import re
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal
+
+from lark import Lark, Token, Transformer, v_args
+from lark.exceptions import UnexpectedInput
 
 from polylogue.archive.query.spec import (
     QUERY_ACTION_TYPES,
@@ -211,7 +215,7 @@ _HAS_BOOL_MAP: dict[str, str] = {
 }
 
 # ---------------------------------------------------------------------------
-# Lexer tokens
+# Parser AST
 # ---------------------------------------------------------------------------
 
 
@@ -251,183 +255,253 @@ class _JsonToken:
 
 _LexToken = _FieldToken | _CountToken | _TextToken | _JsonToken
 
+
+@dataclass(frozen=True)
+class QueryExpressionAST:
+    """Parsed query expression before lowering into ``SessionQuerySpec``."""
+
+    clauses: tuple[_LexToken, ...]
+
+
+ExplainClauseKind = Literal["field", "count", "text", "json"]
+
+
+@dataclass(frozen=True)
+class QueryExpressionExplainClause:
+    """Serializable clause view for parser/lowerer diagnostics."""
+
+    kind: ExplainClauseKind
+    field: str | None = None
+    value: str | None = None
+    negated: bool = False
+    quoted: bool = False
+    op: Literal[">=", "<=", "="] | None = None
+    number: int | None = None
+
+    def to_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {"kind": self.kind}
+        if self.field is not None:
+            payload["field"] = self.field
+        if self.value is not None:
+            payload["value"] = self.value
+        if self.negated:
+            payload["negated"] = True
+        if self.quoted:
+            payload["quoted"] = True
+        if self.op is not None:
+            payload["op"] = self.op
+        if self.number is not None:
+            payload["number"] = self.number
+        return payload
+
+
+@dataclass(frozen=True)
+class QueryExpressionExplanation:
+    """Debug envelope for query parsing, lowering, and execution-plan selection."""
+
+    source_text: str
+    clauses: tuple[QueryExpressionExplainClause, ...]
+    lowerer: str
+    lowered_spec: SessionQuerySpec
+    plan_description: tuple[str, ...]
+    unsupported_nodes: tuple[str, ...] = ()
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "source_text": self.source_text,
+            "clauses": [clause.to_payload() for clause in self.clauses],
+            "lowerer": self.lowerer,
+            "plan_description": list(self.plan_description),
+            "unsupported_nodes": list(self.unsupported_nodes),
+        }
+
+
 # ---------------------------------------------------------------------------
-# Lexer
+# Parser
 # ---------------------------------------------------------------------------
 
-# Matches: optional leading -, field name, colon, value (bare, quoted, or parens group)
-_FIELD_RE = re.compile(
+_QUERY_GRAMMAR = r"""
+    start: clause*
+
+    ?clause: COUNT_CLAUSE       -> count_clause
+        | FIELD_CLAUSE          -> field_clause
+        | NEG_QUOTED_TEXT       -> neg_quoted_text
+        | QUOTED_TEXT           -> quoted_text
+        | NEG_BARE_TEXT         -> neg_bare_text
+        | BARE_TEXT             -> bare_text
+
+    COUNT_CLAUSE.5: /(messages|words):(>=|<=|=)\d+(?!\S)/
+    FIELD_CLAUSE.4: /-?[a-zA-Z_][a-zA-Z0-9_]*:(?:"(\\.|[^"\\])*"|\([^)]*\)|[^\s"()\[\]{}]+)/
+    NEG_QUOTED_TEXT.3: /-"(\\.|[^"\\])*"/
+    QUOTED_TEXT.2: /"(\\.|[^"\\])*"/
+    NEG_BARE_TEXT.1: /-[^\s"]+/
+    BARE_TEXT: /[^\s"]+/
+
+    %import common.WS
+    %ignore WS
+"""
+
+
+_QUERY_PARSER = Lark(_QUERY_GRAMMAR, parser="lalr", maybe_placeholders=False)
+
+_COUNT_CLAUSE_RE = re.compile(r"^(messages|words):(>=|<=|=)(\d+)$")
+_FIELD_CLAUSE_RE = re.compile(
     r"""
-    ^(-?)                           # optional negation
-    ([a-zA-Z_][a-zA-Z0-9_]*)       # field name
-    :                               # separator
-    (?:
-        "([^"]*)"                   # quoted value  → group 3
+    ^(-?)
+    ([a-zA-Z_][a-zA-Z0-9_]*)
+    :
+    (
+        "(?:\\.|[^"\\])*"
         |
-        \(([^)]*)\)                 # paren group   → group 4
+        \([^)]*\)
         |
-        ([^\s"()\[\]]+)             # bare value    → group 5
+        [^\s"()\[\]{}]+
     )
     $
     """,
     re.VERBOSE,
 )
 
-_COUNT_RE = re.compile(r"^(messages|words):(>=|<=|=)(\d+)$")
 
-_QUOTED_RE = re.compile(r'^(-?)"([^"]*)"$')
+def _decode_escaped_string(token: Token) -> str:
+    try:
+        decoded = json.loads(str(token))
+    except json.JSONDecodeError as exc:
+        raise ExpressionCompileError(f"invalid quoted string: {exc}", field=None) from exc
+    if not isinstance(decoded, str):
+        raise ExpressionCompileError("quoted value did not decode to a string", field=None)
+    return decoded
 
-# JSON spec must start with { and be balanced; simple heuristic: starts with {
-_JSON_START_RE = re.compile(r"^\{")
+
+def _parse_error_message(expression: str, exc: UnexpectedInput) -> str:
+    if expression.lstrip().startswith("("):
+        return (
+            "cross-field OR parentheses are not supported; express as separate queries "
+            "or use field:(a|b|c) for in-field OR. "
+            "Boolean-tree queries are tracked in issue #2006."
+        )
+    if '"' in expression:
+        return "unclosed quoted string"
+    return f"invalid query expression near column {exc.column}"
 
 
-def _next_token(text: str) -> tuple[str, str]:
-    """Extract the next token from *text*, respecting quoted and paren sub-strings.
+@v_args(inline=True)
+class _QueryTransformer(Transformer[Token, _LexToken | str | QueryExpressionAST]):
+    def start(self, *clauses: _LexToken) -> QueryExpressionAST:
+        return QueryExpressionAST(tuple(clauses))
 
-    Returns ``(token, remainder)`` where *token* is the next whitespace-delimited
-    chunk (with quoted/paren sections treated as opaque) and *remainder* is what
-    follows.
+    def count_clause(self, token: Token) -> _CountToken:
+        matched = _COUNT_CLAUSE_RE.match(str(token))
+        if matched is None:
+            raise ExpressionCompileError(f"invalid count clause: {token}", field=None)
+        op_text = matched.group(2)
+        op: Literal[">=", "<=", "="] = ">=" if op_text == ">=" else "<=" if op_text == "<=" else "="
+        return _CountToken(field=matched.group(1), op=op, number=int(matched.group(3)))
 
-    Examples::
+    def field_clause(self, token: Token) -> _FieldToken:
+        matched = _FIELD_CLAUSE_RE.match(str(token))
+        if matched is None:
+            raise ExpressionCompileError(f"invalid field clause: {token}", field=None)
+        negated, field_name, raw_value = matched.group(1), matched.group(2), matched.group(3)
+        if raw_value.startswith('"'):
+            raw_value = _decode_escaped_string(Token("ESCAPED_STRING", raw_value))
+        elif raw_value.startswith("("):
+            raw_value = raw_value[1:-1]
+        return _FieldToken(field=field_name.lower(), raw_value=raw_value, negated=bool(negated))
 
-        _next_token('near:"semantic search" rest')
-        → ('near:"semantic search"', ' rest')
+    def neg_quoted_text(self, text: Token) -> _TextToken:
+        return _TextToken(
+            text=_decode_escaped_string(Token("ESCAPED_STRING", str(text)[1:])),
+            quoted=True,
+            negated=True,
+        )
 
-        _next_token('repo:polylogue since:7d')
-        → ('repo:polylogue', ' since:7d')
-    """
-    i = 0
-    n = len(text)
-    while i < n:
-        ch = text[i]
-        if ch in (" ", "\t", "\n", "\r"):
-            return text[:i], text[i:]
-        if ch == '"':
-            # Skip over a quoted sub-string
-            i += 1
-            while i < n and text[i] != '"':
-                i += 1
-            i += 1  # consume closing "
-        elif ch == "(":
-            # Skip over a paren group
-            depth = 1
-            i += 1
-            while i < n and depth > 0:
-                if text[i] == "(":
-                    depth += 1
-                elif text[i] == ")":
-                    depth -= 1
-                i += 1
-        else:
-            i += 1
-    return text, ""
+    def quoted_text(self, text: Token) -> _TextToken:
+        return _TextToken(text=_decode_escaped_string(text), quoted=True, negated=False)
+
+    def neg_bare_text(self, text: Token) -> _TextToken:
+        value = str(text)
+        return _TextToken(text=value[1:], quoted=False, negated=True)
+
+    def bare_text(self, text: Token) -> _TextToken:
+        return _TextToken(text=str(text), quoted=False, negated=False)
+
+
+_QUERY_TRANSFORMER = _QueryTransformer()
+
+
+def parse_expression_ast(expression: str) -> QueryExpressionAST:
+    """Parse a query expression into the typed AST without lowering it."""
+    expression = expression.strip()
+    if not expression:
+        return QueryExpressionAST(())
+    if expression.startswith("("):
+        raise ExpressionCompileError(
+            "cross-field OR / parentheses are not supported; use field:(a|b|c)",
+            field=None,
+        )
+    try:
+        tree = _QUERY_PARSER.parse(expression)
+    except UnexpectedInput as exc:
+        raise ExpressionCompileError(_parse_error_message(expression, exc), field=None) from exc
+    transformed = _QUERY_TRANSFORMER.transform(tree)
+    if not isinstance(transformed, QueryExpressionAST):
+        raise ExpressionCompileError("query expression did not produce an AST", field=None)
+    return transformed
 
 
 def _lex(expression: str) -> list[_LexToken]:
-    """Tokenize an expression string into a flat list of tokens."""
-    tokens: list[_LexToken] = []
-    remaining = expression.strip()
+    """Project the canonical Lark AST into the current clause lowerer input."""
+    return list(parse_expression_ast(expression).clauses)
 
-    while remaining:
-        remaining = remaining.lstrip()
-        if not remaining:
-            break
 
-        # --- JSON spec ---
-        if remaining.startswith("{"):
-            depth = 0
-            i = 0
-            while i < len(remaining):
-                ch = remaining[i]
-                if ch == "{":
-                    depth += 1
-                elif ch == "}":
-                    depth -= 1
-                    if depth == 0:
-                        tokens.append(_JsonToken(raw=remaining[: i + 1]))
-                        remaining = remaining[i + 1 :]
-                        break
-                elif ch == '"':
-                    i += 1
-                    while i < len(remaining) and remaining[i] != '"':
-                        if remaining[i] == "\\":
-                            i += 1
-                        i += 1
-                i += 1
-            else:
-                raise ExpressionCompileError("unclosed '{' in JSON spec", field=None)
-            continue
+def _explain_clause(token: _LexToken) -> QueryExpressionExplainClause:
+    if isinstance(token, _FieldToken):
+        return QueryExpressionExplainClause(
+            kind="field",
+            field=token.field,
+            value=token.raw_value,
+            negated=token.negated,
+        )
+    if isinstance(token, _CountToken):
+        return QueryExpressionExplainClause(
+            kind="count",
+            field=token.field,
+            op=token.op,
+            number=token.number,
+        )
+    if isinstance(token, _TextToken):
+        return QueryExpressionExplainClause(
+            kind="text",
+            value=token.text,
+            negated=token.negated,
+            quoted=token.quoted,
+        )
+    return QueryExpressionExplainClause(kind="json", value=token.raw)
 
-        # --- Quoted phrase (possibly negated) ---
-        if remaining.startswith('"') or remaining.startswith('-"'):
-            negated = remaining.startswith('-"')
-            start = 2 if negated else 1
-            i = start
-            phrase_chars: list[str] = []
-            found_close = False
-            while i < len(remaining):
-                ch = remaining[i]
-                if ch == "\\":
-                    i += 1
-                    if i < len(remaining):
-                        phrase_chars.append(remaining[i])
-                elif ch == '"':
-                    found_close = True
-                    break
-                else:
-                    phrase_chars.append(ch)
-                i += 1
-            if not found_close:
-                raise ExpressionCompileError("unclosed quoted string", field=None)
-            phrase = "".join(phrase_chars)
-            tokens.append(_TextToken(text=phrase, quoted=True, negated=negated))
-            remaining = remaining[i + 1 :]
-            continue
 
-        # --- Cross-field OR detection: a bare `(` not attached to a field ---
-        if remaining.startswith("("):
-            raise ExpressionCompileError(
-                "cross-field OR parentheses are not supported; express as separate queries "
-                "or use field:(a|b|c) for in-field OR. "
-                "Boolean-tree queries are tracked in issue #1812.",
-                field=None,
-            )
-
-        # --- Consume the next token, respecting quotes and parens ---
-        raw_tok, remaining = _next_token(remaining)
-
-        # Try count comparison first (messages:>=10)
-        m_count = _COUNT_RE.match(raw_tok)
-        if m_count:
-            count_field = m_count.group(1)
-            op_str = m_count.group(2)
-            number = int(m_count.group(3))
-            op: Literal[">=", "<=", "="] = ">=" if op_str == ">=" else "<=" if op_str == "<=" else "="
-            tokens.append(_CountToken(field=count_field, op=op, number=number))
-            continue
-
-        # Try field clause (field:value or -field:value)
-        m_field = _FIELD_RE.match(raw_tok)
-        if m_field:
-            neg_str, field_name, quoted_val, paren_val, bare_val = (
-                m_field.group(1),
-                m_field.group(2),
-                m_field.group(3),
-                m_field.group(4),
-                m_field.group(5),
-            )
-            raw_value = quoted_val if quoted_val is not None else (paren_val if paren_val is not None else bare_val)
-            tokens.append(_FieldToken(field=field_name.lower(), raw_value=raw_value or "", negated=bool(neg_str)))
-            continue
-
-        # Bare word (possibly negated via leading -)
-        # Note: a bare `-` alone is treated as a word.
-        # A `-"phrase"` form was handled above.
-        negated_word = raw_tok.startswith("-") and len(raw_tok) > 1 and not raw_tok[1:].startswith('"')
-        word_text = raw_tok[1:] if negated_word else raw_tok
-        tokens.append(_TextToken(text=word_text, quoted=False, negated=negated_word))
-
-    return tokens
+def explain_expression(expression: str) -> QueryExpressionExplanation:
+    """Explain parser output, lowering path, and execution-plan descriptions."""
+    source_text = expression
+    stripped = expression.strip()
+    if stripped.startswith("{") or stripped.startswith("["):
+        lowered = _compile_json_spec(stripped)
+        return QueryExpressionExplanation(
+            source_text=source_text,
+            clauses=(_explain_clause(_JsonToken(raw=stripped)),),
+            lowerer="json-spec",
+            lowered_spec=lowered,
+            plan_description=tuple(lowered.to_plan().describe()),
+        )
+    ast = parse_expression_ast(stripped)
+    lowered = compile_expression(stripped)
+    return QueryExpressionExplanation(
+        source_text=source_text,
+        clauses=tuple(_explain_clause(clause) for clause in ast.clauses),
+        lowerer="lark-query-expression-to-session-query-spec",
+        lowered_spec=lowered,
+        plan_description=tuple(lowered.to_plan().describe()),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -787,7 +861,8 @@ def compile_expression(expression: str) -> SessionQuerySpec:
     if expression.startswith("{") or expression.startswith("["):
         return _compile_json_spec(expression)
 
-    tokens = _lex(expression)
+    ast = parse_expression_ast(expression)
+    tokens = list(ast.clauses)
 
     # Check for JSON tokens (should only appear alone; mixed is an error)
     json_tokens = [t for t in tokens if isinstance(t, _JsonToken)]
@@ -805,7 +880,7 @@ def compile_expression(expression: str) -> SessionQuerySpec:
         raise ExpressionCompileError(
             "cross-field OR is not supported in this version; express as separate queries "
             "or use field:(a|b|c) for in-field OR. "
-            "Boolean-tree queries are tracked in issue #1812.",
+            "Boolean-tree queries are tracked in issue #2006.",
             field=None,
         )
 
@@ -882,7 +957,12 @@ def _compile_json_spec(raw: str) -> SessionQuerySpec:
 __all__ = [
     "compile_expression",
     "compile_expression_into",
+    "explain_expression",
     "ExpressionCompileError",
     "EXPRESSION_FIELD_REGISTRY",
+    "QueryExpressionExplainClause",
+    "QueryExpressionExplanation",
+    "QueryExpressionAST",
     "_HAS_BOOL_MAP",
+    "parse_expression_ast",
 ]

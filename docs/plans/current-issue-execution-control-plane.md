@@ -24,7 +24,7 @@ Do not preserve stale public aliases. Do not add ceremonial proof, witness, QA, 
 
 #1842 owns the public command floor: `find`, `import`, `config`, `ops`, and terminal actions `read`, `mark`, `analyze`, `remove`, and `continue` if it truly resumes work. `read` absorbs show/open/messages/raw/export. `mark` absorbs tags/user-state/blackboard/feedback. `analyze` absorbs stats/facets/cost/neighbors/insights/diagnostics/correlate.
 
-#2006 owns the full query DSL: a typed AST and lowering pipeline over SQLite, FTS5, vector search, recursive CTEs, EXISTS subqueries, and existing read/action contracts. It is not a custom database engine. It includes Boolean predicates, structural message/action predicates, lineage/run/event/assertion traversal, aggregation, terminal report/action stages, and explain output. The old flat compiler remains the floor; #2006 owns the ceiling.
+#2006 owns the full query DSL: a typed AST and lowering pipeline over SQLite, FTS5, vector search, recursive CTEs, EXISTS subqueries, and existing read/action contracts. It is not a custom database engine. It includes Boolean predicates, structural message/action predicates, lineage/run/event/assertion traversal, aggregation, terminal report/action stages, and explain output. The Lark grammar is the query grammar; old flat-expression behavior is only parity evidence while the AST lowerer absorbs and replaces it.
 
 #1815 owns public import/demo/source vocabulary. Public command is `import`; internal ingestion terminology may remain only for daemon or pipeline mechanics. Remaining work is demo fixture worlds, parser regression coverage, and operation/status truthfulness.
 
