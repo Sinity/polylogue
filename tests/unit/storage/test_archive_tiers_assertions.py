@@ -13,8 +13,10 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user import USER_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.user_write import (
+    ASSERTION_CLAIM_KINDS,
     AssertionKind,
     assertion_id_for_transform_candidate,
+    list_assertion_claims,
     list_assertions_for_target,
     mark_assertion_status,
     read_assertion_envelope,
@@ -240,6 +242,110 @@ def test_list_assertions_filters_by_target_and_kind(tmp_path: Path) -> None:
         assert [a.assertion_id for a in b1] == ["t2-tag"]
 
         assert list_assertions_for_target(conn, "session:absent") == []
+    finally:
+        conn.close()
+
+
+def test_list_assertion_claims_filters_lifecycle_assertions(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "user.db")
+    try:
+        assert set(ASSERTION_CLAIM_KINDS) == {
+            AssertionKind.DECISION,
+            AssertionKind.CAVEAT,
+            AssertionKind.BLOCKER,
+            AssertionKind.LESSON,
+            AssertionKind.RUN_STATE,
+            AssertionKind.TRANSFORM_CANDIDATE,
+        }
+
+        rows: list[tuple[str, str, AssertionKind, str, str, dict[str, object] | None, int]] = [
+            (
+                "claim-decision",
+                "session:s-1",
+                AssertionKind.DECISION,
+                "run:r-1",
+                "active",
+                {"inject": True},
+                1_700_000_001_000,
+            ),
+            (
+                "claim-caveat",
+                "session:s-1",
+                AssertionKind.CAVEAT,
+                "run:r-1",
+                "active",
+                {"inject": False},
+                1_700_000_002_000,
+            ),
+            (
+                "claim-transform",
+                "session:s-1",
+                AssertionKind.TRANSFORM_CANDIDATE,
+                "run:r-2",
+                "candidate",
+                None,
+                1_700_000_003_000,
+            ),
+            (
+                "claim-blocker-deleted",
+                "session:s-1",
+                AssertionKind.BLOCKER,
+                "run:r-1",
+                "deleted",
+                {"inject": True},
+                1_700_000_004_000,
+            ),
+            (
+                "claim-lesson-other",
+                "session:s-2",
+                AssertionKind.LESSON,
+                "run:r-1",
+                "active",
+                {"inject": True},
+                1_700_000_005_000,
+            ),
+            (
+                "overlay-mark",
+                "session:s-1",
+                AssertionKind.MARK,
+                "run:r-1",
+                "active",
+                {"inject": True},
+                1_700_000_006_000,
+            ),
+        ]
+        for assertion_id, target_ref, kind, scope_ref, status, context_policy, now_ms in rows:
+            upsert_assertion(
+                conn,
+                assertion_id=assertion_id,
+                target_ref=target_ref,
+                kind=kind,
+                scope_ref=scope_ref,
+                status=status,
+                context_policy=context_policy,
+                now_ms=now_ms,
+            )
+
+        target_claims = list_assertion_claims(conn, target_ref="session:s-1")
+        assert [claim.assertion_id for claim in target_claims] == [
+            "claim-transform",
+            "claim-caveat",
+            "claim-decision",
+        ]
+
+        scoped_claims = list_assertion_claims(conn, scope_ref="run:r-1", context_inject=True)
+        assert [claim.assertion_id for claim in scoped_claims] == ["claim-lesson-other", "claim-decision"]
+
+        deleted_blockers = list_assertion_claims(
+            conn,
+            kinds=(AssertionKind.BLOCKER,),
+            statuses=("deleted",),
+        )
+        assert [claim.assertion_id for claim in deleted_blockers] == ["claim-blocker-deleted"]
+
+        assert list_assertion_claims(conn, kinds=()) == []
+        assert list_assertion_claims(conn, statuses=()) == []
+        assert [claim.assertion_id for claim in list_assertion_claims(conn, limit=1)] == ["claim-lesson-other"]
     finally:
         conn.close()
 
