@@ -955,6 +955,31 @@ class TestReaderDegradedStates:
         assert payload["total"] == 0
 
 
+class TestReaderQueryCompletions:
+    def test_query_completions_endpoint_exposes_shared_payload(self) -> None:
+        with _running_server_without_seed() as (_server, base_url):
+            payload = _get_json(base_url, "/api/query-completions?kind=field&incomplete=d")
+
+        assert isinstance(payload, dict)
+        envelope = payload["query_completions"]
+        assert isinstance(envelope, dict)
+        assert envelope["kind"] == "field"
+        candidates = envelope["candidates"]
+        assert isinstance(candidates, list)
+        candidate_payloads = [cast(dict[str, object], candidate) for candidate in candidates]
+        date_candidate = next(candidate for candidate in candidate_payloads if candidate["value"] == "date")
+        assert date_candidate["insert"] == "date "
+        assert date_candidate["source"] == "DATE_QUERY_FIELD_REGISTRY"
+
+    def test_query_completions_endpoint_reports_invalid_context(self) -> None:
+        with _running_server_without_seed() as (_server, base_url):
+            status, payload = _get_json_ex(base_url, "/api/query-completions?kind=structural-field")
+
+        assert status == 400
+        assert payload["error"] == "invalid_query_completion"
+        assert "--unit is required" in str(payload["message"])
+
+
 class TestReaderPrivacy:
     """The reader must never expose absolute local paths or auth tokens.
 
