@@ -45,6 +45,8 @@ STATIC_COMPLETERS: tuple[tuple[str, list[str]], ...] = (
     ("action", ["--action"]),
     ("action_sequence", ["--action-sequence"]),
     ("message_type", ["messages", "--message-type"]),
+    ("read_view", ["read", "--view"]),
+    ("read_format", ["read", "--format"]),
 )
 
 CONTRACT_COMPLETION_COMMANDS: dict[CompletionContext, list[str]] = {
@@ -372,6 +374,25 @@ def test_query_action_completion_marks_destructive_actions_per_shell(
     item_map = dict(items)
     assert "delete" in item_map
     assert item_map["delete"] is not None and item_map["delete"].startswith("DANGER:")
+
+
+@pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
+def test_read_format_completion_uses_selected_view_per_shell(
+    shell: str,
+    comp_cls: type[ShellComplete],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """read --format completion narrows to the selected read-view profile."""
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+    items = _run_completion(shell, comp_cls, ["read", "--view", "raw", "--format"])
+    item_map = dict(items)
+
+    assert item_map == {"json": "Supported by read --view raw"}
 
 
 @pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])

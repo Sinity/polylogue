@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from polylogue.cli.root_request import RootModeRequest
     from polylogue.insights.transforms import RecoveryReportPreset
 
-from polylogue.archive.viewport import READ_VIEW_PROFILES, read_view_choices
+from polylogue.archive.viewport import READ_VIEW_PROFILE_BY_ID, READ_VIEW_PROFILES, read_view_choices
 from polylogue.cli.click_option_groups import _LazyChoice
 from polylogue.cli.shared.types import AppEnv
 from polylogue.cli.verb_names import VERB_NAMES
@@ -59,7 +59,7 @@ _complete_message_type = _lazy_shell_complete("message_type")
 _READ_VIEWS = read_view_choices()
 _READ_VIEW_HELP = "What to render (" + ", ".join(_READ_VIEWS) + ")."
 _READ_DESTINATIONS = ("terminal", "stdout", "browser", "clipboard", "file")
-_READ_FORMATS = ("text", "markdown", "json", "ndjson", "yaml", "html", "obsidian", "org", "csv")
+_READ_FORMATS = tuple(sorted({fmt for profile in READ_VIEW_PROFILES for fmt in profile.formats}))
 _RECOVERY_REPORT_PRESETS = ("continue", "blame")
 
 
@@ -72,6 +72,29 @@ def _complete_read_view(ctx: click.Context, param: click.Parameter, incomplete: 
         for profile in READ_VIEW_PROFILES
         if profile.view_id.startswith(needle)
     ]
+
+
+def _selected_read_view(ctx: click.Context) -> str | None:
+    value = ctx.params.get("view")
+    if isinstance(value, str) and value in READ_VIEW_PROFILE_BY_ID:
+        return value
+    return None
+
+
+def _complete_read_format(ctx: click.Context, param: click.Parameter, incomplete: str) -> list[CompletionItem]:
+    """Complete output formats from read-view profile metadata."""
+
+    del param
+    needle = incomplete.lower()
+    selected_view = _selected_read_view(ctx)
+    profiles = (READ_VIEW_PROFILE_BY_ID[selected_view],) if selected_view is not None else READ_VIEW_PROFILES
+    items: dict[str, str] = {}
+    for profile in profiles:
+        for output_format in profile.formats:
+            if needle and not output_format.startswith(needle):
+                continue
+            items.setdefault(output_format, f"Supported by read --view {profile.view_id}")
+    return [CompletionItem(output_format, help=help_text) for output_format, help_text in sorted(items.items())]
 
 
 @click.command("list")
@@ -181,6 +204,7 @@ def recent_verb(
     "output_format",
     type=click.Choice(_READ_FORMATS),
     default=None,
+    shell_complete=_complete_read_format,
     help="Output format (where applicable).",
 )
 @click.option("--out", "out_path", type=click.Path(), default=None, help="File path for --to file.")
