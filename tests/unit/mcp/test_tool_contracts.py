@@ -831,6 +831,48 @@ class TestQueryExplanationTool:
         mock_poly.explain_query_expression.assert_awaited_once_with("sessions where repo:polylogue")
 
 
+class TestQueryCompletionsTool:
+    def test_query_completions_uses_facade_contract(self, mcp_server: MCPServerUnderTest) -> None:
+        completions = {
+            "kind": "field",
+            "incomplete": "d",
+            "unit": None,
+            "field": None,
+            "candidates": [
+                {
+                    "value": "date",
+                    "insert": "date ",
+                    "replace_start": None,
+                    "replace_end": None,
+                    "display": "date ",
+                    "kind": "query-date-field",
+                    "group": "query readable fields",
+                    "description": "Date field.",
+                    "score": 1.0,
+                    "source": "DATE_QUERY_FIELD_REGISTRY",
+                    "stale": False,
+                    "danger": False,
+                    "unsupported_reason": None,
+                    "preview_command": None,
+                }
+            ],
+        }
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.query_completions = AsyncMock(return_value=completions)
+            mock_get_polylogue.return_value = mock_poly
+
+            result = invoke_surface(
+                mcp_server._tool_manager._tools["query_completions"].fn,
+                kind="field",
+                incomplete="d",
+            )
+
+        body = json.loads(result)
+        assert body["query_completions"] == completions
+        mock_poly.query_completions.assert_awaited_once_with("field", incomplete="d", unit=None, field=None)
+
+
 class TestInsightTools:
     @pytest.mark.asyncio
     async def test_session_profile_tool_uses_archive_insight_contract(self, mcp_server: MCPServerUnderTest) -> None:

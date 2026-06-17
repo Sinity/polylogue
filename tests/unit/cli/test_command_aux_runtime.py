@@ -130,7 +130,7 @@ def test_query_field_candidates_come_from_expression_registry() -> None:
     assert payload["replace_start"] is None
     assert payload["danger"] is False
     assert payload["unsupported_reason"] is None
-    click_item = repo_candidate.to_click_item()
+    click_item = shell_completion_values.query_completion_candidate_to_click_item(repo_candidate)
     assert click_item.value == "repo:"
     assert click_item.type == "plain"
 
@@ -220,7 +220,7 @@ def test_query_action_candidates_come_from_action_contracts_with_danger_metadata
     assert delete_candidate.source == "ACTION_CONTRACTS"
     assert delete_candidate.kind == "query-action"
     assert delete_candidate.danger is True
-    help_text = delete_candidate.to_click_item().help
+    help_text = shell_completion_values.query_completion_candidate_to_click_item(delete_candidate).help
     assert help_text is not None
     assert help_text.startswith("DANGER:")
 

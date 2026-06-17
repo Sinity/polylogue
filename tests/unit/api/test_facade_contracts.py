@@ -28,6 +28,7 @@ import inspect
 import json
 from collections.abc import Iterable
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -175,6 +176,7 @@ METADATA_MUTATION_METHODS: frozenset[str] = frozenset(
 BESPOKE_METHODS: frozenset[str] = frozenset(
     {
         "explain_query_expression",
+        "query_completions",
         "get_sessions",
         "get_actions_batch",
         "query_sessions",
@@ -684,6 +686,27 @@ async def test_explain_query_expression_exposes_shared_query_payload(tmp_path: P
         assert "exists-block" in execution_legs
         assert "sql" in execution_legs
         assert payload["predicate"]
+    finally:
+        await archive.close()
+
+
+async def test_query_completions_exposes_shared_completion_payload(tmp_path: Path) -> None:
+    """``query_completions`` exposes registry-backed query metadata."""
+    archive = _archive(tmp_path)
+    try:
+        payload = await archive.query_completions("field", incomplete="d")
+
+        assert payload["kind"] == "field"
+        assert payload["incomplete"] == "d"
+        candidates = payload["candidates"]
+        assert isinstance(candidates, list)
+        candidate_payloads = [cast(dict[str, object], candidate) for candidate in candidates]
+        date_candidate = next(candidate for candidate in candidate_payloads if candidate["value"] == "date")
+        assert date_candidate["insert"] == "date "
+        assert date_candidate["source"] == "DATE_QUERY_FIELD_REGISTRY"
+        description = date_candidate["description"]
+        assert isinstance(description, str)
+        assert "date between 2026-01-01 and 2026-02-01" in description
     finally:
         await archive.close()
 

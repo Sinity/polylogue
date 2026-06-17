@@ -11,28 +11,27 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
 import click
 from click.shell_completion import CompletionItem
 
 from polylogue.archive.message.types import MessageType
+from polylogue.archive.query.completions import (
+    QueryCompletionCandidate,
+    query_action_candidates,
+    query_count_operator_candidates,
+    query_date_operator_candidates,
+    query_field_candidates,
+    query_structural_field_candidates,
+    query_structural_unit_candidates,
+)
 from polylogue.archive.query.expression import (
-    COUNT_QUERY_FIELD_REGISTRY,
-    DATE_QUERY_FIELD_REGISTRY,
     EXPRESSION_FIELD_REGISTRY,
-    STRUCTURAL_QUERY_UNIT_REGISTRY,
-    count_query_fields,
-    count_query_operators,
-    date_query_fields,
-    date_query_operators,
-    structural_query_fields,
     structural_query_units,
 )
 from polylogue.archive.query.fields import QUERY_FIELD_DESCRIPTORS, CompletionSource
 from polylogue.archive.query.spec import QUERY_ACTION_TYPES, QUERY_RETRIEVAL_LANES, QUERY_SEQUENCE_ACTION_TYPES
-from polylogue.cli.action_contracts import ACTION_CONTRACTS, CliActionContract
 from polylogue.paths import active_index_db_path
 
 if TYPE_CHECKING:
@@ -54,56 +53,6 @@ _ORIGIN_DESCRIPTIONS: Final[dict[str, str]] = {
 _MAX_ID_COMPLETIONS = 24
 _MAX_VALUE_COMPLETIONS = 32
 CompletionCallback = Callable[[click.Context, click.Parameter, str], list[CompletionItem]]
-
-
-@dataclass(frozen=True)
-class QueryCompletionCandidate:
-    """Structured query-completion candidate shared by shell adapters."""
-
-    value: str
-    insert: str
-    display: str
-    kind: str
-    group: str
-    description: str
-    source: str
-    replace_start: int | None = None
-    replace_end: int | None = None
-    stale: bool = False
-    danger: bool = False
-    score: float = 1.0
-    unsupported_reason: str | None = None
-    preview_command: str | None = None
-
-    def to_payload(self) -> dict[str, object]:
-        """Return the structured candidate payload for non-shell consumers."""
-
-        return {
-            "value": self.value,
-            "insert": self.insert,
-            "replace_start": self.replace_start,
-            "replace_end": self.replace_end,
-            "display": self.display,
-            "kind": self.kind,
-            "group": self.group,
-            "description": self.description,
-            "score": self.score,
-            "source": self.source,
-            "stale": self.stale,
-            "danger": self.danger,
-            "unsupported_reason": self.unsupported_reason,
-            "preview_command": self.preview_command,
-        }
-
-    def to_click_item(self) -> CompletionItem:
-        help_text = _trim_help(self.description)
-        if self.danger:
-            help_text = f"DANGER: {help_text}" if help_text else "DANGER"
-        return CompletionItem(
-            self.insert,
-            type="plain",
-            help=help_text,
-        )
 
 
 def _split_csv_incomplete(incomplete: str) -> tuple[str, str]:
@@ -165,11 +114,20 @@ def _stats_by_items(group_by: str, prefix: str, *, unit: str) -> ArchiveCompleti
     return action
 
 
-def _trim_help(value: str, *, limit: int = 72) -> str:
+def _trim_help(value: str, *, limit: int = 120) -> str:
     cleaned = " ".join(value.split())
     if len(cleaned) <= limit:
         return cleaned
     return cleaned[: limit - 1] + chr(0x2026)
+
+
+def query_completion_candidate_to_click_item(candidate: QueryCompletionCandidate) -> CompletionItem:
+    """Convert shared query-completion metadata into a Click shell item."""
+
+    help_text = _trim_help(candidate.description)
+    if candidate.danger:
+        help_text = f"DANGER: {help_text}" if help_text else "DANGER"
+    return CompletionItem(candidate.insert, type="plain", help=help_text)
 
 
 def _static_completion_items(
@@ -182,201 +140,6 @@ def _static_completion_items(
     current_lower = current.lower()
     items = [CompletionItem(value) for value in values if not current_lower or value.lower().startswith(current_lower)]
     return _with_csv_prefix(items, prefix) if csv else items
-
-
-def query_field_candidates(incomplete: str) -> list[QueryCompletionCandidate]:
-    """Return DSL field candidates from the shared expression registry."""
-
-    current = incomplete.strip().lstrip("-").lower()
-    if ":" in current:
-        return []
-    candidates: list[QueryCompletionCandidate] = []
-    emitted: set[str] = set()
-    for field_name, info in sorted(EXPRESSION_FIELD_REGISTRY.items()):
-        if current and not field_name.startswith(current):
-            continue
-        insert = f"{field_name}:"
-        description = info.get("description", "")
-        example = info.get("example")
-        if example:
-            description = f"{description} Example: {example}" if description else f"Example: {example}"
-        source = "EXPRESSION_FIELD_REGISTRY"
-        count_info = COUNT_QUERY_FIELD_REGISTRY.get(field_name)
-        if count_info is not None:
-            operators = ", ".join((*count_info.operators, count_info.range_keyword))
-            description = (
-                f"{description} Readable operators: {operators}. Example: {count_info.example}"
-                if description
-                else f"Readable operators: {operators}. Example: {count_info.example}"
-            )
-            source = "EXPRESSION_FIELD_REGISTRY/COUNT_QUERY_FIELD_REGISTRY"
-        candidates.append(
-            QueryCompletionCandidate(
-                value=field_name,
-                insert=insert,
-                display=insert,
-                kind="query-field",
-                group="query fields",
-                description=description,
-                source=source,
-            )
-        )
-        emitted.add(field_name)
-    for field_name, date_info in sorted(DATE_QUERY_FIELD_REGISTRY.items()):
-        if field_name in emitted:
-            continue
-        if current and not field_name.startswith(current):
-            continue
-        operators = ", ".join((*date_info.operators, date_info.range_keyword))
-        description = f"{date_info.description} Readable operators: {operators}. Example: {date_info.example}"
-        candidates.append(
-            QueryCompletionCandidate(
-                value=field_name,
-                insert=f"{field_name} ",
-                display=f"{field_name} ",
-                kind="query-date-field",
-                group="query readable fields",
-                description=description,
-                source="DATE_QUERY_FIELD_REGISTRY",
-            )
-        )
-    return candidates
-
-
-def query_structural_unit_candidates(incomplete: str) -> list[QueryCompletionCandidate]:
-    """Return ``exists <unit>(...)`` candidates from the grammar registry."""
-
-    current = incomplete.strip().lower()
-    candidates: list[QueryCompletionCandidate] = []
-    for unit in structural_query_units():
-        if current and not unit.startswith(current):
-            continue
-        info = STRUCTURAL_QUERY_UNIT_REGISTRY[unit]
-        description = info.description
-        if info.example:
-            description = f"{description} Example: {info.example}" if description else f"Example: {info.example}"
-        candidates.append(
-            QueryCompletionCandidate(
-                value=unit,
-                insert=f"{unit}(",
-                display=f"{unit}(",
-                kind="query-structural-unit",
-                group="query structural units",
-                description=description,
-                source="STRUCTURAL_QUERY_UNIT_REGISTRY",
-            )
-        )
-    return candidates
-
-
-def query_structural_field_candidates(unit: str, incomplete: str) -> list[QueryCompletionCandidate]:
-    """Return field candidates accepted inside ``exists <unit>(...)``."""
-
-    current = incomplete.strip().lstrip("-").lower()
-    if ":" in current:
-        return []
-    candidates: list[QueryCompletionCandidate] = []
-    for field_name in structural_query_fields(unit):
-        if current and not field_name.startswith(current):
-            continue
-        candidates.append(
-            QueryCompletionCandidate(
-                value=field_name,
-                insert=f"{field_name}:",
-                display=f"{field_name}:",
-                kind="query-structural-field",
-                group=f"{unit} structural fields",
-                description=f"Field accepted inside exists {unit}(...).",
-                source="STRUCTURAL_QUERY_UNIT_REGISTRY",
-            )
-        )
-    return candidates
-
-
-def query_count_operator_candidates(field: str, incomplete: str) -> list[QueryCompletionCandidate]:
-    """Return readable count operators accepted by the query grammar."""
-
-    field_name = field.lower()
-    if field_name not in count_query_fields():
-        return []
-    current = incomplete.strip().lower()
-    info = COUNT_QUERY_FIELD_REGISTRY[field_name]
-    candidates: list[QueryCompletionCandidate] = []
-    for operator in count_query_operators(field_name):
-        if current and not operator.startswith(current):
-            continue
-        insert = f"{operator} " if operator == info.range_keyword else operator
-        candidates.append(
-            QueryCompletionCandidate(
-                value=operator,
-                insert=insert,
-                display=insert,
-                kind="query-count-operator",
-                group=f"{field_name} count operators",
-                description=f"{info.description} Example: {info.example}",
-                source="COUNT_QUERY_FIELD_REGISTRY",
-            )
-        )
-    return candidates
-
-
-def query_date_operator_candidates(field: str, incomplete: str) -> list[QueryCompletionCandidate]:
-    """Return readable date operators accepted by the query grammar."""
-
-    field_name = field.lower()
-    if field_name not in date_query_fields():
-        return []
-    current = incomplete.strip().lower()
-    info = DATE_QUERY_FIELD_REGISTRY[field_name]
-    candidates: list[QueryCompletionCandidate] = []
-    for operator in date_query_operators(field_name):
-        if current and not operator.startswith(current):
-            continue
-        insert = f"{operator} " if operator == info.range_keyword else operator
-        candidates.append(
-            QueryCompletionCandidate(
-                value=operator,
-                insert=insert,
-                display=insert,
-                kind="query-date-operator",
-                group=f"{field_name} date operators",
-                description=f"{info.description} Example: {info.example}",
-                source="DATE_QUERY_FIELD_REGISTRY",
-            )
-        )
-    return candidates
-
-
-def _action_description(contract: CliActionContract) -> str:
-    guards = ", ".join(contract.guards)
-    detail = f"{contract.effect}; input={contract.input_unit}; cardinality={contract.cardinality}"
-    return f"{detail}; guards={guards}" if guards else detail
-
-
-def query_action_candidates(incomplete: str) -> list[QueryCompletionCandidate]:
-    """Return root query/action candidates from public action contracts."""
-
-    current = incomplete.strip().lower()
-    candidates: list[QueryCompletionCandidate] = []
-    for contract in ACTION_CONTRACTS:
-        if len(contract.path) != 1:
-            continue
-        name = contract.path[0]
-        if current and not name.startswith(current):
-            continue
-        candidates.append(
-            QueryCompletionCandidate(
-                value=name,
-                insert=name,
-                display=name,
-                kind="query-action",
-                group="query actions",
-                description=_action_description(contract),
-                source="ACTION_CONTRACTS",
-                danger=contract.effect == "destructive",
-            )
-        )
-    return candidates
 
 
 def _completion_source_for_expression_field(field_name: str) -> CompletionSource | None:
@@ -472,8 +235,14 @@ def _complete_structural_query_context(incomplete: str) -> list[CompletionItem] 
         return None
     unit_or_kind, prefix = context
     if unit_or_kind == "unit":
-        return [candidate.to_click_item() for candidate in query_structural_unit_candidates(prefix)]
-    return [candidate.to_click_item() for candidate in query_structural_field_candidates(unit_or_kind, prefix)]
+        return [
+            query_completion_candidate_to_click_item(candidate)
+            for candidate in query_structural_unit_candidates(prefix)
+        ]
+    return [
+        query_completion_candidate_to_click_item(candidate)
+        for candidate in query_structural_field_candidates(unit_or_kind, prefix)
+    ]
 
 
 def complete_query_expression_fields(
@@ -491,7 +260,7 @@ def complete_query_expression_fields(
     if ":" in incomplete:
         return _complete_query_expression_values(ctx, param, incomplete)
     del ctx, param
-    return [candidate.to_click_item() for candidate in query_field_candidates(incomplete)]
+    return [query_completion_candidate_to_click_item(candidate) for candidate in query_field_candidates(incomplete)]
 
 
 def complete_query_actions(
@@ -502,7 +271,7 @@ def complete_query_actions(
     """Complete root query actions from public action contracts."""
 
     del ctx, param
-    return [candidate.to_click_item() for candidate in query_action_candidates(incomplete)]
+    return [query_completion_candidate_to_click_item(candidate) for candidate in query_action_candidates(incomplete)]
 
 
 def complete_origin_values(
@@ -700,6 +469,7 @@ __all__ = [
     "query_count_operator_candidates",
     "query_date_operator_candidates",
     "query_field_candidates",
+    "query_completion_candidate_to_click_item",
     "query_structural_field_candidates",
     "query_structural_unit_candidates",
     "QueryCompletionCandidate",
