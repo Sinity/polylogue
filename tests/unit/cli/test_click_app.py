@@ -259,6 +259,28 @@ def test_query_explain_accepts_negated_dsl_tokens(cli_runner: CliRunner) -> None
     }
 
 
+def test_read_views_plain_lists_profile_metadata(cli_runner: CliRunner) -> None:
+    result = cli_runner.invoke(click_cli, ["--plain", "read-views"], catch_exceptions=False)
+
+    assert result.exit_code == 0
+    assert "Read views:" in result.output
+    assert "recovery" in result.output
+    assert "evidence=required" in result.output
+    assert "handoff" in result.output
+
+
+def test_read_views_json_outputs_profile_payload(cli_runner: CliRunner) -> None:
+    result = cli_runner.invoke(click_cli, ["--plain", "read-views", "--format", "json"], catch_exceptions=False)
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    views = {item["view_id"]: item for item in payload["result"]["read_views"]}
+    assert payload["status"] == "ok"
+    assert views["raw"]["lossiness"] == "raw"
+    assert views["recovery"]["successor_handoff"] is True
+    assert "markdown" in views["recovery"]["formats"]
+
+
 def test_read_verb_raw_view_forwards_options(cli_runner: CliRunner) -> None:
     """read --view raw routes pagination and format to run_raw."""
     with patch("polylogue.cli.messages.run_raw") as mock_run_raw:
@@ -667,6 +689,7 @@ class TestCliMetadata:
             "commands",
             "paths",
             "query-explain",
+            "read-views",
             "recent",
             "dashboard",
             "resume",

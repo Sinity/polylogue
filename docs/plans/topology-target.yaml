@@ -674,7 +674,7 @@ files:
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
-    loc: 183
+    loc: 185
     target: polylogue/cli/click_command_registration.py
     owner: stable
   - path: polylogue/cli/click_option_groups.py
@@ -773,6 +773,10 @@ files:
     loc: 96
     target: polylogue/cli/commands/query_explain.py
     owner: stable
+  - path: polylogue/cli/commands/read_views.py
+    loc: 57
+    target: polylogue/cli/commands/read_views.py
+    owner: stable
   - path: polylogue/cli/commands/reset.py
     loc: 335
     target: polylogue/cli/commands/reset.py
@@ -862,7 +866,7 @@ files:
     target: polylogue/cli/query_stats.py
     owner: stable
   - path: polylogue/cli/query_verbs.py
-    loc: 1134
+    loc: 1147
     target: polylogue/cli/query_verbs.py
     owner: stable
   - path: polylogue/cli/root_request.py
