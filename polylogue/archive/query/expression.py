@@ -1,11 +1,11 @@
-"""Query expression compiler: DSL string → :class:`SessionQuerySpec`.
+"""Query expression parser/lowerer: DSL string → :class:`SessionQuerySpec`.
 
 This module is the shared front-door for the query-expression language used
 by all Polylogue read surfaces (CLI bare-query path, Python facade, and any
 future surfaces that wire in).
 
-Grammar (flat-conjunction DSL)
---------------------------------
+Current executable grammar
+--------------------------
 An expression is a whitespace-separated sequence of *clauses*, all AND'd:
 
     repo:polylogue since:7d "json envelope"
@@ -27,9 +27,10 @@ Clause forms:
 - ``words:>=N``            — count comparison (min_words)
 - ``{...}``                — direct JSON spec (validated into SessionQuerySpec)
 
-Cross-field OR (``(a origin:x OR origin:y)``) and nested parentheses across
-different fields are **rejected loudly** — they require a boolean-tree spec
-that is tracked in issue #1812.  Unknown fields also fail loudly.
+Cross-field OR and nested Boolean groups are **rejected loudly** until #2006
+adds executable Boolean AST lowerers. Unknown fields also fail loudly. The
+Lark grammar in this module is the query grammar; there is no separate
+long-lived "floor grammar."
 
 Field registry
 --------------
@@ -445,7 +446,7 @@ def parse_expression_ast(expression: str) -> QueryExpressionAST:
 
 
 def _lex(expression: str) -> list[_LexToken]:
-    """Tokenize an expression string into the compatibility token stream."""
+    """Project the canonical Lark AST into the current clause lowerer input."""
     return list(parse_expression_ast(expression).clauses)
 
 
