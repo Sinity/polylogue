@@ -1,22 +1,20 @@
-"""Render the OpenAPI schema for the daemon search HTTP surface.
+"""Render the OpenAPI schema for stable daemon query HTTP surfaces.
 
-The :class:`~polylogue.surfaces.payloads.SearchEnvelope` is the typed
-ranked-result contract shared across CLI JSON, MCP, the Python API, and
-daemon HTTP (#1266). To make the daemon HTTP surface machine-discoverable
-— and to let external tooling auto-generate clients without touching
-private Python types — this command writes an OpenAPI 3.1 document at
-``docs/openapi/search.yaml`` that exposes both the request shape (query
-parameters) and the response schema (the typed ``SearchEnvelope`` and
-its referenced models) for ``GET /api/sessions``.
+The surface payload models in :mod:`polylogue.surfaces.payloads` are the
+typed result contracts shared across CLI JSON, MCP, the Python API, and
+daemon HTTP. To make the daemon HTTP surface machine-discoverable — and
+to let external tooling auto-generate clients without touching private
+Python types — this command writes an OpenAPI 3.1 document at
+``docs/openapi/search.yaml`` that exposes both request parameters and
+response schemas for stable daemon query routes such as
+``GET /api/sessions`` and ``GET /api/query-units``.
 
 The schema is derived from Pydantic models. Do not edit the output by
 hand; regenerate it with ``devtools render-openapi``. The ``--check``
 mode is for CI sync verification.
 
-This is intentionally narrow: it covers the single ranked-search
-endpoint that motivated #1266. Future slices (#1218, #1224) can extend
-the same emitter to describe other daemon HTTP endpoints under one
-OpenAPI tree.
+This is intentionally route-backed: only endpoints with typed payload
+contracts and daemon handlers should be added here.
 """
 
 from __future__ import annotations
@@ -35,6 +33,7 @@ from devtools.render_support import write_if_changed
 from polylogue.surfaces.payloads import (
     RANKING_POLICY_MIXED,
     RANKING_POLICY_VERSION,
+    QueryUnitEnvelope,
     SearchEnvelope,
     SessionListRowPayload,
     SessionSearchHitPayload,
@@ -47,6 +46,7 @@ POLYLOGUE_API_VERSION = "1"
 # Pydantic models whose JSON Schema is published in ``components.schemas``.
 _PUBLISHED_MODELS: tuple[type[BaseModel], ...] = (
     SearchEnvelope,
+    QueryUnitEnvelope,
     SessionSearchHitPayload,
     SessionListRowPayload,
 )
@@ -85,10 +85,10 @@ def _build_openapi_document() -> dict[str, Any]:
             "title": "Polylogue Search API",
             "version": POLYLOGUE_API_VERSION,
             "description": (
-                "Local daemon HTTP API exposing the typed ranked-result envelope "
-                "(`SearchEnvelope`) shared across CLI JSON, MCP, and the Python "
-                "API (#1266). This document is generated from Pydantic models "
-                "in `polylogue.surfaces.payloads`; do not edit by hand. "
+                "Local daemon HTTP API exposing typed query envelopes shared "
+                "across CLI JSON, MCP, and the Python API. This document is "
+                "generated from Pydantic models in `polylogue.surfaces.payloads`; "
+                "do not edit by hand. "
                 f"Run `{control_plane_command('render-openapi')}` to regenerate."
             ),
         },
@@ -193,7 +193,57 @@ def _build_openapi_document() -> dict[str, Any]:
                         }
                     },
                 }
-            }
+            },
+            "/api/query-units": {
+                "get": {
+                    "summary": "Terminal message/action/block query rows",
+                    "description": (
+                        "Returns terminal row results for explicit "
+                        "``messages/actions/blocks where ...`` expressions. "
+                        "This endpoint shares the ``QueryUnitEnvelope`` contract "
+                        "with CLI JSON output, MCP ``query_units``, and "
+                        "``Polylogue.query_units()``."
+                    ),
+                    "operationId": "queryUnits",
+                    "parameters": [
+                        {
+                            "name": "expression",
+                            "in": "query",
+                            "description": (
+                                "Explicit unit-source expression such as "
+                                "``messages where role:assistant AND text:timeout``."
+                            ),
+                            "required": True,
+                            "schema": {"type": "string"},
+                        },
+                        {
+                            "name": "limit",
+                            "in": "query",
+                            "description": "Page size (default 50).",
+                            "required": False,
+                            "schema": {"type": "integer", "minimum": 1, "default": 50},
+                        },
+                        {
+                            "name": "offset",
+                            "in": "query",
+                            "description": "Row offset for terminal query-unit pagination.",
+                            "required": False,
+                            "schema": {"type": "integer", "minimum": 0, "default": 0},
+                        },
+                    ],
+                    "responses": {
+                        "200": {
+                            "description": "Terminal query-unit result envelope.",
+                            "content": {
+                                "application/json": {"schema": {"$ref": "#/components/schemas/QueryUnitEnvelope"}}
+                            },
+                        },
+                        "400": {
+                            "description": "Malformed query or non-terminal session expression.",
+                        },
+                    },
+                }
+            },
         },
         "components": {
             "schemas": schemas,
@@ -215,7 +265,7 @@ def _build_yaml_body() -> str:
     document = _build_openapi_document()
     header = (
         "# Generated by `" + control_plane_command("render-openapi") + "`. Do not edit by hand.\n"
-        "# Source models: polylogue.surfaces.payloads.SearchEnvelope (#1266).\n"
+        "# Source models: polylogue.surfaces.payloads query envelopes.\n"
     )
     body = yaml.safe_dump(document, sort_keys=False, allow_unicode=True, width=120)
     return header + body
@@ -244,7 +294,7 @@ def render(output_path: Path, *, check: bool) -> int:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Render the daemon search OpenAPI schema from Pydantic models (#1266).",
+        description="Render the daemon query OpenAPI schema from Pydantic payload models.",
     )
     parser.add_argument(
         "--output",
