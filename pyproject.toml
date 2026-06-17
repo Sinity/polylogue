@@ -33,6 +33,7 @@ dependencies = [
   "markdown-it-py",
   "pygments>=2.20",
   "ijson",
+  "lark>=1.3.1,<2.0",  # Query DSL grammar/parser substrate (#2006)
   "sqlite-vec>=0.1.9",  # Self-contained vector search
   "questionary>=2.0.0",
   "click>=8.4.1,<9.0",

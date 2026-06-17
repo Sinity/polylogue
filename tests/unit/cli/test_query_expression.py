@@ -27,11 +27,13 @@ import pytest
 from polylogue.archive.query.expression import (
     EXPRESSION_FIELD_REGISTRY,
     ExpressionCompileError,
+    _CountToken,
     _FieldToken,
     _lex,
     _TextToken,
     compile_expression,
     compile_expression_into,
+    parse_expression_ast,
 )
 from polylogue.archive.query.spec import SessionQuerySpec
 
@@ -51,6 +53,15 @@ def _spec(**kwargs: Any) -> SessionQuerySpec:
 
 
 class TestLexer:
+    def test_parse_expression_ast_exposes_clauses(self) -> None:
+        ast = parse_expression_ast('repo:polylogue "json envelope" messages:>=10')
+
+        assert ast.clauses == (
+            _FieldToken(field="repo", raw_value="polylogue", negated=False),
+            _TextToken(text="json envelope", quoted=True, negated=False),
+            _CountToken(field="messages", op=">=", number=10),
+        )
+
     def test_bare_words(self) -> None:
         tokens = _lex("json envelope")
         assert tokens == [
@@ -89,6 +100,14 @@ class TestLexer:
     def test_cross_field_or_paren_raises(self) -> None:
         with pytest.raises(ExpressionCompileError, match="cross-field OR"):
             _lex("(origin:x OR origin:y)")
+
+    def test_parse_expression_ast_preserves_escaped_quotes(self) -> None:
+        ast = parse_expression_ast(r'near:"say \"hello\"" -"bad \"phrase\""')
+
+        assert ast.clauses == (
+            _FieldToken(field="near", raw_value='say "hello"', negated=False),
+            _TextToken(text='bad "phrase"', quoted=True, negated=True),
+        )
 
     def test_empty_expression(self) -> None:
         assert _lex("") == []
