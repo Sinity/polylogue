@@ -50,7 +50,7 @@ dependencies = [
   "nh3>=0.2.18",  # Rust-backed HTML sanitizer (ammonia bindings) for defense-in-depth
   "opentelemetry-proto>=1.20.0",  # OTLP protobuf stubs for /v1/traces|metrics|logs receiver (#1321)
   # Transitive constraints to avoid known CVEs surfaced by pip-audit:
-  "cryptography>=48.0.0",  # CVE-2026-39892 (transitive via google-auth)
+  "cryptography>=48.0.1",  # GHSA-537c-gmf6-5ccf / CVE-2026-39892 (transitive via google-auth)
   "python-multipart>=0.0.32",  # CVE-2026-40347 (transitive via mcp)
 ]
 
