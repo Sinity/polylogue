@@ -121,6 +121,12 @@ def archive_query_filters(spec: SessionQuerySpec) -> ArchiveQueryFilters:
     }
 
 
+def _archive_text_query(spec: SessionQuerySpec) -> str | None:
+    terms = (*spec.query_terms, *spec.contains_terms)
+    text = " ".join(term for term in terms if term).strip()
+    return text or None
+
+
 def archive_summary_payload(summary: ArchiveSessionSummary) -> MCPSessionSummaryPayload:
     """Project an archive session summary into the generic MCP summary shape."""
     from polylogue.mcp.payloads import MCPSessionSummaryPayload
@@ -266,15 +272,30 @@ def archive_session_list_payload(
     limit = spec.limit or default_limit
     offset = max(0, spec.offset)
     filters = archive_query_filters(spec)
-    summaries = archive.list_summaries(
-        limit=limit,
-        offset=offset,
-        sort=_sort_value(spec.sort),
-        reverse=spec.reverse,
-        sample=bool(spec.sample),
-        **filters,
-    )
-    total = archive.count_sessions(**filters)
+    text_query = _archive_text_query(spec)
+    if text_query is None:
+        summaries = archive.list_summaries(
+            limit=limit,
+            offset=offset,
+            sort=_sort_value(spec.sort),
+            reverse=spec.reverse,
+            sample=bool(spec.sample),
+            **filters,
+        )
+        total = archive.count_sessions(**filters)
+    else:
+        summaries = [
+            archive.read_summary(hit.session_id)
+            for hit in archive.search_summaries(
+                text_query,
+                limit=limit,
+                offset=offset,
+                sort=_sort_value(spec.sort),
+                reverse=spec.reverse,
+                **filters,
+            )
+        ]
+        total = archive.count_search_sessions(text_query, **filters)
     next_offset = offset + len(summaries) if len(summaries) == limit and offset + limit < total else None
     return MCPPaginatedQueryResultPayload(
         items=tuple(archive_summary_payload(summary) for summary in summaries),

@@ -24,7 +24,7 @@ from tests.infra.oracles import (
 )
 from tests.infra.query_cases import ArchiveQueryCase
 from tests.infra.semantic_facts import SessionFacts
-from tests.infra.surfaces import ArchiveSurfaceSet, build_archive_surface_set
+from tests.infra.surfaces import ArchiveSurfaceSet, build_adapter_surface_set, build_archive_surface_set
 
 
 @pytest.fixture()
@@ -71,6 +71,22 @@ async def multi_provider_surfaces(
         db_path=db_path,
         archive_root=workspace_env["archive_root"],
         scenarios=scenarios,
+    )
+    try:
+        yield surfaces
+    finally:
+        await surfaces.close()
+
+
+@pytest.fixture()
+async def multi_provider_adapter_surfaces(
+    workspace_env: Mapping[str, Path],
+    multi_provider_archive: tuple[Path, tuple[ArchiveScenario, ...]],
+) -> AsyncIterator[ArchiveSurfaceSet]:
+    db_path, _ = multi_provider_archive
+    surfaces = build_adapter_surface_set(
+        db_path=db_path,
+        archive_root=workspace_env["archive_root"],
     )
     try:
         yield surfaces
@@ -134,6 +150,57 @@ class TestArchiveFactsConsistency:
             ids_by_provider[provider] = first
 
         assert_provider_partition_exhaustive(all_session_ids=all_ids, ids_by_provider=ids_by_provider)
+
+
+class TestAdapterQueryAgreement:
+    @pytest.mark.asyncio()
+    async def test_query_cases_agree_across_public_adapters(
+        self,
+        multi_provider_archive: tuple[Path, tuple[ArchiveScenario, ...]],
+        multi_provider_adapter_surfaces: ArchiveSurfaceSet,
+    ) -> None:
+        """Repository, facade, CLI, MCP, and daemon HTTP agree on query ids."""
+        _, scenarios = multi_provider_archive
+        by_provider = {scenario.provider: scenario.native_session_id for scenario in scenarios}
+        gpt_id = by_provider["chatgpt"]
+        claude_id = by_provider["claude-code"]
+        query_cases = (
+            ArchiveQueryCase(
+                name="origin-claude-code",
+                provider="claude-code",
+                expected_ids=(claude_id,),
+            ),
+            ArchiveQueryCase(
+                name="contains-hello",
+                search_text="Hello",
+                expected_ids=(gpt_id,),
+            ),
+            ArchiveQueryCase(
+                name="min-messages",
+                min_messages=2,
+                expected_ids=(claude_id, gpt_id),
+            ),
+            ArchiveQueryCase(
+                name="contains-with-min-messages",
+                search_text="Hello",
+                min_messages=3,
+                expected_ids=(),
+            ),
+            ArchiveQueryCase(
+                name="provider-with-min-messages",
+                provider="codex",
+                min_messages=2,
+                expected_ids=(),
+            ),
+        )
+
+        for query_case in query_cases:
+            expected = tuple(sorted(query_case.expected_ids))
+            actual_by_surface = {
+                surface.name: await surface.query_ids(query_case)
+                for surface in multi_provider_adapter_surfaces.surfaces
+            }
+            assert actual_by_surface == {surface.name: expected for surface in multi_provider_adapter_surfaces.surfaces}
 
 
 # ---------------------------------------------------------------------------

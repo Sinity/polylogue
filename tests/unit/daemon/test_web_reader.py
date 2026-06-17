@@ -784,7 +784,11 @@ class TestReaderUserState:
         assert saved_payload["query"] == {"limit": 5, "origin": "claude-code-session", "query": "auth"}
         assert listed_payload["total"] == 1
         assert fetched_payload["view_id"] == "view-auth"
-        assert fetched_payload["query_json"] == '{"limit": 5, "origin": "claude-code-session", "query": "auth"}'
+        assert json.loads(str(fetched_payload["query_json"])) == {
+            "limit": 5,
+            "origin": "claude-code-session",
+            "query": "auth",
+        }
         assert delete_status == 200
         assert deleted == {"view_id": "view-auth", "deleted": True}
 
