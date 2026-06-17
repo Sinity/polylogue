@@ -152,6 +152,17 @@ def test_query_structural_field_candidates_come_from_expression_registry() -> No
     assert type_candidate.source == "STRUCTURAL_QUERY_UNIT_REGISTRY"
 
 
+def test_query_count_operator_candidates_come_from_expression_registry() -> None:
+    candidates = shell_completion_values.query_count_operator_candidates("messages", "b")
+
+    assert [candidate.value for candidate in candidates] == ["between"]
+    between_candidate = candidates[0]
+    assert between_candidate.insert == "between "
+    assert between_candidate.kind == "query-count-operator"
+    assert between_candidate.source == "COUNT_QUERY_FIELD_REGISTRY"
+    assert "messages between 5 and 20" in between_candidate.description
+
+
 def test_query_expression_value_completion_uses_field_completion_source() -> None:
     ctx, param = _ctx_param()
 

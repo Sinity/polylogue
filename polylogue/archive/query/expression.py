@@ -501,6 +501,16 @@ class StructuralQueryUnitInfo:
     example: str
 
 
+@dataclass(frozen=True)
+class CountQueryFieldInfo:
+    """Completion/query-builder metadata for readable count predicates."""
+
+    description: str
+    operators: tuple[str, ...]
+    range_keyword: str
+    example: str
+
+
 STRUCTURAL_QUERY_UNIT_REGISTRY: dict[str, StructuralQueryUnitInfo] = {
     "action": StructuralQueryUnitInfo(
         description="Match sessions with at least one action row satisfying the child predicate.",
@@ -519,6 +529,21 @@ STRUCTURAL_QUERY_UNIT_REGISTRY: dict[str, StructuralQueryUnitInfo] = {
     ),
 }
 
+COUNT_QUERY_FIELD_REGISTRY: dict[str, CountQueryFieldInfo] = {
+    "messages": CountQueryFieldInfo(
+        description="Message-count predicate over normalized session messages.",
+        operators=(">=", "<=", "=", ">", "<"),
+        range_keyword="between",
+        example="messages between 5 and 20",
+    ),
+    "words": CountQueryFieldInfo(
+        description="Word-count predicate over normalized session text.",
+        operators=(">=", "<=", "=", ">", "<"),
+        range_keyword="between",
+        example="words between 100 and 500",
+    ),
+}
+
 
 def structural_query_units() -> tuple[str, ...]:
     """Return the structural units accepted by the query grammar."""
@@ -533,6 +558,21 @@ def structural_query_fields(unit: str) -> tuple[str, ...]:
     if info is None:
         return ()
     return info.fields
+
+
+def count_query_fields() -> tuple[str, ...]:
+    """Return count fields with readable comparison/range syntax."""
+
+    return tuple(sorted(COUNT_QUERY_FIELD_REGISTRY))
+
+
+def count_query_operators(field: str) -> tuple[str, ...]:
+    """Return readable comparison/range operators accepted for a count field."""
+
+    info = COUNT_QUERY_FIELD_REGISTRY.get(field.lower())
+    if info is None:
+        return ()
+    return (*info.operators, info.range_keyword)
 
 
 def _unknown_query_field_message(field_name: str, *, include_structural: bool = False) -> str:
@@ -1621,6 +1661,10 @@ def _compile_json_spec(raw: str) -> SessionQuerySpec:
 __all__ = [
     "compile_expression",
     "compile_expression_into",
+    "CountQueryFieldInfo",
+    "COUNT_QUERY_FIELD_REGISTRY",
+    "count_query_fields",
+    "count_query_operators",
     "explain_expression",
     "ExpressionCompileError",
     "EXPRESSION_FIELD_REGISTRY",

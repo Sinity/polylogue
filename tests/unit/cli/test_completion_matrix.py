@@ -235,6 +235,45 @@ def test_query_structural_field_completion_per_shell(
 
 
 @pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
+def test_query_count_operator_completion_per_shell(
+    shell: str,
+    comp_cls: type[ShellComplete],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Readable count syntax completion suggests grammar-backed operators."""
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+    items = _run_completion_for_partial(shell, comp_cls, ["messages"], "b")
+    item_map = dict(items)
+    assert item_map == {"between ": item_map["between "]}
+    assert "messages between 5 and 20" in (item_map["between "] or "")
+
+
+@pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
+def test_query_count_operator_empty_completion_per_shell(
+    shell: str,
+    comp_cls: type[ShellComplete],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After a count field, completion is operator-only, not root-command mixed."""
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+    items = _run_completion(shell, comp_cls, ["messages"])
+    values = {value for value, _ in items}
+    assert {">=", "<=", "=", ">", "<", "between "}.issubset(values)
+    assert "backup" not in values
+    assert "blackboard" not in values
+
+
+@pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
 def test_query_then_connector_completion_per_shell(
     shell: str,
     comp_cls: type[ShellComplete],
