@@ -37,6 +37,15 @@ and explicit Boolean session predicates:
 
     sessions where (repo:polylogue OR origin:chatgpt-export) AND NOT tag:stale
     repo:polylogue OR repo:sinex
+    messages where role:assistant AND text:timeout
+    actions where action:file_edit AND path:polylogue/archive
+    blocks where type:code AND text:timeout
+
+Unit-scoped ``messages/actions/blocks where ...`` predicates are executable
+session selectors: they lower to the same correlated ``exists <unit>(...)``
+predicates as the explicit structural form. They do not yet change the terminal
+result unit to raw message/action/block rows; terminal unit-changing pipelines
+are a later layer over the same AST/lowerer.
 
 Unknown fields and unsupported structured forms fail loudly. The Lark grammar
 in this module is the query grammar. Compact field/text clauses and explicit
@@ -493,7 +502,14 @@ _FIELD_CLAUSE_RE = re.compile(
     re.VERBOSE,
 )
 
-_BOOLEAN_TRIGGER_RE = re.compile(r"^\s*\(|^\s*sessions\s+where\b|\b(?:and|or|not)\b", re.IGNORECASE)
+_SOURCE_WHERE_SOURCES: tuple[tuple[str, Literal["message", "action", "block"]], ...] = (
+    ("message", "message"),
+    ("messages", "message"),
+    ("action", "action"),
+    ("actions", "action"),
+    ("block", "block"),
+    ("blocks", "block"),
+)
 _BOOLEAN_SUPPORTED_FIELDS = {
     "repo",
     "origin",
@@ -1083,12 +1099,26 @@ _BOOLEAN_QUERY_TRANSFORMER = _BooleanQueryTransformer()
 
 
 def _is_boolean_expression(expression: str) -> bool:
-    if re.search(
-        r"^\s*\(|^\s*sessions\s+where\b|^\s*exists\s+(?:message|action|block)\s*\(|^\s*seq\s*\(|^\s*lineage:",
-        expression,
-        re.IGNORECASE,
+    stripped = expression.lstrip()
+    lower = stripped.lower()
+    if (
+        stripped.startswith("(")
+        or lower.startswith("sessions where ")
+        or lower.startswith("exists message(")
+        or lower.startswith("exists message (")
+        or lower.startswith("exists action(")
+        or lower.startswith("exists action (")
+        or lower.startswith("exists block(")
+        or lower.startswith("exists block (")
+        or lower.startswith("seq(")
+        or lower.startswith("seq (")
+        or lower.startswith("lineage:")
     ):
         return True
+    for source, _unit in _SOURCE_WHERE_SOURCES:
+        marker = f"{source} where"
+        if lower == marker or (lower.startswith(marker) and lower[len(marker)].isspace()):
+            return True
     if "~" in expression:
         return True
     if re.search(r"\b(?:semantic|near:text):", expression, re.IGNORECASE):
@@ -1102,7 +1132,18 @@ def _is_boolean_expression(expression: str) -> bool:
     return ":" in expression and bool(re.search(r"\b(?:and|or|not)\b", expression, re.IGNORECASE))
 
 
-def _parse_boolean_predicate(expression: str) -> QueryPredicate:
+def _source_where_unit(source: str) -> Literal["message", "action", "block"]:
+    normalized = source.strip().lower()
+    if normalized in {"message", "messages"}:
+        return "message"
+    if normalized in {"action", "actions"}:
+        return "action"
+    if normalized in {"block", "blocks"}:
+        return "block"
+    raise ExpressionCompileError(f"unsupported query source {source!r}", field=None)
+
+
+def _transform_boolean_predicate(expression: str) -> QueryPredicate:
     try:
         tree = _QUERY_PARSER.parse(expression, start="boolean_query")
     except UnexpectedInput as exc:
@@ -1127,8 +1168,35 @@ def _parse_boolean_predicate(expression: str) -> QueryPredicate:
         | QuerySemanticPredicate,
     ):
         raise ExpressionCompileError("Boolean query did not produce a predicate", field=None)
+    return transformed
+
+
+def _parse_boolean_predicate(expression: str) -> QueryPredicate:
+    transformed = _transform_boolean_predicate(expression)
     _validate_predicate_context(transformed, unit="session")
     return transformed
+
+
+def _parse_source_where_predicate(expression: str) -> QueryExistsPredicate | None:
+    stripped = expression.strip()
+    lower = stripped.lower()
+    source_match: tuple[str, Literal["message", "action", "block"], str] | None = None
+    for source, unit in _SOURCE_WHERE_SOURCES:
+        marker = f"{source} where"
+        if lower == marker:
+            source_match = (marker, unit, "")
+            break
+        if lower.startswith(marker) and lower[len(marker)].isspace():
+            source_match = (marker, unit, stripped[len(marker) :].strip())
+            break
+    if source_match is None:
+        return None
+    _marker, unit, inner = source_match
+    if not inner:
+        raise ExpressionCompileError(f"{unit}s where requires a predicate", field=None)
+    transformed = _transform_boolean_predicate(inner)
+    _validate_predicate_context(transformed, unit=unit)
+    return QueryExistsPredicate(unit=unit, child=transformed)
 
 
 def _contains_semantic_predicate(predicate: QueryPredicate) -> bool:
@@ -1197,6 +1265,9 @@ def parse_expression_ast(expression: str) -> QueryExpressionAST:
     expression = expression.strip()
     if not expression:
         return QueryExpressionAST(())
+    source_where = _parse_source_where_predicate(expression)
+    if source_where is not None:
+        return QueryExpressionAST((), boolean_predicate=source_where)
     if _is_boolean_expression(expression):
         return QueryExpressionAST((), boolean_predicate=_parse_boolean_predicate(expression))
     try:
