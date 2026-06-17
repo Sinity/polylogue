@@ -18,7 +18,7 @@ from click.shell_completion import CompletionItem
 
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.query.expression import EXPRESSION_FIELD_REGISTRY
-from polylogue.archive.query.fields import CompletionSource
+from polylogue.archive.query.fields import QUERY_FIELD_DESCRIPTORS, CompletionSource
 from polylogue.archive.query.spec import QUERY_ACTION_TYPES, QUERY_RETRIEVAL_LANES, QUERY_SEQUENCE_ACTION_TYPES
 from polylogue.paths import active_index_db_path
 
@@ -173,6 +173,53 @@ def query_field_candidates(incomplete: str) -> list[QueryCompletionCandidate]:
     return candidates
 
 
+def _completion_source_for_expression_field(field_name: str) -> CompletionSource | None:
+    info = EXPRESSION_FIELD_REGISTRY.get(field_name)
+    if info is None:
+        return None
+    spec_fields = tuple(part.strip() for part in info["spec_field"].split("/") if part.strip())
+    for spec_field in spec_fields:
+        for descriptor in QUERY_FIELD_DESCRIPTORS:
+            if spec_field in {descriptor.name, descriptor.spec_attr} and descriptor.completion_source is not None:
+                return descriptor.completion_source
+    return None
+
+
+def _prefixed_query_value_items(
+    items: list[CompletionItem],
+    *,
+    prefix: str,
+) -> list[CompletionItem]:
+    return [
+        CompletionItem(
+            f"{prefix}{item.value}",
+            type=item.type,
+            help=item.help,
+        )
+        for item in items
+    ]
+
+
+def _complete_query_expression_values(
+    ctx: click.Context,
+    param: click.Parameter | None,
+    incomplete: str,
+) -> list[CompletionItem]:
+    negated = incomplete.startswith("-")
+    token = incomplete[1:] if negated else incomplete
+    field_name, value_prefix = token.split(":", 1)
+    field_name = field_name.lower()
+    if not field_name or value_prefix.startswith("("):
+        return []
+    source = _completion_source_for_expression_field(field_name)
+    if source is None:
+        return []
+    value_param = param or click.Option(["--query-value"])
+    items = complete_query_source(source)(ctx, value_param, value_prefix)
+    prefix = f"{'-' if negated else ''}{field_name}:"
+    return _prefixed_query_value_items(items, prefix=prefix)
+
+
 def complete_query_expression_fields(
     ctx: click.Context,
     param: click.Parameter | None,
@@ -180,9 +227,11 @@ def complete_query_expression_fields(
 ) -> list[CompletionItem]:
     """Complete query DSL field tokens from the canonical grammar registry."""
 
-    del ctx, param
     if incomplete.startswith("--"):
         return []
+    if ":" in incomplete:
+        return _complete_query_expression_values(ctx, param, incomplete)
+    del ctx, param
     return [candidate.to_click_item() for candidate in query_field_candidates(incomplete)]
 
 
