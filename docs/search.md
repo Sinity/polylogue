@@ -2,11 +2,12 @@
 
 # Search & Query Reference
 
-Polylogue uses a query-first CLI grammar: bare tokens are search terms, flags
-are filters, and trailing subcommands are verbs. The same query semantics —
-filters, retrieval lanes, ranking policy, and the typed `SearchEnvelope`
-response shape — apply across the CLI, MCP, Python API, and daemon HTTP
-surfaces.
+Polylogue uses a query-first grammar over archive units. Bare tokens are
+full-text terms, field clauses narrow the selected unit, explicit
+`sessions/messages/actions/blocks where ...` forms opt into Boolean predicates,
+and trailing CLI verbs render or mutate the selected session set. The same
+query semantics — filters, retrieval lanes, ranking policy, and typed response
+payloads — apply across the CLI, MCP, Python API, and daemon HTTP surfaces.
 
 Quick links:
 
@@ -24,14 +25,142 @@ Quick links:
 
 ## Grammar
 
-```
-polylogue [<terms>] [filters] [verb]
+The canonical parser is the Lark grammar in
+`polylogue/archive/query/expression.py`. It has two entry shapes that lower
+through the same typed AST and query planner:
+
+```text
+compact-query      ::= compact-clause*
+boolean-query      ::= ["sessions" "where"] predicate
+unit-query         ::= ("messages" | "actions" | "blocks") "where" predicate
+
+compact-clause     ::= field-clause
+                     | quoted-text | bare-text
+                     | "-" quoted-text | "-" bare-text
+                     | count-comparison | count-range
+                     | date-comparison | date-range
+
+predicate          ::= predicate "OR" predicate
+                     | predicate "AND" predicate
+                     | "NOT" predicate
+                     | "(" predicate ")"
+                     | field-clause
+                     | count-comparison | count-range
+                     | date-comparison | date-range
+                     | fts-leaf | semantic-leaf
+                     | "exists" structural-unit "(" predicate ")"
+                     | "seq" "(" sequence-step "->" sequence-step+ ")"
+
+structural-unit    ::= "message" | "action" | "block"
 ```
 
-- **terms**: space-separated words matched by full-text search (AND when
-  repeated with `--contains`)
-- **filters**: `--flag` filters that narrow the session set
-- **verb**: optional trailing subcommand (`list`, `stats`, `count`, etc.)
+Compact queries select sessions:
+
+```bash
+polylogue repo:polylogue tag:active -"stale plan" "query envelope"
+polylogue origin:(codex-session|claude-code-session) messages:>=10 words:<=2000
+polylogue near:id:codex-session:abc123
+```
+
+Explicit Boolean session queries also select sessions:
+
+```bash
+polylogue sessions where '(repo:polylogue OR repo:sinex) AND NOT tag:stale'
+polylogue sessions where 'exists message(role:assistant AND text:timeout)'
+polylogue sessions where 'seq(action:file_edit -> action:shell)'
+```
+
+Unit queries select terminal rows instead of sessions:
+
+```bash
+polylogue messages where 'role:assistant AND text:timeout'
+polylogue actions where 'action:file_edit AND path:polylogue/archive'
+polylogue blocks where 'type:code AND text:sqlite'
+```
+
+Unsupported forms raise typed `ExpressionCompileError`s and must not broaden
+into looser full-text search. In particular, reserved unit prefixes such as
+`messages where` are errors when malformed; they are not treated as ordinary
+text terms.
+
+### DSL Fields
+
+| Field | Meaning | Example |
+|-------|---------|---------|
+| `repo` | Repository substring | `repo:polylogue` |
+| `origin` | Source origin | `origin:claude-code-session` |
+| `tag` | User/session tag | `tag:review` |
+| `path` | Referenced file path substring | `path:polylogue/cli` |
+| `cwd` | Working-directory prefix | `cwd:/realm/project` |
+| `tool` | Tool name used in the session | `tool:bash` |
+| `action` | Semantic action category | `action:file_edit` |
+| `has` | Content presence (`paste`, `tools`, `thinking`, or stored type) | `has:paste` |
+| `id` | Session id or prefix | `id:codex-session:abc` |
+| `title` | Session title substring | `title:refactor` |
+| `since` / `until` | Session time bounds, ISO or relative | `since:7d` |
+| `contains` | Exact content substring filter | `contains:sqlite` |
+| `near` | Vector similarity from text or a session id | `near:"semantic search"` / `near:id:<session>` |
+| `lane` | Retrieval lane | `lane:dialogue` |
+| `lineage` | Sessions sharing topology with a seed | `lineage:id:<session>` |
+
+Field values support quoted strings and in-field alternatives:
+
+```bash
+polylogue 'origin:(codex-session|claude-code-session) title:"query DSL"'
+polylogue 'tool:bash AND NOT tag:stale'
+```
+
+Negation is supported for fields that are semantically safe to negate, such as
+`origin`, `tag`, `tool`, and `action`.
+
+### Comparisons And Ranges
+
+Readable comparisons are supported for message counts, word counts, and dates:
+
+```bash
+polylogue 'messages >= 5 AND messages <= 20'
+polylogue 'words between 100 and 500'
+polylogue 'date between 2026-06-01 and 2026-06-17'
+```
+
+Compact count syntax is equivalent where available:
+
+```bash
+polylogue messages:>=5 words:<=500
+```
+
+### Structural Predicates
+
+`exists <unit>(...)` keeps the selected unit as `sessions` but requires at least
+one child row matching the nested predicate.
+
+| Unit | Accepted fields |
+|------|-----------------|
+| `message` | `action`, `command`, `output`, `path`, `role`, `text`, `tool`, `type`, `words` |
+| `action` | `action`, `command`, `output`, `path`, `text`, `tool`, `type` |
+| `block` | `action`, `command`, `path`, `text`, `tool`, `type` |
+
+Examples:
+
+```bash
+polylogue sessions where 'exists action(tool:bash AND text:pytest)'
+polylogue sessions where 'exists block(type:code AND text:timeout)'
+```
+
+### FTS And Semantic Leaves
+
+Inside Boolean predicates, `~` marks an explicit FTS leaf and `semantic:` /
+`near:text:` mark semantic-vector leaves:
+
+```bash
+polylogue sessions where '~"null pointer" AND repo:polylogue'
+polylogue sessions where 'semantic:"query compiler failure"'
+polylogue sessions where 'near:text:timeout'
+```
+
+Semantic leaves require embeddings to be configured and available. When vectors
+are unavailable, the query fails with a typed semantic/vector availability
+error instead of falling back to broad lexical search.
 
 ## Terminal Unit Queries
 
