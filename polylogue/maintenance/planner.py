@@ -98,9 +98,7 @@ class BackfillKind(str, Enum):
     """What kind of maintenance operation this is.
 
     The values map to the typed-operation taxonomy the rest of the
-    maintenance cluster expects (see #1144). The compatibility aliases
-    (``REBUILD``, ``REINDEX``, ``RESET``, ``BACKFILL``) are retained as
-    compatibility shims for callers that have not moved yet.
+    maintenance cluster expects (see #1144).
     """
 
     # Typed taxonomy (issue #1144).
@@ -110,11 +108,21 @@ class BackfillKind(str, Enum):
     SEMANTIC_REMATERIALIZE = "semantic-rematerialize"
     CONFIG_DRIVEN = "config-driven"
 
-    # Legacy aliases — kept so existing surfaces keep round-tripping.
-    REBUILD = "rebuild"
-    REINDEX = "reindex"
-    RESET = "reset"
-    BACKFILL = "backfill"
+
+_RETIRED_STORED_KIND_MAP: dict[str, BackfillKind] = {
+    "backfill": BackfillKind.DERIVED_REBUILD,
+    "rebuild": BackfillKind.DERIVED_REBUILD,
+    "reindex": BackfillKind.INDEX_REPAIR,
+    "reset": BackfillKind.CONFIG_DRIVEN,
+}
+
+
+def _coerce_backfill_kind(value: object) -> BackfillKind:
+    text = str(value)
+    try:
+        return BackfillKind(text)
+    except ValueError:
+        return _RETIRED_STORED_KIND_MAP.get(text, BackfillKind.DERIVED_REBUILD)
 
 
 class BackfillStatus(str, Enum):
@@ -293,11 +301,7 @@ class BackfillOperation:
         """
 
         op_id = str(payload.get("operation_id", ""))
-        kind_raw = str(payload.get("kind", BackfillKind.DERIVED_REBUILD.value))
-        try:
-            kind = BackfillKind(kind_raw)
-        except ValueError:
-            kind = BackfillKind.DERIVED_REBUILD
+        kind = _coerce_backfill_kind(payload.get("kind", BackfillKind.DERIVED_REBUILD.value))
         status_raw = str(payload.get("status", BackfillStatus.PENDING.value))
         try:
             status = BackfillStatus(status_raw)

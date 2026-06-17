@@ -92,7 +92,7 @@ class TestMaintenanceAPIRoutes:
 
                 fake_op = BackfillOperation(
                     operation_id="test-001",
-                    kind=BackfillKind.BACKFILL,
+                    kind=BackfillKind.DERIVED_REBUILD,
                     targets=("session_insights",),
                     status=BackfillStatus.PENDING,
                     affected_rows=10,
@@ -115,7 +115,7 @@ class TestMaintenanceAPIRoutes:
 
                 fake_op = BackfillOperation(
                     operation_id="test-002",
-                    kind=BackfillKind.BACKFILL,
+                    kind=BackfillKind.INDEX_REPAIR,
                     targets=("fts_repair",),
                     status=BackfillStatus.COMPLETED,
                     affected_rows=42,

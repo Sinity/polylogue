@@ -216,13 +216,6 @@ class MCPPaginatedQueryResultPayload(SurfacePayloadModel):
     diagnostics: MCPQueryMissDiagnosticsPayload | None = None
 
 
-#: MCP search uses the canonical :class:`~polylogue.surfaces.payloads.SearchEnvelope`
-#: shape (#1266). The compatibility alias is retained so existing call sites keep
-#: working; new code should import :class:`SearchEnvelope` directly from
-#: ``polylogue.surfaces.payloads``.
-MCPPaginatedSearchResultPayload = SearchEnvelope
-
-
 class MCPSessionTreePayload(SurfacePayloadModel):
     """Bounded envelope for ``get_session_tree``.
 
@@ -939,7 +932,6 @@ __all__ = [
     "MutationResultPayload",
     "MCPNeighborCandidatesPayload",
     "MCPPaginatedQueryResultPayload",
-    "MCPPaginatedSearchResultPayload",
     "MCPQueryMissDiagnosticsPayload",
     "MCPQueryMissReasonPayload",
     "MCPRawArtifactPayload",

@@ -35,8 +35,8 @@ The contract substrate already exists:
   shadow adapters used by mypy contract checks. They are **not** in the
   request path of production CLI / MCP / HTTP code.
 - `polylogue/mcp/payloads.py` — MCP-local envelope variants
-  (`MCPPaginatedQueryResultPayload`, `MCPPaginatedSearchResultPayload`,
-  `MCPErrorPayload`).
+  (`MCPPaginatedQueryResultPayload`, `MCPErrorPayload`) plus direct use of
+  the shared `SearchEnvelope`.
 - `polylogue/mcp/query_contracts.py` — `MCPConversationQueryRequest`,
   the typed input spec that already encodes every filter parameter
   declared one at a time in `mcp/server_tools.py`.
@@ -96,7 +96,7 @@ HTTP paths never call into it. #859 closed without wiring this through.
 
 - Daemon HTTP returns `hits` with nested `match` (reader anchors,
   actions).
-- MCP returns `MCPPaginatedSearchResultPayload`.
+- MCP returns the shared `SearchEnvelope`.
 - CLI rolls its own payload via `_search_hit_to_payload`.
 
 #1266 standardized the ranked envelope but the production CLI/MCP/HTTP

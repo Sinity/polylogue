@@ -6,7 +6,7 @@ import pytest
 
 from polylogue.insights.confidence import (
     ConfidenceBand,
-    from_legacy,
+    confidence_band_from_stored,
     from_score,
     from_signals,
 )
@@ -34,7 +34,7 @@ def test_band_is_str_subclass_for_json_compat() -> None:
 
 
 # ---------------------------------------------------------------------------
-# from_signals — preserves the legacy support_level() decision rule
+# from_signals — support-level decision rule
 # ---------------------------------------------------------------------------
 
 
@@ -88,7 +88,7 @@ def test_from_score_thirds(score: float, expected: ConfidenceBand) -> None:
 
 
 # ---------------------------------------------------------------------------
-# from_legacy — coerce stored string into typed band
+# confidence_band_from_stored — coerce stored string into typed band
 # ---------------------------------------------------------------------------
 
 
@@ -101,17 +101,17 @@ def test_from_score_thirds(score: float, expected: ConfidenceBand) -> None:
         ("none", ConfidenceBand.NONE),
     ],
 )
-def test_from_legacy_accepts_known_spellings(value: str, expected: ConfidenceBand) -> None:
-    assert from_legacy(value) is expected
+def test_confidence_band_from_stored_accepts_known_spellings(value: str, expected: ConfidenceBand) -> None:
+    assert confidence_band_from_stored(value) is expected
 
 
-def test_from_legacy_passes_through_enum_instances() -> None:
-    assert from_legacy(ConfidenceBand.STRONG) is ConfidenceBand.STRONG
+def test_confidence_band_from_stored_passes_through_enum_instances() -> None:
+    assert confidence_band_from_stored(ConfidenceBand.STRONG) is ConfidenceBand.STRONG
 
 
 @pytest.mark.parametrize("value", [None, "", "unknown", "medium", "high"])
-def test_from_legacy_unknown_spellings_collapse_to_weak(value: str | None) -> None:
-    assert from_legacy(value) is ConfidenceBand.WEAK
+def test_confidence_band_from_stored_unknown_spellings_collapse_to_weak(value: str | None) -> None:
+    assert confidence_band_from_stored(value) is ConfidenceBand.WEAK
 
 
 # ---------------------------------------------------------------------------
