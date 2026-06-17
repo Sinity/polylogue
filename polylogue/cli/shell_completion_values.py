@@ -96,7 +96,7 @@ class QueryCompletionCandidate:
         }
 
     def to_click_item(self) -> CompletionItem:
-        help_text = self.description
+        help_text = _trim_help(self.description)
         if self.danger:
             help_text = f"DANGER: {help_text}" if help_text else "DANGER"
         return CompletionItem(
@@ -191,6 +191,7 @@ def query_field_candidates(incomplete: str) -> list[QueryCompletionCandidate]:
     if ":" in current:
         return []
     candidates: list[QueryCompletionCandidate] = []
+    emitted: set[str] = set()
     for field_name, info in sorted(EXPRESSION_FIELD_REGISTRY.items()):
         if current and not field_name.startswith(current):
             continue
@@ -199,6 +200,16 @@ def query_field_candidates(incomplete: str) -> list[QueryCompletionCandidate]:
         example = info.get("example")
         if example:
             description = f"{description} Example: {example}" if description else f"Example: {example}"
+        source = "EXPRESSION_FIELD_REGISTRY"
+        count_info = COUNT_QUERY_FIELD_REGISTRY.get(field_name)
+        if count_info is not None:
+            operators = ", ".join((*count_info.operators, count_info.range_keyword))
+            description = (
+                f"{description} Readable operators: {operators}. Example: {count_info.example}"
+                if description
+                else f"Readable operators: {operators}. Example: {count_info.example}"
+            )
+            source = "EXPRESSION_FIELD_REGISTRY/COUNT_QUERY_FIELD_REGISTRY"
         candidates.append(
             QueryCompletionCandidate(
                 value=field_name,
@@ -206,8 +217,27 @@ def query_field_candidates(incomplete: str) -> list[QueryCompletionCandidate]:
                 display=insert,
                 kind="query-field",
                 group="query fields",
-                description=_trim_help(description),
-                source="EXPRESSION_FIELD_REGISTRY",
+                description=description,
+                source=source,
+            )
+        )
+        emitted.add(field_name)
+    for field_name, date_info in sorted(DATE_QUERY_FIELD_REGISTRY.items()):
+        if field_name in emitted:
+            continue
+        if current and not field_name.startswith(current):
+            continue
+        operators = ", ".join((*date_info.operators, date_info.range_keyword))
+        description = f"{date_info.description} Readable operators: {operators}. Example: {date_info.example}"
+        candidates.append(
+            QueryCompletionCandidate(
+                value=field_name,
+                insert=f"{field_name} ",
+                display=f"{field_name} ",
+                kind="query-date-field",
+                group="query readable fields",
+                description=description,
+                source="DATE_QUERY_FIELD_REGISTRY",
             )
         )
     return candidates
@@ -232,7 +262,7 @@ def query_structural_unit_candidates(incomplete: str) -> list[QueryCompletionCan
                 display=f"{unit}(",
                 kind="query-structural-unit",
                 group="query structural units",
-                description=_trim_help(description),
+                description=description,
                 source="STRUCTURAL_QUERY_UNIT_REGISTRY",
             )
         )

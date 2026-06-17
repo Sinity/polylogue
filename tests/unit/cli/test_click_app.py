@@ -303,6 +303,21 @@ def test_query_completions_json_outputs_structured_candidates(cli_runner: CliRun
     assert repo["danger"] is False
     assert "repository name" in repo["description"]
 
+    date_result = cli_runner.invoke(
+        click_cli,
+        ["--plain", "query-completions", "--kind", "field", "--incomplete", "d", "--format", "json"],
+        catch_exceptions=False,
+    )
+
+    assert date_result.exit_code == 0
+    date_payload = json.loads(date_result.output)
+    date_candidates = {item["value"]: item for item in date_payload["result"]["query_completions"]["candidates"]}
+    date = date_candidates["date"]
+    assert date["insert"] == "date "
+    assert date["kind"] == "query-date-field"
+    assert date["source"] == "DATE_QUERY_FIELD_REGISTRY"
+    assert "date between 2026-01-01 and 2026-02-01" in date["description"]
+
 
 def test_query_completions_requires_unit_for_structural_fields(cli_runner: CliRunner) -> None:
     result = cli_runner.invoke(

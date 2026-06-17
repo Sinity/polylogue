@@ -135,6 +135,21 @@ def test_query_field_candidates_come_from_expression_registry() -> None:
     assert click_item.type == "plain"
 
 
+def test_query_field_candidates_include_readable_operator_fields() -> None:
+    date_candidates = shell_completion_values.query_field_candidates("d")
+    date_candidate = next(candidate for candidate in date_candidates if candidate.value == "date")
+    assert date_candidate.insert == "date "
+    assert date_candidate.kind == "query-date-field"
+    assert date_candidate.source == "DATE_QUERY_FIELD_REGISTRY"
+    assert "date between 2026-01-01 and 2026-02-01" in date_candidate.description
+
+    message_candidates = shell_completion_values.query_field_candidates("mess")
+    message_candidate = next(candidate for candidate in message_candidates if candidate.value == "messages")
+    assert message_candidate.insert == "messages:"
+    assert message_candidate.source == "EXPRESSION_FIELD_REGISTRY/COUNT_QUERY_FIELD_REGISTRY"
+    assert "messages between 5 and 20" in message_candidate.description
+
+
 def test_query_structural_unit_candidates_come_from_expression_registry() -> None:
     candidates = shell_completion_values.query_structural_unit_candidates("b")
     assert [candidate.value for candidate in candidates] == ["block"]
