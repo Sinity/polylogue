@@ -271,7 +271,7 @@ paths; use `devtools verify --seed-testmon` when you intentionally want to
 refresh the dependency database and `devtools verify --all` for an explicit full
 diagnostic.
 
-Add `devtools build-package` or `nix flake check` when touching packaging or
+Add `devtools release build-package` or `nix flake check` when touching packaging or
 Nix expressions. See [TESTING.md](TESTING.md) and [docs/devtools.md](docs/devtools.md)
 for details.
 

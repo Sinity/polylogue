@@ -49,17 +49,17 @@ def main(argv: list[str] | None = None) -> int:
     try:
         verify_distribution_surface(work_dir)
     except DistributionVerificationError as exc:
-        print(f"verify-distribution-surface: FAILED: {exc}", file=sys.stderr)
+        print(f"release verify-distribution: FAILED: {exc}", file=sys.stderr)
         if not cleanup:
-            print(f"verify-distribution-surface: work dir: {work_dir}", file=sys.stderr)
+            print(f"release verify-distribution: work dir: {work_dir}", file=sys.stderr)
         return 1
     finally:
         if cleanup:
             shutil.rmtree(work_dir, ignore_errors=True)
 
     if args.keep_work_dir or args.work_dir is not None:
-        print(f"verify-distribution-surface: work dir: {work_dir}", file=sys.stderr)
-    print("verify-distribution-surface: ok", file=sys.stderr)
+        print(f"release verify-distribution: work dir: {work_dir}", file=sys.stderr)
+    print("release verify-distribution: ok", file=sys.stderr)
     return 0
 
 
@@ -171,7 +171,7 @@ def _run(
     env: dict[str, str] | None = None,
 ) -> None:
     rendered = " ".join(cmd)
-    print(f"verify-distribution-surface: {rendered}", file=sys.stderr)
+    print(f"release verify-distribution: {rendered}", file=sys.stderr)
     result = subprocess.run(tuple(cmd), cwd=cwd, env=env, text=True, capture_output=True, check=False)
     if result.returncode == 0:
         return

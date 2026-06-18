@@ -111,7 +111,7 @@ jobs:
         with:
           python-version: "3.13"
       - run: uv sync --extra dev --frozen
-      - run: uv run devtools verify-distribution-surface --work-dir "${RUNNER_TEMP}/dist" --keep-work-dir
+      - run: uv run devtools release verify-distribution --work-dir "${RUNNER_TEMP}/dist" --keep-work-dir
         env:
           POLYLOGUE_FORCE_PLAIN: "1"
       - uses: actions/upload-artifact@v7

@@ -20,6 +20,7 @@ VERIFICATION_LAB_COMMAND_NAMES: tuple[str, ...] = (
 CATEGORY_ORDER: tuple[str, ...] = (
     "core",
     "generated surfaces",
+    "release",
     "verification",
     "campaigns",
     "maintenance",
@@ -165,8 +166,8 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         featured=True,
     ),
     CommandSpec(
-        "release-readiness",
-        "verification",
+        "release readiness",
+        "release",
         "Validate the externally-presentable release gate definition.",
         "devtools.release_readiness",
         use_when=(
@@ -174,9 +175,9 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "and release PR evidence template are still coherent before touching a release PR."
         ),
         examples=(
-            "devtools release-readiness",
-            "devtools release-readiness --json",
-            "devtools release-readiness --release-body-file /tmp/release-pr-body.md",
+            "devtools release readiness",
+            "devtools release readiness --json",
+            "devtools release readiness --release-body-file /tmp/release-pr-body.md",
         ),
     ),
     CommandSpec(
@@ -476,15 +477,15 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools verify-test-clock-hygiene", "devtools verify-test-clock-hygiene --json"),
     ),
     CommandSpec(
-        "verify-distribution-surface",
-        "verification",
+        "release verify-distribution",
+        "release",
         "Verify wheel/sdist installed artifacts expose only supported runtime entrypoints.",
         "devtools.verify_distribution_surface",
         use_when=(
             "Build wheel and sdist artifacts, rebuild a wheel from an unpacked sdist without .git, "
             "and smoke installed runtime console scripts."
         ),
-        examples=("devtools verify-distribution-surface",),
+        examples=("devtools release verify-distribution",),
     ),
     CommandSpec(
         "pipeline-probe",
@@ -594,12 +595,12 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "build-package",
-        "maintenance",
+        "release build-package",
+        "release",
         "Build the default Nix package with the out-link under .local/result.",
         "devtools.build_package",
         use_when="Produce the Nix package artifact with its out-link kept under the repo-local output root.",
-        examples=("devtools build-package",),
+        examples=("devtools release build-package",),
     ),
     CommandSpec(
         "mutmut-campaign",

@@ -513,4 +513,4 @@ devtools lab-scenario verify-baselines
 
 - `.cache/`: disposable caches (hypothesis, pytest, mypy, ruff)
 - `.local/`: untracked outputs (campaigns, showcases, build artifacts)
-- `.local/result`: out-link for `devtools build-package`
+- `.local/result`: out-link for `devtools release build-package`

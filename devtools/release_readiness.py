@@ -24,10 +24,10 @@ class GateCommand:
 
 
 REQUIRED_COMMANDS: tuple[GateCommand, ...] = (
-    GateCommand(("devtools", "release-readiness"), True, "release gate definition"),
+    GateCommand(("devtools", "release", "readiness"), True, "release gate definition"),
     GateCommand(("devtools", "verify", "--quick"), True, "static/generated baseline"),
     GateCommand(("devtools", "verify", "--lab"), True, "verification-lab baseline"),
-    GateCommand(("devtools", "build-package"), True, "wheel/sdist/Nix package smoke"),
+    GateCommand(("devtools", "release", "build-package"), True, "wheel/sdist/Nix package smoke"),
     GateCommand(("devtools", "render pages"), True, "documentation site build"),
     GateCommand(("devtools", "verify-doc-commands"), True, "README/docs command examples"),
 )
@@ -203,7 +203,7 @@ def build_report(
 
 def _print_human(report: dict[str, Any]) -> None:
     status = "ok" if report["ok"] else "FAIL"
-    print(f"release-readiness: {status}")
+    print(f"release readiness: {status}")
     print(f"gate doc: {report['gate_doc']}")
     print("required commands:")
     for command in report["required_commands"]:
