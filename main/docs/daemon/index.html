@@ -950,7 +950,7 @@ status — this is not an error.</p>
 daemon marks all sessions for re-embedding. A dimension change also drops
 and recreates the vec0 virtual table.</p>
 <h3>Checking coverage</h3>
-<pre><code class="language-bash">polylogue stats                      # embedding coverage in archive stats
+<pre><code class="language-bash">polylogue analyze                    # embedding coverage in archive aggregates
 polylogue ops embed status               # cheap readiness + latest catch-up run
 polylogue ops embed status --detail      # exact pending-message/retrieval accounting
 polylogued status                    # daemon status includes embedding readiness

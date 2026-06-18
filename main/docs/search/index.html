@@ -888,35 +888,35 @@ are rejected instead of silently coercing row queries back to session queries.</
 </thead>
 <tbody>
 <tr>
-<td><code>list</code></td>
-<td>List matched sessions with metadata</td>
+<td><code>read --all</code></td>
+<td>List/export matched sessions with metadata</td>
 </tr>
 <tr>
-<td><code>count</code></td>
+<td><code>analyze --count</code></td>
 <td>Print count of matched sessions</td>
 </tr>
 <tr>
-<td><code>stats</code></td>
-<td>Grouped statistics (<code>--by origin</code>, <code>month</code>, <code>year</code>, <code>day</code>, <code>action</code>, <code>tool</code>, <code>repo</code>, <code>work-kind</code>)</td>
+<td><code>analyze --by ...</code></td>
+<td>Grouped statistics (<code>origin</code>, <code>month</code>, <code>year</code>, <code>day</code>, <code>action</code>, <code>tool</code>, <code>repo</code>, <code>work-kind</code>)</td>
 </tr>
 <tr>
-<td><code>show</code></td>
-<td>Display full session content</td>
+<td><code>read</code></td>
+<td>Display session content through read views</td>
 </tr>
 <tr>
-<td><code>open</code></td>
-<td>Open session in browser/editor</td>
+<td><code>read --to browser</code></td>
+<td>Open session in browser</td>
 </tr>
 <tr>
-<td><code>bulk-export</code></td>
-<td>Export matched sessions to file</td>
+<td><code>read --all --format ...</code></td>
+<td>Export matched sessions</td>
 </tr>
 <tr>
-<td><code>messages</code></td>
+<td><code>read --view messages</code></td>
 <td>Show individual messages</td>
 </tr>
 <tr>
-<td><code>raw</code></td>
+<td><code>read --view raw</code></td>
 <td>Show raw (unparsed) session data</td>
 </tr>
 <tr>
@@ -1334,9 +1334,9 @@ non-ranked list paths and as a best-effort fallback for ranked paths.</p>
 envelope; see :class:<code>polylogue.surfaces.payloads.SearchCursor</code>).
 Consumers MUST treat it as opaque and pass it back unchanged.</p>
 <pre><code class="language-bash"># Page 1
-polylogue &quot;sqlite&quot; list --format json --limit 25
+polylogue &quot;sqlite&quot; read --all --format json --limit 25
 # Read .next_cursor from the response, then ask for page 2:
-polylogue &quot;sqlite&quot; list --format json --limit 25 \
+polylogue &quot;sqlite&quot; read --all --format json --limit 25 \
     --cursor &quot;$NEXT_CURSOR&quot;
 </code></pre>
 <p>MCP search and the daemon <code>/api/sessions</code> endpoint accept the same
@@ -1416,7 +1416,7 @@ tokenizer. Prefix queries use <code>*</code>:</p>
 </tbody>
 </table>
 <p>Set format with <code>-f</code> / <code>--format</code> on a verb:</p>
-<pre><code class="language-bash">polylogue &quot;sqlite locking&quot; list --format json
+<pre><code class="language-bash">polylogue &quot;sqlite locking&quot; read --all --format json
 polylogue --since yesterday bulk-export --format jsonl
 </code></pre>
 <h2>Facets (Scoped vs Global)</h2>
@@ -1448,12 +1448,12 @@ polylogue facets -f json --no-idf    # FacetsResponse, no IDF weighting
 <h2>Empty Result Diagnostics</h2>
 <p>When a query returns no results:</p>
 <ol>
-<li>Check origin spelling: <code>polylogue --origin claude-code-session list</code> (not <code>claude_code</code>)</li>
+<li>Check origin spelling: <code>polylogue --origin claude-code-session read --all</code> (not <code>claude_code</code>)</li>
 <li>Expand the time window: <code>--since 2024-01</code> instead of <code>--since yesterday</code></li>
-<li>Verify the archive has data: <code>polylogue count</code> (no filters)</li>
+<li>Verify the archive has data: <code>polylogue analyze --count</code> (no filters)</li>
 <li>Check FTS index health: <code>polylogued status</code> shows <code>fts_readiness</code></li>
 <li>Run <code>polylogue ops doctor</code> for schema and index integrity</li>
-<li>If using <code>--similar</code>, ensure embeddings are built (check <code>polylogue stats</code> for embedding coverage)</li>
+<li>If using <code>--similar</code>, ensure embeddings are built (check <code>polylogue ops embed status --detail</code> for embedding readiness/coverage)</li>
 </ol>
 
 <hr style="margin: 3rem 0 1rem; border-color: var(--border);">
