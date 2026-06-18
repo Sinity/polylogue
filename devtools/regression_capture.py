@@ -24,14 +24,14 @@ def _read_input(input_path: Path | None) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Capture a devtools pipeline-probe JSON summary as a durable regression case.",
+        description="Capture a devtools lab probe pipeline JSON summary as a durable regression case.",
     )
     parser.add_argument(
         "--input",
         "-i",
         type=Path,
         default=None,
-        help="Pipeline-probe JSON summary path. Reads stdin when omitted or set to '-'.",
+        help="Lab probe pipeline JSON summary path. Reads stdin when omitted or set to '-'.",
     )
     parser.add_argument("--name", required=True, help="Human-readable regression case name.")
     parser.add_argument(

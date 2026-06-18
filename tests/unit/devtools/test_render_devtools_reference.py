@@ -14,15 +14,10 @@ def test_build_command_catalog_includes_discovery_and_commands() -> None:
     assert "devtools --list-commands --json" in rendered
     assert "devtools status --json" in rendered
     assert "not end-user archive workflows" in rendered
+    assert "| `devtools lab graph` | Render the runtime artifact, operation, and scenario-coverage map. |" in rendered
+    assert "| `devtools lab projections` | Render the authored scenario-bearing verification projections. |" in rendered
     assert (
-        "| `devtools artifact-graph` | Render the runtime artifact, operation, and scenario-coverage map. |" in rendered
-    )
-    assert (
-        "| `devtools scenario-projections` | Render the authored scenario-bearing verification projections. |"
-        in rendered
-    )
-    assert (
-        "| `devtools regression-capture` | Capture pipeline-probe summaries as durable local regression cases. |"
+        "| `devtools lab probe capture-regression` | Capture pipeline-probe summaries as durable local regression cases. |"
         in rendered
     )
     assert "| `devtools render all` |" in rendered

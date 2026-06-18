@@ -22,6 +22,7 @@ from devtools.command_catalog import (
 )
 
 GROUP_HELP: dict[str, str] = {
+    "lab": "Run verification-lab evidence, schema, probe, and policy commands.",
     "render": "Render and check generated repository surfaces.",
     "release": "Build, smoke, and validate release/distribution readiness.",
     "workspace": "Inspect and maintain local agent workspace state.",

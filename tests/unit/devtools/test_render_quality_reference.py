@@ -39,7 +39,7 @@ def test_build_document_includes_live_registry_sections() -> None:
                     description="Read-only live archive exercises.",
                     timeout_s=300,
                     category="live",
-                    execution=devtools_execution("lab-scenario", "run", "archive-smoke", "--live", "--tier", "0"),
+                    execution=devtools_execution("lab scenario", "run", "archive-smoke", "--live", "--tier", "0"),
                 ),
                 LaneEntry(
                     name="runtime-substrate-hardening",
@@ -233,7 +233,7 @@ def test_build_document_includes_runtime_coverage_section() -> None:
     assert "- uncovered runtime operations: `materialize-session-insights`" in rendered
     assert "- uncovered maintenance targets: `wal_checkpoint`" in rendered
     assert "- uncovered declared operation targets: `benchmark.pipeline.index-and-helpers`" in rendered
-    assert "devtools artifact-graph" in rendered
+    assert "devtools lab graph" in rendered
 
 
 def test_write_if_changed_reuses_existing_output(tmp_path: Path) -> None:

@@ -79,7 +79,9 @@ def test_pipeline_probe_execution_renders_control_plane_command() -> None:
     assert execution.kind is ExecutionKind.PIPELINE_PROBE
     assert execution.command == (
         "devtools",
-        "pipeline-probe",
+        "lab",
+        "probe",
+        "pipeline",
         "--provider",
         "chatgpt",
         "--stage",
@@ -121,7 +123,7 @@ def test_memory_budget_execution_wraps_structured_execution() -> None:
 
 
 def test_execution_spec_round_trips_payload() -> None:
-    execution = devtools_execution("lab-scenario", "run", "archive-smoke", "--tier", "0")
+    execution = devtools_execution("lab scenario", "run", "archive-smoke", "--tier", "0")
 
     restored = type(execution).from_payload(execution.to_payload())
 

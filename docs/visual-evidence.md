@@ -27,13 +27,13 @@ From the devshell:
 ```bash
 nix develop -c pytest tests/unit/daemon/test_web_reader.py
 nix develop -c pytest tests/visual
-nix develop -c devtools lab-scenario run reader-visual-smoke
+nix develop -c devtools lab scenario run reader-visual-smoke
 ```
 
 Both suites are part of the standard non-integration test run. There is no
 browser binary or Playwright dependency in these fast lanes: they use Python's
 standard `http.server`, `urllib.request`, and `html.parser` against the real
-`DaemonAPIHTTPServer`. The `devtools lab-scenario` command is the
+`DaemonAPIHTTPServer`. The `devtools lab scenario` command is the
 operator-facing wrapper for the visual/DOM lane.
 
 ## Coverage

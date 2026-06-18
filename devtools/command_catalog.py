@@ -10,17 +10,25 @@ from dataclasses import asdict, dataclass
 CommandMain = Callable[[list[str] | None], int]
 CONTROL_PLANE = "devtools"
 VERIFICATION_LAB_COMMAND_NAMES: tuple[str, ...] = (
-    "lab-scenario",
-    "schema-generate",
-    "schema-promote",
-    "schema-audit",
-    "verify-schema-roundtrip",
+    "lab graph",
+    "lab lanes",
+    "lab policy schema-versioning",
+    "lab probe capture-regression",
+    "lab probe pipeline",
+    "lab projections",
+    "lab scenario",
+    "lab schema audit",
+    "lab schema generate",
+    "lab schema promote",
+    "lab schema roundtrip",
+    "lab snapshot read-surface",
 )
 
 CATEGORY_ORDER: tuple[str, ...] = (
     "core",
     "generated surfaces",
     "release",
+    "verification lab",
     "verification",
     "campaigns",
     "workspace",
@@ -206,17 +214,28 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools coverage-gate -- --maxfail=1",
         ),
     ),
-    CommandSpec("run-validation-lanes", "verification", "Run named validation lanes.", "devtools.run_validation_lanes"),
     CommandSpec(
-        "artifact-graph",
-        "verification",
+        "lab lanes",
+        "verification lab",
+        "Run named validation lanes.",
+        "devtools.run_validation_lanes",
+        use_when="List, dry-run, or execute authored validation lanes from the verification lab registry.",
+        examples=(
+            "devtools lab lanes --list",
+            "devtools lab lanes --lane frontier-local",
+            "devtools lab lanes --lane live-exercises --dry-run",
+        ),
+    ),
+    CommandSpec(
+        "lab graph",
+        "verification lab",
         "Render the runtime artifact, operation, and scenario-coverage map.",
         "devtools.artifact_graph",
         use_when="Inspect the authored runtime graph and see which scenarios currently cover declared artifacts and operations.",
         examples=(
-            "devtools artifact-graph",
-            "devtools artifact-graph --json",
-            "devtools artifact-graph --strict",
+            "devtools lab graph",
+            "devtools lab graph --json",
+            "devtools lab graph --strict",
         ),
     ),
     CommandSpec(
@@ -252,17 +271,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "self-verify",
-        "verification",
-        "Capture and compare archive golden-master envelopes for schema rewrites.",
+        "lab snapshot read-surface",
+        "verification lab",
+        "Capture and compare archive read-surface snapshots.",
         "devtools.self_verify",
         use_when=(
-            "Freeze v22 read-surface behavior before archive work, then compare candidate "
+            "Freeze archive read-surface behavior before archive work, then compare candidate "
             "archives against the captured envelope baseline."
         ),
         examples=(
-            "devtools self-verify capture --out .local/self-verify/v22.json",
-            "devtools self-verify compare .local/self-verify/v22.json .local/self-verify/candidate.json --json",
+            "devtools lab snapshot read-surface capture --out .local/self-verify/baseline.json",
+            "devtools lab snapshot read-surface compare .local/self-verify/baseline.json .local/self-verify/candidate.json --json",
         ),
     ),
     CommandSpec(
@@ -298,15 +317,15 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "scenario-projections",
-        "verification",
+        "lab projections",
+        "verification lab",
         "Render the authored scenario-bearing verification projections.",
         "devtools.scenario_projections",
         use_when="Inspect the unified projection inventory that feeds runtime coverage, generated docs, and control-plane maps.",
         examples=(
-            "devtools scenario-projections",
-            "devtools scenario-projections --source-kind exercise --artifact-target message_fts",
-            "devtools scenario-projections --json",
+            "devtools lab projections",
+            "devtools lab projections --source-kind exercise --artifact-target message_fts",
+            "devtools lab projections --json",
         ),
     ),
     CommandSpec(
@@ -451,8 +470,8 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools verify-test-infra-currency", "devtools verify-test-infra-currency --json"),
     ),
     CommandSpec(
-        "verify-schema-upgrade-lane",
-        "verification",
+        "lab policy schema-versioning",
+        "verification lab",
         "Reject in-place storage schema upgrade helpers (#1302).",
         "devtools.verify_schema_upgrade_lane",
         use_when=(
@@ -461,7 +480,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "storage schema upgrade chain; archive-shape changes edit the canonical "
             "DDL and require a fresh rebuild from source."
         ),
-        examples=("devtools verify-schema-upgrade-lane", "devtools verify-schema-upgrade-lane --json"),
+        examples=("devtools lab policy schema-versioning", "devtools lab policy schema-versioning --json"),
     ),
     CommandSpec(
         "verify-test-clock-hygiene",
@@ -489,14 +508,14 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools release verify-distribution",),
     ),
     CommandSpec(
-        "pipeline-probe",
-        "verification",
+        "lab probe pipeline",
+        "verification lab",
         "Run typed pipeline probes against synthetic, staged, or archive-subset inputs.",
         "devtools.pipeline_probe",
         use_when="Exercise real pipeline stages and optionally capture emitted summaries as regression cases.",
         examples=(
-            "devtools pipeline-probe --provider chatgpt --stage parse",
-            "devtools pipeline-probe --input-mode archive-subset --capture-regression live-parse-drift",
+            "devtools lab probe pipeline --provider chatgpt --stage parse",
+            "devtools lab probe pipeline --input-mode archive-subset --capture-regression live-parse-drift",
         ),
     ),
     CommandSpec(
@@ -508,44 +527,44 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools query-memory-budget --max-rss-mb 1536 -- polylogue --plain analyze",),
     ),
     CommandSpec(
-        "lab-scenario",
-        "verification",
+        "lab scenario",
+        "verification lab",
         "Run verification-lab showcase scenario sets and baseline checks.",
         "devtools.lab_scenario",
         use_when="Run showcase exercise smoke scenarios and committed baseline checks outside the archive CLI.",
         examples=(
-            "devtools lab-scenario list",
-            "devtools lab-scenario run archive-smoke --tier 0",
-            "devtools lab-scenario verify-baselines",
+            "devtools lab scenario list",
+            "devtools lab scenario run archive-smoke --tier 0",
+            "devtools lab scenario verify-baselines",
         ),
     ),
     CommandSpec(
-        "schema-generate",
-        "verification",
+        "lab schema generate",
+        "verification lab",
         "Generate provider schema packages and optional evidence clusters.",
         "devtools.schema_generate",
         use_when="Refresh provider schema package artifacts from archive observations outside the archive CLI.",
-        examples=("devtools schema-generate --provider chatgpt --cluster",),
+        examples=("devtools lab schema generate --provider chatgpt --cluster",),
     ),
     CommandSpec(
-        "schema-promote",
-        "verification",
+        "lab schema promote",
+        "verification lab",
         "Promote a schema evidence cluster into a registered package version.",
         "devtools.schema_promote",
         use_when="Turn reviewed schema evidence clusters into committed provider schema packages.",
-        examples=("devtools schema-promote --provider chatgpt --cluster chatgpt-message-v2",),
+        examples=("devtools lab schema promote --provider chatgpt --cluster chatgpt-message-v2",),
     ),
     CommandSpec(
-        "schema-audit",
-        "verification",
+        "lab schema audit",
+        "verification lab",
         "Run committed provider schema package quality checks.",
         "devtools.schema_audit",
         use_when="Check committed schema package quality gates without presenting them as normal archive usage.",
-        examples=("devtools schema-audit --provider chatgpt --json",),
+        examples=("devtools lab schema audit --provider chatgpt --json",),
     ),
     CommandSpec(
-        "verify-schema-roundtrip",
-        "verification",
+        "lab schema roundtrip",
+        "verification lab",
         "Verify committed provider schema packages reload and roundtrip cleanly.",
         "devtools.verify_schema_roundtrip",
         use_when=(
@@ -553,19 +572,19 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "and every supported element schema must be reachable from the runtime registry."
         ),
         examples=(
-            "devtools verify-schema-roundtrip --provider chatgpt",
-            "devtools verify-schema-roundtrip --all --json",
+            "devtools lab schema roundtrip --provider chatgpt",
+            "devtools lab schema roundtrip --all --json",
         ),
     ),
     CommandSpec(
-        "regression-capture",
-        "verification",
+        "lab probe capture-regression",
+        "verification lab",
         "Capture pipeline-probe summaries as durable local regression cases.",
         "devtools.regression_capture",
         use_when="Turn a live or probe failure JSON summary into a replayable local regression artifact.",
         examples=(
-            "devtools regression-capture --input probe.json --name parse-drift",
-            "devtools pipeline-probe --json | devtools regression-capture --name parse-drift --tag live",
+            "devtools lab probe capture-regression --input probe.json --name parse-drift",
+            "devtools lab probe pipeline --json | devtools lab probe capture-regression --name parse-drift --tag live",
         ),
     ),
     CommandSpec(

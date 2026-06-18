@@ -34,7 +34,7 @@ def isolated_xtask_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
         ("verify-topology", "verify"),
         ("render all", "render"),
         ("render cli-reference", "render"),
-        ("lab-scenario", "lab"),
+        ("lab scenario", "lab"),
         ("mutmut-campaign", "campaign"),
         ("benchmark-campaign", "campaign"),
         ("run-benchmark-campaigns", "campaign"),

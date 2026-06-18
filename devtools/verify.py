@@ -908,7 +908,7 @@ def build_verify_steps(
                 ("verify-topology", _devtools_cmd("verify-topology")),
                 ("verify-layering", _devtools_cmd("verify-layering")),
                 ("verify-closure-matrix", _devtools_cmd("verify-closure-matrix")),
-                ("verify-schema-roundtrip", _devtools_cmd("verify-schema-roundtrip", "--all")),
+                ("lab schema roundtrip", _devtools_cmd("lab schema roundtrip", "--all")),
                 ("verify-manifests", _devtools_cmd("verify-manifests")),
                 ("verify-ci-workflows", _devtools_cmd("verify-ci-workflows")),
                 ("verify-doc-commands", _devtools_cmd("verify-doc-commands")),
@@ -984,9 +984,9 @@ def build_verify_steps(
             steps.append((label, pytest_cmd))
 
     if lab:
-        steps.append(("lab scenario", _devtools_cmd("lab-scenario", "run", "archive-smoke", "--tier", "0")))
+        steps.append(("lab scenario", _devtools_cmd("lab scenario", "run", "archive-smoke", "--tier", "0")))
         steps.append(("verify-slos", _devtools_cmd("verify-slos", "--include-lab")))
-        steps.append(("verify-schema-upgrade-lane", _devtools_cmd("verify-schema-upgrade-lane")))
+        steps.append(("lab policy schema-versioning", _devtools_cmd("lab policy schema-versioning")))
         steps.append(("verify-test-coverage-contracts", _devtools_cmd("verify-test-coverage-contracts")))
     return steps
 

@@ -530,7 +530,7 @@ class TestSchemaExplainCommand:
 
 
 # =============================================================================
-# devtools schema-promote (end-to-end with clustering)
+# devtools lab schema promote (end-to-end with clustering)
 # =============================================================================
 
 

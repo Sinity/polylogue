@@ -18,7 +18,10 @@ def test_control_plane_helpers_render_consistent_invocations() -> None:
     assert control_plane_argv("status", "--json") == ("devtools", "status", "--json")
     assert control_plane_command("render all", "--check") == "devtools render all --check"
     assert control_plane_argv("render all", "--check") == ("devtools", "render", "all", "--check")
+    assert control_plane_command("lab schema roundtrip", "--all") == "devtools lab schema roundtrip --all"
+    assert control_plane_argv("lab schema roundtrip", "--all") == ("devtools", "lab", "schema", "roundtrip", "--all")
     assert command_name_from_tokens(["render", "all", "--check"]) == "render all"
+    assert command_name_from_tokens(["lab", "schema", "roundtrip", "--all"]) == "lab schema roundtrip"
 
 
 def test_command_specs_have_unique_names_and_known_categories() -> None:
@@ -47,7 +50,7 @@ def test_verification_lab_surface_is_explicit_and_implemented() -> None:
     specs = verification_lab_command_specs()
 
     assert tuple(spec.name for spec in specs) == VERIFICATION_LAB_COMMAND_NAMES
-    assert {spec.category for spec in specs} == {"verification"}
+    assert {spec.category for spec in specs} == {"verification lab"}
     assert len({spec.module for spec in specs}) == len(specs)
 
     for spec in specs:

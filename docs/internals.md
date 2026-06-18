@@ -108,7 +108,7 @@ schema shape:
   No upgrade helpers are added for the bump.
 - Provider schemas (the parsing/validation surface, distinct from the
   storage schema) are still regenerated fresh via
-  `devtools schema-generate` and promoted via `devtools schema-promote`.
+  `devtools lab schema generate` and promoted via `devtools lab schema promote`.
 
 This design intentionally rejects in-place upgrade-chain complexity (no
 Alembic, no forward/reverse upgrade scripts, no partially-applied upgrade
@@ -506,7 +506,7 @@ Drift check:
 
 ```bash
 devtools render all --check
-devtools lab-scenario verify-baselines
+devtools lab scenario verify-baselines
 ```
 
 ## Local State

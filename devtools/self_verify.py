@@ -1,4 +1,4 @@
-"""Capture and compare archive golden-master envelopes for schema rewrites."""
+"""Capture and compare archive read-surface snapshots."""
 
 from __future__ import annotations
 
@@ -224,7 +224,7 @@ async def _capture_topology_cases(poly: Polylogue, *, session_ids: Sequence[str]
 
 
 async def capture_snapshot(config: CaptureConfig) -> JSONDocument:
-    """Capture a stable read-surface snapshot from a v22 archive database."""
+    """Capture a stable read-surface snapshot from an archive database."""
     db_path = config.db_path.expanduser().resolve()
     if not db_path.exists():
         raise FileNotFoundError(f"archive database not found: {db_path}")
@@ -344,7 +344,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    capture = subparsers.add_parser("capture", help="Capture a v22 read-surface golden-master snapshot.")
+    capture = subparsers.add_parser("capture", help="Capture an archive read-surface snapshot.")
     capture.add_argument("--db", type=Path, default=default_db_path(), help="Archive database path.")
     capture.add_argument("--out", type=Path, help="Path to write the captured JSON snapshot.")
     capture.add_argument("--limit", type=int, default=10, help="Session rows per list/search case.")

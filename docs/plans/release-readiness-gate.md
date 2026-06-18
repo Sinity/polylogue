@@ -38,7 +38,7 @@ Add focused commands for changed release surfaces:
 ```bash
 devtools test tests/unit/cli/test_query_verbs_runtime.py
 devtools test tests/unit/storage/test_blackboard_facade.py
-devtools lab-scenario verify-baselines
+devtools lab scenario verify-baselines
 ```
 
 If packaging, Nix, or dependency metadata changed, also run:

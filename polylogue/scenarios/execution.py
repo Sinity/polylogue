@@ -423,7 +423,9 @@ class ExecutionSpec:
         if self.kind is ExecutionKind.PIPELINE_PROBE:
             if self.pipeline_probe is None:
                 return None
-            return ("devtools", "pipeline-probe", *self.pipeline_probe.to_argv())
+            from devtools.command_catalog import control_plane_argv
+
+            return tuple(control_plane_argv("lab probe pipeline", *self.pipeline_probe.to_argv()))
         if self.kind is ExecutionKind.POLYLOGUE:
             return ("polylogue", "--plain", *self.argv)
         if self.kind is ExecutionKind.DEVTOOLS:

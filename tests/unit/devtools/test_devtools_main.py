@@ -6,23 +6,17 @@ from types import ModuleType
 import pytest
 
 import devtools.__main__ as devtools_main
-from devtools.command_catalog import COMMANDS, CommandSpec
+from devtools.command_catalog import COMMANDS, VERIFICATION_LAB_COMMAND_NAMES, CommandSpec
 
 
 def test_list_commands_json_includes_generated_surface(capsys: pytest.CaptureFixture[str]) -> None:
     assert devtools_main.main(["--list-commands", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
     commands = {entry["name"] for entry in payload["commands"]}
-    assert payload["surfaces"]["verification_lab"] == [
-        "lab-scenario",
-        "schema-generate",
-        "schema-promote",
-        "schema-audit",
-        "verify-schema-roundtrip",
-    ]
-    assert "artifact-graph" in commands
-    assert "regression-capture" in commands
-    assert "scenario-projections" in commands
+    assert payload["surfaces"]["verification_lab"] == list(VERIFICATION_LAB_COMMAND_NAMES)
+    assert "lab graph" in commands
+    assert "lab probe capture-regression" in commands
+    assert "lab projections" in commands
     assert "render devtools-reference" in commands
     assert "release readiness" in commands
     assert "workspace tasks" in commands
@@ -33,14 +27,14 @@ def test_list_commands_human_output(capsys: pytest.CaptureFixture[str]) -> None:
     assert devtools_main.main(["--list-commands"]) == 0
     captured = capsys.readouterr()
     assert "verification lab surface:" in captured.out
-    assert "lab-scenario" in captured.out
-    assert "schema-generate" in captured.out
-    assert "schema-promote" in captured.out
-    assert "schema-audit" in captured.out
+    assert "lab scenario" in captured.out
+    assert "lab schema generate" in captured.out
+    assert "lab schema promote" in captured.out
+    assert "lab schema audit" in captured.out
     assert "generated surfaces:" in captured.out
-    assert "artifact-graph" in captured.out
-    assert "regression-capture" in captured.out
-    assert "scenario-projections" in captured.out
+    assert "lab graph" in captured.out
+    assert "lab probe capture-regression" in captured.out
+    assert "lab projections" in captured.out
     assert "render devtools-reference" in captured.out
 
 
