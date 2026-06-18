@@ -33,6 +33,8 @@ from polylogue.surfaces.payloads import (
     build_query_unit_envelope,
 )
 
+_SUMMARY_SCAN_BATCH_SIZE = 500
+
 
 def _bool_param(value: object) -> bool:
     if isinstance(value, bool):
@@ -309,6 +311,28 @@ def _context_snapshot_row(
     )
 
 
+def _iter_filtered_summaries(
+    archive: ArchiveStore,
+    session_filters: Mapping[str, object] | None,
+) -> Iterable[ArchiveSessionSummary]:
+    """Yield matching summaries without imposing an arbitrary archive cap."""
+
+    summary_offset = 0
+    filters = dict(session_filters or {})
+    while True:
+        summaries = cast(Any, archive.list_summaries)(
+            limit=_SUMMARY_SCAN_BATCH_SIZE,
+            offset=summary_offset,
+            **filters,
+        )
+        if not summaries:
+            return
+        yield from summaries
+        if len(summaries) < _SUMMARY_SCAN_BATCH_SIZE:
+            return
+        summary_offset += len(summaries)
+
+
 def _query_context_snapshots(
     archive: ArchiveStore,
     source: QueryUnitSource,
@@ -320,8 +344,7 @@ def _query_context_snapshots(
     rows: list[ContextSnapshotQueryRowPayload] = []
     target_count = limit + 1
     skipped = 0
-    summaries = cast(Any, archive.list_summaries)(limit=1_000_000, **dict(session_filters or {}))
-    for summary in summaries:
+    for summary in _iter_filtered_summaries(archive, session_filters):
         session = _session_to_session(archive.read_session(str(summary.session_id)))
         digest = compile_recovery_digest(session)
         for snapshot in digest.run_projection.context_snapshots:
@@ -347,8 +370,7 @@ def _query_observed_events(
     rows: list[ObservedEventQueryRowPayload] = []
     target_count = limit + 1
     skipped = 0
-    summaries = cast(Any, archive.list_summaries)(limit=1_000_000, **dict(session_filters or {}))
-    for summary in summaries:
+    for summary in _iter_filtered_summaries(archive, session_filters):
         session = _session_to_session(archive.read_session(str(summary.session_id)))
         digest = compile_recovery_digest(session)
         for event in digest.run_projection.events:

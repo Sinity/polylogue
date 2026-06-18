@@ -33,7 +33,7 @@ through the same typed AST and query planner:
 ```text
 compact-query      ::= compact-clause*
 boolean-query      ::= ["sessions" "where"] predicate
-unit-query         ::= ("messages" | "actions" | "blocks") "where" predicate
+unit-query         ::= ("messages" | "actions" | "blocks" | "assertions" | "observed-events" | "context-snapshots") "where" predicate
 
 compact-clause     ::= field-clause
                      | quoted-text | bare-text

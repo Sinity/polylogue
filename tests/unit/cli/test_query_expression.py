@@ -1460,6 +1460,43 @@ class TestBooleanQueryExpression:
         assert isinstance(row, ContextSnapshotQueryRowPayload)
         assert row.session_id == "codex-session:ext-created-only"
 
+    def test_context_snapshot_unit_source_paginates_session_summaries(
+        self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Runtime-transform row scans do not silently stop at one summary page."""
+        import polylogue.archive.query.unit_results as unit_results
+        from polylogue.archive.query.unit_results import query_unit_rows
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from polylogue.surfaces.payloads import ContextSnapshotQueryRowPayload
+        from tests.infra.storage_records import SessionBuilder
+
+        archive_root = workspace_env["archive_root"]
+        index_db = archive_root / "index.db"
+        for index in range(3):
+            (
+                SessionBuilder(index_db, f"page-{index}")
+                .provider("codex")
+                .title(f"page {index}")
+                .add_message(f"m-page-{index}", role="user", text=f"page-marker-{index}")
+                .save()
+            )
+
+        monkeypatch.setattr(unit_results, "_SUMMARY_SCAN_BATCH_SIZE", 2)
+        source = parse_unit_source_expression("context-snapshots where session.id:page-2 AND boundary:session_start")
+        assert source is not None
+        with ArchiveStore.open_existing(archive_root) as archive:
+            envelope = query_unit_rows(
+                archive,
+                source,
+                query="context-snapshots where session.id:page-2 AND boundary:session_start",
+                limit=10,
+            )
+
+        assert len(envelope.items) == 1
+        row = envelope.items[0]
+        assert isinstance(row, ContextSnapshotQueryRowPayload)
+        assert row.session_id == "codex-session:ext-page-2"
+
     def test_exists_block_tool_predicate_executes_against_archive(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
         from tests.infra.storage_records import SessionBuilder
