@@ -190,6 +190,16 @@ def test_query_structural_field_candidates_come_from_expression_registry() -> No
     assert "session.origin:claude-code-session" in origin_candidate.description
 
 
+def test_query_structural_session_field_examples_are_executable() -> None:
+    from polylogue.archive.query.expression import compile_expression
+    from polylogue.archive.query.metadata import structural_query_field_info
+
+    for field in ("session.messages", "session.words", "session.since", "session.origin"):
+        info = structural_query_field_info("message", field)
+        assert info is not None
+        compile_expression(f"exists message({info.example} AND role:assistant)")
+
+
 def test_query_count_operator_candidates_come_from_expression_registry() -> None:
     candidates = shell_completion_values.query_count_operator_candidates("messages", "b")
 

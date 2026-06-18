@@ -261,18 +261,34 @@ _ASSERTION_STRUCTURAL_FIELD_INFO: dict[str, StructuralQueryFieldInfo] = {
     "visibility": _field_info("visibility", "Assertion visibility.", "visibility:private"),
 }
 
+_SESSION_SCOPED_STRUCTURAL_EXAMPLES: dict[str, str] = {
+    "action": "session.action:file_edit",
+    "cwd": "session.cwd:/realm/project",
+    "has": "session.has:tools",
+    "id": "session.id:abc123",
+    "messages": "session.messages:10",
+    "origin": "session.origin:claude-code-session",
+    "path": "session.path:polylogue/cli",
+    "repo": "session.repo:polylogue",
+    "since": "session.since:7d",
+    "tag": "session.tag:review",
+    "title": "session.title:refactor",
+    "tool": "session.tool:bash",
+    "until": "session.until:2024-01-15",
+    "words": "session.words:200",
+}
+
 
 def _session_scoped_field_info() -> tuple[StructuralQueryFieldInfo, ...]:
     fields: list[StructuralQueryFieldInfo] = []
-    for field in sorted(_BOOLEAN_SUPPORTED_FIELDS):
+    for field, example in sorted(_SESSION_SCOPED_STRUCTURAL_EXAMPLES.items()):
         info = EXPRESSION_FIELD_REGISTRY.get(field)
         description = info["description"] if info is not None else f"Owning session {field} predicate."
-        example = info.get("example", f"{field}:value") if info is not None else f"{field}:value"
         fields.append(
             _field_info(
                 f"session.{field}",
                 f"Owning session scope: {description}",
-                f"session.{example}",
+                example,
             )
         )
     return tuple(fields)
