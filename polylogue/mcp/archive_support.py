@@ -405,7 +405,7 @@ def archive_query_unit_payload(
     source = parse_unit_source_expression(expression)
     if source is None:
         raise ExpressionCompileError(
-            "query_units requires an explicit messages/actions/blocks/assertions where expression",
+            "query_units requires an explicit messages/actions/blocks/assertions/observed-events/context-snapshots where expression",
             field=None,
         )
     return query_unit_rows(

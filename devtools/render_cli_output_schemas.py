@@ -134,8 +134,9 @@ SCHEMAS: tuple[CliOutputSchema, ...] = (
         name="query-unit-envelope",
         title="Query Unit Envelope",
         description=(
-            "Terminal message/action/block row envelope for explicit "
-            "`messages/actions/blocks where ...` query-unit expressions. "
+            "Terminal row envelope for explicit "
+            "`messages/actions/blocks/assertions/observed-events/context-snapshots where ...` "
+            "query-unit expressions. "
             "Shared by CLI JSON output, Python API, MCP, and daemon HTTP."
         ),
         model=QueryUnitEnvelope,
@@ -143,6 +144,9 @@ SCHEMAS: tuple[CliOutputSchema, ...] = (
             "polylogue --format json messages where ...",
             "polylogue --format json actions where ...",
             "polylogue --format json blocks where ...",
+            "polylogue --format json assertions where ...",
+            "polylogue --format json observed-events where ...",
+            "polylogue --format json context-snapshots where ...",
             "Polylogue.query_units(...)",
             "MCP query_units",
             "GET /api/query-units?expression=...",

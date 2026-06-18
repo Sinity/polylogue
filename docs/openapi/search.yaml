@@ -88,14 +88,16 @@ paths:
                 $ref: '#/components/schemas/SearchEnvelope'
   /api/query-units:
     get:
-      summary: Terminal message/action/block query rows
-      description: Returns terminal row results for explicit ``messages/actions/blocks where ...`` expressions. This endpoint
-        shares the ``QueryUnitEnvelope`` contract with CLI JSON output, MCP ``query_units``, and ``Polylogue.query_units()``.
+      summary: Terminal query-unit rows
+      description: Returns terminal row results for explicit ``messages/actions/blocks/assertions/observed-events/context-snapshots
+        where ...`` expressions. This endpoint shares the ``QueryUnitEnvelope`` contract with CLI JSON output, MCP ``query_units``,
+        and ``Polylogue.query_units()``.
       operationId: queryUnits
       parameters:
       - name: expression
         in: query
-        description: Explicit unit-source expression such as ``messages where role:assistant AND text:timeout``.
+        description: Explicit unit-source expression such as ``messages where role:assistant AND text:timeout`` or ``assertions
+          where kind:decision``.
         required: true
         schema:
           type: string
@@ -915,6 +917,66 @@ components:
       - position
       title: BlockQueryRowPayload
       type: object
+    ContextSnapshotQueryRowPayload:
+      additionalProperties: false
+      description: Shared terminal-query row for runtime-transform context snapshots.
+      properties:
+        unit:
+          const: context-snapshot
+          default: context-snapshot
+          title: Unit
+          type: string
+        snapshot_ref:
+          title: Snapshot Ref
+          type: string
+        session_id:
+          title: Session Id
+          type: string
+        origin:
+          title: Origin
+          type: string
+        title:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Title
+        run_ref:
+          title: Run Ref
+          type: string
+        boundary:
+          title: Boundary
+          type: string
+        inheritance_mode:
+          title: Inheritance Mode
+          type: string
+        segment_refs:
+          items:
+            type: string
+          title: Segment Refs
+          type: array
+        evidence_refs:
+          items:
+            type: string
+          title: Evidence Refs
+          type: array
+        metadata:
+          additionalProperties:
+            type: string
+          title: Metadata
+          type: object
+      required:
+      - snapshot_ref
+      - session_id
+      - origin
+      - run_ref
+      - boundary
+      - inheritance_mode
+      - segment_refs
+      - evidence_refs
+      - metadata
+      title: ContextSnapshotQueryRowPayload
+      type: object
     MessageQueryRowPayload:
       additionalProperties: false
       description: Shared terminal-query row for archive messages.
@@ -1041,6 +1103,7 @@ components:
           - block
           - assertion
           - observed-event
+          - context-snapshot
           title: Unit
           type: string
         query:
@@ -1054,6 +1117,7 @@ components:
             - $ref: '#/components/schemas/BlockQueryRowPayload'
             - $ref: '#/components/schemas/AssertionQueryRowPayload'
             - $ref: '#/components/schemas/ObservedEventQueryRowPayload'
+            - $ref: '#/components/schemas/ContextSnapshotQueryRowPayload'
           title: Items
           type: array
         total:

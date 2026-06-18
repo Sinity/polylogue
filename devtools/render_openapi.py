@@ -196,10 +196,10 @@ def _build_openapi_document() -> dict[str, Any]:
             },
             "/api/query-units": {
                 "get": {
-                    "summary": "Terminal message/action/block query rows",
+                    "summary": "Terminal query-unit rows",
                     "description": (
                         "Returns terminal row results for explicit "
-                        "``messages/actions/blocks where ...`` expressions. "
+                        "``messages/actions/blocks/assertions/observed-events/context-snapshots where ...`` expressions. "
                         "This endpoint shares the ``QueryUnitEnvelope`` contract "
                         "with CLI JSON output, MCP ``query_units``, and "
                         "``Polylogue.query_units()``."
@@ -211,7 +211,8 @@ def _build_openapi_document() -> dict[str, Any]:
                             "in": "query",
                             "description": (
                                 "Explicit unit-source expression such as "
-                                "``messages where role:assistant AND text:timeout``."
+                                "``messages where role:assistant AND text:timeout`` or "
+                                "``assertions where kind:decision``."
                             ),
                             "required": True,
                             "schema": {"type": "string"},
