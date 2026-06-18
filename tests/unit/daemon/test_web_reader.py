@@ -1104,6 +1104,14 @@ class TestReaderQueryUnits:
         items = cast(list[dict[str, object]], payload["items"])
         assert [item["session_id"] for item in items] == [C2]
 
+    def test_query_units_endpoint_accepts_inline_session_scope(self, workspace_env: dict[str, Path]) -> None:
+        expression = quote("messages where session.origin:chatgpt-export AND text:Hello")
+        with _running_server(workspace_env) as (_, base_url):
+            payload = cast(dict[str, object], _get_json(base_url, f"/api/query-units?expression={expression}"))
+
+        items = cast(list[dict[str, object]], payload["items"])
+        assert [item["session_id"] for item in items] == [C2]
+
     def test_query_units_endpoint_rejects_session_expression(self, workspace_env: dict[str, Path]) -> None:
         expression = quote("repo:polylogue")
         with _running_server(workspace_env) as (_, base_url):
