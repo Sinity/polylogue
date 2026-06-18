@@ -1,0 +1,1485 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Search — Polylogue</title>
+    <style>
+
+        :root {
+            --bg-primary: #0B0E14;
+            --bg-secondary: #13171F;
+            --bg-tertiary: #1A1F2A;
+            --text-primary: #E6E8EC;
+            --text-secondary: #8B919A;
+            --text-tertiary: #555B63;
+            --accent: #3B82F6;
+            --accent-hover: #2563EB;
+            --border: #1E2430;
+            --shadow: rgba(0, 0, 0, 0.4);
+            --green: #22C55E;
+            --yellow: #EAB308;
+            --red: #EF4444;
+            --provider-claude-code: #D97706;
+            --provider-codex: #3B82F6;
+            --provider-chatgpt: #10B981;
+            --provider-gemini: #8B5CF6;
+            --provider-claude-ai: #F59E0B;
+            --header-height: 56px;
+            --nav-width: 240px;
+            --content-max-width: 720px;
+            --footer-height: 40px;
+            --font-body: &#39;Inter&#39;, system-ui, -apple-system, sans-serif;
+            --font-code: &#39;JetBrains Mono&#39;, &#39;Fira Code&#39;, monospace;
+        }
+        @media (prefers-color-scheme: light) {
+            :root {
+                --bg-primary: #FAFAFA;
+                --bg-secondary: #FFFFFF;
+                --bg-tertiary: #F3F4F6;
+                --text-primary: #111827;
+                --text-secondary: #6B7280;
+                --text-tertiary: #9CA3AF;
+                --border: #E5E7EB;
+                --shadow: rgba(0, 0, 0, 0.08);
+            }
+        }
+
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        html { font-size: 15px; }
+        body {
+            font-family: var(--font-body);
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+            -webkit-font-smoothing: antialiased;
+        }
+        .site-header {
+            position: sticky; top: 0; z-index: 10;
+            height: var(--header-height);
+            background-color: var(--bg-secondary);
+            border-bottom: 1px solid var(--border);
+            display: flex; align-items: center; padding: 0 1.5rem; gap: 1rem;
+        }
+        .site-header .logo { font-weight: 700; font-size: 1.1rem; color: var(--text-primary); text-decoration: none; white-space: nowrap; }
+        .site-header .logo span { color: var(--accent); }
+        .site-header .search-bar { flex: 1; max-width: 400px; margin: 0 auto; }
+        .site-header .search-bar input {
+            width: 100%; padding: 0.4rem 0.75rem; border-radius: 6px;
+            border: 1px solid var(--border); background-color: var(--bg-tertiary);
+            color: var(--text-primary); font-family: var(--font-body); font-size: 0.9rem;
+        }
+        .site-header .theme-toggle {
+            background: none; border: 1px solid var(--border); border-radius: 6px;
+            padding: 0.3rem 0.6rem; cursor: pointer; color: var(--text-secondary); font-size: 0.9rem;
+        }
+        .page-layout { display: flex; min-height: calc(100vh - var(--header-height)); }
+        .site-nav {
+            width: var(--nav-width); flex-shrink: 0; padding: 2rem 1.5rem;
+            background-color: var(--bg-primary); border-right: 1px solid var(--border);
+            overflow-y: auto; position: sticky; top: var(--header-height);
+            height: calc(100vh - var(--header-height));
+        }
+        .site-nav .nav-section { margin-bottom: 1.5rem; }
+        .site-nav .nav-section-title { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-tertiary); margin-bottom: 0.5rem; }
+        .site-nav a { display: block; padding: 0.3rem 0; color: var(--text-secondary); text-decoration: none; font-size: 0.9rem; }
+        .site-nav a:hover { color: var(--text-primary); }
+        .site-nav a.active { color: var(--accent); font-weight: 500; }
+        .content { flex: 1; max-width: var(--content-max-width); margin: 0 auto; padding: 2rem 2rem 4rem; width: 100%; }
+        h1 { font-size: 1.87rem; font-weight: 600; line-height: 1.3; margin: 2rem 0 1rem; }
+        h1:first-child { margin-top: 0; }
+        h2 { font-size: 1.47rem; font-weight: 600; line-height: 1.3; margin: 2rem 0 0.75rem; }
+        h3 { font-size: 1.2rem; font-weight: 600; line-height: 1.4; margin: 1.5rem 0 0.5rem; }
+        p { margin-bottom: 1rem; }
+        a { color: var(--accent); text-decoration: none; }
+        a:hover { color: var(--accent-hover); }
+        code { font-family: var(--font-code); font-size: 0.87rem; background-color: var(--bg-tertiary); padding: 0.15em 0.4em; border-radius: 3px; }
+        pre { background-color: var(--bg-secondary); border: 1px solid var(--border); border-radius: 6px; padding: 1rem 1.25rem; overflow-x: auto; margin-bottom: 1.25rem; font-size: 0.87rem; line-height: 1.5; }
+        pre code { background: none; padding: 0; font-size: inherit; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 1.25rem; font-size: 0.9rem; }
+        th, td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid var(--border); }
+        th { font-weight: 600; color: var(--text-secondary); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }
+        .card { background-color: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem; margin-bottom: 1rem; }
+        .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+        .stat-card { background-color: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem; text-align: center; }
+        .stat-card .stat-value { font-size: 2rem; font-weight: 700; color: var(--accent); }
+        .stat-card .stat-label { font-size: 0.8rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 0.25rem; }
+        .badge { display: inline-block; padding: 0.15em 0.5em; border-radius: 4px; font-size: 0.8rem; font-weight: 500; }
+        .badge-green { background-color: rgba(34, 197, 94, 0.15); color: var(--green); }
+        .badge-yellow { background-color: rgba(234, 179, 8, 0.15); color: var(--yellow); }
+        .badge-red { background-color: rgba(239, 68, 68, 0.15); color: var(--red); }
+        .site-footer { height: var(--footer-height); display: flex; align-items: center; justify-content: space-between; padding: 0 1.5rem; border-top: 1px solid var(--border); font-size: 0.8rem; color: var(--text-tertiary); }
+        .site-footer a { color: var(--text-secondary); }
+        .home-hero { text-align: center; padding: 4rem 0 3rem; }
+        .home-hero h1 { font-size: 3rem; margin-bottom: 0.5rem; }
+        .home-hero .tagline { font-size: 1.2rem; color: var(--text-secondary); margin-bottom: 2rem; }
+        .home-hero .hero-search { max-width: 500px; margin: 0 auto 3rem; }
+        .home-hero .hero-search input { width: 100%; padding: 0.75rem 1rem; border-radius: 8px; border: 1px solid var(--border); background-color: var(--bg-secondary); color: var(--text-primary); font-family: var(--font-body); font-size: 1rem; }
+        .home-links { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; margin-top: 2rem; }
+        .home-links a { display: inline-block; padding: 0.6rem 1.5rem; border-radius: 6px; background-color: var(--bg-secondary); border: 1px solid var(--border); font-weight: 500; }
+        .home-links a:hover { background-color: var(--bg-tertiary); border-color: var(--accent); }
+        @media (max-width: 768px) {
+            .site-nav { display: none; }
+            .content { padding: 1.5rem 1rem; }
+            .home-hero h1 { font-size: 2rem; }
+        }
+        @media print {
+            .site-header, .site-nav, .site-footer { display: none; }
+            .content { max-width: none; padding: 0; }
+            body { background: white; color: black; }
+        }
+
+pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.highlight .hll { background-color: #49483e }
+.highlight { background: #272822; color: #F8F8F2 }
+.highlight .c { color: #959077 } /* Comment */
+.highlight .err { color: #ED007E; background-color: #1E0010 } /* Error */
+.highlight .esc { color: #F8F8F2 } /* Escape */
+.highlight .g { color: #F8F8F2 } /* Generic */
+.highlight .k { color: #66D9EF } /* Keyword */
+.highlight .l { color: #AE81FF } /* Literal */
+.highlight .n { color: #F8F8F2 } /* Name */
+.highlight .o { color: #FF4689 } /* Operator */
+.highlight .x { color: #F8F8F2 } /* Other */
+.highlight .p { color: #F8F8F2 } /* Punctuation */
+.highlight .ch { color: #959077 } /* Comment.Hashbang */
+.highlight .cm { color: #959077 } /* Comment.Multiline */
+.highlight .cp { color: #959077 } /* Comment.Preproc */
+.highlight .cpf { color: #959077 } /* Comment.PreprocFile */
+.highlight .c1 { color: #959077 } /* Comment.Single */
+.highlight .cs { color: #959077 } /* Comment.Special */
+.highlight .gd { color: #FF4689 } /* Generic.Deleted */
+.highlight .ge { color: #F8F8F2; font-style: italic } /* Generic.Emph */
+.highlight .ges { color: #F8F8F2; font-weight: bold; font-style: italic } /* Generic.EmphStrong */
+.highlight .gr { color: #F8F8F2 } /* Generic.Error */
+.highlight .gh { color: #F8F8F2 } /* Generic.Heading */
+.highlight .gi { color: #A6E22E } /* Generic.Inserted */
+.highlight .go { color: #66D9EF } /* Generic.Output */
+.highlight .gp { color: #FF4689; font-weight: bold } /* Generic.Prompt */
+.highlight .gs { color: #F8F8F2; font-weight: bold } /* Generic.Strong */
+.highlight .gu { color: #959077 } /* Generic.Subheading */
+.highlight .gt { color: #F8F8F2 } /* Generic.Traceback */
+.highlight .kc { color: #66D9EF } /* Keyword.Constant */
+.highlight .kd { color: #66D9EF } /* Keyword.Declaration */
+.highlight .kn { color: #FF4689 } /* Keyword.Namespace */
+.highlight .kp { color: #66D9EF } /* Keyword.Pseudo */
+.highlight .kr { color: #66D9EF } /* Keyword.Reserved */
+.highlight .kt { color: #66D9EF } /* Keyword.Type */
+.highlight .ld { color: #E6DB74 } /* Literal.Date */
+.highlight .m { color: #AE81FF } /* Literal.Number */
+.highlight .s { color: #E6DB74 } /* Literal.String */
+.highlight .na { color: #A6E22E } /* Name.Attribute */
+.highlight .nb { color: #F8F8F2 } /* Name.Builtin */
+.highlight .nc { color: #A6E22E } /* Name.Class */
+.highlight .no { color: #66D9EF } /* Name.Constant */
+.highlight .nd { color: #A6E22E } /* Name.Decorator */
+.highlight .ni { color: #F8F8F2 } /* Name.Entity */
+.highlight .ne { color: #A6E22E } /* Name.Exception */
+.highlight .nf { color: #A6E22E } /* Name.Function */
+.highlight .nl { color: #F8F8F2 } /* Name.Label */
+.highlight .nn { color: #F8F8F2 } /* Name.Namespace */
+.highlight .nx { color: #A6E22E } /* Name.Other */
+.highlight .py { color: #F8F8F2 } /* Name.Property */
+.highlight .nt { color: #FF4689 } /* Name.Tag */
+.highlight .nv { color: #F8F8F2 } /* Name.Variable */
+.highlight .ow { color: #FF4689 } /* Operator.Word */
+.highlight .pm { color: #F8F8F2 } /* Punctuation.Marker */
+.highlight .w { color: #F8F8F2 } /* Text.Whitespace */
+.highlight .mb { color: #AE81FF } /* Literal.Number.Bin */
+.highlight .mf { color: #AE81FF } /* Literal.Number.Float */
+.highlight .mh { color: #AE81FF } /* Literal.Number.Hex */
+.highlight .mi { color: #AE81FF } /* Literal.Number.Integer */
+.highlight .mo { color: #AE81FF } /* Literal.Number.Oct */
+.highlight .sa { color: #E6DB74 } /* Literal.String.Affix */
+.highlight .sb { color: #E6DB74 } /* Literal.String.Backtick */
+.highlight .sc { color: #E6DB74 } /* Literal.String.Char */
+.highlight .dl { color: #E6DB74 } /* Literal.String.Delimiter */
+.highlight .sd { color: #E6DB74 } /* Literal.String.Doc */
+.highlight .s2 { color: #E6DB74 } /* Literal.String.Double */
+.highlight .se { color: #AE81FF } /* Literal.String.Escape */
+.highlight .sh { color: #E6DB74 } /* Literal.String.Heredoc */
+.highlight .si { color: #E6DB74 } /* Literal.String.Interpol */
+.highlight .sx { color: #E6DB74 } /* Literal.String.Other */
+.highlight .sr { color: #E6DB74 } /* Literal.String.Regex */
+.highlight .s1 { color: #E6DB74 } /* Literal.String.Single */
+.highlight .ss { color: #E6DB74 } /* Literal.String.Symbol */
+.highlight .bp { color: #F8F8F2 } /* Name.Builtin.Pseudo */
+.highlight .fm { color: #A6E22E } /* Name.Function.Magic */
+.highlight .vc { color: #F8F8F2 } /* Name.Variable.Class */
+.highlight .vg { color: #F8F8F2 } /* Name.Variable.Global */
+.highlight .vi { color: #F8F8F2 } /* Name.Variable.Instance */
+.highlight .vm { color: #F8F8F2 } /* Name.Variable.Magic */
+.highlight .il { color: #AE81FF } /* Literal.Number.Integer.Long */
+    </style>
+    
+</head>
+<body>
+    <header class="site-header">
+        <a href="/polylogue/" class="logo">poly<span>logue</span></a>
+        <div class="search-bar">
+            <input type="search" placeholder="Search docs..." id="search-input">
+        </div>
+        <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme">
+            <span class="light-icon">☀</span>
+            <span class="dark-icon">☾</span>
+        </button>
+    </header>
+    <div class="page-layout">
+        <nav class="site-nav" id="site-nav">
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Documentation</div>
+                
+                <a href="/polylogue/docs/getting-started/" >
+                    Getting Started
+                </a>
+                
+                <a href="/polylogue/docs/search/" class="active">
+                    Search
+                </a>
+                
+                <a href="/polylogue/docs/providers/" >
+                    Providers
+                </a>
+                
+                <a href="/polylogue/docs/insights/" >
+                    Insights
+                </a>
+                
+                <a href="/polylogue/docs/export/" >
+                    Export
+                </a>
+                
+                <a href="/polylogue/docs/daemon/" >
+                    Daemon
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Reference</div>
+                
+                <a href="/polylogue/reference/cli/" >
+                    CLI
+                </a>
+                
+                <a href="/polylogue/reference/mcp/" >
+                    MCP
+                </a>
+                
+                <a href="/polylogue/reference/api/" >
+                    API
+                </a>
+                
+                <a href="/polylogue/reference/config/" >
+                    Config
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Architecture</div>
+                
+                <a href="/polylogue/architecture/rings/" >
+                    Rings
+                </a>
+                
+                <a href="/polylogue/architecture/internals/" >
+                    Internals
+                </a>
+                
+                <a href="/polylogue/architecture/schema/" >
+                    Schema
+                </a>
+                
+                <a href="/polylogue/architecture/contributing/" >
+                    Contributing
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Verifiability</div>
+                
+                <a href="/polylogue/verifiability/catalog/" >
+                    Catalog
+                </a>
+                
+                <a href="/polylogue/verifiability/coverage/" >
+                    Coverage
+                </a>
+                
+                <a href="/polylogue/verifiability/mutation/" >
+                    Mutation
+                </a>
+                
+                <a href="/polylogue/verifiability/freshness/" >
+                    Freshness
+                </a>
+                
+                <a href="/polylogue/verifiability/drift/" >
+                    Drift
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Design</div>
+                
+                <a href="/polylogue/design/second-brain/" >
+                    Second Brain
+                </a>
+                
+                <a href="/polylogue/design/time-machine/" >
+                    Time Machine
+                </a>
+                
+                <a href="/polylogue/design/project-memory/" >
+                    Project Memory
+                </a>
+                
+                <a href="/polylogue/design/agent-first-mcp/" >
+                    Agent-First MCP
+                </a>
+                
+                <a href="/polylogue/design/archive-storytelling/" >
+                    Archive Storytelling
+                </a>
+                
+                <a href="/polylogue/design/whole-product/" >
+                    Whole Product
+                </a>
+                
+            </div>
+            
+        </nav>
+        <main class="content">
+            
+<p><a href="README.md">← Back to Docs</a></p>
+<h1>Search &amp; Query Reference</h1>
+<p>Polylogue uses a query-first grammar over archive units. Bare tokens are
+full-text terms, field clauses narrow the selected unit, explicit
+<code>sessions/messages/actions/blocks/assertions/observed-events/context-snapshots where ...</code>
+forms opt into Boolean predicates,
+and trailing CLI verbs render or mutate the selected session set. The same
+query semantics — filters, retrieval lanes, ranking policy, and typed response
+payloads — apply across the CLI, MCP, Python API, and daemon HTTP surfaces.</p>
+<p>Quick links:</p>
+<ul>
+<li><a href="#retrieval-lanes">Retrieval Lanes</a> — <code>dialogue</code>, <code>actions</code>, <code>hybrid</code>,
+<code>semantic</code>, and how <code>auto</code> elevates.</li>
+<li><a href="#terminal-unit-queries">Terminal Unit Queries</a> — <code>messages/actions/blocks/ assertions/observed-events/context-snapshots where ...</code> row results.</li>
+<li><a href="#ranking-policy">Ranking Policy</a> — current <code>mixed-bm25-rrf-vector</code>
+policy and version contract.</li>
+<li><a href="#searchenvelope-contract">SearchEnvelope Contract</a> — the typed
+response shape shared across surfaces (<a href="https://github.com/Sinity/polylogue/issues/1266">#1266</a>).</li>
+<li><a href="#fts5-syntax">FTS5 Syntax</a> — boolean, phrase, and prefix queries.</li>
+<li><a href="#facets-scoped-vs-global">Facets (Scoped vs Global)</a> — aggregate
+counts with both views (<a href="https://github.com/Sinity/polylogue/issues/1269">#1269</a>).</li>
+</ul>
+<h2>Grammar</h2>
+<p>The canonical parser is the Lark grammar in
+<code>polylogue/archive/query/expression.py</code>. It has two entry shapes that lower
+through the same typed AST and query planner:</p>
+<pre><code class="language-text">compact-query      ::= compact-clause*
+boolean-query      ::= [&quot;sessions&quot; &quot;where&quot;] predicate
+unit-query         ::= (&quot;messages&quot; | &quot;actions&quot; | &quot;blocks&quot; | &quot;assertions&quot; | &quot;observed-events&quot; | &quot;context-snapshots&quot;) &quot;where&quot; predicate
+
+compact-clause     ::= field-clause
+                     | quoted-text | bare-text
+                     | &quot;-&quot; quoted-text | &quot;-&quot; bare-text
+                     | count-comparison | count-range
+                     | date-comparison | date-range
+
+predicate          ::= predicate &quot;OR&quot; predicate
+                     | predicate &quot;AND&quot; predicate
+                     | &quot;NOT&quot; predicate
+                     | &quot;(&quot; predicate &quot;)&quot;
+                     | field-clause
+                     | count-comparison | count-range
+                     | date-comparison | date-range
+                     | fts-leaf | semantic-leaf
+                     | &quot;exists&quot; structural-unit &quot;(&quot; predicate &quot;)&quot;
+                     | &quot;seq&quot; &quot;(&quot; sequence-step &quot;-&gt;&quot; sequence-step+ &quot;)&quot;
+
+structural-unit    ::= &quot;message&quot; | &quot;action&quot; | &quot;block&quot;
+</code></pre>
+<p>Compact queries select sessions:</p>
+<pre><code class="language-bash">polylogue repo:polylogue tag:active -&quot;stale plan&quot; &quot;query envelope&quot;
+polylogue origin:(codex-session|claude-code-session) messages:&gt;=10 words:&lt;=2000
+polylogue near:id:codex-session:abc123
+</code></pre>
+<p>Explicit Boolean session queries also select sessions:</p>
+<pre><code class="language-bash">polylogue sessions where '(repo:polylogue OR repo:sinex) AND NOT tag:stale'
+polylogue sessions where 'exists message(role:assistant AND text:timeout)'
+polylogue sessions where 'seq(action:file_edit -&gt; action:shell)'
+</code></pre>
+<p>Unit queries select terminal rows instead of sessions:</p>
+<pre><code class="language-bash">polylogue messages where 'role:assistant AND text:timeout'
+polylogue actions where 'session.repo:polylogue AND action:file_edit AND path:polylogue/archive'
+polylogue blocks where 'type:code AND text:sqlite'
+polylogue assertions where 'kind:decision AND status:active AND text:review'
+polylogue observed-events where 'delivery_state:acted_on AND text:#2100'
+polylogue context-snapshots where 'boundary:session_start AND session.repo:polylogue'
+</code></pre>
+<p>Unsupported forms raise typed <code>ExpressionCompileError</code>s and must not broaden
+into looser full-text search. In particular, reserved unit prefixes such as
+<code>messages where</code> are errors when malformed; they are not treated as ordinary
+text terms.</p>
+<h3>DSL Fields</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Meaning</th>
+<th>Example</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>repo</code></td>
+<td>Repository substring</td>
+<td><code>repo:polylogue</code></td>
+</tr>
+<tr>
+<td><code>origin</code></td>
+<td>Source origin</td>
+<td><code>origin:claude-code-session</code></td>
+</tr>
+<tr>
+<td><code>tag</code></td>
+<td>User/session tag</td>
+<td><code>tag:review</code></td>
+</tr>
+<tr>
+<td><code>path</code></td>
+<td>Referenced file path substring</td>
+<td><code>path:polylogue/cli</code></td>
+</tr>
+<tr>
+<td><code>cwd</code></td>
+<td>Working-directory prefix</td>
+<td><code>cwd:/realm/project</code></td>
+</tr>
+<tr>
+<td><code>tool</code></td>
+<td>Tool name used in the session</td>
+<td><code>tool:bash</code></td>
+</tr>
+<tr>
+<td><code>action</code></td>
+<td>Semantic action category</td>
+<td><code>action:file_edit</code></td>
+</tr>
+<tr>
+<td><code>has</code></td>
+<td>Content presence (<code>paste</code>, <code>tools</code>, <code>thinking</code>, or stored type)</td>
+<td><code>has:paste</code></td>
+</tr>
+<tr>
+<td><code>id</code></td>
+<td>Session id or prefix</td>
+<td><code>id:codex-session:abc</code></td>
+</tr>
+<tr>
+<td><code>title</code></td>
+<td>Session title substring</td>
+<td><code>title:refactor</code></td>
+</tr>
+<tr>
+<td><code>since</code> / <code>until</code></td>
+<td>Session time bounds, ISO or relative</td>
+<td><code>since:7d</code></td>
+</tr>
+<tr>
+<td><code>contains</code></td>
+<td>Exact content substring filter</td>
+<td><code>contains:sqlite</code></td>
+</tr>
+<tr>
+<td><code>near</code></td>
+<td>Vector similarity from text or a session id</td>
+<td><code>near:&quot;semantic search&quot;</code> / <code>near:id:&lt;session&gt;</code></td>
+</tr>
+<tr>
+<td><code>lane</code></td>
+<td>Retrieval lane</td>
+<td><code>lane:dialogue</code></td>
+</tr>
+<tr>
+<td><code>lineage</code></td>
+<td>Sessions sharing topology with a seed</td>
+<td><code>lineage:id:&lt;session&gt;</code></td>
+</tr>
+</tbody>
+</table>
+<p>Field values support quoted strings and in-field alternatives:</p>
+<pre><code class="language-bash">polylogue 'origin:(codex-session|claude-code-session) title:&quot;query DSL&quot;'
+polylogue 'tool:bash AND NOT tag:stale'
+</code></pre>
+<p>Negation is supported for fields that are semantically safe to negate, such as
+<code>origin</code>, <code>tag</code>, <code>tool</code>, and <code>action</code>.</p>
+<h3>Comparisons And Ranges</h3>
+<p>Readable comparisons are supported for message counts, word counts, and dates:</p>
+<pre><code class="language-bash">polylogue 'messages &gt;= 5 AND messages &lt;= 20'
+polylogue 'words between 100 and 500'
+polylogue 'date between 2026-06-01 and 2026-06-17'
+</code></pre>
+<p>Compact count syntax is equivalent where available:</p>
+<pre><code class="language-bash">polylogue messages:&gt;=5 words:&lt;=500
+</code></pre>
+<h3>Structural Predicates</h3>
+<p><code>exists &lt;unit&gt;(...)</code> keeps the selected unit as <code>sessions</code> but requires at least
+one child row matching the nested predicate.</p>
+<table>
+<thead>
+<tr>
+<th>Unit</th>
+<th>Accepted fields</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>message</code></td>
+<td><code>action</code>, <code>command</code>, <code>output</code>, <code>path</code>, <code>role</code>, <code>text</code>, <code>tool</code>, <code>type</code>, <code>words</code></td>
+</tr>
+<tr>
+<td><code>action</code></td>
+<td><code>action</code>, <code>command</code>, <code>output</code>, <code>path</code>, <code>text</code>, <code>tool</code>, <code>type</code></td>
+</tr>
+<tr>
+<td><code>block</code></td>
+<td><code>action</code>, <code>command</code>, <code>path</code>, <code>text</code>, <code>tool</code>, <code>type</code></td>
+</tr>
+</tbody>
+</table>
+<p>All three structural units also accept <code>session.&lt;field&gt;</code> predicates for the
+owning session fields, such as <code>session.repo</code>, <code>session.origin</code>,
+<code>session.tag</code>, <code>session.title</code>, <code>session.date</code>, <code>session.since</code>, and
+<code>session.until</code>. Count and date session fields accept compact comparison
+prefixes such as <code>session.messages:&gt;=2</code>, <code>session.words:&lt;=500</code>, and
+<code>session.date:&gt;=2026-01-02</code>. This lets a unit query carry its session scope
+inline instead of splitting selection between the query string and parallel
+parameters.</p>
+<p>Examples:</p>
+<pre><code class="language-bash">polylogue sessions where 'exists action(session.repo:polylogue AND tool:bash AND text:pytest)'
+polylogue sessions where 'exists block(type:code AND text:timeout)'
+</code></pre>
+<h3>FTS And Semantic Leaves</h3>
+<p>Inside Boolean predicates, <code>~</code> marks an explicit FTS leaf and <code>semantic:</code> /
+<code>near:text:</code> mark semantic-vector leaves:</p>
+<pre><code class="language-bash">polylogue sessions where '~&quot;null pointer&quot; AND repo:polylogue'
+polylogue sessions where 'semantic:&quot;query compiler failure&quot;'
+polylogue sessions where 'near:text:timeout'
+</code></pre>
+<p>Semantic leaves require embeddings to be configured and available. When vectors
+are unavailable, the query fails with a typed semantic/vector availability
+error instead of falling back to broad lexical search.</p>
+<h2>Terminal Unit Queries</h2>
+<p>Most query expressions select sessions. Explicit unit sources select terminal
+rows instead:</p>
+<pre><code class="language-bash">polylogue --format json messages where role:assistant AND text:timeout
+polylogue --format ndjson actions where session.repo:polylogue AND action:file_edit AND path:polylogue/archive
+polylogue --format yaml blocks where type:code AND text:sqlite
+polylogue --format json assertions where kind:decision AND status:active AND text:review
+polylogue --format json observed-events where delivery_state:acted_on AND text:#2100
+polylogue --format json context-snapshots where boundary:session_start AND session.repo:polylogue
+</code></pre>
+<p>The row shape is the shared <code>QueryUnitEnvelope</code> used by CLI JSON/NDJSON/YAML,
+Python <code>Polylogue.query_units()</code>, MCP <code>query_units</code>, and daemon
+<code>GET /api/query-units?expression=...</code>. Plain and CSV CLI output are
+transport-specific renderings of the same message/action/block/assertion/
+observed-event/context-snapshot row payloads.
+Those surfaces share the same session-scoping filters for the row source
+where applicable, such as origin, tag, repo, title, date bounds, message-type
+and tool/paste/thinking feature filters.</p>
+<p>Use <code>session.&lt;field&gt;</code> inside the expression when the unit rows should be scoped
+by their owning session:</p>
+<pre><code class="language-bash">polylogue messages where session.origin:claude-code-session AND role:assistant
+polylogue actions where session.repo:polylogue AND action:file_edit
+polylogue blocks where session.since:7d AND session.words:&lt;=500 AND type:code
+polylogue assertions where session.repo:polylogue AND kind:caveat
+polylogue observed-events where session.origin:codex-session AND object_ref:github-review
+polylogue context-snapshots where session.messages:&gt;=2 AND session.date:&gt;=2026-01-02 AND boundary:subagent_start
+</code></pre>
+<p><code>observed-events</code> and <code>context-snapshots</code> are runtime-transform row sources.
+They return projected evidence from existing recovery/run-projection
+transforms, not durable SQL table rows, so they are terminal unit sources only;
+they do not act as <code>exists observed-event(...)</code> or
+<code>exists context-snapshot(...)</code> session selectors.</p>
+<p>Session filters such as <code>--origin</code>, <code>--tag</code>, <code>--repo</code>, <code>--since</code>, and <code>--until</code>
+still narrow the owning sessions before rows are returned. Session-only actions
+and result-shaping modes that do not have row semantics yet, such as
+<code>delete</code>, <code>open</code>, <code>stats</code>, <code>count</code>, <code>--cursor</code>, and custom sort/reverse modes,
+are rejected instead of silently coercing row queries back to session queries.</p>
+<h2>Filters</h2>
+<h3>Identity and content</h3>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--id</code>, <code>-i</code></td>
+<td>Session ID (exact or prefix match)</td>
+</tr>
+<tr>
+<td><code>--contains</code>, <code>-c</code></td>
+<td>FTS term (repeatable = AND)</td>
+</tr>
+<tr>
+<td><code>--exclude-text</code></td>
+<td>Exclude sessions matching this term</td>
+</tr>
+<tr>
+<td><code>--title</code></td>
+<td>Title contains substring</td>
+</tr>
+<tr>
+<td><code>--origin</code>, <code>-o</code></td>
+<td>Include origins (comma = OR)</td>
+</tr>
+<tr>
+<td><code>--exclude-origin</code></td>
+<td>Exclude origins</td>
+</tr>
+<tr>
+<td><code>--repo</code>, <code>-r</code></td>
+<td>Filter by repository name</td>
+</tr>
+<tr>
+<td><code>--referenced-path</code></td>
+<td>File path contains substring (repeatable = AND)</td>
+</tr>
+<tr>
+<td><code>--cwd-prefix</code></td>
+<td>Working directory starts with this prefix</td>
+</tr>
+</tbody>
+</table>
+<h3>Content type</h3>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--has-tool-use</code></td>
+<td>Only sessions with tool calls</td>
+</tr>
+<tr>
+<td><code>--has-thinking</code></td>
+<td>Only sessions with reasoning/thinking blocks</td>
+</tr>
+<tr>
+<td><code>--has-paste</code></td>
+<td>Only sessions with pasted content</td>
+</tr>
+<tr>
+<td><code>--typed-only</code></td>
+<td>Only typed (non-pasted) content</td>
+</tr>
+<tr>
+<td><code>--has</code>, <code>--has-type</code></td>
+<td>Filter by content type: <code>thinking</code>, <code>tools</code>, <code>summary</code>, <code>attachments</code></td>
+</tr>
+</tbody>
+</table>
+<h3>Message stats</h3>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--min-messages</code></td>
+<td>Minimum message count</td>
+</tr>
+<tr>
+<td><code>--max-messages</code></td>
+<td>Maximum message count</td>
+</tr>
+<tr>
+<td><code>--min-words</code></td>
+<td>Minimum word count</td>
+</tr>
+<tr>
+<td><code>--message-type</code></td>
+<td>Filter by message type</td>
+</tr>
+</tbody>
+</table>
+<h3>Semantic actions</h3>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--action</code></td>
+<td>Require semantic action: <code>file_read</code>, <code>file_write</code>, <code>file_edit</code>, <code>shell</code>, <code>search</code>, <code>web</code>, <code>agent</code>, <code>subagent</code>, <code>git</code> (repeatable = AND)</td>
+</tr>
+<tr>
+<td><code>--exclude-action</code></td>
+<td>Exclude semantic action (repeatable = AND)</td>
+</tr>
+<tr>
+<td><code>--action-sequence</code></td>
+<td>Require ordered action subsequence (comma-separated)</td>
+</tr>
+<tr>
+<td><code>--action-text</code></td>
+<td>Text match within action evidence (repeatable = AND)</td>
+</tr>
+<tr>
+<td><code>--tool</code></td>
+<td>Require normalized tool name (repeatable = AND)</td>
+</tr>
+<tr>
+<td><code>--exclude-tool</code></td>
+<td>Exclude normalized tool name (repeatable = AND)</td>
+</tr>
+</tbody>
+</table>
+<h3>Time and scope</h3>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--since</code></td>
+<td>Only sessions on or after this date/time</td>
+</tr>
+<tr>
+<td><code>--until</code></td>
+<td>Only sessions on or before this date/time</td>
+</tr>
+<tr>
+<td><code>--limit</code>, <code>-n</code></td>
+<td>Maximum results</td>
+</tr>
+<tr>
+<td><code>--offset</code></td>
+<td>Start offset</td>
+</tr>
+<tr>
+<td><code>--latest</code></td>
+<td>Newest-first sort</td>
+</tr>
+<tr>
+<td><code>--sort</code></td>
+<td>Sort order</td>
+</tr>
+<tr>
+<td><code>--reverse</code></td>
+<td>Reverse sort direction</td>
+</tr>
+<tr>
+<td><code>--sample</code></td>
+<td>Random sample of N sessions</td>
+</tr>
+</tbody>
+</table>
+<h3>Tags</h3>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--tag</code>, <code>-t</code></td>
+<td>Include tags (comma = OR, supports <code>key:value</code>)</td>
+</tr>
+<tr>
+<td><code>--exclude-tag</code></td>
+<td>Exclude tags</td>
+</tr>
+</tbody>
+</table>
+<h3>Retrieval</h3>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--retrieval-lane</code></td>
+<td>Query lane: <code>auto</code>, <code>dialogue</code>, <code>actions</code>, <code>hybrid</code></td>
+</tr>
+<tr>
+<td><code>--similar</code></td>
+<td>Semantic similarity query (requires embeddings)</td>
+</tr>
+</tbody>
+</table>
+<h3>Output modifiers</h3>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--no-code-blocks</code></td>
+<td>Strip code blocks from output</td>
+</tr>
+<tr>
+<td><code>--no-tool-calls</code></td>
+<td>Strip tool call blocks</td>
+</tr>
+<tr>
+<td><code>--no-tool-outputs</code></td>
+<td>Strip tool result blocks</td>
+</tr>
+<tr>
+<td><code>--no-file-reads</code></td>
+<td>Strip file read blocks</td>
+</tr>
+<tr>
+<td><code>--prose-only</code></td>
+<td>Show only authored prose text</td>
+</tr>
+<tr>
+<td><code>--dialogue-only</code></td>
+<td>Show only user/assistant messages</td>
+</tr>
+<tr>
+<td><code>--message-role</code></td>
+<td>Filter by role (<code>user</code>, <code>assistant</code>, <code>system</code>, <code>tool</code>)</td>
+</tr>
+</tbody>
+</table>
+<h2>Verbs</h2>
+<p>Verbs determine the action applied to the matched session set.</p>
+<table>
+<thead>
+<tr>
+<th>Verb</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>list</code></td>
+<td>List matched sessions with metadata</td>
+</tr>
+<tr>
+<td><code>count</code></td>
+<td>Print count of matched sessions</td>
+</tr>
+<tr>
+<td><code>stats</code></td>
+<td>Grouped statistics (<code>--by origin</code>, <code>month</code>, <code>year</code>, <code>day</code>, <code>action</code>, <code>tool</code>, <code>repo</code>, <code>work-kind</code>)</td>
+</tr>
+<tr>
+<td><code>show</code></td>
+<td>Display full session content</td>
+</tr>
+<tr>
+<td><code>open</code></td>
+<td>Open session in browser/editor</td>
+</tr>
+<tr>
+<td><code>bulk-export</code></td>
+<td>Export matched sessions to file</td>
+</tr>
+<tr>
+<td><code>messages</code></td>
+<td>Show individual messages</td>
+</tr>
+<tr>
+<td><code>raw</code></td>
+<td>Show raw (unparsed) session data</td>
+</tr>
+<tr>
+<td><code>select</code></td>
+<td>Select and print a single field</td>
+</tr>
+<tr>
+<td><code>delete</code></td>
+<td>Delete matched sessions (requires <code>--dry-run</code> confirmation)</td>
+</tr>
+</tbody>
+</table>
+<h2>Retrieval Lanes</h2>
+<p>Lane selection lives on the query as <code>retrieval_lane</code>. The resolved value
+appears in the <code>SearchEnvelope.retrieval_lane</code> field on every response so
+consumers can tell what actually ran (which matters because <code>auto</code> may
+elevate — see below).</p>
+<table>
+<thead>
+<tr>
+<th>Lane</th>
+<th>Description</th>
+<th>Score kind</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>auto</code></td>
+<td>Surface left the lane to the planner. May elevate to <code>hybrid</code> when embeddings are enabled and an FTS query is present (see <a href="#auto-elevation">Auto Elevation</a>).</td>
+<td>depends on chosen lane</td>
+</tr>
+<tr>
+<td><code>dialogue</code></td>
+<td>FTS5 over message text (<code>messages_fts</code> virtual table, <code>unicode61</code> tokenizer). Default lexical lane.</td>
+<td><code>bm25</code></td>
+</tr>
+<tr>
+<td><code>actions</code></td>
+<td>FTS5 over tool-use/tool-result block text in <code>messages_fts</code>. Targets tool/file/shell evidence rather than prose. Public ranked-hit payloads currently carry action rank/evidence without a numeric action BM25 score.</td>
+<td><code>null</code></td>
+</tr>
+<tr>
+<td><code>hybrid</code></td>
+<td>Reciprocal Rank Fusion combining FTS5 and vector similarity (requires embeddings).</td>
+<td><code>rrf</code></td>
+</tr>
+<tr>
+<td><code>semantic</code></td>
+<td>Pure vector similarity over Voyage-4 embeddings via sqlite-vec. Triggered by <code>--similar</code> or <code>--semantic</code>.</td>
+<td><code>vector_distance</code></td>
+</tr>
+</tbody>
+</table>
+<p>Implementation: <code>polylogue/storage/search_providers/fts5.py</code>,
+<code>polylogue/storage/search_providers/hybrid.py</code>,
+<code>polylogue/storage/search_providers/sqlite_vec_support.py</code>.</p>
+<h3>Lane Semantics</h3>
+<h4><code>dialogue</code> (FTS5 lexical)</h4>
+<ul>
+<li>Backed by SQLite FTS5's BM25 implementation against <code>messages_fts</code>.</li>
+<li>Tokenizer is <code>unicode61</code> — case-insensitive for ASCII, Unicode-aware
+tokenization. <strong>Porter stemming is not available</strong> in this SQLite build,
+so <code>refactor</code> and <code>refactoring</code> are distinct tokens. Use prefix queries
+(<code>refactor*</code>) when you want morphological breadth.</li>
+<li>Raw score is <strong>BM25</strong>: lower is better in SQLite FTS5, values are
+typically negative, and they are <strong>not comparable across queries</strong>.</li>
+<li>Match evidence: <code>matched_terms</code>, <code>snippet</code>, <code>match_surface=&quot;message&quot;</code>,
+<code>message_id</code>, and <code>target_ref</code> point at the hit message.</li>
+</ul>
+<h4><code>actions</code> (FTS5 over action blocks)</h4>
+<ul>
+<li>Same FTS5 mechanics as <code>dialogue</code>, but the query is restricted to
+<code>tool_use</code> and <code>tool_result</code> blocks inside <code>messages_fts</code>. The normalized
+<code>actions</code> view remains the structured action surface for filters and
+analytics.</li>
+<li>Current public action-lane hits preserve rank and action match surface
+but do not expose the underlying action FTS BM25 score in the shared
+<code>SearchEnvelope</code>; consumers should treat <code>score_kind=null</code> as the
+contract for action-only hits until the action evidence path is widened.</li>
+<li>Useful when you remember an action (&quot;the session where I edited
+<code>connection_profile.py</code>&quot;) rather than its prose.</li>
+</ul>
+<h4><code>hybrid</code> (RRF fusion)</h4>
+<ul>
+<li>Runs both <code>dialogue</code> (FTS5) and <code>semantic</code> (vector) lanes, then fuses
+with <strong>Reciprocal Rank Fusion</strong> at <code>k=60</code>:
+<code>fused_score = Σ 1 / (k + rank_in_lane)</code>.</li>
+<li>Tie-breaking is deterministic: descending fused score, then ascending
+<code>session_id</code>. This makes cursor and offset pagination stable
+across runs even when scores tie.</li>
+<li>Reported <code>score_kind</code> is <code>&quot;rrf&quot;</code>. Higher fused scores indicate stronger
+cross-lane consensus.</li>
+<li><strong>Lane contributions</strong> (per-lane rank and per-lane RRF contribution)
+are preserved end-to-end on each hit's <code>score_components</code>
+(<a href="https://github.com/Sinity/polylogue/issues/1267">#1267</a>): every lane
+that contributed adds a <code>&lt;lane&gt;_rank</code> (1-based rank within that lane)
+and a matching <code>&lt;lane&gt;_rrf</code> (the <code>1 / (k + rank)</code> contribution that was
+summed into the fused score). Lane names are <code>text</code> (FTS5 dialogue),
+<code>action</code> (FTS5 action blocks), and <code>vector</code> (semantic). A hit that
+appeared only in the lexical lane carries <code>{text_rank, text_rrf}</code> and
+nothing else; a hit that survived both lanes carries the full
+<code>(text|action|vector)_(rank|rrf)</code> set, so consumers can show &quot;ranked
+high in both lexical and semantic lanes&quot; without re-running the
+search.</li>
+</ul>
+<h4><code>semantic</code> (vector-only)</h4>
+<ul>
+<li>Pure k-nearest-neighbor over Voyage-4 1024-dim embeddings via
+sqlite-vec's <code>vec0</code> virtual table.</li>
+<li>Triggered by <code>--similar &lt;text&gt;</code> or <code>--semantic</code> (which promotes the
+positional query string into <code>similar_text</code>; no FTS leg runs).</li>
+<li>Score kind is <code>&quot;vector_distance&quot;</code> — lower means closer in embedding
+space. Like BM25, distances are not directly comparable across
+different query embeddings.</li>
+<li>Requires embeddings to be enabled and populated; see
+<a href="architecture.md#embedding-pipeline">docs/architecture.md § Embedding Pipeline</a>.</li>
+<li>Use <code>polylogue ops embed status</code> to check whether vector retrieval is disabled,
+missing an API key, pending backlog catch-up, partially usable, or complete.
+<code>polylogue ops embed status --detail</code> performs exact pending-message and
+retrieval-band accounting; the default status path stays cheap and reports
+the latest persisted catch-up run.</li>
+</ul>
+<h3>Embedding Activation And Catch-Up</h3>
+<p>Semantic search stays unavailable until embeddings are both enabled and
+materialized. The activation path is deliberately bounded:</p>
+<ol>
+<li><code>polylogue ops embed status</code> shows config state, key presence, coverage,
+configured model/dimension, monthly cost cap, backlog, latest catch-up
+progress, and <code>next_action</code> (<code>code</code>, <code>reason</code>, <code>command</code>) for automation.</li>
+<li><code>polylogue ops embed preflight --max-sessions 10</code> estimates the next
+bounded window without contacting Voyage. Use <code>--format json</code> for the
+scriptable form: it reports the exact window, pricing assumptions,
+effective cost cap, and a ready-to-run <code>backfill_args</code> list for the same
+bounded catch-up slice.</li>
+<li><code>polylogue ops embed enable --yes</code> enables the daemon stage when a Voyage key is
+already configured, or <code>polylogue ops embed enable --voyage-api-key ...</code> records
+the key and enables the stage.</li>
+<li><code>polylogue ops embed backfill --max-sessions 10</code> runs an explicit bounded
+catch-up batch; after enablement, <code>polylogued</code> also processes bounded daemon
+batches for new or stale sessions.</li>
+</ol>
+<p><code>--max-messages</code> is a hard message-count window and uses live message counts
+rather than potentially stale <code>session_stats</code>. <code>--max-sessions</code> may
+use materialized session stats so small first batches remain fast on large
+archives.</p>
+<p>MCP clients should use <code>embedding_status</code> for readiness/next-action state and
+<code>embedding_preflight</code> for the same no-provider-call cost window. Both tools are
+read-only and return the canonical JSON payloads used by the CLI, so agents do
+not need to scrape terminal output before deciding whether semantic search is
+actually usable.</p>
+<p>Python API clients use the same contracts through
+<code>Polylogue.embedding_status(detail=False)</code> and
+<code>Polylogue.embedding_preflight(...)</code>.</p>
+<h3>Auto Elevation</h3>
+<p>When <code>retrieval_lane=auto</code> (the default), the planner picks a concrete
+lane based on archive state and the query shape:</p>
+<table>
+<thead>
+<tr>
+<th>Condition</th>
+<th>Resolved lane</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--lexical</code> flag set</td>
+<td><code>dialogue</code> (forced FTS-only, even with embeddings enabled)</td>
+</tr>
+<tr>
+<td><code>--semantic</code> flag set, or <code>--similar &lt;text&gt;</code> given</td>
+<td><code>semantic</code> (vector-only)</td>
+</tr>
+<tr>
+<td>Embeddings retrieval-ready + FTS query present</td>
+<td><code>hybrid</code></td>
+</tr>
+<tr>
+<td>Otherwise</td>
+<td><code>dialogue</code></td>
+</tr>
+</tbody>
+</table>
+<p>The elevation rule lives in
+<code>polylogue/cli/query.py:_maybe_elevate_to_hybrid</code>. The resolved lane is
+always echoed back in <code>SearchEnvelope.retrieval_lane</code> so callers do not
+have to re-derive what ran.</p>
+<p>Two ergonomic overrides on the root CLI surface (<a href="https://github.com/Sinity/polylogue/issues/1217">#1217</a>):</p>
+<ul>
+<li><code>--lexical</code> — force the FTS-only lane; useful when you want
+deterministic keyword matches regardless of embedding state.</li>
+<li><code>--semantic</code> — promote the query string into a vector-only similarity
+probe; no FTS leg, no boolean operators applied.</li>
+</ul>
+<h2>Ranking Policy</h2>
+<p>Every <code>SearchEnvelope</code> declares its <code>ranking_policy</code> and
+<code>ranking_policy_version</code>. The current policy identifier is
+<code>mixed-bm25-rrf-vector</code> (version <code>1</code>):</p>
+<ul>
+<li><code>dialogue</code> orders hits by FTS5 BM25 (lower is better; raw scores are
+usually negative).</li>
+<li><code>actions</code> orders through the action FTS read model, but the
+public action-lane hit payload does not currently expose a numeric
+action score.</li>
+<li><code>hybrid</code> fuses dialogue + action + semantic lanes with RRF at <code>k=60</code>
+and orders by fused score, breaking ties on <code>(−fused_score, session_id)</code>.</li>
+<li><code>semantic</code> orders by ascending vector distance.</li>
+</ul>
+<p>Consumers should pin the <code>ranking_policy_version</code> they validate against
+and treat any change as a contract event. The version is intentionally
+exposed so external pipelines can detect ordering shifts without diffing
+raw scores. See <code>docs/openapi/search.yaml</code> (<code>x-polylogue-ranking-policy</code>)
+for the machine-readable declaration.</p>
+<h2>SearchEnvelope Contract</h2>
+<p>All ranked surfaces (CLI <code>--format json</code>, MCP <code>search</code>/<code>list_sessions</code>,
+daemon <code>GET /api/sessions?query=…</code>, Python API) return the typed
+<code>SearchEnvelope</code> defined in <code>polylogue/surfaces/payloads.py</code> and emitted
+via the daemon under
+<a href="openapi/search.yaml"><code>docs/openapi/search.yaml</code></a> (<a href="https://github.com/Sinity/polylogue/issues/1266">#1266</a>).</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>hits</code></td>
+<td>Ordered list of <code>SessionSearchHitPayload</code>. Each hit carries a <code>session</code> summary plus a <code>match</code> evidence block.</td>
+</tr>
+<tr>
+<td><code>total</code></td>
+<td>Total matching sessions, or <code>null</code> when the lane cannot compute it cheaply.</td>
+</tr>
+<tr>
+<td><code>limit</code> / <code>offset</code></td>
+<td>Applied page size and row offset. Offset-based pagination is <strong>best-effort</strong> for ranked results.</td>
+</tr>
+<tr>
+<td><code>next_offset</code></td>
+<td>Convenience offset pointer; only set when more results are likely.</td>
+</tr>
+<tr>
+<td><code>next_cursor</code></td>
+<td>Opaque keyset cursor encoding rank, score, session id, and resolved retrieval lane. <strong>Preferred</strong> for stable rank-first pagination across pages — pass it back unchanged in the next request.</td>
+</tr>
+<tr>
+<td><code>query</code></td>
+<td>The FTS query text actually applied after CLI/MCP/HTTP coercion. Empty when no FTS query was given.</td>
+</tr>
+<tr>
+<td><code>sort</code></td>
+<td>Applied explicit sort field (<code>&quot;date&quot;</code>, <code>&quot;messages&quot;</code>, <code>&quot;words&quot;</code>, etc.) or <code>null</code> to preserve the lane's natural rank order. Ranked search will not silently fall back to date sort.</td>
+</tr>
+<tr>
+<td><code>retrieval_lane</code></td>
+<td>Resolved lane that actually ran (<code>dialogue</code> / <code>actions</code> / <code>hybrid</code> / <code>semantic</code> / <code>auto</code>).</td>
+</tr>
+<tr>
+<td><code>ranking_policy</code> / <code>ranking_policy_version</code></td>
+<td>Declared ordering semantics; see above.</td>
+</tr>
+<tr>
+<td><code>diagnostics</code></td>
+<td>Optional <code>QueryMissDiagnosticsPayload</code> when the query produced zero hits but filters were applied.</td>
+</tr>
+</tbody>
+</table>
+<p>Each hit's <code>match</code> (a <code>SessionSearchMatchPayload</code>) carries:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>rank</code></td>
+<td>1-based position in the result list.</td>
+</tr>
+<tr>
+<td><code>retrieval_lane</code></td>
+<td>Lane that produced this hit (matches envelope, unless future per-hit attribution differs).</td>
+</tr>
+<tr>
+<td><code>match_surface</code></td>
+<td>Indexed surface that matched — e.g. <code>message</code>, <code>action</code>, <code>hybrid</code>, <code>semantic</code>, or <code>attachment</code>.</td>
+</tr>
+<tr>
+<td><code>score</code></td>
+<td>Raw lane score (semantics depend on <code>score_kind</code>).</td>
+</tr>
+<tr>
+<td><code>score_kind</code></td>
+<td>One of <code>&quot;bm25&quot;</code>, <code>&quot;rrf&quot;</code>, <code>&quot;vector_distance&quot;</code>, or <code>null</code> for identity-only lanes. <strong>Always check this before comparing or ordering by <code>score</code> directly.</strong></td>
+</tr>
+<tr>
+<td><code>score_components</code></td>
+<td>Map of per-component contributions explaining the rank. Dialogue (FTS5) hits carry <code>{&quot;bm25_raw&quot;: &lt;relevance&gt;}</code>; hybrid hits carry per-lane <code>&lt;lane&gt;_rank</code> and <code>&lt;lane&gt;_rrf</code> entries summed into <code>score</code> (<a href="https://github.com/Sinity/polylogue/issues/1267">#1267</a>). Identity-only lanes (e.g. attachment) carry <code>{}</code>.</td>
+</tr>
+<tr>
+<td><code>lane_rank</code> / <code>lane_contribution</code></td>
+<td>Primary lane rank and contribution when the backend can identify one. For hybrid, this is the strongest contributing RRF lane; all lane details still live in <code>score_components</code>.</td>
+</tr>
+<tr>
+<td><code>raw_score</code></td>
+<td>Backend-native score before public interpretation. For FTS this is BM25 relevance; for hybrid it is the fused RRF score.</td>
+</tr>
+<tr>
+<td><code>matched_terms</code></td>
+<td>FTS terms that triggered the match.</td>
+</tr>
+<tr>
+<td><code>snippet</code></td>
+<td>Highlighted excerpt around the match (FTS5 snippet).</td>
+</tr>
+<tr>
+<td><code>message_id</code> / <code>target_ref</code> / <code>anchor</code></td>
+<td>Stable identifiers pointing the reader at the matching message or sub-block.</td>
+</tr>
+<tr>
+<td><code>actions</code></td>
+<td>Per-target reader action availability (open, copy-link, etc.).</td>
+</tr>
+</tbody>
+</table>
+<h3>Score-kind cheatsheet</h3>
+<ul>
+<li><code>bm25</code> — lower = better match in SQLite FTS5. Values are typically negative.
+<strong>Never display raw BM25 as a percent or compare across queries</strong>;
+rank position is the durable signal.</li>
+<li><code>rrf</code> — higher = better; bounded by <code>Σ 1/(k+1)</code> over contributing
+lanes. Per-lane decomposition lives in <code>score_components</code> as
+<code>&lt;lane&gt;_rank</code> / <code>&lt;lane&gt;_rrf</code> pairs, so consumers can explain &quot;this
+hit appeared in both lexical and semantic lanes&quot; without re-running
+the query (#1267).</li>
+<li><code>vector_distance</code> — lower = closer in embedding space. Not comparable
+across different query embeddings.</li>
+<li><code>null</code> — identity-bearing match (e.g. attachment identity lane); no
+numeric score, only rank.</li>
+</ul>
+<h3>Per-hit explanations (<a href="https://github.com/Sinity/polylogue/issues/1267">#1267</a>)</h3>
+<p>Every ranked hit carries deterministic why-this-matched evidence on its
+<code>match</code> payload. The exact field set depends on the lane that produced
+the hit:</p>
+<table>
+<thead>
+<tr>
+<th>Lane</th>
+<th><code>matched_terms</code></th>
+<th><code>score_kind</code></th>
+<th><code>score_components</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>dialogue</code> (FTS5 over messages)</td>
+<td>tokenized query terms (lowercased, FTS5 operators stripped)</td>
+<td><code>bm25</code></td>
+<td><code>{&quot;bm25_raw&quot;: &lt;relevance&gt;}</code></td>
+</tr>
+<tr>
+<td><code>actions</code> (FTS5 over action blocks)</td>
+<td>tokenized query terms</td>
+<td><code>null</code> today</td>
+<td><code>{}</code> today; action rank is preserved, but action BM25 is not part of the public hit evidence contract yet</td>
+</tr>
+<tr>
+<td><code>hybrid</code> (RRF fusion)</td>
+<td>tokenized query terms</td>
+<td><code>rrf</code></td>
+<td><code>&lt;lane&gt;_rank</code> and <code>&lt;lane&gt;_rrf</code> for every contributing lane (<code>text</code> / <code>action</code> / <code>vector</code>); <code>score</code> equals the sum of <code>*_rrf</code></td>
+</tr>
+<tr>
+<td><code>semantic</code> (vector-only)</td>
+<td>the query string passed to <code>--similar</code> / <code>--semantic</code> (single term)</td>
+<td><code>vector_distance</code></td>
+<td><code>{}</code> (raw distance lives in <code>score</code>)</td>
+</tr>
+<tr>
+<td><code>attachment</code> (identity lookup)</td>
+<td>the matched identifier (single term)</td>
+<td><code>null</code></td>
+<td><code>{}</code> (identity hits have no numeric rank)</td>
+</tr>
+</tbody>
+</table>
+<p>Tokenization for <code>matched_terms</code> strips FTS5 boolean operators
+(<code>AND</code> / <code>OR</code> / <code>NOT</code> / <code>NEAR</code>), quote/colon/paren punctuation, and
+trailing <code>*</code> prefix markers, then deduplicates case-insensitively. The
+result is the literal set of tokens a reader can expect to see
+highlighted in the <code>snippet</code>.</p>
+<p>Hybrid <code>score_components</code> are the load-bearing surface: each
+contributing lane adds two entries that explain its share of the fused
+score. For example, a hit at lexical rank 1 and vector rank 2 carries:</p>
+<pre><code class="language-json">&quot;score_components&quot;: {
+  &quot;text_rank&quot;: 1.0,
+  &quot;text_rrf&quot;: 0.0163934426,
+  &quot;vector_rank&quot;: 2.0,
+  &quot;vector_rrf&quot;: 0.0161290323
+},
+&quot;score&quot;: 0.0325224749
+</code></pre>
+<p>Consumers can read <code>score_components</code> directly to render a &quot;matched in
+both lanes&quot; badge or to debug ranking drift without re-running the
+search.</p>
+<h3>Pagination</h3>
+<p>For ranked queries, prefer <code>next_cursor</code> over <code>offset</code>. Cursor
+pagination encodes the rank tie-breaker
+(<code>(rank, score, session_id, retrieval_lane)</code>) and is stable under
+archive growth between page fetches. Offset pagination is supported for
+non-ranked list paths and as a best-effort fallback for ranked paths.</p>
+<p>The cursor is an opaque URL-safe base64 token (a versioned JSON
+envelope; see :class:<code>polylogue.surfaces.payloads.SearchCursor</code>).
+Consumers MUST treat it as opaque and pass it back unchanged.</p>
+<pre><code class="language-bash"># Page 1
+polylogue &quot;sqlite&quot; list --format json --limit 25
+# Read .next_cursor from the response, then ask for page 2:
+polylogue &quot;sqlite&quot; list --format json --limit 25 \
+    --cursor &quot;$NEXT_CURSOR&quot;
+</code></pre>
+<p>MCP search and the daemon <code>/api/sessions</code> endpoint accept the same
+<code>cursor</code> parameter; the Python API exposes <code>Polylogue.search_envelope( query, cursor=...)</code>. The cursor carries the retrieval lane it was
+minted in, so a <code>dialogue</code> cursor passed back to a <code>hybrid</code> request is
+rejected up-front rather than silently changing ranking policy
+mid-walk.</p>
+<p>Stability guarantees (#1268):</p>
+<ul>
+<li><strong>No duplicates</strong>: any hit returned on page N is filtered out on page
+N+1 even when new rows were ingested between requests.</li>
+<li><strong>No gaps</strong>: any hit that sorts strictly after the anchor (under the
+lane's natural ordering: BM25 lower-is-better, RRF higher-is-better,
+vector distance lower-is-better) survives the cursor trim.</li>
+<li><strong>Restart-stable</strong>: cursors are self-contained tokens with no
+server-side state; they survive daemon restart.</li>
+</ul>
+<h2>FTS5 Syntax</h2>
+<p>The <code>messages_fts</code> virtual table uses SQLite's FTS5 with the <code>unicode61</code>
+tokenizer. Prefix queries use <code>*</code>:</p>
+<pre><code class="language-bash">polylogue &quot;refactor*&quot;
+</code></pre>
+<p>Phrase queries use quotes:</p>
+<pre><code class="language-bash">polylogue '&quot;null pointer exception&quot;'
+</code></pre>
+<p>Boolean operators combine terms:</p>
+<pre><code class="language-bash">polylogue &quot;refactor AND schema NOT test&quot;
+</code></pre>
+<p>Column filters restrict matches:</p>
+<pre><code class="language-bash">polylogue 'text:css {session_id claude-code}: refactor'
+</code></pre>
+<h2>Output Formats</h2>
+<table>
+<thead>
+<tr>
+<th>Format</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>markdown</code></td>
+<td>Default -- formatted markdown with syntax-highlighted code blocks</td>
+</tr>
+<tr>
+<td><code>json</code></td>
+<td>Full session as JSON</td>
+</tr>
+<tr>
+<td><code>jsonl</code></td>
+<td>One JSON object per line (used by <code>bulk-export</code>)</td>
+</tr>
+<tr>
+<td><code>yaml</code></td>
+<td>YAML representation</td>
+</tr>
+<tr>
+<td><code>plaintext</code></td>
+<td>Plain text, no formatting</td>
+</tr>
+<tr>
+<td><code>html</code></td>
+<td>HTML with Pygments syntax highlighting</td>
+</tr>
+<tr>
+<td><code>obsidian</code></td>
+<td>YAML frontmatter + markdown body</td>
+</tr>
+<tr>
+<td><code>org</code></td>
+<td>Org-mode format</td>
+</tr>
+<tr>
+<td><code>csv</code></td>
+<td>Messages as rows</td>
+</tr>
+</tbody>
+</table>
+<p>Set format with <code>-f</code> / <code>--format</code> on a verb:</p>
+<pre><code class="language-bash">polylogue &quot;sqlite locking&quot; list --format json
+polylogue --since yesterday bulk-export --format jsonl
+</code></pre>
+<h2>Facets (Scoped vs Global)</h2>
+<p>Facets summarize the archive as aggregate counts. Polylogue exposes the
+same shape across daemon HTTP (<code>GET /api/facets</code>), MCP (<code>facets</code>), CLI
+(<code>polylogue facets</code>), and the Python API (<code>Polylogue.facets</code>); see
+<a href="https://github.com/Sinity/polylogue/issues/1269">#1269</a> (slice D of
+<a href="https://github.com/Sinity/polylogue/issues/873">#873</a>).</p>
+<p>A facets response carries both views explicitly:</p>
+<ul>
+<li><code>scoped</code> — counts rolled from the current query/filter set. Empty
+buckets if the filter chain narrows away every value.</li>
+<li><code>global</code> — counts over the unfiltered archive. Always populated.</li>
+<li><code>scoped_to_query</code> — <code>true</code> whenever any filter narrowed the view.</li>
+<li><code>idf</code> — inverse-document-frequency per facet value, computed against
+the global universe. Higher = rarer = stronger signal; near zero =
+value appears in almost every session. Disable with
+<code>--no-idf</code> on the CLI.</li>
+</ul>
+<p>Top-level fields (<code>origins</code>, <code>tags</code>, <code>total_sessions</code> etc.)
+mirror the <em>active</em> view (scoped when filtered, global otherwise) for
+backward compatibility with surfaces written before #1269. Consumers
+that need both views should read <code>scoped</code> and <code>global</code> directly.</p>
+<pre><code class="language-bash">polylogue facets                     # global only (no filters)
+polylogue facets -o chatgpt-export   # scoped to ChatGPT exports + global side-by-side
+polylogue facets -q &quot;vector store&quot;   # scoped to FTS hits
+polylogue facets -f json --no-idf    # FacetsResponse, no IDF weighting
+</code></pre>
+<h2>Empty Result Diagnostics</h2>
+<p>When a query returns no results:</p>
+<ol>
+<li>Check origin spelling: <code>polylogue --origin claude-code-session list</code> (not <code>claude_code</code>)</li>
+<li>Expand the time window: <code>--since 2024-01</code> instead of <code>--since yesterday</code></li>
+<li>Verify the archive has data: <code>polylogue count</code> (no filters)</li>
+<li>Check FTS index health: <code>polylogued status</code> shows <code>fts_readiness</code></li>
+<li>Run <code>polylogue ops doctor</code> for schema and index integrity</li>
+<li>If using <code>--similar</code>, ensure embeddings are built (check <code>polylogue stats</code> for embedding coverage)</li>
+</ol>
+
+<hr style="margin: 3rem 0 1rem; border-color: var(--border);">
+<nav style="display: flex; justify-content: space-between; font-size: 0.9rem;">
+    <a href="/polylogue/docs/getting-started/">← Getting Started</a>
+    <a href="/polylogue/docs/providers/">Providers →</a>
+</nav>
+
+        </main>
+    </div>
+    <footer class="site-footer">
+        <span>Polylogue — your AI memory</span>
+        <a href="https://github.com/Sinity/polylogue">GitHub</a>
+    </footer>
+    <script>
+        function toggleTheme() {
+            var html = document.documentElement;
+            var current = html.getAttribute('data-theme');
+            html.setAttribute('data-theme', current === 'dark' ? 'light' : 'dark');
+            localStorage.setItem('theme', current === 'dark' ? 'light' : 'dark');
+        }
+        (function() {
+            var saved = localStorage.getItem('theme');
+            if (saved) document.documentElement.setAttribute('data-theme', saved);
+        })();
+    </script>
+    
+</body>
+</html>
