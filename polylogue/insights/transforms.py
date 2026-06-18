@@ -67,6 +67,7 @@ _TEST_PASS_RE = re.compile(r"\b(?P<count>\d+)\s+passed\b", re.IGNORECASE)
 _TEST_FAIL_RE = re.compile(r"\b(?P<count>\d+)\s+failed\b", re.IGNORECASE)
 _CHECK_PASS_RE = re.compile(r"\b(?P<name>[A-Za-z0-9_.() -]+)\s+\.\.\.\s+ok\b")
 _CHECK_FAIL_RE = re.compile(r"\b(?P<name>[A-Za-z0-9_.() -]+)\s+\.\.\.\s+(?:FAIL|FAILED|failure)\b", re.IGNORECASE)
+_COMMIT_SHA_RE = re.compile(r"\b(?P<sha>[0-9a-f]{7,40})\b", re.IGNORECASE)
 _DECISION_RE = re.compile(r"\b(decision|decided|choose|chosen):?\s+(?P<text>.+)", re.IGNORECASE)
 _STATUS_HEADING_RE = re.compile(r"^\s*(goal|done|in flight|blockers?|next):\s*(?P<text>.+)$", re.IGNORECASE)
 _RUNSTATE_SECTION_RE = re.compile(
@@ -169,6 +170,7 @@ class ToolSummary(ArchiveInsightModel):
     issue_refs: tuple[str, ...] = ()
     test_evidence: tuple[str, ...] = ()
     file_refs: tuple[str, ...] = ()
+    commit_refs: tuple[str, ...] = ()
     raw_refs: tuple[TransformRawRef, ...]
 
     @model_validator(mode="after")
@@ -532,7 +534,10 @@ def render_work_packet(packet: RecoveryWorkPacket) -> str:
         object_refs = _object_refs_line(entry)
         if object_refs:
             lines.append(f"  - refs: {object_refs}")
-        detail = _packet_metadata_line(entry.metadata, keys=("pr_refs", "review_refs", "issue_refs", "test_evidence"))
+        detail = _packet_metadata_line(
+            entry.metadata,
+            keys=("pr_refs", "review_refs", "issue_refs", "commit_refs", "test_evidence"),
+        )
         if detail:
             lines.append(f"  - details: {detail}")
     if not event_entries:
@@ -566,7 +571,10 @@ def render_work_packet(packet: RecoveryWorkPacket) -> str:
         object_refs = _object_refs_line(entry)
         if object_refs:
             lines.append(f"  - refs: {object_refs}")
-        detail = _packet_metadata_line(entry.metadata, keys=("pr_refs", "issue_refs", "file_refs", "test_evidence"))
+        detail = _packet_metadata_line(
+            entry.metadata,
+            keys=("pr_refs", "issue_refs", "file_refs", "commit_refs", "test_evidence"),
+        )
         if detail:
             lines.append(f"  - details: {detail}")
     if not tool_entries:
@@ -856,6 +864,8 @@ def _tool_packet_metadata(tool: ToolSummary) -> dict[str, str]:
         metadata["issue_refs"] = ", ".join(issue_refs)
     if tool.file_refs:
         metadata["file_refs"] = ", ".join(tool.file_refs)
+    if tool.commit_refs:
+        metadata["commit_refs"] = ", ".join(tool.commit_refs)
     if tool.test_evidence:
         metadata["test_evidence"] = " | ".join(tool.test_evidence)
     return metadata
@@ -869,6 +879,7 @@ def _tool_object_refs(tool: ToolSummary) -> tuple[ObjectRef, ...]:
         *_github_object_refs("github-pr", tool.pr_refs),
         *_github_object_refs("github-issue", issue_refs),
         *(ObjectRef(kind="file", object_id=ref) for ref in tool.file_refs),
+        *(ObjectRef(kind="commit", object_id=ref) for ref in tool.commit_refs),
     )
 
 
@@ -1201,6 +1212,7 @@ def _extract_tool_summaries(session: Session, messages: Sequence[Message]) -> It
                 issue_refs=tuple(_number_refs(_ISSUE_RE, output_text)),
                 test_evidence=tuple(_test_evidence(output_text)),
                 file_refs=tuple(_tool_file_refs(tool_name=tool_name, command=command, output_text=output_text)),
+                commit_refs=tuple(_tool_commit_refs(command=command, output_text=output_text)),
                 raw_refs=tuple(refs),
             )
 
@@ -1789,6 +1801,35 @@ def _tool_file_refs(
             cleaned = token.strip("`'\"(),:")
             if "/" in cleaned and "#" not in cleaned and not cleaned.startswith(("http://", "https://")):
                 yield cleaned
+
+
+def _tool_commit_refs(*, command: str | None, output_text: str) -> Iterable[str]:
+    """Return commit hashes from git-shaped tool evidence.
+
+    The detector is intentionally conservative: a bare 40-character hash in
+    arbitrary command output is not enough. Work packets cite commit refs only
+    when the command itself is git-shaped or the output line names commit-ish
+    context, keeping handoff packets small and avoiding random hex soup.
+    """
+
+    command_text = command or ""
+    should_scan_all_output = _command_invokes_git(command_text)
+    seen: set[str] = set()
+    for value in (command_text, output_text):
+        for line in value.splitlines() or [value]:
+            lowered = line.lower()
+            if not (should_scan_all_output or any(token in lowered for token in ("commit", "sha", "head"))):
+                continue
+            for match in _COMMIT_SHA_RE.finditer(line):
+                sha = match.group("sha").lower()
+                if sha in seen:
+                    continue
+                seen.add(sha)
+                yield sha
+
+
+def _command_invokes_git(command: str) -> bool:
+    return re.search(r"(?:^|[;&|({]\s*)git(?:\s|$)", command, re.IGNORECASE) is not None
 
 
 def _block_text(block: Mapping[str, object]) -> str:

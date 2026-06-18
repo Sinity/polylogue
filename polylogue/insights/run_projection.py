@@ -72,6 +72,9 @@ class _ToolSummaryLike(Protocol):
     @property
     def file_refs(self) -> Sequence[str]: ...
 
+    @property
+    def commit_refs(self) -> Sequence[str]: ...
+
 
 class _SubagentReportLike(Protocol):
     @property
@@ -411,6 +414,7 @@ def _tool_object_refs(tool: _ToolSummaryLike) -> tuple[ObjectRef, ...]:
         *(ObjectRef(kind="github-pr", object_id=ref) for ref in tool.pr_refs),
         *(ObjectRef(kind="github-issue", object_id=ref) for ref in tool.issue_refs if ref not in set(tool.pr_refs)),
         *(ObjectRef(kind="file", object_id=ref) for ref in tool.file_refs),
+        *(ObjectRef(kind="commit", object_id=ref) for ref in tool.commit_refs),
     )
 
 

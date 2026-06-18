@@ -23,6 +23,7 @@ from polylogue.core.refs import (
         ("file:polylogue/insights/transforms.py", "file", "polylogue/insights/transforms.py", ()),
         ("branch:feature/demo", "branch", "feature/demo", ()),
         ("commit:abc1234", "commit", "abc1234", ()),
+        ("commit:a8cd1c1516b29068ec9ce1493f262d663407ffa5", "commit", "a8cd1c1516b29068ec9ce1493f262d663407ffa5", ()),
         ("check-run:ruff check", "check-run", "ruff check", ()),
         ("github-issue:Sinity/polylogue#1883", "github-issue", "Sinity/polylogue#1883", ()),
         ("github-review:1911", "github-review", "1911", ()),
