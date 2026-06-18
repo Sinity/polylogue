@@ -266,6 +266,7 @@ class RecoveryWorkPacket(ArchiveInsightModel):
     message_count: int
     git_branch: str | None = None
     working_directories: tuple[str, ...] = ()
+    target_refs: tuple[ObjectRef, ...] = ()
     entries: tuple[RecoveryWorkPacketEntry, ...] = ()
     evidence_refs: tuple[EvidenceRef, ...]
 
@@ -286,6 +287,8 @@ class RecoveryDigest(ArchiveInsightModel):
 
     session_id: str
     title: str | None = None
+    git_branch: str | None = None
+    working_directories: tuple[str, ...] = ()
     transform: TransformMetadata
     size_metrics: RecoverySizeMetrics
     role_counts: dict[str, int] = Field(default_factory=dict)
@@ -404,6 +407,8 @@ def compile_recovery_digest(
             decision_candidate_count=len(decisions),
         ),
         role_counts=role_counts,
+        git_branch=session.git_branch,
+        working_directories=tuple(session.working_directories),
         tool_summaries=tool_summaries,
         subagent_reports=subagent_reports,
         run_state=run_state,
@@ -433,6 +438,7 @@ def render_resume_bundle(
         message_count=len(session.messages),
         git_branch=session.git_branch,
         working_directories=tuple(session.working_directories),
+        target_refs=_work_packet_target_refs(str(session.id), session.git_branch),
         entries=tuple(
             _work_packet_entries(
                 events=events,
@@ -468,6 +474,8 @@ def render_work_packet(packet: RecoveryWorkPacket) -> str:
     ]
     if packet.git_branch:
         lines.append(f"- branch: {packet.git_branch}")
+    if packet.target_refs:
+        lines.append(f"- refs: {', '.join(ref.format() for ref in packet.target_refs)}")
     if packet.working_directories:
         lines.append(f"- workdirs: {', '.join(packet.working_directories)}")
     lines.extend(["", "## Events"])
@@ -542,6 +550,9 @@ def build_recovery_work_packet(digest: RecoveryDigest) -> RecoveryWorkPacket:
         title=digest.title or digest.session_id,
         source_origin=digest.transform.source_origin,
         message_count=digest.size_metrics.message_count,
+        git_branch=digest.git_branch,
+        working_directories=digest.working_directories,
+        target_refs=_work_packet_target_refs(digest.session_id, digest.git_branch),
         entries=tuple(
             _work_packet_entries(
                 events=digest.events,
@@ -558,6 +569,13 @@ def build_recovery_work_packet(digest: RecoveryDigest) -> RecoveryWorkPacket:
 
 def _packet_section(packet: RecoveryWorkPacket, section: WorkPacketSection) -> tuple[RecoveryWorkPacketEntry, ...]:
     return tuple(entry for entry in packet.entries if entry.section == section)
+
+
+def _work_packet_target_refs(session_id: str, git_branch: str | None) -> tuple[ObjectRef, ...]:
+    refs = [ObjectRef(kind="session", object_id=session_id)]
+    if git_branch:
+        refs.append(ObjectRef(kind="branch", object_id=git_branch))
+    return tuple(refs)
 
 
 def _support_marker(entry: RecoveryWorkPacketEntry) -> str:
