@@ -524,11 +524,11 @@ storage in <code>storage/insights/session/</code>. Wire rebuild logic and regist
 <code>insights/registry.py</code>.</p>
 <p><strong>Adding a devtools command</strong>: Add a <code>CommandSpec</code> to
 <code>devtools/command_catalog.py</code>. Implementation goes in <code>devtools/&lt;name&gt;.py</code>.
-Run <code>devtools render-all</code> to update the generated catalog in
+Run <code>devtools render all</code> to update the generated catalog in
 <code>docs/devtools.md</code>.</p>
 <p><strong>Adding any new module/file under <code>polylogue/</code></strong>: regenerate the topology
-projection or <code>verify-topology</code> and <code>render-all --check</code> will fail on the new
-path. Run <code>devtools build-topology-projection &amp;&amp; devtools render-topology-status</code>
+projection or <code>verify-topology</code> and <code>render all --check</code> will fail on the new
+path. Run <code>devtools render topology-projection &amp;&amp; devtools render topology-status</code>
 and commit the updated <code>docs/plans/topology-target.yaml</code> and
 <code>docs/topology-status.md</code> alongside the code.</p>
 <h2>Schema Versioning Model</h2>
@@ -942,7 +942,7 @@ section is intentionally deferred and tracked under the same issue.</p>
 <li>schema: <code>schemas/</code> ↔ <code>sources/providers/</code> ↔ <code>pipeline/services/validation_*</code></li>
 </ul>
 <p>Drift check:</p>
-<pre><code class="language-bash">devtools render-all --check
+<pre><code class="language-bash">devtools render all --check
 devtools lab-scenario verify-baselines
 </code></pre>
 <h2>Local State</h2>

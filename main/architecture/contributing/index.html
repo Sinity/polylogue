@@ -375,7 +375,7 @@ It is gitignored.</p>
 <p>For repository maintenance, use <code>devtools</code>:</p>
 <pre><code class="language-bash">devtools --help
 devtools status
-devtools render-all
+devtools render all
 </code></pre>
 <h2>Workflow</h2>
 <p>All code changes land through feature branches and squash-merged pull requests
@@ -511,10 +511,10 @@ publish from the tag. The manual procedure is retained in
 <p>Use <code>Ref #NNN</code> when the issue should stay open after merge, and <code>Closes #NNN</code>
 when the merge should close it.</p>
 <h2>Documentation Site Previews</h2>
-<p>The documentation site (<code>devtools render-pages</code> → <code>.cache/site/</code>) is
+<p>The documentation site (<code>devtools render pages</code> → <code>.cache/site/</code>) is
 published to GitHub Pages on every push to <code>master</code> via
 <code>.github/workflows/pages.yml</code>.</p>
-<p>PRs that touch docs, render-pages helpers, or top-level Markdown files
+<p>PRs that touch docs, render pages helpers, or top-level Markdown files
 trigger <code>.github/workflows/pages-preview.yml</code>, which rebuilds the site
 and uploads it as a workflow artifact named
 <code>docs-site-preview-pr-&lt;NNN&gt;</code>. Download the artifact from the PR's
@@ -568,7 +568,7 @@ local pytest selection is accelerated by pytest-testmon.</p>
 <pre><code class="language-bash">devtools verify            # static/generated gates + pytest-testmon affected tests
 devtools verify --seed-testmon --skip-slow  # seed/update affected-test DB
 devtools verify --all      # explicit full non-integration pytest diagnostic
-devtools verify --quick    # format + lint + mypy + render-all --check (skip tests)
+devtools verify --quick    # format + lint + mypy + render all --check (skip tests)
 devtools verify --lab      # explicit lab checks beyond the quick/default loop
 </code></pre>
 <p>The quick gate runs on <code>git push</code> via <code>.githooks/pre-push</code>. It's a fast check,
