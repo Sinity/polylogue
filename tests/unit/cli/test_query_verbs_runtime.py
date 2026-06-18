@@ -8,7 +8,8 @@ import click
 import pytest
 
 from polylogue.archive.viewport import READ_VIEW_PROFILE_BY_ID, READ_VIEW_PROFILES, read_view_choices
-from polylogue.cli import query_verbs
+from polylogue.cli import query_verbs, read_view_handlers
+from polylogue.cli.read_view_handlers import ReadViewInvocation
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 
@@ -135,6 +136,11 @@ def test_read_view_click_choices_come_from_view_profiles() -> None:
     assert tuple(option.type.choices) == read_view_choices()
 
 
+def test_read_view_handlers_cover_view_profiles() -> None:
+    assert read_view_handlers.read_view_handler_ids() == read_view_choices()
+    read_view_handlers.validate_read_view_handler_registry()
+
+
 def test_read_view_completion_comes_from_view_profiles() -> None:
     option = next(param for param in query_verbs.read_verb.params if param.name == "view")
 
@@ -206,12 +212,12 @@ def _read_verb_kwargs(**overrides: object) -> dict[str, object]:
 
 
 def test_read_verb_summary_dispatches_to_execute_query_verb() -> None:
-    """read --view summary (default) routes to _execute_query_verb."""
+    """read --view summary (default) routes through the handler registry."""
     _, child = _context_pair(params={"origin": "chatgpt-export"}, query_terms=("alpha",))
     wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
     assert callable(wrapped)
 
-    with patch("polylogue.cli.query_verbs._execute_query_verb") as execute:
+    with patch("polylogue.cli.read_view_handlers._execute_query_request") as execute:
         wrapped(child, **_read_verb_kwargs(view="summary"))
 
     execute.assert_called_once()
@@ -241,8 +247,8 @@ def test_read_verb_context_composes_preamble_not_passthrough() -> None:
 
     with (
         patch("polylogue.context.preamble.compose_context_preamble", return_value="{}") as compose,
-        patch("polylogue.cli.query_verbs._execute_query_verb") as execute,
-        patch("polylogue.cli.query_verbs._deliver_content") as deliver,
+        patch("polylogue.cli.read_view_handlers._execute_query_request") as execute,
+        patch("polylogue.cli.read_view_handlers._deliver_content") as deliver,
     ):
         wrapped(child, **_read_verb_kwargs(view="context", related_limit=3))
 
@@ -281,7 +287,7 @@ def test_read_verb_recovery_compiles_digest() -> None:
     child.obj.polylogue.recovery_digest = recovery_digest
 
     with (
-        patch("polylogue.cli.query_verbs._deliver_content") as deliver,
+        patch("polylogue.cli.read_view_handlers._deliver_content") as deliver,
     ):
         wrapped(child, **_read_verb_kwargs(view="recovery"))
 
@@ -307,7 +313,7 @@ def test_read_verb_recovery_default_ignores_report_renderer() -> None:
     child.obj.polylogue.recovery_digest = recovery_digest
 
     with (
-        patch("polylogue.cli.query_verbs._deliver_content") as deliver,
+        patch("polylogue.cli.read_view_handlers._deliver_content") as deliver,
     ):
         wrapped(child, **_read_verb_kwargs(view="recovery"))
 
@@ -334,7 +340,7 @@ def test_read_verb_recovery_report_selector_renders_presets() -> None:
     child.obj.polylogue.recovery_report = recovery_report
 
     with (
-        patch("polylogue.cli.query_verbs._deliver_content") as deliver,
+        patch("polylogue.cli.read_view_handlers._deliver_content") as deliver,
     ):
         wrapped(child, **_read_verb_kwargs(view="recovery", recovery_report="continue"))
         wrapped(child, **_read_verb_kwargs(view="recovery", recovery_report="blame"))
@@ -373,13 +379,17 @@ def test_read_view_recovery_json_uses_success_envelope(capsys: pytest.CaptureFix
     with (
         patch("polylogue.surfaces.payloads.model_json_document", return_value={"session_id": "s1"}),
     ):
-        query_verbs._run_read_recovery(
+        read_view_handlers._run_read_recovery(
             cast(AppEnv, env),
-            session_id="s1",
-            output_format="json",
-            report=None,
-            destination="terminal",
-            out_path=None,
+            RootModeRequest.from_params({}),
+            ReadViewInvocation(
+                view="recovery",
+                session_id="s1",
+                output_format="json",
+                recovery_report=None,
+                destination="terminal",
+                out_path=None,
+            ),
         )
 
     output = capsys.readouterr().out
@@ -398,13 +408,17 @@ def test_read_view_recovery_work_packet_json_uses_success_envelope(capsys: pytes
     env = SimpleNamespace(polylogue=_API())
 
     with patch("polylogue.surfaces.payloads.model_json_document", return_value={"session_id": "s1"}):
-        query_verbs._run_read_recovery(
+        read_view_handlers._run_read_recovery(
             cast(AppEnv, env),
-            session_id="s1",
-            output_format="json",
-            report="work-packet",
-            destination="terminal",
-            out_path=None,
+            RootModeRequest.from_params({}),
+            ReadViewInvocation(
+                view="recovery",
+                session_id="s1",
+                output_format="json",
+                recovery_report="work-packet",
+                destination="terminal",
+                out_path=None,
+            ),
         )
 
     output = capsys.readouterr().out
@@ -427,7 +441,7 @@ def test_read_view_recovery_honors_root_json_format() -> None:
 
     with (
         patch("polylogue.surfaces.payloads.model_json_document", return_value={"session_id": "codex-session:abc123"}),
-        patch("polylogue.cli.query_verbs._deliver_content") as deliver,
+        patch("polylogue.cli.read_view_handlers._deliver_content") as deliver,
     ):
         wrapped(child, **_read_verb_kwargs(view="recovery", output_format=None))
 
@@ -439,14 +453,18 @@ def test_read_view_recovery_honors_root_json_format() -> None:
 def test_read_view_recovery_requires_session_id() -> None:
     env = SimpleNamespace(polylogue=SimpleNamespace())
 
-    with pytest.raises(SystemExit):
-        query_verbs._run_read_recovery(
+    with pytest.raises(click.UsageError, match="requires a session ID"):
+        read_view_handlers.run_read_view(
             cast(AppEnv, env),
-            session_id=None,
-            output_format=None,
-            report=None,
-            destination="terminal",
-            out_path=None,
+            RootModeRequest.from_params({}),
+            ReadViewInvocation(
+                view="recovery",
+                session_id=None,
+                output_format=None,
+                recovery_report=None,
+                destination="terminal",
+                out_path=None,
+            ),
         )
 
 

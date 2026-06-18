@@ -873,8 +873,12 @@ files:
     target: polylogue/cli/query_stats.py
     owner: stable
   - path: polylogue/cli/query_verbs.py
-    loc: 1205
+    loc: 769
     target: polylogue/cli/query_verbs.py
+    owner: stable
+  - path: polylogue/cli/read_view_handlers.py
+    loc: 528
+    target: polylogue/cli/read_view_handlers.py
     owner: stable
   - path: polylogue/cli/root_request.py
     loc: 145
@@ -1474,7 +1478,7 @@ files:
     target: polylogue/insights/topology.py
     owner: stable
   - path: polylogue/insights/transforms.py
-    loc: 1579
+    loc: 1625
     target: polylogue/insights/transforms.py
     owner: stable
   - path: polylogue/logging.py

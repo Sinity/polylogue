@@ -2,8 +2,8 @@
 
 The standalone ``neighbors`` command was absorbed into the read-view surface
 (#1842): ``find <seed> then read --view neighbors``. These tests exercise the
-``_run_read_neighbors`` renderer directly (the cli-app path builds its own env,
-so the neighbor backend is injected through a mock env here).
+read-view handler directly (the cli-app path builds its own env, so the
+neighbor backend is injected through a mock env here).
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ import pytest
 
 from polylogue.archive.models import SessionSummary
 from polylogue.archive.session.neighbor_candidates import NeighborReason, SessionNeighborCandidate
-from polylogue.cli.query_verbs import _run_read_neighbors
+from polylogue.cli.read_view_handlers import ReadViewInvocation, _run_read_neighbors
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.core.enums import Origin
 from polylogue.types import SessionId
@@ -53,12 +53,15 @@ def test_read_view_neighbors_emits_json_payload(capsys: pytest.CaptureFixture[st
     _run_read_neighbors(
         env,
         request,
-        session_id="target",
-        limit=10,
-        window_hours=24,
-        output_format="json",
-        destination="stdout",
-        out_path=None,
+        ReadViewInvocation(
+            view="neighbors",
+            session_id="target",
+            limit=10,
+            window_hours=24,
+            output_format="json",
+            destination="stdout",
+            out_path=None,
+        ),
     )
 
     payload = json.loads(capsys.readouterr().out)
@@ -82,12 +85,15 @@ def test_read_view_neighbors_plain_renders_reasons(capsys: pytest.CaptureFixture
     _run_read_neighbors(
         env,
         request,
-        session_id="target",
-        limit=10,
-        window_hours=24,
-        output_format=None,
-        destination="stdout",
-        out_path=None,
+        ReadViewInvocation(
+            view="neighbors",
+            session_id="target",
+            limit=10,
+            window_hours=24,
+            output_format=None,
+            destination="stdout",
+            out_path=None,
+        ),
     )
 
     out = capsys.readouterr().out
@@ -108,12 +114,15 @@ def test_read_view_neighbors_surfaces_discovery_error(capsys: pytest.CaptureFixt
         _run_read_neighbors(
             env,
             request,
-            session_id="target",
-            limit=10,
-            window_hours=24,
-            output_format=None,
-            destination="stdout",
-            out_path=None,
+            ReadViewInvocation(
+                view="neighbors",
+                session_id="target",
+                limit=10,
+                window_hours=24,
+                output_format=None,
+                destination="stdout",
+                out_path=None,
+            ),
         )
 
     assert "no candidates" in capsys.readouterr().err
@@ -127,12 +136,15 @@ def test_read_view_neighbors_empty_renders_message(capsys: pytest.CaptureFixture
     _run_read_neighbors(
         env,
         request,
-        session_id="target",
-        limit=10,
-        window_hours=24,
-        output_format=None,
-        destination="stdout",
-        out_path=None,
+        ReadViewInvocation(
+            view="neighbors",
+            session_id="target",
+            limit=10,
+            window_hours=24,
+            output_format=None,
+            destination="stdout",
+            out_path=None,
+        ),
     )
 
     assert "No neighboring candidates found." in capsys.readouterr().out
@@ -146,12 +158,15 @@ def test_read_view_neighbors_requires_a_seed(capsys: pytest.CaptureFixture[str])
         _run_read_neighbors(
             env,
             request,
-            session_id=None,
-            limit=10,
-            window_hours=24,
-            output_format=None,
-            destination="stdout",
-            out_path=None,
+            ReadViewInvocation(
+                view="neighbors",
+                session_id=None,
+                limit=10,
+                window_hours=24,
+                output_format=None,
+                destination="stdout",
+                out_path=None,
+            ),
         )
 
     assert "requires a seed" in capsys.readouterr().err
