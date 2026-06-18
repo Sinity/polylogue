@@ -257,8 +257,8 @@ devtools verify --lab      # explicit lab checks beyond the quick/default loop
 
 The quick gate runs on `git push` via `.githooks/pre-push`. It's a fast check,
 not a substitute for the default baseline. The default command fails fast when
-`.testmondata` and `.cache/testmon/seed.json` are missing; do not rely on
-silent full-suite fallback.
+`.cache/testmon/testmondata` and `.cache/testmon/seed.json` are missing; do not
+rely on silent full-suite fallback.
 
 `devtools verify` does not replay a prior verify result. It always runs the
 static gates and then invokes pytest-testmon for affected-test selection from

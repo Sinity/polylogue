@@ -35,10 +35,10 @@ nix flake check
 ```
 
 `devtools verify` uses pytest-testmon for per-test affected selection. The
-seed command records `.testmondata` plus `.cache/testmon/seed.json`; those
-files are local generated state and are not committed. If the seed is missing,
-the default command fails with setup guidance instead of silently running the
-whole suite.
+seed command records `.cache/testmon/testmondata` plus
+`.cache/testmon/seed.json`; those files are local generated state and are not
+committed. If the seed is missing, the default command fails with setup
+guidance instead of silently running the whole suite.
 
 Plain focused `pytest` runs are single-process by default so small inner-loop
 checks do not spawn a worker pool. `devtools verify` keeps pytest-testmon as

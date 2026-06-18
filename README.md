@@ -307,8 +307,8 @@ Start with the generated command and architecture references; use [docs/README.m
 |----------|-------------|
 | [Architecture](docs/architecture.md) | System rings, ownership boundaries, and data flow. |
 | [Architecture Spine](docs/architecture-spine.md) | Target shape, guardrails, and major decisions with rejected alternatives. |
-| [Execution Plan](docs/execution-plan.md) | Living sequencing plan — landed, in flight, queued, and frozen subsystems. |
-| [Design Direction](docs/design/README.md) | Canonical MK3 archive-workbench design pack and historical design handoffs. |
+| [Execution Plan](docs/execution-plan.md) | Current issue-driven sequencing plan for the remaining backlog. |
+| [Design Direction](docs/design/README.md) | Historical design inputs and current guidance for using them without treating them as parallel roadmaps. |
 | [CLI Reference](docs/cli-reference.md) | Generated command reference from live help output. |
 | [Search & Query](docs/search.md) | Query grammar, retrieval lanes, ranking policy, and the typed SearchEnvelope contract. |
 | [Browser Capture](docs/browser-capture.md) | Local browser extension capture for ChatGPT and Claude.ai sessions. |

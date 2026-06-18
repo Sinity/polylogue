@@ -14,9 +14,9 @@ on-disk archive and drive the live HTTP surface — neither reads the operator's
 real archive, serves committed private sample content, or makes pixel-diff
 assertions that would freeze aesthetic iteration.
 
-This page documents the harness so #848, #859, #865, and the design packs
-have a stable reference for what the lane covers and how to run it. MK3 is the
-current target and lives at [`docs/design/mk3/`](design/mk3/); the earlier MK2
+This page documents the harness so workbench and reader changes have a stable
+reference for what the lane covers and how to run it. Historical visual design
+inputs live at [`docs/design/mk3/`](design/mk3/); the earlier MK2
 visual-evidence handoff remains at
 [`docs/design/mk2/coding-agent-pack/07-verification-and-visual-evidence.md`](design/mk2/coding-agent-pack/07-verification-and-visual-evidence.md).
 
@@ -49,10 +49,9 @@ operator-facing wrapper for the visual/DOM lane.
 | Privacy boundary | — | `/`, `/s/{id}`, `/api/facets`, `/api/sessions`, `/api/sessions/{id}`, `/api/sessions/{id}/messages` (auditing for absolute local paths) |
 | Auth boundary | — | `/api/sessions` with/without `Authorization: Bearer ...` |
 
-The artefact ids match the names referenced in the design packs and in #848 so
-the visual-evidence companion can cross-reference them. MK3 expands the target
-matrix to include reader, stack, topology, attachments, degraded states, and
-palette screenshots under `docs/design/mk3/screens/`.
+The artefact ids are stable cross-references for visual evidence and fixture
+coverage. Historical design screenshots under `docs/design/mk3/screens/` remain
+reference material for future visual lanes, not current acceptance criteria.
 
 ## What the lane checks
 
@@ -103,14 +102,14 @@ palette screenshots under `docs/design/mk3/screens/`.
   fixtures — the synthetic seeder produces three single-message
   sessions with stable ids so the envelope assertions stay
   reproducible.
-- No browser-binary requirement in the fast lanes. A later #865 slice should
-  add a separate browser-backed screenshot lane for the richer reader, stack,
+- No browser-binary requirement in the fast lanes. A later visual slice can add
+  a separate browser-backed screenshot lane for the richer reader, stack,
   topology, attachment, and degraded-state matrix rather than replacing this
   fast DOM/contract smoke.
 
 ## Follow-ups
 
-The fast lane is still DOM/contract-only. The MK3 follow-up in #865 should add
-a separate browser-backed screenshot lane for the richer reader, stack,
+The fast lane is still DOM/contract-only. A later visual slice can add a
+separate browser-backed screenshot lane for the richer reader, stack,
 topology, attachment, and degraded-state matrix rather than replacing this
 unit-speed smoke.
