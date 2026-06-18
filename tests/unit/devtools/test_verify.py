@@ -10,6 +10,7 @@ import pytest
 
 from devtools.verify import (
     PYTEST_EVENTS_PATH,
+    PYTEST_JUNIT_REPORT_PATH,
     PYTEST_OUTPUT_PATH,
     PYTEST_PROGRESS_PATH,
     PYTEST_REPORT_PATH,
@@ -363,6 +364,66 @@ def test_pytest_run_writes_live_progress_artifact(tmp_path: Path, monkeypatch: p
     assert "pytest-progress" in (tmp_path / PYTEST_OUTPUT_PATH).read_text()
 
 
+def test_pytest_run_removes_stale_reports_before_child_starts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    stale_json = tmp_path / PYTEST_REPORT_PATH
+    stale_junit = tmp_path / PYTEST_JUNIT_REPORT_PATH
+    stale_json.parent.mkdir(parents=True)
+    stale_junit.parent.mkdir(parents=True)
+    stale_json.write_text('{"summary": {"failed": 99, "total": 99}}')
+    stale_junit.write_text("<testsuite failures='99'/>")
+
+    rc, _elapsed, metadata = _run("pytest stale", [sys.executable, "-c", "print('ok')"])
+
+    assert rc == 0
+    assert metadata["report_path"] is None
+    assert metadata["report_status"] == "missing"
+    assert metadata["junitxml_path"] == str(PYTEST_JUNIT_REPORT_PATH)
+    assert not stale_json.exists()
+    assert not stale_junit.exists()
+
+
+def test_pytest_run_preserves_other_lane_reports(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    primary_json = tmp_path / PYTEST_REPORT_PATH
+    primary_junit = tmp_path / PYTEST_JUNIT_REPORT_PATH
+    isolated_json = tmp_path / ".cache/pytest/last-pytest-isolated.json"
+    isolated_junit = tmp_path / ".cache/test-reports/verify-latest-isolated.xml"
+    primary_json.parent.mkdir(parents=True)
+    primary_junit.parent.mkdir(parents=True)
+    isolated_json.parent.mkdir(parents=True)
+    primary_json.write_text('{"summary": {"passed": 7, "total": 7}}')
+    primary_junit.write_text("<testsuite tests='7'/>")
+    isolated_json.write_text('{"summary": {"failed": 99, "total": 99}}')
+    isolated_junit.write_text("<testsuite failures='99'/>")
+
+    rc, _elapsed, metadata = _run(
+        "pytest isolated",
+        [
+            sys.executable,
+            "-c",
+            "print('ok')",
+            f"--json-report-file={isolated_json}",
+            f"--junitxml={isolated_junit}",
+        ],
+    )
+
+    assert rc == 0
+    assert primary_json.exists()
+    assert primary_junit.exists()
+    assert not isolated_json.exists()
+    assert not isolated_junit.exists()
+    assert metadata["report_path"] is None
+    assert metadata["report_status"] == "missing"
+    assert metadata["junitxml_path"] == str(isolated_junit)
+
+
 def test_pytest_run_terminates_after_runtime_budget(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -378,6 +439,10 @@ def test_pytest_run_terminates_after_runtime_budget(
     assert metadata["stall_timeout_s"] == 0.0
     assert metadata["events_path"] == str(PYTEST_EVENTS_PATH)
     assert metadata["output_path"] == str(PYTEST_OUTPUT_PATH)
+    assert metadata["report_path"] is None
+    assert metadata["report_status"] == "missing"
+    assert metadata["progress_event"] == "terminated"
+    assert metadata["termination_reason"] == "pytest runtime exceeded 0.15s"
     assert "pytest runtime exceeded 0.15s" in captured.err
     assert "terminated pytest process group" in captured.err
 
@@ -452,7 +517,7 @@ def test_pytest_command_metadata_reports_worker_and_selection_policy() -> None:
 
 def test_pytest_metadata_handles_empty_summary() -> None:
     """Robustness: a malformed/empty report still yields a metadata dict."""
-    assert _pytest_metadata_from_report({}) == {"report_path": str(PYTEST_REPORT_PATH)}
+    assert _pytest_metadata_from_report({}, report_path=PYTEST_REPORT_PATH) == {"report_path": str(PYTEST_REPORT_PATH)}
 
 
 def test_read_pytest_report_returns_none_for_missing_file(tmp_path: Path) -> None:

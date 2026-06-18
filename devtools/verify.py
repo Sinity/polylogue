@@ -34,7 +34,7 @@ import signal
 import subprocess
 import sys
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -136,6 +136,8 @@ TESTMON_DATA = Path(".testmondata")
 TESTMON_SEED_STAMP = Path(".cache/testmon/seed.json")
 PYTEST_REPORT_DIR = Path(".cache/verify")
 PYTEST_REPORT_PATH = PYTEST_REPORT_DIR / "last-pytest.json"
+PYTEST_JUNIT_REPORT_DIR = Path(".cache/test-reports")
+PYTEST_JUNIT_REPORT_PATH = PYTEST_JUNIT_REPORT_DIR / "verify-latest.xml"
 PYTEST_PROGRESS_PATH = PYTEST_REPORT_DIR / "current-pytest-progress.json"
 PYTEST_EVENTS_PATH = PYTEST_REPORT_DIR / "current-pytest-events.jsonl"
 PYTEST_OUTPUT_PATH = PYTEST_REPORT_DIR / "current-pytest-output.log"
@@ -218,10 +220,18 @@ def _read_pytest_report(path: Path = PYTEST_REPORT_PATH) -> dict[str, Any] | Non
     return raw
 
 
-def _pytest_metadata_from_report(report: dict[str, Any]) -> dict[str, Any]:
+def _read_json_artifact(path: Path) -> dict[str, Any] | None:
+    try:
+        raw = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    return raw if isinstance(raw, dict) else None
+
+
+def _pytest_metadata_from_report(report: dict[str, Any], *, report_path: Path) -> dict[str, Any]:
     """Project a pytest-json-report dict into verify-step metadata."""
     summary = report.get("summary")
-    metadata: dict[str, Any] = {"report_path": str(PYTEST_REPORT_PATH)}
+    metadata: dict[str, Any] = {"report_path": str(report_path)}
     if isinstance(summary, dict):
         # `total` is collected count; sum the executed outcomes for the
         # number we previously scraped from the terminal.
@@ -254,9 +264,33 @@ def _pytest_command_metadata(cmd: list[str]) -> dict[str, Any]:
     return metadata
 
 
-def _clear_pytest_report() -> None:
+def _pytest_artifact_paths(cmd: Sequence[str]) -> tuple[Path, ...]:
+    json_paths: list[Path] = []
+    junit_paths: list[Path] = []
+    for arg in cmd:
+        if arg.startswith("--json-report-file="):
+            json_paths.append(Path(arg.split("=", 1)[1]))
+        elif arg.startswith("--junitxml="):
+            junit_paths.append(Path(arg.split("=", 1)[1]))
+    paths = [*(json_paths or [PYTEST_REPORT_PATH]), *(junit_paths or [PYTEST_JUNIT_REPORT_PATH])]
+    return tuple(dict.fromkeys(paths))
+
+
+def _pytest_json_report_path(cmd: Sequence[str]) -> Path:
+    for arg in reversed(cmd):
+        if arg.startswith("--json-report-file="):
+            return Path(arg.split("=", 1)[1])
+    return PYTEST_REPORT_PATH
+
+
+def _clear_pytest_report(cmd: Sequence[str] = ()) -> None:
     """Remove a stale report before a pytest step runs."""
-    for path in (PYTEST_REPORT_PATH, PYTEST_PROGRESS_PATH, PYTEST_EVENTS_PATH, PYTEST_OUTPUT_PATH):
+    for path in (
+        *_pytest_artifact_paths(cmd),
+        PYTEST_PROGRESS_PATH,
+        PYTEST_EVENTS_PATH,
+        PYTEST_OUTPUT_PATH,
+    ):
         with contextlib.suppress(FileNotFoundError):
             path.unlink()
 
@@ -529,7 +563,7 @@ def _run(label: str, cmd: list[str], *, cwd: str | None = None) -> tuple[int, fl
     sys.stderr.flush()
     is_pytest = label.startswith("pytest")
     if is_pytest:
-        _clear_pytest_report()
+        _clear_pytest_report(cmd)
     env = _subprocess_env()
     if is_pytest:
         result = _run_pytest_with_heartbeat(cmd, cwd=cwd, env=env, t0=t0)
@@ -545,9 +579,16 @@ def _run(label: str, cmd: list[str], *, cwd: str | None = None) -> tuple[int, fl
         metadata["progress_path"] = str(PYTEST_PROGRESS_PATH)
         metadata["events_path"] = str(PYTEST_EVENTS_PATH)
         metadata["output_path"] = str(PYTEST_OUTPUT_PATH)
-        report = _read_pytest_report()
+        junit_paths = [
+            str(path) for path in _pytest_artifact_paths(cmd) if path.suffix == ".xml" or path.name.endswith(".xml")
+        ]
+        if junit_paths:
+            metadata["junitxml_path"] = junit_paths[-1]
+        report_path = _pytest_json_report_path(cmd)
+        report = _read_json_artifact(report_path)
         if report is not None:
-            metadata.update(_pytest_metadata_from_report(report))
+            metadata.update(_pytest_metadata_from_report(report, report_path=report_path))
+            metadata["report_status"] = "present"
         else:
             # Fallback: terminal scraping when the structured report is
             # missing (pytest crashed before writing it, or the plugin is
@@ -556,6 +597,15 @@ def _run(label: str, cmd: list[str], *, cwd: str | None = None) -> tuple[int, fl
             if fallback is not None:
                 metadata["count"] = fallback
             metadata["report_path"] = None
+            metadata["report_status"] = "missing"
+        progress = _read_json_artifact(PYTEST_PROGRESS_PATH)
+        if progress is not None:
+            event = progress.get("event")
+            if isinstance(event, str):
+                metadata["progress_event"] = event
+            termination_reason = progress.get("termination_reason")
+            if isinstance(termination_reason, str):
+                metadata["termination_reason"] = termination_reason
     if result.returncode == 0:
         sys.stderr.write(f"ok ({elapsed:.1f}s)\n")
     else:
@@ -616,7 +666,7 @@ def build_verify_steps(
         )
 
     if not quick and not commit:
-        _report_dir = Path(".cache/test-reports")
+        _report_dir = PYTEST_JUNIT_REPORT_DIR
         _report_dir.mkdir(parents=True, exist_ok=True)
         PYTEST_REPORT_DIR.mkdir(parents=True, exist_ok=True)
         # Scale-tier policy (issue #1183): default verify includes
