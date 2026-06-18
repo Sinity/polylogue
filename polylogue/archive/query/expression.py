@@ -92,6 +92,7 @@ from polylogue.archive.query.metadata import (
     _BLOCK_STRUCTURAL_FIELDS,
     _BOOLEAN_SUPPORTED_FIELDS,
     _MESSAGE_STRUCTURAL_FIELDS,
+    _OBSERVED_EVENT_STRUCTURAL_FIELDS,
     _SOURCE_WHERE_SOURCES,
     _STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS,
     COUNT_QUERY_FIELD_REGISTRY,
@@ -713,8 +714,11 @@ def _validate_predicate_context(predicate: QueryPredicate, *, unit: Literal["ses
         elif unit == "block":
             supported = _BLOCK_STRUCTURAL_FIELDS
             effective_field = session_field or predicate.field
-        else:
+        elif unit == "assertion":
             supported = _ASSERTION_STRUCTURAL_FIELDS
+            effective_field = session_field or predicate.field
+        else:
+            supported = _OBSERVED_EVENT_STRUCTURAL_FIELDS
             effective_field = session_field or predicate.field
         if session_field is not None and unit != "session":
             supported = _BOOLEAN_SUPPORTED_FIELDS
@@ -749,6 +753,12 @@ def _validate_predicate_context(predicate: QueryPredicate, *, unit: Literal["ses
                 "value",
                 "evidence",
                 "context",
+                "delivery_state",
+                "subject",
+                "subject_ref",
+                "object",
+                "object_ref",
+                "summary",
             }
             and not predicate.values
         ):
@@ -885,7 +895,9 @@ class _BooleanQueryTransformer(Transformer[Token, QueryPredicate]):
         unit_value = str(unit).lower()
         if unit_value not in {"message", "action", "block", "assertion"}:
             raise ExpressionCompileError(f"unsupported structural query unit {unit_value!r}", field=None)
-        return QueryExistsPredicate(unit=cast(QueryUnitName, unit_value), child=child)
+        return QueryExistsPredicate(
+            unit=cast(Literal["message", "action", "block", "assertion"], unit_value), child=child
+        )
 
     def sequence_step(self, token: Token) -> QueryPredicate:
         predicate = _field_token_to_predicate(_QUERY_TRANSFORMER.field_clause(token))
@@ -949,6 +961,8 @@ def _source_where_unit(source: str) -> QueryUnitName:
         return "block"
     if normalized in {"assertion", "assertions"}:
         return "assertion"
+    if normalized in {"observed-event", "observed-events"}:
+        return "observed-event"
     raise ExpressionCompileError(f"unsupported query source {source!r}", field=None)
 
 
@@ -1018,6 +1032,8 @@ def parse_unit_source_expression(expression: str) -> QueryUnitSource | None:
 def _parse_source_where_predicate(expression: str) -> QueryExistsPredicate | None:
     source = parse_unit_source_expression(expression)
     if source is None:
+        return None
+    if source.unit == "observed-event":
         return None
     return QueryExistsPredicate(unit=source.unit, child=source.predicate)
 
@@ -1297,15 +1313,20 @@ def explain_expression(expression: str) -> QueryExpressionExplanation:
         )
     unit_source = parse_unit_source_expression(stripped)
     if unit_source is not None:
-        lowered = SessionQuerySpec(
-            boolean_predicate=QueryExistsPredicate(unit=unit_source.unit, child=unit_source.predicate)
+        lowered = (
+            SessionQuerySpec()
+            if unit_source.unit == "observed-event"
+            else SessionQuerySpec(
+                boolean_predicate=QueryExistsPredicate(unit=unit_source.unit, child=unit_source.predicate)
+            )
         )
         selected_units = (unit_source.unit,)
         execution_legs = _explain_unit_source_execution_legs(unit_source)
-        plan_description = (
-            f"terminal unit source: {unit_source.unit}",
-            f"compatibility session selector: exists {unit_source.unit}(...)",
-        )
+        plan_description = (f"terminal unit source: {unit_source.unit}",)
+        compatibility_selector = None
+        if unit_source.unit != "observed-event":
+            compatibility_selector = f"exists {unit_source.unit}(...)"
+            plan_description = (*plan_description, f"compatibility session selector: {compatibility_selector}")
         lowerer = "lark-query-unit-source-to-terminal-unit"
         return QueryExpressionExplanation(
             source_text=source_text,
@@ -1322,7 +1343,7 @@ def explain_expression(expression: str) -> QueryExpressionExplanation:
                 selected_units=selected_units,
                 execution_legs=execution_legs,
                 plan_description=plan_description,
-                compatibility_selector=f"exists {unit_source.unit}(...)",
+                compatibility_selector=compatibility_selector,
             ),
         )
     ast = parse_expression_ast(stripped)

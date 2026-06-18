@@ -965,6 +965,66 @@ components:
       - text
       title: MessageQueryRowPayload
       type: object
+    ObservedEventQueryRowPayload:
+      additionalProperties: false
+      description: Shared terminal-query row for runtime-transform observed events.
+      properties:
+        unit:
+          const: observed-event
+          default: observed-event
+          title: Unit
+          type: string
+        event_ref:
+          title: Event Ref
+          type: string
+        session_id:
+          title: Session Id
+          type: string
+        origin:
+          title: Origin
+          type: string
+        title:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Title
+        kind:
+          title: Kind
+          type: string
+        summary:
+          title: Summary
+          type: string
+        delivery_state:
+          title: Delivery State
+          type: string
+        subject_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Subject Ref
+        object_refs:
+          items:
+            type: string
+          title: Object Refs
+          type: array
+        evidence_refs:
+          items:
+            type: string
+          title: Evidence Refs
+          type: array
+      required:
+      - event_ref
+      - session_id
+      - origin
+      - kind
+      - summary
+      - delivery_state
+      - object_refs
+      - evidence_refs
+      title: ObservedEventQueryRowPayload
+      type: object
     QueryUnitEnvelope:
       additionalProperties: false
       description: Shared envelope for explicit terminal unit-source query results.
@@ -980,6 +1040,7 @@ components:
           - action
           - block
           - assertion
+          - observed-event
           title: Unit
           type: string
         query:
@@ -992,6 +1053,7 @@ components:
             - $ref: '#/components/schemas/ActionQueryRowPayload'
             - $ref: '#/components/schemas/BlockQueryRowPayload'
             - $ref: '#/components/schemas/AssertionQueryRowPayload'
+            - $ref: '#/components/schemas/ObservedEventQueryRowPayload'
           title: Items
           type: array
         total:

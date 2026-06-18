@@ -422,6 +422,92 @@
       ],
       "title": "MessageQueryRowPayload",
       "type": "object"
+    },
+    "ObservedEventQueryRowPayload": {
+      "additionalProperties": false,
+      "description": "Shared terminal-query row for runtime-transform observed events.",
+      "properties": {
+        "delivery_state": {
+          "title": "Delivery State",
+          "type": "string"
+        },
+        "event_ref": {
+          "title": "Event Ref",
+          "type": "string"
+        },
+        "evidence_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "object_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Object Refs",
+          "type": "array"
+        },
+        "origin": {
+          "title": "Origin",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "subject_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Subject Ref"
+        },
+        "summary": {
+          "title": "Summary",
+          "type": "string"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        },
+        "unit": {
+          "const": "observed-event",
+          "default": "observed-event",
+          "title": "Unit",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_ref",
+        "session_id",
+        "origin",
+        "kind",
+        "summary",
+        "delivery_state",
+        "object_refs",
+        "evidence_refs"
+      ],
+      "title": "ObservedEventQueryRowPayload",
+      "type": "object"
     }
   },
   "$id": "https://polylogue.dev/schemas/cli-output/query-unit-envelope.schema.json",
@@ -443,6 +529,9 @@
           },
           {
             "$ref": "#/$defs/AssertionQueryRowPayload"
+          },
+          {
+            "$ref": "#/$defs/ObservedEventQueryRowPayload"
           }
         ]
       },
@@ -488,7 +577,8 @@
         "message",
         "action",
         "block",
-        "assertion"
+        "assertion",
+        "observed-event"
       ],
       "title": "Unit",
       "type": "string"

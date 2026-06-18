@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping, Sequence
+from typing import Any, cast
 
+from polylogue.archive.query.archive_execution import _session_to_session
 from polylogue.archive.query.expression import QueryUnitSource
+from polylogue.archive.query.predicate import QueryBoolPredicate, QueryFieldPredicate, QueryNotPredicate, QueryPredicate
 from polylogue.archive.query.spec import (
     normalize_action_sequence,
     normalize_action_terms,
@@ -15,12 +18,16 @@ from polylogue.archive.query.spec import (
     parse_query_date,
     split_csv,
 )
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.core.refs import EvidenceRef, ObjectRef
+from polylogue.insights.run_projection import ObservedEvent
+from polylogue.insights.transforms import compile_recovery_digest
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSummary, ArchiveStore
 from polylogue.surfaces.payloads import (
     ActionQueryRowPayload,
     AssertionQueryRowPayload,
     BlockQueryRowPayload,
     MessageQueryRowPayload,
+    ObservedEventQueryRowPayload,
     QueryUnitEnvelope,
     build_query_unit_envelope,
 )
@@ -100,6 +107,135 @@ def query_unit_session_filters(**params: object) -> dict[str, object]:
     }
 
 
+def _object_ref_text(ref: ObjectRef | None) -> str | None:
+    return ref.format() if ref is not None else None
+
+
+def _evidence_ref_text(ref: EvidenceRef) -> str:
+    return ref.format()
+
+
+def _contains_value(haystacks: Iterable[str | None], needles: Sequence[str]) -> bool:
+    if not needles:
+        return True
+    lowered_haystacks = [value.lower() for value in haystacks if value]
+    return any(any(needle.lower() in haystack for haystack in lowered_haystacks) for needle in needles)
+
+
+def _exact_or_contains(value: str | None, needles: Sequence[str], *, exact: bool = False) -> bool:
+    if not needles:
+        return True
+    if value is None:
+        return False
+    lowered = value.lower()
+    if exact:
+        return any(lowered == needle.lower() for needle in needles)
+    return any(needle.lower() in lowered for needle in needles)
+
+
+def _summary_field_matches(summary: ArchiveSessionSummary, field: str, values: Sequence[str]) -> bool:
+    if field == "id":
+        return _exact_or_contains(str(summary.session_id), values)
+    if field == "origin":
+        return _exact_or_contains(str(summary.origin), values, exact=True)
+    if field == "repo":
+        return _exact_or_contains(summary.git_repository_url, values)
+    if field == "title":
+        return _exact_or_contains(summary.title, values)
+    return True
+
+
+def _observed_event_field_matches(
+    event: ObservedEvent,
+    summary: ArchiveSessionSummary,
+    predicate: QueryFieldPredicate,
+) -> bool:
+    field = predicate.field
+    if field.startswith("session."):
+        return _summary_field_matches(summary, field.removeprefix("session."), predicate.values)
+    if field == "kind":
+        return _exact_or_contains(event.kind, predicate.values, exact=True)
+    if field == "delivery_state":
+        return _exact_or_contains(event.delivery_state, predicate.values, exact=True)
+    if field == "summary":
+        return _contains_value((event.summary,), predicate.values)
+    if field == "text":
+        return _contains_value(
+            (
+                event.summary,
+                _object_ref_text(event.subject_ref),
+                *(_object_ref_text(ref) for ref in event.object_refs),
+                *(_evidence_ref_text(ref) for ref in event.evidence_refs),
+            ),
+            predicate.values,
+        )
+    if field in {"subject", "subject_ref"}:
+        return _contains_value((_object_ref_text(event.subject_ref),), predicate.values)
+    if field in {"object", "object_ref"}:
+        return _contains_value((_object_ref_text(ref) for ref in event.object_refs), predicate.values)
+    if field == "evidence":
+        return _contains_value((_evidence_ref_text(ref) for ref in event.evidence_refs), predicate.values)
+    return False
+
+
+def _observed_event_matches(
+    event: ObservedEvent,
+    summary: ArchiveSessionSummary,
+    predicate: QueryPredicate,
+) -> bool:
+    if isinstance(predicate, QueryFieldPredicate):
+        return _observed_event_field_matches(event, summary, predicate)
+    if isinstance(predicate, QueryNotPredicate):
+        return not _observed_event_matches(event, summary, predicate.child)
+    if isinstance(predicate, QueryBoolPredicate):
+        if predicate.op == "and":
+            return all(_observed_event_matches(event, summary, child) for child in predicate.children)
+        return any(_observed_event_matches(event, summary, child) for child in predicate.children)
+    return False
+
+
+def _observed_event_row(summary: ArchiveSessionSummary, event: ObservedEvent) -> ObservedEventQueryRowPayload:
+    return ObservedEventQueryRowPayload(
+        event_ref=event.event_ref.format(),
+        session_id=str(summary.session_id),
+        origin=str(summary.origin),
+        title=summary.title,
+        kind=event.kind,
+        summary=event.summary,
+        delivery_state=event.delivery_state,
+        subject_ref=_object_ref_text(event.subject_ref),
+        object_refs=tuple(ref.format() for ref in event.object_refs),
+        evidence_refs=tuple(ref.format() for ref in event.evidence_refs),
+    )
+
+
+def _query_observed_events(
+    archive: ArchiveStore,
+    source: QueryUnitSource,
+    *,
+    limit: int,
+    offset: int,
+    session_filters: Mapping[str, object] | None,
+) -> tuple[ObservedEventQueryRowPayload, ...]:
+    rows: list[ObservedEventQueryRowPayload] = []
+    target_count = limit + 1
+    skipped = 0
+    summaries = cast(Any, archive.list_summaries)(limit=1_000_000, **dict(session_filters or {}))
+    for summary in summaries:
+        session = _session_to_session(archive.read_session(str(summary.session_id)))
+        digest = compile_recovery_digest(session)
+        for event in digest.run_projection.events:
+            if not _observed_event_matches(event, summary, source.predicate):
+                continue
+            if skipped < offset:
+                skipped += 1
+                continue
+            rows.append(_observed_event_row(summary, event))
+            if len(rows) >= target_count:
+                return tuple(rows)
+    return tuple(rows)
+
+
 def query_unit_rows(
     archive: ArchiveStore,
     source: QueryUnitSource,
@@ -112,6 +248,22 @@ def query_unit_rows(
     """Execute an explicit unit-source query."""
 
     fetch_limit = limit + 1
+    if source.unit == "observed-event":
+        event_rows = _query_observed_events(
+            archive,
+            source,
+            limit=limit,
+            offset=offset,
+            session_filters=session_filters,
+        )
+        return build_query_unit_envelope(
+            event_rows[:limit],
+            unit=source.unit,
+            query=query,
+            limit=limit,
+            offset=offset,
+            has_next=len(event_rows) > limit,
+        )
     if source.unit == "message":
         message_rows = archive.query_messages(
             source.predicate,

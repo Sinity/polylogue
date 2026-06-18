@@ -829,7 +829,7 @@ class SearchEnvelope(SurfacePayloadModel):
     diagnostics: QueryMissDiagnosticsPayload | None = None
 
 
-QueryUnitKind: TypeAlias = Literal["message", "action", "block", "assertion"]
+QueryUnitKind: TypeAlias = Literal["message", "action", "block", "assertion", "observed-event"]
 """Terminal query source unit exposed by query-unit envelopes."""
 
 
@@ -973,8 +973,28 @@ class AssertionQueryRowPayload(SurfacePayloadModel):
         )
 
 
+class ObservedEventQueryRowPayload(SurfacePayloadModel):
+    """Shared terminal-query row for runtime-transform observed events."""
+
+    unit: Literal["observed-event"] = "observed-event"
+    event_ref: str
+    session_id: str
+    origin: str
+    title: str | None = None
+    kind: str
+    summary: str
+    delivery_state: str
+    subject_ref: str | None = None
+    object_refs: tuple[str, ...]
+    evidence_refs: tuple[str, ...]
+
+
 QueryUnitRowPayload: TypeAlias = (
-    MessageQueryRowPayload | ActionQueryRowPayload | BlockQueryRowPayload | AssertionQueryRowPayload
+    MessageQueryRowPayload
+    | ActionQueryRowPayload
+    | BlockQueryRowPayload
+    | AssertionQueryRowPayload
+    | ObservedEventQueryRowPayload
 )
 """Union of terminal row payloads returned by explicit unit-source queries."""
 
@@ -1611,6 +1631,7 @@ __all__ = [
     "QueryUnitRowPayload",
     "QueryMissDiagnosticsPayload",
     "QueryMissReasonPayload",
+    "ObservedEventQueryRowPayload",
     "RANKING_POLICY_MIXED",
     "RANKING_POLICY_VERSION",
     "ReaderActionAvailabilityPayload",
