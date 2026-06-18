@@ -332,7 +332,6 @@ _SESSION_SCOPED_STRUCTURAL_EXAMPLES: dict[str, str] = {
     "id": "session.id:abc123",
     "messages": "session.messages:10",
     "origin": "session.origin:claude-code-session",
-    "path": "session.path:polylogue/cli",
     "repo": "session.repo:polylogue",
     "since": "session.since:7d",
     "tag": "session.tag:review",

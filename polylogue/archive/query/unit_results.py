@@ -145,21 +145,30 @@ def _summary_field_matches(summary: ArchiveSessionSummary, field: str, values: S
         return _exact_or_contains(summary.title, values)
     if field == "tag":
         return _contains_value(summary.tags, values)
-    if field in {"cwd", "path"}:
+    if field == "cwd":
         return _contains_value(summary.working_directories, values)
+    if field == "path":
+        # Runtime-transform rows only carry session summaries here. Referenced
+        # file paths are not in that projection, so fail closed instead of
+        # treating path as cwd and broadening/missing results unpredictably.
+        return False
     if field == "messages":
         return _exact_or_contains(str(summary.message_count), values, exact=True)
     if field == "words":
         return _exact_or_contains(str(summary.word_count), values, exact=True)
     if field == "since":
         threshold = _epoch_ms("since", values[0]) if values else None
-        updated = _epoch_ms("updated_at", summary.updated_at)
+        updated = _summary_updated_or_created_ms(summary)
         return threshold is not None and updated is not None and updated >= threshold
     if field == "until":
         threshold = _epoch_ms("until", values[0]) if values else None
-        updated = _epoch_ms("updated_at", summary.updated_at)
+        updated = _summary_updated_or_created_ms(summary)
         return threshold is not None and updated is not None and updated <= threshold
     return False
+
+
+def _summary_updated_or_created_ms(summary: ArchiveSessionSummary) -> int | None:
+    return _epoch_ms("updated_at", summary.updated_at) or _epoch_ms("created_at", summary.created_at)
 
 
 def _observed_event_field_matches(

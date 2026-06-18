@@ -1401,6 +1401,65 @@ class TestBooleanQueryExpression:
 
         assert unsupported_summary_envelope.items == ()
 
+        path_source = parse_unit_source_expression(
+            "context-snapshots where session.path:polylogue AND boundary:session_start"
+        )
+        assert path_source is not None
+        with ArchiveStore.open_existing(archive_root) as archive:
+            path_envelope = query_unit_rows(
+                archive,
+                path_source,
+                query="context-snapshots where session.path:polylogue AND boundary:session_start",
+                limit=10,
+            )
+
+        assert path_envelope.items == ()
+
+    def test_context_snapshot_session_since_uses_created_at_fallback(self, workspace_env: dict[str, Path]) -> None:
+        """Runtime-transform session date filters match normal session timestamp semantics."""
+        import sqlite3
+
+        from polylogue.archive.query.unit_results import query_unit_rows
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from polylogue.surfaces.payloads import ContextSnapshotQueryRowPayload
+        from tests.infra.storage_records import SessionBuilder
+
+        archive_root = workspace_env["archive_root"]
+        index_db = archive_root / "index.db"
+        (
+            SessionBuilder(index_db, "created-only")
+            .provider("codex")
+            .created_at("2026-01-03T00:00:00+00:00")
+            .updated_at("2026-01-03T00:00:00+00:00")
+            .title("created only context")
+            .add_message("m-created-only", role="user", text="created-only context row")
+            .save()
+        )
+        with sqlite3.connect(index_db) as conn:
+            conn.execute(
+                "UPDATE sessions SET updated_at_ms = NULL WHERE session_id = ?", ("codex-session:created-only",)
+            )
+
+        source = parse_unit_source_expression(
+            "context-snapshots where session.since:2026-01-02 AND boundary:session_start AND text:created-only"
+        )
+        assert source is not None
+        with ArchiveStore.open_existing(archive_root) as archive:
+            envelope = query_unit_rows(
+                archive,
+                source,
+                query=(
+                    "context-snapshots where session.since:2026-01-02 AND boundary:session_start AND text:created-only"
+                ),
+                limit=10,
+            )
+
+        assert envelope.unit == "context-snapshot"
+        assert len(envelope.items) == 1
+        row = envelope.items[0]
+        assert isinstance(row, ContextSnapshotQueryRowPayload)
+        assert row.session_id == "codex-session:ext-created-only"
+
     def test_exists_block_tool_predicate_executes_against_archive(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
         from tests.infra.storage_records import SessionBuilder
