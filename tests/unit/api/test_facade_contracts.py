@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import sqlite3
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, cast
@@ -800,9 +801,25 @@ async def test_query_completions_exposes_shared_completion_payload(tmp_path: Pat
 
 async def test_recovery_report_renders_seeded_session_presets(tmp_path: Path) -> None:
     """``recovery_report`` exposes deterministic preset markdown with evidence refs."""
+    from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
+
     archive = _archive(tmp_path)
     db_path = archive.config.archive_root / "index.db"
     await _seed_two_sessions(db_path)
+    with sqlite3.connect(archive.config.archive_root / "user.db") as conn:
+        upsert_assertion(
+            conn,
+            assertion_id="recovery-caveat-alpha",
+            target_ref="session:claude-ai-export:conv-alpha",
+            kind=AssertionKind.CAVEAT,
+            body_text="Review findings have not been read yet.",
+            author_ref="user:test",
+            author_kind="user",
+            evidence_refs=["claude-ai-export:conv-alpha"],
+            status="active",
+            visibility="private",
+            now_ms=1_700_000_000_000,
+        )
     try:
         continue_report = await archive.recovery_report("claude-ai-export:conv-alpha", "continue")
         blame_report = await archive.recovery_report("claude-ai-export:conv-alpha", "blame")
@@ -818,10 +835,16 @@ async def test_recovery_report_renders_seeded_session_presets(tmp_path: Path) ->
         assert work_packet_report.startswith("# Resume: Alpha")
         assert work_packet.session_id == "claude-ai-export:conv-alpha"
         assert work_packet.render_markdown() == work_packet_report
+        assertion_entries = [entry for entry in work_packet.entries if entry.section == "assertions"]
+        assert [(entry.label, entry.support, entry.text) for entry in assertion_entries] == [
+            ("caveat", "caveat", "Review findings have not been read yet.")
+        ]
         assert continue_report != blame_report
         assert work_packet_report not in {continue_report, blame_report}
         assert "[evidence:" in continue_report
         assert "[evidence:" in blame_report
+        assert "## Assertion Claims" in work_packet_report
+        assert "- [caveat] caveat: Review findings have not been read yet." in work_packet_report
         assert "## Evidence" in work_packet_report
         assert await archive.recovery_report("nonexistent", "continue") is None
         assert await archive.recovery_work_packet("nonexistent") is None

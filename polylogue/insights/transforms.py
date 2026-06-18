@@ -36,7 +36,7 @@ ForensicClaimKind = Literal[
     "decision_candidate",
 ]
 RecoveryReportPreset = Literal["continue", "blame", "work-packet"]
-WorkPacketSection = Literal["events", "subagents", "run_state", "tools", "decisions", "evidence_gaps"]
+WorkPacketSection = Literal["events", "subagents", "run_state", "tools", "decisions", "assertions", "evidence_gaps"]
 WorkPacketSupport = Literal["raw_evidence", "assertion", "inference", "caveat", "missing_evidence"]
 SubagentChildLinkStatus = Literal["resolved", "unresolved", "repaired", "quarantined"]
 
@@ -502,6 +502,10 @@ def render_work_packet(packet: RecoveryWorkPacket) -> str:
     lines.extend(_work_packet_line(entry) for entry in decision_entries[:8])
     if not decision_entries:
         lines.append("- none extracted")
+    assertion_entries = _packet_section(packet, "assertions")
+    if assertion_entries:
+        lines.extend(["", "## Assertion Claims"])
+        lines.extend(_work_packet_line(entry) for entry in assertion_entries[:12])
     gap_entries = _packet_section(packet, "evidence_gaps")
     if gap_entries:
         lines.extend(["", "## Evidence Gaps"])
