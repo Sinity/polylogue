@@ -15,6 +15,8 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.models import Session, SessionSummary
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.core.enums import BlockType, Provider
+from polylogue.core.refs import EvidenceRef
+from polylogue.insights.transforms import RecoveryWorkPacket, RecoveryWorkPacketEntry
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.types import SessionId
@@ -750,6 +752,62 @@ class TestArchiveGenericToolSurfaces:
         payload = json.loads(result)
         assert payload["session_id"] == session_id
         assert payload["messages"][0]["text"] == "tool message from archive index"
+
+    @pytest.mark.asyncio
+    async def test_get_recovery_work_packet_reads_shared_facade_dto(
+        self: object, mcp_server: MCPServerUnderTest
+    ) -> None:
+        packet = RecoveryWorkPacket(
+            session_id="session-1",
+            title="Recovery target",
+            source_origin="codex-session",
+            message_count=3,
+            entries=(
+                RecoveryWorkPacketEntry(
+                    section="assertions",
+                    label="Assertion",
+                    text="The retry path is evidence-backed.",
+                    evidence_refs=(EvidenceRef(session_id="session-1"),),
+                    support="assertion",
+                    metadata={"kind": "fact"},
+                ),
+            ),
+            evidence_refs=(EvidenceRef(session_id="session-1"),),
+        )
+        mock_poly = make_polylogue_mock()
+        mock_poly.recovery_work_packet.return_value = packet
+
+        with patch("polylogue.mcp.server._get_polylogue", return_value=mock_poly):
+            result = await invoke_surface_async(
+                mcp_server._tool_manager._tools["get_recovery_work_packet"].fn,
+                session_id="session-1",
+            )
+
+        payload = json.loads(result)
+        assert payload["recovery_work_packet"]["session_id"] == "session-1"
+        assert payload["recovery_work_packet"]["entries"][0]["section"] == "assertions"
+        assert payload["recovery_work_packet"]["entries"][0]["support"] == "assertion"
+        assert payload["recovery_work_packet"]["entries"][0]["evidence_refs"][0]["session_id"] == "session-1"
+        mock_poly.recovery_work_packet.assert_awaited_once_with("session-1")
+
+    @pytest.mark.asyncio
+    async def test_get_recovery_work_packet_reports_missing_session(
+        self: object, mcp_server: MCPServerUnderTest
+    ) -> None:
+        mock_poly = make_polylogue_mock()
+        mock_poly.recovery_work_packet.return_value = None
+
+        with patch("polylogue.mcp.server._get_polylogue", return_value=mock_poly):
+            result = await invoke_surface_async(
+                mcp_server._tool_manager._tools["get_recovery_work_packet"].fn,
+                session_id="missing",
+            )
+
+        payload = json.loads(result)
+        assert payload["is_error"] is True
+        assert payload["code"] == "not_found"
+        assert payload["tool"] == "get_recovery_work_packet"
+        mock_poly.recovery_work_packet.assert_awaited_once_with("missing")
 
 
 class TestPromptSurfaces:
