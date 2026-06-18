@@ -9,7 +9,8 @@ def test_generated_surfaces_use_public_devtools_commands() -> None:
     assert GENERATED_SURFACES
     for surface in GENERATED_SURFACES:
         assert surface.command[0] == "devtools"
-        assert len(surface.command) == 2
+        assert len(surface.command) >= 2
+        assert all(part and " " not in part for part in surface.command)
         assert callable(surface.main)
 
 
