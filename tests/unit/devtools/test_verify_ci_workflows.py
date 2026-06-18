@@ -26,7 +26,7 @@ class TestDevtoolsCommandNames:
         names = _devtools_command_names()
         assert "verify" in names
         assert "status" in names
-        assert "render-all" in names
+        assert "render all" in names
 
 
 class TestCheckWorkflow:
@@ -43,10 +43,24 @@ class TestCheckWorkflow:
               lint:
                 steps:
                   - name: lint
-                    run: uv run devtools render-all --check
+                    run: uv run devtools render all --check
             """,
         )
         errors, warnings = check_workflow(path, tmp_path.parent, _devtools_command_names())
+        assert errors == []
+
+    def test_python_devtools_module_path_is_not_command(self, tmp_path: Path) -> None:
+        path = self._write_yaml(
+            tmp_path,
+            """
+            jobs:
+              lint:
+                steps:
+                  - name: script
+                    run: uv run python devtools/some_script.py --flag
+            """,
+        )
+        errors, _warnings = check_workflow(path, tmp_path.parent, _devtools_command_names())
         assert errors == []
 
     def test_unknown_devtools_command_is_error(self, tmp_path: Path) -> None:

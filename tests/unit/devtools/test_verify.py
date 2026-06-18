@@ -42,7 +42,7 @@ def test_quick_verify_omits_pytest() -> None:
         "ruff format",
         "ruff check",
         "mypy",
-        "render-all",
+        "render all",
         "verify-topology",
         "verify-layering",
         "verify-closure-matrix",
@@ -417,7 +417,7 @@ def test_run_forces_subprocesses_to_current_checkout(monkeypatch: pytest.MonkeyP
     completed = subprocess.CompletedProcess(args=["devtools"], returncode=0, stdout="", stderr="")
 
     with patch("devtools.verify.subprocess.run", return_value=completed) as run:
-        rc, _elapsed, _metadata = _run("render-all", ["devtools", "render-all", "--check"])
+        rc, _elapsed, _metadata = _run("render all", ["devtools", "render all", "--check"])
 
     assert rc == 0
     env = run.call_args.kwargs["env"]

@@ -75,12 +75,12 @@ storage in `storage/insights/session/`. Wire rebuild logic and register in
 
 **Adding a devtools command**: Add a `CommandSpec` to
 `devtools/command_catalog.py`. Implementation goes in `devtools/<name>.py`.
-Run `devtools render-all` to update the generated catalog in
+Run `devtools render all` to update the generated catalog in
 `docs/devtools.md`.
 
 **Adding any new module/file under `polylogue/`**: regenerate the topology
-projection or `verify-topology` and `render-all --check` will fail on the new
-path. Run `devtools build-topology-projection && devtools render-topology-status`
+projection or `verify-topology` and `render all --check` will fail on the new
+path. Run `devtools render topology-projection && devtools render topology-status`
 and commit the updated `docs/plans/topology-target.yaml` and
 `docs/topology-status.md` alongside the code.
 
@@ -505,7 +505,7 @@ Cross-check adjacent surfaces after changes:
 Drift check:
 
 ```bash
-devtools render-all --check
+devtools render all --check
 devtools lab-scenario verify-baselines
 ```
 

@@ -26,7 +26,7 @@ For repository maintenance, use `devtools`:
 ```bash
 devtools --help
 devtools status
-devtools render-all
+devtools render all
 ```
 
 ## Workflow
@@ -178,11 +178,11 @@ when the merge should close it.
 
 ## Documentation Site Previews
 
-The documentation site (`devtools render-pages` → `.cache/site/`) is
+The documentation site (`devtools render pages` → `.cache/site/`) is
 published to GitHub Pages on every push to `master` via
 `.github/workflows/pages.yml`.
 
-PRs that touch docs, render-pages helpers, or top-level Markdown files
+PRs that touch docs, render pages helpers, or top-level Markdown files
 trigger `.github/workflows/pages-preview.yml`, which rebuilds the site
 and uploads it as a workflow artifact named
 `docs-site-preview-pr-<NNN>`. Download the artifact from the PR's
@@ -251,7 +251,7 @@ local pytest selection is accelerated by pytest-testmon.
 devtools verify            # static/generated gates + pytest-testmon affected tests
 devtools verify --seed-testmon --skip-slow  # seed/update affected-test DB
 devtools verify --all      # explicit full non-integration pytest diagnostic
-devtools verify --quick    # format + lint + mypy + render-all --check (skip tests)
+devtools verify --quick    # format + lint + mypy + render all --check (skip tests)
 devtools verify --lab      # explicit lab checks beyond the quick/default loop
 ```
 

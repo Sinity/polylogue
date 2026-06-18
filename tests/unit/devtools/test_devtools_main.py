@@ -23,7 +23,7 @@ def test_list_commands_json_includes_generated_surface(capsys: pytest.CaptureFix
     assert "artifact-graph" in commands
     assert "regression-capture" in commands
     assert "scenario-projections" in commands
-    assert "render-devtools-reference" in commands
+    assert "render devtools-reference" in commands
     assert "release-readiness" in commands
     assert "status" in commands
 
@@ -40,7 +40,7 @@ def test_list_commands_human_output(capsys: pytest.CaptureFixture[str]) -> None:
     assert "artifact-graph" in captured.out
     assert "regression-capture" in captured.out
     assert "scenario-projections" in captured.out
-    assert "render-devtools-reference" in captured.out
+    assert "render devtools-reference" in captured.out
 
 
 def test_global_json_flag_is_forwarded_to_command(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -62,6 +62,27 @@ def test_global_json_flag_is_forwarded_to_command(monkeypatch: pytest.MonkeyPatc
 
     assert devtools_main.main(["--json", "status"]) == 0
     assert captured == [["--json"]]
+
+
+def test_nested_render_command_dispatches_to_catalog_entry(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[list[str] | None] = []
+
+    def fake_main(argv: list[str] | None) -> int:
+        captured.append(argv)
+        return 0
+
+    fake_module = ModuleType("_polylogue_devtools_test_nested_fake")
+    fake_module.__dict__["main"] = fake_main
+    monkeypatch.setitem(__import__("sys").modules, fake_module.__name__, fake_module)
+
+    monkeypatch.setitem(
+        COMMANDS,
+        "render all",
+        CommandSpec("render all", "generated surfaces", "fake render all", fake_module.__name__),
+    )
+
+    assert devtools_main.main(["render", "all", "--check"]) == 0
+    assert captured == [["--check"]]
 
 
 def test_help_output_includes_devtools_prog_name(capsys: pytest.CaptureFixture[str]) -> None:

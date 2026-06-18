@@ -1,7 +1,7 @@
 name: GitHub Pages Preview
 
 # Build the documentation site on every pull request that touches a docs or
-# render-pages surface, and deploy to the gh-pages branch under /pr/NNN/ so
+# render pages surface, and deploy to the gh-pages branch under /pr/NNN/ so
 # reviewers get a live preview URL at sinity.github.io/polylogue/pr/NNN/.
 #
 # #1592: per-PR live preview URLs via branch-based deploy.
@@ -39,7 +39,7 @@ jobs:
           nix_path: nixpkgs=channel:nixos-unstable
 
       - name: Build site
-        run: nix develop --command devtools render-pages
+        run: nix develop --command devtools render pages
 
       - name: Deploy to gh-pages /pr/NNN/
         uses: peaceiris/actions-gh-pages@v4

@@ -17,7 +17,7 @@ import yaml
 
 from devtools import repo_root as _get_root
 from devtools.authored_scenario_catalog import get_authored_scenario_catalog
-from devtools.command_catalog import COMMANDS
+from devtools.command_catalog import COMMANDS, command_name_from_tokens
 from devtools.verify_ci_workflows import WorkflowInventory, inventory_workflows
 from polylogue.verification.manifests.models import validate_manifest
 
@@ -545,7 +545,7 @@ def _resolvable_command(value: str) -> bool:
         return False
     command = tokens[0]
     if command == "devtools":
-        return len(tokens) >= 2 and tokens[1] in COMMANDS
+        return command_name_from_tokens(tokens[1:]) in COMMANDS
     return command in _EVIDENCE_COMMANDS
 
 
@@ -567,12 +567,20 @@ def _command_present_in_workflows(command: str, inventory: WorkflowInventory) ->
     for run in inventory.all_run_commands:
         if needle in run:
             return True
-    # Fall back to the first two tokens, e.g. "devtools coverage-gate".
+    # Fall back to the registered command path, e.g. "devtools render all".
     try:
         tokens = shlex.split(needle)
     except ValueError:
         return False
-    if len(tokens) >= 2:
+    if len(tokens) >= 2 and tokens[0] == "devtools":
+        command_name = command_name_from_tokens(tokens[1:])
+        if command_name is None:
+            return False
+        prefix = f"devtools {command_name}"
+        for run in inventory.all_run_commands:
+            if prefix in run:
+                return True
+    elif len(tokens) >= 2:
         bigram = f"{tokens[0]} {tokens[1]}"
         for run in inventory.all_run_commands:
             if bigram in run:

@@ -262,7 +262,7 @@
   "$id": "https://polylogue.dev/schemas/cli-output/session-neighbor-candidate.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "Semantic-neighbor candidate for the `read --view neighbors` surface: session identity plus per-reason evidence and rank.\n\nGenerated from `polylogue.surfaces.payloads.SessionNeighborCandidatePayload` by `devtools render-cli-output-schemas`. Do not edit by hand.",
+  "description": "Semantic-neighbor candidate for the `read --view neighbors` surface: session identity plus per-reason evidence and rank.\n\nGenerated from `polylogue.surfaces.payloads.SessionNeighborCandidatePayload` by `devtools render cli-output-schemas`. Do not edit by hand.",
   "properties": {
     "query": {
       "anyOf": [

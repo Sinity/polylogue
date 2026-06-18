@@ -155,7 +155,7 @@ def status_snapshot(cwd: Path, *, verify_generated: bool = False) -> StatusSnaps
         "commands": {
             "discover": control_plane_command("--list-commands", "--json"),
             "status": control_plane_command("status", "--json"),
-            "render_all_check": control_plane_command("render-all", "--check"),
+            "render_all_check": control_plane_command("render all", "--check"),
             "verify_quick": control_plane_command("verify", "--quick"),
             "build_package": control_plane_command("build-package"),
             "test_baseline": "pytest -q --ignore=tests/integration",

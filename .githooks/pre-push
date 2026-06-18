@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Pre-push gate: quick verification baseline (format + lint only).
-# Full verification (mypy, render-all, pytest) is expected to have already
+# Full verification (mypy, render all, pytest) is expected to have already
 # run via `devtools verify` before the push (see CONTRIBUTING.md).
 # CI runs the complete baseline.
 #

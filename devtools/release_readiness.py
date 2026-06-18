@@ -28,7 +28,7 @@ REQUIRED_COMMANDS: tuple[GateCommand, ...] = (
     GateCommand(("devtools", "verify", "--quick"), True, "static/generated baseline"),
     GateCommand(("devtools", "verify", "--lab"), True, "verification-lab baseline"),
     GateCommand(("devtools", "build-package"), True, "wheel/sdist/Nix package smoke"),
-    GateCommand(("devtools", "render-pages"), True, "documentation site build"),
+    GateCommand(("devtools", "render pages"), True, "documentation site build"),
     GateCommand(("devtools", "verify-doc-commands"), True, "README/docs command examples"),
 )
 

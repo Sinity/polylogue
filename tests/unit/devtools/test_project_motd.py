@@ -34,7 +34,7 @@ def test_render_motd_contains_expected_sections(
     assert "worktree   dirty · 1 staged · 2 modified · 3 untracked" in rendered
     assert f"generated  {surface_count}/{surface_count} generated unchecked" in rendered
     assert "head       docs: tighten repo guides" in rendered
-    assert "ready      devtools render-all --check · devtools verify --quick · devtools build-package" in rendered
+    assert "ready      devtools render all --check · devtools verify --quick · devtools build-package" in rendered
     assert "test       pytest -q --ignore=tests/integration" in rendered
     assert "roots      keep .venv/ .direnv/ · cache .cache/ · outputs .local/ · build .local/result" in rendered
     assert "dirty · 1 staged · 2 modified · 3 untracked" in rendered

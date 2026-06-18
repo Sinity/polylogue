@@ -180,7 +180,7 @@ neither.
 
 ### F12. No OpenAPI emission from typed payloads
 
-`devtools render-openapi` emits `docs/openapi/search.yaml` from the
+`devtools render openapi` emits `docs/openapi/search.yaml` from the
 typed `SearchEnvelope` Pydantic models (#1266). The daemon's
 `/api/conversations`, `/api/conversations/{id}`, `/api/topology/...`,
 `/api/conversations/{id}/{cost,provenance,similar}`,

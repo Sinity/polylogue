@@ -2,7 +2,7 @@
   "$id": "https://polylogue.dev/schemas/cli-output/machine-success.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "Standard CLI machine-readable success envelope. Emitted by commands that ran with `--machine` and produced structured output.\n\nGenerated from `polylogue.surfaces.payloads.MachineSuccessPayload` by `devtools render-cli-output-schemas`. Do not edit by hand.",
+  "description": "Standard CLI machine-readable success envelope. Emitted by commands that ran with `--machine` and produced structured output.\n\nGenerated from `polylogue.surfaces.payloads.MachineSuccessPayload` by `devtools render cli-output-schemas`. Do not edit by hand.",
   "properties": {
     "result": {
       "additionalProperties": true,

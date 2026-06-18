@@ -2,7 +2,7 @@
   "$id": "https://polylogue.dev/schemas/cli-output/query-error.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "Shared typed error payload for daemon HTTP, MCP, and query/read surfaces that need field-addressable machine-readable failures.\n\nGenerated from `polylogue.surfaces.payloads.QueryErrorPayload` by `devtools render-cli-output-schemas`. Do not edit by hand.",
+  "description": "Shared typed error payload for daemon HTTP, MCP, and query/read surfaces that need field-addressable machine-readable failures.\n\nGenerated from `polylogue.surfaces.payloads.QueryErrorPayload` by `devtools render cli-output-schemas`. Do not edit by hand.",
   "properties": {
     "detail": {
       "anyOf": [

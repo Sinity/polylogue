@@ -43,7 +43,7 @@ def test_render_all_check_passes_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls == [("--check",)]
 
 
-def test_render_all_check_runs_surfaces_sequentially(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_render_all_check_runs_surfaces_sequentially_with_agents_last(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
 
     class FakeSurface:
@@ -62,7 +62,7 @@ def test_render_all_check_runs_surfaces_sequentially(monkeypatch: pytest.MonkeyP
     )
 
     assert render_all.main(["--check"]) == 0
-    assert calls == ["agents", "devtools-reference", "quality-reference"]
+    assert calls == ["devtools-reference", "quality-reference", "agents"]
 
 
 def test_render_all_reports_surface_progress(
@@ -81,4 +81,4 @@ def test_render_all_reports_surface_progress(
 
     assert render_all.main([]) == 0
     captured = capsys.readouterr()
-    assert "render-all: render agents" in captured.err
+    assert "render all: render agents" in captured.err

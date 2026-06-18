@@ -39,7 +39,7 @@ const Boundary = () => (
                kind="source-checkout only"
                role="repo control plane / proof"
                examples={[
-                 'devtools verify  ·  render-all',
+                 'devtools verify  ·  render all',
                  'lab-corpus seed  ·  affected-obligations',
                  'not on user PATH',
                ]} />

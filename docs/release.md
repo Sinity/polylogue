@@ -37,7 +37,7 @@ anything different; release-please consumes the existing history.
 ## Pre-flight (before merging a release PR)
 
 - [ ] `devtools verify` passes on the cut commit.
-- [ ] `devtools render-all --check` clean.
+- [ ] `devtools render all --check` clean.
 - [ ] CI green on `master`.
 - [ ] `CHANGELOG.md` diff in the release PR looks right — entries grouped under
       the configured sections, no stray Unreleased content left over.

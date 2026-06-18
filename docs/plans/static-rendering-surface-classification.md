@@ -10,7 +10,7 @@ breaking required gates.
 | `polylogue/rendering/templates/session.html` | read/export format | Retain | HTML session renderer template, not a separate product UI. |
 | `polylogue/templates/` | dead static-site product residue | Deleted | No live imports or package/runtime references were found; the retained HTML session renderer lives under `polylogue/rendering/templates/session.html`. |
 | `polylogue/publication/` | report manifest helper | Retain for lab reports | Used by report writers as an output manifest type. |
-| `devtools/pages_builder.py` | documentation site build | Retain | `devtools render-pages` and site renderer tests exercise it. |
+| `devtools/pages_builder.py` | documentation site build | Retain | `devtools render pages` and site renderer tests exercise it. |
 | `devtools/pages_templates.py` | documentation site build | Retain | Template source for `pages_builder.py`. |
 | `devtools/render_pages.py` | documentation site build | Retain | Registered generated-surface command and covered by renderer tests. |
 | `devtools/generate_readme_media.py` | public docs media generator | Retain | Generates README diagrams; normal render/docs review owns accuracy. |

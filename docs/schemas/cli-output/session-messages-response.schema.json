@@ -333,7 +333,7 @@
   "$id": "https://polylogue.dev/schemas/cli-output/session-messages-response.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "Finite response for `polylogue read --view messages --format json`.\n\nGenerated from `polylogue.surfaces.payloads.SessionMessagesResponsePayload` by `devtools render-cli-output-schemas`. Do not edit by hand.",
+  "description": "Finite response for `polylogue read --view messages --format json`.\n\nGenerated from `polylogue.surfaces.payloads.SessionMessagesResponsePayload` by `devtools render cli-output-schemas`. Do not edit by hand.",
   "properties": {
     "limit": {
       "title": "Limit",

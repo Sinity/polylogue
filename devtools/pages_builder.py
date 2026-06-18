@@ -124,7 +124,7 @@ def _site_archive_stats() -> dict[str, Any]:
     The hero counts are read from the live archive and are therefore volatile:
     in CI no archive exists (stats are empty), while a local dev archive — and
     especially one mid re-ingest — changes second to second. Embedding those
-    counts in the built HTML made ``render-pages --check`` non-deterministic
+    counts in the built HTML made ``render pages --check`` non-deterministic
     (a fresh build never matched a `.cache/site` built moments earlier),
     perma-failing the pre-push gate during any ingest. The site build is
     therefore reproducible by default: live counts are read only when

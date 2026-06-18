@@ -117,19 +117,19 @@ def main(argv: list[str] | None = None) -> int:
     try:
         rendered = replace_marked_section(output_path.read_text(encoding="utf-8"), build_command_catalog())
     except ValueError as exc:
-        print(f"render-devtools-reference: {exc}", file=sys.stderr)
+        print(f"render devtools-reference: {exc}", file=sys.stderr)
         return 1
 
     if args.check:
         current = output_path.read_text(encoding="utf-8")
         if current != rendered:
-            print(f"render-devtools-reference: out of sync: {output_path}", file=sys.stderr)
+            print(f"render devtools-reference: out of sync: {output_path}", file=sys.stderr)
             print(
-                f"render-devtools-reference: run: {control_plane_command('render-devtools-reference')}",
+                f"render devtools-reference: run: {control_plane_command('render devtools-reference')}",
                 file=sys.stderr,
             )
             return 1
-        print(f"render-devtools-reference: sync OK: {output_path}")
+        print(f"render devtools-reference: sync OK: {output_path}")
         return 0
 
     write_if_changed(output_path, rendered)

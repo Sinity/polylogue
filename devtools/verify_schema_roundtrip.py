@@ -14,16 +14,22 @@ from polylogue.schemas.runtime_registry import SCHEMA_DIR, SchemaRegistry
 try:
     import jsonschema
     from jsonschema import Draft202012Validator
+
+    _JSONSCHEMA_AVAILABLE = True
 except ImportError:  # pragma: no cover - defensive optional dep
     jsonschema = None
     Draft202012Validator = None
+    _JSONSCHEMA_AVAILABLE = False
 
 try:
     from polylogue.schemas.synthetic import SyntheticCorpus
     from polylogue.schemas.synthetic.wire_formats import PROVIDER_WIRE_FORMATS
+
+    _SYNTHETIC_AVAILABLE = True
 except ImportError:  # pragma: no cover - defensive optional dep
     SyntheticCorpus = None  # type: ignore[misc,assignment]
     PROVIDER_WIRE_FORMATS = {}
+    _SYNTHETIC_AVAILABLE = False
 
 
 @dataclass
@@ -94,7 +100,7 @@ def _verify_corpus_roundtrip_for_provider(
 
     Returns a list of failure messages (empty if all records validate).
     """
-    if SyntheticCorpus is None or jsonschema is None:  # defensive: imports may fail
+    if not _SYNTHETIC_AVAILABLE or not _JSONSCHEMA_AVAILABLE:  # defensive: imports may fail
         return ["synthetic corpus or jsonschema not available (import failed)"]
     if provider not in PROVIDER_WIRE_FORMATS:
         return [f"no wire format configured for provider {provider!r}"]

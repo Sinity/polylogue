@@ -4,10 +4,10 @@ Reads pages.toml, calls feeder render commands, assembles output
 through Jinja2 templates, runs Pagefind, writes .cache/site/.
 
 Usage:
-    devtools render-pages              Build .cache/site/
-    devtools render-pages --serve      Build and serve locally
-    devtools render-pages --check      Verify .cache/site/ matches sources
-    devtools render-pages --watch      Rebuild on source changes
+    devtools render pages              Build .cache/site/
+    devtools render pages --serve      Build and serve locally
+    devtools render pages --check      Verify .cache/site/ matches sources
+    devtools render pages --watch      Rebuild on source changes
 """
 
 from __future__ import annotations
@@ -72,11 +72,11 @@ def _run_render_commands(verbose: bool = False) -> None:
     )
 
     renderers = [
-        ("render-cli-reference", render_cli_reference.main),
-        ("render-devtools-reference", render_devtools_reference.main),
-        ("render-docs-surface", render_docs_surface.main),
-        ("render-quality-reference", render_quality_reference.main),
-        ("render-topology-status", render_topology_status.main),
+        ("render cli-reference", render_cli_reference.main),
+        ("render devtools-reference", render_devtools_reference.main),
+        ("render docs-surface", render_docs_surface.main),
+        ("render quality-reference", render_quality_reference.main),
+        ("render topology-status", render_topology_status.main),
     ]
     for name, render in renderers:
         if verbose:
@@ -123,7 +123,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
             current_hash = _hash_directory(args.output)
             if current_hash != new_hash:
-                print(f"Error: {args.output} is out of sync with sources. Run: devtools render-pages", file=sys.stderr)
+                print(f"Error: {args.output} is out of sync with sources. Run: devtools render pages", file=sys.stderr)
                 return 1
             print(f"OK: {args.output} matches sources.")
             return 0
@@ -161,7 +161,7 @@ def main(argv: list[str] | None = None) -> int:
             run_process(
                 str(ROOT),
                 target=sys.executable,
-                args=("-m", "devtools", "render-pages", "--skip-pagefind"),
+                args=("-m", "devtools", "render pages", "--skip-pagefind"),
                 callback=lambda changes: print(f"  Rebuilding ({len(changes)} changes)...", file=sys.stderr),
             )
         except ImportError:
