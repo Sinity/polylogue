@@ -40,6 +40,25 @@ def test_progress_plugin_records_call_and_setup_failures(
     assert events[1]["longrepr"] == "fixture exploded"
 
 
+def test_progress_plugin_records_node_start_and_finish(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events_path = tmp_path / "events.jsonl"
+    monkeypatch.setenv("POLYLOGUE_PYTEST_EVENTS_PATH", str(events_path))
+
+    location = ("tests/unit/test_example.py", 12, "test_example")
+    pytest_progress_plugin.pytest_runtest_logstart("tests/unit/test_example.py::test_example", location)
+    pytest_progress_plugin.pytest_runtest_logfinish("tests/unit/test_example.py::test_example", location)
+
+    events = [json.loads(line) for line in events_path.read_text().splitlines()]
+    assert [(event["event"], event["nodeid"]) for event in events] == [
+        ("test_started", "tests/unit/test_example.py::test_example"),
+        ("test_finished", "tests/unit/test_example.py::test_example"),
+    ]
+    assert events[0]["location"] == ["tests/unit/test_example.py", 12, "test_example"]
+
+
 def test_progress_plugin_write_failures_do_not_escape(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("POLYLOGUE_PYTEST_EVENTS_PATH", "/dev/null/events.jsonl")
 
