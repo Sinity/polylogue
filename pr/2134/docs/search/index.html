@@ -1453,7 +1453,7 @@ polylogue facets -f json --no-idf    # FacetsResponse, no IDF weighting
 <li>Verify the archive has data: <code>polylogue analyze --count</code> (no filters)</li>
 <li>Check FTS index health: <code>polylogued status</code> shows <code>fts_readiness</code></li>
 <li>Run <code>polylogue ops doctor</code> for schema and index integrity</li>
-<li>If using <code>--similar</code>, ensure embeddings are built (check <code>polylogue analyze</code> for embedding coverage)</li>
+<li>If using <code>--similar</code>, ensure embeddings are built (check <code>polylogue ops embed status --detail</code> for embedding readiness/coverage)</li>
 </ol>
 
 <hr style="margin: 3rem 0 1rem; border-color: var(--border);">
