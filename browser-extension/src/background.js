@@ -1,13 +1,22 @@
 const DEFAULT_RECEIVER = "http://127.0.0.1:8765";
 
-async function receiverBase() {
-  const stored = await chrome.storage.local.get({ receiverBaseUrl: DEFAULT_RECEIVER });
-  return stored.receiverBaseUrl.replace(/\/+$/, "");
+async function receiverSettings() {
+  const stored = await chrome.storage.local.get({
+    receiverAuthToken: "",
+    receiverBaseUrl: DEFAULT_RECEIVER,
+  });
+  return {
+    authToken: String(stored.receiverAuthToken || ""),
+    baseUrl: String(stored.receiverBaseUrl || DEFAULT_RECEIVER).replace(/\/+$/, ""),
+  };
 }
 
-async function saveReceiverBaseUrl(receiverBaseUrl) {
-  await chrome.storage.local.set({ receiverBaseUrl: receiverBaseUrl.replace(/\/+$/, "") || DEFAULT_RECEIVER });
-  return receiverBase();
+async function saveReceiverSettings(receiverBaseUrl, receiverAuthToken = "") {
+  await chrome.storage.local.set({
+    receiverAuthToken: String(receiverAuthToken || ""),
+    receiverBaseUrl: String(receiverBaseUrl || DEFAULT_RECEIVER).replace(/\/+$/, "") || DEFAULT_RECEIVER,
+  });
+  return receiverSettings();
 }
 
 async function setState(state) {
@@ -17,11 +26,19 @@ async function setState(state) {
   await chrome.action.setBadgeBackgroundColor({ color: state.captured ? "#1f7a4d" : state.online ? "#805ad5" : "#9b2c2c" });
 }
 
+async function requestHeaders({ hasBody = false } = {}) {
+  const settings = await receiverSettings();
+  const headers = {};
+  if (hasBody) headers["Content-Type"] = "application/json";
+  if (settings.authToken) headers.Authorization = `Bearer ${settings.authToken}`;
+  return headers;
+}
+
 async function postJson(path, payload) {
-  const base = await receiverBase();
-  const response = await fetch(`${base}${path}`, {
+  const settings = await receiverSettings();
+  const response = await fetch(`${settings.baseUrl}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: await requestHeaders({ hasBody: true }),
     body: JSON.stringify(payload)
   });
   const body = await response.json().catch(() => ({}));
@@ -30,8 +47,10 @@ async function postJson(path, payload) {
 }
 
 async function getJson(path) {
-  const base = await receiverBase();
-  const response = await fetch(`${base}${path}`);
+  const settings = await receiverSettings();
+  const response = await fetch(`${settings.baseUrl}${path}`, {
+    headers: await requestHeaders(),
+  });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
   return body;
@@ -40,8 +59,8 @@ async function getJson(path) {
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   (async () => {
     if (message.type === "polylogue.configureReceiver") {
-      const receiverBaseUrl = await saveReceiverBaseUrl(message.receiverBaseUrl || DEFAULT_RECEIVER);
-      sendResponse({ ok: true, receiverBaseUrl });
+      const settings = await saveReceiverSettings(message.receiverBaseUrl || DEFAULT_RECEIVER, message.receiverAuthToken || "");
+      sendResponse({ ok: true, receiverBaseUrl: settings.baseUrl, authConfigured: Boolean(settings.authToken) });
       return;
     }
     if (message.type === "polylogue.capture") {

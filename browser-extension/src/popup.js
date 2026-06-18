@@ -26,9 +26,11 @@ async function render() {
   const stateNode = document.getElementById("state");
   const stored = await chrome.storage.local.get({
     polylogueState: null,
+    receiverAuthToken: "",
     receiverBaseUrl: DEFAULT_RECEIVER
   });
   document.getElementById("receiver-url").value = stored.receiverBaseUrl;
+  document.getElementById("receiver-token").value = stored.receiverAuthToken || "";
   document.getElementById("receiver").textContent = stored.receiverBaseUrl;
   const tab = await activeTab();
   document.getElementById("page").textContent = hostLabel(tab?.url || "");
@@ -60,7 +62,8 @@ document.getElementById("check").addEventListener("click", async () => {
 
 document.getElementById("save").addEventListener("click", async () => {
   const receiverBaseUrl = document.getElementById("receiver-url").value;
-  await chrome.runtime.sendMessage({ type: "polylogue.configureReceiver", receiverBaseUrl });
+  const receiverAuthToken = document.getElementById("receiver-token").value;
+  await chrome.runtime.sendMessage({ type: "polylogue.configureReceiver", receiverBaseUrl, receiverAuthToken });
   await render();
 });
 

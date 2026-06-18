@@ -12,6 +12,7 @@ from pathlib import Path
 import orjson
 
 from polylogue.browser_capture.models import (
+    BROWSER_CAPTURE_EXTENSION_ORIGIN_WILDCARD,
     BrowserCaptureArchiveStatePayload,
     BrowserCaptureEnvelope,
     BrowserCaptureReceiverStatusPayload,
@@ -27,12 +28,7 @@ class BrowserCaptureReceiverConfig:
     """Configuration for the localhost browser-capture receiver."""
 
     spool_path: Path
-    allowed_origins: frozenset[str] = frozenset(
-        {
-            "https://chatgpt.com",
-            "https://claude.ai",
-        }
-    )
+    allowed_origins: frozenset[str] = frozenset({BROWSER_CAPTURE_EXTENSION_ORIGIN_WILDCARD})
     allow_remote: bool = False
     auth_token: str | None = None
 
@@ -44,6 +40,14 @@ class BrowserCaptureReceiverConfig:
         """Validate configuration invariants."""
         if self.allow_remote and not self.auth_token:
             raise ValueError("--browser-capture-auth-token is required when --insecure-allow-remote is set")
+        unauthenticated_web_origins = sorted(
+            origin for origin in self.allowed_origins if not _is_extension_origin_pattern(origin)
+        )
+        if unauthenticated_web_origins and not self.auth_token:
+            raise ValueError(
+                "browser-capture web origins require --browser-capture-auth-token; "
+                f"unauthenticated origins: {', '.join(unauthenticated_web_origins)}"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +59,10 @@ class BrowserCaptureWriteResult:
     path: Path
     bytes_written: int
     replaced: bool
+
+
+def _is_extension_origin_pattern(origin: str) -> bool:
+    return origin == BROWSER_CAPTURE_EXTENSION_ORIGIN_WILDCARD or origin.startswith("chrome-extension://")
 
 
 def _safe_token(value: str) -> str:
@@ -102,6 +110,7 @@ def receiver_status_payload(config: BrowserCaptureReceiverConfig) -> dict[str, o
         spool_path=str(config.spool_path),
         allowed_origins=sorted(config.allowed_origins),
         allow_remote=config.allow_remote,
+        auth_required=config.auth_token is not None,
         active=True,
         checked_at=datetime.now(UTC).isoformat(),
     ).model_dump(mode="json")
@@ -155,6 +164,7 @@ def existing_capture_state(
 __all__ = [
     "BrowserCaptureReceiverConfig",
     "BrowserCaptureWriteResult",
+    "_is_extension_origin_pattern",
     "capture_artifact_path",
     "existing_capture_state",
     "receiver_status_payload",

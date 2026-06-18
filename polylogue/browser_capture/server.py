@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, urlparse
 from pydantic import ValidationError
 
 from polylogue.browser_capture.models import (
+    BROWSER_CAPTURE_EXTENSION_ORIGIN_WILDCARD,
     BrowserCaptureAcceptedPayload,
     BrowserCaptureEnvelope,
     BrowserCaptureErrorPayload,
@@ -32,9 +33,11 @@ def _json_bytes(payload: object) -> bytes:
 def _origin_allowed(origin: str | None, config: BrowserCaptureReceiverConfig) -> bool:
     if origin is None:
         return True
-    if origin.startswith("chrome-extension://"):
+    if origin in config.allowed_origins:
         return True
-    return origin in config.allowed_origins
+    return (
+        origin.startswith("chrome-extension://") and BROWSER_CAPTURE_EXTENSION_ORIGIN_WILDCARD in config.allowed_origins
+    )
 
 
 def _is_loopback(host: str) -> bool:
@@ -109,7 +112,9 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         return True
 
     def do_OPTIONS(self) -> None:
-        if self._reject_origin() or self._reject_token():
+        # Browser CORS preflights cannot carry Authorization.  Guard origin here
+        # and enforce the bearer token on the actual data request.
+        if self._reject_origin():
             return
         origin = self.headers.get("Origin")
         self.send_response(HTTPStatus.NO_CONTENT.value)
@@ -156,14 +161,23 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             return
         try:
             payload = json.loads(self.rfile.read(length))
+        except json.JSONDecodeError:
+            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_json")
+            return
+        try:
             envelope = BrowserCaptureEnvelope.model_validate(payload)
-            result = write_capture_envelope(envelope, spool_path=self.server.config.spool_path)
-        except (json.JSONDecodeError, ValidationError, OSError):
+        except ValidationError:
             self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_payload")
+            return
+        try:
+            result = write_capture_envelope(envelope, spool_path=self.server.config.spool_path)
+        except OSError:
+            self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
             return
         self._send_json(
             HTTPStatus.ACCEPTED,
             BrowserCaptureAcceptedPayload(
+                capture_id=envelope.capture_id or f"{result.provider}:{result.provider_session_id}",
                 provider=result.provider,
                 provider_session_id=result.provider_session_id,
                 artifact_path=str(result.path),
