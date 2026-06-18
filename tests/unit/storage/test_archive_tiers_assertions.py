@@ -14,6 +14,11 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user import USER_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.user_write import (
     ASSERTION_CLAIM_KINDS,
+    ASSERTION_DEFAULT_AUTHOR_KIND,
+    ASSERTION_DEFAULT_AUTHOR_REF,
+    ASSERTION_DEFAULT_CONTEXT_POLICY,
+    ASSERTION_DEFAULT_STATUS,
+    ASSERTION_DEFAULT_VISIBILITY,
     AssertionKind,
     assertion_envelope_to_payload,
     assertion_id_for_transform_candidate,
@@ -119,6 +124,9 @@ def test_assertion_round_trip_across_kinds(tmp_path: Path) -> None:
         assert read_mark.author_kind == "human"
         assert read_mark.value is None
         assert read_mark.evidence_refs == []
+        assert read_mark.status == ASSERTION_DEFAULT_STATUS
+        assert read_mark.visibility == ASSERTION_DEFAULT_VISIBILITY
+        assert read_mark.context_policy == ASSERTION_DEFAULT_CONTEXT_POLICY
         assert read_mark.created_at_ms == 1_700_000_000_000
 
         assert read_decision.kind == "decision"
@@ -134,6 +142,84 @@ def test_assertion_round_trip_across_kinds(tmp_path: Path) -> None:
 
         # read of a missing assertion returns None, not a raise.
         assert read_assertion_envelope(conn, "absent") is None
+    finally:
+        conn.close()
+
+
+def test_assertion_defaults_are_explicit_private_no_inject(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "user.db")
+    try:
+        active = upsert_assertion(
+            conn,
+            assertion_id="default-decision",
+            target_ref="session:s-1",
+            kind=AssertionKind.DECISION,
+            body_text="default lifecycle should be explicit",
+            now_ms=1_700_000_000_000,
+        )
+        candidate_policy = upsert_assertion(
+            conn,
+            assertion_id="candidate-policy",
+            target_ref="session:s-1",
+            kind=AssertionKind.TRANSFORM_CANDIDATE,
+            body_text="candidate keeps promotion flag",
+            context_policy={"promotion_required": True},
+            status="candidate",
+            now_ms=1_700_000_001_000,
+        )
+
+        assert active.status == "active"
+        assert active.visibility == "private"
+        assert active.author_ref == ASSERTION_DEFAULT_AUTHOR_REF
+        assert active.author_kind == ASSERTION_DEFAULT_AUTHOR_KIND
+        assert active.context_policy == {"inject": False}
+        assert candidate_policy.context_policy == {"inject": False, "promotion_required": True}
+
+        active_claims = list_assertion_claims(conn, target_ref="session:s-1", statuses=("active",))
+        assert [claim.assertion_id for claim in active_claims] == ["default-decision"]
+
+        active_exports = list_assertions_for_export(conn, statuses=("active",))
+        assert [row.assertion_id for row in active_exports] == ["default-decision"]
+    finally:
+        conn.close()
+
+
+def test_legacy_null_lifecycle_assertions_read_as_active_private_no_inject(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "user.db")
+    try:
+        conn.execute(
+            """
+            INSERT INTO assertions (
+                assertion_id, target_ref, kind, body_text,
+                author_ref, author_kind, status, visibility, context_policy_json,
+                created_at_ms, updated_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "legacy-null",
+                "session:s-legacy",
+                AssertionKind.DECISION.value,
+                "legacy row before lifecycle defaults",
+                None,
+                None,
+                None,
+                None,
+                None,
+                1_700_000_000_000,
+                1_700_000_000_000,
+            ),
+        )
+
+        stored = read_assertion_envelope(conn, "legacy-null")
+        assert stored is not None
+        assert stored.status == "active"
+        assert stored.visibility == "private"
+        assert stored.author_ref == ASSERTION_DEFAULT_AUTHOR_REF
+        assert stored.author_kind == ASSERTION_DEFAULT_AUTHOR_KIND
+        assert stored.context_policy == {"inject": False}
+
+        assert [claim.assertion_id for claim in list_assertion_claims(conn, statuses=("active",))] == ["legacy-null"]
+        assert [row.assertion_id for row in list_assertions_for_export(conn, statuses=("active",))] == ["legacy-null"]
     finally:
         conn.close()
 
@@ -337,6 +423,9 @@ def test_list_assertion_claims_filters_lifecycle_assertions(tmp_path: Path) -> N
 
         scoped_claims = list_assertion_claims(conn, scope_ref="run:r-1", context_inject=True)
         assert [claim.assertion_id for claim in scoped_claims] == ["claim-lesson-other", "claim-decision"]
+
+        private_target_claims = list_assertion_claims(conn, target_ref="session:s-1", context_inject=False)
+        assert [claim.assertion_id for claim in private_target_claims] == ["claim-transform", "claim-caveat"]
 
         deleted_blockers = list_assertion_claims(
             conn,

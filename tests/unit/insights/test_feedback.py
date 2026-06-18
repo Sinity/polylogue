@@ -14,6 +14,7 @@ Acceptance criteria covered here:
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -199,6 +200,57 @@ class TestFeedbackStorage:
         # (session_id, kind) is UNIQUE: only the latest payload survives.
         assert len(corrections) == 1
         assert corrections[0].payload == {"summary": "Second summary."}
+
+    async def test_upsert_correction_writes_assertion_lifecycle_defaults(
+        self,
+        workspace_env: dict[str, Path],
+        storage_repository: SessionRepository,
+    ) -> None:
+        del workspace_env
+        await _seed_session(storage_repository, "conv-lifecycle")
+
+        from polylogue.storage.insights.feedback import upsert_correction
+        from polylogue.storage.sqlite.archive_tiers.user_write import (
+            ASSERTION_DEFAULT_AUTHOR_KIND,
+            ASSERTION_DEFAULT_AUTHOR_REF,
+            ASSERTION_DEFAULT_CONTEXT_POLICY,
+            ASSERTION_DEFAULT_STATUS,
+            ASSERTION_DEFAULT_VISIBILITY,
+            assertion_id_for_correction,
+            correction_id_for,
+        )
+
+        async with storage_repository.backend.connection() as conn:
+            await upsert_correction(
+                conn,
+                session_id="conv-lifecycle",
+                kind=CorrectionKind.SUMMARY_OVERRIDE,
+                payload={"summary": "Operator correction."},
+                note="durable user evidence",
+            )
+            cursor = await conn.execute(
+                """
+                SELECT author_ref, author_kind, evidence_refs_json, status,
+                       visibility, context_policy_json, supersedes_json
+                FROM user_tier.assertions
+                WHERE assertion_id = ?
+                """,
+                (
+                    assertion_id_for_correction(
+                        correction_id_for("insight", "conv-lifecycle", CorrectionKind.SUMMARY_OVERRIDE.value)
+                    ),
+                ),
+            )
+            row = await cursor.fetchone()
+
+        assert row is not None
+        assert row[0] == ASSERTION_DEFAULT_AUTHOR_REF
+        assert row[1] == ASSERTION_DEFAULT_AUTHOR_KIND
+        assert json.loads(str(row[2])) == []
+        assert row[3] == ASSERTION_DEFAULT_STATUS
+        assert row[4] == ASSERTION_DEFAULT_VISIBILITY
+        assert json.loads(str(row[5])) == ASSERTION_DEFAULT_CONTEXT_POLICY
+        assert json.loads(str(row[6])) == []
 
     async def test_list_preserves_flat_assertion_payload(
         self,

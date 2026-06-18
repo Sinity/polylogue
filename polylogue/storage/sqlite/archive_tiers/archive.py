@@ -90,6 +90,11 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import (
+    ASSERTION_DEFAULT_AUTHOR_KIND,
+    ASSERTION_DEFAULT_AUTHOR_REF,
+    ASSERTION_DEFAULT_CONTEXT_POLICY,
+    ASSERTION_DEFAULT_STATUS,
+    ASSERTION_DEFAULT_VISIBILITY,
     ArchiveAssertionEnvelope,
     ArchiveBlackboardNoteEnvelope,
     AssertionKind,
@@ -3471,13 +3476,15 @@ class ArchiveStore:
                 key=str(row["key"]) if row["key"] is not None else None,
                 body_text=str(row["body_text"]) if row["body_text"] is not None else None,
                 value=_json_value(row["value_json"], default={}),
-                author_ref=str(row["author_ref"]),
-                author_kind=str(row["author_kind"]),
-                status=str(row["status"]),
-                visibility=str(row["visibility"]),
+                author_ref=str(row["author_ref"] if row["author_ref"] is not None else ASSERTION_DEFAULT_AUTHOR_REF),
+                author_kind=str(
+                    row["author_kind"] if row["author_kind"] is not None else ASSERTION_DEFAULT_AUTHOR_KIND
+                ),
+                status=str(row["status"] if row["status"] is not None else ASSERTION_DEFAULT_STATUS),
+                visibility=str(row["visibility"] if row["visibility"] is not None else ASSERTION_DEFAULT_VISIBILITY),
                 evidence_refs=_json_str_tuple(row["evidence_refs_json"]),
                 staleness=_json_value(row["staleness_json"], default={}),
-                context_policy=_json_value(row["context_policy_json"], default={}),
+                context_policy=_json_value(row["context_policy_json"], default=ASSERTION_DEFAULT_CONTEXT_POLICY),
                 created_at_ms=int(row["created_at_ms"]),
                 updated_at_ms=int(row["updated_at_ms"]),
             )
@@ -4685,14 +4692,28 @@ def _block_field_predicate_clause(block_alias: str, predicate: QueryFieldPredica
 
 def _assertion_field_predicate_clause(assertion_alias: str, predicate: QueryFieldPredicate) -> tuple[str, list[object]]:
     field = predicate.field
-    if field in {"kind", "status", "key", "author_kind", "visibility"}:
+    if field == "status":
+        clause, params = _in_or_equals_clause(f"COALESCE({assertion_alias}.status, ?)", predicate.values, lower=True)
+        return clause, [ASSERTION_DEFAULT_STATUS, *params]
+    if field == "visibility":
+        clause, params = _in_or_equals_clause(
+            f"COALESCE({assertion_alias}.visibility, ?)", predicate.values, lower=True
+        )
+        return clause, [ASSERTION_DEFAULT_VISIBILITY, *params]
+    if field == "author_kind":
+        clause, params = _in_or_equals_clause(
+            f"COALESCE({assertion_alias}.author_kind, ?)", predicate.values, lower=True
+        )
+        return clause, [ASSERTION_DEFAULT_AUTHOR_KIND, *params]
+    if field in {"kind", "key"}:
         return _in_or_equals_clause(f"{assertion_alias}.{field}", predicate.values, lower=True)
     if field in {"target", "target_ref"}:
         return _like_clause(f"{assertion_alias}.target_ref", predicate.values)
     if field in {"scope", "scope_ref"}:
         return _like_clause(f"{assertion_alias}.scope_ref", predicate.values)
     if field in {"author", "author_ref"}:
-        return _like_clause(f"{assertion_alias}.author_ref", predicate.values)
+        clause, params = _like_clause(f"COALESCE({assertion_alias}.author_ref, ?)", predicate.values)
+        return clause, [ASSERTION_DEFAULT_AUTHOR_REF, *params]
     if field in {"text", "body"}:
         return _like_clause(f"{assertion_alias}.body_text", predicate.values)
     if field == "value":
@@ -4700,7 +4721,9 @@ def _assertion_field_predicate_clause(assertion_alias: str, predicate: QueryFiel
     if field == "evidence":
         return _like_clause(f"{assertion_alias}.evidence_refs_json", predicate.values)
     if field == "context":
-        return _like_clause(f"{assertion_alias}.context_policy_json", predicate.values)
+        default_context_json = json.dumps(ASSERTION_DEFAULT_CONTEXT_POLICY, sort_keys=True, separators=(",", ":"))
+        clause, params = _like_clause(f"COALESCE({assertion_alias}.context_policy_json, ?)", predicate.values)
+        return clause, [default_context_json, *params]
     raise ValueError(f"unsupported assertion predicate field: {field}")
 
 
