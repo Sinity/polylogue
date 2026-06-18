@@ -17,6 +17,7 @@ def _valid_gate_text() -> str:
     headings = "\n\n".join(release_readiness.REQUIRED_DOC_HEADINGS)
     commands = "\n".join(" ".join(command.argv) for command in release_readiness.REQUIRED_COMMANDS)
     fields = "\n".join(release_readiness.REQUIRED_RELEASE_BODY_FIELDS)
+    body_headings = "\n".join(release_readiness.REQUIRED_RELEASE_BODY_HEADINGS)
     return f"""# Release Readiness Gate
 
 {headings}
@@ -34,6 +35,7 @@ Still blocking external release claims:
 - #2 blocks a release claim.
 
 ```text
+{body_headings}
 {fields}
 ```
 """
@@ -117,3 +119,60 @@ def test_release_readiness_allows_satisfied_issue_in_scoped_caveat(tmp_path: Pat
     report = release_readiness.build_report(gate_doc=gate_doc)
 
     assert report["ok"] is True
+
+
+def _valid_release_body_text() -> str:
+    fields = "\n".join(f"{field} satisfied" for field in release_readiness.REQUIRED_RELEASE_BODY_FIELDS)
+    return f"""Release gate:
+{fields}
+
+Verification:
+- devtools release-readiness -- key output line
+"""
+
+
+def test_release_readiness_can_validate_release_pr_body_text(tmp_path: Path) -> None:
+    gate_doc = tmp_path / "release-readiness-gate.md"
+    _write_gate(gate_doc, _valid_gate_text())
+
+    report = release_readiness.build_report(
+        gate_doc=gate_doc,
+        release_body_text=_valid_release_body_text(),
+    )
+
+    assert report["ok"] is True
+    assert report["release_body"] == {
+        "checked": True,
+        "missing_headings": [],
+        "missing_fields": [],
+    }
+
+
+def test_release_readiness_rejects_release_pr_body_without_gate_evidence(tmp_path: Path) -> None:
+    gate_doc = tmp_path / "release-readiness-gate.md"
+    _write_gate(gate_doc, _valid_gate_text())
+
+    report = release_readiness.build_report(
+        gate_doc=gate_doc,
+        release_body_text="This release is too large to preview in the pull request body.",
+    )
+
+    assert report["ok"] is False
+    assert report["release_body"]["checked"] is True
+    assert "release PR body missing heading: Release gate:" in report["errors"]
+    assert "release PR body missing heading: Verification:" in report["errors"]
+    assert "release PR body missing field: - Command floor:" in report["errors"]
+
+
+def test_release_readiness_cli_validates_release_body_file(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    body = tmp_path / "body.md"
+    body.write_text(_valid_release_body_text(), encoding="utf-8")
+
+    assert release_readiness.main(["--json", "--release-body-file", str(body)]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["release_body"]["checked"] is True
+    assert payload["release_body"]["path"] == str(body)

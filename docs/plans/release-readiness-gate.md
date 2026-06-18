@@ -25,6 +25,7 @@ Run these from a clean checkout inside the devshell:
 
 ```bash
 devtools release-readiness
+devtools release-readiness --release-body-file /tmp/release-pr-body.md
 devtools verify --quick
 devtools verify --lab
 devtools build-package
@@ -64,7 +65,7 @@ nix flake check
 
 ## Manual Release Review
 
-Before merging a release PR, record the answers in the PR body:
+Before merging a release PR, record the answers in the PR body and run `devtools release-readiness --release-body-file <path>` against that exact body text:
 
 | Question | Required Answer |
 | --- | --- |

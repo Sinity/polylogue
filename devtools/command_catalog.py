@@ -170,7 +170,11 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "Check that the release-readiness gate document, required local commands, "
             "and release PR evidence template are still coherent before touching a release PR."
         ),
-        examples=("devtools release-readiness", "devtools release-readiness --json"),
+        examples=(
+            "devtools release-readiness",
+            "devtools release-readiness --json",
+            "devtools release-readiness --release-body-file /tmp/release-pr-body.md",
+        ),
     ),
     CommandSpec(
         "test",

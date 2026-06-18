@@ -56,6 +56,8 @@ REQUIRED_DOC_HEADINGS: tuple[str, ...] = (
     "## Release PR Body Requirements",
 )
 
+REQUIRED_RELEASE_BODY_HEADINGS: tuple[str, ...] = ("Release gate:", "Verification:")
+
 REQUIRED_RELEASE_BODY_FIELDS: tuple[str, ...] = (
     "- Command floor:",
     "- Machine output:",
@@ -100,7 +102,34 @@ def _issue_refs(lines: list[str]) -> set[str]:
     return refs
 
 
-def build_report(*, gate_doc: Path = GATE_DOC) -> dict[str, Any]:
+def _read_text_file(path: Path, *, label: str, errors: list[str]) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError as exc:
+        errors.append(f"could not read {label}: {path}: {exc}")
+        return None
+
+
+def _validate_release_body(text: str, *, errors: list[str]) -> dict[str, Any]:
+    missing_headings = [heading for heading in REQUIRED_RELEASE_BODY_HEADINGS if heading not in text]
+    missing_fields = [field for field in REQUIRED_RELEASE_BODY_FIELDS if field not in text]
+    for heading in missing_headings:
+        errors.append(f"release PR body missing heading: {heading}")
+    for field in missing_fields:
+        errors.append(f"release PR body missing field: {field}")
+    return {
+        "checked": True,
+        "missing_headings": missing_headings,
+        "missing_fields": missing_fields,
+    }
+
+
+def build_report(
+    *,
+    gate_doc: Path = GATE_DOC,
+    release_body_file: Path | None = None,
+    release_body_text: str | None = None,
+) -> dict[str, Any]:
     """Return a JSON-serializable release-gate definition report."""
     from devtools.command_catalog import COMMANDS
 
@@ -114,6 +143,9 @@ def build_report(*, gate_doc: Path = GATE_DOC) -> dict[str, Any]:
     for heading in REQUIRED_DOC_HEADINGS:
         if heading not in text:
             errors.append(f"gate document missing heading: {heading}")
+    for heading in REQUIRED_RELEASE_BODY_HEADINGS:
+        if heading not in text:
+            errors.append(f"release PR template missing heading: {heading}")
     for field in REQUIRED_RELEASE_BODY_FIELDS:
         if field not in text:
             errors.append(f"release PR template missing field: {field}")
@@ -142,12 +174,25 @@ def build_report(*, gate_doc: Path = GATE_DOC) -> dict[str, Any]:
                 f"{', '.join(overlapping_refs)} without scoped-out/caveat wording"
             )
 
+    release_body_report: dict[str, Any] = {"checked": False}
+    if release_body_text is not None and release_body_file is not None:
+        errors.append("pass either release_body_text or release_body_file, not both")
+    elif release_body_text is not None:
+        release_body_report = _validate_release_body(release_body_text, errors=errors)
+    elif release_body_file is not None:
+        body_text = _read_text_file(release_body_file, label="release PR body", errors=errors)
+        if body_text is not None:
+            release_body_report = _validate_release_body(body_text, errors=errors)
+            release_body_report["path"] = str(release_body_file)
+
     return {
         "ok": not errors,
         "gate_doc": str(gate_doc.relative_to(ROOT) if gate_doc.is_relative_to(ROOT) else gate_doc),
         "required_commands": [command.to_dict() for command in REQUIRED_COMMANDS],
         "focused_commands": [command.to_dict() for command in FOCUSED_COMMANDS],
+        "required_release_body_headings": list(REQUIRED_RELEASE_BODY_HEADINGS),
         "required_release_body_fields": list(REQUIRED_RELEASE_BODY_FIELDS),
+        "release_body": release_body_report,
         "release_status": {
             "satisfied": satisfied,
             "blocking_external_claims": blocking,
@@ -169,6 +214,13 @@ def _print_human(report: dict[str, Any]) -> None:
     print("release status:")
     print(f"  satisfied: {len(report['release_status']['satisfied'])}")
     print(f"  blocking external claims: {len(report['release_status']['blocking_external_claims'])}")
+    body = report.get("release_body")
+    if isinstance(body, dict) and body.get("checked"):
+        print("release PR body: checked")
+        if body.get("missing_headings"):
+            print(f"  missing headings: {len(body['missing_headings'])}")
+        if body.get("missing_fields"):
+            print(f"  missing fields: {len(body['missing_fields'])}")
     if report["errors"]:
         print("errors:")
         for error in report["errors"]:
@@ -178,9 +230,14 @@ def _print_human(report: dict[str, Any]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", action="store_true", help="Emit the gate-definition report as JSON.")
+    parser.add_argument(
+        "--release-body-file",
+        type=Path,
+        help="Validate an actual release PR body against the gate evidence template.",
+    )
     args = parser.parse_args(argv)
 
-    report = build_report()
+    report = build_report(release_body_file=args.release_body_file)
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:
