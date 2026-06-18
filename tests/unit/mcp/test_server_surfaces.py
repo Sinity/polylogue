@@ -643,6 +643,42 @@ class TestArchiveGenericToolSurfaces:
         assert [item["session_id"] for item in payload["items"]] == [kept_id]
 
     @pytest.mark.asyncio
+    async def test_query_units_tool_accepts_inline_session_scope(
+        self: object, mcp_server: MCPServerUnderTest, tmp_path: Path
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        with ArchiveStore(archive_root) as archive:
+            kept_id = _write_archive_session(
+                archive,
+                provider=Provider.CODEX,
+                native_id="tool-query-units-inline-kept",
+                text="shared inline terminal row",
+            )
+            _write_archive_session(
+                archive,
+                provider=Provider.CHATGPT,
+                native_id="tool-query-units-inline-dropped",
+                text="shared inline terminal row",
+            )
+
+        with (
+            patch("polylogue.mcp.server._get_config") as mock_get_config,
+            patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
+        ):
+            mock_get_config.return_value = SimpleNamespace(
+                archive_root=archive_root,
+                db_path=archive_root / "index.db",
+            )
+            mock_get_polylogue.side_effect = AssertionError("query_units tool must not open archive operations")
+            result = await invoke_surface_async(
+                mcp_server._tool_manager._tools["query_units"].fn,
+                expression="messages where session.origin:codex-session AND text:terminal",
+            )
+
+        payload = json.loads(result)
+        assert [item["session_id"] for item in payload["items"]] == [kept_id]
+
+    @pytest.mark.asyncio
     async def test_query_units_tool_rejects_session_expression(self: object, mcp_server: MCPServerUnderTest) -> None:
         result = await invoke_surface_async(
             mcp_server._tool_manager._tools["query_units"].fn,
