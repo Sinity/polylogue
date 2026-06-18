@@ -156,7 +156,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         max_words: MCPCountBound = None,
         message_type: str | None = None,
     ) -> str:
-        """Return terminal rows for ``messages/actions/blocks where`` query expressions."""
+        """Return terminal rows for explicit unit-source query expressions."""
 
         async def run() -> str:
             from polylogue.archive.query.expression import ExpressionCompileError

@@ -120,6 +120,123 @@
       "title": "ActionQueryRowPayload",
       "type": "object"
     },
+    "AssertionQueryRowPayload": {
+      "additionalProperties": false,
+      "description": "Shared terminal-query row for user-tier assertions.",
+      "properties": {
+        "assertion_id": {
+          "title": "Assertion Id",
+          "type": "string"
+        },
+        "author_kind": {
+          "title": "Author Kind",
+          "type": "string"
+        },
+        "author_ref": {
+          "title": "Author Ref",
+          "type": "string"
+        },
+        "body_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Body Text"
+        },
+        "context_policy": {
+          "title": "Context Policy"
+        },
+        "created_at_ms": {
+          "title": "Created At Ms",
+          "type": "integer"
+        },
+        "evidence_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Key"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "scope_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scope Ref"
+        },
+        "staleness": {
+          "title": "Staleness"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "target_ref": {
+          "title": "Target Ref",
+          "type": "string"
+        },
+        "unit": {
+          "const": "assertion",
+          "default": "assertion",
+          "title": "Unit",
+          "type": "string"
+        },
+        "updated_at_ms": {
+          "title": "Updated At Ms",
+          "type": "integer"
+        },
+        "value": {
+          "title": "Value"
+        },
+        "visibility": {
+          "title": "Visibility",
+          "type": "string"
+        }
+      },
+      "required": [
+        "assertion_id",
+        "target_ref",
+        "kind",
+        "value",
+        "author_ref",
+        "author_kind",
+        "status",
+        "visibility",
+        "evidence_refs",
+        "staleness",
+        "context_policy",
+        "created_at_ms",
+        "updated_at_ms"
+      ],
+      "title": "AssertionQueryRowPayload",
+      "type": "object"
+    },
     "BlockQueryRowPayload": {
       "additionalProperties": false,
       "description": "Shared terminal-query row for archive content blocks.",
@@ -323,6 +440,9 @@
           },
           {
             "$ref": "#/$defs/BlockQueryRowPayload"
+          },
+          {
+            "$ref": "#/$defs/AssertionQueryRowPayload"
           }
         ]
       },
@@ -367,7 +487,8 @@
       "enum": [
         "message",
         "action",
-        "block"
+        "block",
+        "assertion"
       ],
       "title": "Unit",
       "type": "string"

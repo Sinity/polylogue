@@ -28,7 +28,7 @@ import inspect
 import json
 from collections.abc import Iterable
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -1137,7 +1137,7 @@ async def test_query_units_applies_session_scope_filters(tmp_path: Path) -> None
 
         envelope = await archive.query_units("messages where text:needle", origin="codex-session")
 
-        assert [item.session_id for item in envelope.items] == ["codex-session:unit-filter-codex"]
+        assert [cast(Any, item).session_id for item in envelope.items] == ["codex-session:unit-filter-codex"]
     finally:
         await archive.close()
 
@@ -1180,7 +1180,97 @@ async def test_query_units_accepts_inline_session_scope(tmp_path: Path) -> None:
 
         envelope = await archive.query_units("messages where session.origin:codex-session AND text:needle")
 
-        assert [item.session_id for item in envelope.items] == ["codex-session:unit-inline-codex"]
+        assert [cast(Any, item).session_id for item in envelope.items] == ["codex-session:unit-inline-codex"]
+    finally:
+        await archive.close()
+
+
+async def test_query_units_returns_assertion_rows(tmp_path: Path) -> None:
+    """``query_units()`` exposes assertion terminal rows through the facade."""
+    import sqlite3
+
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
+
+    archive = _archive(tmp_path)
+    try:
+        with ArchiveStore(archive.config.archive_root) as archive_db:
+            archive_db.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="unit-assertion-codex",
+                    title="Unit assertion Codex",
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id="m1",
+                            role=Role.USER,
+                            text="assertion target",
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="assertion target")],
+                        )
+                    ],
+                )
+            )
+            archive_db.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CHATGPT,
+                    provider_session_id="unit-assertion-chatgpt",
+                    title="Unit assertion ChatGPT",
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id="m1",
+                            role=Role.USER,
+                            text="assertion target",
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="assertion target")],
+                        )
+                    ],
+                )
+            )
+        user_db = archive.config.archive_root / "user.db"
+        initialize_archive_database(user_db, ArchiveTier.USER)
+        with sqlite3.connect(user_db) as conn:
+            upsert_assertion(
+                conn,
+                assertion_id="facade-decision-hit",
+                target_ref="session:codex-session:unit-assertion-codex",
+                kind=AssertionKind.DECISION,
+                key="query-unit",
+                value={"rank": 1},
+                body_text="Review assertion query unit facade wiring.",
+                author_ref="agent:codex",
+                author_kind="agent",
+                evidence_refs=["session:codex-session:unit-assertion-codex#message:m1"],
+                status="active",
+                visibility="public",
+                now_ms=1000,
+            )
+            upsert_assertion(
+                conn,
+                assertion_id="facade-decision-miss",
+                target_ref="session:chatgpt-export:unit-assertion-chatgpt",
+                kind=AssertionKind.DECISION,
+                body_text="Review another origin.",
+                author_ref="agent:codex",
+                author_kind="agent",
+                status="active",
+                now_ms=500,
+            )
+            conn.commit()
+
+        envelope = await archive.query_units(
+            "assertions where kind:decision AND status:active AND text:facade",
+            origin="codex-session",
+        )
+
+        assert envelope.unit == "assertion"
+        [item] = envelope.items
+        payload = item.model_dump(mode="json")
+        assert payload["unit"] == "assertion"
+        assert payload["assertion_id"] == "facade-decision-hit"
+        assert payload["target_ref"] == "session:codex-session:unit-assertion-codex"
+        assert payload["kind"] == "decision"
+        assert payload["value"] == {"rank": 1}
+        assert payload["evidence_refs"] == ["session:codex-session:unit-assertion-codex#message:m1"]
     finally:
         await archive.close()
 

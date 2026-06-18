@@ -422,6 +422,33 @@ class TestBooleanQueryExpression:
             ),
         )
 
+    def test_assertion_source_where_lowers_to_structural_exists(self) -> None:
+        ast = parse_expression_ast("assertions where kind:decision AND text:review")
+
+        assert ast.boolean_predicate == QueryExistsPredicate(
+            unit="assertion",
+            child=QueryBoolPredicate(
+                op="and",
+                children=(
+                    QueryFieldPredicate(field="kind", values=("decision",)),
+                    QueryFieldPredicate(field="text", values=("review",)),
+                ),
+            ),
+        )
+
+    def test_parse_assertion_source_expression_preserves_terminal_unit(self) -> None:
+        source = parse_unit_source_expression("assertions where kind:decision AND status:active")
+
+        assert source is not None
+        assert source.unit == "assertion"
+        assert source.predicate == QueryBoolPredicate(
+            op="and",
+            children=(
+                QueryFieldPredicate(field="kind", values=("decision",)),
+                QueryFieldPredicate(field="status", values=("active",)),
+            ),
+        )
+
     def test_action_source_where_lowers_to_structural_exists(self) -> None:
         ast = parse_expression_ast("actions where action:file_edit AND path:archive/query")
 
@@ -436,7 +463,9 @@ class TestBooleanQueryExpression:
             ),
         )
 
-    @pytest.mark.parametrize("expression", ["messages where", "actions where   ", "blocks where\t"])
+    @pytest.mark.parametrize(
+        "expression", ["messages where", "actions where   ", "blocks where\t", "assertions where "]
+    )
     def test_source_where_without_predicate_is_rejected(self, expression: str) -> None:
         with pytest.raises(ExpressionCompileError, match="where requires a predicate"):
             compile_expression(expression)
@@ -1051,6 +1080,146 @@ class TestBooleanQueryExpression:
             rows = archive.query_blocks(source.predicate, limit=100)
 
         assert [(row.session_id, row.block_type) for row in rows] == [("chatgpt-export:ext-hit", "code")]
+
+    def test_exists_assertion_predicate_executes_against_archive(self, workspace_env: dict[str, Path]) -> None:
+        import sqlite3
+
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+        from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
+        from tests.infra.storage_records import SessionBuilder
+
+        archive_root = workspace_env["archive_root"]
+        index_db = archive_root / "index.db"
+        (
+            SessionBuilder(index_db, "hit")
+            .provider("codex")
+            .title("assertion hit")
+            .add_message("m-hit", role="assistant", text="target session")
+            .save()
+        )
+        (
+            SessionBuilder(index_db, "miss")
+            .provider("codex")
+            .title("assertion miss")
+            .add_message("m-miss", role="assistant", text="target session")
+            .save()
+        )
+        user_db = archive_root / "user.db"
+        initialize_archive_database(user_db, ArchiveTier.USER)
+        with sqlite3.connect(user_db) as conn:
+            upsert_assertion(
+                conn,
+                assertion_id="decision-hit",
+                target_ref="session:codex-session:ext-hit",
+                kind=AssertionKind.DECISION,
+                body_text="Review the query unit before merge.",
+                author_ref="agent:codex",
+                author_kind="agent",
+                status="active",
+                now_ms=2000,
+            )
+            upsert_assertion(
+                conn,
+                assertion_id="decision-miss",
+                target_ref="session:codex-session:ext-miss",
+                kind=AssertionKind.DECISION,
+                body_text="Review unrelated branch.",
+                author_ref="agent:codex",
+                author_kind="agent",
+                status="deleted",
+                now_ms=1000,
+            )
+            conn.commit()
+
+        spec = compile_expression("exists assertion(kind:decision AND status:active AND text:query)")
+        assert spec.boolean_predicate is not None
+        with ArchiveStore.open_existing(archive_root) as archive:
+            rows = archive.list_summaries(limit=100, boolean_predicate=spec.boolean_predicate)
+
+        assert [row.session_id for row in rows] == ["codex-session:ext-hit"]
+
+    def test_terminal_assertion_source_returns_assertion_rows(self, workspace_env: dict[str, Path]) -> None:
+        import sqlite3
+
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+        from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
+        from tests.infra.storage_records import SessionBuilder
+
+        archive_root = workspace_env["archive_root"]
+        index_db = archive_root / "index.db"
+        (
+            SessionBuilder(index_db, "hit")
+            .provider("codex")
+            .git_repository_url("polylogue")
+            .title("assertion hit")
+            .add_message("m-hit", role="assistant", text="target session")
+            .save()
+        )
+        (
+            SessionBuilder(index_db, "wrong-repo")
+            .provider("codex")
+            .git_repository_url("sinex")
+            .title("assertion wrong repo")
+            .add_message("m-wrong-repo", role="assistant", text="target session")
+            .save()
+        )
+        user_db = archive_root / "user.db"
+        initialize_archive_database(user_db, ArchiveTier.USER)
+        with sqlite3.connect(user_db) as conn:
+            upsert_assertion(
+                conn,
+                assertion_id="decision-hit",
+                target_ref="session:codex-session:ext-hit",
+                kind=AssertionKind.DECISION,
+                key="next-step",
+                value={"priority": 1},
+                body_text="Review the query unit before merge.",
+                author_ref="agent:codex",
+                author_kind="agent",
+                evidence_refs=["session:codex-session:ext-hit#message:m-hit"],
+                status="active",
+                visibility="public",
+                staleness={"policy": "manual"},
+                context_policy={"inject": False},
+                now_ms=2000,
+            )
+            upsert_assertion(
+                conn,
+                assertion_id="decision-wrong-repo",
+                target_ref="session:codex-session:ext-wrong-repo",
+                kind=AssertionKind.DECISION,
+                body_text="Review the other archive.",
+                author_ref="agent:codex",
+                author_kind="agent",
+                status="active",
+                now_ms=1000,
+            )
+            conn.commit()
+
+        source = parse_unit_source_expression(
+            "assertions where session.repo:polylogue AND kind:decision AND status:active AND text:query"
+        )
+        assert source is not None
+        assert source.unit == "assertion"
+        with ArchiveStore.open_existing(archive_root) as archive:
+            rows = archive.query_assertions(source.predicate, limit=100)
+
+        assert [(row.assertion_id, row.target_ref, row.kind, row.body_text) for row in rows] == [
+            (
+                "decision-hit",
+                "session:codex-session:ext-hit",
+                "decision",
+                "Review the query unit before merge.",
+            )
+        ]
+        assert rows[0].value == {"priority": 1}
+        assert rows[0].evidence_refs == ("session:codex-session:ext-hit#message:m-hit",)
+        assert rows[0].staleness == {"policy": "manual"}
+        assert rows[0].context_policy == {"inject": False}
 
     def test_exists_block_tool_predicate_executes_against_archive(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore

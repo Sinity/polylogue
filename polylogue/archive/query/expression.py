@@ -41,7 +41,7 @@ and explicit Boolean session predicates:
     actions where action:file_edit AND path:polylogue/archive
     blocks where type:code AND text:timeout
 
-Unit-scoped ``messages/actions/blocks where ...`` predicates are executable
+Unit-scoped ``messages/actions/blocks/assertions where ...`` predicates are executable
 in two shared paths: ``compile_expression`` keeps the compatibility session
 selector behavior by lowering them to correlated ``exists <unit>(...)``
 predicates, while terminal query-unit surfaces preserve the selected unit and
@@ -104,6 +104,8 @@ from polylogue.archive.query.spec import (
 )
 from polylogue.core.enums import Origin
 from polylogue.errors import PolylogueError
+
+QueryUnitName = Literal["message", "action", "block", "assertion"]
 
 # ---------------------------------------------------------------------------
 # Error
@@ -336,7 +338,7 @@ class QueryExpressionAST:
 class QueryUnitSource:
     """Explicit unit-changing source parsed from ``<unit>s where ...``."""
 
-    unit: Literal["message", "action", "block"]
+    unit: QueryUnitName
     predicate: QueryPredicate
 
 
@@ -462,7 +464,7 @@ _QUERY_GRAMMAR = r"""
     EXISTS: /exists/i
     SEQ: /seq/i
     ARROW: "->"
-    STRUCT_UNIT: /(message|action|block)/i
+    STRUCT_UNIT: /(message|action|block|assertion)/i
     OR: /or/i
     AND: /and/i
     NOT: /not/i
@@ -514,13 +516,15 @@ _FIELD_CLAUSE_RE = re.compile(
     re.VERBOSE,
 )
 
-_SOURCE_WHERE_SOURCES: tuple[tuple[str, Literal["message", "action", "block"]], ...] = (
+_SOURCE_WHERE_SOURCES: tuple[tuple[str, QueryUnitName], ...] = (
     ("message", "message"),
     ("messages", "message"),
     ("action", "action"),
     ("actions", "action"),
     ("block", "block"),
     ("blocks", "block"),
+    ("assertion", "assertion"),
+    ("assertions", "assertion"),
 )
 _BOOLEAN_SUPPORTED_FIELDS = {
     "repo",
@@ -554,6 +558,25 @@ _STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS = {
 _MESSAGE_STRUCTURAL_FIELDS = {"role", "type", "text", "tool", "action", "command", "path", "output", "words"}
 _ACTION_STRUCTURAL_FIELDS = {"tool", "action", "type", "command", "path", "output", "text"}
 _BLOCK_STRUCTURAL_FIELDS = {"type", "text", "tool", "action", "command", "path"}
+_ASSERTION_STRUCTURAL_FIELDS = {
+    "kind",
+    "status",
+    "target",
+    "target_ref",
+    "scope",
+    "scope_ref",
+    "key",
+    "text",
+    "body",
+    "author",
+    "author_ref",
+    "author_kind",
+    "visibility",
+    "value",
+    "evidence",
+    "context",
+}
+_STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS.update(_ASSERTION_STRUCTURAL_FIELDS)
 _SCOPED_SESSION_STRUCTURAL_FIELDS = tuple(f"session.{field}" for field in sorted(_BOOLEAN_SUPPORTED_FIELDS))
 
 
@@ -601,6 +624,11 @@ STRUCTURAL_QUERY_UNIT_REGISTRY: dict[str, StructuralQueryUnitInfo] = {
         description="Match sessions with at least one message satisfying the child predicate.",
         fields=tuple(sorted((*_MESSAGE_STRUCTURAL_FIELDS, *_SCOPED_SESSION_STRUCTURAL_FIELDS))),
         example="exists message(session.repo:polylogue AND role:assistant AND text:timeout)",
+    ),
+    "assertion": StructuralQueryUnitInfo(
+        description="Match sessions with at least one session-targeted assertion satisfying the child predicate.",
+        fields=tuple(sorted((*_ASSERTION_STRUCTURAL_FIELDS, *_SCOPED_SESSION_STRUCTURAL_FIELDS))),
+        example="exists assertion(kind:decision AND status:active AND text:review)",
     ),
 }
 
@@ -956,9 +984,7 @@ def _predicate_children(items: tuple[object, ...]) -> tuple[QueryPredicate, ...]
     )
 
 
-def _validate_predicate_context(
-    predicate: QueryPredicate, *, unit: Literal["session", "message", "action", "block"]
-) -> None:
+def _validate_predicate_context(predicate: QueryPredicate, *, unit: Literal["session"] | QueryUnitName) -> None:
     if isinstance(predicate, QueryFieldPredicate):
         session_field = _scoped_session_field(predicate.field)
         if unit == "session":
@@ -970,8 +996,11 @@ def _validate_predicate_context(
         elif unit == "action":
             supported = _ACTION_STRUCTURAL_FIELDS
             effective_field = session_field or predicate.field
-        else:
+        elif unit == "block":
             supported = _BLOCK_STRUCTURAL_FIELDS
+            effective_field = session_field or predicate.field
+        else:
+            supported = _ASSERTION_STRUCTURAL_FIELDS
             effective_field = session_field or predicate.field
         if session_field is not None and unit != "session":
             supported = _BOOLEAN_SUPPORTED_FIELDS
@@ -981,7 +1010,32 @@ def _validate_predicate_context(
                 field=predicate.field,
             )
         if (
-            effective_field in {"role", "type", "text", "tool", "action", "command", "path", "output"}
+            effective_field
+            in {
+                "role",
+                "type",
+                "text",
+                "body",
+                "tool",
+                "action",
+                "command",
+                "path",
+                "output",
+                "kind",
+                "status",
+                "target",
+                "target_ref",
+                "scope",
+                "scope_ref",
+                "key",
+                "author",
+                "author_ref",
+                "author_kind",
+                "visibility",
+                "value",
+                "evidence",
+                "context",
+            }
             and not predicate.values
         ):
             raise ExpressionCompileError(f"field {predicate.field!r} requires a value", field=predicate.field)
@@ -1115,9 +1169,9 @@ class _BooleanQueryTransformer(Transformer[Token, QueryPredicate]):
 
     def exists_leaf(self, _exists: Token, unit: Token, child: QueryPredicate) -> QueryPredicate:
         unit_value = str(unit).lower()
-        if unit_value not in {"message", "action", "block"}:
+        if unit_value not in {"message", "action", "block", "assertion"}:
             raise ExpressionCompileError(f"unsupported structural query unit {unit_value!r}", field=None)
-        return QueryExistsPredicate(unit=cast(Literal["message", "action", "block"], unit_value), child=child)
+        return QueryExistsPredicate(unit=cast(QueryUnitName, unit_value), child=child)
 
     def sequence_step(self, token: Token) -> QueryPredicate:
         predicate = _field_token_to_predicate(_QUERY_TRANSFORMER.field_clause(token))
@@ -1171,7 +1225,7 @@ def _is_boolean_expression(expression: str) -> bool:
     return ":" in expression and bool(re.search(r"\b(?:and|or|not)\b", expression, re.IGNORECASE))
 
 
-def _source_where_unit(source: str) -> Literal["message", "action", "block"]:
+def _source_where_unit(source: str) -> QueryUnitName:
     normalized = source.strip().lower()
     if normalized in {"message", "messages"}:
         return "message"
@@ -1179,6 +1233,8 @@ def _source_where_unit(source: str) -> Literal["message", "action", "block"]:
         return "action"
     if normalized in {"block", "blocks"}:
         return "block"
+    if normalized in {"assertion", "assertions"}:
+        return "assertion"
     raise ExpressionCompileError(f"unsupported query source {source!r}", field=None)
 
 
@@ -1217,7 +1273,7 @@ def _parse_boolean_predicate(expression: str) -> QueryPredicate:
 
 
 def parse_unit_source_expression(expression: str) -> QueryUnitSource | None:
-    """Parse ``messages/actions/blocks where ...`` as a terminal unit source.
+    """Parse ``messages/actions/blocks/assertions where ...`` as a terminal unit source.
 
     ``compile_expression`` still lowers these forms to session selectors for
     existing surfaces. Terminal query execution uses this helper to preserve
@@ -1226,7 +1282,7 @@ def parse_unit_source_expression(expression: str) -> QueryUnitSource | None:
 
     stripped = expression.strip()
     lower = stripped.lower()
-    source_match: tuple[str, Literal["message", "action", "block"], str] | None = None
+    source_match: tuple[str, QueryUnitName, str] | None = None
     for source, unit in _SOURCE_WHERE_SOURCES:
         marker = f"{source} where"
         if lower == marker:

@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from polylogue.archive.session.neighbor_candidates import NeighborReason, SessionNeighborCandidate
     from polylogue.storage.sqlite.archive_tiers.archive import (
         ArchiveActionQueryRow,
+        ArchiveAssertionQueryRow,
         ArchiveBlockQueryRow,
         ArchiveMessageQueryRow,
     )
@@ -828,7 +829,7 @@ class SearchEnvelope(SurfacePayloadModel):
     diagnostics: QueryMissDiagnosticsPayload | None = None
 
 
-QueryUnitKind: TypeAlias = Literal["message", "action", "block"]
+QueryUnitKind: TypeAlias = Literal["message", "action", "block", "assertion"]
 """Terminal query source unit exposed by query-unit envelopes."""
 
 
@@ -929,12 +930,57 @@ class BlockQueryRowPayload(SurfacePayloadModel):
         )
 
 
-QueryUnitRowPayload: TypeAlias = MessageQueryRowPayload | ActionQueryRowPayload | BlockQueryRowPayload
+class AssertionQueryRowPayload(SurfacePayloadModel):
+    """Shared terminal-query row for user-tier assertions."""
+
+    unit: Literal["assertion"] = "assertion"
+    assertion_id: str
+    target_ref: str
+    scope_ref: str | None = None
+    kind: str
+    key: str | None = None
+    body_text: str | None = None
+    value: object
+    author_ref: str
+    author_kind: str
+    status: str
+    visibility: str
+    evidence_refs: tuple[str, ...]
+    staleness: object
+    context_policy: object
+    created_at_ms: int
+    updated_at_ms: int
+
+    @classmethod
+    def from_row(cls, row: ArchiveAssertionQueryRow) -> AssertionQueryRowPayload:
+        return cls(
+            assertion_id=row.assertion_id,
+            target_ref=row.target_ref,
+            scope_ref=row.scope_ref,
+            kind=row.kind,
+            key=row.key,
+            body_text=row.body_text,
+            value=row.value,
+            author_ref=row.author_ref,
+            author_kind=row.author_kind,
+            status=row.status,
+            visibility=row.visibility,
+            evidence_refs=row.evidence_refs,
+            staleness=row.staleness,
+            context_policy=row.context_policy,
+            created_at_ms=row.created_at_ms,
+            updated_at_ms=row.updated_at_ms,
+        )
+
+
+QueryUnitRowPayload: TypeAlias = (
+    MessageQueryRowPayload | ActionQueryRowPayload | BlockQueryRowPayload | AssertionQueryRowPayload
+)
 """Union of terminal row payloads returned by explicit unit-source queries."""
 
 
 class QueryUnitEnvelope(SurfacePayloadModel):
-    """Shared envelope for ``messages/actions/blocks where ...`` query results."""
+    """Shared envelope for explicit terminal unit-source query results."""
 
     mode: Literal["query-unit"] = "query-unit"
     unit: QueryUnitKind
@@ -1572,6 +1618,7 @@ __all__ = [
     "SearchCursor",
     "SearchEnvelope",
     "MessageQueryRowPayload",
+    "AssertionQueryRowPayload",
     "InvalidSearchCursorError",
     "SurfacePayloadModel",
     "TagMutationOutcome",
