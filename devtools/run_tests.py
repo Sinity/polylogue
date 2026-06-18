@@ -35,6 +35,7 @@ from devtools.verify import (
     PYTEST_OUTPUT_PATH,
     PYTEST_PROGRESS_PATH,
     PYTEST_SELECTION_PATH,
+    PYTEST_SUMMARY_PATH,
     _clear_pytest_report,
     _run_pytest_with_heartbeat,
 )
@@ -51,6 +52,7 @@ def _managed_env() -> dict[str, str]:
     env["PYTHONPYCACHEPREFIX"] = str(ROOT / ".cache" / "pycache")
     env["POLYLOGUE_PYTEST_EVENTS_PATH"] = str(ROOT / PYTEST_EVENTS_PATH)
     env["POLYLOGUE_PYTEST_SELECTION_PATH"] = str(ROOT / PYTEST_SELECTION_PATH)
+    env["POLYLOGUE_PYTEST_SUMMARY_PATH"] = str(ROOT / PYTEST_SUMMARY_PATH)
     return env
 
 
@@ -125,6 +127,6 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write(result.stderr)
     sys.stderr.write(
         f"\ndevtools test: progress={PYTEST_PROGRESS_PATH} selection={PYTEST_SELECTION_PATH} "
-        f"events={PYTEST_EVENTS_PATH} output={PYTEST_OUTPUT_PATH}\n"
+        f"summary={PYTEST_SUMMARY_PATH} events={PYTEST_EVENTS_PATH} output={PYTEST_OUTPUT_PATH}\n"
     )
     return result.returncode

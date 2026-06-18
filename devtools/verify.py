@@ -141,6 +141,7 @@ PYTEST_JUNIT_REPORT_PATH = PYTEST_JUNIT_REPORT_DIR / "verify-latest.xml"
 PYTEST_PROGRESS_PATH = PYTEST_REPORT_DIR / "current-pytest-progress.json"
 PYTEST_EVENTS_PATH = PYTEST_REPORT_DIR / "current-pytest-events.jsonl"
 PYTEST_SELECTION_PATH = PYTEST_REPORT_DIR / "current-pytest-selection.json"
+PYTEST_SUMMARY_PATH = PYTEST_REPORT_DIR / "current-pytest-summary.json"
 PYTEST_OUTPUT_PATH = PYTEST_REPORT_DIR / "current-pytest-output.log"
 PYTEST_HEARTBEAT_ENV = "POLYLOGUE_VERIFY_HEARTBEAT_S"
 PYTEST_TIMEOUT_ENV = "POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S"
@@ -312,6 +313,7 @@ def _clear_pytest_report(cmd: Sequence[str] = ()) -> None:
         PYTEST_PROGRESS_PATH,
         PYTEST_EVENTS_PATH,
         PYTEST_SELECTION_PATH,
+        PYTEST_SUMMARY_PATH,
         PYTEST_OUTPUT_PATH,
     ):
         with contextlib.suppress(FileNotFoundError):
@@ -618,6 +620,7 @@ def _run(label: str, cmd: list[str], *, cwd: str | None = None) -> tuple[int, fl
         metadata["progress_path"] = str(PYTEST_PROGRESS_PATH)
         metadata["events_path"] = str(PYTEST_EVENTS_PATH)
         metadata["selection_path"] = str(PYTEST_SELECTION_PATH)
+        metadata["summary_path"] = str(PYTEST_SUMMARY_PATH)
         metadata["output_path"] = str(PYTEST_OUTPUT_PATH)
         junit_paths = [
             str(path) for path in _pytest_artifact_paths(cmd) if path.suffix == ".xml" or path.name.endswith(".xml")
@@ -654,6 +657,14 @@ def _run(label: str, cmd: list[str], *, cwd: str | None = None) -> tuple[int, fl
                 metadata["selected_count"] = selected_count
             if isinstance(deselected_count, int):
                 metadata["deselected_count"] = deselected_count
+            collection_duration_s = selection.get("collection_duration_s")
+            if isinstance(collection_duration_s, (int, float)):
+                metadata["collection_duration_s"] = collection_duration_s
+        summary = _read_json_artifact(PYTEST_SUMMARY_PATH)
+        if summary is not None:
+            slowest_reports = summary.get("slowest_reports")
+            if isinstance(slowest_reports, list):
+                metadata["slowest_report_count"] = len(slowest_reports)
     if result.returncode == 0:
         sys.stderr.write(f"ok ({elapsed:.1f}s)\n")
     else:
@@ -672,6 +683,7 @@ def _subprocess_env() -> dict[str, str]:
     env["PYTHONPYCACHEPREFIX"] = str(ROOT / ".cache" / "pycache")
     env["POLYLOGUE_PYTEST_EVENTS_PATH"] = str(Path.cwd() / PYTEST_EVENTS_PATH)
     env["POLYLOGUE_PYTEST_SELECTION_PATH"] = str(Path.cwd() / PYTEST_SELECTION_PATH)
+    env["POLYLOGUE_PYTEST_SUMMARY_PATH"] = str(Path.cwd() / PYTEST_SUMMARY_PATH)
     return env
 
 
