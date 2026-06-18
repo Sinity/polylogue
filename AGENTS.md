@@ -497,9 +497,12 @@ full-suite pass is expected and supervised.
 `devtools test` uses the same pytest progress plugin and process supervisor for
 focused selections. During or after a run, inspect
 `.cache/verify/current-pytest-progress.json`,
+`.cache/verify/current-pytest-selection.json`,
+`.cache/verify/current-pytest-summary.json`,
 `.cache/verify/current-pytest-events.jsonl`, and
 `.cache/verify/current-pytest-output.log` to see the active/latest test node,
-captured output, and termination reason if a focused run stalls.
+selected/deselected node IDs, collection duration, slowest setup/call/teardown
+phases, captured output, and termination reason if a focused run stalls.
 
 For the generated validation-lane, mutation-campaign, and benchmark inventory,
 see [docs/test-quality-workflows.md](docs/test-quality-workflows.md).

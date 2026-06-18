@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from devtools import run_tests
-from devtools.verify import PYTEST_EVENTS_PATH
+from devtools.verify import PYTEST_EVENTS_PATH, PYTEST_SELECTION_PATH, PYTEST_SUMMARY_PATH
 
 
 def test_build_pytest_cmd_defaults_to_single_process() -> None:
@@ -47,11 +47,14 @@ def test_main_strips_dispatch_json_flag(monkeypatch: pytest.MonkeyPatch) -> None
         return type("Result", (), {"returncode": 0, "stderr": ""})()
 
     monkeypatch.setenv("POLYLOGUE_TEST_NO_LOCK", "1")
+    monkeypatch.setattr("devtools.run_tests._clear_pytest_report", lambda _cmd: None)
     monkeypatch.setattr("devtools.run_tests._run_pytest_with_heartbeat", _fake_run)
     assert run_tests.main(["tests/unit/pipeline", "--json"]) == 0
     assert "--json" not in captured["cmd"]
     assert "tests/unit/pipeline" in captured["cmd"]
     assert captured["env"]["POLYLOGUE_PYTEST_EVENTS_PATH"] == str(run_tests.ROOT / PYTEST_EVENTS_PATH)
+    assert captured["env"]["POLYLOGUE_PYTEST_SELECTION_PATH"] == str(run_tests.ROOT / PYTEST_SELECTION_PATH)
+    assert captured["env"]["POLYLOGUE_PYTEST_SUMMARY_PATH"] == str(run_tests.ROOT / PYTEST_SUMMARY_PATH)
 
 
 def test_main_returns_pytest_exit_code(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -59,6 +62,7 @@ def test_main_returns_pytest_exit_code(monkeypatch: pytest.MonkeyPatch) -> None:
         return type("Result", (), {"returncode": 5, "stderr": ""})()
 
     monkeypatch.setenv("POLYLOGUE_TEST_NO_LOCK", "1")
+    monkeypatch.setattr("devtools.run_tests._clear_pytest_report", lambda _cmd: None)
     monkeypatch.setattr("devtools.run_tests._run_pytest_with_heartbeat", _fake_run)
     assert run_tests.main(["tests/unit/does_not_exist"]) == 5
 
@@ -69,4 +73,6 @@ def test_managed_env_sets_repo_roots() -> None:
     assert env["POLYLOGUE_REPO_ROOT"] == str(run_tests.ROOT)
     assert env["PYTHONPYCACHEPREFIX"] == str(run_tests.ROOT / ".cache" / "pycache")
     assert env["POLYLOGUE_PYTEST_EVENTS_PATH"] == str(run_tests.ROOT / PYTEST_EVENTS_PATH)
+    assert env["POLYLOGUE_PYTEST_SELECTION_PATH"] == str(run_tests.ROOT / PYTEST_SELECTION_PATH)
+    assert env["POLYLOGUE_PYTEST_SUMMARY_PATH"] == str(run_tests.ROOT / PYTEST_SUMMARY_PATH)
     assert Path(env["POLYLOGUE_ROOT"]).is_dir()
