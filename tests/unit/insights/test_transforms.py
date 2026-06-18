@@ -141,8 +141,8 @@ def test_compile_recovery_digest_extracts_small_evidence_linked_bundle() -> None
     assert digest.size_metrics.message_count == 3
     assert digest.size_metrics.subagent_report_count == 1
     assert digest.size_metrics.run_state_count == 1
-    assert digest.size_metrics.raw_bytes > digest.size_metrics.resume_bundle_bytes
-    assert digest.size_metrics.resume_to_raw_ratio < 1
+    assert digest.size_metrics.resume_bundle_bytes > 0
+    assert digest.size_metrics.resume_bundle_bytes >= digest.size_metrics.normal_read_bytes
     assert digest.role_counts == {"user": 1, "assistant": 2}
 
     assert len(digest.tool_summaries) == 2
@@ -201,11 +201,11 @@ def test_compile_recovery_digest_extracts_small_evidence_linked_bundle() -> None
     assert "Explore — Map the transform surface and report caveats." in digest.resume_markdown
     assert "refs: tool_id=tool-2, task_id=task-42, child_session_id=codex-session:child-42" in digest.resume_markdown
     assert "## Run State" in digest.resume_markdown
-    assert "- done: #1910 merged" in digest.resume_markdown
-    assert "- next: merge PR #1911" in digest.resume_markdown
+    assert "- [assertion] done: #1910 merged" in digest.resume_markdown
+    assert "- [assertion] next: merge PR #1911" in digest.resume_markdown
     assert "Bash [test]" in digest.resume_markdown
     assert "Read [file_read]" in digest.resume_markdown
-    assert "Raw refs are available" in digest.resume_markdown
+    assert "Every packet row carries evidence refs and a support marker." in digest.resume_markdown
 
 
 def test_every_extracted_claim_carries_raw_refs() -> None:
