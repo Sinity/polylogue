@@ -32,9 +32,6 @@ venv/
 .hypothesis/
 .mypy_cache/
 .ruff_cache/
-.testmondata
-.testmondata-shm
-.testmondata-wal
 .benchmarks/
 /artifacts/
 

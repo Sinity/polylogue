@@ -16,7 +16,7 @@ from devtools import failure_context as fc
 def stub_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Redirect the module's REPO_ROOT/TESTMON_DB/WITNESS_DIR to a temp tree."""
     monkeypatch.setattr(fc, "REPO_ROOT", tmp_path)
-    monkeypatch.setattr(fc, "TESTMON_DB", tmp_path / ".testmondata")
+    monkeypatch.setattr(fc, "TESTMON_DB", tmp_path / ".cache" / "testmon" / "testmondata")
     monkeypatch.setattr(fc, "WITNESS_DIR", tmp_path / "tests" / "witnesses")
     return tmp_path
 
@@ -58,8 +58,9 @@ def test_parse_failure_id_rejects_missing_separator() -> None:
 
 
 def test_testmon_dependencies_returns_sorted_unique(stub_repo: Path) -> None:
+    fc.TESTMON_DB.parent.mkdir(parents=True)
     _seed_testmon(
-        stub_repo / ".testmondata",
+        fc.TESTMON_DB,
         {"tests/unit/foo.py::test_a": ["polylogue/b.py", "polylogue/a.py"]},
     )
     deps = fc._testmon_dependencies("tests/unit/foo.py::test_a")
@@ -105,8 +106,9 @@ def test_similar_witnesses_scores_source_test_match(stub_repo: Path) -> None:
 
 
 def test_build_envelope_shape(stub_repo: Path) -> None:
+    fc.TESTMON_DB.parent.mkdir(parents=True)
     _seed_testmon(
-        stub_repo / ".testmondata",
+        fc.TESTMON_DB,
         {"tests/unit/foo.py::test_a": ["polylogue/a.py"]},
     )
     envelope = fc.build_envelope("tests/unit/foo.py::test_a", days=7)
@@ -122,8 +124,9 @@ def test_build_envelope_shape(stub_repo: Path) -> None:
 
 
 def test_main_emits_json_envelope(stub_repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    fc.TESTMON_DB.parent.mkdir(parents=True)
     _seed_testmon(
-        stub_repo / ".testmondata",
+        fc.TESTMON_DB,
         {"tests/unit/foo.py::test_a": ["polylogue/a.py"]},
     )
     exit_code = fc.main(["tests/unit/foo.py::test_a"])

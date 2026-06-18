@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-TESTMON_DB = REPO_ROOT / ".testmondata"
+TESTMON_DB = REPO_ROOT / ".cache" / "testmon" / "testmondata"
 WITNESS_DIR = REPO_ROOT / "tests" / "witnesses"
 
 

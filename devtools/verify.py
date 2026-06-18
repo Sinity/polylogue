@@ -8,7 +8,7 @@ Tiers:
   --quick    Pre-push tier: all non-pytest gates (~15s warm).
   (default)  Baseline with pytest-testmon affected tests.
   --seed-testmon
-             Full non-integration pytest run that seeds/updates .testmondata.
+             Full non-integration pytest run that seeds/updates .cache/testmon/testmondata.
   --all/--full
              Explicit full non-integration pytest diagnostic.
   --lab      Default testmon baseline plus verification-lab scenario and SLO checks.
@@ -171,7 +171,7 @@ def _format_completion_notification(
 
 
 HISTORY_PATH = Path(".cache/verify-history.jsonl")
-TESTMON_DATA = Path(".testmondata")
+TESTMON_DATA = Path(".cache/testmon/testmondata")
 TESTMON_SEED_STAMP = Path(".cache/testmon/seed.json")
 PYTEST_REPORT_DIR = Path(".cache/verify")
 PYTEST_REPORT_PATH = PYTEST_REPORT_DIR / "last-pytest.json"
@@ -872,6 +872,8 @@ def _subprocess_env() -> dict[str, str]:
     env["POLYLOGUE_ROOT"] = str(ROOT)
     env["POLYLOGUE_REPO_ROOT"] = str(ROOT)
     env["PYTHONPYCACHEPREFIX"] = str(ROOT / ".cache" / "pycache")
+    TESTMON_DATA.parent.mkdir(parents=True, exist_ok=True)
+    env["TESTMON_DATAFILE"] = str(TESTMON_DATA)
     env["POLYLOGUE_PYTEST_EVENTS_PATH"] = str(Path.cwd() / PYTEST_EVENTS_PATH)
     env["POLYLOGUE_PYTEST_SELECTION_PATH"] = str(Path.cwd() / PYTEST_SELECTION_PATH)
     env["POLYLOGUE_PYTEST_SUMMARY_PATH"] = str(Path.cwd() / PYTEST_SUMMARY_PATH)
@@ -1092,7 +1094,8 @@ def _testmon_preflight(*, seed_testmon: bool, full_pytest: bool, quick: bool, co
         return None
     seed_message = (
         "verify: pytest-testmon is not seeded; run `devtools verify --seed-testmon` "
-        "to create .testmondata and .cache/testmon/seed.json before using the default affected-test path.\n"
+        "to create .cache/testmon/testmondata and .cache/testmon/seed.json "
+        "before using the default affected-test path.\n"
     )
     if not TESTMON_DATA.exists() or not TESTMON_SEED_STAMP.exists():
         return seed_message
@@ -1101,12 +1104,12 @@ def _testmon_preflight(*, seed_testmon: bool, full_pytest: bool, quick: bool, co
     except (OSError, json.JSONDecodeError):
         return (
             "verify: pytest-testmon seed stamp is unreadable; run `devtools verify --seed-testmon` "
-            "to refresh .testmondata and .cache/testmon/seed.json.\n"
+            "to refresh .cache/testmon/testmondata and .cache/testmon/seed.json.\n"
         )
     if not isinstance(stamp, dict):
         return (
             "verify: pytest-testmon seed stamp has an invalid shape; run `devtools verify --seed-testmon` "
-            "to refresh .testmondata and .cache/testmon/seed.json.\n"
+            "to refresh .cache/testmon/testmondata and .cache/testmon/seed.json.\n"
         )
     current_head = _git_head()
     stamped_head = stamp.get("git_head")
@@ -1143,7 +1146,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--seed-testmon",
         action="store_true",
-        help="Run full non-integration pytest with --testmon-noselect to seed/update .testmondata.",
+        help="Run full non-integration pytest with --testmon-noselect to seed/update .cache/testmon/testmondata.",
     )
     parser.add_argument(
         "--all", action="store_true", help="Force the full non-integration pytest diagnostic instead of testmon."

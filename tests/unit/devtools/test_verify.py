@@ -17,6 +17,7 @@ from devtools.verify import (
     PYTEST_PROGRESS_PATH,
     PYTEST_REPORT_PATH,
     ROOT,
+    TESTMON_DATA,
     _enable_tmpfs_for_broad_pytest,
     _format_completion_notification,
     _parse_pytest_test_count,
@@ -262,7 +263,8 @@ def test_testmon_preflight_requires_seed_when_database_missing(tmp_path: Path, m
 
 def test_testmon_preflight_requires_seed_stamp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
-    (tmp_path / ".testmondata").write_text("partial")
+    TESTMON_DATA.parent.mkdir(parents=True)
+    TESTMON_DATA.write_text("partial")
 
     message = _testmon_preflight(seed_testmon=False, full_pytest=False, quick=False, commit=False)
 
@@ -272,9 +274,10 @@ def test_testmon_preflight_requires_seed_stamp(tmp_path: Path, monkeypatch: pyte
 
 def test_testmon_preflight_accepts_seeded_database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
-    (tmp_path / ".testmondata").write_text("seeded")
+    TESTMON_DATA.parent.mkdir(parents=True)
+    TESTMON_DATA.write_text("seeded")
     seed_stamp = tmp_path / ".cache" / "testmon" / "seed.json"
-    seed_stamp.parent.mkdir(parents=True)
+    seed_stamp.parent.mkdir(parents=True, exist_ok=True)
     seed_stamp.write_text(
         json.dumps(
             {
@@ -292,9 +295,10 @@ def test_testmon_preflight_warns_on_stale_git_head(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    (tmp_path / ".testmondata").write_text("seeded")
+    TESTMON_DATA.parent.mkdir(parents=True)
+    TESTMON_DATA.write_text("seeded")
     seed_stamp = tmp_path / ".cache" / "testmon" / "seed.json"
-    seed_stamp.parent.mkdir(parents=True)
+    seed_stamp.parent.mkdir(parents=True, exist_ok=True)
     seed_stamp.write_text(
         json.dumps(
             {
@@ -315,9 +319,10 @@ def test_testmon_preflight_warns_on_database_fingerprint_drift(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    (tmp_path / ".testmondata").write_text("mutated")
+    TESTMON_DATA.parent.mkdir(parents=True)
+    TESTMON_DATA.write_text("mutated")
     seed_stamp = tmp_path / ".cache" / "testmon" / "seed.json"
-    seed_stamp.parent.mkdir(parents=True)
+    seed_stamp.parent.mkdir(parents=True, exist_ok=True)
     seed_stamp.write_text(
         json.dumps(
             {

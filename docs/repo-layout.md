@@ -43,16 +43,3 @@ Every top-level entry has a reason.
 | `systemd/` | Systemd service units for daemon | repo |
 | `tests/` | Test suite | repo |
 | `uv.lock` | uv dependency lockfile | uv |
-
-## Ignored Local State
-
-These entries can appear at the repository root during local work but are not
-part of the tracked layout:
-
-| Entry | Purpose / policy |
-|-------|------------------|
-| `.testmondata*` | pytest-testmon dependency database used by `devtools verify`; keep when it is useful for affected-test selection. |
-| `.benchmarks/` | pytest-benchmark local output. |
-| `.serena/` | local Serena project state. |
-| `MagicMock/` | pytest pollution from a bad mock path; safe to delete when present. |
-| `__pycache__/` | Python bytecode cache; safe to delete when present. |

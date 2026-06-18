@@ -385,8 +385,8 @@ devtools verify --lab      # explicit lab checks beyond the quick/default loop
 
 The quick gate runs on `git push` via `.githooks/pre-push`. It's a fast check,
 not a substitute for the default baseline. The default command fails fast when
-`.testmondata` and `.cache/testmon/seed.json` are missing; do not rely on
-silent full-suite fallback.
+`.cache/testmon/testmondata` and `.cache/testmon/seed.json` are missing; do not
+rely on silent full-suite fallback.
 
 `devtools verify` does not replay a prior verify result. It always runs the
 static gates and then invokes pytest-testmon for affected-test selection from
@@ -456,10 +456,10 @@ nix flake check
 ```
 
 `devtools verify` uses pytest-testmon for per-test affected selection. The
-seed command records `.testmondata` plus `.cache/testmon/seed.json`; those
-files are local generated state and are not committed. If the seed is missing,
-the default command fails with setup guidance instead of silently running the
-whole suite.
+seed command records `.cache/testmon/testmondata` plus
+`.cache/testmon/seed.json`; those files are local generated state and are not
+committed. If the seed is missing, the default command fails with setup
+guidance instead of silently running the whole suite.
 
 Plain focused `pytest` runs are single-process by default so small inner-loop
 checks do not spawn a worker pool. `devtools verify` keeps pytest-testmon as
