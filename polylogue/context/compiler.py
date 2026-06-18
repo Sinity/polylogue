@@ -8,13 +8,16 @@ shape that CLI/API/MCP surfaces can share.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Literal, cast
 
 from pydantic import model_validator
 
+from polylogue.context.assertion_claims import context_claim_text
 from polylogue.core.refs import EvidenceRef, ObjectRef
 from polylogue.insights.archive_models import ArchiveInsightModel
 from polylogue.insights.transforms import RecoveryDigest, RecoveryReportPreset, RecoveryWorkPacket
+from polylogue.surfaces.payloads import AssertionClaimPayload
 
 RecoveryContextKind = Literal["recovery_digest", "recovery_report", "work_packet"]
 
@@ -41,6 +44,7 @@ class RecoveryContextCompilation(ArchiveInsightModel):
     evidence_refs: tuple[EvidenceRef, ...] = ()
     object_refs: tuple[ObjectRef, ...] = ()
     caveats: tuple[str, ...] = ()
+    assertion_claims: tuple[AssertionClaimPayload, ...] = ()
 
     @model_validator(mode="after")
     def _validate_requested_shape(self) -> RecoveryContextCompilation:
@@ -58,6 +62,7 @@ def compile_recovery_context(
     *,
     report: RecoveryReportPreset | str | None = None,
     work_packet: RecoveryWorkPacket | None = None,
+    assertion_claims: Sequence[AssertionClaimPayload] = (),
 ) -> RecoveryContextCompilation:
     """Compile a recovery digest into the requested successor-context view.
 
@@ -67,7 +72,10 @@ def compile_recovery_context(
     * ``RecoveryReportPreset`` for continue/blame/work-packet rendering;
     * ``RecoveryWorkPacket`` for Bundle(kind=work_packet) handoff material;
     * ``EvidenceRef``/``ObjectRef`` for addressable support and targets.
+    * ``AssertionClaimPayload`` for explicit context-injection claims.
     """
+
+    claims = tuple(assertion_claims)
 
     if report is None:
         if work_packet is not None:
@@ -76,10 +84,11 @@ def compile_recovery_context(
             kind="recovery_digest",
             session_id=digest.session_id,
             digest=digest,
-            markdown=digest.resume_markdown,
+            markdown=_append_assertion_claims_markdown(digest.resume_markdown, claims),
             evidence_refs=_digest_evidence_refs(digest),
             object_refs=_digest_object_refs(digest),
             caveats=_digest_caveats(digest),
+            assertion_claims=claims,
         )
 
     if report not in _SUPPORTED_REPORTS:
@@ -97,6 +106,7 @@ def compile_recovery_context(
             evidence_refs=packet.evidence_refs,
             object_refs=packet.target_refs,
             caveats=_packet_caveats(packet),
+            assertion_claims=claims,
         )
 
     if work_packet is not None:
@@ -106,10 +116,11 @@ def compile_recovery_context(
         session_id=digest.session_id,
         report=preset,
         digest=digest,
-        markdown=digest.report_markdown(preset),
+        markdown=_append_assertion_claims_markdown(digest.report_markdown(preset), claims),
         evidence_refs=_digest_evidence_refs(digest),
         object_refs=_digest_object_refs(digest),
         caveats=_digest_caveats(digest),
+        assertion_claims=claims,
     )
 
 
@@ -139,6 +150,15 @@ def _digest_caveats(digest: RecoveryDigest) -> tuple[str, ...]:
 
 def _packet_caveats(packet: RecoveryWorkPacket) -> tuple[str, ...]:
     return tuple(entry.label for entry in packet.entries if entry.support in {"caveat", "missing_evidence"})
+
+
+def _append_assertion_claims_markdown(markdown: str, claims: Sequence[AssertionClaimPayload]) -> str:
+    if not claims:
+        return markdown
+    lines = [markdown.rstrip(), "", "## Assertion Claims"]
+    for claim in claims:
+        lines.append(f"- {context_claim_text(kind=claim.kind, body_text=claim.body_text, target_ref=claim.target_ref)}")
+    return "\n".join(lines) + "\n"
 
 
 __all__ = [
