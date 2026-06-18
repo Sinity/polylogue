@@ -723,18 +723,6 @@ files:
     loc: 106
     target: polylogue/cli/commands/config.py
     owner: stable
-  - path: polylogue/cli/commands/context.py
-    loc: 81
-    target: polylogue/cli/commands/context.py
-    owner: stable
-  - path: polylogue/cli/commands/context_pack.py
-    loc: 316
-    target: polylogue/cli/commands/context_pack.py
-    owner: stable
-  - path: polylogue/cli/commands/correlate.py
-    loc: 253
-    target: polylogue/cli/commands/correlate.py
-    owner: stable
   - path: polylogue/cli/commands/cost.py
     loc: 161
     target: polylogue/cli/commands/cost.py
@@ -1018,6 +1006,18 @@ files:
     target: polylogue/config.py
     owner: kernel
     reason: kernel root rule
+  - path: polylogue/context/__init__.py
+    loc: 20
+    target: polylogue/context/__init__.py
+    owner: stable
+  - path: polylogue/context/pack.py
+    loc: 306
+    target: polylogue/context/pack.py
+    owner: stable
+  - path: polylogue/context/preamble.py
+    loc: 69
+    target: polylogue/context/preamble.py
+    owner: stable
   - path: polylogue/core/__init__.py
     loc: 0
     target: polylogue/core/__init__.py
@@ -1395,6 +1395,10 @@ files:
   - path: polylogue/insights/confidence.py
     loc: 137
     target: polylogue/insights/confidence.py
+    owner: stable
+  - path: polylogue/insights/correlation_view.py
+    loc: 233
+    target: polylogue/insights/correlation_view.py
     owner: stable
   - path: polylogue/insights/cost_enrichment.py
     loc: 73

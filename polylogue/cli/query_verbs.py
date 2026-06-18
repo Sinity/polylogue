@@ -436,7 +436,7 @@ def read_verb(
         return
 
     if view == "context-pack":
-        from polylogue.cli.commands.context_pack import run_context_pack_view
+        from polylogue.context.pack import run_context_pack_view
 
         run_context_pack_view(
             env,
@@ -480,7 +480,7 @@ def read_verb(
     if view == "correlation":
         if session_id is None:
             raise click.UsageError("read --view correlation requires a session ID (use --id, id:prefix, or --latest).")
-        from polylogue.cli.commands.correlate import run_correlation_view
+        from polylogue.insights.correlation_view import run_correlation_view
 
         run_correlation_view(
             env,
@@ -681,11 +681,11 @@ def _run_read_context(
     preamble JSON document. The MCP ``compose_context_preamble`` tool exposes
     the same capability programmatically.
     """
-    from polylogue.cli.commands.context import run_context_compose
+    from polylogue.context.preamble import compose_context_preamble
 
     if session_id is None:
         raise click.UsageError("read --view context requires a session ID (use --id, id:prefix, or --latest).")
-    preamble = run_context_compose(env, session_id=session_id, related_limit=max(1, related_limit))
+    preamble = compose_context_preamble(env, session_id=session_id, related_limit=max(1, related_limit))
     _deliver_content(env, preamble + "\n", destination=destination, out_path=out_path)
 
 

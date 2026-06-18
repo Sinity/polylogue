@@ -234,13 +234,13 @@ def test_read_verb_all_invokes_run_bulk_export() -> None:
 
 
 def test_read_verb_context_composes_preamble_not_passthrough() -> None:
-    """read --view context routes to run_context_compose, NOT a markdown passthrough (#1842 bug)."""
+    """read --view context routes to the context preamble composer."""
     _, child = _context_pair(params={"conv_id": "claude-code:abc123"}, query_terms=())
     wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
     assert callable(wrapped)
 
     with (
-        patch("polylogue.cli.commands.context.run_context_compose", return_value="{}") as compose,
+        patch("polylogue.context.preamble.compose_context_preamble", return_value="{}") as compose,
         patch("polylogue.cli.query_verbs._execute_query_verb") as execute,
         patch("polylogue.cli.query_verbs._deliver_content") as deliver,
     ):
@@ -254,12 +254,12 @@ def test_read_verb_context_composes_preamble_not_passthrough() -> None:
 
 
 def test_read_verb_context_pack_invokes_pack_view() -> None:
-    """read --view context-pack routes to run_context_pack_view with pack options."""
+    """read --view context-pack routes to the context-pack view with pack options."""
     _, child = _context_pair(query_terms=())
     wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
     assert callable(wrapped)
 
-    with patch("polylogue.cli.commands.context_pack.run_context_pack_view") as pack:
+    with patch("polylogue.context.pack.run_context_pack_view") as pack:
         wrapped(child, **_read_verb_kwargs(view="context-pack", pack_query="cost", max_sessions=3))
 
     pack.assert_called_once()

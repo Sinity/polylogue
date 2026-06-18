@@ -114,7 +114,7 @@ READ_VIEW_PROFILES: tuple[SessionViewProfile, ...] = (
     SessionViewProfile(
         view_id="context",
         label="Context",
-        owner="polylogue.cli.commands.context.run_context_compose",
+        owner="polylogue.context.preamble.compose_context_preamble",
         purpose="Seed-session preamble with nearby related sessions for agent handoff.",
         input_scope="single seed session id",
         included_kinds=("seed session", "related sessions", "context preamble"),
@@ -129,7 +129,7 @@ READ_VIEW_PROFILES: tuple[SessionViewProfile, ...] = (
     SessionViewProfile(
         view_id="context-pack",
         label="Context Pack",
-        owner="polylogue.cli.commands.context_pack.run_context_pack_view",
+        owner="polylogue.context.pack.run_context_pack_view",
         purpose="Project/query-scoped multi-session context bundle.",
         input_scope="project path, repo, date/origin/query filters",
         included_kinds=("session excerpts", "messages", "project scope", "redacted paths"),
@@ -184,7 +184,7 @@ READ_VIEW_PROFILES: tuple[SessionViewProfile, ...] = (
     SessionViewProfile(
         view_id="correlation",
         label="Correlation",
-        owner="polylogue.cli.commands.correlate.run_correlation_view",
+        owner="polylogue.insights.correlation_view.run_correlation_view",
         purpose="GitHub/Git/OTLP correlation evidence around one session.",
         input_scope="single session id plus repository/time-window options",
         included_kinds=("commits", "issues", "pull requests", "checks", "spans", "file overlap"),

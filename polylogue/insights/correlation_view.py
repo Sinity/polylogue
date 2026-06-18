@@ -1,4 +1,4 @@
-"""Session-to-git correlation commands (#1690 phase 1-3)."""
+"""Session-to-git correlation read-view implementation."""
 
 from __future__ import annotations
 
@@ -6,9 +6,8 @@ import json
 import subprocess
 from typing import TYPE_CHECKING
 
-from polylogue.cli.shared.types import AppEnv
-
 if TYPE_CHECKING:
+    from polylogue.cli.shared.types import AppEnv
     from polylogue.insights.session_commit import SessionCorrelationResult
 
 
@@ -23,12 +22,7 @@ def run_correlation_view(
     github_api: bool = True,
     otlp: bool = False,
 ) -> None:
-    """Show git commits and GitHub refs within the session's time window (#1690).
-
-    The capability behind ``read --view correlation`` (#1842): it absorbed the
-    former standalone ``correlate`` command. The MCP ``correlate_session(s)``
-    tools expose the same correlation programmatically.
-    """
+    """Show git commits and GitHub refs within the session's time window (#1690)."""
     from polylogue.api.sync.bridge import run_coroutine_sync
     from polylogue.insights.session_commit import build_correlation_result
 
@@ -37,14 +31,12 @@ def run_correlation_view(
         env.ui.error(f"Session not found: {session_id}")
         raise SystemExit(1)
 
-    # Determine time window from session timestamps.
     start = conv.created_at
     end = conv.updated_at
     if start is None or end is None:
         env.ui.error("Session has no timestamp data.")
         raise SystemExit(1)
 
-    # Determine repo path.
     repo: str = repo_path or "."
     if not repo_path:
         repo_url = getattr(conv, "git_repository_url", None)
@@ -54,7 +46,6 @@ def run_correlation_view(
             directories = getattr(conv, "working_directories", ()) or ()
             repo = str(directories[0]) if directories else "."
 
-    # Build messages as dicts for the detection logic.
     messages: list[dict[str, object]] = []
     for msg in conv.messages:
         msg_dict: dict[str, object] = {
@@ -65,9 +56,6 @@ def run_correlation_view(
         content_blocks = msg.blocks if hasattr(msg, "blocks") else []
         msg_dict["content_blocks"] = list(content_blocks) if content_blocks else []
         messages.append(msg_dict)
-
-    # Use session messages directly — they carry full text and
-    # content_blocks from the archive read path already.
 
     result = build_correlation_result(
         session_id=session_id,
@@ -80,7 +68,6 @@ def run_correlation_view(
         confidence_threshold=confidence_threshold,
     )
 
-    # Phase 3: Optionally cross-reference with GitHub API
     if github_api and (result.issue_refs or result.pr_refs):
         result = _enrich_with_github_api(result)
 
@@ -92,7 +79,6 @@ def run_correlation_view(
 
     _print_correlation_result(env, result)
 
-    # OTLP span evidence
     if otlp:
         _print_otlp_evidence(env, session_id, output_format)
 
@@ -125,12 +111,11 @@ def _print_otlp_evidence(env: AppEnv, session_id: str, output_format: str | None
             f"  - [bold]{t.tool_name}[/bold] [{status_color}]{t.status}[/{status_color}] [dim]{t.duration_ms}ms[/dim]"
         )
         if t.start_time:
-            env.ui.console.print(f"    {t.start_time} → {t.end_time}")
+            env.ui.console.print(f"    {t.start_time} -> {t.end_time}")
 
 
 def _enrich_with_github_api(result: SessionCorrelationResult) -> SessionCorrelationResult:
     """Cross-reference issue/PR refs against the GitHub API via gh CLI."""
-
     from polylogue.insights.session_commit import GitHubRef
 
     all_refs: list[tuple[GitHubRef, str]] = []
@@ -161,8 +146,6 @@ def _enrich_with_github_api(result: SessionCorrelationResult) -> SessionCorrelat
                     timeout=10,
                 )
                 if gh_result.returncode == 0:
-                    import json
-
                     data = json.loads(gh_result.stdout)
                     enriched = GitHubRef(
                         owner=ref.owner,
@@ -180,7 +163,6 @@ def _enrich_with_github_api(result: SessionCorrelationResult) -> SessionCorrelat
                     continue
             except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
                 pass
-        # Keep original if gh fails
         if default_kind == "pr":
             enriched_prs.append(ref)
         else:
@@ -208,25 +190,24 @@ def _print_correlation_result(env: AppEnv, result: SessionCorrelationResult) -> 
             ws = datetime.fromisoformat(result.window_start)
             we = datetime.fromisoformat(result.window_end)
             env.ui.console.print(
-                f"[bold]Window:[/bold] {ws.strftime('%Y-%m-%d %H:%M')} → {we.strftime('%Y-%m-%d %H:%M')}"
+                f"[bold]Window:[/bold] {ws.strftime('%Y-%m-%d %H:%M')} -> {we.strftime('%Y-%m-%d %H:%M')}"
             )
         except (ValueError, TypeError):
-            env.ui.console.print(f"[bold]Window:[/bold] {result.window_start} → {result.window_end}")
+            env.ui.console.print(f"[bold]Window:[/bold] {result.window_start} -> {result.window_end}")
     if result.repo:
         env.ui.console.print(f"[bold]Repo:[/bold] {result.repo}")
 
     files = result.file_paths or []
     env.ui.console.print(f"[bold]Touched files:[/bold] {len(files)}")
 
-    # Commits
     commits = result.commits or []
     if commits:
         env.ui.console.print(f"\n[bold]Commits:[/bold] {len(commits)}")
         for c in commits:
             method_label = {
-                "explicit_ref": "●",
-                "file_overlap": "○",
-                "time_window": "·",
+                "explicit_ref": "*",
+                "file_overlap": "o",
+                "time_window": ".",
             }.get(c.detection_method, " ")
             env.ui.console.print(
                 f"  {method_label} [bold]{c.commit_sha[:8]}[/bold] "
@@ -236,7 +217,6 @@ def _print_correlation_result(env: AppEnv, result: SessionCorrelationResult) -> 
     else:
         env.ui.console.print("\n[dim]No commits found in session window.[/dim]")
 
-    # Issue refs
     issue_refs = result.issue_refs or []
     if issue_refs:
         env.ui.console.print(f"\n[bold]Issue references:[/bold] {len(issue_refs)}")
@@ -244,7 +224,6 @@ def _print_correlation_result(env: AppEnv, result: SessionCorrelationResult) -> 
             label = f"{ref.owner}/{ref.repo}#{ref.number}" if ref.owner else f"#{ref.number}"
             env.ui.console.print(f"  - {label} [dim]{ref.raw_match}[/dim]")
 
-    # PR refs
     pr_refs = result.pr_refs or []
     if pr_refs:
         env.ui.console.print(f"\n[bold]PR references:[/bold] {len(pr_refs)}")

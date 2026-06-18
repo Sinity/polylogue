@@ -1,20 +1,14 @@
-"""Multi-session context-pack view — assemble provenance-rich context bundles.
-
-The capability behind ``read --view context-pack`` (#1842): it absorbed the
-former standalone ``context-pack`` command. The MCP ``build_context_pack`` tool
-exposes the same capability programmatically.
-"""
+"""Multi-session context-pack read-view implementation."""
 
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import click
 
 from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.archive.query.spec import SessionQuerySpec
-from polylogue.cli.shared.types import AppEnv
 from polylogue.mcp.context_pack import (
     ContextPackDateRange,
     ContextPackDecisions,
@@ -32,6 +26,9 @@ from polylogue.mcp.context_pack import (
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.surfaces.payloads import serialize_surface_payload
+
+if TYPE_CHECKING:
+    from polylogue.cli.shared.types import AppEnv
 
 _DEFAULT_MAX_SESSIONS = 5
 _DEFAULT_MAX_MESSAGES = 20
@@ -60,12 +57,7 @@ def run_context_pack_view(
     max_messages: int = _DEFAULT_MAX_MESSAGES,
     no_redact: bool = False,
 ) -> None:
-    """Build a provenance-rich multi-session context pack for agent analysis.
-
-    The capability behind ``read --view context-pack`` (#1842): selects matching
-    sessions by project/origin/date/query filters and emits a single provenance
-    JSON document to stdout.
-    """
+    """Build a provenance-rich multi-session context pack for agent analysis."""
     conv_limit = max(1, min(max_sessions, 20))
     msg_limit = max(1, min(max_messages, 100))
 
