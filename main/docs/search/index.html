@@ -560,8 +560,11 @@ one child row matching the nested predicate.</p>
 <p>All three structural units also accept <code>session.&lt;field&gt;</code> predicates for the
 owning session fields, such as <code>session.repo</code>, <code>session.origin</code>,
 <code>session.tag</code>, <code>session.title</code>, <code>session.date</code>, <code>session.since</code>, and
-<code>session.until</code>. This lets a unit query carry its session scope inline instead
-of splitting selection between the query string and parallel parameters.</p>
+<code>session.until</code>. Count and date session fields accept compact comparison
+prefixes such as <code>session.messages:&gt;=2</code>, <code>session.words:&lt;=500</code>, and
+<code>session.date:&gt;=2026-01-02</code>. This lets a unit query carry its session scope
+inline instead of splitting selection between the query string and parallel
+parameters.</p>
 <p>Examples:</p>
 <pre><code class="language-bash">polylogue sessions where 'exists action(session.repo:polylogue AND tool:bash AND text:pytest)'
 polylogue sessions where 'exists block(type:code AND text:timeout)'
@@ -598,10 +601,10 @@ and tool/paste/thinking feature filters.</p>
 by their owning session:</p>
 <pre><code class="language-bash">polylogue messages where session.origin:claude-code-session AND role:assistant
 polylogue actions where session.repo:polylogue AND action:file_edit
-polylogue blocks where session.since:7d AND type:code
+polylogue blocks where session.since:7d AND session.words:&lt;=500 AND type:code
 polylogue assertions where session.repo:polylogue AND kind:caveat
 polylogue observed-events where session.origin:codex-session AND object_ref:github-review
-polylogue context-snapshots where session.repo:polylogue AND boundary:subagent_start
+polylogue context-snapshots where session.messages:&gt;=2 AND session.date:&gt;=2026-01-02 AND boundary:subagent_start
 </code></pre>
 <p><code>observed-events</code> and <code>context-snapshots</code> are runtime-transform row sources.
 They return projected evidence from existing recovery/run-projection
