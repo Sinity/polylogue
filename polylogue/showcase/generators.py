@@ -294,6 +294,7 @@ JSON_CONTRACT_SCENARIOS: tuple[Exercise, ...] = (
     _json_contract_scenario(
         "json-schema-list",
         "schema list JSON contract",
+        "ops",
         "schema",
         "list",
         "--format",

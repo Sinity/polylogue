@@ -1,4 +1,4 @@
-Usage: polylogue schema list [OPTIONS]
+Usage: polylogue ops schema list [OPTIONS]
 
   List available schema packages, versions, and evidence manifests.
 

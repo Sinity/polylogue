@@ -2,7 +2,7 @@
 
 The CLI uses a hybrid structure:
 - Positional args without subcommand prefix → query mode
-- Known subcommand prefixes (`ops`, `schema`, etc.) → subcommand mode
+- Known subcommand prefixes (`ops`, etc.) → subcommand mode
 - No args → status / stats mode
 """
 

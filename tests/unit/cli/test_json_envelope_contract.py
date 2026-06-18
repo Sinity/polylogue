@@ -118,7 +118,7 @@ class TestQueryShapedJsonMatrix:
         [
             (["tags", "--format", "json"], "tags"),
             (["insights", "status", "--format", "json"], "insights"),
-            (["schema", "list", "--format", "json"], "providers"),
+            (["ops", "schema", "list", "--format", "json"], "providers"),
         ],
     )
     @pytest.mark.contract
@@ -137,7 +137,7 @@ class TestQueryShapedJsonMatrix:
         "args",
         [
             ["insights", "status", "--format", "json"],
-            ["schema", "list", "--format", "json"],
+            ["ops", "schema", "list", "--format", "json"],
         ],
     )
     def test_json_alias_uses_success_envelope(
@@ -469,7 +469,7 @@ class TestSchemaExplainJsonContract:
     ) -> None:
         """schema explain --provider claude-ai --format json uses success envelope."""
         parsed = _invoke_json_command(
-            ["schema", "explain", "--provider", "claude-ai", "--format", "json"],
+            ["ops", "schema", "explain", "--provider", "claude-ai", "--format", "json"],
             monkeypatch,
         )
         assert parsed["status"] == "ok"
@@ -483,7 +483,7 @@ class TestSchemaExplainJsonContract:
     ) -> None:
         """schema explain with unknown provider exits non-zero without traceback."""
         exit_code, output = _invoke_raw_json_command(
-            ["schema", "explain", "--provider", "nonexistent_provider_xyz", "--format", "json"],
+            ["ops", "schema", "explain", "--provider", "nonexistent_provider_xyz", "--format", "json"],
             monkeypatch,
         )
         assert exit_code != 0
@@ -495,7 +495,7 @@ class TestSchemaExplainJsonContract:
     ) -> None:
         """schema explain without --provider exits non-zero without traceback."""
         exit_code, output = _invoke_raw_json_command(
-            ["schema", "explain", "--format", "json"],
+            ["ops", "schema", "explain", "--format", "json"],
             monkeypatch,
         )
         assert exit_code != 0
@@ -520,7 +520,7 @@ class TestAllJsonCommandsProduceValidJson:
         [
             (["ops", "doctor", "--format", "json"], "cli.doctor_json_matrix", False),
             (["tags", "--format", "json"], "cli.tags_json_matrix", False),
-            (["schema", "list", "--format", "json"], "cli.schema_list_json_matrix", False),
+            (["ops", "schema", "list", "--format", "json"], "cli.schema_list_json_matrix", False),
             (["config", "--format", "json"], "cli.config_json_matrix", False),
             # list browse on empty archive → exit 0 + empty archive envelope (valid JSON)
             (["list", "--format", "json"], "cli.list_verb_json_matrix", True),

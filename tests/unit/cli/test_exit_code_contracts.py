@@ -204,7 +204,7 @@ class TestJsonModeExitCodeConsistency:
 
     def test_help_exits_zero_json_format(self, runner: CliRunner) -> None:
         """schema list --format json --help exits 0 (--help short-circuits before format matters)."""
-        result = runner.invoke(cli, ["schema", "list", "--help"])
+        result = runner.invoke(cli, ["ops", "schema", "list", "--help"])
         assert result.exit_code == 0
 
     def test_int_type_error_exits_two_regardless_of_output_format(self, runner: CliRunner) -> None:

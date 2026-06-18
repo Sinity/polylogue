@@ -75,7 +75,7 @@ class TestErrorOutput:
     def test_missing_required_argument_error(self) -> None:
         """Verify error on missing required arguments."""
         # Use completions command without --shell (requires it)
-        result = run_in_pty(["completions"])
+        result = run_in_pty(["ops", "completions"])
         assert result.exit_code != 0
 
 
@@ -125,7 +125,7 @@ class TestPlainModeConsistency:
 
     def test_error_consistency_across_modes(self) -> None:
         """Verify Click's unknown-subcommand error is rendered in the PTY."""
-        result = run_in_pty(["schema", "invalid-xyz"])
+        result = run_in_pty(["ops", "schema", "invalid-xyz"])
         assert result.exit_code != 0
 
         error_text = grid_to_text(result.grid)

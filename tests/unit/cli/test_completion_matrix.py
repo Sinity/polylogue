@@ -7,7 +7,7 @@ completion item without raising — both against an empty archive
 (static and graceful-empty behavior) and against a seeded archive
 (dynamic completers that read SQLite).
 
-The script-emit side of ``polylogue completions --shell <SHELL>`` is
+The script-emit side of ``polylogue ops completions --shell <SHELL>`` is
 covered by ``test_completions_contract.py``; this test covers the
 runtime completion-handler protocol the script invokes.
 """

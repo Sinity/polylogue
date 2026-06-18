@@ -1,4 +1,4 @@
-Usage: polylogue schema compare [OPTIONS]
+Usage: polylogue ops schema compare [OPTIONS]
 
   Compare two schema package versions for a provider.
 

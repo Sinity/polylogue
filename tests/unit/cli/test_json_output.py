@@ -111,11 +111,11 @@ _COMMANDS: list[tuple[list[str], bool]] = [
     # ── Embed, feedback, schema, maintenance ─────────────────────────
     (["ops", "embed", "status"], False),
     (["feedback", "list"], False),
-    (["schema", "list"], False),
+    (["ops", "schema", "list"], False),
     (["ops", "maintenance", "status"], False),
     (["ops", "maintenance", "preview"], False),
     # ── Shell integration (emits scripts, not JSON; must not crash) ──
-    (["completions", "--shell", "bash"], False),
+    (["ops", "completions", "--shell", "bash"], False),
 ]
 
 # Excluded from COMMANDS for documented reasons:

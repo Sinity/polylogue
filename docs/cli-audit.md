@@ -326,8 +326,8 @@ coverage of their result payloads.
 |---------|-------------------|---------------|
 | `doctor` | `polylogue ops doctor --format json` | `TestCheckJsonEnvelope` |
 | `tags` | `polylogue tags --format json` | `TestTagsJsonEnvelope` |
-| `schema explain` | `polylogue schema explain --provider <p> --format json` | `TestSchemaExplainJsonContract` |
-| `schema list` | `polylogue schema list --format json` | `TestAllJsonCommandsProduceValidJson` |
+| `schema explain` | `polylogue ops schema explain --provider <p> --format json` | `TestSchemaExplainJsonContract` |
+| `schema list` | `polylogue ops schema list --format json` | `TestAllJsonCommandsProduceValidJson` |
 | `config` | `polylogue config --format json` | `TestConfigJsonContract` |
 
 ### Crash-Free (Parametrized Test)
