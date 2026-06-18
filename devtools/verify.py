@@ -849,12 +849,37 @@ def _pytest_worker_args(*, default: str) -> list[str]:
 def _testmon_preflight(*, seed_testmon: bool, full_pytest: bool, quick: bool, commit: bool) -> str | None:
     if quick or commit or seed_testmon or full_pytest:
         return None
-    if TESTMON_DATA.exists() and TESTMON_SEED_STAMP.exists():
-        return None
-    return (
+    seed_message = (
         "verify: pytest-testmon is not seeded; run `devtools verify --seed-testmon` "
         "to create .testmondata and .cache/testmon/seed.json before using the default affected-test path.\n"
     )
+    if not TESTMON_DATA.exists() or not TESTMON_SEED_STAMP.exists():
+        return seed_message
+    try:
+        stamp = json.loads(TESTMON_SEED_STAMP.read_text())
+    except (OSError, json.JSONDecodeError):
+        return (
+            "verify: pytest-testmon seed stamp is unreadable; run `devtools verify --seed-testmon` "
+            "to refresh .testmondata and .cache/testmon/seed.json.\n"
+        )
+    if not isinstance(stamp, dict):
+        return (
+            "verify: pytest-testmon seed stamp has an invalid shape; run `devtools verify --seed-testmon` "
+            "to refresh .testmondata and .cache/testmon/seed.json.\n"
+        )
+    current_head = _git_head()
+    stamped_head = stamp.get("git_head")
+    if current_head is not None and stamped_head != current_head:
+        return (
+            "verify: pytest-testmon seed was recorded for a different git head; "
+            "run `devtools verify --seed-testmon` before using the default affected-test path.\n"
+        )
+    if stamp.get("testmon_data") != _file_fingerprint(TESTMON_DATA):
+        return (
+            "verify: pytest-testmon database changed after the seed stamp; "
+            "run `devtools verify --seed-testmon` before using the default affected-test path.\n"
+        )
+    return None
 
 
 def _write_testmon_seed_stamp(result: dict[str, Any]) -> None:

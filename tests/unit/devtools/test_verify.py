@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -227,9 +228,59 @@ def test_testmon_preflight_accepts_seeded_database(tmp_path: Path, monkeypatch: 
     (tmp_path / ".testmondata").write_text("seeded")
     seed_stamp = tmp_path / ".cache" / "testmon" / "seed.json"
     seed_stamp.parent.mkdir(parents=True)
-    seed_stamp.write_text("{}")
+    seed_stamp.write_text(
+        json.dumps(
+            {
+                "git_head": "current-head",
+                "testmon_data": hashlib.sha256(b"seeded").hexdigest(),
+            }
+        )
+    )
+    monkeypatch.setattr("devtools.verify._git_head", lambda: "current-head")
 
     assert _testmon_preflight(seed_testmon=False, full_pytest=False, quick=False, commit=False) is None
+
+
+def test_testmon_preflight_rejects_stale_git_head(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".testmondata").write_text("seeded")
+    seed_stamp = tmp_path / ".cache" / "testmon" / "seed.json"
+    seed_stamp.parent.mkdir(parents=True)
+    seed_stamp.write_text(
+        json.dumps(
+            {
+                "git_head": "old-head",
+                "testmon_data": hashlib.sha256(b"seeded").hexdigest(),
+            }
+        )
+    )
+    monkeypatch.setattr("devtools.verify._git_head", lambda: "current-head")
+
+    message = _testmon_preflight(seed_testmon=False, full_pytest=False, quick=False, commit=False)
+
+    assert message is not None
+    assert "different git head" in message
+
+
+def test_testmon_preflight_rejects_database_fingerprint_drift(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".testmondata").write_text("mutated")
+    seed_stamp = tmp_path / ".cache" / "testmon" / "seed.json"
+    seed_stamp.parent.mkdir(parents=True)
+    seed_stamp.write_text(
+        json.dumps(
+            {
+                "git_head": "current-head",
+                "testmon_data": hashlib.sha256(b"seeded").hexdigest(),
+            }
+        )
+    )
+    monkeypatch.setattr("devtools.verify._git_head", lambda: "current-head")
+
+    message = _testmon_preflight(seed_testmon=False, full_pytest=False, quick=False, commit=False)
+
+    assert message is not None
+    assert "database changed" in message
 
 
 def test_testmon_preflight_allows_seed_and_full_without_database(
