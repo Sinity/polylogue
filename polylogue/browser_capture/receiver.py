@@ -11,7 +11,11 @@ from pathlib import Path
 
 import orjson
 
-from polylogue.browser_capture.models import BrowserCaptureEnvelope
+from polylogue.browser_capture.models import (
+    BrowserCaptureArchiveStatePayload,
+    BrowserCaptureEnvelope,
+    BrowserCaptureReceiverStatusPayload,
+)
 from polylogue.core.hashing import hash_text_short
 from polylogue.paths import browser_capture_spool_root
 
@@ -94,16 +98,13 @@ def write_capture_envelope(
 
 def receiver_status_payload(config: BrowserCaptureReceiverConfig) -> dict[str, object]:
     """Return JSON status for extension health checks."""
-    return {
-        "ok": True,
-        "receiver": "polylogue-browser-capture",
-        "schema_version": 1,
-        "spool_path": str(config.spool_path),
-        "allowed_origins": sorted(config.allowed_origins),
-        "allow_remote": config.allow_remote,
-        "active": True,
-        "checked_at": datetime.now(UTC).isoformat(),
-    }
+    return BrowserCaptureReceiverStatusPayload(
+        spool_path=str(config.spool_path),
+        allowed_origins=sorted(config.allowed_origins),
+        allow_remote=config.allow_remote,
+        active=True,
+        checked_at=datetime.now(UTC).isoformat(),
+    ).model_dump(mode="json")
 
 
 def existing_capture_state(
@@ -128,20 +129,27 @@ def existing_capture_state(
         }
     )
     path = capture_artifact_path(envelope, spool_path)
-    state: dict[str, object] = {
-        "provider": envelope.provider.value,
-        "provider_session_id": envelope.provider_session_id,
-        "captured": path.exists(),
-        "artifact_path": str(path),
-    }
+    capture_id: str | None = None
+    updated_at: str | None = None
+    artifact_readable: bool | None = None
     if path.exists():
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
-            state["capture_id"] = payload.get("capture_id")
-            state["updated_at"] = payload.get("session", {}).get("updated_at")
+            raw_capture_id = payload.get("capture_id")
+            raw_updated_at = payload.get("session", {}).get("updated_at")
+            capture_id = raw_capture_id if isinstance(raw_capture_id, str) else None
+            updated_at = raw_updated_at if isinstance(raw_updated_at, str) else None
         except (OSError, json.JSONDecodeError, AttributeError):
-            state["artifact_readable"] = False
-    return state
+            artifact_readable = False
+    return BrowserCaptureArchiveStatePayload(
+        provider=envelope.provider.value,
+        provider_session_id=envelope.provider_session_id,
+        captured=path.exists(),
+        artifact_path=str(path),
+        capture_id=capture_id,
+        updated_at=updated_at,
+        artifact_readable=artifact_readable,
+    ).model_dump(mode="json", exclude_none=True)
 
 
 __all__ = [

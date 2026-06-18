@@ -144,6 +144,49 @@ class BrowserCaptureEnvelope(BaseModel):
         return self.session.provider_session_id
 
 
+class BrowserCaptureReceiverStatusPayload(BaseModel):
+    """Receiver readiness payload returned by ``GET /v1/status``."""
+
+    ok: Literal[True] = True
+    receiver: Literal["polylogue-browser-capture"] = "polylogue-browser-capture"
+    schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
+    spool_path: str
+    allowed_origins: list[str]
+    allow_remote: bool
+    active: bool
+    checked_at: str
+
+
+class BrowserCaptureArchiveStatePayload(BaseModel):
+    """Capture-state payload returned by ``GET /v1/archive-state``."""
+
+    provider: str
+    provider_session_id: str
+    captured: bool
+    artifact_path: str
+    capture_id: str | None = None
+    updated_at: str | None = None
+    artifact_readable: bool | None = None
+
+
+class BrowserCaptureAcceptedPayload(BaseModel):
+    """Accepted-capture payload returned by ``POST /v1/browser-captures``."""
+
+    ok: Literal[True] = True
+    provider: str
+    provider_session_id: str
+    artifact_path: str
+    bytes_written: int
+    replaced: bool
+
+
+class BrowserCaptureErrorPayload(BaseModel):
+    """Safe receiver error payload with no paths or stack traces."""
+
+    ok: Literal[False] = False
+    error: str
+
+
 def looks_like_browser_capture(payload: object) -> bool:
     """Return whether a payload is a browser-capture envelope."""
     if not isinstance(payload, dict):
@@ -159,9 +202,13 @@ def looks_like_browser_capture(payload: object) -> bool:
 __all__ = [
     "BROWSER_CAPTURE_KIND",
     "BROWSER_CAPTURE_SCHEMA_VERSION",
+    "BrowserCaptureAcceptedPayload",
+    "BrowserCaptureArchiveStatePayload",
     "BrowserCaptureAttachment",
     "BrowserCaptureEnvelope",
+    "BrowserCaptureErrorPayload",
     "BrowserCaptureProvenance",
+    "BrowserCaptureReceiverStatusPayload",
     "BrowserCaptureSession",
     "BrowserCaptureTurn",
     "looks_like_browser_capture",
