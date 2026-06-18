@@ -293,7 +293,7 @@ Operators choose focused checks via the verification baseline:
 
 ```bash
 devtools verify --quick
-devtools lab-scenario verify-baselines
+devtools lab scenario verify-baselines
 ```
 
 <!-- BEGIN GENERATED: docs-surface -->

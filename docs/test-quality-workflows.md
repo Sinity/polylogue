@@ -39,8 +39,8 @@ Current registry snapshot:
 Inspect the full authored map with:
 
 ```bash
-devtools artifact-graph
-devtools artifact-graph --json
+devtools lab graph
+devtools lab graph --json
 ```
 
 ## Common Commands
@@ -76,9 +76,9 @@ per-suite JSON parsing, surface invocation, archive seeding, or cross-surface or
 ### Validation lanes
 
 ```bash
-devtools run-validation-lanes --list
-devtools run-validation-lanes --lane frontier-local
-devtools run-validation-lanes --lane live-exercises --dry-run
+devtools lab lanes --list
+devtools lab lanes --lane frontier-local
+devtools lab lanes --lane live-exercises --dry-run
 ```
 
 ### Schema upgrade lane (#1302)
@@ -86,7 +86,7 @@ devtools run-validation-lanes --lane live-exercises --dry-run
 Polylogue intentionally has no in-place storage schema upgrade chain:
 version mismatch is rejected and the operator rebuilds from source (see
 [Schema Versioning Model](internals.md#schema-versioning-model)).
-`devtools verify-schema-upgrade-lane` enforces that policy boundary:
+`devtools lab policy schema-versioning` enforces that policy boundary:
 
 - It scans `polylogue/storage/sqlite/` for upgrade-shaped helpers
   (`build_vN_to_vM`, `_apply_version_upgrade_plan`, `upgrade_vN_to_vM`,
@@ -99,8 +99,8 @@ The lint runs as part of `devtools verify --lab`, not the fast default path:
 the policy boundary is an architectural concern, not a per-edit gate.
 
 ```bash
-devtools verify-schema-upgrade-lane
-devtools verify-schema-upgrade-lane --json
+devtools lab policy schema-versioning
+devtools lab policy schema-versioning --json
 ```
 
 ### Mutation campaigns
@@ -127,16 +127,16 @@ devtools run-benchmark-campaigns --scale medium --campaign <campaign>
 ### Fast pipeline probes
 
 ```bash
-devtools pipeline-probe --provider chatgpt --count 5 --stage parse --workdir /tmp/polylogue-probe
-devtools pipeline-probe --input-mode archive-subset --source-db "$XDG_DATA_HOME/polylogue/source.db" --sample-per-provider 50 --stage parse --workdir /tmp/polylogue-probe-real --manifest-out /tmp/polylogue-probe-real.json
-devtools pipeline-probe --input-mode archive-subset --manifest-in /tmp/polylogue-probe-real.json --stage parse --workdir /tmp/polylogue-probe-replay
+devtools lab probe pipeline --provider chatgpt --count 5 --stage parse --workdir /tmp/polylogue-probe
+devtools lab probe pipeline --input-mode archive-subset --source-db "$XDG_DATA_HOME/polylogue/source.db" --sample-per-provider 50 --stage parse --workdir /tmp/polylogue-probe-real --manifest-out /tmp/polylogue-probe-real.json
+devtools lab probe pipeline --input-mode archive-subset --manifest-in /tmp/polylogue-probe-real.json --stage parse --workdir /tmp/polylogue-probe-replay
 ```
 
 ### Showcase baseline drift
 
 ```bash
-devtools lab-scenario verify-baselines
-devtools lab-scenario verify-baselines --update
+devtools lab scenario verify-baselines
+devtools lab scenario verify-baselines --update
 ```
 
 ## Validation Lane Catalog

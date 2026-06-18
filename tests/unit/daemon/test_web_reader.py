@@ -8,7 +8,7 @@ any regression in the daemon's contract surface fails here loudly.
 
 This is the documented reader visual smoke lane (see
 ``docs/visual-evidence.md``). The lane runs as part of the standard
-unit suite and ``devtools verify``; a separate ``devtools lab-scenario``
+unit suite and ``devtools verify``; a separate ``devtools lab scenario``
 entrypoint can be added later if Playwright-based screenshot evidence
 is bolted on.
 

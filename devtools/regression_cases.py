@@ -82,7 +82,7 @@ class RegressionCase:
         created_at: str | None = None,
         capture_keys: tuple[str, ...] = DEFAULT_CAPTURE_KEYS,
     ) -> RegressionCase:
-        """Create a regression case from a ``devtools pipeline-probe`` summary."""
+        """Create a regression case from a ``devtools lab probe pipeline`` summary."""
         if "probe" not in summary or "result" not in summary:
             raise ValueError("pipeline probe regression cases require `probe` and `result` summary keys")
         selected = _selected_summary(summary, capture_keys)
@@ -91,7 +91,7 @@ class RegressionCase:
         return cls(
             case_id=case_id,
             name=name,
-            source="pipeline-probe",
+            source="lab probe pipeline",
             created_at=created_at or _utc_now(),
             summary=selected,
             provenance=provenance,

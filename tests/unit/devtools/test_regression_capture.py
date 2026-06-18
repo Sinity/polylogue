@@ -50,7 +50,7 @@ def test_regression_capture_writes_probe_case(tmp_path: Path, capsys: pytest.Cap
     case = RegressionCase.read(output_path)
     assert output_path.parent == output_dir
     assert case.name == "Parse Drift"
-    assert case.source == "pipeline-probe"
+    assert case.source == "lab probe pipeline"
     assert case.tags == ("live",)
     assert case.notes == ("captured from probe",)
     assert case.summary["result"] == {"ok": False, "error": "parse drift"}
@@ -77,6 +77,6 @@ def test_regression_capture_json_output_includes_path(tmp_path: Path, capsys: py
     )
 
     payload = json.loads(capsys.readouterr().out)
-    assert payload["source"] == "pipeline-probe"
+    assert payload["source"] == "lab probe pipeline"
     assert Path(payload["path"]).exists()
     assert payload["summary"]["db_stats"] == {"sessions": 0, "raw_sessions": 1}

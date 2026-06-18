@@ -99,7 +99,7 @@ coverage_gaps:
     declared_at: "2026-05-02"
     review_after: "2026-08-01"
     issue: 590
-    next_evidence: devtools scenario-projections
+    next_evidence: devtools lab projections
   - id: scenario.performance
     subject: performance
     gap: No scenario family exercising memory or throughput budgets
@@ -108,7 +108,7 @@ coverage_gaps:
     declared_at: "2026-05-02"
     review_after: "2026-08-01"
     issue: 590
-    next_evidence: devtools scenario-projections
+    next_evidence: devtools lab projections
   - id: scenario.security-privacy
     subject: security_privacy
     gap: Security verification uses unit tests, not scenario specs
@@ -117,7 +117,7 @@ coverage_gaps:
     declared_at: "2026-05-02"
     review_after: "2026-08-01"
     issue: 590
-    next_evidence: devtools scenario-projections
+    next_evidence: devtools lab projections
   - id: scenario.distribution
     subject: distribution
     gap: No scenario for install/package verification
@@ -126,7 +126,7 @@ coverage_gaps:
     declared_at: "2026-05-02"
     review_after: "2026-08-01"
     issue: 590
-    next_evidence: devtools scenario-projections
+    next_evidence: devtools lab projections
   - id: scenario.schema-rebuild-safety
     subject: schema_rebuild_safety
     gap: No scenario for schema rebuild safety verification
@@ -135,7 +135,7 @@ coverage_gaps:
     declared_at: "2026-05-02"
     review_after: "2026-08-01"
     issue: 590
-    next_evidence: devtools scenario-projections
+    next_evidence: devtools lab projections
   - id: scenario.docs-media
     subject: docs_media
     gap: No scenario for documentation freshness verification
@@ -144,4 +144,4 @@ coverage_gaps:
     declared_at: "2026-05-02"
     review_after: "2026-08-01"
     issue: 590
-    next_evidence: devtools scenario-projections
+    next_evidence: devtools lab projections

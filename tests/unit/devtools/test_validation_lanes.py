@@ -192,11 +192,11 @@ class TestCommandConstruction:
 
     def test_showcase_baselines_lane_uses_lab_scenario_baseline_action(self) -> None:
         cmd = build_lane_command(LANES["showcase-baselines"])
-        assert cmd[:3] == ["devtools", "lab-scenario", "verify-baselines"]
+        assert cmd[:4] == ["devtools", "lab", "scenario", "verify-baselines"]
 
     def test_pipeline_probe_chatgpt_lane_uses_probe_budgets(self) -> None:
         cmd = build_lane_command(LANES["pipeline-probe-chatgpt"])
-        assert cmd[:2] == ["devtools", "pipeline-probe"]
+        assert cmd[:4] == ["devtools", "lab", "probe", "pipeline"]
         assert "--provider" in cmd
         assert "chatgpt" in cmd
         assert "--max-total-ms" in cmd
@@ -207,7 +207,7 @@ class TestCommandConstruction:
         assert lane.execution is not None
         cmd = build_lane_command(lane)
         assert lane.execution.kind is ExecutionKind.PIPELINE_PROBE
-        assert cmd[:2] == ["devtools", "pipeline-probe"]
+        assert cmd[:4] == ["devtools", "lab", "probe", "pipeline"]
         assert "--input-mode" in cmd
         assert "archive-subset" in cmd
         assert "--stage" in cmd
@@ -421,7 +421,7 @@ class TestCommandConstruction:
 
     def test_live_lane_uses_module_entrypoint(self) -> None:
         cmd = build_lane_command(LANES["live-exercises"])
-        assert cmd[:2] == ["devtools", "lab-scenario"]
+        assert cmd[:3] == ["devtools", "lab", "scenario"]
         assert "archive-smoke" in cmd
         assert "--live" in cmd
         assert "--tier" in cmd

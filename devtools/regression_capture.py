@@ -24,7 +24,7 @@ def _read_input(input_path: Path | None) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Capture a devtools pipeline-probe JSON summary as a durable regression case.",
+        description="Capture a devtools lab probe pipeline JSON summary as a durable regression case.",
     )
     parser.add_argument(
         "--input",

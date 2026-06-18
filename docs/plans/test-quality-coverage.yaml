@@ -141,7 +141,7 @@ coverage_gaps:
     declared_at: "2026-05-02"
     review_after: "2026-08-01"
     issue: 590
-    next_evidence: devtools run-validation-lanes --list
+    next_evidence: devtools lab lanes --list
   - id: test-quality.mock-depth
     dimension: mock_depth
     gap: Mock depth not measured or enforced
@@ -150,7 +150,7 @@ coverage_gaps:
     declared_at: "2026-05-02"
     review_after: "2026-08-01"
     issue: 590
-    next_evidence: devtools run-validation-lanes --list
+    next_evidence: devtools lab lanes --list
   - id: test-quality.fuzz-ci
     dimension: fuzz
     gap: Atheris fuzz targets not run in CI
@@ -159,7 +159,7 @@ coverage_gaps:
     declared_at: "2026-05-02"
     review_after: "2026-08-01"
     issue: 590
-    next_evidence: devtools run-validation-lanes --list
+    next_evidence: devtools lab lanes --list
   - id: test-quality.per-module-coverage
     dimension: direct_coverage
     gap: Coverage per-module not tracked (only aggregate fail_under)

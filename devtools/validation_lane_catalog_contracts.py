@@ -57,7 +57,7 @@ CONTRACT_LANES: dict[str, LaneEntry] = {
         description="Registry-derived tier-0 CLI help/source showcase baselines",
         timeout_s=180,
         category="contract",
-        execution=devtools_execution("lab-scenario", "verify-baselines"),
+        execution=devtools_execution("lab scenario", "verify-baselines"),
         operation_targets=("cli.help",),
         tags=("contract", "showcase", "help"),
     ),

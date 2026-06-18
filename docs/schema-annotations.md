@@ -7,12 +7,12 @@ role of each JSON path (e.g., `message_role`, `session_title`,
 
 ## Review process
 
-1. Run schema inference: `devtools schema-generate <provider>`
+1. Run schema inference: `devtools lab schema generate <provider>`
 2. Review generated annotations for correctness
 3. Create or update `pins.json` in the provider directory to reject
    known-wrong annotations (see `claude-code/pins.json` for format)
 4. Re-run inference — `select_best_roles()` will respect pin overrides
-5. Promote reviewed annotations: `devtools schema-promote <provider>`
+5. Promote reviewed annotations: `devtools lab schema promote <provider>`
 6. Verify: `python devtools/verify_schema_annotations.py`
 
 ## Verification
