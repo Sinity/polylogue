@@ -14,10 +14,10 @@ Current registry snapshot:
 - mutation campaigns: `19`
 - benchmark campaigns: `7`
 - synthetic benchmark campaigns: `6`
-- scenario projections: `272`
+- scenario projections: `271`
 - inferred corpus scenarios: `8`
   - benchmark-campaign: `7`
-  - exercise: `165`
+  - exercise: `164`
   - inferred-corpus-scenario: `8`
   - mutation-campaign: `19`
   - synthetic-benchmark: `6`
@@ -361,7 +361,6 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-diagnostics-pace` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | diagnostics pace help |
 | `exercise` | `help-diagnostics-tools` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | diagnostics tools help |
 | `exercise` | `help-diagnostics-turns` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | diagnostics turns help |
-| `exercise` | `help-doctor` | — | — | — | — | — | Doctor subcommand help |
 | `exercise` | `help-feedback` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | feedback help |
 | `exercise` | `help-feedback-clear` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | feedback clear help |
 | `exercise` | `help-feedback-list` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | feedback list help |
