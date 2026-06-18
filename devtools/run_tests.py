@@ -34,11 +34,13 @@ from devtools.verify import (
     PYTEST_EVENTS_PATH,
     PYTEST_OUTPUT_PATH,
     PYTEST_PROGRESS_PATH,
+    PYTEST_REPORT_PATH,
     PYTEST_SELECTION_PATH,
     PYTEST_SUMMARY_PATH,
     _clear_pytest_report,
-    _run_pytest_with_heartbeat,
+    _run,
 )
+from devtools.verify_runs import VerifyRun
 
 ROOT = Path(__file__).resolve().parent.parent
 _LOCK_PATH = ROOT / ".cache" / "test-run.lock"
@@ -71,7 +73,16 @@ def _worker_args(selection: list[str]) -> list[str]:
 
 def build_pytest_cmd(selection: list[str]) -> list[str]:
     """Compose the pytest command for a focused selection."""
-    return ["pytest", "-p", "devtools.pytest_progress_plugin", *selection, *_worker_args(selection)]
+    return [
+        "pytest",
+        "-p",
+        "devtools.pytest_progress_plugin",
+        "--json-report",
+        "--json-report-omit=collectors,log,streams,warnings",
+        f"--json-report-file={PYTEST_REPORT_PATH}",
+        *selection,
+        *_worker_args(selection),
+    ]
 
 
 @contextlib.contextmanager
@@ -122,11 +133,12 @@ def main(argv: list[str] | None = None) -> int:
     no_lock = os.environ.get("POLYLOGUE_TEST_NO_LOCK") == "1"
     with _run_lock(enabled=not no_lock):
         _clear_pytest_report(cmd)
-        result = _run_pytest_with_heartbeat(cmd, cwd=str(ROOT), env=_managed_env(), t0=time.monotonic())
-    if result.stderr:
-        sys.stderr.write(result.stderr)
+        run = VerifyRun(tier="focused-test", argv=selection, git_head=None, root=ROOT)
+        started = time.monotonic()
+        rc, _elapsed, metadata = _run("pytest focused", cmd, cwd=str(ROOT), run=run)
+        run.finish(exit_code=rc, duration_s=time.monotonic() - started, diagnosis=metadata.get("diagnosis"))
     sys.stderr.write(
         f"\ndevtools test: progress={PYTEST_PROGRESS_PATH} selection={PYTEST_SELECTION_PATH} "
         f"summary={PYTEST_SUMMARY_PATH} events={PYTEST_EVENTS_PATH} output={PYTEST_OUTPUT_PATH}\n"
     )
-    return result.returncode
+    return rc

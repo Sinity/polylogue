@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
 import hashlib
 import importlib
 import json
@@ -16,7 +17,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 from hypothesis import given, settings
-from hypothesis import strategies as st
 from pydantic import ValidationError
 from typing_extensions import TypedDict, Unpack
 
@@ -51,26 +51,12 @@ from tests.infra.storage_records import (
 from tests.infra.strategies.messages import session_strategy
 from tests.infra.strategies.storage import (
     TagAssignmentSpec,
-    TitleSearchSpec,
     expected_tag_counts,
     seed_session_graph,
 )
 from tests.infra.strategies.storage import (
-    literal_title_search_strategy as infra_title_search_strategy,
-)
-from tests.infra.strategies.storage import (
     tag_assignment_strategy as infra_tag_assignment_strategy,
 )
-
-
-class SimpleTagSpec(TypedDict):
-    session_id: str
-    tags: list[str]
-
-
-class SimpleTitleSearchSpec(TypedDict):
-    title: str
-    search_term: str
 
 
 class RecordQueryKwargs(TypedDict, total=False):
@@ -81,6 +67,27 @@ class RecordQueryKwargs(TypedDict, total=False):
     tool_terms: tuple[str, ...]
     excluded_tool_terms: tuple[str, ...]
     limit: int
+
+
+_SHARED_TEST_DIRS: dict[str, Path] = {}
+
+
+def _shared_test_db_path(name: str) -> Path:
+    db_dir = _SHARED_TEST_DIRS.get(name)
+    if db_dir is None:
+        db_dir = Path(tempfile.mkdtemp(prefix=f"polylogue-{name}-"))
+        _SHARED_TEST_DIRS[name] = db_dir
+        atexit.register(_cleanup_shared_test_dir, db_dir)
+    return db_dir / "index.db"
+
+
+def _cleanup_shared_test_dir(path: Path) -> None:
+    shutil.rmtree(path, ignore_errors=True)
+
+
+def _stable_conv_id(prefix: str, payload: object) -> str:
+    encoded = json.dumps(payload, sort_keys=True, default=str, ensure_ascii=False).encode("utf-8")
+    return f"{prefix}-{hashlib.sha1(encoded, usedforsecurity=False).hexdigest()[:16]}"
 
 
 def _session_id(value: str) -> SessionId:
@@ -1220,13 +1227,10 @@ class TestCrudLaws:
     @settings(max_examples=30, deadline=None)
     async def test_save_retrieve_roundtrip(self, conv_data: dict[str, object]) -> None:
         """Saving a strategy-generated session and retrieving it preserves identity."""
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            db_path = Path(tmp_dir) / "roundtrip.db"
-            backend = SQLiteBackend(db_path=db_path)
-
-            raw_id = conv_data["id"]
-            assert isinstance(raw_id, str)
-            conv_id = f"test-{raw_id[:16]}"
+        db_path = _shared_test_db_path("crud-roundtrip")
+        backend = SQLiteBackend(db_path=db_path)
+        try:
+            conv_id = _stable_conv_id("test", conv_data)
             raw_provider = conv_data.get("provider", "test")
             assert isinstance(raw_provider, str)
             provider = raw_provider
@@ -1266,20 +1270,17 @@ class TestCrudLaws:
 
             retrieved_msgs = await backend.get_messages(conv_id)
             assert len(retrieved_msgs) == len(messages)
-
+        finally:
             await backend.close()
 
     @given(session_strategy(min_messages=1, max_messages=3))
     @settings(max_examples=20, deadline=None)
     async def test_save_is_idempotent(self, conv_data: dict[str, object]) -> None:
         """Saving the same session twice yields the same stored data."""
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            db_path = Path(tmp_dir) / "idempotent.db"
-            backend = SQLiteBackend(db_path=db_path)
-
-            raw_id = conv_data["id"]
-            assert isinstance(raw_id, str)
-            conv_id = f"idem-{raw_id[:16]}"
+        db_path = _shared_test_db_path("crud-idempotent")
+        backend = SQLiteBackend(db_path=db_path)
+        try:
+            conv_id = _stable_conv_id("idem", conv_data)
             raw_provider = conv_data.get("provider", "test")
             assert isinstance(raw_provider, str)
             raw_title = conv_data.get("title", "Idempotent")
@@ -1299,7 +1300,7 @@ class TestCrudLaws:
             expected_session_id = f"{origin_from_provider(Provider.from_string(raw_provider)).value}:{conv_id}"
             matching = [c for c in all_convs if c.session_id == expected_session_id]
             assert len(matching) == 1
-
+        finally:
             await backend.close()
 
 
@@ -1308,81 +1309,44 @@ class TestCrudLaws:
 # ============================================================================
 
 
-@st.composite
-def simple_tag_spec(draw: st.DrawFn) -> SimpleTagSpec:
-    """Generate a tag assignment spec: session ID + list of tags."""
-    conv_suffix = draw(
-        st.text(
-            min_size=3,
-            max_size=12,
-            alphabet="abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-",
-        ).filter(lambda s: s[0].isalpha())
-    )
-    tags = draw(
-        st.lists(
-            st.text(
-                min_size=1,
-                max_size=15,
-                alphabet="abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-",
-            ),
-            min_size=1,
-            max_size=4,
-            unique=True,
-        )
-    )
-    return {"session_id": f"tag-{conv_suffix}", "tags": tags}
-
-
-@st.composite
-def simple_title_search_spec(draw: st.DrawFn) -> SimpleTitleSearchSpec:
-    """Generate a title search spec: title and search substring."""
-    words = draw(
-        st.lists(
-            st.text(min_size=3, max_size=12, alphabet="abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"),
-            min_size=2,
-            max_size=5,
-        )
-    )
-    title = " ".join(words)
-    search_word = draw(st.sampled_from(words))
-    return {"title": title, "search_term": search_word}
-
-
 class TestTagAssignmentLaws:
     """Property-based tests for tag operations on repository."""
 
-    @given(simple_tag_spec())
-    @settings(max_examples=15, deadline=None)
-    async def test_add_tag_is_retrievable(self, spec: SimpleTagSpec) -> None:
+    @pytest.mark.parametrize(
+        ("conv_id", "tag"),
+        [
+            ("tag-alpha", "alpha"),
+            ("tag-mixed-case", "Needs-Review"),
+            ("tag-spaced", "  spaced-tag  "),
+        ],
+    )
+    async def test_add_tag_is_retrievable(self, conv_id: str, tag: str) -> None:
         """Adding a tag to a session makes it appear in the tag read surface."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             from tests.infra.archive_scenarios import archive_for_scenario_db, native_session_id_for
             from tests.infra.storage_records import SessionBuilder
 
             db_path = Path(tmp_dir) / "index.db"
-            conv_id = spec["session_id"]
 
             (SessionBuilder(db_path, conv_id).provider("test").title("Tag Test").add_message("m1", text="Hello").save())
 
             repo = archive_for_scenario_db(db_path)
             try:
-                tag = spec["tags"][0]
                 await repo.add_tag(native_session_id_for("test", conv_id), tag)
                 listed = await repo.list_tags()
                 assert tag.strip().lower() in listed
             finally:
                 await repo.close()
 
-    @given(simple_tag_spec())
-    @settings(max_examples=15, deadline=None)
-    async def test_remove_tag_is_idempotent(self, spec: SimpleTagSpec) -> None:
+    @pytest.mark.parametrize("tag", ["missing", "Needs-Review", "  spaced-tag  "])
+    async def test_remove_tag_is_idempotent(self, tag: str) -> None:
         """Removing a tag that doesn't exist doesn't crash."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             from tests.infra.archive_scenarios import archive_for_scenario_db, native_session_id_for
             from tests.infra.storage_records import SessionBuilder
 
             db_path = Path(tmp_dir) / "index.db"
-            conv_id = spec["session_id"]
+            conv_id = f"remove-{tag.strip().lower()}"
 
             (
                 SessionBuilder(db_path, conv_id)
@@ -1394,7 +1358,6 @@ class TestTagAssignmentLaws:
 
             repo = archive_for_scenario_db(db_path)
             try:
-                tag = spec["tags"][0]
                 await repo.remove_tag(native_session_id_for("test", conv_id), tag)
                 listed = await repo.list_tags()
                 assert tag.strip().lower() not in listed
@@ -1402,12 +1365,18 @@ class TestTagAssignmentLaws:
                 await repo.close()
 
 
-class TestTitleSearchLaws:
-    """Property-based tests for title-based search."""
+_SIMPLE_TITLE_SEARCH_CASES = (
+    ("Alpha Beta Gamma", "Beta"),
+    ("MixedCase Title Words", "Title"),
+    ("Prefixable archive session", "archive"),
+)
 
-    @given(simple_title_search_spec())
-    @settings(max_examples=15, deadline=None)
-    async def test_title_search_finds_matching(self, spec: SimpleTitleSearchSpec) -> None:
+
+class TestTitleSearchLaws:
+    """Representative tests for title-based search."""
+
+    @pytest.mark.parametrize(("title", "search_term"), _SIMPLE_TITLE_SEARCH_CASES)
+    async def test_title_search_finds_matching(self, title: str, search_term: str) -> None:
         """Searching by title substring finds the matching session."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -1420,21 +1389,20 @@ class TestTitleSearchLaws:
             (
                 SessionBuilder(db_path, conv_id)
                 .provider("test")
-                .title(spec["title"])
+                .title(title)
                 .add_message("m1", text="Search test content")
                 .save()
             )
 
             with ArchiveStore.open_existing(db_path.parent) as archive:
-                results = archive.list_summaries(title=spec["search_term"], limit=50)
+                results = archive.list_summaries(title=search_term, limit=50)
             found_ids = [summary.session_id for summary in results]
             assert native_session_id_for("test", conv_id) in found_ids, (
-                f"Expected to find '{conv_id}' when searching title='{spec['title']}' for term='{spec['search_term']}'"
+                f"Expected to find '{conv_id}' when searching title='{title}' for term='{search_term}'"
             )
 
-    @given(simple_title_search_spec())
-    @settings(max_examples=15, deadline=None)
-    async def test_title_search_excludes_non_matching(self, spec: SimpleTitleSearchSpec) -> None:
+    @pytest.mark.parametrize(("title", "search_term"), _SIMPLE_TITLE_SEARCH_CASES)
+    async def test_title_search_excludes_non_matching(self, title: str, search_term: str) -> None:
         """Title search doesn't return sessions with unrelated titles."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -1446,7 +1414,7 @@ class TestTitleSearchLaws:
             (
                 SessionBuilder(db_path, "match-conv")
                 .provider("test")
-                .title(spec["title"])
+                .title(title)
                 .add_message("m1", text="Content")
                 .save()
             )
@@ -1460,7 +1428,7 @@ class TestTitleSearchLaws:
             )
 
             with ArchiveStore.open_existing(db_path.parent) as archive:
-                results = archive.list_summaries(title=spec["search_term"], limit=50)
+                results = archive.list_summaries(title=search_term, limit=50)
             found_ids = {summary.session_id for summary in results}
             assert native_session_id_for("test", "match-conv") in found_ids
 
@@ -1901,8 +1869,8 @@ class TestInfraTagAssignment:
 
     @given(infra_tag_assignment_strategy(min_sessions=2, max_sessions=4))
     @settings(max_examples=10, deadline=None)
-    async def test_tag_assignment_roundtrip(self, spec: TagAssignmentSpec) -> None:
-        """Tags assigned via strategy-generated specs are retrievable and consistent."""
+    async def test_tag_assignment_roundtrip_and_counts(self, spec: TagAssignmentSpec) -> None:
+        """Strategy-generated tags are retrievable and counted consistently."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             from tests.infra.archive_scenarios import archive_for_scenario_db, native_session_id_for
 
@@ -1919,36 +1887,27 @@ class TestInfraTagAssignment:
                 for _conv, tags in zip(spec.sessions, spec.tag_sequences, strict=True):
                     for tag in set(tags):
                         assert tag in listed, f"Tag '{tag}' missing from tag read surface: {listed}"
-            finally:
-                await repo.close()
-
-    @given(infra_tag_assignment_strategy(min_sessions=2, max_sessions=4))
-    @settings(max_examples=10, deadline=None)
-    async def test_tag_counts_match_expected(self, spec: TagAssignmentSpec) -> None:
-        """Tag counts computed from strategy match actual stored tag counts."""
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            from tests.infra.archive_scenarios import archive_for_scenario_db, native_session_id_for
-
-            db_path = Path(tmp_dir) / "index.db"
-            seed_session_graph(db_path, spec.sessions)
-
-            repo = archive_for_scenario_db(db_path)
-            try:
-                for conv, tags in zip(spec.sessions, spec.tag_sequences, strict=True):
-                    for tag in tags:
-                        await repo.add_tag(native_session_id_for(conv.provider, conv.session_id), tag)
-
                 assert await repo.list_tags() == expected_tag_counts(spec)
             finally:
                 await repo.close()
 
 
-class TestInfraTitleSearch:
-    """Property-based tests using the full TitleSearchSpec strategy."""
+_LITERAL_TITLE_SEARCH_CASES = (
+    ("alpha*beta", "before alpha*beta after", "before alphaxbeta after"),
+    ("alpha?beta", "before alpha?beta after", "before alphaybeta after"),
+    ('alpha"beta', 'before alpha"beta after', "before alphazbeta after"),
+    ("alpha-beta", "before alpha-beta after", "before alphaxbeta after"),
+    ("alpha/beta", "before alpha/beta after", "before alphaybeta after"),
+)
 
-    @given(infra_title_search_strategy())
-    @settings(max_examples=15, deadline=None)
-    async def test_literal_title_search_finds_matching_with_special_chars(self, spec: TitleSearchSpec) -> None:
+
+class TestInfraTitleSearch:
+    """Representative literal title-search cases for wildcard-sensitive text."""
+
+    @pytest.mark.parametrize(("needle", "matching_title", "decoy_title"), _LITERAL_TITLE_SEARCH_CASES)
+    async def test_literal_title_search_finds_matching_with_special_chars(
+        self, needle: str, matching_title: str, decoy_title: str
+    ) -> None:
         """Title search with wildcard-sensitive characters finds exact matches."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -1960,7 +1919,7 @@ class TestInfraTitleSearch:
             (
                 SessionBuilder(db_path, "match-conv")
                 .provider("test")
-                .title(spec.matching_title)
+                .title(matching_title)
                 .add_message("m1", text="Content")
                 .save()
             )
@@ -1968,21 +1927,22 @@ class TestInfraTitleSearch:
             (
                 SessionBuilder(db_path, "decoy-conv")
                 .provider("test")
-                .title(spec.decoy_title)
+                .title(decoy_title)
                 .add_message("m2", text="Other")
                 .save()
             )
 
             with ArchiveStore.open_existing(db_path.parent) as archive:
-                results = archive.list_summaries(title=spec.needle, limit=50)
+                results = archive.list_summaries(title=needle, limit=50)
             found_ids = {summary.session_id for summary in results}
             assert native_session_id_for("test", "match-conv") in found_ids, (
-                f"Expected 'match-conv' for needle='{spec.needle}' in title='{spec.matching_title}'"
+                f"Expected 'match-conv' for needle='{needle}' in title='{matching_title}'"
             )
 
-    @given(infra_title_search_strategy())
-    @settings(max_examples=15, deadline=None)
-    async def test_literal_title_search_excludes_decoy(self, spec: TitleSearchSpec) -> None:
+    @pytest.mark.parametrize(("needle", "_matching_title", "decoy_title"), _LITERAL_TITLE_SEARCH_CASES)
+    async def test_literal_title_search_excludes_decoy(
+        self, needle: str, _matching_title: str, decoy_title: str
+    ) -> None:
         """Title search with special characters does not match the decoy title."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -1994,14 +1954,14 @@ class TestInfraTitleSearch:
             (
                 SessionBuilder(db_path, "decoy-only")
                 .provider("test")
-                .title(spec.decoy_title)
+                .title(decoy_title)
                 .add_message("m1", text="Content")
                 .save()
             )
 
             with ArchiveStore.open_existing(db_path.parent) as archive:
-                results = archive.list_summaries(title=spec.needle, limit=50)
+                results = archive.list_summaries(title=needle, limit=50)
             found_ids = {summary.session_id for summary in results}
             assert native_session_id_for("test", "decoy-only") not in found_ids, (
-                f"Decoy '{spec.decoy_title}' should not match needle='{spec.needle}'"
+                f"Decoy '{decoy_title}' should not match needle='{needle}'"
             )

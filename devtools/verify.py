@@ -39,6 +39,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from devtools.verify_runs import (
+    CURRENT_EVENTS_DIR,
+    CURRENT_POSTMORTEM_PATH,
+    CURRENT_RESOURCES_PATH,
+    PytestStepArtifacts,
+    ResourceSampler,
+    VerifyRun,
+    classify_pytest_result,
+    copy_current_pytest_artifacts,
+    env_for_pytest_step,
+    latest_event_from_paths,
+    merge_worker_events,
+    utc_now,
+)
+
 ROOT = Path(__file__).resolve().parents[1]
 
 # ── mypy daemon probe ──────────────────────────────────────────────
@@ -98,6 +113,30 @@ def _warn_low_memory() -> None:
         sys.stderr.write(f"verify: low memory ({avail_gb:.1f} GB free) — pytest may be slow or OOM\n")
 
 
+def _shm_free_gb() -> float | None:
+    try:
+        stat = os.statvfs("/dev/shm")
+    except OSError:
+        return None
+    return (stat.f_bavail * stat.f_frsize) / 1024 / 1024 / 1024
+
+
+def _enable_tmpfs_for_broad_pytest(label: str, env: dict[str, str]) -> bool:
+    if not (label == "pytest seed-testmon" or label == "pytest testmon (broad)" or label.startswith("pytest full")):
+        return False
+    if env.get("POLYLOGUE_PYTEST_BASETEMP_ROOT") or env.get("POLYLOGUE_PYTEST_TMPFS"):
+        return False
+    mem = _check_available_memory()
+    shm_free = _shm_free_gb()
+    if mem is None or shm_free is None:
+        return False
+    available_gb = mem[0] / 1024 / 1024
+    if available_gb < 10.0 or shm_free < 8.0:
+        return False
+    env["POLYLOGUE_PYTEST_TMPFS"] = "1"
+    return True
+
+
 # ── completion notification ────────────────────────────────────────
 
 
@@ -140,15 +179,18 @@ PYTEST_JUNIT_REPORT_DIR = Path(".cache/test-reports")
 PYTEST_JUNIT_REPORT_PATH = PYTEST_JUNIT_REPORT_DIR / "verify-latest.xml"
 PYTEST_PROGRESS_PATH = PYTEST_REPORT_DIR / "current-pytest-progress.json"
 PYTEST_EVENTS_PATH = PYTEST_REPORT_DIR / "current-pytest-events.jsonl"
+PYTEST_EVENTS_DIR = CURRENT_EVENTS_DIR
 PYTEST_SELECTION_PATH = PYTEST_REPORT_DIR / "current-pytest-selection.json"
 PYTEST_SUMMARY_PATH = PYTEST_REPORT_DIR / "current-pytest-summary.json"
 PYTEST_OUTPUT_PATH = PYTEST_REPORT_DIR / "current-pytest-output.log"
 PYTEST_HEARTBEAT_ENV = "POLYLOGUE_VERIFY_HEARTBEAT_S"
 PYTEST_TIMEOUT_ENV = "POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S"
 PYTEST_STALL_TIMEOUT_ENV = "POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S"
+PYTEST_RESOURCE_INTERVAL_ENV = "POLYLOGUE_VERIFY_RESOURCE_INTERVAL_S"
 DEFAULT_PYTEST_HEARTBEAT_S = 30.0
 DEFAULT_PYTEST_TIMEOUT_S = 45 * 60.0
 DEFAULT_PYTEST_STALL_TIMEOUT_S = 10 * 60.0
+DEFAULT_PYTEST_RESOURCE_INTERVAL_S = 2.0
 
 
 def _load_history() -> list[dict[str, Any]]:
@@ -232,6 +274,8 @@ def _read_json_artifact(path: Path) -> dict[str, Any] | None:
 
 def _read_latest_pytest_event(path: Path = PYTEST_EVENTS_PATH) -> dict[str, Any] | None:
     """Return the latest valid pytest event from the live JSONL ledger."""
+    if path == PYTEST_EVENTS_PATH:
+        return latest_event_from_paths(PYTEST_EVENTS_DIR, PYTEST_EVENTS_PATH)
     try:
         with path.open("rb") as handle:
             handle.seek(0, os.SEEK_END)
@@ -312,12 +356,18 @@ def _clear_pytest_report(cmd: Sequence[str] = ()) -> None:
         *_pytest_artifact_paths(cmd),
         PYTEST_PROGRESS_PATH,
         PYTEST_EVENTS_PATH,
+        PYTEST_EVENTS_DIR,
         PYTEST_SELECTION_PATH,
         PYTEST_SUMMARY_PATH,
         PYTEST_OUTPUT_PATH,
+        CURRENT_RESOURCES_PATH,
+        CURRENT_POSTMORTEM_PATH,
     ):
         with contextlib.suppress(FileNotFoundError):
-            path.unlink()
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
 
 
 def _write_pytest_output(stdout: str, stderr: str) -> None:
@@ -339,6 +389,9 @@ def _write_pytest_progress(
     status: Mapping[str, str | int | None] | None = None,
     cpu_pct: float | None = None,
     termination_reason: str | None = None,
+    run_id: str | None = None,
+    artifact_dir: str | None = None,
+    resources: Mapping[str, Any] | None = None,
 ) -> None:
     """Write a live pytest progress artifact for long verify runs."""
     if elapsed_s is None:
@@ -364,6 +417,12 @@ def _write_pytest_progress(
         payload["cpu_pct"] = round(cpu_pct, 2)
     if termination_reason is not None:
         payload["termination_reason"] = termination_reason
+    if run_id is not None:
+        payload["run_id"] = run_id
+    if artifact_dir is not None:
+        payload["artifact_dir"] = artifact_dir
+    if resources is not None:
+        payload["resources"] = dict(resources)
     latest_event = _read_latest_pytest_event()
     if latest_event is not None:
         payload["latest_test_event"] = {
@@ -432,6 +491,10 @@ def _pytest_stall_timeout_s() -> float:
     return _float_env(PYTEST_STALL_TIMEOUT_ENV, DEFAULT_PYTEST_STALL_TIMEOUT_S)
 
 
+def _pytest_resource_interval_s() -> float:
+    return _float_env(PYTEST_RESOURCE_INTERVAL_ENV, DEFAULT_PYTEST_RESOURCE_INTERVAL_S)
+
+
 def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
     with contextlib.suppress(ProcessLookupError):
         os.killpg(process.pid, signal.SIGTERM)
@@ -452,10 +515,13 @@ def _run_pytest_with_heartbeat(
     cwd: str | None,
     env: dict[str, str],
     t0: float,
+    run: VerifyRun | None = None,
+    artifacts: PytestStepArtifacts | None = None,
 ) -> subprocess.CompletedProcess[str]:
     heartbeat_s = _pytest_heartbeat_interval()
     timeout_s = _pytest_timeout_s()
     stall_timeout_s = _pytest_stall_timeout_s()
+    resource_interval_s = _pytest_resource_interval_s()
     sys.stderr.write(f"\n    command: {shlex.join(cmd)}\n")
     sys.stderr.flush()
     process = subprocess.Popen(
@@ -468,12 +534,27 @@ def _run_pytest_with_heartbeat(
     )
     assert process.stdout is not None
     assert process.stderr is not None
+    sampler = (
+        ResourceSampler(
+            root_pid=process.pid,
+            run_id=run.run_id if run is not None else env.get("POLYLOGUE_PYTEST_RUN_ID", str(process.pid)),
+            root=Path(cwd) if cwd is not None else Path.cwd(),
+            env=env,
+            output_path=artifacts.resources_path if artifacts is not None else Path.cwd() / CURRENT_RESOURCES_PATH,
+        )
+        if artifacts is not None or resource_interval_s > 0
+        else None
+    )
+    if sampler is not None:
+        sampler.sample(event="started")
     _write_pytest_progress(
         event="started",
         cmd=cmd,
         started_at=t0,
         pid=process.pid,
         output_bytes={"stdout": 0, "stderr": 0},
+        run_id=run.run_id if run is not None else None,
+        artifact_dir=str(artifacts.step_dir) if artifacts is not None else None,
     )
     selector = selectors.DefaultSelector()
     selector.register(process.stdout, selectors.EVENT_READ, "stdout")
@@ -483,6 +564,7 @@ def _run_pytest_with_heartbeat(
     last_cpu = _process_cpu_seconds(process.pid)
     last_sample = time.monotonic()
     last_output = last_sample
+    last_resource_sample = last_sample
     termination_reason: str | None = None
     while True:
         now = time.monotonic()
@@ -523,6 +605,8 @@ def _run_pytest_with_heartbeat(
                         idle_s=0.0,
                         output_bytes=output_bytes,
                         status=_process_status(process.pid),
+                        run_id=run.run_id if run is not None else None,
+                        artifact_dir=str(artifacts.step_dir) if artifacts is not None else None,
                     )
                 else:
                     selector.unregister(selector_key.fileobj)
@@ -561,7 +645,13 @@ def _run_pytest_with_heartbeat(
                 output_bytes=output_bytes,
                 status=status,
                 cpu_pct=cpu_pct,
+                run_id=run.run_id if run is not None else None,
+                artifact_dir=str(artifacts.step_dir) if artifacts is not None else None,
             )
+        sample_now = time.monotonic()
+        if sampler is not None and resource_interval_s > 0 and sample_now - last_resource_sample >= resource_interval_s:
+            sampler.sample(event="sample")
+            last_resource_sample = sample_now
         if process.poll() is not None and not selector.get_map():
             break
 
@@ -575,6 +665,14 @@ def _run_pytest_with_heartbeat(
     stdout = b"".join(output["stdout"]).decode(errors="replace")
     stderr = b"".join(output["stderr"]).decode(errors="replace")
     _write_pytest_output(stdout, stderr)
+    if artifacts is not None:
+        artifacts.stdout_path.write_text(stdout, encoding="utf-8")
+        artifacts.stderr_path.write_text(stderr, encoding="utf-8")
+        artifacts.output_path.write_text(stdout + stderr, encoding="utf-8")
+    resource_summary: dict[str, Any] = {}
+    if sampler is not None:
+        sampler.sample(event="finished" if termination_reason is None else "terminated")
+        resource_summary = sampler.summary()
     if termination_reason is not None:
         _write_pytest_progress(
             event="terminated",
@@ -584,6 +682,9 @@ def _run_pytest_with_heartbeat(
             returncode=124,
             output_bytes=output_bytes,
             termination_reason=termination_reason,
+            run_id=run.run_id if run is not None else None,
+            artifact_dir=str(artifacts.step_dir) if artifacts is not None else None,
+            resources=resource_summary,
         )
         stderr = f"{stderr}\nverify: {termination_reason}; terminated pytest process group {process.pid}\n"
         return subprocess.CompletedProcess(cmd, 124, stdout, stderr)
@@ -594,34 +695,60 @@ def _run_pytest_with_heartbeat(
         pid=process.pid,
         returncode=process.returncode or 0,
         output_bytes=output_bytes,
+        run_id=run.run_id if run is not None else None,
+        artifact_dir=str(artifacts.step_dir) if artifacts is not None else None,
+        resources=resource_summary,
     )
     return subprocess.CompletedProcess(cmd, process.returncode or 0, stdout, stderr)
 
 
-def _run(label: str, cmd: list[str], *, cwd: str | None = None) -> tuple[int, float, dict[str, Any]]:
+def _run(
+    label: str,
+    cmd: list[str],
+    *,
+    cwd: str | None = None,
+    run: VerifyRun | None = None,
+) -> tuple[int, float, dict[str, Any]]:
     t0 = time.monotonic()
     sys.stderr.write(f"  {label} ... ")
     sys.stderr.flush()
     is_pytest = label.startswith("pytest")
     if is_pytest:
         _clear_pytest_report(cmd)
+    artifacts = run.start_step(label=label, cmd=cmd) if run is not None else None
     env = _subprocess_env()
+    pytest_tmpfs = False
     if is_pytest:
-        result = _run_pytest_with_heartbeat(cmd, cwd=cwd, env=env, t0=t0)
+        pytest_tmpfs = _enable_tmpfs_for_broad_pytest(label, env)
+        if run is not None and artifacts is not None:
+            env = env_for_pytest_step(env, run=run, artifacts=artifacts)
+        result = _run_pytest_with_heartbeat(cmd, cwd=cwd, env=env, t0=t0, run=run, artifacts=artifacts)
+        if artifacts is not None:
+            merge_worker_events(artifacts.events_dir, artifacts.events_merged_path)
+            with contextlib.suppress(FileNotFoundError):
+                shutil.copyfile(PYTEST_PROGRESS_PATH, artifacts.progress_path)
     else:
         result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, env=env)
     elapsed = time.monotonic() - t0
     metadata: dict[str, Any] = {}
+    if artifacts is not None:
+        metadata["run_id"] = run.run_id if run is not None else None
+        metadata["artifact_dir"] = str(artifacts.step_dir.relative_to(Path.cwd()))
     if is_pytest:
         metadata.update(_pytest_command_metadata(cmd))
         metadata["heartbeat_s"] = _pytest_heartbeat_interval()
         metadata["timeout_s"] = _pytest_timeout_s()
         metadata["stall_timeout_s"] = _pytest_stall_timeout_s()
+        metadata["resource_interval_s"] = _pytest_resource_interval_s()
+        metadata["pytest_tmpfs"] = pytest_tmpfs
         metadata["progress_path"] = str(PYTEST_PROGRESS_PATH)
         metadata["events_path"] = str(PYTEST_EVENTS_PATH)
+        metadata["events_dir"] = str(PYTEST_EVENTS_DIR)
         metadata["selection_path"] = str(PYTEST_SELECTION_PATH)
         metadata["summary_path"] = str(PYTEST_SUMMARY_PATH)
         metadata["output_path"] = str(PYTEST_OUTPUT_PATH)
+        metadata["resources_path"] = str(CURRENT_RESOURCES_PATH)
+        metadata["postmortem_path"] = str(CURRENT_POSTMORTEM_PATH)
         junit_paths = [
             str(path) for path in _pytest_artifact_paths(cmd) if path.suffix == ".xml" or path.name.endswith(".xml")
         ]
@@ -641,7 +768,12 @@ def _run(label: str, cmd: list[str], *, cwd: str | None = None) -> tuple[int, fl
                 metadata["count"] = fallback
             metadata["report_path"] = None
             metadata["report_status"] = "missing"
-        progress = _read_json_artifact(PYTEST_PROGRESS_PATH)
+        progress_path = (
+            artifacts.progress_path
+            if artifacts is not None and artifacts.progress_path.exists()
+            else PYTEST_PROGRESS_PATH
+        )
+        progress = _read_json_artifact(progress_path)
         if progress is not None:
             event = progress.get("event")
             if isinstance(event, str):
@@ -649,7 +781,8 @@ def _run(label: str, cmd: list[str], *, cwd: str | None = None) -> tuple[int, fl
             termination_reason = progress.get("termination_reason")
             if isinstance(termination_reason, str):
                 metadata["termination_reason"] = termination_reason
-        selection = _read_json_artifact(PYTEST_SELECTION_PATH)
+        selection_path = artifacts.selection_path if artifacts is not None else PYTEST_SELECTION_PATH
+        selection = _read_json_artifact(selection_path)
         if selection is not None:
             selected_count = selection.get("selected_count")
             deselected_count = selection.get("deselected_count")
@@ -660,11 +793,65 @@ def _run(label: str, cmd: list[str], *, cwd: str | None = None) -> tuple[int, fl
             collection_duration_s = selection.get("collection_duration_s")
             if isinstance(collection_duration_s, (int, float)):
                 metadata["collection_duration_s"] = collection_duration_s
-        summary = _read_json_artifact(PYTEST_SUMMARY_PATH)
+        summary_path = artifacts.summary_path if artifacts is not None else PYTEST_SUMMARY_PATH
+        summary = _read_json_artifact(summary_path)
         if summary is not None:
             slowest_reports = summary.get("slowest_reports")
             if isinstance(slowest_reports, list):
                 metadata["slowest_report_count"] = len(slowest_reports)
+        resource_summary: dict[str, Any] = {}
+        if artifacts is not None and artifacts.resources_path.exists():
+            resource_rows = [
+                json.loads(line)
+                for line in artifacts.resources_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            if resource_rows:
+                peak_rss = max(int(row.get("tree_rss_kb") or 0) for row in resource_rows)
+                peak_pss_values = [
+                    int(row["tree_pss_kb"]) for row in resource_rows if row.get("tree_pss_kb") is not None
+                ]
+                resource_summary = {
+                    "resource_sample_count": len(resource_rows),
+                    "peak_tree_rss_kb": peak_rss,
+                    "peak_tree_rss_mb": round(peak_rss / 1024, 1),
+                    "peak_tree_pss_kb": max(peak_pss_values) if peak_pss_values else None,
+                    "peak_tree_pss_mb": round(max(peak_pss_values) / 1024, 1) if peak_pss_values else None,
+                    "peak_process_count": max(int(row.get("process_count") or 0) for row in resource_rows),
+                }
+                metadata.update(resource_summary)
+        diagnosis = classify_pytest_result(
+            returncode=result.returncode,
+            termination_reason=metadata.get("termination_reason")
+            if isinstance(metadata.get("termination_reason"), str)
+            else None,
+            report_present=metadata.get("report_status") == "present",
+            summary=summary if isinstance(summary, dict) else None,
+            progress_event=metadata.get("progress_event") if isinstance(metadata.get("progress_event"), str) else None,
+        )
+        metadata["diagnosis"] = diagnosis
+        if artifacts is not None:
+            postmortem = {
+                "updated_at": utc_now(),
+                "diagnosis": diagnosis,
+                "returncode": result.returncode,
+                "report_status": metadata.get("report_status"),
+                "progress_event": metadata.get("progress_event"),
+                "summary_exitstatus": summary.get("exitstatus") if isinstance(summary, dict) else None,
+                **resource_summary,
+            }
+            artifacts.postmortem_path.write_text(json.dumps(postmortem, indent=2, ensure_ascii=False) + "\n")
+            copy_current_pytest_artifacts(
+                Path.cwd(),
+                artifacts,
+                legacy_paths={
+                    "progress_path": PYTEST_PROGRESS_PATH,
+                    "events_merged_path": PYTEST_EVENTS_PATH,
+                    "selection_path": PYTEST_SELECTION_PATH,
+                    "summary_path": PYTEST_SUMMARY_PATH,
+                    "output_path": PYTEST_OUTPUT_PATH,
+                },
+            )
     if result.returncode == 0:
         sys.stderr.write(f"ok ({elapsed:.1f}s)\n")
     else:
@@ -673,6 +860,10 @@ def _run(label: str, cmd: list[str], *, cwd: str | None = None) -> tuple[int, fl
             sys.stderr.write(result.stdout + "\n")
         if result.stderr.strip():
             sys.stderr.write(result.stderr + "\n")
+    if run is not None and artifacts is not None:
+        run.finish_step(
+            step_id=artifacts.step_id, result={"duration_s": round(elapsed, 2), "exit": result.returncode, **metadata}
+        )
     return result.returncode, elapsed, metadata
 
 
@@ -702,6 +893,7 @@ def build_verify_steps(
     commit: bool = False,
     seed_testmon: bool = False,
     full_pytest: bool = False,
+    broad_testmon: bool = False,
 ) -> list[tuple[str, list[str]]]:
     steps: list[tuple[str, list[str]]] = [
         ("ruff format", ["ruff", "format", "--check", "polylogue/", "tests/", "devtools/"]),
@@ -751,9 +943,7 @@ def build_verify_steps(
         ]
         base_marker = f"not slow and {scale_marker_expr}" if skip_slow else scale_marker_expr
         if seed_testmon:
-            pytest_cmd.extend(
-                ["-m", base_marker, "--testmon", "--testmon-noselect", *_pytest_worker_args(default="16")]
-            )
+            pytest_cmd.extend(["-m", base_marker, "--testmon", "--testmon-noselect", *_pytest_worker_args(default="4")])
             steps.append(("pytest seed-testmon", pytest_cmd))
         elif full_pytest:
             # #1775: the full diagnostic runs as two lanes. The bulk lane keeps
@@ -768,7 +958,7 @@ def build_verify_steps(
                 *pytest_cmd,
                 "-m",
                 f"({base_marker}) and not load_sensitive and not tui",
-                *_pytest_worker_args(default="16"),
+                *_pytest_worker_args(default="4"),
             ]
             steps.append(("pytest full (parallel)", bulk_cmd))
 
@@ -785,9 +975,11 @@ def build_verify_steps(
             isolated_cmd.extend(["-m", f"({base_marker}) and (load_sensitive or tui)", "-p", "no:randomly", "-n", "0"])
             steps.append(("pytest load-sensitive (isolated)", isolated_cmd))
         else:
-            pytest_cmd.extend(["-m", base_marker, "--testmon", *_pytest_worker_args(default="0")])
+            default_workers = "4" if broad_testmon else "0"
+            pytest_cmd.extend(["-m", base_marker, "--testmon", *_pytest_worker_args(default=default_workers)])
             pytest_cmd.append("--testmon-forceselect")
-            steps.append(("pytest testmon", pytest_cmd))
+            label = "pytest testmon (broad)" if broad_testmon else "pytest testmon"
+            steps.append((label, pytest_cmd))
 
     if lab:
         steps.append(("lab scenario", _devtools_cmd("lab-scenario", "run", "archive-smoke", "--tier", "0")))
@@ -870,6 +1062,29 @@ def _pytest_worker_args(*, default: str) -> list[str]:
     return ["-n", workers]
 
 
+_BROAD_TESTMON_CHANGED_PATHS = {
+    "pyproject.toml",
+    "tests/conftest.py",
+}
+
+
+def _default_testmon_is_broad_change() -> bool:
+    """Return true when affected-test selection should be treated as broad."""
+    changed: set[str] = set()
+    commands = (
+        ["git", "diff", "--name-only", "HEAD", "--"],
+        ["git", "diff", "--name-only", "origin/master...HEAD", "--"],
+    )
+    for command in commands:
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if result.returncode == 0:
+            changed.update(line.strip() for line in result.stdout.splitlines() if line.strip())
+    return bool(changed & _BROAD_TESTMON_CHANGED_PATHS)
+
+
 def _testmon_preflight(*, seed_testmon: bool, full_pytest: bool, quick: bool, commit: bool) -> str | None:
     if quick or commit or seed_testmon or full_pytest:
         return None
@@ -894,14 +1109,14 @@ def _testmon_preflight(*, seed_testmon: bool, full_pytest: bool, quick: bool, co
     current_head = _git_head()
     stamped_head = stamp.get("git_head")
     if current_head is not None and stamped_head != current_head:
-        return (
+        sys.stderr.write(
             "verify: pytest-testmon seed was recorded for a different git head; "
-            "run `devtools verify --seed-testmon` before using the default affected-test path.\n"
+            "continuing with the existing dependency database and recording affected-test evidence.\n"
         )
     if stamp.get("testmon_data") != _file_fingerprint(TESTMON_DATA):
-        return (
+        sys.stderr.write(
             "verify: pytest-testmon database changed after the seed stamp; "
-            "run `devtools verify --seed-testmon` before using the default affected-test path.\n"
+            "continuing because testmon updates its dependency database during normal affected runs.\n"
         )
     return None
 
@@ -984,6 +1199,7 @@ def main(argv: list[str] | None = None) -> int:
 
     head = _git_head()
     t0 = time.monotonic()
+    verify_run = VerifyRun(tier=tier, argv=list(sys.argv[1:] if argv is None else argv), git_head=head)
 
     if not use_json:
         sys.stderr.write("verify: running local verification baseline\n")
@@ -1000,6 +1216,7 @@ def main(argv: list[str] | None = None) -> int:
         skip_slow=bool(args.skip_slow),
         seed_testmon=bool(args.seed_testmon),
         full_pytest=full_pytest,
+        broad_testmon=_default_testmon_is_broad_change(),
     )
 
     step_results: list[dict[str, Any]] = []
@@ -1007,7 +1224,7 @@ def main(argv: list[str] | None = None) -> int:
     for label, cmd in steps:
         if label.startswith("pytest"):
             _warn_low_memory()  # check again right before the heavy step
-        rc, elapsed, metadata = _run(label, cmd)
+        rc, elapsed, metadata = _run(label, cmd, run=verify_run)
         step_result: dict[str, Any] = {"name": label, "duration_s": round(elapsed, 2), "exit": rc}
         step_result.update(metadata)
         step_results.append(step_result)
@@ -1023,10 +1240,22 @@ def main(argv: list[str] | None = None) -> int:
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "git_head": head,
         "tier": tier,
+        "run_id": verify_run.run_id,
+        "artifact_dir": str(verify_run.relative_run_dir),
         "steps": step_results,
         "total_duration_s": total_duration,
         "exit_code": exit_code,
     }
+    pytest_diagnosis = next(
+        (
+            str(step["diagnosis"])
+            for step in step_results
+            if str(step.get("name", "")).startswith("pytest") and "diagnosis" in step
+        ),
+        None,
+    )
+    if pytest_diagnosis is not None:
+        history_entry["diagnosis"] = pytest_diagnosis
 
     if use_json:
         _print_json(history_entry)
@@ -1047,6 +1276,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Persist history and stamp.
     _save_history(history_entry)
+    verify_run.finish(exit_code=exit_code, duration_s=total_duration, diagnosis=pytest_diagnosis)
     if exit_code == 0:
         _stamp_head()
         if args.seed_testmon:

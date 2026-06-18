@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from devtools import repo_root as _get_root
+from devtools.verify_runs import CURRENT_RUN_PATH
 from polylogue.core.json import JSONDocument
 
 XTaskDict = JSONDocument
@@ -73,6 +74,46 @@ def _append_task(task: XTaskDict, path: Path | None = None) -> None:
     _ensure_file(target)
     with target.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(task, sort_keys=True) + "\n")
+
+
+def _latest_verify_run_metadata(command: str) -> dict[str, Any]:
+    if command not in {"verify", "test"}:
+        return {}
+    path = _get_root() / CURRENT_RUN_PATH
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    latest_pytest = next(
+        (
+            step
+            for step in reversed(payload.get("steps", []))
+            if isinstance(step, dict) and str(step.get("name", "")).startswith("pytest")
+        ),
+        {},
+    )
+    metadata: dict[str, Any] = {
+        "verify_run_id": payload.get("run_id"),
+        "verify_artifact_dir": payload.get("artifact_dir"),
+        "verify_status": payload.get("status"),
+        "verify_diagnosis": payload.get("diagnosis"),
+    }
+    if isinstance(latest_pytest, dict):
+        for key in (
+            "diagnosis",
+            "selected_count",
+            "deselected_count",
+            "count",
+            "peak_tree_rss_mb",
+            "peak_tree_pss_mb",
+            "peak_process_count",
+            "resource_sample_count",
+        ):
+            if key in latest_pytest:
+                metadata[f"pytest_{key}"] = latest_pytest[key]
+    return {key: value for key, value in metadata.items() if value is not None}
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +191,7 @@ def record_invocation(
             "cwd": cwd if cwd is not None else os.getcwd(),
             "class": classify_command(command),
         }
+        task.update(_latest_verify_run_metadata(command))
         _append_task(task, path=path)
     except Exception:
         # Auto-log must never crash the wrapped command.
@@ -214,6 +256,12 @@ def _cmd_recent(args: argparse.Namespace) -> int:
             parts.append(f"exit={code}")
         if dur is not None:
             parts.append(f"{dur}ms")
+        if task.get("verify_run_id"):
+            parts.append(f"run={task['verify_run_id']}")
+        if task.get("verify_diagnosis") or task.get("pytest_diagnosis"):
+            parts.append(f"diagnosis={task.get('verify_diagnosis') or task.get('pytest_diagnosis')}")
+        if task.get("pytest_peak_tree_rss_mb") is not None:
+            parts.append(f"rss_peak={task['pytest_peak_tree_rss_mb']}MiB")
         print("  ".join(parts))
     return 0
 
@@ -297,6 +345,18 @@ def _cmd_stats(args: argparse.Namespace) -> int:
     if args.by_class:
         stats["by_class"] = _class_distributions(tasks)
 
+    peaks: list[float] = []
+    for task in tasks:
+        value = task.get("pytest_peak_tree_rss_mb")
+        if isinstance(value, (int, float)):
+            peaks.append(float(value))
+    if args.resources and peaks:
+        stats["resources"] = {
+            "count": len(peaks),
+            "peak_rss_mb_max": max(peaks),
+            "peak_rss_mb_p95": _percentile(peaks, 95),
+        }
+
     slowest: list[XTaskDict] = []
     if args.slowest and args.slowest > 0:
         timed = [t for t in tasks if t.get("duration_ms") is not None]
@@ -326,6 +386,13 @@ def _cmd_stats(args: argparse.Namespace) -> int:
                 f"median={dist['median_ms']:.0f}ms  p95={dist['p95_ms']:.0f}ms  "
                 f"max={dist['max_ms']:.0f}ms"
             )
+    if args.resources and "resources" in stats:
+        res = stats["resources"]
+        print(
+            f"resources: n={res['count']} "
+            f"peak_rss_max={res['peak_rss_mb_max']:.1f}MiB "
+            f"peak_rss_p95={res['peak_rss_mb_p95']:.1f}MiB"
+        )
     if slowest:
         print(f"slowest {len(slowest)}:")
         for task in slowest:
@@ -516,6 +583,11 @@ def main(argv: list[str] | None = None) -> int:
         default=0,
         metavar="N",
         help="Include the N slowest invocations by duration_ms.",
+    )
+    stats_parser.add_argument(
+        "--resources",
+        action="store_true",
+        help="Add pytest resource distributions when verify/test records carry them.",
     )
 
     replay_parser = subparsers.add_parser("replay", help="Re-run the Nth most recent task (default 1).")

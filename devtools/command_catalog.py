@@ -634,6 +634,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools xtask recent --count 20",
             "devtools xtask stats",
             "devtools xtask stats --json",
+            "devtools xtask stats --resources",
         ),
     ),
     CommandSpec(

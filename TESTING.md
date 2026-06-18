@@ -47,16 +47,27 @@ default, override with `POLYLOGUE_PYTEST_WORKERS`). Because the default gate
 also applies marker filters for scale tiers, it passes `--testmon-forceselect`
 so pytest-testmon still selects affected tests instead of letting pytest marker
 selection expand the run. Full diagnostic and seed runs use the same worker
-override and default to `-n 16`.
+override and default to `-n 4` so database-heavy workers do not multiply
+memory and I/O pressure by default.
 
 Pytest temp databases default to `/realm/tmp/polylogue-pytest` so interrupted
 full or xdist runs do not leave multi-GiB `/dev/shm` directories resident in
-RAM. Use `POLYLOGUE_PYTEST_TMPFS=1` only for explicit performance lanes that
-can afford tmpfs pressure. `POLYLOGUE_PYTEST_BASETEMP_ROOT=/path` overrides
-both. Per-run `pytest-polylogue-*` basetemps are removed at normal pytest
-shutdown, and pytest startup sweeps stale per-run dirs from both the configured
-root and legacy `/dev/shm`; shared `pytest-polylogue-seeded-*` caches are kept
-because they are small and reused.
+RAM. On btrfs scratch volumes, the harness best-effort marks that root with
+`chattr +C` so new per-run SQLite files avoid CoW amplification. Use
+`POLYLOGUE_PYTEST_TMPFS=1` only for explicit performance lanes that can afford
+tmpfs pressure. `POLYLOGUE_PYTEST_BASETEMP_ROOT=/path` overrides both. Per-run
+`pytest-polylogue-*` basetemps are removed at normal pytest shutdown, and
+pytest startup sweeps stale per-run dirs from both the configured root and
+legacy `/dev/shm`; shared `pytest-polylogue-seeded-*` caches are kept because
+they are small and reused.
+
+`devtools verify --seed-testmon` and the parallel full diagnostic may set
+`POLYLOGUE_PYTEST_TMPFS=1` automatically when the host has at least 10 GiB
+available memory and `/dev/shm` has at least 8 GiB free. This is deliberately
+limited to broad lanes: seed/full runs and default affected runs caused by
+harness/config changes are write-heavy enough that disk-backed basetemps can
+dominate runtime, while focused and ordinary affected runs stay on the normal
+scratch root unless the operator opts in.
 
 The default path does not replay cached verify results. Every invocation runs
 the static gates and then invokes pytest-testmon for affected-test selection.
@@ -64,14 +75,36 @@ Polylogue does not maintain a parallel changed-file router for helper/config
 paths; explicit full collection is limited to `devtools verify --seed-testmon`
 for dependency-database refreshes and `devtools verify --all` for diagnostics.
 
-`devtools verify` treats the pytest subprocess as a bounded child workload, not
-an unowned shell. It prints periodic heartbeat lines, drains pytest output
-incrementally so real progress resets the stall clock, and terminates the whole
-pytest process group if the step exceeds
-`POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S` (default 45 minutes) or produces no output
-for `POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S` (default 10 minutes). Set either
-variable to `0` only for an explicit diagnostic run where an unusually long
-full-suite pass is expected and supervised.
+`devtools verify` and `devtools test` treat pytest as a bounded, supervised
+child workload, not an unowned shell. Each pytest step gets a run directory
+under `.cache/verify/runs/<run-id>/` with stdout/stderr, progress, selection,
+summary, merged worker events, raw per-worker event files, resource samples,
+and a postmortem diagnosis. The latest run is mirrored to
+`.cache/verify/current-run.json`, and the latest pytest step is mirrored to:
+
+- `.cache/verify/current-pytest-progress.json`
+- `.cache/verify/current-pytest-selection.json`
+- `.cache/verify/current-pytest-summary.json`
+- `.cache/verify/current-pytest-events.jsonl`
+- `.cache/verify/current-pytest-events/`
+- `.cache/verify/current-pytest-resources.jsonl`
+- `.cache/verify/current-pytest-postmortem.json`
+- `.cache/verify/current-pytest-output.log`
+
+The supervisor prints periodic heartbeat lines, drains pytest output
+incrementally so real progress resets the stall clock, samples the pytest
+process tree and host memory/pressure state, and terminates the whole pytest
+process group if the step exceeds `POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S` (default
+45 minutes) or produces no output for
+`POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S` (default 10 minutes).
+`POLYLOGUE_VERIFY_RESOURCE_INTERVAL_S` controls resource sampling cadence
+(default 2 seconds). Set these timeout variables to `0` only for an explicit
+diagnostic run where an unusually long full-suite pass is expected and
+supervised.
+
+`devtools xtask recent` shows the run id, diagnosis, and peak pytest RSS when
+the current run metadata is available. `devtools xtask stats --resources`
+aggregates recorded pytest memory peaks over time.
 
 `devtools test` uses the same pytest progress plugin and process supervisor for
 focused selections. During or after a run, inspect

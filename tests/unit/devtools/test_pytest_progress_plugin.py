@@ -76,6 +76,26 @@ def test_progress_plugin_records_node_start_and_finish(
     assert events[0]["location"] == ["tests/unit/test_example.py", 12, "test_example"]
 
 
+def test_progress_plugin_writes_worker_scoped_event_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events_dir = tmp_path / "events"
+    monkeypatch.setenv("POLYLOGUE_PYTEST_EVENTS_DIR", str(events_dir))
+    monkeypatch.setenv("POLYLOGUE_VERIFY_RUN_ID", "run-123")
+    monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw3")
+
+    location = ("tests/unit/test_example.py", 12, "test_example")
+    pytest_progress_plugin.pytest_runtest_logstart("tests/unit/test_example.py::test_example", location)
+
+    files = list(events_dir.glob("gw3-*.jsonl"))
+    assert len(files) == 1
+    event = json.loads(files[0].read_text().splitlines()[0])
+    assert event["run_id"] == "run-123"
+    assert event["worker_id"] == "gw3"
+    assert event["event"] == "test_started"
+
+
 def test_progress_plugin_write_failures_do_not_escape(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("POLYLOGUE_PYTEST_EVENTS_PATH", "/dev/null/events.jsonl")
 

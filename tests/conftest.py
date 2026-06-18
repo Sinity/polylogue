@@ -6,6 +6,7 @@ import os
 import shutil
 import sqlite3
 import stat as _stat
+import subprocess
 import sys
 import threading
 import time
@@ -72,10 +73,11 @@ def pytest_configure(config: pytest.Config) -> None:
         checkout = hashlib.sha1(str(config.rootpath).encode("utf-8"), usedforsecurity=False).hexdigest()[:8]
         os.environ["POLYLOGUE_PYTEST_CHECKOUT"] = checkout
         run_id = os.environ.get("POLYLOGUE_PYTEST_RUN_ID")
+        if not hasattr(config, "workerinput"):
+            _sweep_stale_polylogue_basetemps()
         if run_id is None:
             run_id = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
             os.environ["POLYLOGUE_PYTEST_RUN_ID"] = run_id
-            _sweep_stale_polylogue_basetemps()
         root, label = _managed_pytest_temp_root()
         config.option.basetemp = str(root / f"pytest-polylogue-{checkout}-{run_id}")
         sys.stderr.write(f"pytest: basetemp → {config.option.basetemp} ({label})\n")
@@ -112,11 +114,41 @@ def _managed_pytest_temp_root() -> tuple[Path, str]:
 
     try:
         _DEFAULT_SCRATCH_ROOT.mkdir(parents=True, exist_ok=True)
+        _mark_btrfs_nocow(_DEFAULT_SCRATCH_ROOT)
     except OSError:
         fallback = Path("/tmp/polylogue-pytest")
         fallback.mkdir(parents=True, exist_ok=True)
+        _mark_btrfs_nocow(fallback)
         return fallback, "disk fallback"
     return _DEFAULT_SCRATCH_ROOT, "scratch"
+
+
+def _mark_btrfs_nocow(path: Path) -> None:
+    """Best-effort no-CoW marking for SQLite-heavy pytest scratch roots."""
+    if shutil.which("chattr") is None or _filesystem_type(path) != "btrfs":
+        return
+    try:
+        current = subprocess.run(["lsattr", "-d", str(path)], capture_output=True, text=True, timeout=2)
+        if current.returncode == 0 and current.stdout.split(maxsplit=1)[0].find("C") >= 0:
+            return
+        subprocess.run(["chattr", "+C", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+    except (OSError, subprocess.TimeoutExpired):
+        return
+
+
+def _filesystem_type(path: Path) -> str | None:
+    try:
+        result = subprocess.run(
+            ["findmnt", "-T", str(path), "-no", "FSTYPE"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
 
 
 def _polylogue_basetemp_roots() -> tuple[Path, ...]:
