@@ -18,6 +18,7 @@ from polylogue.core.refs import EvidenceRef, ObjectRef
         ("branch:feature/demo", "branch", "feature/demo", ()),
         ("check-run:ruff check", "check-run", "ruff check", ()),
         ("github-issue:Sinity/polylogue#1883", "github-issue", "Sinity/polylogue#1883", ()),
+        ("github-review:1911", "github-review", "1911", ()),
     ],
 )
 def test_object_ref_parses_and_formats_existing_assertion_ref_shapes(

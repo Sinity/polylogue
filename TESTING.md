@@ -15,8 +15,9 @@ devtools verify --seed-testmon --skip-slow
 
 # Focused inner-loop runs — prefer `devtools test` over raw pytest. It runs the
 # selection through the managed harness (repo env, single-process by default,
-# live output) and serializes overlapping runs from the same checkout so two
-# suites do not race. Any pytest arguments go after the command name.
+# live output, current-node progress artifacts, stall/runtime timeouts) and
+# serializes overlapping runs from the same checkout so two suites do not race.
+# Any pytest arguments go after the command name.
 devtools test tests/unit/storage/test_hybrid_laws.py
 devtools test -k "test_name"
 devtools test tests/unit/pipeline -x
@@ -71,6 +72,13 @@ pytest process group if the step exceeds
 for `POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S` (default 10 minutes). Set either
 variable to `0` only for an explicit diagnostic run where an unusually long
 full-suite pass is expected and supervised.
+
+`devtools test` uses the same pytest progress plugin and process supervisor for
+focused selections. During or after a run, inspect
+`.cache/verify/current-pytest-progress.json`,
+`.cache/verify/current-pytest-events.jsonl`, and
+`.cache/verify/current-pytest-output.log` to see the active/latest test node,
+captured output, and termination reason if a focused run stalls.
 
 For the generated validation-lane, mutation-campaign, and benchmark inventory,
 see [docs/test-quality-workflows.md](docs/test-quality-workflows.md).

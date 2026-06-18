@@ -19,6 +19,7 @@ ObjectRefKind: TypeAlias = Literal[
     "observed-event",
     "github-issue",
     "github-pr",
+    "github-review",
 ]
 
 EvidenceRefKind: TypeAlias = Literal["session", "message", "block"]
@@ -37,6 +38,7 @@ _OBJECT_REF_KINDS: Final[dict[str, ObjectRefKind]] = {
     "observed-event": "observed-event",
     "github-issue": "github-issue",
     "github-pr": "github-pr",
+    "github-review": "github-review",
 }
 
 

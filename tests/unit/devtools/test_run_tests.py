@@ -2,18 +2,18 @@
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from devtools import run_tests
+from devtools.verify import PYTEST_EVENTS_PATH
 
 
 def test_build_pytest_cmd_defaults_to_single_process() -> None:
     cmd = run_tests.build_pytest_cmd(["tests/unit/pipeline"])
-    assert cmd[0] == "pytest"
+    assert cmd[:3] == ["pytest", "-p", "devtools.pytest_progress_plugin"]
     assert "tests/unit/pipeline" in cmd
     assert cmd[-2:] == ["-n", "0"]
 
@@ -41,23 +41,25 @@ def test_main_requires_a_selection(capsys: pytest.CaptureFixture[str]) -> None:
 def test_main_strips_dispatch_json_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, Any] = {}
 
-    def _fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+    def _fake_run(cmd: list[str], **kwargs: Any) -> Any:
         captured["cmd"] = cmd
-        return subprocess.CompletedProcess(cmd, 0)
+        captured["env"] = kwargs["env"]
+        return type("Result", (), {"returncode": 0, "stderr": ""})()
 
     monkeypatch.setenv("POLYLOGUE_TEST_NO_LOCK", "1")
-    monkeypatch.setattr("devtools.run_tests.subprocess.run", _fake_run)
+    monkeypatch.setattr("devtools.run_tests._run_pytest_with_heartbeat", _fake_run)
     assert run_tests.main(["tests/unit/pipeline", "--json"]) == 0
     assert "--json" not in captured["cmd"]
     assert "tests/unit/pipeline" in captured["cmd"]
+    assert captured["env"]["POLYLOGUE_PYTEST_EVENTS_PATH"] == str(run_tests.ROOT / PYTEST_EVENTS_PATH)
 
 
 def test_main_returns_pytest_exit_code(monkeypatch: pytest.MonkeyPatch) -> None:
-    def _fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
-        return subprocess.CompletedProcess(cmd, 5)
+    def _fake_run(cmd: list[str], **kwargs: Any) -> Any:
+        return type("Result", (), {"returncode": 5, "stderr": ""})()
 
     monkeypatch.setenv("POLYLOGUE_TEST_NO_LOCK", "1")
-    monkeypatch.setattr("devtools.run_tests.subprocess.run", _fake_run)
+    monkeypatch.setattr("devtools.run_tests._run_pytest_with_heartbeat", _fake_run)
     assert run_tests.main(["tests/unit/does_not_exist"]) == 5
 
 
@@ -66,4 +68,5 @@ def test_managed_env_sets_repo_roots() -> None:
     assert env["POLYLOGUE_ROOT"] == str(run_tests.ROOT)
     assert env["POLYLOGUE_REPO_ROOT"] == str(run_tests.ROOT)
     assert env["PYTHONPYCACHEPREFIX"] == str(run_tests.ROOT / ".cache" / "pycache")
+    assert env["POLYLOGUE_PYTEST_EVENTS_PATH"] == str(run_tests.ROOT / PYTEST_EVENTS_PATH)
     assert Path(env["POLYLOGUE_ROOT"]).is_dir()

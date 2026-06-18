@@ -51,7 +51,12 @@ def _session() -> Session:
                 Message(
                     id="m2",
                     role=Role.ASSISTANT,
-                    text="Decision: keep benchmarks outside coverage-gate for scope, not flakiness.",
+                    text=(
+                        "Decision: keep benchmarks outside coverage-gate for scope, not flakiness.\n"
+                        "Review posted on PR #1911\n"
+                        "Read review on PR #1911\n"
+                        "Addressed review on PR #1911"
+                    ),
                     blocks=[
                         {
                             "type": "tool_use",
@@ -219,10 +224,16 @@ def test_compile_recovery_digest_extracts_small_evidence_linked_bundle() -> None
         "subagent_started",
         "subagent_finished",
         "check_passed",
+        "review_posted",
+        "review_seen_by_tool",
+        "review_acted_on",
     } <= observed_kinds
     check_projection = next(event for event in projection.events if event.kind == "check_passed")
     assert check_projection.delivery_state == "observed"
     assert check_projection.object_refs == (ObjectRef(kind="check-run", object_id="ruff check"),)
+    review_projection = next(event for event in projection.events if event.kind == "review_acted_on")
+    assert review_projection.delivery_state == "acted_on"
+    assert review_projection.object_refs == (ObjectRef(kind="github-review", object_id="#1911"),)
 
     event_summaries = {event.summary for event in digest.events}
     assert "PR #1911 opened" in event_summaries
@@ -230,6 +241,9 @@ def test_compile_recovery_digest_extracts_small_evidence_linked_bundle() -> None
     assert "Issue #1818 closed" in event_summaries
     assert "20 tests passed" in event_summaries
     assert "ruff check passed" in event_summaries
+    assert "Review on PR #1911 posted" in event_summaries
+    assert "Review on PR #1911 seen by tool" in event_summaries
+    assert "Review on PR #1911 acted on" in event_summaries
 
     candidates = {candidate.text for candidate in digest.decision_candidates}
     assert "goal: burn down the backlog" in candidates
@@ -528,6 +542,39 @@ def test_github_cli_and_failed_check_events_are_extracted() -> None:
     assert ("pr_opened", "PR #1930 opened") in events
     assert ("check_failed", "showcase-verify failed") in events
     assert ("check_passed", "Analyze (python) passed") in events
+
+
+def test_review_delivery_events_are_extracted_and_projected() -> None:
+    session = Session(
+        id=SessionId("codex-session:review-events"),
+        origin=Origin.CODEX_SESSION,
+        title="Review event extraction",
+        messages=MessageCollection(
+            messages=[
+                Message(
+                    id="m-review",
+                    role=Role.ASSISTANT,
+                    text=(
+                        "Review posted on PR #2100\n"
+                        "Read review on PR #2100\n"
+                        "Injected review into context for PR #2100\n"
+                        "Acknowledged review on PR #2100\n"
+                        "Addressed review on PR #2100"
+                    ),
+                )
+            ]
+        ),
+    )
+
+    digest = compile_recovery_digest(session)
+    event_by_kind = {event.kind: event for event in digest.run_projection.events}
+
+    assert event_by_kind["review_posted"].delivery_state == "observed"
+    assert event_by_kind["review_seen_by_tool"].delivery_state == "seen_by_tool"
+    assert event_by_kind["review_injected_context"].delivery_state == "injected_context"
+    assert event_by_kind["review_acknowledged"].delivery_state == "acknowledged"
+    assert event_by_kind["review_acted_on"].delivery_state == "acted_on"
+    assert event_by_kind["review_acted_on"].object_refs == (ObjectRef(kind="github-review", object_id="#2100"),)
 
 
 def test_claim_models_reject_missing_raw_refs() -> None:

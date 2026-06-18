@@ -9,6 +9,8 @@ This command forwards a selection (paths, ``-k``/``-m`` expressions, ``-x``,
 - a single-process worker default (``-n 0``) for fast focused runs, overridable
   with ``-n`` in the selection or ``POLYLOGUE_PYTEST_WORKERS``;
 - live, streamed output (unlike ``devtools verify``, which captures);
+- the same pytest progress ledger, heartbeat, and stall timeout used by
+  ``devtools verify``;
 - a checkout-scoped lock that serializes overlapping runs so two suites from
   the same checkout do not race and burn CPU. Concurrency is already
   *correctness*-safe at the conftest level (#1785, per-run tmpfs basetemp); the
@@ -23,10 +25,18 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import os
-import subprocess
 import sys
+import time
 from collections.abc import Iterator
 from pathlib import Path
+
+from devtools.verify import (
+    PYTEST_EVENTS_PATH,
+    PYTEST_OUTPUT_PATH,
+    PYTEST_PROGRESS_PATH,
+    _clear_pytest_report,
+    _run_pytest_with_heartbeat,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 _LOCK_PATH = ROOT / ".cache" / "test-run.lock"
@@ -38,6 +48,7 @@ def _managed_env() -> dict[str, str]:
     env["POLYLOGUE_ROOT"] = str(ROOT)
     env["POLYLOGUE_REPO_ROOT"] = str(ROOT)
     env["PYTHONPYCACHEPREFIX"] = str(ROOT / ".cache" / "pycache")
+    env["POLYLOGUE_PYTEST_EVENTS_PATH"] = str(ROOT / PYTEST_EVENTS_PATH)
     return env
 
 
@@ -56,7 +67,7 @@ def _worker_args(selection: list[str]) -> list[str]:
 
 def build_pytest_cmd(selection: list[str]) -> list[str]:
     """Compose the pytest command for a focused selection."""
-    return ["pytest", *selection, *_worker_args(selection)]
+    return ["pytest", "-p", "devtools.pytest_progress_plugin", *selection, *_worker_args(selection)]
 
 
 @contextlib.contextmanager
@@ -106,5 +117,11 @@ def main(argv: list[str] | None = None) -> int:
     cmd = build_pytest_cmd(selection)
     no_lock = os.environ.get("POLYLOGUE_TEST_NO_LOCK") == "1"
     with _run_lock(enabled=not no_lock):
-        result = subprocess.run(cmd, cwd=str(ROOT), env=_managed_env())
+        _clear_pytest_report(cmd)
+        result = _run_pytest_with_heartbeat(cmd, cwd=str(ROOT), env=_managed_env(), t0=time.monotonic())
+    if result.stderr:
+        sys.stderr.write(result.stderr)
+    sys.stderr.write(
+        f"\ndevtools test: progress={PYTEST_PROGRESS_PATH} events={PYTEST_EVENTS_PATH} output={PYTEST_OUTPUT_PATH}\n"
+    )
     return result.returncode
