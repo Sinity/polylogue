@@ -56,7 +56,7 @@ anything different; release-please consumes the existing history.
 3. The tag push triggers [`release.yml`](../.github/workflows/release.yml),
    which runs, in order:
    - `build-and-smoke` — builds wheel + sdist, runs
-     `devtools verify-distribution-surface`, and verifies PyPI long-description
+     `devtools release verify-distribution`, and verifies PyPI long-description
      renderability with `twine check`.
    - `installed-smoke` matrix — installs the freshly-built wheel into a fresh
      `python -m venv` on `{ubuntu-latest, macos-latest} × py{3.11, 3.12, 3.13}`

@@ -1,7 +1,7 @@
 name: Release
 
 # Triggered by pushing an annotated tag matching `vX.Y.Z`. Builds the
-# wheel + sdist, smokes them through verify-distribution-surface on the
+# wheel + sdist, smokes them through release verify-distribution on the
 # build host, runs an installed-wheel smoke matrix across supported
 # Python versions on Linux + macOS, signs the artifacts with Sigstore
 # keyless OIDC, emits a CycloneDX SBOM, then:
@@ -52,7 +52,7 @@ jobs:
       - name: Install dev dependencies (frozen lockfile)
         run: uv sync --extra dev --frozen
       - name: Build wheel + sdist and smoke installed entrypoints
-        run: uv run devtools verify-distribution-surface --work-dir "${RUNNER_TEMP}/dist" --keep-work-dir
+        run: uv run devtools release verify-distribution --work-dir "${RUNNER_TEMP}/dist" --keep-work-dir
         env:
           POLYLOGUE_FORCE_PLAIN: "1"
       - name: twine check (PyPI metadata long-description renderability)
@@ -146,7 +146,7 @@ jobs:
           # `analyze` against an empty XDG archive must not crash on first-run
           # (covers schema bootstrap on a fresh database).
           polylogue --plain analyze
-          # `--plain analyze --count` is the smoke parity with verify-distribution-surface.
+          # `--plain analyze --count` is the smoke parity with release verify-distribution.
           polylogue --plain analyze --count
           python -m polylogue --version
 

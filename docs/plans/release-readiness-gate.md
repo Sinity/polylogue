@@ -24,11 +24,11 @@ shipped product behavior.
 Run these from a clean checkout inside the devshell:
 
 ```bash
-devtools release-readiness
-devtools release-readiness --release-body-file /tmp/release-pr-body.md
+devtools release readiness
+devtools release readiness --release-body-file /tmp/release-pr-body.md
 devtools verify --quick
 devtools verify --lab
-devtools build-package
+devtools release build-package
 devtools render pages
 devtools verify-doc-commands
 ```
@@ -61,11 +61,11 @@ nix flake check
 | Web/API | Any advertised web/API surface has stable DTOs, auth posture, and route vocabulary. | #1847, #1846 |
 | Static/docs surface | Generated docs, pages, media, and topology status are current. | #1848, #1849 |
 | CI reliability | Known benchmark/test flakes are resolved or explicitly excluded from the release gate with rationale. | #1878 |
-| Packaging | Wheel/sdist/Nix package expose only supported runtime entrypoints. | `devtools build-package`, `nix flake check` |
+| Packaging | Wheel/sdist/Nix package expose only supported runtime entrypoints. | `devtools release build-package`, `nix flake check` |
 
 ## Manual Release Review
 
-Before merging a release PR, record the answers in the PR body and run `devtools release-readiness --release-body-file <path>` against that exact body text:
+Before merging a release PR, record the answers in the PR body and run `devtools release readiness --release-body-file <path>` against that exact body text:
 
 | Question | Required Answer |
 | --- | --- |

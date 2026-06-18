@@ -47,7 +47,7 @@ def test_release_readiness_report_validates_committed_gate() -> None:
     assert report["ok"] is True
     assert report["gate_doc"] == "docs/plans/release-readiness-gate.md"
     assert ["devtools", "verify", "--quick"] in [command["argv"] for command in report["required_commands"]]
-    assert ["devtools", "build-package"] in [command["argv"] for command in report["required_commands"]]
+    assert ["devtools", "release", "build-package"] in [command["argv"] for command in report["required_commands"]]
     assert "- Known caveats scoped out:" in report["required_release_body_fields"]
     assert report["release_status"]["satisfied"]
     assert report["release_status"]["blocking_external_claims"]
@@ -59,7 +59,7 @@ def test_release_readiness_json_cli(capsys: pytest.CaptureFixture[str]) -> None:
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is True
-    assert payload["required_commands"][0]["argv"] == ["devtools", "release-readiness"]
+    assert payload["required_commands"][0]["argv"] == ["devtools", "release", "readiness"]
     assert "release_status" in payload
 
 
@@ -127,7 +127,7 @@ def _valid_release_body_text() -> str:
 {fields}
 
 Verification:
-- devtools release-readiness -- key output line
+- devtools release readiness -- key output line
 """
 
 

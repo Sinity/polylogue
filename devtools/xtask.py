@@ -139,7 +139,7 @@ _CLASS_PREFIXES: tuple[tuple[str, str], ...] = (
     ("regression-capture", "query"),
     ("scenario-projections", "query"),
     ("coverage-gate", "verify"),
-    ("build-package", "render"),
+    ("release build-package", "render"),
     ("status", "query"),
     ("xtask", "query"),
 )

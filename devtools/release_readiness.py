@@ -24,11 +24,11 @@ class GateCommand:
 
 
 REQUIRED_COMMANDS: tuple[GateCommand, ...] = (
-    GateCommand(("devtools", "release-readiness"), True, "release gate definition"),
+    GateCommand(("devtools", "release", "readiness"), True, "release gate definition"),
     GateCommand(("devtools", "verify", "--quick"), True, "static/generated baseline"),
     GateCommand(("devtools", "verify", "--lab"), True, "verification-lab baseline"),
-    GateCommand(("devtools", "build-package"), True, "wheel/sdist/Nix package smoke"),
-    GateCommand(("devtools", "render pages"), True, "documentation site build"),
+    GateCommand(("devtools", "release", "build-package"), True, "wheel/sdist/Nix package smoke"),
+    GateCommand(("devtools", "render", "pages"), True, "documentation site build"),
     GateCommand(("devtools", "verify-doc-commands"), True, "README/docs command examples"),
 )
 
@@ -102,6 +102,21 @@ def _issue_refs(lines: list[str]) -> set[str]:
     return refs
 
 
+def _catalog_command_name(argv: tuple[str, ...], commands: set[str]) -> str:
+    """Return the devtools command path before command-local arguments."""
+
+    command_parts: list[str] = []
+    for part in argv[1:]:
+        if part.startswith("-"):
+            break
+        command_parts.append(part)
+    for end in range(len(command_parts), 0, -1):
+        candidate = " ".join(command_parts[:end])
+        if candidate in commands:
+            return candidate
+    return " ".join(command_parts)
+
+
 def _read_text_file(path: Path, *, label: str, errors: list[str]) -> str | None:
     try:
         return path.read_text(encoding="utf-8")
@@ -154,7 +169,7 @@ def build_report(
         command_text = " ".join(command.argv)
         if command.required and command_text not in text:
             errors.append(f"required command missing from gate document: {command_text}")
-        if command.argv[0] == "devtools" and command.argv[1] not in COMMANDS:
+        if command.argv[0] == "devtools" and _catalog_command_name(command.argv, set(COMMANDS)) not in COMMANDS:
             errors.append(f"unknown devtools command in release gate: {command_text}")
 
     if STATUS_SATISFIED_HEADING not in text:
@@ -203,7 +218,7 @@ def build_report(
 
 def _print_human(report: dict[str, Any]) -> None:
     status = "ok" if report["ok"] else "FAIL"
-    print(f"release-readiness: {status}")
+    print(f"release readiness: {status}")
     print(f"gate doc: {report['gate_doc']}")
     print("required commands:")
     for command in report["required_commands"]:

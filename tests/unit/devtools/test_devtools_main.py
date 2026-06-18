@@ -24,7 +24,7 @@ def test_list_commands_json_includes_generated_surface(capsys: pytest.CaptureFix
     assert "regression-capture" in commands
     assert "scenario-projections" in commands
     assert "render devtools-reference" in commands
-    assert "release-readiness" in commands
+    assert "release readiness" in commands
     assert "status" in commands
 
 

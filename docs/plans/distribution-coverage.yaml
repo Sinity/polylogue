@@ -20,9 +20,9 @@ artifacts:
     description: Python wheel distribution (bdist_wheel)
     build_system: hatchling
     config_location: pyproject.toml
-    build_command: devtools verify-distribution-surface
+    build_command: devtools release verify-distribution
     install_command: pip install polylogue
-    verification_command: devtools verify-distribution-surface
+    verification_command: devtools release verify-distribution
     ci_build: true
     ci_test: true
     notes: >
@@ -37,9 +37,9 @@ artifacts:
     description: Python source distribution (sdist)
     build_system: hatchling
     config_location: pyproject.toml
-    build_command: devtools verify-distribution-surface
+    build_command: devtools release verify-distribution
     install_command: pip install polylogue
-    verification_command: devtools verify-distribution-surface
+    verification_command: devtools release verify-distribution
     ci_build: true
     ci_test: true
     notes: >
@@ -100,7 +100,7 @@ artifacts:
       (XDG_CONFIG_HOME) are declared. Build + push to GHCR runs from
       release.yml::publish-container on `vX.Y.Z` tag push. Pre-tag CI
       does not build the image to keep ci.yml fast; the
-      verify-distribution-surface gate exercises the same wheel that
+      release verify-distribution gate exercises the same wheel that
       the Containerfile installs.
 
   browser_extension:
@@ -167,7 +167,7 @@ coverage_gaps:
     declared_at: "2026-05-02"
     review_after: "2026-08-01"
     issue: 593
-    next_evidence: devtools verify-distribution-surface
+    next_evidence: devtools release verify-distribution
   - id: distribution.macos-ci
     platform: macos
     gap: No macOS CI runner
@@ -176,7 +176,7 @@ coverage_gaps:
     declared_at: "2026-05-02"
     review_after: "2026-08-01"
     issue: 593
-    next_evidence: devtools verify-distribution-surface
+    next_evidence: devtools release verify-distribution
   - id: distribution.windows-ci
     platform: windows
     gap: No Windows CI runner
@@ -185,7 +185,7 @@ coverage_gaps:
     declared_at: "2026-05-02"
     review_after: "2026-08-01"
     issue: 593
-    next_evidence: devtools verify-distribution-surface
+    next_evidence: devtools release verify-distribution
   - id: distribution.nix-wheel-parity
     concern: install_parity
     gap: Local gate smokes wheel and sdist-built wheel, but exact Nix/devshell parity is not yet compared in CI
@@ -194,7 +194,7 @@ coverage_gaps:
     declared_at: "2026-05-02"
     review_after: "2026-08-01"
     issue: 593
-    next_evidence: devtools verify-distribution-surface
+    next_evidence: devtools release verify-distribution
   - id: distribution.container-ci-build
     artifact: oci_container
     gap: Containerfile is built+pushed only on tag (release.yml). No pre-tag CI build means image-only regressions surface at release time.
@@ -203,7 +203,7 @@ coverage_gaps:
     declared_at: "2026-05-17"
     review_after: "2026-08-01"
     issue: 953
-    next_evidence: devtools verify-distribution-surface
+    next_evidence: devtools release verify-distribution
   - id: distribution.browser-extension-store
     artifact: browser_extension
     gap: Packed .zip/.xpi ship on GitHub releases (#1238), but Chrome Web Store / Mozilla AMO submission still requires non-engineering store sign-up + review.
@@ -212,4 +212,4 @@ coverage_gaps:
     declared_at: "2026-05-17"
     review_after: "2026-08-01"
     issue: 953
-    next_evidence: devtools verify-distribution-surface
+    next_evidence: devtools release verify-distribution
