@@ -140,6 +140,7 @@ PYTEST_JUNIT_REPORT_DIR = Path(".cache/test-reports")
 PYTEST_JUNIT_REPORT_PATH = PYTEST_JUNIT_REPORT_DIR / "verify-latest.xml"
 PYTEST_PROGRESS_PATH = PYTEST_REPORT_DIR / "current-pytest-progress.json"
 PYTEST_EVENTS_PATH = PYTEST_REPORT_DIR / "current-pytest-events.jsonl"
+PYTEST_SELECTION_PATH = PYTEST_REPORT_DIR / "current-pytest-selection.json"
 PYTEST_OUTPUT_PATH = PYTEST_REPORT_DIR / "current-pytest-output.log"
 PYTEST_HEARTBEAT_ENV = "POLYLOGUE_VERIFY_HEARTBEAT_S"
 PYTEST_TIMEOUT_ENV = "POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S"
@@ -310,6 +311,7 @@ def _clear_pytest_report(cmd: Sequence[str] = ()) -> None:
         *_pytest_artifact_paths(cmd),
         PYTEST_PROGRESS_PATH,
         PYTEST_EVENTS_PATH,
+        PYTEST_SELECTION_PATH,
         PYTEST_OUTPUT_PATH,
     ):
         with contextlib.suppress(FileNotFoundError):
@@ -615,6 +617,7 @@ def _run(label: str, cmd: list[str], *, cwd: str | None = None) -> tuple[int, fl
         metadata["stall_timeout_s"] = _pytest_stall_timeout_s()
         metadata["progress_path"] = str(PYTEST_PROGRESS_PATH)
         metadata["events_path"] = str(PYTEST_EVENTS_PATH)
+        metadata["selection_path"] = str(PYTEST_SELECTION_PATH)
         metadata["output_path"] = str(PYTEST_OUTPUT_PATH)
         junit_paths = [
             str(path) for path in _pytest_artifact_paths(cmd) if path.suffix == ".xml" or path.name.endswith(".xml")
@@ -643,6 +646,14 @@ def _run(label: str, cmd: list[str], *, cwd: str | None = None) -> tuple[int, fl
             termination_reason = progress.get("termination_reason")
             if isinstance(termination_reason, str):
                 metadata["termination_reason"] = termination_reason
+        selection = _read_json_artifact(PYTEST_SELECTION_PATH)
+        if selection is not None:
+            selected_count = selection.get("selected_count")
+            deselected_count = selection.get("deselected_count")
+            if isinstance(selected_count, int):
+                metadata["selected_count"] = selected_count
+            if isinstance(deselected_count, int):
+                metadata["deselected_count"] = deselected_count
     if result.returncode == 0:
         sys.stderr.write(f"ok ({elapsed:.1f}s)\n")
     else:
@@ -660,6 +671,7 @@ def _subprocess_env() -> dict[str, str]:
     env["POLYLOGUE_REPO_ROOT"] = str(ROOT)
     env["PYTHONPYCACHEPREFIX"] = str(ROOT / ".cache" / "pycache")
     env["POLYLOGUE_PYTEST_EVENTS_PATH"] = str(Path.cwd() / PYTEST_EVENTS_PATH)
+    env["POLYLOGUE_PYTEST_SELECTION_PATH"] = str(Path.cwd() / PYTEST_SELECTION_PATH)
     return env
 
 
