@@ -94,10 +94,10 @@ class TestDiagnoseBanner:
         workspace_env: Mapping[str, Path],
     ) -> None:
         """A registered subcommand routes directly; --diagnose says so."""
-        result = runner.invoke(cli, ["--diagnose", "doctor", "--help"])
+        result = runner.invoke(cli, ["--diagnose", "ops", "--help"])
         assert result.exit_code == 0
         assert "[diagnose]" in result.output
-        assert "matched subcommand" in result.output and "doctor" in result.output
+        assert "matched subcommand" in result.output and "ops" in result.output
 
 
 # ---------------------------------------------------------------------------

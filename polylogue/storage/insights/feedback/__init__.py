@@ -1,9 +1,9 @@
 """Storage for the learning-feedback loop (#1131).
 
-User corrections are persisted in the ``corrections`` table, which is
-intentionally separate from any content-hashed session payload. The
-table is declared in the current user tier DDL
-(:mod:`polylogue.storage.sqlite.archive_tiers.user`).
+User corrections are persisted outside the content-hashed session payload.
+Current split-archive writes use assertion rows in the user tier; older
+single-file archives with ``user_corrections`` are still read and written by
+the fallback path used in tests and historical local archives.
 
 This module owns the SQL surface: insert/upsert, list, delete, and the
 ``hash_invariant_columns`` helper used by tests to assert that nothing in
@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import uuid
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -29,6 +30,11 @@ from polylogue.insights.feedback import (
     now_utc,
     parse_correction_kind,
 )
+from polylogue.storage.sqlite.archive_tiers.user_write import (
+    AssertionKind,
+    assertion_id_for_correction,
+    correction_id_for,
+)
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -37,6 +43,14 @@ if TYPE_CHECKING:
 async def _table_exists(conn: aiosqlite.Connection, table_name: str) -> bool:
     cursor = await conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ? LIMIT 1",
+        (table_name,),
+    )
+    return await cursor.fetchone() is not None
+
+
+async def _attached_table_exists(conn: aiosqlite.Connection, schema_name: str, table_name: str) -> bool:
+    cursor = await conn.execute(
+        f"SELECT 1 FROM {schema_name}.sqlite_master WHERE type='table' AND name = ? LIMIT 1",
         (table_name,),
     )
     return await cursor.fetchone() is not None
@@ -67,7 +81,7 @@ async def _attach_user_tier_if_present(conn: aiosqlite.Connection) -> bool:
 async def _uses_archive_user_tier(conn: aiosqlite.Connection) -> bool:
     if await _table_exists(conn, "user_corrections"):
         return False
-    return await _attach_user_tier_if_present(conn)
+    return await _attach_user_tier_if_present(conn) and await _attached_table_exists(conn, "user_tier", "assertions")
 
 
 def _new_correction_id() -> str:
@@ -94,33 +108,61 @@ async def upsert_correction(
     payload_json = json.dumps(payload, sort_keys=True)
     created_at = now_utc()
     if await _uses_archive_user_tier(conn):
-        payload_for_store: dict[str, str] = dict(payload)
-        if note is not None:
-            payload_for_store["note"] = note
-        stored_json = json.dumps(payload_for_store, sort_keys=True)
+        stored_payload: dict[str, object] = {"payload": dict(payload), "note": note}
+        stored_json = json.dumps(stored_payload, sort_keys=True)
         now_ms = int(created_at.timestamp() * 1000)
+        correction_id = correction_id_for("insight", session_id, kind.value)
+        assertion_id = assertion_id_for_correction(correction_id)
         cursor = await conn.execute(
             """
-            SELECT correction_id, created_at_ms
-            FROM user_tier.corrections
-            WHERE target_type = 'session' AND target_id = ? AND correction_type = ?
+            SELECT created_at_ms
+            FROM user_tier.assertions
+            WHERE assertion_id = ?
             """,
-            (session_id, kind.value),
+            (assertion_id,),
         )
         row = await cursor.fetchone()
-        correction_id = str(row[0]) if row is not None else _new_correction_id()
-        created_ms = int(row[1]) if row is not None else now_ms
+        created_ms = int(row[0]) if row is not None else now_ms
         await conn.execute(
             """
-            INSERT INTO user_tier.corrections (
-                correction_id, target_type, target_id, correction_type,
-                payload_json, created_at_ms, updated_at_ms
-            ) VALUES (?, 'session', ?, ?, ?, ?, ?)
-            ON CONFLICT(target_type, target_id, correction_type) DO UPDATE SET
-                payload_json = excluded.payload_json,
+            INSERT INTO user_tier.assertions (
+                assertion_id, scope_ref, target_ref, key, kind, value_json, body_text,
+                author_ref, author_kind, evidence_refs_json, status, visibility, confidence,
+                staleness_json, context_policy_json, supersedes_json, created_at_ms, updated_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(assertion_id) DO UPDATE SET
+                scope_ref = excluded.scope_ref,
+                target_ref = excluded.target_ref,
+                key = excluded.key,
+                kind = excluded.kind,
+                value_json = excluded.value_json,
+                body_text = excluded.body_text,
+                author_ref = excluded.author_ref,
+                author_kind = excluded.author_kind,
+                status = excluded.status,
+                visibility = excluded.visibility,
                 updated_at_ms = excluded.updated_at_ms
             """,
-            (correction_id, session_id, kind.value, stored_json, created_ms, now_ms),
+            (
+                assertion_id,
+                "insight-feedback",
+                f"insight:{session_id}",
+                kind.value,
+                AssertionKind.CORRECTION.value,
+                stored_json,
+                note,
+                None,
+                "user",
+                None,
+                "active",
+                "private",
+                None,
+                None,
+                None,
+                None,
+                created_ms,
+                now_ms,
+            ),
         )
         return LearningCorrection(
             session_id=session_id,
@@ -182,18 +224,18 @@ async def list_corrections(
 
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     if await _uses_archive_user_tier(conn):
-        archive_clauses: list[str] = ["target_type = 'session'"]
-        archive_params: list[object] = []
+        archive_clauses: list[str] = ["kind = ?", "COALESCE(status, '') != 'deleted'"]
+        archive_params: list[object] = [AssertionKind.CORRECTION.value]
         if session_id is not None:
-            archive_clauses.append("target_id = ?")
-            archive_params.append(session_id)
+            archive_clauses.append("target_ref = ?")
+            archive_params.append(f"insight:{session_id}")
         if kind is not None:
-            archive_clauses.append("correction_type = ?")
+            archive_clauses.append("key = ?")
             archive_params.append(kind.value)
         cursor = await conn.execute(
-            "SELECT target_id, correction_type, payload_json, updated_at_ms "
-            f"FROM user_tier.corrections WHERE {' AND '.join(archive_clauses)} "
-            "ORDER BY target_id, correction_type",
+            "SELECT target_ref, key, value_json, updated_at_ms "
+            f"FROM user_tier.assertions WHERE {' AND '.join(archive_clauses)} "
+            "ORDER BY target_ref, key",
             archive_params,
         )
         rows = await cursor.fetchall()
@@ -205,19 +247,25 @@ async def list_corrections(
                 payload_raw = {}
             if not isinstance(payload_raw, dict):
                 payload_raw = {}
-            note = payload_raw.pop("note", None)
+            payload_section = payload_raw.get("payload")
+            if isinstance(payload_section, dict):
+                payload_dict = dict(payload_section)
+                note = payload_raw.get("note")
+            else:
+                payload_dict = payload_raw
+                note = None
             try:
                 kind_value = parse_correction_kind(str(row[1]))
             except ValueError:
                 continue
-            from datetime import UTC, datetime
-
+            target_ref = str(row[0])
+            _target_kind, _separator, resolved_session_id = target_ref.partition(":")
             created_at = datetime.fromtimestamp(int(row[3]) / 1000, tz=UTC)
             archive_out.append(
                 LearningCorrection(
-                    session_id=str(row[0]),
+                    session_id=resolved_session_id or target_ref,
                     kind=kind_value,
-                    payload={str(key): str(value) for key, value in payload_raw.items()},
+                    payload={str(key): str(value) for key, value in payload_dict.items()},
                     note=str(note) if note is not None else None,
                     created_at=created_at,
                 )
@@ -247,8 +295,6 @@ async def list_corrections(
             # Persisted row uses an unrecognized kind (e.g. removed in a
             # later version). Skip rather than corrupt the typed surface.
             continue
-        from datetime import datetime
-
         try:
             created_at = datetime.fromisoformat(str(row[4]))
         except ValueError:
@@ -278,8 +324,13 @@ async def delete_correction(
 
     cursor = (
         await conn.execute(
-            "DELETE FROM user_tier.corrections WHERE target_type = 'session' AND target_id = ? AND correction_type = ?",
-            (session_id, kind.value),
+            """
+            UPDATE user_tier.assertions
+            SET status = 'deleted'
+            WHERE assertion_id = ?
+              AND COALESCE(status, '') != 'deleted'
+            """,
+            (assertion_id_for_correction(correction_id_for("insight", session_id, kind.value)),),
         )
         if await _uses_archive_user_tier(conn)
         else await conn.execute(
@@ -299,8 +350,14 @@ async def clear_corrections(
 
     cursor = (
         await conn.execute(
-            "DELETE FROM user_tier.corrections WHERE target_type = 'session' AND target_id = ?",
-            (session_id,),
+            """
+            UPDATE user_tier.assertions
+            SET status = 'deleted'
+            WHERE kind = ?
+              AND target_ref = ?
+              AND COALESCE(status, '') != 'deleted'
+            """,
+            (AssertionKind.CORRECTION.value, f"insight:{session_id}"),
         )
         if await _uses_archive_user_tier(conn)
         else await conn.execute(

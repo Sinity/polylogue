@@ -750,8 +750,8 @@ class TestCliMetadata:
         expected = {
             "import",
             "init",
-            "completions",
             "config",
+            "continue",
             "cost",
             "blackboard",
             "commands",
@@ -763,7 +763,6 @@ class TestCliMetadata:
             "resume",
             "resume-candidates",
             "insights",
-            "schema",
             "tags",
             "feedback",
             "user-state",

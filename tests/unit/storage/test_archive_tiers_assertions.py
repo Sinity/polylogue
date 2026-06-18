@@ -15,8 +15,10 @@ from polylogue.storage.sqlite.archive_tiers.user import USER_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.user_write import (
     ASSERTION_CLAIM_KINDS,
     AssertionKind,
+    assertion_envelope_to_payload,
     assertion_id_for_transform_candidate,
     list_assertion_claims,
+    list_assertions_for_export,
     list_assertions_for_target,
     mark_assertion_status,
     read_assertion_envelope,
@@ -346,6 +348,73 @@ def test_list_assertion_claims_filters_lifecycle_assertions(tmp_path: Path) -> N
         assert list_assertion_claims(conn, kinds=()) == []
         assert list_assertion_claims(conn, statuses=()) == []
         assert [claim.assertion_id for claim in list_assertion_claims(conn, limit=1)] == ["claim-lesson-other"]
+    finally:
+        conn.close()
+
+
+def test_list_assertions_for_export_covers_all_kinds_and_statuses(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "user.db")
+    try:
+        rows = [
+            ("a-mark", AssertionKind.MARK, "active", 1_700_000_001_000),
+            ("a-deleted-note", AssertionKind.NOTE, "deleted", 1_700_000_002_000),
+            ("a-candidate", AssertionKind.TRANSFORM_CANDIDATE, "candidate", 1_700_000_003_000),
+        ]
+        for assertion_id, kind, status, now_ms in rows:
+            upsert_assertion(
+                conn,
+                assertion_id=assertion_id,
+                target_ref="session:s-1",
+                kind=kind,
+                scope_ref="run:r-1",
+                key=f"export/{assertion_id}",
+                value={"status": status},
+                body_text=f"body {assertion_id}",
+                author_ref="user:operator",
+                author_kind="user",
+                evidence_refs=[f"message:s-1:{now_ms}"],
+                status=status,
+                visibility="private",
+                confidence=0.75,
+                staleness={"stale": False},
+                context_policy={"inject": status == "active"},
+                supersedes=["old:a"] if assertion_id == "a-mark" else None,
+                now_ms=now_ms,
+            )
+
+        exported = list_assertions_for_export(conn)
+        assert [row.assertion_id for row in exported] == ["a-mark", "a-deleted-note", "a-candidate"]
+
+        active = list_assertions_for_export(conn, statuses=("active",))
+        assert [row.assertion_id for row in active] == ["a-mark"]
+
+        notes = list_assertions_for_export(conn, kinds=(AssertionKind.NOTE,))
+        assert [row.assertion_id for row in notes] == ["a-deleted-note"]
+
+        limited = list_assertions_for_export(conn, limit=2)
+        assert [row.assertion_id for row in limited] == ["a-mark", "a-deleted-note"]
+
+        payload = assertion_envelope_to_payload(exported[0])
+        assert payload == {
+            "assertion_id": "a-mark",
+            "scope_ref": "run:r-1",
+            "target_ref": "session:s-1",
+            "key": "export/a-mark",
+            "kind": "mark",
+            "value": {"status": "active"},
+            "body_text": "body a-mark",
+            "author_ref": "user:operator",
+            "author_kind": "user",
+            "evidence_refs": ["message:s-1:1700000001000"],
+            "status": "active",
+            "visibility": "private",
+            "confidence": 0.75,
+            "staleness": {"stale": False},
+            "context_policy": {"inject": True},
+            "supersedes": ["old:a"],
+            "created_at_ms": 1_700_000_001_000,
+            "updated_at_ms": 1_700_000_001_000,
+        }
     finally:
         conn.close()
 

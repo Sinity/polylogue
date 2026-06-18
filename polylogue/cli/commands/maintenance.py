@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -33,6 +34,12 @@ from polylogue.storage.sqlite.archive_tiers.archive_init import (
 from polylogue.storage.sqlite.archive_tiers.archive_plan import ArchiveInitPlan, build_archive_init_plan
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.user_write import (
+    ArchiveAssertionEnvelope,
+    AssertionKind,
+    assertion_envelope_to_payload,
+    list_assertions_for_export,
+)
 
 _BACKUP_POLICIES: dict[ArchiveTier, dict[str, object]] = {
     ArchiveTier.SOURCE: {
@@ -353,6 +360,93 @@ def backup_plan_command(output_format: str) -> None:
         return
 
     _render_backup_plain_plan(payload)
+
+
+@maintenance_group.command("assertion-export")
+@click.option(
+    "--format",
+    "-f",
+    "output_format",
+    type=click.Choice(["json", "jsonl"]),
+    default="jsonl",
+    show_default=True,
+    help="Export format for assertion rows.",
+)
+@click.option("--out", "out_path", type=click.Path(path_type=Path), default=None, help="Write export to this path.")
+@click.option(
+    "--kind",
+    "kinds",
+    multiple=True,
+    type=click.Choice([kind.value for kind in AssertionKind]),
+    help="Restrict export to one assertion kind; repeatable.",
+)
+@click.option("--status", "statuses", multiple=True, help="Restrict export to one assertion status; repeatable.")
+@click.option("--limit", "-l", type=click.IntRange(min=0), default=None, help="Maximum assertion rows to export.")
+def assertion_export_command(
+    output_format: str,
+    out_path: Path | None,
+    kinds: tuple[str, ...],
+    statuses: tuple[str, ...],
+    limit: int | None,
+) -> None:
+    """Export the durable assertion substrate from user.db."""
+
+    root = archive_root()
+    user_db_path = root / ARCHIVE_TIER_SPECS[ArchiveTier.USER].filename
+    rows = _read_assertion_export_rows(
+        user_db_path,
+        kinds=kinds or None,
+        statuses=statuses or None,
+        limit=limit,
+    )
+    payload_rows = [assertion_envelope_to_payload(row) for row in rows]
+
+    if output_format == "json":
+        content = (
+            json.dumps(
+                {
+                    "ok": True,
+                    "mode": "assertion_export",
+                    "archive_root": str(root),
+                    "user_db_path": str(user_db_path),
+                    "count": len(payload_rows),
+                    "assertions": payload_rows,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        )
+    else:
+        content = "".join(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n" for row in payload_rows)
+
+    if out_path is not None:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(content, encoding="utf-8")
+        click.echo(f"Exported {len(payload_rows)} assertions to {out_path}")
+        return
+
+    click.echo(content, nl=False)
+
+
+def _read_assertion_export_rows(
+    user_db_path: Path,
+    *,
+    kinds: tuple[str, ...] | None,
+    statuses: tuple[str, ...] | None,
+    limit: int | None,
+) -> list[ArchiveAssertionEnvelope]:
+    if not user_db_path.exists():
+        return []
+    uri = f"file:{user_db_path}?mode=ro"
+    with sqlite3.connect(uri, uri=True) as conn:
+        conn.row_factory = sqlite3.Row
+        return list_assertions_for_export(
+            conn,
+            kinds=kinds,
+            statuses=statuses,
+            limit=limit,
+        )
 
 
 def _backup_plan_payload(root: Path) -> dict[str, Any]:
@@ -1112,6 +1206,7 @@ def _render_record_plain(record: OperationRecord) -> None:
 
 
 __all__ = [
+    "assertion_export_command",
     "gc_history_command",
     "maintenance_group",
     "plan_command",

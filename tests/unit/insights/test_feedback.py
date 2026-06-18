@@ -200,6 +200,43 @@ class TestFeedbackStorage:
         assert len(corrections) == 1
         assert corrections[0].payload == {"summary": "Second summary."}
 
+    async def test_list_preserves_flat_assertion_payload(
+        self,
+        workspace_env: dict[str, Path],
+        storage_repository: SessionRepository,
+    ) -> None:
+        del workspace_env
+        await _seed_session(storage_repository, "conv-flat")
+
+        from polylogue.storage.insights.feedback import list_corrections
+
+        async with storage_repository.backend.connection() as conn:
+            await conn.execute(
+                """
+                INSERT INTO user_tier.assertions (
+                    assertion_id, target_ref, key, kind, value_json,
+                    author_kind, created_at_ms, updated_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "assertion:correction:flat-payload",
+                    "insight:conv-flat",
+                    CorrectionKind.TAG_REJECT.value,
+                    "correction",
+                    '{"tag":"costly"}',
+                    "user",
+                    1_800_000_000_000,
+                    1_800_000_000_000,
+                ),
+            )
+
+            corrections = await list_corrections(conn, session_id="conv-flat")
+
+        assert len(corrections) == 1
+        assert corrections[0].kind == CorrectionKind.TAG_REJECT
+        assert corrections[0].payload == {"tag": "costly"}
+        assert corrections[0].note is None
+
     async def test_content_hash_invariant(
         self,
         workspace_env: dict[str, Path],

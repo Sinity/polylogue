@@ -693,7 +693,7 @@ def _blackboard_envelope_from_assertion(assertion: ArchiveAssertionEnvelope) -> 
         target_type = None
         target_id = None
     return ArchiveBlackboardNoteEnvelope(
-        note_id=str(assertion.key or ""),
+        note_id=str(assertion.key or assertion.target_ref),
         target_type=target_type,
         target_id=target_id,
         body=assertion.body_text or "",
@@ -957,6 +957,79 @@ def list_assertions_for_target(
     return [_assertion_row_to_envelope(row) for row in rows]
 
 
+def assertion_envelope_to_payload(envelope: ArchiveAssertionEnvelope) -> dict[str, object]:
+    """Return a JSON-serializable backup/export payload for one assertion."""
+
+    return {
+        "assertion_id": envelope.assertion_id,
+        "scope_ref": envelope.scope_ref,
+        "target_ref": envelope.target_ref,
+        "key": envelope.key,
+        "kind": envelope.kind,
+        "value": envelope.value,
+        "body_text": envelope.body_text,
+        "author_ref": envelope.author_ref,
+        "author_kind": envelope.author_kind,
+        "evidence_refs": list(envelope.evidence_refs),
+        "status": envelope.status,
+        "visibility": envelope.visibility,
+        "confidence": envelope.confidence,
+        "staleness": envelope.staleness,
+        "context_policy": envelope.context_policy,
+        "supersedes": list(envelope.supersedes),
+        "created_at_ms": envelope.created_at_ms,
+        "updated_at_ms": envelope.updated_at_ms,
+    }
+
+
+def list_assertions_for_export(
+    conn: sqlite3.Connection,
+    *,
+    kinds: Sequence[str | AssertionKind] | None = None,
+    statuses: Sequence[str] | None = None,
+    limit: int | None = None,
+) -> list[ArchiveAssertionEnvelope]:
+    """List assertion rows for durable user-tier export.
+
+    Unlike ``list_assertion_claims``, this is deliberately all-kinds and
+    all-statuses by default: backup/export must include marks, overlays,
+    accepted claims, deleted rows, and private transform candidates.
+    """
+
+    if not _table_exists(conn, "assertions"):
+        return []
+
+    where: list[str] = []
+    params: list[object] = []
+
+    if kinds is not None:
+        normalized_kinds = tuple(str(kind) for kind in kinds)
+        if not normalized_kinds:
+            return []
+        placeholders = ", ".join("?" for _ in normalized_kinds)
+        where.append(f"kind IN ({placeholders})")
+        params.extend(normalized_kinds)
+
+    if statuses is not None:
+        normalized_statuses = tuple(str(status) for status in statuses)
+        if not normalized_statuses:
+            return []
+        placeholders = ", ".join("?" for _ in normalized_statuses)
+        where.append(f"COALESCE(status, '') IN ({placeholders})")
+        params.extend(normalized_statuses)
+
+    sql = f"SELECT {_ASSERTION_COLUMNS} FROM assertions"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY created_at_ms, assertion_id"
+    if limit is not None and limit >= 0:
+        sql += " LIMIT ?"
+        params.append(limit)
+
+    rows = conn.execute(sql, tuple(params)).fetchall()
+    return [_assertion_row_to_envelope(row) for row in rows]
+
+
 ASSERTION_CLAIM_KINDS: tuple[AssertionKind, ...] = (
     AssertionKind.DECISION,
     AssertionKind.CAVEAT,
@@ -1041,6 +1114,7 @@ __all__ = [
     "ArchiveSavedViewEnvelope",
     "ArchiveWorkspaceEnvelope",
     "AssertionKind",
+    "assertion_envelope_to_payload",
     "assertion_id_for_annotation",
     "assertion_id_for_blackboard_note",
     "assertion_id_for_correction",
@@ -1053,6 +1127,7 @@ __all__ = [
     "correction_id_for",
     "list_archive_blackboard_note_envelopes",
     "list_assertion_claims",
+    "list_assertions_for_export",
     "list_assertions_by_kind",
     "list_assertions_for_target",
     "mark_assertion_status",
