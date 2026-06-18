@@ -23,6 +23,7 @@ CATEGORY_ORDER: tuple[str, ...] = (
     "release",
     "verification",
     "campaigns",
+    "workspace",
     "maintenance",
 )
 
@@ -265,8 +266,8 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "worktree-gc",
-        "maintenance",
+        "workspace worktree-gc",
+        "workspace",
         "Safe worktree garbage collection — list and remove merged or abandoned git worktrees.",
         "devtools.worktree_gc",
         use_when=(
@@ -275,10 +276,10 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "Never removes dirty worktrees or the main worktree."
         ),
         examples=(
-            "devtools worktree-gc",
-            "devtools worktree-gc --json",
-            "devtools worktree-gc --apply",
-            "devtools worktree-gc --apply --force",
+            "devtools workspace worktree-gc",
+            "devtools workspace worktree-gc --json",
+            "devtools workspace worktree-gc --apply",
+            "devtools workspace worktree-gc --apply --force",
         ),
     ),
     CommandSpec(
@@ -631,23 +632,23 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "devtools.run_campaign",
     ),
     CommandSpec(
-        "xtask",
-        "maintenance",
-        "Record and query agent task execution history (.agent/xtask/tasks.jsonl).",
+        "workspace tasks",
+        "workspace",
+        "Record and query local agent task execution history.",
         "devtools.xtask",
         use_when="Log, view recent, or summarize agent task execution history during development sessions.",
         examples=(
-            "devtools xtask log --command 'devtools render all' --duration-ms 3200 --exit-code 0",
-            "devtools xtask recent",
-            "devtools xtask recent --count 20",
-            "devtools xtask stats",
-            "devtools xtask stats --json",
-            "devtools xtask stats --resources",
+            "devtools workspace tasks log --command 'devtools render all' --duration-ms 3200 --exit-code 0",
+            "devtools workspace tasks recent",
+            "devtools workspace tasks recent --count 20",
+            "devtools workspace tasks stats",
+            "devtools workspace tasks stats --json",
+            "devtools workspace tasks stats --resources",
         ),
     ),
     CommandSpec(
-        "failure-context",
-        "maintenance",
+        "workspace failure-context",
+        "workspace",
         "Join testmon, git history, and fixtures for a pytest failure ID into a JSON envelope.",
         "devtools.failure_context",
         use_when=(
@@ -656,8 +657,8 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "all in one structured envelope."
         ),
         examples=(
-            "devtools failure-context tests/unit/storage/test_foo.py::test_bar",
-            "devtools failure-context tests/unit/storage/test_foo.py::test_bar --days 14",
+            "devtools workspace failure-context tests/unit/storage/test_foo.py::test_bar",
+            "devtools workspace failure-context tests/unit/storage/test_foo.py::test_bar --days 14",
         ),
     ),
     CommandSpec(

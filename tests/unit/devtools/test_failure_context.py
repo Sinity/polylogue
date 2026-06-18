@@ -141,7 +141,7 @@ def test_main_rejects_bad_failure_id(capsys: pytest.CaptureFixture[str]) -> None
 def test_command_registered_in_catalog() -> None:
     from devtools.command_catalog import COMMANDS
 
-    assert "failure-context" in COMMANDS
-    spec = COMMANDS["failure-context"]
+    assert "workspace failure-context" in COMMANDS
+    spec = COMMANDS["workspace failure-context"]
     assert spec.module == "devtools.failure_context"
     assert callable(spec.resolve_main())

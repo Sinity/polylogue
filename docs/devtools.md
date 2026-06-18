@@ -142,14 +142,19 @@ These are the commands worth remembering during normal repo work:
 | `devtools mutmut-campaign` | Run focused mutation campaigns and maintain their local index. |
 | `devtools run-benchmark-campaigns` | Run synthetic benchmark campaigns over generated archives. |
 
+### Workspace
+
+| Command | Description |
+| --- | --- |
+| `devtools workspace failure-context` | Join testmon, git history, and fixtures for a pytest failure ID into a JSON envelope. |
+| `devtools workspace tasks` | Record and query local agent task execution history. |
+| `devtools workspace worktree-gc` | Safe worktree garbage collection — list and remove merged or abandoned git worktrees. |
+
 ### Maintenance
 
 | Command | Description |
 | --- | --- |
 | `devtools archive-space-report` | Report SQLite archive file/page/object space by table and index. |
-| `devtools failure-context` | Join testmon, git history, and fixtures for a pytest failure ID into a JSON envelope. |
-| `devtools worktree-gc` | Safe worktree garbage collection — list and remove merged or abandoned git worktrees. |
-| `devtools xtask` | Record and query agent task execution history (.agent/xtask/tasks.jsonl). |
 
 <!-- END GENERATED: devtools-command-catalog -->
 

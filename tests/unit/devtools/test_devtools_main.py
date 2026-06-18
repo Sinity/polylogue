@@ -25,6 +25,7 @@ def test_list_commands_json_includes_generated_surface(capsys: pytest.CaptureFix
     assert "scenario-projections" in commands
     assert "render devtools-reference" in commands
     assert "release readiness" in commands
+    assert "workspace tasks" in commands
     assert "status" in commands
 
 
@@ -83,6 +84,27 @@ def test_nested_render_command_dispatches_to_catalog_entry(monkeypatch: pytest.M
 
     assert devtools_main.main(["render", "all", "--check"]) == 0
     assert captured == [["--check"]]
+
+
+def test_nested_workspace_command_dispatches_to_catalog_entry(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[list[str] | None] = []
+
+    def fake_main(argv: list[str] | None) -> int:
+        captured.append(argv)
+        return 0
+
+    fake_module = ModuleType("_polylogue_devtools_test_workspace_fake")
+    fake_module.__dict__["main"] = fake_main
+    monkeypatch.setitem(__import__("sys").modules, fake_module.__name__, fake_module)
+
+    monkeypatch.setitem(
+        COMMANDS,
+        "workspace tasks",
+        CommandSpec("workspace tasks", "workspace", "fake workspace tasks", fake_module.__name__),
+    )
+
+    assert devtools_main.main(["workspace", "tasks", "recent", "--json"]) == 0
+    assert captured == [["recent", "--json"]]
 
 
 def test_help_output_includes_devtools_prog_name(capsys: pytest.CaptureFixture[str]) -> None:

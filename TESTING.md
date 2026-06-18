@@ -102,9 +102,9 @@ process group if the step exceeds `POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S` (default
 diagnostic run where an unusually long full-suite pass is expected and
 supervised.
 
-`devtools xtask recent` shows the run id, diagnosis, and peak pytest RSS when
-the current run metadata is available. `devtools xtask stats --resources`
-aggregates recorded pytest memory peaks over time.
+`devtools workspace tasks recent` shows the run id, diagnosis, and peak pytest
+RSS when the current run metadata is available. `devtools workspace tasks stats
+--resources` aggregates recorded pytest memory peaks over time.
 
 `devtools test` uses the same pytest progress plugin and process supervisor for
 focused selections. During or after a run, inspect
