@@ -91,6 +91,14 @@ These are the commands worth remembering during normal repo work:
 | `devtools render topology-projection` | Generate docs/plans/topology-target.yaml from the current tree using placement rules. |
 | `devtools render topology-status` | Render docs/topology-status.md from the topology projection and realized tree. |
 
+### Release
+
+| Command | Description |
+| --- | --- |
+| `devtools release build-package` | Build the default Nix package with the out-link under .local/result. |
+| `devtools release readiness` | Validate the externally-presentable release gate definition. |
+| `devtools release verify-distribution` | Verify wheel/sdist installed artifacts expose only supported runtime entrypoints. |
+
 ### Verification
 
 | Command | Description |
@@ -104,7 +112,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools pipeline-probe` | Run typed pipeline probes against synthetic, staged, or archive-subset inputs. |
 | `devtools query-memory-budget` | Measure query-memory envelopes on generated fixtures. |
 | `devtools regression-capture` | Capture pipeline-probe summaries as durable local regression cases. |
-| `devtools release readiness` | Validate the externally-presentable release gate definition. |
 | `devtools run-validation-lanes` | Run named validation lanes. |
 | `devtools scenario-projections` | Render the authored scenario-bearing verification projections. |
 | `devtools schema-audit` | Run committed provider schema package quality checks. |
@@ -115,7 +122,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools verify` | Run the local verification baseline before pushing or creating a PR. |
 | `devtools verify-ci-workflows` | Verify CI workflow files reference locally-known devtools commands and existing paths. |
 | `devtools verify-closure-matrix` | Verify docs/plans/test-closure-matrix.yaml stays grounded in the realized tree. |
-| `devtools release verify-distribution` | Verify wheel/sdist installed artifacts expose only supported runtime entrypoints. |
 | `devtools verify-doc-commands` | Verify README/docs command examples resolve to live polylogue, polylogued, and devtools commands. |
 | `devtools verify-lane-assertions` | Verify scenario lanes classified as SEMANTIC_OUTPUT carry semantic assertions. |
 | `devtools verify-layering` | Check inter-package imports against declared layering rules from docs/plans/layering.yaml. |
@@ -141,7 +147,6 @@ These are the commands worth remembering during normal repo work:
 | Command | Description |
 | --- | --- |
 | `devtools archive-space-report` | Report SQLite archive file/page/object space by table and index. |
-| `devtools release build-package` | Build the default Nix package with the out-link under .local/result. |
 | `devtools failure-context` | Join testmon, git history, and fixtures for a pytest failure ID into a JSON envelope. |
 | `devtools worktree-gc` | Safe worktree garbage collection — list and remove merged or abandoned git worktrees. |
 | `devtools xtask` | Record and query agent task execution history (.agent/xtask/tasks.jsonl). |
