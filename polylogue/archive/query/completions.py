@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from polylogue.archive.query.expression import (
+from polylogue.archive.query.metadata import (
     COUNT_QUERY_FIELD_REGISTRY,
     DATE_QUERY_FIELD_REGISTRY,
     EXPRESSION_FIELD_REGISTRY,

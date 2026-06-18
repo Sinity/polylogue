@@ -26,11 +26,11 @@ from polylogue.archive.query.completions import (
     query_structural_field_candidates,
     query_structural_unit_candidates,
 )
-from polylogue.archive.query.expression import (
+from polylogue.archive.query.fields import QUERY_FIELD_DESCRIPTORS, CompletionSource
+from polylogue.archive.query.metadata import (
     EXPRESSION_FIELD_REGISTRY,
     structural_query_units,
 )
-from polylogue.archive.query.fields import QUERY_FIELD_DESCRIPTORS, CompletionSource
 from polylogue.archive.query.spec import QUERY_ACTION_TYPES, QUERY_RETRIEVAL_LANES, QUERY_SEQUENCE_ACTION_TYPES
 from polylogue.paths import active_index_db_path
 
