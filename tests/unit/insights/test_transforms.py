@@ -577,10 +577,63 @@ def test_review_delivery_events_are_extracted_and_projected() -> None:
 
     assert event_by_kind["review_posted"].delivery_state == "observed"
     assert event_by_kind["review_seen_by_tool"].delivery_state == "seen_by_tool"
-    assert event_by_kind["review_injected_context"].delivery_state == "injected_context"
+    injected_event = event_by_kind["review_injected_context"]
+    assert injected_event.delivery_state == "injected_context"
     assert event_by_kind["review_acknowledged"].delivery_state == "acknowledged"
     assert event_by_kind["review_acted_on"].delivery_state == "acted_on"
     assert event_by_kind["review_acted_on"].object_refs == (ObjectRef(kind="github-review", object_id="#2100"),)
+
+    injection_snapshots = [
+        snapshot for snapshot in digest.run_projection.context_snapshots if snapshot.boundary == "review_injection"
+    ]
+    assert len(injection_snapshots) == 1
+    injection_snapshot = injection_snapshots[0]
+    assert injection_snapshot.inheritance_mode == "injected"
+    assert injection_snapshot.evidence_refs == injected_event.evidence_refs
+    assert injection_snapshot.segment_refs == (
+        injected_event.event_ref,
+        ObjectRef(kind="github-review", object_id="#2100"),
+    )
+    assert injection_snapshot.metadata == {
+        "source": "recovery-event",
+        "event_ref": injected_event.event_ref.format(),
+        "delivery_state": "injected_context",
+    }
+
+
+def test_review_injection_context_snapshot_reaches_work_packet() -> None:
+    session = Session(
+        id=SessionId("codex-session:review-context"),
+        origin=Origin.CODEX_SESSION,
+        title="Review context packet",
+        messages=MessageCollection(
+            messages=[
+                Message(
+                    id="m-review",
+                    role=Role.ASSISTANT,
+                    text="Injected review into context for PR #2100",
+                )
+            ]
+        ),
+    )
+
+    packet = compile_recovery_digest(session).work_packet()
+    rendered = packet.render_markdown()
+
+    snapshot_entry = next(
+        entry
+        for entry in packet.entries
+        if entry.section == "execution"
+        and entry.label == "context_snapshot"
+        and entry.metadata["boundary"] == "review_injection"
+    )
+    assert snapshot_entry.metadata["inheritance_mode"] == "injected"
+    assert snapshot_entry.metadata["delivery_state"] == "injected_context"
+    assert ObjectRef(kind="github-review", object_id="#2100") in snapshot_entry.object_refs
+    assert any(ref.message_id == "m-review" for ref in snapshot_entry.evidence_refs)
+    assert "- [raw-evidence] context_snapshot: review_injection" in rendered
+    assert "details: boundary=review_injection; inheritance_mode=injected" in rendered
+    assert "refs: context-snapshot:codex-session:review-context:review_injection:0" in rendered
 
 
 def test_claim_models_reject_missing_raw_refs() -> None:

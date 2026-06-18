@@ -19,13 +19,14 @@ from polylogue.archive.query.spec import (
     split_csv,
 )
 from polylogue.core.refs import EvidenceRef, ObjectRef
-from polylogue.insights.run_projection import ObservedEvent
+from polylogue.insights.run_projection import ContextSnapshot, ObservedEvent
 from polylogue.insights.transforms import compile_recovery_digest
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSummary, ArchiveStore
 from polylogue.surfaces.payloads import (
     ActionQueryRowPayload,
     AssertionQueryRowPayload,
     BlockQueryRowPayload,
+    ContextSnapshotQueryRowPayload,
     MessageQueryRowPayload,
     ObservedEventQueryRowPayload,
     QueryUnitEnvelope,
@@ -139,10 +140,26 @@ def _summary_field_matches(summary: ArchiveSessionSummary, field: str, values: S
     if field == "origin":
         return _exact_or_contains(str(summary.origin), values, exact=True)
     if field == "repo":
-        return _exact_or_contains(summary.git_repository_url, values)
+        return _contains_value((summary.git_repository_url, *summary.working_directories), values)
     if field == "title":
         return _exact_or_contains(summary.title, values)
-    return True
+    if field == "tag":
+        return _contains_value(summary.tags, values)
+    if field in {"cwd", "path"}:
+        return _contains_value(summary.working_directories, values)
+    if field == "messages":
+        return _exact_or_contains(str(summary.message_count), values, exact=True)
+    if field == "words":
+        return _exact_or_contains(str(summary.word_count), values, exact=True)
+    if field == "since":
+        threshold = _epoch_ms("since", values[0]) if values else None
+        updated = _epoch_ms("updated_at", summary.updated_at)
+        return threshold is not None and updated is not None and updated >= threshold
+    if field == "until":
+        threshold = _epoch_ms("until", values[0]) if values else None
+        updated = _epoch_ms("updated_at", summary.updated_at)
+        return threshold is not None and updated is not None and updated <= threshold
+    return False
 
 
 def _observed_event_field_matches(
@@ -209,6 +226,107 @@ def _observed_event_row(summary: ArchiveSessionSummary, event: ObservedEvent) ->
     )
 
 
+def _metadata_text(metadata: Mapping[str, str]) -> tuple[str, ...]:
+    return tuple(f"{key}:{value}" for key, value in sorted(metadata.items()))
+
+
+def _context_snapshot_field_matches(
+    snapshot: ContextSnapshot,
+    summary: ArchiveSessionSummary,
+    predicate: QueryFieldPredicate,
+) -> bool:
+    field = predicate.field
+    if field.startswith("session."):
+        return _summary_field_matches(summary, field.removeprefix("session."), predicate.values)
+    if field == "boundary":
+        return _exact_or_contains(snapshot.boundary, predicate.values, exact=True)
+    if field == "inheritance_mode":
+        return _exact_or_contains(snapshot.inheritance_mode, predicate.values, exact=True)
+    if field in {"run", "run_ref"}:
+        return _contains_value((_object_ref_text(snapshot.run_ref),), predicate.values)
+    if field in {"segment", "segment_ref"}:
+        return _contains_value((_object_ref_text(ref) for ref in snapshot.segment_refs), predicate.values)
+    if field == "evidence":
+        return _contains_value((_evidence_ref_text(ref) for ref in snapshot.evidence_refs), predicate.values)
+    if field == "metadata":
+        return _contains_value(_metadata_text(snapshot.metadata), predicate.values)
+    if field == "text":
+        return _contains_value(
+            (
+                _object_ref_text(snapshot.snapshot_ref),
+                _object_ref_text(snapshot.run_ref),
+                snapshot.boundary,
+                snapshot.inheritance_mode,
+                *(_object_ref_text(ref) for ref in snapshot.segment_refs),
+                *(_evidence_ref_text(ref) for ref in snapshot.evidence_refs),
+                *_metadata_text(snapshot.metadata),
+            ),
+            predicate.values,
+        )
+    return False
+
+
+def _context_snapshot_matches(
+    snapshot: ContextSnapshot,
+    summary: ArchiveSessionSummary,
+    predicate: QueryPredicate,
+) -> bool:
+    if isinstance(predicate, QueryFieldPredicate):
+        return _context_snapshot_field_matches(snapshot, summary, predicate)
+    if isinstance(predicate, QueryNotPredicate):
+        return not _context_snapshot_matches(snapshot, summary, predicate.child)
+    if isinstance(predicate, QueryBoolPredicate):
+        if predicate.op == "and":
+            return all(_context_snapshot_matches(snapshot, summary, child) for child in predicate.children)
+        return any(_context_snapshot_matches(snapshot, summary, child) for child in predicate.children)
+    return False
+
+
+def _context_snapshot_row(
+    summary: ArchiveSessionSummary,
+    snapshot: ContextSnapshot,
+) -> ContextSnapshotQueryRowPayload:
+    return ContextSnapshotQueryRowPayload(
+        snapshot_ref=snapshot.snapshot_ref.format(),
+        session_id=str(summary.session_id),
+        origin=str(summary.origin),
+        title=summary.title,
+        run_ref=snapshot.run_ref.format(),
+        boundary=snapshot.boundary,
+        inheritance_mode=snapshot.inheritance_mode,
+        segment_refs=tuple(ref.format() for ref in snapshot.segment_refs),
+        evidence_refs=tuple(ref.format() for ref in snapshot.evidence_refs),
+        metadata=dict(snapshot.metadata),
+    )
+
+
+def _query_context_snapshots(
+    archive: ArchiveStore,
+    source: QueryUnitSource,
+    *,
+    limit: int,
+    offset: int,
+    session_filters: Mapping[str, object] | None,
+) -> tuple[ContextSnapshotQueryRowPayload, ...]:
+    rows: list[ContextSnapshotQueryRowPayload] = []
+    target_count = limit + 1
+    skipped = 0
+    summaries = cast(Any, archive.list_summaries)(limit=1_000_000, **dict(session_filters or {}))
+    for summary in summaries:
+        session = _session_to_session(archive.read_session(str(summary.session_id)))
+        digest = compile_recovery_digest(session)
+        for snapshot in digest.run_projection.context_snapshots:
+            if not _context_snapshot_matches(snapshot, summary, source.predicate):
+                continue
+            if skipped < offset:
+                skipped += 1
+                continue
+            rows.append(_context_snapshot_row(summary, snapshot))
+            if len(rows) >= target_count:
+                return tuple(rows)
+    return tuple(rows)
+
+
 def _query_observed_events(
     archive: ArchiveStore,
     source: QueryUnitSource,
@@ -263,6 +381,22 @@ def query_unit_rows(
             limit=limit,
             offset=offset,
             has_next=len(event_rows) > limit,
+        )
+    if source.unit == "context-snapshot":
+        snapshot_rows = _query_context_snapshots(
+            archive,
+            source,
+            limit=limit,
+            offset=offset,
+            session_filters=session_filters,
+        )
+        return build_query_unit_envelope(
+            snapshot_rows[:limit],
+            unit=source.unit,
+            query=query,
+            limit=limit,
+            offset=offset,
+            has_next=len(snapshot_rows) > limit,
         )
     if source.unit == "message":
         message_rows = archive.query_messages(

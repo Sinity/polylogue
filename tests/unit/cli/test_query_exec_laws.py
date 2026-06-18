@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -52,6 +53,9 @@ def search_workspace(cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyP
     """
     from datetime import datetime, timedelta, timezone
 
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
     from tests.infra.storage_records import SessionBuilder
 
     monkeypatch.setenv("XDG_STATE_HOME", str(cli_workspace["state_dir"]))
@@ -91,6 +95,24 @@ def search_workspace(cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyP
         .add_message("m6", role="assistant", text="Rust ownership ensures memory safety without garbage collection.")
         .save()
     )
+
+    with sqlite3.connect(cli_workspace["archive_root"] / "user.db") as conn:
+        conn.row_factory = sqlite3.Row
+        initialize_archive_tier(conn, ArchiveTier.USER)
+        upsert_assertion(
+            conn,
+            assertion_id="assertion-cli-decision",
+            target_ref="session:chatgpt-export:ext-conv1",
+            kind=AssertionKind.DECISION,
+            key="query-unit/parity",
+            body_text="Python terminal assertion query rows must render in the CLI.",
+            author_ref="user:operator",
+            author_kind="user",
+            evidence_refs=("message:chatgpt-export:ext-conv1:m2",),
+            status="active",
+            visibility="private",
+            now_ms=1_700_000_010_000,
+        )
 
     return cli_workspace
 
@@ -2529,6 +2551,89 @@ class TestSearchQueryContracts:
         assert payload["mode"] == "query-unit"
         assert payload["unit"] == "message"
         assert payload["items"] == []
+
+    def test_assertion_unit_source_returns_json_envelope(self, search_workspace: SearchWorkspace) -> None:
+        """Assertion terminal rows execute through the CLI JSON envelope."""
+        from polylogue.cli import cli
+
+        del search_workspace
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "--plain",
+                "find",
+                "-f",
+                "json",
+                "assertions",
+                "where",
+                "session.origin:chatgpt-export",
+                "AND",
+                "kind:decision",
+                "AND",
+                "status:active",
+                "AND",
+                "text:Python",
+            ],
+        )
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["mode"] == "query-unit"
+        assert payload["unit"] == "assertion"
+        assert [item["assertion_id"] for item in payload["items"]] == ["assertion-cli-decision"]
+
+    def test_assertion_unit_source_renders_plain_rows(self, search_workspace: SearchWorkspace) -> None:
+        """Assertion terminal rows render in text mode as well as machine envelopes."""
+        from polylogue.cli import cli
+
+        del search_workspace
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "--plain",
+                "find",
+                "assertions",
+                "where",
+                "kind:decision",
+                "AND",
+                "text:terminal",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert "assertion-cli-decision [decision/active] Python terminal assertion" in result.output
+
+    def test_context_snapshot_unit_source_routes_to_query_units(self, search_workspace: SearchWorkspace) -> None:
+        """Context snapshot expressions stay on terminal query-unit routing, not stats."""
+        from polylogue.cli import cli
+
+        del search_workspace
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "--plain",
+                "find",
+                "-f",
+                "json",
+                "context-snapshots",
+                "where",
+                "boundary:session_start",
+                "AND",
+                "text:ext-conv1",
+            ],
+        )
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["mode"] == "query-unit"
+        assert payload["unit"] == "context-snapshot"
+        assert [item["session_id"] for item in payload["items"]] == ["chatgpt-export:ext-conv1"]
 
 
 class TestSearchEdgeCases:

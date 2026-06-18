@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import sqlite3
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,7 +20,9 @@ from polylogue.core.refs import EvidenceRef
 from polylogue.insights.transforms import RecoveryWorkPacket, RecoveryWorkPacketEntry
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionEnvelope
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionEnvelope, AssertionKind, upsert_assertion
 from polylogue.types import SessionId
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.mcp import (
@@ -607,6 +610,78 @@ class TestArchiveGenericToolSurfaces:
         assert payload["unit"] == "message"
         assert payload["items"][0]["session_id"] == session_id
         assert payload["items"][0]["unit"] == "message"
+
+    def test_query_unit_payload_returns_assertion_rows(self: object, tmp_path: Path) -> None:
+        from polylogue.mcp.archive_support import archive_query_unit_payload
+
+        archive_root = tmp_path / "archive"
+        with ArchiveStore(archive_root) as archive:
+            session_id = _write_archive_session(
+                archive,
+                provider=Provider.CHATGPT,
+                native_id="tool-query-units-assertion-v1",
+                title="Tool assertion unit",
+                text="supporting message for an assertion row",
+            )
+            with sqlite3.connect(archive_root / "user.db") as conn:
+                conn.row_factory = sqlite3.Row
+                initialize_archive_tier(conn, ArchiveTier.USER)
+                upsert_assertion(
+                    conn,
+                    assertion_id="mcp-query-decision",
+                    target_ref=f"session:{session_id}",
+                    kind=AssertionKind.DECISION,
+                    body_text="MCP assertion query unit row",
+                    status="active",
+                    visibility="private",
+                    now_ms=1_700_000_000_000,
+                )
+
+            payload = archive_query_unit_payload(
+                archive,
+                expression="assertions where session.origin:chatgpt-export AND kind:decision",
+                limit=10,
+                offset=0,
+            )
+
+        assert payload.mode == "query-unit"
+        assert payload.unit == "assertion"
+        [item] = payload.items
+        data = item.model_dump(mode="json")
+        assert data["assertion_id"] == "mcp-query-decision"
+
+    @pytest.mark.asyncio
+    async def test_query_units_tool_returns_context_snapshot_rows_without_archive_operations(
+        self: object, mcp_server: MCPServerUnderTest, tmp_path: Path
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        with ArchiveStore(archive_root) as archive:
+            session_id = _write_archive_session(
+                archive,
+                native_id="tool-query-units-context-v1",
+                title="Tool query units context",
+                text="context snapshot seed",
+            )
+
+        with (
+            patch("polylogue.mcp.server._get_config") as mock_get_config,
+            patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
+        ):
+            mock_get_config.return_value = SimpleNamespace(
+                archive_root=archive_root,
+                db_path=archive_root / "index.db",
+            )
+            mock_get_polylogue.side_effect = AssertionError("query_units tool must not open archive operations")
+            result = await invoke_surface_async(
+                mcp_server._tool_manager._tools["query_units"].fn,
+                expression="context-snapshots where boundary:session_start AND text:tool-query-units-context-v1",
+            )
+
+        payload = json.loads(result)
+        assert payload["mode"] == "query-unit"
+        assert payload["unit"] == "context-snapshot"
+        assert [item["session_id"] for item in payload["items"]] == [session_id]
+        assert payload["items"][0]["boundary"] == "session_start"
 
     @pytest.mark.asyncio
     async def test_query_units_tool_applies_session_scope_filters(

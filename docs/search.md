@@ -4,7 +4,8 @@
 
 Polylogue uses a query-first grammar over archive units. Bare tokens are
 full-text terms, field clauses narrow the selected unit, explicit
-`sessions/messages/actions/blocks where ...` forms opt into Boolean predicates,
+`sessions/messages/actions/blocks/assertions/observed-events/context-snapshots where ...`
+forms opt into Boolean predicates,
 and trailing CLI verbs render or mutate the selected session set. The same
 query semantics — filters, retrieval lanes, ranking policy, and typed response
 payloads — apply across the CLI, MCP, Python API, and daemon HTTP surfaces.
@@ -13,8 +14,8 @@ Quick links:
 
 - [Retrieval Lanes](#retrieval-lanes) — `dialogue`, `actions`, `hybrid`,
   `semantic`, and how `auto` elevates.
-- [Terminal Unit Queries](#terminal-unit-queries) — `messages/actions/blocks
-  where ...` row results.
+- [Terminal Unit Queries](#terminal-unit-queries) — `messages/actions/blocks/
+  assertions/observed-events/context-snapshots where ...` row results.
 - [Ranking Policy](#ranking-policy) — current `mixed-bm25-rrf-vector`
   policy and version contract.
 - [SearchEnvelope Contract](#searchenvelope-contract) — the typed
@@ -76,6 +77,9 @@ Unit queries select terminal rows instead of sessions:
 polylogue messages where 'role:assistant AND text:timeout'
 polylogue actions where 'session.repo:polylogue AND action:file_edit AND path:polylogue/archive'
 polylogue blocks where 'type:code AND text:sqlite'
+polylogue assertions where 'kind:decision AND status:active AND text:review'
+polylogue observed-events where 'delivery_state:acted_on AND text:#2100'
+polylogue context-snapshots where 'boundary:session_start AND session.repo:polylogue'
 ```
 
 Unsupported forms raise typed `ExpressionCompileError`s and must not broaden
@@ -177,12 +181,16 @@ rows instead:
 polylogue --format json messages where role:assistant AND text:timeout
 polylogue --format ndjson actions where session.repo:polylogue AND action:file_edit AND path:polylogue/archive
 polylogue --format yaml blocks where type:code AND text:sqlite
+polylogue --format json assertions where kind:decision AND status:active AND text:review
+polylogue --format json observed-events where delivery_state:acted_on AND text:#2100
+polylogue --format json context-snapshots where boundary:session_start AND session.repo:polylogue
 ```
 
 The row shape is the shared `QueryUnitEnvelope` used by CLI JSON/NDJSON/YAML,
 Python `Polylogue.query_units()`, MCP `query_units`, and daemon
 `GET /api/query-units?expression=...`. Plain and CSV CLI output are
-transport-specific renderings of the same message/action/block row payloads.
+transport-specific renderings of the same message/action/block/assertion/
+observed-event/context-snapshot row payloads.
 Those surfaces share the same session-scoping filters for the row source
 where applicable, such as origin, tag, repo, title, date bounds, message-type
 and tool/paste/thinking feature filters.
@@ -194,7 +202,16 @@ by their owning session:
 polylogue messages where session.origin:claude-code-session AND role:assistant
 polylogue actions where session.repo:polylogue AND action:file_edit
 polylogue blocks where session.since:7d AND type:code
+polylogue assertions where session.repo:polylogue AND kind:caveat
+polylogue observed-events where session.origin:codex-session AND object_ref:github-review
+polylogue context-snapshots where session.repo:polylogue AND boundary:subagent_start
 ```
+
+`observed-events` and `context-snapshots` are runtime-transform row sources.
+They return projected evidence from existing recovery/run-projection
+transforms, not durable SQL table rows, so they are terminal unit sources only;
+they do not act as `exists observed-event(...)` or
+`exists context-snapshot(...)` session selectors.
 
 Session filters such as `--origin`, `--tag`, `--repo`, `--since`, and `--until`
 still narrow the owning sessions before rows are returned. Session-only actions

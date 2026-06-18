@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-QueryUnitName = Literal["message", "action", "block", "assertion", "observed-event"]
+QueryUnitName = Literal["message", "action", "block", "assertion", "observed-event", "context-snapshot"]
 
 #: Recognized DSL field tokens and a short human description.
 #: ``spec_field`` values correspond to :class:`~polylogue.archive.query.spec.SessionQuerySpec`
@@ -136,6 +136,8 @@ _SOURCE_WHERE_SOURCES: tuple[tuple[str, QueryUnitName], ...] = (
     ("assertions", "assertion"),
     ("observed-event", "observed-event"),
     ("observed-events", "observed-event"),
+    ("context-snapshot", "context-snapshot"),
+    ("context-snapshots", "context-snapshot"),
 )
 _BOOLEAN_SUPPORTED_FIELDS = {
     "repo",
@@ -198,8 +200,20 @@ _OBSERVED_EVENT_STRUCTURAL_FIELDS = {
     "object_ref",
     "evidence",
 }
+_CONTEXT_SNAPSHOT_STRUCTURAL_FIELDS = {
+    "boundary",
+    "inheritance_mode",
+    "run",
+    "run_ref",
+    "segment",
+    "segment_ref",
+    "evidence",
+    "metadata",
+    "text",
+}
 _STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS.update(_ASSERTION_STRUCTURAL_FIELDS)
 _STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS.update(_OBSERVED_EVENT_STRUCTURAL_FIELDS)
+_STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS.update(_CONTEXT_SNAPSHOT_STRUCTURAL_FIELDS)
 
 
 @dataclass(frozen=True)
@@ -291,6 +305,26 @@ _OBSERVED_EVENT_STRUCTURAL_FIELD_INFO: dict[str, StructuralQueryFieldInfo] = {
     "text": _field_info("text", "Observed-event summary/ref substring.", "text:review"),
 }
 
+_CONTEXT_SNAPSHOT_STRUCTURAL_FIELD_INFO: dict[str, StructuralQueryFieldInfo] = {
+    "boundary": _field_info(
+        "boundary",
+        "Context snapshot boundary, such as session_start or subagent_start.",
+        "boundary:session_start",
+    ),
+    "evidence": _field_info("evidence", "Context snapshot evidence ref substring.", "evidence:message:"),
+    "inheritance_mode": _field_info(
+        "inheritance_mode",
+        "Context inheritance mode, such as clean, summary, injected, or unknown.",
+        "inheritance_mode:summary",
+    ),
+    "metadata": _field_info("metadata", "Context snapshot metadata key/value substring.", "metadata:branch"),
+    "run": _field_info("run", "Owning run ObjectRef substring.", "run:run:"),
+    "run_ref": _field_info("run_ref", "Owning run ObjectRef substring.", "run_ref:run:"),
+    "segment": _field_info("segment", "Context segment ObjectRef substring.", "segment:message:"),
+    "segment_ref": _field_info("segment_ref", "Context segment ObjectRef substring.", "segment_ref:message:"),
+    "text": _field_info("text", "Context snapshot ref/run/segment/evidence/metadata substring.", "text:session_start"),
+}
+
 _SESSION_SCOPED_STRUCTURAL_EXAMPLES: dict[str, str] = {
     "action": "session.action:file_edit",
     "cwd": "session.cwd:/realm/project",
@@ -343,6 +377,11 @@ def _observed_event_field_infos() -> tuple[StructuralQueryFieldInfo, ...]:
     return tuple(sorted((*infos, *_SCOPED_SESSION_STRUCTURAL_FIELD_INFO), key=lambda field: field.name))
 
 
+def _context_snapshot_field_infos() -> tuple[StructuralQueryFieldInfo, ...]:
+    infos = [_CONTEXT_SNAPSHOT_STRUCTURAL_FIELD_INFO[name] for name in sorted(_CONTEXT_SNAPSHOT_STRUCTURAL_FIELDS)]
+    return tuple(sorted((*infos, *_SCOPED_SESSION_STRUCTURAL_FIELD_INFO), key=lambda field: field.name))
+
+
 STRUCTURAL_QUERY_UNIT_REGISTRY: dict[str, StructuralQueryUnitInfo] = {
     "action": StructuralQueryUnitInfo(
         description="Match sessions with at least one action row satisfying the child predicate.",
@@ -368,6 +407,11 @@ STRUCTURAL_QUERY_UNIT_REGISTRY: dict[str, StructuralQueryUnitInfo] = {
         description="Return runtime-transform observed events satisfying the child predicate.",
         fields=_observed_event_field_infos(),
         example="observed-events where session.repo:polylogue AND delivery_state:acted_on",
+    ),
+    "context-snapshot": StructuralQueryUnitInfo(
+        description="Return runtime-transform context snapshots satisfying the child predicate.",
+        fields=_context_snapshot_field_infos(),
+        example="context-snapshots where session.repo:polylogue AND boundary:session_start",
     ),
 }
 
@@ -468,7 +512,9 @@ __all__ = [
     "_ACTION_STRUCTURAL_FIELDS",
     "_ASSERTION_STRUCTURAL_FIELDS",
     "_BLOCK_STRUCTURAL_FIELDS",
+    "_CONTEXT_SNAPSHOT_STRUCTURAL_FIELDS",
     "_MESSAGE_STRUCTURAL_FIELDS",
+    "_OBSERVED_EVENT_STRUCTURAL_FIELDS",
     "_SOURCE_WHERE_SOURCES",
     "_STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS",
     "count_query_fields",

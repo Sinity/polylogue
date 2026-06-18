@@ -471,6 +471,28 @@ class TestBooleanQueryExpression:
         assert explanation.lowering_plan is not None
         assert "compatibility_selector" not in explanation.lowering_plan
 
+    def test_parse_context_snapshot_source_expression_preserves_terminal_unit(self) -> None:
+        source = parse_unit_source_expression(
+            "context-snapshots where session.repo:polylogue AND boundary:session_start AND text:run"
+        )
+
+        assert source is not None
+        assert source.unit == "context-snapshot"
+        assert source.predicate == QueryBoolPredicate(
+            op="and",
+            children=(
+                QueryFieldPredicate(field="session.repo", values=("polylogue",)),
+                QueryFieldPredicate(field="boundary", values=("session_start",)),
+                QueryFieldPredicate(field="text", values=("run",)),
+            ),
+        )
+        explanation = explain_expression(
+            "context-snapshots where session.repo:polylogue AND boundary:session_start AND text:run"
+        )
+        assert explanation.selected_units == ("context-snapshot",)
+        assert explanation.lowering_plan is not None
+        assert "compatibility_selector" not in explanation.lowering_plan
+
     def test_action_source_where_lowers_to_structural_exists(self) -> None:
         ast = parse_expression_ast("actions where action:file_edit AND path:archive/query")
 
@@ -1291,6 +1313,93 @@ class TestBooleanQueryExpression:
         )
         assert row.object_refs == ("github-review:#2100",)
         assert row.evidence_refs == ("codex-session:ext-hit::codex-session:ext-hit:m-hit",)
+
+    def test_terminal_context_snapshot_source_returns_runtime_rows(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.archive.query.unit_results import query_unit_rows
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from polylogue.surfaces.payloads import ContextSnapshotQueryRowPayload
+        from tests.infra.storage_records import SessionBuilder
+
+        archive_root = workspace_env["archive_root"]
+        index_db = archive_root / "index.db"
+        (
+            SessionBuilder(index_db, "hit")
+            .provider("codex")
+            .git_repository_url("polylogue")
+            .title("context hit")
+            .add_message("m-hit", role="user", text="Initial prompt. Injected review into context for PR #2100")
+            .add_message("m-subagent", role="assistant", text="Subagent final report")
+            .save()
+        )
+        (
+            SessionBuilder(index_db, "wrong-repo")
+            .provider("codex")
+            .git_repository_url("sinex")
+            .title("context elsewhere")
+            .add_message("m-wrong-repo", role="user", text="Initial prompt")
+            .save()
+        )
+
+        source = parse_unit_source_expression(
+            "context-snapshots where session.repo:polylogue AND boundary:session_start AND text:ext-hit"
+        )
+        assert source is not None
+        with ArchiveStore.open_existing(archive_root) as archive:
+            envelope = query_unit_rows(
+                archive,
+                source,
+                query=("context-snapshots where session.repo:polylogue AND boundary:session_start AND text:ext-hit"),
+                limit=10,
+            )
+
+        assert envelope.unit == "context-snapshot"
+        assert len(envelope.items) == 1
+        row = envelope.items[0]
+        assert isinstance(row, ContextSnapshotQueryRowPayload)
+        assert row.session_id == "codex-session:ext-hit"
+        assert row.boundary == "session_start"
+        assert row.inheritance_mode == "unknown"
+        assert row.snapshot_ref.startswith("context-snapshot:")
+        assert row.run_ref.startswith("run:")
+        assert row.evidence_refs == ("codex-session:ext-hit",)
+
+        review_source = parse_unit_source_expression(
+            "context-snapshots where session.repo:polylogue AND boundary:review_injection AND segment:#2100"
+        )
+        assert review_source is not None
+        with ArchiveStore.open_existing(archive_root) as archive:
+            review_envelope = query_unit_rows(
+                archive,
+                review_source,
+                query="context-snapshots where session.repo:polylogue AND boundary:review_injection AND segment:#2100",
+                limit=10,
+            )
+
+        assert review_envelope.unit == "context-snapshot"
+        assert len(review_envelope.items) == 1
+        review_row = review_envelope.items[0]
+        assert isinstance(review_row, ContextSnapshotQueryRowPayload)
+        assert review_row.boundary == "review_injection"
+        assert review_row.inheritance_mode == "injected"
+        assert review_row.segment_refs == (
+            "observed-event:codex-session:ext-hit:review_injected_context:0",
+            "github-review:#2100",
+        )
+        assert review_row.metadata["delivery_state"] == "injected_context"
+
+        unsupported_summary_source = parse_unit_source_expression(
+            "context-snapshots where session.tool:bash AND boundary:session_start"
+        )
+        assert unsupported_summary_source is not None
+        with ArchiveStore.open_existing(archive_root) as archive:
+            unsupported_summary_envelope = query_unit_rows(
+                archive,
+                unsupported_summary_source,
+                query="context-snapshots where session.tool:bash AND boundary:session_start",
+                limit=10,
+            )
+
+        assert unsupported_summary_envelope.items == ()
 
     def test_exists_block_tool_predicate_executes_against_archive(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore

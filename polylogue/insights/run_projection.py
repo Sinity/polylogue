@@ -17,7 +17,7 @@ from polylogue.insights.archive_models import ArchiveInsightModel
 
 RunHarness = Literal["claude-code", "codex", "chatgpt", "local", "unknown"]
 RunStatus = Literal["completed", "failed", "unknown"]
-ContextBoundary = Literal["session_start", "subagent_start", "resume", "unknown"]
+ContextBoundary = Literal["session_start", "subagent_start", "review_injection", "resume", "unknown"]
 ContextInheritanceMode = Literal["clean", "summary", "prefix", "snapshot", "injected", "unknown"]
 ObservedEventKind = Literal[
     "session_started",
@@ -256,18 +256,36 @@ def build_run_projection(
 
     for index, event in enumerate(recovery_events):
         evidence_refs = _to_evidence_refs(event.raw_refs)
+        event_ref = _event_ref(session_id, event.kind, index)
+        event_object_refs = _event_object_refs(event)
         observed.append(
             ObservedEvent(
-                event_ref=_event_ref(session_id, event.kind, index),
+                event_ref=event_ref,
                 kind=event.kind,
                 run_ref=main_run_ref,
                 summary=event.summary,
                 delivery_state=_delivery_state_for_event(event.kind),
                 subject_ref=ObjectRef(kind="message", object_id=evidence_refs[0].message_id or session_id),
-                object_refs=_event_object_refs(event),
+                object_refs=event_object_refs,
                 evidence_refs=evidence_refs,
             )
         )
+        if event.kind == "review_injected_context":
+            snapshots.append(
+                ContextSnapshot(
+                    snapshot_ref=_context_snapshot_ref(session_id, f"review_injection:{index}"),
+                    run_ref=main_run_ref,
+                    boundary="review_injection",
+                    inheritance_mode="injected",
+                    segment_refs=(event_ref, *event_object_refs),
+                    evidence_refs=evidence_refs,
+                    metadata={
+                        "source": "recovery-event",
+                        "event_ref": event_ref.format(),
+                        "delivery_state": "injected_context",
+                    },
+                )
+            )
 
     for index, report in enumerate(subagent_reports):
         child_id = report.resolved_child_session_id or report.child_session_id or report.task_id or f"subagent-{index}"

@@ -133,13 +133,10 @@ class RootModeRequest:
         return self.with_query_terms(self.query_terms + tuple(str(term) for term in extra_terms))
 
     def should_show_stats(self) -> bool:
+        if self.query_terms:
+            return False
         query_spec = self.query_spec()
-        return (
-            not self.query_terms
-            and not query_spec.has_filters()
-            and not self.has_output_mode()
-            and not self.has_modifiers()
-        )
+        return not query_spec.has_filters() and not self.has_output_mode() and not self.has_modifiers()
 
 
 __all__ = ["RootModeRequest"]

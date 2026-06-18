@@ -355,6 +355,88 @@
       "title": "BlockQueryRowPayload",
       "type": "object"
     },
+    "ContextSnapshotQueryRowPayload": {
+      "additionalProperties": false,
+      "description": "Shared terminal-query row for runtime-transform context snapshots.",
+      "properties": {
+        "boundary": {
+          "title": "Boundary",
+          "type": "string"
+        },
+        "evidence_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "inheritance_mode": {
+          "title": "Inheritance Mode",
+          "type": "string"
+        },
+        "metadata": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Metadata",
+          "type": "object"
+        },
+        "origin": {
+          "title": "Origin",
+          "type": "string"
+        },
+        "run_ref": {
+          "title": "Run Ref",
+          "type": "string"
+        },
+        "segment_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Segment Refs",
+          "type": "array"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "snapshot_ref": {
+          "title": "Snapshot Ref",
+          "type": "string"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        },
+        "unit": {
+          "const": "context-snapshot",
+          "default": "context-snapshot",
+          "title": "Unit",
+          "type": "string"
+        }
+      },
+      "required": [
+        "snapshot_ref",
+        "session_id",
+        "origin",
+        "run_ref",
+        "boundary",
+        "inheritance_mode",
+        "segment_refs",
+        "evidence_refs",
+        "metadata"
+      ],
+      "title": "ContextSnapshotQueryRowPayload",
+      "type": "object"
+    },
     "MessageQueryRowPayload": {
       "additionalProperties": false,
       "description": "Shared terminal-query row for archive messages.",
@@ -513,7 +595,7 @@
   "$id": "https://polylogue.dev/schemas/cli-output/query-unit-envelope.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "Terminal message/action/block row envelope for explicit `messages/actions/blocks where ...` query-unit expressions. Shared by CLI JSON output, Python API, MCP, and daemon HTTP.\n\nGenerated from `polylogue.surfaces.payloads.QueryUnitEnvelope` by `devtools render-cli-output-schemas`. Do not edit by hand.",
+  "description": "Terminal row envelope for explicit `messages/actions/blocks/assertions/observed-events/context-snapshots where ...` query-unit expressions. Shared by CLI JSON output, Python API, MCP, and daemon HTTP.\n\nGenerated from `polylogue.surfaces.payloads.QueryUnitEnvelope` by `devtools render-cli-output-schemas`. Do not edit by hand.",
   "properties": {
     "items": {
       "items": {
@@ -532,6 +614,9 @@
           },
           {
             "$ref": "#/$defs/ObservedEventQueryRowPayload"
+          },
+          {
+            "$ref": "#/$defs/ContextSnapshotQueryRowPayload"
           }
         ]
       },
@@ -578,7 +663,8 @@
         "action",
         "block",
         "assertion",
-        "observed-event"
+        "observed-event",
+        "context-snapshot"
       ],
       "title": "Unit",
       "type": "string"
@@ -598,6 +684,9 @@
     "polylogue --format json messages where ...",
     "polylogue --format json actions where ...",
     "polylogue --format json blocks where ...",
+    "polylogue --format json assertions where ...",
+    "polylogue --format json observed-events where ...",
+    "polylogue --format json context-snapshots where ...",
     "Polylogue.query_units(...)",
     "MCP query_units",
     "GET /api/query-units?expression=..."

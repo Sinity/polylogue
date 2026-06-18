@@ -115,7 +115,7 @@ Get messages for a session. Query params: `limit`, `offset`.
 
 Return terminal rows for explicit query-unit expressions. Query params:
 `expression`, `limit`, `offset`. `expression` must be a
-`messages/actions/blocks where ...` query and returns the shared
+`messages/actions/blocks/assertions/observed-events/context-snapshots where ...` query and returns the shared
 `QueryUnitEnvelope`.
 
 ### GET /api/facets

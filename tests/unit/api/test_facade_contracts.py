@@ -1389,6 +1389,43 @@ async def test_query_units_returns_assertion_rows(tmp_path: Path) -> None:
         await archive.close()
 
 
+async def test_query_units_returns_context_snapshot_rows(tmp_path: Path) -> None:
+    """``query_units()`` exposes runtime context snapshots through the facade."""
+    from polylogue.surfaces.payloads import ContextSnapshotQueryRowPayload
+
+    archive = _archive(tmp_path)
+    try:
+        with ArchiveStore(archive.config.archive_root) as archive_db:
+            archive_db.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="facade-context-snapshot-v1",
+                    title="Facade context snapshot",
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id="m1",
+                            role=Role.USER,
+                            text="facade context snapshot seed",
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="facade context snapshot seed")],
+                        )
+                    ],
+                )
+            )
+
+        envelope = await archive.query_units(
+            "context-snapshots where boundary:session_start AND text:facade-context-snapshot-v1"
+        )
+
+        assert envelope.unit == "context-snapshot"
+        [item] = envelope.items
+        assert isinstance(item, ContextSnapshotQueryRowPayload)
+        assert item.session_id == "codex-session:facade-context-snapshot-v1"
+        assert item.boundary == "session_start"
+        assert item.evidence_refs == ("codex-session:facade-context-snapshot-v1",)
+    finally:
+        await archive.close()
+
+
 async def test_query_units_rejects_session_expression(tmp_path: Path) -> None:
     """``query_units()`` is only for terminal source expressions."""
     from polylogue.archive.query.expression import ExpressionCompileError

@@ -1550,6 +1550,12 @@ def _emit_unit_source_rows(
         text_line = _action_query_line
     elif source.unit == "block":
         text_line = _block_query_line
+    elif source.unit == "assertion":
+        text_line = _assertion_query_line
+    elif source.unit == "observed-event":
+        text_line = _observed_event_query_line
+    elif source.unit == "context-snapshot":
+        text_line = _context_snapshot_query_line
     else:
         raise click.UsageError(f"Unsupported query unit: {source.unit}")
 
@@ -1599,6 +1605,21 @@ def _action_query_line(item: dict[str, object]) -> str:
 def _block_query_line(item: dict[str, object]) -> str:
     detail = item.get("text") or item.get("tool_path") or item.get("tool_command") or ""
     return f"{item['block_id']} [{item['block_type']}] {_snippet(detail)}"
+
+
+def _assertion_query_line(item: dict[str, object]) -> str:
+    detail = item.get("body_text") or item.get("key") or item.get("value") or item.get("target_ref") or ""
+    return f"{item['assertion_id']} [{item['kind']}/{item['status']}] {_snippet(detail)}"
+
+
+def _observed_event_query_line(item: dict[str, object]) -> str:
+    detail = item.get("summary") or item.get("subject_ref") or item.get("event_ref") or ""
+    return f"{item['event_ref']} [{item['kind']}/{item['delivery_state']}] {_snippet(detail)}"
+
+
+def _context_snapshot_query_line(item: dict[str, object]) -> str:
+    detail = item.get("metadata") or item.get("segment_refs") or item.get("evidence_refs") or ""
+    return f"{item['snapshot_ref']} [{item['boundary']}/{item['inheritance_mode']}] {_snippet(detail)}"
 
 
 def _project_payload(payload: dict[str, object], fields: str | None) -> dict[str, object]:

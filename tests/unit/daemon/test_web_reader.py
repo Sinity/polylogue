@@ -24,6 +24,7 @@ import pytest
 pytestmark = pytest.mark.xdist_group("web-reader")
 
 import json
+import sqlite3
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -1112,6 +1113,47 @@ class TestReaderQueryUnits:
         items = cast(list[dict[str, object]], payload["items"])
         assert [item["session_id"] for item in items] == [C2]
 
+    def test_query_units_endpoint_returns_terminal_assertion_rows(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+        from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
+
+        expression = quote("assertions where session.origin:chatgpt-export AND kind:decision AND status:active")
+        with _running_server(workspace_env) as (_, base_url):
+            user_db = workspace_env["archive_root"] / "user.db"
+            initialize_archive_database(user_db, ArchiveTier.USER)
+            with sqlite3.connect(user_db) as conn:
+                upsert_assertion(
+                    conn,
+                    assertion_id="daemon-query-decision",
+                    target_ref=f"session:{C2}",
+                    kind=AssertionKind.DECISION,
+                    body_text="Daemon assertion terminal query row.",
+                    status="active",
+                    visibility="private",
+                    now_ms=1_700_000_000_000,
+                )
+                conn.commit()
+
+            payload = cast(dict[str, object], _get_json(base_url, f"/api/query-units?expression={expression}"))
+
+        assert payload["mode"] == "query-unit"
+        assert payload["unit"] == "assertion"
+        items = cast(list[dict[str, object]], payload["items"])
+        assert [item["assertion_id"] for item in items] == ["daemon-query-decision"]
+
+    def test_query_units_endpoint_returns_context_snapshot_rows(self, workspace_env: dict[str, Path]) -> None:
+        expression = quote("context-snapshots where boundary:session_start AND text:c2")
+        with _running_server(workspace_env) as (_, base_url):
+            payload = cast(dict[str, object], _get_json(base_url, f"/api/query-units?expression={expression}"))
+
+        assert payload["mode"] == "query-unit"
+        assert payload["unit"] == "context-snapshot"
+        items = cast(list[dict[str, object]], payload["items"])
+        assert [item["session_id"] for item in items] == [C2]
+        assert items[0]["boundary"] == "session_start"
+        assert items[0]["unit"] == "context-snapshot"
+
     def test_query_units_endpoint_rejects_session_expression(self, workspace_env: dict[str, Path]) -> None:
         expression = quote("repo:polylogue")
         with _running_server(workspace_env) as (_, base_url):
@@ -1119,7 +1161,7 @@ class TestReaderQueryUnits:
 
         assert status == 400
         assert payload["error"] == "invalid_query"
-        assert "messages/actions/blocks/assertions where" in str(payload["message"])
+        assert "messages/actions/blocks/assertions/observed-events/context-snapshots where" in str(payload["message"])
 
 
 class TestReaderViewProfiles:
