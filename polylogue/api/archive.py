@@ -1244,16 +1244,38 @@ class PolylogueArchiveMixin:
     ) -> RecoveryContextCompilation:
         """Compile one recovery-context view without making callers branch on bundle shape."""
         from polylogue.context.compiler import compile_recovery_context
+        from polylogue.surfaces.payloads import AssertionClaimPayload
 
         packet: RecoveryWorkPacket | None = None
+        target_ref = f"session:{digest.session_id}"
         if report == "work-packet":
-            packet = await self._recovery_work_packet_from_digest(digest)
-        return compile_recovery_context(digest, report=report, work_packet=packet)
+            claims = await self.list_assertion_claims(target_ref=target_ref, limit=20)
+            packet = await self._recovery_work_packet_from_digest(digest, claims=claims)
+        else:
+            claims = await self.list_assertion_claims(
+                target_ref=target_ref,
+                statuses=("active",),
+                context_inject=True,
+                limit=20,
+            )
+        assertion_claims = tuple(AssertionClaimPayload.from_envelope(claim) for claim in claims)
+        return compile_recovery_context(
+            digest,
+            report=report,
+            work_packet=packet,
+            assertion_claims=assertion_claims,
+        )
 
-    async def _recovery_work_packet_from_digest(self, digest: RecoveryDigest) -> RecoveryWorkPacket:
+    async def _recovery_work_packet_from_digest(
+        self,
+        digest: RecoveryDigest,
+        *,
+        claims: Sequence[ArchiveAssertionEnvelope] | None = None,
+    ) -> RecoveryWorkPacket:
         """Build the assertion-enriched work-packet bundle for a digest."""
         packet = digest.work_packet()
-        claims = await self.list_assertion_claims(target_ref=f"session:{digest.session_id}", limit=20)
+        if claims is None:
+            claims = await self.list_assertion_claims(target_ref=f"session:{digest.session_id}", limit=20)
         assertion_entries = _archive_assertion_work_packet_entries(claims, digest.session_id)
         if not assertion_entries:
             return packet

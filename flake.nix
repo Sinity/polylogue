@@ -240,7 +240,7 @@
 
           if [ "$agents_hash" != "$agents_last_hash" ]; then
             echo "devshell: regenerating AGENTS.md (sources changed)" >&2
-            devtools render-agents >/dev/null
+            devtools render agents >/dev/null
             printf '%s' "$agents_hash" > "$agents_hash_file"
           fi
 

@@ -822,6 +822,20 @@ async def test_recovery_report_renders_seeded_session_presets(tmp_path: Path) ->
             visibility="private",
             now_ms=1_700_000_000_000,
         )
+        upsert_assertion(
+            conn,
+            assertion_id="recovery-decision-injected-alpha",
+            target_ref="session:claude-ai-export:conv-alpha",
+            kind=AssertionKind.DECISION,
+            body_text="Resume with the assertion-aware continuation context.",
+            author_ref="agent:test",
+            author_kind="agent",
+            evidence_refs=["claude-ai-export:conv-alpha"],
+            status="active",
+            visibility="private",
+            context_policy={"inject": True},
+            now_ms=1_700_000_000_100,
+        )
     try:
         continue_report = await archive.recovery_report("claude-ai-export:conv-alpha", "continue")
         blame_report = await archive.recovery_report("claude-ai-export:conv-alpha", "blame")
@@ -838,15 +852,20 @@ async def test_recovery_report_renders_seeded_session_presets(tmp_path: Path) ->
         assert work_packet.session_id == "claude-ai-export:conv-alpha"
         assert work_packet.render_markdown() == work_packet_report
         assertion_entries = [entry for entry in work_packet.entries if entry.section == "assertions"]
-        assert [(entry.label, entry.support, entry.text) for entry in assertion_entries] == [
-            ("caveat", "caveat", "Review findings have not been read yet.")
+        assert sorted((entry.label, entry.support, entry.text) for entry in assertion_entries) == [
+            ("caveat", "caveat", "Review findings have not been read yet."),
+            ("decision", "assertion", "Resume with the assertion-aware continuation context."),
         ]
         assert continue_report != blame_report
         assert work_packet_report not in {continue_report, blame_report}
         assert "[evidence:" in continue_report
         assert "[evidence:" in blame_report
+        assert "## Assertion Claims" in continue_report
+        assert "decision: Resume with the assertion-aware continuation context." in continue_report
+        assert "Review findings have not been read yet." not in continue_report
         assert "## Assertion Claims" in work_packet_report
         assert "- [caveat] caveat: Review findings have not been read yet." in work_packet_report
+        assert "- [assertion] decision: Resume with the assertion-aware continuation context." in work_packet_report
         assert "## Evidence" in work_packet_report
         assert await archive.recovery_report("nonexistent", "continue") is None
         assert await archive.recovery_work_packet("nonexistent") is None
