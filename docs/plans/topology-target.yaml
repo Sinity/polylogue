@@ -17,7 +17,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/archive.py
-    loc: 3478
+    loc: 3500
     target: polylogue/api/archive.py
     owner: stable
     cross_cut: { api: async }
@@ -685,15 +685,15 @@ files:
     target: polylogue/cli/bulk_export.py
     owner: stable
   - path: polylogue/cli/click_app.py
-    loc: 350
+    loc: 351
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
-    loc: 196
+    loc: 194
     target: polylogue/cli/click_command_registration.py
     owner: stable
   - path: polylogue/cli/click_option_groups.py
-    loc: 394
+    loc: 401
     target: polylogue/cli/click_option_groups.py
     owner: stable
   - path: polylogue/cli/command_inventory.py
@@ -776,10 +776,6 @@ files:
     loc: 62
     target: polylogue/cli/commands/query_completions.py
     owner: stable
-  - path: polylogue/cli/commands/query_explain.py
-    loc: 106
-    target: polylogue/cli/commands/query_explain.py
-    owner: stable
   - path: polylogue/cli/commands/reset.py
     loc: 335
     target: polylogue/cli/commands/reset.py
@@ -833,7 +829,7 @@ files:
     target: polylogue/cli/parser_diagnostics.py
     owner: stable
   - path: polylogue/cli/query.py
-    loc: 106
+    loc: 121
     target: polylogue/cli/query.py
     owner: stable
   - path: polylogue/cli/query_actions.py
@@ -843,6 +839,10 @@ files:
   - path: polylogue/cli/query_contracts.py
     loc: 356
     target: polylogue/cli/query_contracts.py
+    owner: stable
+  - path: polylogue/cli/query_explain.py
+    loc: 55
+    target: polylogue/cli/query_explain.py
     owner: stable
   - path: polylogue/cli/query_feedback.py
     loc: 97
@@ -877,7 +877,7 @@ files:
     target: polylogue/cli/read_view_handlers.py
     owner: stable
   - path: polylogue/cli/root_request.py
-    loc: 142
+    loc: 147
     target: polylogue/cli/root_request.py
     owner: stable
   - path: polylogue/cli/select.py
@@ -1020,15 +1020,15 @@ files:
     target: polylogue/context/__init__.py
     owner: stable
   - path: polylogue/context/assertion_claims.py
-    loc: 34
+    loc: 11
     target: polylogue/context/assertion_claims.py
     owner: stable
   - path: polylogue/context/compiler.py
-    loc: 148
+    loc: 168
     target: polylogue/context/compiler.py
     owner: stable
   - path: polylogue/context/pack.py
-    loc: 328
+    loc: 342
     target: polylogue/context/pack.py
     owner: stable
   - path: polylogue/context/preamble.py
@@ -1579,7 +1579,7 @@ files:
     target: polylogue/mcp/server.py
     owner: stable
   - path: polylogue/mcp/server_context_tools.py
-    loc: 316
+    loc: 331
     target: polylogue/mcp/server_context_tools.py
     owner: stable
   - path: polylogue/mcp/server_insight_tools.py

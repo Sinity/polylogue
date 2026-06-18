@@ -29,6 +29,9 @@ def handle_query_mode(
     """Handle query mode: run the archive query executor."""
     env: AppEnv = ctx.obj
     request = RootModeRequest.from_context(ctx)
+    if request.explain_query:
+        _explain_query_request(request)
+        return
     if request.should_show_stats() and callable(show_stats):
         show_stats(env, verbose=request.verbose)
         return
@@ -71,6 +74,18 @@ def _create_query_vector_provider(config: Config, *, db_path: Path | None = None
     except Exception as exc:
         logger.warning("Vector search setup failed: %s", exc, exc_info=True)
         return None
+
+
+def _explain_query_request(request: RootModeRequest) -> None:
+    if not request.query_terms:
+        raise click.UsageError("--explain requires query terms. Use `polylogue find QUERY --explain`.")
+    from polylogue.cli.query_explain import explain_query_expression
+
+    output_format = str(request.params.get("output_format") or "plain")
+    if output_format not in {"plain", "plaintext", "markdown", "json"}:
+        raise click.UsageError(f"--explain does not support --format {output_format}.")
+    render_format = "json" if output_format == "json" else "plain"
+    explain_query_expression(" ".join(request.query_terms), output_format=render_format)
 
 
 def execute_query_request(env: AppEnv, request: RootModeRequest) -> None:

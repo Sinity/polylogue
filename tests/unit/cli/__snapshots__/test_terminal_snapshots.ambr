@@ -189,6 +189,8 @@
                                     verb output). `ndjson` emits one JSON
                                     document per line, streaming-friendly for
                                     shell pipelines and LLM tool-use harnesses.
+    --explain                       Explain query DSL parsing and lowering
+                                    instead of executing the query.
     --transform [strip-tools|strip-thinking|strip-all]
                                     Remove content: strip-tools (tool calls),
                                     strip-thinking (reasoning), strip-all (both)
@@ -235,7 +237,6 @@
     mark
     ops                Run operational archive and daemon commands.
     query-completions  Inspect structured query completion metadata.
-    query-explain      Explain query DSL parsing and lowering.
     read               Read matched sessions (route to view<PATH>).
     recent             List the most recently updated sessions.
     resume             Resume from recent session context.
@@ -425,6 +426,10 @@
   ng-friendly for
                                     shell pipelines and LLM to
   ol-use harnesses.
+    --explain                       Explain query DSL parsing
+  and lowering
+                                    instead of executing the q
+  uery.
     --transform [strip-tools|strip-thinking|strip-all]
                                     Remove content: strip-tool
   s (tool calls),
@@ -498,7 +503,6 @@
   ands.
     query-completions  Inspect structured query completion met
   adata.
-    query-explain      Explain query DSL parsing and lowering.
     read               Read matched sessions (route to view<PATH>
   stination).
     recent             List the most recently updated sessions
@@ -627,6 +631,8 @@
                                     verb output). `ndjson` emits one JSON
                                     document per line, streaming-friendly for
                                     shell pipelines and LLM tool-use harnesses.
+    --explain                       Explain query DSL parsing and lowering
+                                    instead of executing the query.
     --transform [strip-tools|strip-thinking|strip-all]
                                     Remove content: strip-tools (tool calls),
                                     strip-thinking (reasoning), strip-all (both)
@@ -673,7 +679,6 @@
     mark
     ops                Run operational archive and daemon commands.
     query-completions  Inspect structured query completion metadata.
-    query-explain      Explain query DSL parsing and lowering.
     read               Read matched sessions (route to view<PATH>).
     recent             List the most recently updated sessions.
     resume             Resume from recent session context.

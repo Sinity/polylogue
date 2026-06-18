@@ -225,6 +225,7 @@ def cli(
     # Output
     output: str | None,
     output_format: str | None,
+    explain_query: bool,
     output_as_json: bool,
     transform: str | None,
     no_code_blocks: bool,
