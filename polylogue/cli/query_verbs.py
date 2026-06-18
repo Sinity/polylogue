@@ -444,6 +444,45 @@ def read_verb(
     )
 
 
+@click.command("continue")
+@click.option(
+    "--to",
+    "destination",
+    type=click.Choice(_READ_DESTINATIONS),
+    default="terminal",
+    show_default=True,
+    help="Output destination.",
+)
+@click.option("--out", "out_path", type=click.Path(), default=None, help="File path for --to file.")
+@click.pass_context
+def continue_verb(ctx: click.Context, destination: str, out_path: str | None) -> None:
+    """Compile a successor-agent continuation report for one matched session.
+
+    \b
+    Examples:
+        polylogue find id:abc then continue
+        polylogue --latest continue --to clipboard
+        polylogue find 'repo:polylogue near:id:abc' then continue --to file --out handoff.md
+    """
+    env: AppEnv = ctx.obj
+    request = _parent_request(ctx)
+    session_id = _resolve_target_session_id(request)
+    if session_id is None:
+        raise click.UsageError("continue requires one matched session (use --id, --latest, or a narrowing query).")
+    run_read_view(
+        env,
+        request,
+        ReadViewInvocation(
+            view="recovery",
+            session_id=session_id,
+            output_format=None,
+            destination=destination,
+            out_path=out_path,
+            recovery_report="continue",
+        ),
+    )
+
+
 @click.command("delete")
 @click.option("--dry-run", is_flag=True, help="Preview what would be deleted without deleting")
 @click.option("--yes", "yes_flag", is_flag=True, help="Confirm the deletion (required for actual deletion)")
@@ -736,6 +775,29 @@ def _execute_query_verb(
 
 def _resolve_target_session_id(request: RootModeRequest) -> str | None:
     """Verb-tree adapter for the shared latest-resolver helper (#1626, #1642)."""
+    if request.query_terms:
+        from dataclasses import replace
+
+        from polylogue.api.sync.bridge import run_coroutine_sync
+        from polylogue.config import Config
+
+        explicit = request.params.get("conv_id")
+        if isinstance(explicit, str) and explicit:
+            return explicit
+        spec = request.query_spec()
+        if not spec.latest and not spec.has_filters():
+            return None
+        one_match_spec = replace(spec, limit=1)
+
+        async def _resolve() -> str | None:
+            from polylogue.api import Polylogue
+
+            async with Polylogue.open(config=cast("Config | None", request.params.get("_config"))) as api:
+                summaries = await one_match_spec.list_summaries(api.config)
+            return str(summaries[0].id) if summaries else None
+
+        return run_coroutine_sync(_resolve())
+
     from polylogue.cli.shared.latest_resolver import resolve_session_id_from_root_params
 
     return resolve_session_id_from_root_params(dict(request.params))
@@ -748,6 +810,7 @@ QUERY_VERBS = (
     recent_verb,
     select_verb,
     read_verb,
+    continue_verb,
     delete_verb,
     mark_verb,
     analyze_verb,
@@ -758,6 +821,7 @@ __all__ = [
     "QUERY_VERBS",
     "VERB_NAMES",
     "analyze_verb",
+    "continue_verb",
     "count_verb",
     "delete_verb",
     "list_verb",
