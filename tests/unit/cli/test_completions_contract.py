@@ -1,4 +1,4 @@
-"""Contracts for the ``polylogue completions`` shell-integration surface.
+"""Contracts for the ``polylogue ops completions`` shell-integration surface.
 
 These tests pin the shape of the completions subcommand: each supported
 shell produces non-empty, shell-syntax output that mentions the program
@@ -40,7 +40,7 @@ class TestCompletionsPerShell:
         shell: str,
         runner: CliRunner,
     ) -> None:
-        result = runner.invoke(cli, ["completions", "--shell", shell])
+        result = runner.invoke(cli, ["ops", "completions", "--shell", shell])
         assert result.exit_code == 0, f"completions --shell {shell} exited {result.exit_code}: {result.output!r}"
         assert TRACEBACK_SENTINEL not in result.output
         assert result.stdout.strip(), f"empty completion script for shell={shell}"
@@ -57,7 +57,7 @@ class TestCompletionsPerShell:
         runner: CliRunner,
     ) -> None:
         """Output for each shell contains syntax markers specific to that shell."""
-        result = runner.invoke(cli, ["completions", "--shell", shell])
+        result = runner.invoke(cli, ["ops", "completions", "--shell", shell])
         assert result.exit_code == 0
         body = result.stdout
         if shell == "bash":
@@ -80,19 +80,19 @@ class TestCompletionsErrorPaths:
         self,
         runner: CliRunner,
     ) -> None:
-        result = runner.invoke(cli, ["completions", "--shell", "ksh"])
+        result = runner.invoke(cli, ["ops", "completions", "--shell", "ksh"])
         assert result.exit_code != 0
         assert TRACEBACK_SENTINEL not in result.output
 
     def test_missing_shell_flag_exits_non_zero(self, runner: CliRunner) -> None:
-        """``polylogue completions`` without ``--shell`` is a Click usage error."""
-        result = runner.invoke(cli, ["completions"])
+        """``polylogue ops completions`` without ``--shell`` is a Click usage error."""
+        result = runner.invoke(cli, ["ops", "completions"])
         assert result.exit_code != 0
         assert TRACEBACK_SENTINEL not in result.output
 
     def test_missing_shell_error_goes_to_stderr(self, runner: CliRunner) -> None:
         """Click usage errors land on stderr, not stdout."""
-        result = runner.invoke(cli, ["completions"])
+        result = runner.invoke(cli, ["ops", "completions"])
         # The error message is on stderr; stdout stays empty.
         assert "Missing option" in result.stderr or "Error" in result.stderr, (
             f"expected Click usage error on stderr, got stderr={result.stderr!r}"

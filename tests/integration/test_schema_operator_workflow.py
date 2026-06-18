@@ -150,7 +150,7 @@ def _patch_registry(registry: SchemaRegistry) -> AbstractContextManager[object]:
 class TestSchemaListCommand:
     def test_list_all_providers_json(self, runner: CliRunner, seeded_registry: SchemaRegistry) -> None:
         with _patch_registry(seeded_registry):
-            result = runner.invoke(cli, ["schema", "list", "--format", "json"])
+            result = runner.invoke(cli, ["ops", "schema", "list", "--format", "json"])
 
         assert result.exit_code == 0, f"CLI failed: {result.output}"
         outer = _extract_json(result.output)
@@ -168,7 +168,7 @@ class TestSchemaListCommand:
 
     def test_list_specific_provider_json(self, runner: CliRunner, seeded_registry: SchemaRegistry) -> None:
         with _patch_registry(seeded_registry):
-            result = runner.invoke(cli, ["schema", "list", "--provider", "test-provider", "--format", "json"])
+            result = runner.invoke(cli, ["ops", "schema", "list", "--provider", "test-provider", "--format", "json"])
 
         assert result.exit_code == 0, f"CLI failed: {result.output}"
         outer = _extract_json(result.output)
@@ -186,7 +186,7 @@ class TestSchemaListCommand:
 
     def test_list_specific_provider_text(self, runner: CliRunner, seeded_registry: SchemaRegistry) -> None:
         with _patch_registry(seeded_registry):
-            result = runner.invoke(cli, ["schema", "list", "--provider", "test-provider"])
+            result = runner.invoke(cli, ["ops", "schema", "list", "--provider", "test-provider"])
 
         assert result.exit_code == 0, f"CLI failed: {result.output}"
         assert "test-provider" in result.output
@@ -197,7 +197,7 @@ class TestSchemaListCommand:
 
     def test_list_unknown_provider(self, runner: CliRunner, seeded_registry: SchemaRegistry) -> None:
         with _patch_registry(seeded_registry):
-            result = runner.invoke(cli, ["schema", "list", "--provider", "nonexistent"])
+            result = runner.invoke(cli, ["ops", "schema", "list", "--provider", "nonexistent"])
 
         assert result.exit_code == 0  # not an error, just "no schemas found"
         assert "No schemas found" in result.output or "nonexistent" in result.output
@@ -227,7 +227,19 @@ class TestSchemaCompareCommand:
         with _patch_registry(seeded_registry):
             result = runner.invoke(
                 cli,
-                ["schema", "compare", "--provider", "test-provider", "--from", "v1", "--to", "v2", "--format", "json"],
+                [
+                    "ops",
+                    "schema",
+                    "compare",
+                    "--provider",
+                    "test-provider",
+                    "--from",
+                    "v1",
+                    "--to",
+                    "v2",
+                    "--format",
+                    "json",
+                ],
             )
 
         assert result.exit_code == 0, f"CLI failed: {result.output}"
@@ -245,7 +257,19 @@ class TestSchemaCompareCommand:
         with _patch_registry(seeded_registry):
             result = runner.invoke(
                 cli,
-                ["schema", "compare", "--provider", "test-provider", "--from", "v1", "--to", "v2", "--format", "json"],
+                [
+                    "ops",
+                    "schema",
+                    "compare",
+                    "--provider",
+                    "test-provider",
+                    "--from",
+                    "v1",
+                    "--to",
+                    "v2",
+                    "--format",
+                    "json",
+                ],
             )
 
         data = _extract_result_json(result.output)
@@ -260,7 +284,19 @@ class TestSchemaCompareCommand:
         with _patch_registry(seeded_registry):
             result = runner.invoke(
                 cli,
-                ["schema", "compare", "--provider", "test-provider", "--from", "v1", "--to", "v2", "--format", "json"],
+                [
+                    "ops",
+                    "schema",
+                    "compare",
+                    "--provider",
+                    "test-provider",
+                    "--from",
+                    "v1",
+                    "--to",
+                    "v2",
+                    "--format",
+                    "json",
+                ],
             )
 
         data = _extract_result_json(result.output)
@@ -273,7 +309,7 @@ class TestSchemaCompareCommand:
         with _patch_registry(seeded_registry):
             result = runner.invoke(
                 cli,
-                ["schema", "compare", "--provider", "test-provider", "--from", "v1", "--to", "v2"],
+                ["ops", "schema", "compare", "--provider", "test-provider", "--from", "v1", "--to", "v2"],
             )
 
         assert result.exit_code == 0, f"CLI failed: {result.output}"
@@ -316,7 +352,19 @@ class TestSchemaCompareCommand:
         with _patch_registry(registry):
             result = runner.invoke(
                 cli,
-                ["schema", "compare", "--provider", "mut-prov", "--from", "v1", "--to", "v2", "--format", "json"],
+                [
+                    "ops",
+                    "schema",
+                    "compare",
+                    "--provider",
+                    "mut-prov",
+                    "--from",
+                    "v1",
+                    "--to",
+                    "v2",
+                    "--format",
+                    "json",
+                ],
             )
 
         assert result.exit_code == 0, f"CLI failed: {result.output}"
@@ -356,7 +404,19 @@ class TestSchemaCompareCommand:
         with _patch_registry(registry):
             result = runner.invoke(
                 cli,
-                ["schema", "compare", "--provider", "sub-prov", "--from", "v1", "--to", "v2", "--format", "json"],
+                [
+                    "ops",
+                    "schema",
+                    "compare",
+                    "--provider",
+                    "sub-prov",
+                    "--from",
+                    "v1",
+                    "--to",
+                    "v2",
+                    "--format",
+                    "json",
+                ],
             )
 
         assert result.exit_code == 0, f"CLI failed: {result.output}"
@@ -373,7 +433,7 @@ class TestSchemaCompareCommand:
         with _patch_registry(seeded_registry):
             result = runner.invoke(
                 cli,
-                ["schema", "compare", "--provider", "test-provider", "--from", "v1", "--to", "v99"],
+                ["ops", "schema", "compare", "--provider", "test-provider", "--from", "v1", "--to", "v99"],
             )
 
         assert result.exit_code != 0
@@ -387,7 +447,7 @@ class TestSchemaCompareCommand:
 class TestSchemaExplainCommand:
     def test_explain_json_output(self, runner: CliRunner, seeded_registry: SchemaRegistry) -> None:
         with _patch_registry(seeded_registry):
-            result = runner.invoke(cli, ["schema", "explain", "--provider", "test-provider", "--format", "json"])
+            result = runner.invoke(cli, ["ops", "schema", "explain", "--provider", "test-provider", "--format", "json"])
 
         assert result.exit_code == 0, f"CLI failed: {result.output}"
         outer = _extract_json(result.output)
@@ -401,7 +461,7 @@ class TestSchemaExplainCommand:
 
     def test_explain_latest_version(self, runner: CliRunner, seeded_registry: SchemaRegistry) -> None:
         with _patch_registry(seeded_registry):
-            result = runner.invoke(cli, ["schema", "explain", "--provider", "test-provider"])
+            result = runner.invoke(cli, ["ops", "schema", "explain", "--provider", "test-provider"])
 
         assert result.exit_code == 0, f"CLI failed: {result.output}"
         # Latest is v2, which has "status" and "tags"
@@ -412,7 +472,7 @@ class TestSchemaExplainCommand:
         with _patch_registry(seeded_registry):
             result = runner.invoke(
                 cli,
-                ["schema", "explain", "--provider", "test-provider", "--version", "v1"],
+                ["ops", "schema", "explain", "--provider", "test-provider", "--version", "v1"],
             )
 
         assert result.exit_code == 0, f"CLI failed: {result.output}"
@@ -424,14 +484,14 @@ class TestSchemaExplainCommand:
         with _patch_registry(seeded_registry):
             result = runner.invoke(
                 cli,
-                ["schema", "explain", "--provider", "nonexistent"],
+                ["ops", "schema", "explain", "--provider", "nonexistent"],
             )
 
         assert result.exit_code != 0
 
     def test_explain_shows_metadata(self, runner: CliRunner, seeded_registry: SchemaRegistry) -> None:
         with _patch_registry(seeded_registry):
-            result = runner.invoke(cli, ["schema", "explain", "--provider", "test-provider"])
+            result = runner.invoke(cli, ["ops", "schema", "explain", "--provider", "test-provider"])
 
         assert result.exit_code == 0, f"CLI failed: {result.output}"
         assert "Metadata" in result.output
@@ -456,7 +516,7 @@ class TestSchemaExplainCommand:
         )
 
         with _patch_registry(registry):
-            result = runner.invoke(cli, ["schema", "explain", "--provider", "ann-prov", "--format", "json"])
+            result = runner.invoke(cli, ["ops", "schema", "explain", "--provider", "ann-prov", "--format", "json"])
 
         assert result.exit_code == 0, f"CLI failed: {result.output}"
         outer = _extract_json(result.output)
@@ -597,7 +657,7 @@ class TestFullOperatorWorkflow:
         with _patch_registry(registry):
             result = runner.invoke(
                 cli,
-                ["schema", "list", "--provider", "workflow-prov", "--format", "json"],
+                ["ops", "schema", "list", "--provider", "workflow-prov", "--format", "json"],
             )
         assert result.exit_code == 0
         outer = _extract_json(result.output)
@@ -672,7 +732,7 @@ class TestFullOperatorWorkflow:
         with _patch_registry(registry):
             result = runner.invoke(
                 cli,
-                ["schema", "explain", "--provider", "workflow-prov", "--version", "v3", "--format", "json"],
+                ["ops", "schema", "explain", "--provider", "workflow-prov", "--version", "v3", "--format", "json"],
             )
         assert result.exit_code == 0
         outer = _extract_json(result.output)
@@ -688,7 +748,7 @@ class TestFullOperatorWorkflow:
         with _patch_registry(registry):
             result = runner.invoke(
                 cli,
-                ["schema", "list", "--provider", "workflow-prov", "--format", "json"],
+                ["ops", "schema", "list", "--provider", "workflow-prov", "--format", "json"],
             )
         assert result.exit_code == 0
         outer = _extract_json(result.output)

@@ -69,7 +69,7 @@ class TestExercisesByGroup:
         observed = {command_path.display_name for command_path in inventory_command_paths()}
         assert {
             "diagnostics turns",
-            "schema explain",
+            "ops schema explain",
         } <= observed
 
     def test_all_json_contract_commands_have_generated_exercises(self) -> None:

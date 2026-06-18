@@ -1,4 +1,4 @@
-Usage: polylogue schema explain [OPTIONS]
+Usage: polylogue ops schema explain [OPTIONS]
 
   Explain a package element schema with evidence and annotations.
 

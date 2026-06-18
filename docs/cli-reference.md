@@ -167,7 +167,6 @@ Commands:
   analyze
   blackboard
   commands
-  completions        Emit shell completion setup for polylogue.
   config             Show configuration paths and resolved settings.
   cost               Summarize session cost telemetry.
   count              Print count of matched sessions.
@@ -188,7 +187,6 @@ Commands:
   recent             List the most recently updated sessions.
   resume             Resume from recent session context.
   resume-candidates  Rank resume candidates for the current context.
-  schema             Inspect and audit provider schemas.
   select
   stats              Show statistics for matched sessions.
   tags               Manage session tags.
@@ -399,11 +397,13 @@ Options:
 Commands:
   auth         Authenticate optional external services.
   backup       Create a timestamped durability-tier backup.
+  completions  Emit shell completion setup for polylogue.
   doctor       Run archive health checks and repairs.
   embed        Enable, preflight, and backfill the embedding pipeline.
   maintenance  Preview and run maintenance backfill operations.
   paths        Print canonical archive paths and bind-mount detection.
   reset        Reset local archive state.
+  schema       Inspect and audit provider schemas.
   status       Show daemon and archive status.
 ```
 
@@ -563,7 +563,7 @@ Options:
 ## Schema
 
 ```text
-Usage: polylogue schema [OPTIONS] COMMAND [ARGS]...
+Usage: polylogue ops schema [OPTIONS] COMMAND [ARGS]...
 
   Inspect schema packages, versions, and evidence.
 
@@ -579,7 +579,7 @@ Commands:
 ## Completions
 
 ```text
-Usage: polylogue completions [OPTIONS]
+Usage: polylogue ops completions [OPTIONS]
 
   Generate shell completion scripts.
 
@@ -588,9 +588,9 @@ Options:
   --help                   Show this message and exit.
 
   Install:
-    bash: add  eval "$(polylogue completions --shell bash)"  to ~/.bashrc
-    zsh:  add  eval "$(polylogue completions --shell zsh)"   to ~/.zshrc
-    fish: polylogue completions --shell fish > ~/.config/fish/completions/polylogue.fish
+    bash: add  eval "$(polylogue ops completions --shell bash)"  to ~/.bashrc
+    zsh:  add  eval "$(polylogue ops completions --shell zsh)"   to ~/.zshrc
+    fish: polylogue ops completions --shell fish > ~/.config/fish/completions/polylogue.fish
 
   Dynamic completers cover: session IDs, origins/source-families,
   tags, repos, cwd prefixes, action categories and sequences, tool names,
