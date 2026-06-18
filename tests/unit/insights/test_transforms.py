@@ -397,6 +397,12 @@ def test_work_packet_exposes_storage_free_continuation_bundle() -> None:
     pr_event = next(entry for entry in packet.entries if entry.section == "events" and entry.label == "pr_opened")
     assert pr_event.metadata == {"pr_refs": "#1911"}
     assert pr_event.object_refs == (ObjectRef(kind="github-pr", object_id="#1911"),)
+    review_event = next(
+        entry for entry in packet.entries if entry.section == "events" and entry.label == "review_acted_on"
+    )
+    assert review_event.metadata == {"review_refs": "#1911"}
+    assert review_event.object_refs == (ObjectRef(kind="github-review", object_id="#1911"),)
+    assert "review_refs=#1911" in rendered
     issue_event = next(entry for entry in packet.entries if entry.section == "events" and entry.label == "issue_closed")
     assert issue_event.metadata == {"issue_refs": "#1818"}
     assert issue_event.object_refs == (ObjectRef(kind="github-issue", object_id="#1818"),)

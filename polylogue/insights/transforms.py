@@ -532,7 +532,7 @@ def render_work_packet(packet: RecoveryWorkPacket) -> str:
         object_refs = _object_refs_line(entry)
         if object_refs:
             lines.append(f"  - refs: {object_refs}")
-        detail = _packet_metadata_line(entry.metadata, keys=("pr_refs", "issue_refs", "test_evidence"))
+        detail = _packet_metadata_line(entry.metadata, keys=("pr_refs", "review_refs", "issue_refs", "test_evidence"))
         if detail:
             lines.append(f"  - details: {detail}")
     if not event_entries:
