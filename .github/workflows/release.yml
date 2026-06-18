@@ -143,11 +143,11 @@ jobs:
           polylogue --help > /dev/null
           polylogued --help > /dev/null
           polylogue-mcp --help > /dev/null
-          # `stats` against an empty XDG archive must not crash on first-run
+          # `analyze` against an empty XDG archive must not crash on first-run
           # (covers schema bootstrap on a fresh database).
-          polylogue --plain stats
-          # `--plain count` is the smoke parity with verify-distribution-surface.
-          polylogue --plain count
+          polylogue --plain analyze
+          # `--plain analyze --count` is the smoke parity with verify-distribution-surface.
+          polylogue --plain analyze --count
           python -m polylogue --version
 
   installed-smoke-hooks:

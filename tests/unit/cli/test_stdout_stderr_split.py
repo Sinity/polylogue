@@ -59,7 +59,6 @@ _ALL_COMMANDS: tuple[tuple[str, ...], ...] = (
     ("insights", "timeline"),
     ("insights", "tool-usage"),
     ("insights", "work-events"),
-    ("list",),
     ("ops",),
     ("ops", "auth"),
     ("ops", "backup"),
@@ -76,7 +75,6 @@ _ALL_COMMANDS: tuple[tuple[str, ...], ...] = (
     ("ops", "status"),
     ("read",),
     ("resume",),
-    ("stats",),
     ("tags",),
     ("user-state",),
 )

@@ -101,7 +101,7 @@ def format_unknown_subcommand_hint(token: str, registered: Sequence[str]) -> str
 
 
 def is_query_verb(name: str) -> bool:
-    """Return True if ``name`` is one of the query-first verbs (list/count/etc)."""
+    """Return True if ``name`` is one of the query-first action verbs."""
     return name in QUERY_VERB_NAMES or name in VERB_NAMES
 
 

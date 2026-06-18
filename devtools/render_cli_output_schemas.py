@@ -58,24 +58,24 @@ SCHEMAS: tuple[CliOutputSchema, ...] = (
         name="session-list-row",
         title="Session List Row",
         description=(
-            "One row of `polylogue list --format json` output. The list verb "
+            "One row of `polylogue read --all --format json` output. The read-all path "
             "emits an array of these objects; the `ndjson` format emits one per "
             "line as results stream."
         ),
         model=SessionListRowPayload,
         surfaces=(
-            "polylogue list --format json",
-            "polylogue list --format ndjson",
-            "polylogue list --format yaml",
+            "polylogue read --all --format json",
+            "polylogue read --all --format ndjson",
+            "polylogue read --all --format yaml",
         ),
     ),
     CliOutputSchema(
         name="session-summary",
         title="Session Summary",
-        description=("Compact session identity payload used by stats/group-by and embedded inside search hits."),
+        description=("Compact session identity payload used by analyze group-by and embedded inside search hits."),
         model=SessionSummaryPayload,
         surfaces=(
-            "polylogue stats --format json (rows)",
+            "polylogue analyze --format json (rows)",
             "polylogue --format json <query> (hits[].session)",
         ),
     ),

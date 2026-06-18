@@ -102,9 +102,9 @@ def test_import_command_stages_local_path_before_daemon_request(
     # staged inbox path AND actionable next-step guidance. The old
     # "polylogue ops status" message was misleading (status doesn't show
     # recent completed operations); #1679 replaced it with journalctl
-    # for live progress and polylogue stats to verify the import landed.
+    # for live progress and polylogue analyze to verify the import landed.
     assert str(staged) in result.output
-    assert "polylogue stats" in result.output
+    assert "polylogue analyze" in result.output
 
 
 def test_import_demo_materializes_fixture_world_before_daemon_request(
@@ -151,7 +151,7 @@ def test_import_demo_materializes_fixture_world_before_daemon_request(
     assert body == {"path": str(staged)}
     assert captured["timeout"] == 5
     assert str(staged) in result.output
-    assert "polylogue stats" in result.output
+    assert "polylogue analyze" in result.output
 
 
 def test_import_requires_path_or_demo() -> None:

@@ -1,6 +1,0 @@
-Usage: polylogue count [OPTIONS]
-
-  Print count of matched sessions.
-
-Options:
-  --help  Show this message and exit.

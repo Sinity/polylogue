@@ -74,6 +74,8 @@ def _worker_args(selection: list[str]) -> list[str]:
 def build_pytest_cmd(selection: list[str]) -> list[str]:
     """Compose the pytest command for a focused selection."""
     return [
+        sys.executable,
+        "-m",
         "pytest",
         "-p",
         "devtools.pytest_progress_plugin",

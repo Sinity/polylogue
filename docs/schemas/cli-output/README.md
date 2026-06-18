@@ -15,8 +15,8 @@ devtools render cli-output-schemas --check # CI sync check
 
 | File | Surfaces | Source model |
 | --- | --- | --- |
-| [`session-list-row.schema.json`](./session-list-row.schema.json) | `polylogue list --format json`<br>`polylogue list --format ndjson`<br>`polylogue list --format yaml` | `SessionListRowPayload` |
-| [`session-summary.schema.json`](./session-summary.schema.json) | `polylogue stats --format json (rows)`<br>`polylogue --format json <query> (hits[].session)` | `SessionSummaryPayload` |
+| [`session-list-row.schema.json`](./session-list-row.schema.json) | `polylogue read --all --format json`<br>`polylogue read --all --format ndjson`<br>`polylogue read --all --format yaml` | `SessionListRowPayload` |
+| [`session-summary.schema.json`](./session-summary.schema.json) | `polylogue analyze --format json (rows)`<br>`polylogue --format json <query> (hits[].session)` | `SessionSummaryPayload` |
 | [`session-message-row.schema.json`](./session-message-row.schema.json) | `polylogue read --view messages --format ndjson`<br>`polylogue read --view messages --format json (messages[])` | `SessionMessageRowPayload` |
 | [`session-messages-response.schema.json`](./session-messages-response.schema.json) | `polylogue read --view messages --format json` | `SessionMessagesResponsePayload` |
 | [`session-search-hit.schema.json`](./session-search-hit.schema.json) | `polylogue --format json <query>`<br>`polylogue --format ndjson <query>` | `SessionSearchHitPayload` |

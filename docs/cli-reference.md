@@ -165,7 +165,6 @@ Commands:
   config             Show configuration paths and resolved settings.
   continue           Compile a successor-agent continuation report.
   cost               Summarize session cost telemetry.
-  count              Print count of matched sessions.
   dashboard          Open the local dashboard.
   delete             Delete matched sessions.
   diagnostics        Temporal session diagnostics
@@ -173,63 +172,48 @@ Commands:
   import             Import sessions from configured sources.
   init               Detect chat sources and write a starter polylogue.toml.
   insights           Rebuild and inspect derived session insights.
-  list               List matched sessions.
   mark
   ops                Run operational archive and daemon commands.
   read               Read matched sessions (route to view/destination).
-  recent             List the most recently updated sessions.
   resume             Resume from recent session context.
   resume-candidates  Rank resume candidates for the current context.
   select
-  stats              Show statistics for matched sessions.
   tags               Manage session tags.
   tutorial           Interactive first-run walk-through.
   user-state         Manage durable reader user state.
 ```
 
-## List Verb
+## Analyze Verb
 
 ```text
-Usage: polylogue list [OPTIONS]
+Usage: polylogue analyze [OPTIONS]
 
-  List matched sessions.
+  Analyze matched sessions: statistics, facets, and aggregates.
 
-Options:
-  -f, --format [markdown|json|ndjson|html|obsidian|org|yaml|plaintext|csv]
-                                  Output format (ndjson = one JSON document
-                                  per line, streaming-friendly)
-  --fields TEXT                   Fields: id, title, origin, date, messages,
-                                  words, tags, summary
-  -l, -n, --limit INTEGER         Max results
-  --help                          Show this message and exit.
-```
+  Applies to the full result set by default (no cardinality restriction).
+  Wraps aggregate and facet views over the matched session set.
 
-## Stats Verb
-
-```text
-Usage: polylogue stats [OPTIONS]
-
-  Show statistics for matched sessions.
+  Examples:
+      polylogue find 'repo:polylogue since:7d' then analyze
+      polylogue find 'repo:polylogue since:7d' then analyze --count
+      polylogue find 'repo:polylogue since:7d' then analyze --by origin
+      polylogue find 'repo:polylogue since:7d' then analyze --by month
+      polylogue find 'repo:polylogue' then analyze --facets
+      polylogue find 'repo:polylogue' then analyze --by day --format json
 
 Options:
+  --count                         Print only the matched-session count.
   --by [origin|month|year|day|action|tool|repo|work-kind]
-                                  Aggregate by dimension
+                                  Group statistics by dimension
+  --facets                        Show facet aggregates for the matched result
+                                  set
+  --no-idf                        With --facets, skip inverse-document-
+                                  frequency weighting
   -f, --format [markdown|json|ndjson|html|obsidian|org|yaml|plaintext|csv]
                                   Output format (ndjson = one JSON document
                                   per row, streaming-friendly)
   -l, -n, --limit INTEGER         Max matched sessions before grouping
   --help                          Show this message and exit.
-```
-
-## Count Verb
-
-```text
-Usage: polylogue count [OPTIONS]
-
-  Print count of matched sessions.
-
-Options:
-  --help  Show this message and exit.
 ```
 
 ## Read Verb
@@ -322,6 +306,21 @@ Options:
   --help                          Show this message and exit.
 ```
 
+## Select Verb
+
+```text
+Usage: polylogue select [OPTIONS]
+
+  Select one matched session with fzf/prompt fallback.
+
+Options:
+  -n, --limit INTEGER RANGE  Max candidate sessions.  [default: 20; x>=1]
+  --print [id|title|origin]  Field to print for the selected session.
+                             [default: id]
+  --json                     Print the selected session as one JSON object.
+  --help                     Show this message and exit.
+```
+
 ## Delete Verb
 
 ```text
@@ -345,6 +344,61 @@ Options:
   --yes      Confirm the deletion (required for actual deletion)
   --all      Delete all matched sessions (required when multiple match)
   --help     Show this message and exit.
+```
+
+## Mark Verb
+
+```text
+Usage: polylogue mark [OPTIONS]
+
+  Mark matched sessions with tags, notes, or user-state marks.
+
+  Requires exactly one matched session unless --all is present.
+  Use --first to act on the first match when the query is non-specific.
+
+  Mark types: star, pin, archive (managed via --star/--unstar, --pin/--unpin,
+  --archive/--unarchive).  Tags are free-form strings.  Notes are stored as
+  durable annotations on the session.
+
+  Examples:
+      polylogue find id:abc then mark --tag-add reviewed
+      polylogue find id:abc then mark --star --note "key insight"
+      polylogue find id:abc then mark --unstar --tag-remove reviewed
+      polylogue find id:abc then mark --pin
+      polylogue find 'repo:polylogue since:7d' then mark --tag-add sprint --all
+
+Options:
+  --tag-add TAG     Add a tag to the matched session(s)
+  --tag-remove TAG  Remove a tag from the matched session(s)
+  --star            Star the matched session
+  --unstar          Remove star from the matched session
+  --pin             Pin the matched session
+  --unpin           Remove pin from the matched session
+  --archive         Archive-mark the matched session
+  --unarchive       Remove archive-mark from the matched session
+  --note TEXT       Add or update a note annotation
+  --all             Apply to all matched sessions (default: singleton only)
+  --first           Apply to the first matched session only
+  --help            Show this message and exit.
+```
+
+## Continue Verb
+
+```text
+Usage: polylogue continue [OPTIONS]
+
+  Compile a successor-agent continuation report for one matched session.
+
+  Examples:
+      polylogue find id:abc then continue
+      polylogue --latest continue --to clipboard
+      polylogue find 'repo:polylogue near:id:abc' then continue --to file --out handoff.md
+
+Options:
+  --to [terminal|stdout|browser|clipboard|file]
+                                  Output destination.  [default: terminal]
+  --out PATH                      File path for --to file.
+  --help                          Show this message and exit.
 ```
 
 ## Insights
@@ -629,8 +683,8 @@ The schema files live under `docs/schemas/cli-output/`.
 
 | Schema | Model | Surfaces |
 | --- | --- | --- |
-| `session-list-row` | `SessionListRowPayload` | `polylogue list --format json`<br>`polylogue list --format ndjson`<br>`polylogue list --format yaml` |
-| `session-summary` | `SessionSummaryPayload` | `polylogue stats --format json (rows)`<br>`polylogue --format json <query> (hits[].session)` |
+| `session-list-row` | `SessionListRowPayload` | `polylogue read --all --format json`<br>`polylogue read --all --format ndjson`<br>`polylogue read --all --format yaml` |
+| `session-summary` | `SessionSummaryPayload` | `polylogue analyze --format json (rows)`<br>`polylogue --format json <query> (hits[].session)` |
 | `session-message-row` | `SessionMessageRowPayload` | `polylogue read --view messages --format ndjson`<br>`polylogue read --view messages --format json (messages[])` |
 | `session-messages-response` | `SessionMessagesResponsePayload` | `polylogue read --view messages --format json` |
 | `session-search-hit` | `SessionSearchHitPayload` | `polylogue --format json <query>`<br>`polylogue --format ndjson <query>` |

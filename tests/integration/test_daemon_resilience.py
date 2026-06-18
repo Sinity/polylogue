@@ -794,7 +794,7 @@ def test_concurrent_access_safety(workspace_env: dict[str, Path]) -> None:
     """Verify WAL read-during-write safety and daemon pidfile locking.
 
     The daemon runs with ``--no-api``, so ``polylogue --plain status``
-    and ``polylogue --plain count`` fall through to direct SQLite reads
+    and ``polylogue --plain analyze --count`` fall through to direct SQLite reads
     against the WAL journal.  This is the correct test for WAL-mode
     concurrency: a reader must be able to open the database while the
     daemon writer holds an active transaction.
@@ -802,7 +802,7 @@ def test_concurrent_access_safety(workspace_env: dict[str, Path]) -> None:
     1. Start daemon, let it begin ingesting.
     2. Start a second daemon process — assert it exits non-zero (pidfile locked).
     3. Run ``polylogue --plain status`` while daemon is ingesting — assert exit 0.
-    4. Run ``polylogue --plain count`` while daemon is ingesting — assert exit 0.
+    4. Run ``polylogue --plain analyze --count`` while daemon is ingesting — assert exit 0.
     """
     archive_root = workspace_env["archive_root"]
     corpus_root = archive_root / "corpus" / "projects"
@@ -881,20 +881,20 @@ def test_concurrent_access_safety(workspace_env: dict[str, Path]) -> None:
             f"stderr: {status_result.stderr.decode(errors='replace')[:500]}"
         )
 
-        # 3. CLI count while daemon is ingesting.
+        # 3. CLI analyze --count while daemon is ingesting.
         count_result = subprocess.run(
-            [polylogue, "--plain", "count"],
+            [polylogue, "--plain", "analyze", "--count"],
             env=env,
             capture_output=True,
             timeout=30,
         )
         assert count_result.returncode == 0, (
-            f"polylogue count failed: {count_result.returncode}\n"
+            f"polylogue analyze --count failed: {count_result.returncode}\n"
             f"stderr: {count_result.stderr.decode(errors='replace')[:500]}"
         )
         # Output should contain a message count.
         stdout = count_result.stdout.decode(errors="replace")
-        assert stdout.strip(), "polylogue count produced empty output"
+        assert stdout.strip(), "polylogue analyze --count produced empty output"
 
     finally:
         if proc is not None:

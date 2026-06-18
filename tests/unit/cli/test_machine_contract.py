@@ -186,9 +186,9 @@ class TestWantsJsonDetection:
 
     @given(argv=st.lists(st.text(max_size=30), max_size=10))
     @example(argv=[])
-    @example(argv=["list", "--format", "json"])
-    @example(argv=["--format=json", "list"])
-    @example(argv=["-f", "json", "list"])
+    @example(argv=["read", "--all", "--format", "json"])
+    @example(argv=["--format=json", "read", "--all"])
+    @example(argv=["-f", "json", "read", "--all"])
     def test_wants_json_only_matches_exact_flag(self, argv: list[str]) -> None:
         result = wants_json(argv)
         has_json_flag = False
@@ -234,5 +234,5 @@ class TestExtractCommand:
                     raise AssertionError(f"Order violation: {item!r} not in expected position") from None
 
     def test_extract_command_skips_option_values(self) -> None:
-        argv = ["--format", "json", "--limit", "1", "list"]
-        assert extract_command(argv) == ["list"]
+        argv = ["--format", "json", "--limit", "1", "read", "--all"]
+        assert extract_command(argv) == ["read"]

@@ -14,11 +14,12 @@ from devtools.render_support import write_if_changed
 
 SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Top-Level Command", ()),
-    ("List Verb", ("list",)),
-    ("Stats Verb", ("stats",)),
-    ("Count Verb", ("count",)),
+    ("Analyze Verb", ("analyze",)),
     ("Read Verb", ("read",)),
+    ("Select Verb", ("select",)),
     ("Delete Verb", ("delete",)),
+    ("Mark Verb", ("mark",)),
+    ("Continue Verb", ("continue",)),
     ("Insights", ("insights",)),
     ("Operations", ("ops",)),
     ("Doctor", ("ops", "doctor")),

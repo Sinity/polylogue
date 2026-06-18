@@ -285,36 +285,38 @@ def _init_empty_archive(workspace_env: dict[str, Path]) -> None:
 # ---------------------------------------------------------------------------
 
 
-class TestListVerbJsonContract:
-    """list --format json emits valid JSON (error envelope when no results, array when results exist)."""
+class TestReadAllJsonContract:
+    """read --all --format json emits valid JSON."""
 
     @pytest.mark.contract
-    def test_list_json_empty_archive_returns_empty_envelope(
+    def test_read_all_json_empty_archive_returns_empty_envelope(
         self: object,
         monkeypatch: pytest.MonkeyPatch,
         workspace_env: dict[str, Path],
     ) -> None:
-        """polylogue list --format json returns an empty success envelope on empty archive.
+        """polylogue read --all --format json returns an empty success envelope on empty archive.
 
         Archive browse mode ("show me everything, there is nothing") is a valid
-        success: the list verb exits 0 with a parseable archive envelope reporting
+        success: read --all exits 0 with a parseable archive envelope reporting
         zero rows. Only search mode (a query that matched nothing) exits 2.
         """
         _init_empty_archive(workspace_env)
-        exit_code, output = _invoke_raw_json_command(["list", "--format", "json"], monkeypatch)
-        assert exit_code == 0, f"list --format json on empty archive: expected exit 0, got {exit_code}: {output!r}"
+        exit_code, output = _invoke_raw_json_command(["read", "--all", "--format", "json"], monkeypatch)
+        assert exit_code == 0, (
+            f"read --all --format json on empty archive: expected exit 0, got {exit_code}: {output!r}"
+        )
         assert TRACEBACK_SENTINEL not in output
         parsed = json.loads(output)
         assert isinstance(parsed, dict)
         assert parsed.get("mode") == "list"
         assert parsed.get("total") == 0
 
-    def test_list_json_invalid_format_choice_no_traceback(
+    def test_read_all_json_invalid_format_choice_no_traceback(
         self: object,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """list --format with unknown value exits non-zero without traceback."""
-        exit_code, output = _invoke_raw_json_command(["list", "--format", "xml"], monkeypatch)
+        """read --all --format with unknown value exits non-zero without traceback."""
+        exit_code, output = _invoke_raw_json_command(["read", "--all", "--format", "xml"], monkeypatch)
         assert exit_code != 0
         assert TRACEBACK_SENTINEL not in output
 
@@ -324,8 +326,8 @@ class TestListVerbJsonContract:
 # ---------------------------------------------------------------------------
 
 
-class TestStatsVerbJsonContract:
-    """stats --format json emits valid JSON (error envelope on empty archive).
+class TestAnalyzeJsonContract:
+    """analyze --format json emits valid JSON (error envelope on empty archive).
 
     When the archive has no sessions, stats exits code 2 with a machine-error
     envelope. When sessions exist, it emits a raw JSON object with dimension/rows/summary.
@@ -338,10 +340,10 @@ class TestStatsVerbJsonContract:
         monkeypatch: pytest.MonkeyPatch,
         workspace_env: dict[str, Path],
     ) -> None:
-        """polylogue stats --format json returns an empty success envelope on empty archive."""
+        """polylogue analyze --format json returns an empty success envelope on empty archive."""
         _init_empty_archive(workspace_env)
-        exit_code, output = _invoke_raw_json_command(["stats", "--format", "json"], monkeypatch)
-        assert exit_code == 0, f"stats --format json on empty archive: expected exit 0, got {exit_code}: {output!r}"
+        exit_code, output = _invoke_raw_json_command(["analyze", "--format", "json"], monkeypatch)
+        assert exit_code == 0, f"analyze --format json on empty archive: expected exit 0, got {exit_code}: {output!r}"
         assert TRACEBACK_SENTINEL not in output
         parsed = json.loads(output)
         assert isinstance(parsed, dict)
@@ -353,11 +355,11 @@ class TestStatsVerbJsonContract:
         monkeypatch: pytest.MonkeyPatch,
         workspace_env: dict[str, Path],
     ) -> None:
-        """polylogue stats --by origin --format json returns empty envelope on empty archive."""
+        """polylogue analyze --by origin --format json returns empty envelope on empty archive."""
         _init_empty_archive(workspace_env)
-        exit_code, output = _invoke_raw_json_command(["stats", "--by", "origin", "--format", "json"], monkeypatch)
+        exit_code, output = _invoke_raw_json_command(["analyze", "--by", "origin", "--format", "json"], monkeypatch)
         assert exit_code == 0, (
-            f"stats --by origin --format json on empty archive: expected exit 0, got {exit_code}: {output!r}"
+            f"analyze --by origin --format json on empty archive: expected exit 0, got {exit_code}: {output!r}"
         )
         assert TRACEBACK_SENTINEL not in output
         parsed = json.loads(output)
@@ -370,9 +372,9 @@ class TestStatsVerbJsonContract:
         monkeypatch: pytest.MonkeyPatch,
         workspace_env: dict[str, Path],
     ) -> None:
-        """stats --by with unknown value exits non-zero without traceback."""
+        """analyze --by with unknown value exits non-zero without traceback."""
         exit_code, output = _invoke_raw_json_command(
-            ["stats", "--by", "nonexistent_dimension", "--format", "json"], monkeypatch
+            ["analyze", "--by", "nonexistent_dimension", "--format", "json"], monkeypatch
         )
         assert exit_code != 0
         assert TRACEBACK_SENTINEL not in output
@@ -522,8 +524,8 @@ class TestAllJsonCommandsProduceValidJson:
             (["tags", "--format", "json"], "cli.tags_json_matrix", False),
             (["ops", "schema", "list", "--format", "json"], "cli.schema_list_json_matrix", False),
             (["config", "--format", "json"], "cli.config_json_matrix", False),
-            # list browse on empty archive → exit 0 + empty archive envelope (valid JSON)
-            (["list", "--format", "json"], "cli.list_verb_json_matrix", True),
+            # read --all browse on empty archive → exit 0 + empty archive envelope (valid JSON)
+            (["read", "--all", "--format", "json"], "cli.read_all_json_matrix", True),
             (
                 ["ops", "status", "--daemon-url", "http://127.0.0.1:19999", "--format", "json"],
                 "cli.status_json_matrix",

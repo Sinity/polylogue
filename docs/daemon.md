@@ -446,7 +446,7 @@ and recreates the vec0 virtual table.
 ### Checking coverage
 
 ```bash
-polylogue stats                      # embedding coverage in archive stats
+polylogue analyze                    # embedding coverage in archive aggregates
 polylogue ops embed status               # cheap readiness + latest catch-up run
 polylogue ops embed status --detail      # exact pending-message/retrieval accounting
 polylogued status                    # daemon status includes embedding readiness

@@ -4,9 +4,9 @@ These pin the column layout, heading shape, and ordering of the
 ``polylogue --plain`` text surfaces exposed to scripts and users that pipe
 the CLI into other tools. The matrix covers:
 
-- ``list``: per-session rows (provider, id, title, date columns)
-- ``count``: single integer
-- ``stats``: aggregate summary
+- ``read --all``: per-session rows (origin, id, title, date columns)
+- ``analyze --count``: single integer
+- ``analyze``: aggregate summary
 
 Anti-pattern (rejected case): we intentionally do NOT snapshot ephemeral
 fields. Wall-clock timestamps, generated database paths, runtime durations,
@@ -77,43 +77,43 @@ def _invoke(runner: CliRunner, args: list[str]) -> str:
     return _redact(result.output)
 
 
-def test_plain_list_snapshot(
+def test_plain_read_all_snapshot(
     runner: CliRunner,
     seeded_db_env: Path,
     snapshot: object,
 ) -> None:
-    """``polylogue --plain list`` pins per-row column layout."""
-    output = _invoke(runner, ["--plain", "list"])
+    """``polylogue --plain read --all`` pins per-row column layout."""
+    output = _invoke(runner, ["--plain", "read", "--all"])
     assert output == snapshot
 
 
-def test_plain_count_snapshot(
+def test_plain_analyze_count_snapshot(
     runner: CliRunner,
     seeded_db_env: Path,
     snapshot: object,
 ) -> None:
-    """``polylogue --plain count`` pins the single-integer surface."""
-    output = _invoke(runner, ["--plain", "count"])
+    """``polylogue --plain analyze --count`` pins the single-integer surface."""
+    output = _invoke(runner, ["--plain", "analyze", "--count"])
     assert output == snapshot
 
 
-def test_plain_stats_snapshot(
+def test_plain_analyze_snapshot(
     runner: CliRunner,
     seeded_db_env: Path,
     snapshot: object,
 ) -> None:
-    """``polylogue --plain stats`` pins the stats summary shape."""
-    output = _invoke(runner, ["--plain", "stats"])
+    """``polylogue --plain analyze`` pins the stats summary shape."""
+    output = _invoke(runner, ["--plain", "analyze"])
     assert output == snapshot
 
 
-def test_plain_list_origin_filter_snapshot(
+def test_plain_read_all_origin_filter_snapshot(
     runner: CliRunner,
     seeded_db_env: Path,
     snapshot: object,
 ) -> None:
-    """``polylogue --plain --origin chatgpt-export list`` pins filtered list shape."""
-    output = _invoke(runner, ["--plain", "--origin", "chatgpt-export", "list"])
+    """``polylogue --plain --origin chatgpt-export read --all`` pins filtered list shape."""
+    output = _invoke(runner, ["--plain", "--origin", "chatgpt-export", "read", "--all"])
     assert output == snapshot
 
 
@@ -136,37 +136,37 @@ def _invoke_json(runner: CliRunner, args: list[str]) -> str:
     return _redact(result.output)
 
 
-def test_json_list_snapshot(
+def test_json_read_all_snapshot(
     runner: CliRunner,
     seeded_db_env: Path,
     snapshot: object,
 ) -> None:
-    """``polylogue --plain list --format json`` pins JSON list envelope."""
-    output = _invoke_json(runner, ["list", "--format", "json"])
+    """``polylogue --plain read --all --format json`` pins JSON list envelope."""
+    output = _invoke_json(runner, ["read", "--all", "--format", "json"])
     assert output == snapshot
 
 
-def test_json_count_snapshot(
+def test_json_analyze_count_snapshot(
     runner: CliRunner,
     seeded_db_env: Path,
     snapshot: object,
 ) -> None:
-    """``polylogue --plain count`` pins the integer count surface.
+    """``polylogue --plain analyze --count`` pins the integer count surface.
 
-    ``count`` does not accept ``--format``; it always emits a bare integer,
+    ``analyze --count`` does not require ``--format``; it emits a bare integer,
     which is the simplest machine-readable contract.
     """
-    output = _invoke(runner, ["--plain", "count"])
+    output = _invoke(runner, ["--plain", "analyze", "--count"])
     assert output == snapshot
 
 
-def test_json_stats_snapshot(
+def test_json_analyze_snapshot(
     runner: CliRunner,
     seeded_db_env: Path,
     snapshot: object,
 ) -> None:
-    """``polylogue --plain stats --format json`` pins JSON stats envelope."""
-    output = _invoke_json(runner, ["stats", "--format", "json"])
+    """``polylogue --plain analyze --format json`` pins JSON stats envelope."""
+    output = _invoke_json(runner, ["analyze", "--format", "json"])
     assert output == snapshot
 
 

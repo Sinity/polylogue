@@ -96,8 +96,8 @@ class TestPlainEmptyArchiveMessages:
         monkeypatch: pytest.MonkeyPatch,
         workspace_env: dict[str, Path],
     ) -> None:
-        """``polylogue --plain count`` succeeds before archive files exist."""
-        exit_code, stdout, stderr = _invoke_plain(["--plain", "count"], monkeypatch)
+        """``polylogue --plain analyze --count`` succeeds before archive files exist."""
+        exit_code, stdout, stderr = _invoke_plain(["--plain", "analyze", "--count"], monkeypatch)
         assert exit_code == 0, f"unexpected exit {exit_code}: stdout={stdout!r} stderr={stderr!r}"
         assert stdout == "0\n"
 
@@ -106,8 +106,8 @@ class TestPlainEmptyArchiveMessages:
         monkeypatch: pytest.MonkeyPatch,
         workspace_env: dict[str, Path],
     ) -> None:
-        """``polylogue --plain stats`` succeeds before archive files exist."""
-        exit_code, stdout, stderr = _invoke_plain(["--plain", "stats"], monkeypatch)
+        """``polylogue --plain analyze`` succeeds before archive files exist."""
+        exit_code, stdout, stderr = _invoke_plain(["--plain", "analyze"], monkeypatch)
         assert exit_code == 0, f"unexpected exit {exit_code}: stdout={stdout!r} stderr={stderr!r}"
         assert "Sessions: 0" in stdout
         assert "Messages: 0" in stdout
@@ -117,17 +117,17 @@ class TestPlainEmptyArchiveMessages:
         monkeypatch: pytest.MonkeyPatch,
         workspace_env: dict[str, Path],
     ) -> None:
-        """``polylogue --plain list`` browse on an empty archive is a quiet success.
+        """``polylogue --plain read --all`` browse on an empty archive is a quiet success.
 
         Archive browse mode treats "show everything, there is nothing" as a
         valid empty result: exit 0 with no JSON-shaped output. Only search mode
         emits the "No sessions matched." line and exits 2.
         """
         _init_empty_archive(workspace_env)
-        exit_code, stdout, _stderr = _invoke_plain(["--plain", "list"], monkeypatch)
+        exit_code, stdout, _stderr = _invoke_plain(["--plain", "read", "--all"], monkeypatch)
         assert exit_code in (0, 2), f"unexpected exit {exit_code}: {stdout!r}"
         assert not stdout.lstrip().startswith("{"), (
-            f"plain list emitted JSON-shaped output instead of human text: {stdout!r}"
+            f"plain read --all emitted JSON-shaped output instead of human text: {stdout!r}"
         )
 
     def test_plain_stats_empty_archive_message(
@@ -135,12 +135,12 @@ class TestPlainEmptyArchiveMessages:
         monkeypatch: pytest.MonkeyPatch,
         workspace_env: dict[str, Path],
     ) -> None:
-        """``polylogue --plain stats`` reports empty archive in human prose."""
+        """``polylogue --plain analyze`` reports empty archive in human prose."""
         _init_empty_archive(workspace_env)
-        exit_code, stdout, _stderr = _invoke_plain(["--plain", "stats"], monkeypatch)
+        exit_code, stdout, _stderr = _invoke_plain(["--plain", "analyze"], monkeypatch)
         assert exit_code in (0, 2), f"unexpected exit {exit_code}: {stdout!r}"
         assert not stdout.lstrip().startswith("{"), (
-            f"plain stats emitted JSON-shaped output instead of human text: {stdout!r}"
+            f"plain analyze emitted JSON-shaped output instead of human text: {stdout!r}"
         )
         assert "Sessions: 0" in stdout, f"missing empty stats line in {stdout!r}"
 

@@ -125,17 +125,17 @@ registered subcommand is treated as a search query against your archive:
 
 ```bash
 polylogue "error handling"                       # search across all origins
-polylogue --origin claude-code-session --since "last week" list
-polylogue --has-tool-use --typed-only list       # precomputed analytics
-polylogue --action file_edit --tool bash list    # semantic action filters
+polylogue --origin claude-code-session --since "last week" read --all
+polylogue --has-tool-use --typed-only read --all       # precomputed analytics
+polylogue --action file_edit --tool bash read --all    # semantic action filters
 polylogue --similar "sqlite locking" --limit 5   # vector-similar (opt-in)
 polylogue --latest read                          # render the most recent session
-polylogue stats --by origin                      # aggregates
+polylogue analyze --by origin                    # aggregates
 ```
 
 You can also bind a query to an explicit verb with `find QUERY then VERB`. The
-verbs that act on a matched set are `list`, `read`, `count`, `stats`,
-`analyze`, `mark`, and `delete`:
+verbs that act on a matched set are `read`, `select`, `analyze`, `mark`,
+`delete`, and `continue`:
 
 ```bash
 polylogue find id:abc then read --view messages
@@ -256,15 +256,15 @@ In a second terminal with the same environment:
 ```bash
 polylogue import --demo
 polylogue ops status
-polylogue stats
-polylogue "pytest" list --limit 5
+polylogue analyze
+polylogue "pytest" read --all --limit 5
 polylogue find "pytest" then read --view messages
 polylogue find "pytest" then analyze --facets
 ```
 
 `polylogue import --demo` writes only approved synthetic source files and asks
 the running daemon to ingest them. The command is asynchronous: `ops status` shows
-daemon/archive health, while `stats` and search/read/analyze commands are
+daemon/archive health, while search/read/analyze commands are
 meaningful after daemon convergence. The current deterministic archive
 evidence is the in-process fixture evidence in
 [docs/generate.md](docs/generate.md), including the expected `pytest` search

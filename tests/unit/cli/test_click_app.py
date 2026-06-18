@@ -431,7 +431,8 @@ class TestQueryFirstGroupParseArgs:
         assert "--latest" in result.output
         assert "Subcommands:" not in result.output
         assert (
-            "polylogue --origin claude-code-session --since 2026-01-01 stats --by repo --format json" in result.output
+            "polylogue --origin claude-code-session --since 2026-01-01 find 'repo:polylogue' then analyze --by repo --format json"
+            in result.output
         )
         assert (
             "polylogue stats --by repo --origin claude-code-session --since 2026-01-01 --format json"
@@ -441,27 +442,27 @@ class TestQueryFirstGroupParseArgs:
     def test_query_verb_help_renders_with_root_options(self, cli_runner: CliRunner) -> None:
         from polylogue.cli.click_app import cli
 
-        result = cli_runner.invoke(cli, ["--plain", "list", "--help"], catch_exceptions=False)
+        result = cli_runner.invoke(cli, ["--plain", "read", "--help"], catch_exceptions=False)
         assert result.exit_code == 0
-        assert "List matched sessions." in result.output
+        assert "Read matched sessions." in result.output
 
     def test_root_query_option_after_verb_gets_specific_usage_error(self, cli_runner: CliRunner) -> None:
         from polylogue.cli.click_app import cli
 
-        result = cli_runner.invoke(cli, ["stats", "--by", "origin", "--since", "2026-01-01"], catch_exceptions=False)
+        result = cli_runner.invoke(cli, ["analyze", "--by", "origin", "--since", "2026-01-01"], catch_exceptions=False)
         assert result.exit_code == 2
         assert "Query filters and root output flags must appear before the verb." in result.output
-        assert "Move --since before `stats`." in result.output
+        assert "Move --since before `analyze`." in result.output
 
     def test_root_filter_after_verb_gets_specific_usage_error(self, cli_runner: CliRunner) -> None:
         from polylogue.cli.click_app import cli
 
         result = cli_runner.invoke(
-            cli, ["stats", "--by", "origin", "--origin", "claude-ai-export"], catch_exceptions=False
+            cli, ["analyze", "--by", "origin", "--origin", "claude-ai-export"], catch_exceptions=False
         )
         assert result.exit_code == 2
         assert "Query filters and root output flags must appear before the verb." in result.output
-        assert "Move --origin before `stats`." in result.output
+        assert "Move --origin before `analyze`." in result.output
 
 
 class TestQueryFirstGroupInvoke:
@@ -482,11 +483,11 @@ class TestQueryFirstGroupInvoke:
         mock_execute.assert_not_called()
         mock_stats.assert_called_once()
 
-    def test_stats_by_subcommand_preserves_grouped_stats_mode(self, cli_runner: CliRunner) -> None:
+    def test_analyze_by_subcommand_preserves_grouped_stats_mode(self, cli_runner: CliRunner) -> None:
         from polylogue.cli.click_app import cli
 
         with patch("polylogue.cli.query.execute_query_request") as mock_execute:
-            result = cli_runner.invoke(cli, ["--plain", "stats", "--by", "origin"], catch_exceptions=False)
+            result = cli_runner.invoke(cli, ["--plain", "analyze", "--by", "origin"], catch_exceptions=False)
 
         assert result.exit_code == 0
         params = mock_execute.call_args[0][1].query_params()
@@ -647,7 +648,7 @@ class TestCliSetup:
             patch("polylogue.cli.click_app.create_ui", return_value=MagicMock()),
             patch("polylogue.cli.click_app._show_stats"),
         ):
-            result = cli_runner.invoke(cli, ["list", "--format", "json"], catch_exceptions=False)
+            result = cli_runner.invoke(cli, ["read", "--all", "--format", "json"], catch_exceptions=False)
         assert "Plain output active" not in result.output
 
     def test_env_force_plain_false_values_still_do_not_announce(self, cli_runner: CliRunner) -> None:
@@ -710,7 +711,7 @@ class TestCliMetadata:
 
         result = cli_runner.invoke(cli, ["--help"])
         assert result.exit_code == 0
-        for command in ("ops", "import", "tags", "list", "count", "stats"):
+        for command in ("ops", "import", "tags", "read", "analyze"):
             assert command in result.output
         assert result.output.count("Commands:") == 1
 
@@ -724,7 +725,6 @@ class TestCliMetadata:
             "continue",
             "cost",
             "blackboard",
-            "recent",
             "dashboard",
             "resume",
             "resume-candidates",
@@ -736,9 +736,6 @@ class TestCliMetadata:
             "ops",
             "tutorial",
             # Query verbs
-            "list",
-            "count",
-            "stats",
             "read",
             "select",
             "delete",

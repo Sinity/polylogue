@@ -250,16 +250,16 @@ def test_ndjson_empty_rows_render_empty_string() -> None:
     assert document.render("ndjson") == ""
 
 
-def test_live_list_json_rows_validate_against_schema(
+def test_live_read_all_json_rows_validate_against_schema(
     cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Real `polylogue list --format json` rows validate against the published schema."""
+    """Real `polylogue read --all --format json` rows validate against the published schema."""
     import jsonschema
 
     _seed_live_cli_schema_fixture(cli_workspace, monkeypatch)
     schema = _load_published_schema("session-list-row")
 
-    payload = json.loads(_invoke_live_cli(["list", "-f", "json"]))
+    payload = json.loads(_invoke_live_cli(["read", "--all", "-f", "json"]))
     assert isinstance(payload, dict)
     rows = payload.get("items")
     assert isinstance(rows, list)
@@ -268,16 +268,16 @@ def test_live_list_json_rows_validate_against_schema(
     assert rows[0]["title"] == "Schema Live Output"
 
 
-def test_live_list_ndjson_rows_validate_against_schema(
+def test_live_read_all_ndjson_rows_validate_against_schema(
     cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Real `polylogue list --format ndjson` rows validate line-by-line."""
+    """Real `polylogue read --all --format ndjson` rows validate line-by-line."""
     import jsonschema
 
     _seed_live_cli_schema_fixture(cli_workspace, monkeypatch)
     schema = _load_published_schema("session-list-row")
 
-    lines = [line for line in _invoke_live_cli(["list", "-f", "ndjson"]).splitlines() if line]
+    lines = [line for line in _invoke_live_cli(["read", "--all", "-f", "ndjson"]).splitlines() if line]
     assert len(lines) == 1
     row = json.loads(lines[0])
     jsonschema.validate(instance=row, schema=schema)

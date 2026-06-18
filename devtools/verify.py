@@ -929,6 +929,8 @@ def build_verify_steps(
         # invocations.
         scale_marker_expr = "not scale_large" if lab else "not scale_medium and not scale_large"
         pytest_cmd = [
+            sys.executable,
+            "-m",
             "pytest",
             "-q",
             "--tb=short",

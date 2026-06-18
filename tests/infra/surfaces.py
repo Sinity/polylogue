@@ -262,7 +262,7 @@ class FacadeSurface:
 class CLISurface:
     """Click-CLI adapter projection.
 
-    Invokes the same ``polylogue [filters] list --format json`` path that
+    Invokes the same ``polylogue [filters] read --all --format json`` path that
     operators run, then projects the parsed envelope into the canonical
     id-tuple shape used by the parity harness.
 
@@ -307,7 +307,7 @@ class CLISurface:
         # positional bare-token interception.
         if query_case.search_text is not None:
             args.extend(["--contains", query_case.search_text])
-        args.extend(["list", "--format", "json"])
+        args.extend(["read", "--all", "--format", "json"])
         result = self._runner.invoke(cli, args, catch_exceptions=True)
         if result.exception is not None and not isinstance(result.exception, SystemExit):
             raise result.exception
@@ -333,7 +333,9 @@ class CLISurface:
                 return ()
             raise AssertionError(f"CLI exited 2 but envelope is not no_results: {parsed!r}")
         if exit_code != 0:
-            raise AssertionError(f"polylogue list --format json exited {exit_code} for {query_case.name!r}: {output!r}")
+            raise AssertionError(
+                f"polylogue read --all --format json exited {exit_code} for {query_case.name!r}: {output!r}"
+            )
         try:
             parsed = json.loads(output)
         except json.JSONDecodeError as exc:

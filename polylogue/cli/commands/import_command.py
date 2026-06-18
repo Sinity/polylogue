@@ -205,7 +205,7 @@ def import_command(
         f"  Daemon:       {daemon_url}\n"
         f"  Next:         the daemon will process the staged file automatically.\n"
         f"                Check progress:  journalctl --user -u polylogued.service -f\n"
-        f"                Verify ingested: polylogue stats"
+        f"                Verify ingested: polylogue analyze"
     )
 
 

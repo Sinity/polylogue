@@ -53,39 +53,75 @@ def test_execute_query_verb_dispatches_typed_request() -> None:
     execute.assert_called_once_with(child.obj, request)
 
 
-def test_list_and_count_verbs_update_parent_request() -> None:
+def test_read_all_and_analyze_count_update_parent_request() -> None:
     _, child = _context_pair(params={"origin": "chatgpt-export"}, query_terms=("alpha",))
 
-    wrapped_list = getattr(query_verbs.list_verb.callback, "__wrapped__", None)
-    assert callable(wrapped_list)
+    wrapped_read = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
+    assert callable(wrapped_read)
     with patch("polylogue.cli.query_verbs._execute_query_verb") as execute:
-        wrapped_list(child, "json", "id,title", 7)
+        with patch("polylogue.cli.query_verbs.run_bulk_export_view") as bulk_export:
+            wrapped_read(
+                child,
+                "summary",
+                "terminal",
+                "json",
+                None,
+                True,
+                (),
+                None,
+                7,
+                0,
+                24,
+                None,
+                2,
+                0.3,
+                True,
+                False,
+                5,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                5,
+                20,
+                False,
+                False,
+                False,
+                False,
+                False,
+                False,
+                "id,title",
+                False,
+            )
 
+    bulk_export.assert_not_called()
     request = execute.call_args.args[1]
     assert isinstance(request, RootModeRequest)
     assert request.query_params()["origin"] == "chatgpt-export"
-    assert request.query_params()["output_format"] == "json"
-    assert request.query_params()["fields"] == "id,title"
     assert request.query_params()["limit"] == 7
     assert request.query_params()["query"] == ("alpha",)
+    assert request.query_params()["list_mode"] is True
+    assert request.query_params()["output_format"] == "json"
 
-    wrapped_count = getattr(query_verbs.count_verb.callback, "__wrapped__", None)
-    assert callable(wrapped_count)
+    wrapped_analyze = getattr(query_verbs.analyze_verb.callback, "__wrapped__", None)
+    assert callable(wrapped_analyze)
     with patch("polylogue.cli.query_verbs._execute_query_verb") as execute:
-        wrapped_count(child)
+        wrapped_analyze(child, True, None, False, False, None, None)
 
     count_request = execute.call_args.args[1]
     assert isinstance(count_request, RootModeRequest)
     assert count_request.query_params()["count_only"] is True
 
 
-def test_stats_verb_toggles_stats_only_and_updates_grouping() -> None:
+def test_analyze_verb_toggles_stats_only_and_updates_grouping() -> None:
     _, child = _context_pair(query_terms=("alpha",))
-    wrapped = getattr(query_verbs.stats_verb.callback, "__wrapped__", None)
+    wrapped = getattr(query_verbs.analyze_verb.callback, "__wrapped__", None)
     assert callable(wrapped)
 
     with patch("polylogue.cli.query_verbs._execute_query_verb") as execute:
-        wrapped(child, None, None, None)
+        wrapped(child, False, None, False, False, None, None)
 
     request = execute.call_args.args[1]
     assert isinstance(request, RootModeRequest)
@@ -93,7 +129,7 @@ def test_stats_verb_toggles_stats_only_and_updates_grouping() -> None:
     assert request.query_params()["query"] == ("alpha",)
 
     with patch("polylogue.cli.query_verbs._execute_query_verb") as execute:
-        wrapped(child, "origin", "markdown", 3)
+        wrapped(child, False, "origin", False, False, "markdown", 3)
 
     grouped_request = execute.call_args.args[1]
     assert isinstance(grouped_request, RootModeRequest)
@@ -227,14 +263,14 @@ def test_read_verb_summary_dispatches_to_execute_query_verb() -> None:
     assert request.query_params()["origin"] == "chatgpt-export"
 
 
-def test_read_verb_all_invokes_run_bulk_export() -> None:
-    """read --all routes to run_bulk_export."""
+def test_read_verb_all_non_summary_invokes_bulk_export_view() -> None:
+    """read --all with a concrete non-summary view routes to bulk export."""
     _, child = _context_pair(params={"origin": "claude-code-session"}, query_terms=("alpha",))
     wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
     assert callable(wrapped)
 
-    with patch("polylogue.cli.bulk_export.run_bulk_export") as run_export:
-        wrapped(child, **_read_verb_kwargs(output_format="json", export_all=True))
+    with patch("polylogue.cli.query_verbs.run_bulk_export_view") as run_export:
+        wrapped(child, **_read_verb_kwargs(view="transcript", output_format="json", export_all=True))
 
     run_export.assert_called_once()
     assert run_export.call_args.kwargs["output_format"] == "json"

@@ -156,7 +156,7 @@ When changing semantics, validation, or surfaces:
 devtools run-validation-lanes --list
 devtools run-validation-lanes --lane frontier-local
 devtools lab-scenario verify-baselines
-devtools query-memory-budget --max-rss-mb 1536 -- polylogue --plain stats
+devtools query-memory-budget --max-rss-mb 1536 -- polylogue --plain analyze
 ```
 
 Campaign outputs live under `.local/`, not in tracked docs trees.

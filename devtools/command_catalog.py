@@ -503,7 +503,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "Measure query-memory envelopes on generated fixtures.",
         "devtools.query_memory_budget",
         use_when="Assert memory budgets around a concrete query or archive-facing command.",
-        examples=("devtools query-memory-budget --max-rss-mb 1536 -- polylogue --plain stats",),
+        examples=("devtools query-memory-budget --max-rss-mb 1536 -- polylogue --plain analyze",),
     ),
     CommandSpec(
         "lab-scenario",

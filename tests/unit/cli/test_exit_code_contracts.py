@@ -70,14 +70,14 @@ class TestSuccessExitCode:
         result = runner.invoke(cli, ["--version"])
         assert result.exit_code == 0
 
-    def test_list_help_exits_zero(self, runner: CliRunner) -> None:
-        """polylogue list --help exits 0 (verb form)."""
-        result = runner.invoke(cli, ["list", "--help"])
+    def test_read_help_exits_zero(self, runner: CliRunner) -> None:
+        """polylogue read --help exits 0."""
+        result = runner.invoke(cli, ["read", "--help"])
         assert result.exit_code == 0
 
-    def test_count_help_exits_zero(self, runner: CliRunner) -> None:
-        """polylogue count --help exits 0 (verb form)."""
-        result = runner.invoke(cli, ["count", "--help"])
+    def test_analyze_help_exits_zero(self, runner: CliRunner) -> None:
+        """polylogue analyze --help exits 0."""
+        result = runner.invoke(cli, ["analyze", "--help"])
         assert result.exit_code == 0
 
 

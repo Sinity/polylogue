@@ -2,7 +2,7 @@
 #
 # Usage:
 #   docker compose -f docs/docker-compose.yaml up -d
-#   docker compose -f docs/docker-compose.yaml exec polylogued polylogue stats
+#   docker compose -f docs/docker-compose.yaml exec polylogued polylogue analyze
 #   curl http://localhost:8766/api/health
 #
 # The named volumes below keep the SQLite archive and configuration durable
