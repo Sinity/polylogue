@@ -9,6 +9,8 @@ from unittest.mock import patch
 import pytest
 
 from devtools.verify import (
+    PYTEST_EVENTS_PATH,
+    PYTEST_OUTPUT_PATH,
     PYTEST_PROGRESS_PATH,
     PYTEST_REPORT_PATH,
     ROOT,
@@ -75,6 +77,7 @@ def test_pytest_step_requests_structured_json_report() -> None:
         for label, command in pytest_steps:
             assert "--json-report" in command, f"{label}: {command}"
             assert any(arg.startswith("--json-report-file=") for arg in command), label
+            assert command[command.index("-p") + 1] == "devtools.pytest_progress_plugin"
         # The canonical report path consumed by verify/dashboards is emitted by
         # the primary lane; the #1775 isolated lane writes its own file.
         expected_target = f"--json-report-file={PYTEST_REPORT_PATH}"
@@ -265,6 +268,8 @@ def test_run_records_pytest_count_metadata_from_terminal_fallback() -> None:
     assert rc == 0
     assert metadata["count"] == 4
     assert metadata["report_path"] is None
+    assert metadata["events_path"] == str(PYTEST_EVENTS_PATH)
+    assert metadata["output_path"] == str(PYTEST_OUTPUT_PATH)
     assert metadata["pytest_workers"] == "unset"
     assert metadata["pytest_selection"] == "full"
 
@@ -283,6 +288,7 @@ def test_run_forces_subprocesses_to_current_checkout(monkeypatch: pytest.MonkeyP
     assert env["POLYLOGUE_ROOT"] == str(ROOT)
     assert env["POLYLOGUE_REPO_ROOT"] == str(ROOT)
     assert env["PYTHONPYCACHEPREFIX"] == str(ROOT / ".cache" / "pycache")
+    assert env["POLYLOGUE_PYTEST_EVENTS_PATH"] == str(ROOT / PYTEST_EVENTS_PATH)
 
 
 def test_run_reads_structured_pytest_report() -> None:
@@ -312,6 +318,8 @@ def test_run_reads_structured_pytest_report() -> None:
     assert metadata["total"] == 13
     assert metadata["pytest_duration_s"] == 4.56
     assert metadata["report_path"] == str(PYTEST_REPORT_PATH)
+    assert metadata["events_path"] == str(PYTEST_EVENTS_PATH)
+    assert metadata["output_path"] == str(PYTEST_OUTPUT_PATH)
     assert metadata["pytest_workers"] == "8"
     assert metadata["pytest_selection"] == "testmon"
 
@@ -346,11 +354,13 @@ def test_pytest_run_writes_live_progress_artifact(tmp_path: Path, monkeypatch: p
     assert rc == 0
     progress_path = tmp_path / PYTEST_PROGRESS_PATH
     assert metadata["progress_path"] == str(PYTEST_PROGRESS_PATH)
+    assert metadata["output_path"] == str(PYTEST_OUTPUT_PATH)
     progress = json.loads(progress_path.read_text())
     assert progress["event"] == "finished"
     assert progress["returncode"] == 0
     assert progress["output_bytes"]["stdout"] > 0
     assert "updated_at" in progress
+    assert "pytest-progress" in (tmp_path / PYTEST_OUTPUT_PATH).read_text()
 
 
 def test_pytest_run_terminates_after_runtime_budget(
@@ -366,6 +376,8 @@ def test_pytest_run_terminates_after_runtime_budget(
     assert rc == 124
     assert metadata["timeout_s"] == 0.15
     assert metadata["stall_timeout_s"] == 0.0
+    assert metadata["events_path"] == str(PYTEST_EVENTS_PATH)
+    assert metadata["output_path"] == str(PYTEST_OUTPUT_PATH)
     assert "pytest runtime exceeded 0.15s" in captured.err
     assert "terminated pytest process group" in captured.err
 
