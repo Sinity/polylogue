@@ -296,6 +296,47 @@ def _seed_archive_test_archive(workspace: dict[str, Path]) -> str:
         )
 
 
+def _seed_browser_capture_reader_archive(workspace: dict[str, Path]) -> tuple[str, str]:
+    from polylogue.core.enums import Provider
+    from polylogue.sources.dispatch import parse_payload
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    unsafe_text = "<script>alert('captured')</script>\nBrowser capture prose"
+    payload: dict[str, object] = {
+        "polylogue_capture_kind": "browser_llm_session",
+        "schema_version": 1,
+        "capture_id": "chatgpt:xss-reader",
+        "provenance": {
+            "source_url": "https://chatgpt.com/c/xss-reader",
+            "page_title": "Browser Capture XSS",
+            "captured_at": "2026-04-24T00:00:00+00:00",
+            "adapter_name": "chatgpt-dom-v1",
+            "capture_mode": "snapshot",
+        },
+        "session": {
+            "provider": "chatgpt",
+            "provider_session_id": "xss-reader",
+            "title": "Browser Capture XSS",
+            "updated_at": "2026-04-24T00:00:01+00:00",
+            "turns": [
+                {
+                    "provider_turn_id": "xss-m1",
+                    "role": "assistant",
+                    "text": unsafe_text,
+                    "ordinal": 0,
+                }
+            ],
+        },
+    }
+
+    parsed = parse_payload(Provider.CHATGPT, payload, "browser-capture-xss.json")
+    assert len(parsed) == 1
+    workspace["archive_root"].mkdir(parents=True, exist_ok=True)
+    with ArchiveStore(workspace["archive_root"]) as archive:
+        session_id = archive.write_parsed(parsed[0])
+    return session_id, unsafe_text
+
+
 def _index_db_path(workspace: dict[str, Path]) -> Path:
     return workspace["data_root"] / "polylogue" / "index.db"
 
@@ -624,6 +665,33 @@ class TestReaderSessionState:
         assert isinstance(messages, dict)
         assert messages["total"] == 1
         assert messages["messages"][0]["target_ref"]["identity_key"].startswith(f"message:{session_id}:")
+
+    def test_browser_capture_reader_boundary_keeps_text_and_escapes_shell(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        session_id, unsafe_text = _seed_browser_capture_reader_archive(workspace_env)
+
+        with _running_server_without_seed() as (_, base_url):
+            detail = _get_json(base_url, f"/api/sessions/{session_id}")
+            messages = _get_json(base_url, f"/api/sessions/{session_id}/messages")
+            root_status, root_content_type, root_shell = _get_text(base_url, "/")
+            link_status, link_content_type, link_shell = _get_text(base_url, f"/s/{session_id}")
+
+        assert root_status == 200
+        assert link_status == 200
+        assert "text/html" in root_content_type
+        assert "text/html" in link_content_type
+        assert isinstance(detail, dict)
+        assert detail["origin"] == "chatgpt-export"
+        assert detail["messages"][0]["text"] == unsafe_text
+        assert isinstance(messages, dict)
+        assert messages["messages"][0]["text"] == unsafe_text
+        assert "https://chatgpt.com/c/xss-reader" not in json.dumps(detail)
+        assert unsafe_text not in root_shell
+        assert unsafe_text not in link_shell
+        assert "function esc" in root_shell
+        assert "'<div class=\"msg-text\">' + esc(parts[0].body)" in root_shell
 
     def test_unknown_session_yields_404(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env) as (_, base_url):
