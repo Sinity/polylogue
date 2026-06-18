@@ -9,7 +9,13 @@ from typing import cast
 
 from click.testing import CliRunner
 
-from polylogue.browser_capture.models import BrowserCaptureEnvelope
+from polylogue.browser_capture.models import (
+    BrowserCaptureAcceptedPayload,
+    BrowserCaptureArchiveStatePayload,
+    BrowserCaptureEnvelope,
+    BrowserCaptureErrorPayload,
+    BrowserCaptureReceiverStatusPayload,
+)
 from polylogue.browser_capture.receiver import (
     capture_artifact_path,
     existing_capture_state,
@@ -66,9 +72,10 @@ def test_existing_capture_state_reports_written_artifact(tmp_path: Path) -> None
     write_capture_envelope(envelope, spool_path=tmp_path)
 
     state = existing_capture_state("chatgpt", "conv-123", spool_path=tmp_path)
+    typed = BrowserCaptureArchiveStatePayload.model_validate(state)
 
-    assert state["captured"] is True
-    assert state["provider"] == "chatgpt"
+    assert typed.captured is True
+    assert typed.provider == "chatgpt"
 
 
 def test_browser_capture_status_daemon_cli_json(cli_workspace: dict[str, Path]) -> None:
@@ -78,8 +85,9 @@ def test_browser_capture_status_daemon_cli_json(cli_workspace: dict[str, Path]) 
 
     assert result.exit_code == 0
     payload = json.loads(result.output)
+    typed = BrowserCaptureReceiverStatusPayload.model_validate(payload)
     assert payload["ok"] is True
-    assert payload["receiver"] == "polylogue-browser-capture"
+    assert typed.receiver == "polylogue-browser-capture"
 
 
 def test_receiver_http_accepts_capture_and_rejects_unknown_origin(tmp_path: Path) -> None:
@@ -92,8 +100,9 @@ def test_receiver_http_accepts_capture_and_rejects_unknown_origin(tmp_path: Path
         conn = HTTPConnection(host, port)
         conn.request("GET", "/v1/status", headers={"Origin": "https://evil.example"})
         response = conn.getresponse()
+        error = BrowserCaptureErrorPayload.model_validate(json.loads(response.read()))
         assert response.status == HTTPStatus.FORBIDDEN
-        response.read()
+        assert error.error == "origin_not_allowed"
         conn.close()
 
         conn = HTTPConnection(host, port)
@@ -104,10 +113,10 @@ def test_receiver_http_accepts_capture_and_rejects_unknown_origin(tmp_path: Path
             headers={"Content-Type": "application/json", "Origin": "https://chatgpt.com"},
         )
         response = conn.getresponse()
-        body = json.loads(response.read())
+        body = BrowserCaptureAcceptedPayload.model_validate(json.loads(response.read()))
         assert response.status == HTTPStatus.ACCEPTED
-        assert body["ok"] is True
-        assert Path(body["artifact_path"]).exists()
+        assert body.ok is True
+        assert Path(body.artifact_path).exists()
         conn.close()
     finally:
         server.shutdown()

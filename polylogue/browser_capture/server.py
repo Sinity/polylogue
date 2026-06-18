@@ -10,7 +10,11 @@ from urllib.parse import parse_qs, urlparse
 
 from pydantic import ValidationError
 
-from polylogue.browser_capture.models import BrowserCaptureEnvelope
+from polylogue.browser_capture.models import (
+    BrowserCaptureAcceptedPayload,
+    BrowserCaptureEnvelope,
+    BrowserCaptureErrorPayload,
+)
 from polylogue.browser_capture.receiver import (
     BrowserCaptureReceiverConfig,
     existing_capture_state,
@@ -85,7 +89,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
 
     def _safe_error(self, status: HTTPStatus, message: str) -> None:
         """Send a safe error response — no absolute paths or stack traces."""
-        self._send_json(status, {"ok": False, "error": message})
+        self._send_json(status, BrowserCaptureErrorPayload(error=message).model_dump(mode="json"))
 
     def _reject_origin(self) -> bool:
         origin = self.headers.get("Origin")
@@ -159,14 +163,13 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             return
         self._send_json(
             HTTPStatus.ACCEPTED,
-            {
-                "ok": True,
-                "provider": result.provider,
-                "provider_session_id": result.provider_session_id,
-                "artifact_path": str(result.path),
-                "bytes_written": result.bytes_written,
-                "replaced": result.replaced,
-            },
+            BrowserCaptureAcceptedPayload(
+                provider=result.provider,
+                provider_session_id=result.provider_session_id,
+                artifact_path=str(result.path),
+                bytes_written=result.bytes_written,
+                replaced=result.replaced,
+            ).model_dump(mode="json"),
         )
 
 
