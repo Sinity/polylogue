@@ -710,6 +710,71 @@ def test_review_delivery_events_are_extracted_and_projected() -> None:
     }
 
 
+def test_posted_review_does_not_imply_delivery_or_action() -> None:
+    session = Session(
+        id=SessionId("codex-session:missed-review"),
+        origin=Origin.CODEX_SESSION,
+        title="Missed review fixture",
+        messages=MessageCollection(
+            messages=[
+                Message(
+                    id="m-review",
+                    role=Role.ASSISTANT,
+                    text="Review posted on PR #2100",
+                )
+            ]
+        ),
+    )
+
+    digest = compile_recovery_digest(session)
+    review_events = [event for event in digest.run_projection.events if event.kind.startswith("review_")]
+    packet = digest.work_packet()
+    rendered = packet.render_markdown()
+
+    assert [(event.kind, event.delivery_state) for event in review_events] == [("review_posted", "observed")]
+    assert not any(snapshot.boundary == "review_injection" for snapshot in digest.run_projection.context_snapshots)
+    assert "review_acted_on" not in rendered
+    assert "review_injected_context" not in rendered
+    assert "details: delivery_state=observed" in rendered
+
+
+def test_addressed_review_keeps_patch_test_and_reply_evidence_connected() -> None:
+    session = Session(
+        id=SessionId("codex-session:addressed-review"),
+        origin=Origin.CODEX_SESSION,
+        title="Addressed review fixture",
+        messages=MessageCollection(
+            messages=[
+                Message(
+                    id="m-addressed-review",
+                    role=Role.ASSISTANT,
+                    text=(
+                        "Addressed review on PR #2100\n"
+                        "Patched polylogue/insights/transforms.py\n"
+                        "17 passed\n"
+                        "Replied to review on PR #2100"
+                    ),
+                )
+            ]
+        ),
+    )
+
+    digest = compile_recovery_digest(session)
+    event_by_kind = {event.kind: event for event in digest.run_projection.events}
+    recovery_events = {event.kind: event for event in digest.events}
+    acted_on = event_by_kind["review_acted_on"]
+    test_passed = recovery_events["test_passed"]
+    packet = digest.work_packet()
+    rendered = packet.render_markdown()
+
+    assert acted_on.delivery_state == "acted_on"
+    assert acted_on.object_refs == (ObjectRef(kind="github-review", object_id="#2100"),)
+    assert acted_on.evidence_refs == tuple(ref.to_evidence_ref() for ref in test_passed.raw_refs)
+    assert any(ref.message_id == "m-addressed-review" for ref in acted_on.evidence_refs)
+    assert "review_acted_on" in rendered
+    assert "17 tests passed" in rendered
+
+
 def test_review_injection_context_snapshot_reaches_work_packet() -> None:
     session = Session(
         id=SessionId("codex-session:review-context"),
