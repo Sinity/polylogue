@@ -40,8 +40,13 @@ WorkPacketSection = Literal["events", "subagents", "run_state", "tools", "decisi
 WorkPacketSupport = Literal["raw_evidence", "assertion", "inference", "caveat", "missing_evidence"]
 SubagentChildLinkStatus = Literal["resolved", "unresolved", "repaired", "quarantined"]
 
-_ISSUE_RE = re.compile(r"(?:issues/|issue\s+|closed\s+|#)(?P<number>\d{3,6})", re.IGNORECASE)
-_PR_RE = re.compile(r"(?:pull/|PR\s+|#)(?P<number>\d{3,6})", re.IGNORECASE)
+_GITHUB_REPO_REF = r"[\w.-]+/[\w.-]+#"
+_ISSUE_RE = re.compile(
+    rf"(?:issues/|issue\s+(?:{_GITHUB_REPO_REF}|#?)|closed\s+(?:issue\s+)?(?:{_GITHUB_REPO_REF}|#?))"
+    r"(?P<number>\d{3,6})",
+    re.IGNORECASE,
+)
+_PR_RE = re.compile(r"(?:pull/|PR\s+#?)(?P<number>\d{3,6})", re.IGNORECASE)
 _CREATED_PR_RE = re.compile(
     r"\b(?:created|opened)\s+(?:pull\s+request|PR)\s+#?(?P<number>\d{3,6})\b",
     re.IGNORECASE,
@@ -1616,7 +1621,7 @@ def _tool_file_refs(
     for value in (command or "", output_text):
         for token in value.split():
             cleaned = token.strip("`'\"(),:")
-            if "/" in cleaned and not cleaned.startswith(("http://", "https://")):
+            if "/" in cleaned and "#" not in cleaned and not cleaned.startswith(("http://", "https://")):
                 yield cleaned
 
 

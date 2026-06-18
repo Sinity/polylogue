@@ -66,6 +66,17 @@ def _session() -> Session:
                         },
                         {
                             "type": "tool_use",
+                            "id": "tool-close",
+                            "name": "Bash",
+                            "tool_input": {"command": "gh issue close 1818"},
+                        },
+                        {
+                            "type": "tool_result",
+                            "tool_id": "tool-close",
+                            "text": "✓ Closed issue Sinity/polylogue#1818",
+                        },
+                        {
+                            "type": "tool_use",
                             "id": "tool-read",
                             "name": "Read",
                             "tool_input": {"file_path": "polylogue/insights/transforms.py"},
@@ -145,7 +156,7 @@ def test_compile_recovery_digest_extracts_small_evidence_linked_bundle() -> None
     assert digest.size_metrics.resume_bundle_bytes >= digest.size_metrics.normal_read_bytes
     assert digest.role_counts == {"user": 1, "assistant": 2}
 
-    assert len(digest.tool_summaries) == 2
+    assert len(digest.tool_summaries) == 3
     tool = next(item for item in digest.tool_summaries if item.tool_name == "Bash")
     assert tool.tool_name == "Bash"
     assert tool.command == "devtools verify --quick"
@@ -155,6 +166,10 @@ def test_compile_recovery_digest_extracts_small_evidence_linked_bundle() -> None
     assert tool.pr_refs == ("#1911",)
     assert tool.test_evidence == ("ruff check ... ok", "20 passed in 50.28s")
     assert {ref.ref_kind for ref in tool.raw_refs} == {"block"}
+
+    close_tool = next(item for item in digest.tool_summaries if item.command == "gh issue close 1818")
+    assert close_tool.pr_refs == ()
+    assert close_tool.issue_refs == ("#1818",)
 
     read_tool = next(item for item in digest.tool_summaries if item.tool_name == "Read")
     assert read_tool.handler_kind == "file_read"
@@ -331,6 +346,15 @@ def test_work_packet_exposes_storage_free_continuation_bundle() -> None:
         "test_evidence": "ruff check ... ok | 20 passed in 50.28s",
     }
     assert bash_entry.object_refs == (ObjectRef(kind="github-pr", object_id="#1911"),)
+    close_entry = next(
+        entry for entry in packet.entries if entry.section == "tools" and entry.text == "gh issue close 1818"
+    )
+    assert close_entry.metadata == {
+        "handler_kind": "github",
+        "status": "unknown",
+        "issue_refs": "#1818",
+    }
+    assert close_entry.object_refs == (ObjectRef(kind="github-issue", object_id="#1818"),)
     read_entry = next(entry for entry in packet.entries if entry.section == "tools" and entry.label == "Read")
     assert read_entry.metadata == {
         "handler_kind": "file_read",
