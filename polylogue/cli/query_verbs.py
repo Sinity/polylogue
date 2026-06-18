@@ -123,34 +123,15 @@ def _emit_read_view_profiles(output_format: str | None) -> None:
     click.echo(_render_read_view_profiles_plain())
 
 
-@click.command("list")
-@click.option(
-    "--format",
-    "-f",
-    "output_format",
-    type=click.Choice(["markdown", "json", "ndjson", "html", "obsidian", "org", "yaml", "plaintext", "csv"]),
-    help="Output format (ndjson = one JSON document per line, streaming-friendly)",
-)
-@click.option("--fields", help="Fields: id, title, origin, date, messages, words, tags, summary")
-@click.option("--limit", "-l", "-n", type=int, help="Max results")
-@click.pass_context
-def list_verb(ctx: click.Context, output_format: str | None, fields: str | None, limit: int | None) -> None:
-    """List matched sessions."""
-    request = _parent_request(ctx).with_param_updates(list_mode=True)
-    if output_format:
-        request = request.with_param_updates(output_format=output_format)
-    if fields:
-        request = request.with_param_updates(fields=fields)
-    if limit is not None:
-        request = request.with_param_updates(limit=limit)
-    _execute_query_verb(ctx, request)
-
-
-@click.command("count")
-@click.pass_context
-def count_verb(ctx: click.Context) -> None:
-    """Print count of matched sessions."""
-    _execute_query_verb(ctx, _parent_request(ctx).with_param_updates(count_only=True))
+def _summary_all_output_param(destination: str, out_path: str | None) -> str | None:
+    """Translate read delivery options to the root query output contract."""
+    if destination == "file":
+        if not out_path:
+            raise click.UsageError("--to file requires --out <path>.")
+        return out_path
+    if destination in {"browser", "clipboard", "stdout"}:
+        return destination
+    return None
 
 
 @click.command("select")
@@ -173,59 +154,6 @@ def select_verb(ctx: click.Context, limit: int, print_field: str, json_output: b
 
     field: SelectPrintField = "json" if json_output else cast("SelectPrintField", print_field)
     run_select(ctx.obj, _parent_request(ctx), limit=limit, print_field=field)
-
-
-@click.command("stats")
-@click.option(
-    "--by",
-    "stats_by",
-    type=click.Choice(["origin", "month", "year", "day", "action", "tool", "repo", "work-kind"]),
-    help="Aggregate by dimension",
-)
-@click.option(
-    "--format",
-    "-f",
-    "output_format",
-    type=click.Choice(["markdown", "json", "ndjson", "html", "obsidian", "org", "yaml", "plaintext", "csv"]),
-    help="Output format (ndjson = one JSON document per row, streaming-friendly)",
-)
-@click.option("--limit", "-l", "-n", type=int, help="Max matched sessions before grouping")
-@click.pass_context
-def stats_verb(ctx: click.Context, stats_by: str | None, output_format: str | None, limit: int | None) -> None:
-    """Show statistics for matched sessions."""
-    request = _parent_request(ctx).with_param_updates(stats_only=stats_by is None)
-    if stats_by:
-        request = request.with_param_updates(stats_by=stats_by)
-    if output_format:
-        request = request.with_param_updates(output_format=output_format)
-    if limit is not None:
-        request = request.with_param_updates(limit=limit)
-    _execute_query_verb(ctx, request)
-
-
-@click.command("recent")
-@click.option("--limit", "-n", type=int, default=10, show_default=True, help="Maximum sessions to list.")
-@click.option("--origin", "origin_filter", default=None, help="Filter by origin.")
-@click.option("--format", "-f", "output_format", default=None, help="Output format: json, ndjson, yaml, csv.")
-@click.pass_context
-def recent_verb(
-    ctx: click.Context,
-    limit: int,
-    origin_filter: str | None,
-    output_format: str | None,
-) -> None:
-    """List the most recently updated sessions."""
-    request = _parent_request(ctx).with_param_updates(
-        list_mode=True,
-        sort="updated_at",
-        reverse=True,
-        limit=limit,
-    )
-    if origin_filter:
-        request = request.with_param_updates(origin=origin_filter)
-    if output_format:
-        request = request.with_param_updates(output_format=output_format)
-    _execute_query_verb(ctx, request)
 
 
 @click.command("read")
@@ -378,7 +306,7 @@ def read_verb(
     no_file_reads: bool,
     prose_only: bool,
     fields: str | None,
-    show_views: bool,
+    show_views: bool = False,
 ) -> None:
     """Read matched sessions.
 
@@ -414,8 +342,23 @@ def read_verb(
         return
     request = _parent_request(ctx)
 
-    # Bulk-export mode: applies to all matched sessions.
+    # Summary all-mode is the command-floor replacement for the old list verb:
+    # it preserves the summary-list envelope and fields/limit behavior instead
+    # of exporting full transcript payloads.
     if export_all:
+        if limit is not None:
+            request = request.with_param_updates(limit=limit)
+        if view == "summary":
+            request = request.with_param_updates(list_mode=True)
+            if output_format:
+                request = request.with_param_updates(output_format=output_format)
+            output = _summary_all_output_param(destination, out_path)
+            if output is not None:
+                request = request.with_param_updates(output=output)
+            if fields:
+                request = request.with_param_updates(fields=fields)
+            _execute_query_verb(ctx, request)
+            return
         run_bulk_export_view(
             env, request, output_format=output_format, fields=fields, destination=destination, out_path=out_path
         )
@@ -686,6 +629,7 @@ def mark_verb(
 
 
 @click.command("analyze")
+@click.option("--count", "count_only", is_flag=True, help="Print only the matched-session count.")
 @click.option(
     "--by",
     "stats_by",
@@ -705,27 +649,31 @@ def mark_verb(
     "--format",
     "-f",
     "output_format",
-    type=click.Choice(["markdown", "json", "ndjson", "html", "plaintext", "csv"]),
+    type=click.Choice(["markdown", "json", "ndjson", "html", "obsidian", "org", "yaml", "plaintext", "csv"]),
     default=None,
-    help="Output format",
+    help="Output format (ndjson = one JSON document per row, streaming-friendly)",
 )
+@click.option("--limit", "-l", "-n", type=int, help="Max matched sessions before grouping")
 @click.pass_context
 def analyze_verb(
     ctx: click.Context,
-    stats_by: str | None,
-    show_facets: bool,
-    no_idf: bool,
-    output_format: str | None,
+    count_only: bool = False,
+    stats_by: str | None = None,
+    show_facets: bool = False,
+    no_idf: bool = False,
+    output_format: str | None = None,
+    limit: int | None = None,
 ) -> None:
     """Analyze matched sessions: statistics, facets, and aggregates.
 
     \b
     Applies to the full result set by default (no cardinality restriction).
-    Wraps the existing stats and facets surfaces over the matched session set.
+    Wraps aggregate and facet views over the matched session set.
 
     \b
     Examples:
         polylogue find 'repo:polylogue since:7d' then analyze
+        polylogue find 'repo:polylogue since:7d' then analyze --count
         polylogue find 'repo:polylogue since:7d' then analyze --by origin
         polylogue find 'repo:polylogue since:7d' then analyze --by month
         polylogue find 'repo:polylogue' then analyze --facets
@@ -738,7 +686,25 @@ def analyze_verb(
     env: AppEnv = ctx.obj
     request = _parent_request(ctx)
 
+    selected_modes = sum(bool(flag) for flag in (count_only, show_facets, stats_by is not None))
+    if selected_modes > 1:
+        raise click.UsageError("Choose only one analyze mode: --count, --facets, --by, or default stats.")
+
+    if count_only:
+        if limit is not None:
+            raise click.UsageError("`analyze --count` does not support --limit.")
+        updated = request.with_param_updates(count_only=True)
+        if output_format:
+            updated = updated.with_param_updates(output_format=output_format)
+        _execute_query_verb(ctx, updated)
+        return
+
+    if limit is not None:
+        request = request.with_param_updates(limit=limit)
+
     if show_facets:
+        if output_format not in (None, "json"):
+            raise click.UsageError("`analyze --facets` only supports terminal text or --format json")
         # Delegate to the Polylogue facets API using the request's query spec.
         spec = request.query_spec()
         response = run_coroutine_sync(env.polylogue.facets(spec, include_idf=not no_idf))
@@ -765,7 +731,7 @@ def analyze_verb(
         return
 
     if stats_by:
-        updated = request.with_param_updates(stats_by=stats_by)
+        updated = request.with_param_updates(stats_only=False, stats_by=stats_by)
         if output_format:
             updated = updated.with_param_updates(output_format=output_format)
         _execute_query_verb(ctx, updated)
@@ -839,10 +805,6 @@ def _resolve_target_session_id(request: RootModeRequest) -> str | None:
 
 
 QUERY_VERBS = (
-    list_verb,
-    count_verb,
-    stats_verb,
-    recent_verb,
     select_verb,
     read_verb,
     continue_verb,
@@ -857,12 +819,8 @@ __all__ = [
     "VERB_NAMES",
     "analyze_verb",
     "continue_verb",
-    "count_verb",
     "delete_verb",
-    "list_verb",
     "mark_verb",
     "read_verb",
-    "recent_verb",
     "select_verb",
-    "stats_verb",
 ]

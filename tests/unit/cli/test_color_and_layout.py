@@ -70,7 +70,7 @@ class TestNoColorEnv:
     def test_cli_list_with_no_color_produces_no_ansi(
         self, monkeypatch: pytest.MonkeyPatch, workspace_env: dict[str, object]
     ) -> None:
-        """End-to-end: ``NO_COLOR=1 polylogue list`` is byte-for-byte ANSI-free.
+        """End-to-end: ``NO_COLOR=1 polylogue read --all`` is byte-for-byte ANSI-free.
 
         Pins the no-color contract end-to-end so the bridge cannot regress
         silently if ``should_use_plain`` is reworked.

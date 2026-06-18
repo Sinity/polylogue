@@ -80,9 +80,9 @@ polylogued status
 | Command | Purpose |
 |---------|---------|
 | `polylogue <terms>` | Full-text search |
-| `polylogue --since <when> list` | List matched sessions |
-| `polylogue -p <provider> count` | Count matched sessions |
-| `polylogue stats --by provider` | Grouped statistics |
+| `polylogue --since <when> read --all` | List matched sessions |
+| `polylogue --origin <origin> analyze --count` | Count matched sessions |
+| `polylogue analyze --by origin` | Grouped statistics |
 | `polylogue cost --this-month` | Cost estimates |
 | `polylogue --id <id> read` | Export one session |
 | `polylogue --since yesterday read --all` | Batch export |

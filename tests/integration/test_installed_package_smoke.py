@@ -4,7 +4,7 @@ Builds the polylogue wheel, installs it into an isolated virtual environment,
 and exercises the documented operator entrypoints under temporary XDG paths.
 The test asserts that:
 
-- ``polylogue --version``, ``polylogue --plain status``, ``polylogue --plain count``,
+- ``polylogue --version``, ``polylogue --plain status``, ``polylogue --plain analyze --count``,
   ``polylogued --help``, ``polylogued status``, and ``polylogue-mcp --help`` all
   succeed against a fresh installed wheel with no archive present;
 - writes during those invocations stay inside the temporary XDG directories
@@ -12,7 +12,7 @@ The test asserts that:
 
 This closes #1265 (slice D of #869): the existing
 ``devtools verify-distribution-surface`` smoke only exercised ``--help``/
-``--version``/``count``; daemon status under fresh XDG paths was not covered.
+``--version``/``analyze --count``; daemon status under fresh XDG paths was not covered.
 """
 
 from __future__ import annotations
@@ -189,9 +189,9 @@ def test_installed_polylogue_entrypoints_under_fresh_xdg(
     _run((str(bin_dir / "polylogued"), "--help"), env=env, timeout=30)
     _run((str(bin_dir / "polylogue-mcp"), "--help"), env=env, timeout=30)
 
-    # polylogue --plain count: forces an archive open (or first-run bootstrap)
+    # polylogue --plain analyze --count: forces an archive open (or first-run bootstrap)
     # under fresh XDG paths; must not traceback.
-    _run((str(bin_dir / "polylogue"), "--plain", "count"), env=env, timeout=60)
+    _run((str(bin_dir / "polylogue"), "--plain", "analyze", "--count"), env=env, timeout=60)
 
     # polylogue --plain status: the actionable first-run surface (#1263) — must
     # exit cleanly and emit human text against a fresh archive.
@@ -218,7 +218,7 @@ def test_installed_polylogue_writes_only_under_xdg_roots(
 ) -> None:
     """Archive bootstrap writes stay inside the configured XDG_DATA_HOME tree.
 
-    Runs ``polylogue --plain count`` on a fresh archive and asserts that any
+    Runs ``polylogue --plain analyze --count`` on a fresh archive and asserts that any
     files created under HOME live under one of the four declared XDG roots —
     a regression test for archive/config code paths that might silently fall
     back to ``~/.local/...`` even when the env vars are set.
@@ -234,7 +234,7 @@ def test_installed_polylogue_writes_only_under_xdg_roots(
     )
 
     before = _snapshot(home)
-    _run((str(bin_dir / "polylogue"), "--plain", "count"), env=env, timeout=60)
+    _run((str(bin_dir / "polylogue"), "--plain", "analyze", "--count"), env=env, timeout=60)
     _run((str(bin_dir / "polylogue"), "--plain", "status"), env=env, timeout=60)
     after = _snapshot(home)
 

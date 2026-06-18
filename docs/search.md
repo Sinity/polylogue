@@ -313,14 +313,14 @@ Verbs determine the action applied to the matched session set.
 
 | Verb | Description |
 |------|-------------|
-| `list` | List matched sessions with metadata |
-| `count` | Print count of matched sessions |
-| `stats` | Grouped statistics (`--by origin`, `month`, `year`, `day`, `action`, `tool`, `repo`, `work-kind`) |
-| `show` | Display full session content |
-| `open` | Open session in browser/editor |
-| `bulk-export` | Export matched sessions to file |
-| `messages` | Show individual messages |
-| `raw` | Show raw (unparsed) session data |
+| `read --all` | List/export matched sessions with metadata |
+| `analyze --count` | Print count of matched sessions |
+| `analyze --by ...` | Grouped statistics (`origin`, `month`, `year`, `day`, `action`, `tool`, `repo`, `work-kind`) |
+| `read` | Display session content through read views |
+| `read --to browser` | Open session in browser |
+| `read --all --format ...` | Export matched sessions |
+| `read --view messages` | Show individual messages |
+| `read --view raw` | Show raw (unparsed) session data |
 | `select` | Select and print a single field |
 | `delete` | Delete matched sessions (requires `--dry-run` confirmation) |
 
@@ -596,9 +596,9 @@ Consumers MUST treat it as opaque and pass it back unchanged.
 
 ```bash
 # Page 1
-polylogue "sqlite" list --format json --limit 25
+polylogue "sqlite" read --all --format json --limit 25
 # Read .next_cursor from the response, then ask for page 2:
-polylogue "sqlite" list --format json --limit 25 \
+polylogue "sqlite" read --all --format json --limit 25 \
     --cursor "$NEXT_CURSOR"
 ```
 
@@ -663,7 +663,7 @@ polylogue 'text:css {session_id claude-code}: refactor'
 Set format with `-f` / `--format` on a verb:
 
 ```bash
-polylogue "sqlite locking" list --format json
+polylogue "sqlite locking" read --all --format json
 polylogue --since yesterday bulk-export --format jsonl
 ```
 
@@ -702,9 +702,9 @@ polylogue facets -f json --no-idf    # FacetsResponse, no IDF weighting
 
 When a query returns no results:
 
-1. Check origin spelling: `polylogue --origin claude-code-session list` (not `claude_code`)
+1. Check origin spelling: `polylogue --origin claude-code-session read --all` (not `claude_code`)
 2. Expand the time window: `--since 2024-01` instead of `--since yesterday`
-3. Verify the archive has data: `polylogue count` (no filters)
+3. Verify the archive has data: `polylogue analyze --count` (no filters)
 4. Check FTS index health: `polylogued status` shows `fts_readiness`
 5. Run `polylogue ops doctor` for schema and index integrity
-6. If using `--similar`, ensure embeddings are built (check `polylogue stats` for embedding coverage)
+6. If using `--similar`, ensure embeddings are built (check `polylogue ops embed status --detail` for embedding readiness/coverage)

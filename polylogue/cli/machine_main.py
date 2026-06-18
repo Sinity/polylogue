@@ -54,8 +54,8 @@ def actionable_hint_for_usage_error(message: str) -> str | None:
     if "Query filters and root output flags must appear before the verb" in msg:
         return (
             "Hint: root filters (e.g. `-p claude-ai`, `--since`) and root output flags "
-            "must precede the verb. Example: `polylogue -p claude-ai list --format json`, "
-            "not `polylogue list -p claude-ai --format json`."
+            "must precede the verb. Example: `polylogue --origin claude-ai find QUERY then read --all --format json`, "
+            "not `polylogue read --origin claude-ai --format json`."
         )
     return None
 

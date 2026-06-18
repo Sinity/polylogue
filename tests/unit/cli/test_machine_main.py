@@ -18,7 +18,7 @@ def test_run_machine_entry_plain_polylogue_error_emits_click_style_error(
         raise DatabaseError("Database schema version 0 is not expected version 1.")
 
     with pytest.raises(SystemExit) as exc_info:
-        run_machine_entry(boom, ["stats"])
+        run_machine_entry(boom, ["analyze"])
 
     assert exc_info.value.code == 1
     captured = capsys.readouterr()
@@ -35,7 +35,7 @@ def test_run_machine_entry_json_polylogue_error_emits_runtime_envelope(
         raise DatabaseError("Database schema version 0 is not expected version 1.")
 
     with pytest.raises(SystemExit) as exc_info:
-        run_machine_entry(boom, ["stats", "--format", "json"])
+        run_machine_entry(boom, ["analyze", "--format", "json"])
 
     assert exc_info.value.code == 1
     captured = capsys.readouterr()
@@ -57,7 +57,7 @@ def test_run_machine_entry_format_json_polylogue_error_emits_runtime_envelope(
         raise DatabaseError("Database schema version 0 is not expected version 1.")
 
     with pytest.raises(SystemExit) as exc_info:
-        run_machine_entry(boom, ["list", "--format", "json"])
+        run_machine_entry(boom, ["read", "--all", "--format", "json"])
 
     assert exc_info.value.code == 1
     captured = capsys.readouterr()
@@ -77,12 +77,12 @@ def test_run_machine_entry_extracts_query_command_without_option_values(
         raise click.UsageError("No such option: --limit")
 
     with pytest.raises(SystemExit) as exc_info:
-        run_machine_entry(bad_args, ["stats", "--by", "provider", "--format", "json", "--limit", "20"])
+        run_machine_entry(bad_args, ["analyze", "--by", "provider", "--format", "json", "--limit", "20"])
 
     assert exc_info.value.code == 2
     parsed = parse_json_object(capsys.readouterr().out, context="machine stdout")
     details = json_object(parsed["details"], context="details")
     assert parsed["status"] == "error"
     assert parsed["code"] == "invalid_arguments"
-    assert parsed["command"] == ["stats"]
+    assert parsed["command"] == ["analyze"]
     assert details["option"] == "--limit"

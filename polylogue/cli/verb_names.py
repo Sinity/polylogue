@@ -6,14 +6,10 @@ VERB_NAMES: frozenset[str] = frozenset(
     {
         "analyze",
         "continue",
-        "count",
         "delete",
-        "list",
         "mark",
         "read",
-        "recent",
         "select",
-        "stats",
     }
 )
 QUERY_VERB_NAMES = VERB_NAMES

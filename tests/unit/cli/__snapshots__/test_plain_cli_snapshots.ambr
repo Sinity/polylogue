@@ -1,7 +1,38 @@
 # serializer version: 1
-# name: test_json_count_snapshot
+# name: test_json_analyze_count_snapshot
   '''
   2
+  
+  '''
+# ---
+# name: test_json_analyze_snapshot
+  '''
+  {
+    "avg_messages_per_session": 5.0,
+    "db_size_bytes": 532480,
+    "embedded_messages": 0,
+    "embedded_sessions": 0,
+    "embedding_coverage_percent": 0.0,
+    "embedding_dimensions": {},
+    "embedding_models": {},
+    "embedding_newest_at": null,
+    "embedding_oldest_at": null,
+    "embedding_readiness_status": "none",
+    "messages_missing_embedding_provenance": 0,
+    "mode": "stats",
+    "origin": null,
+    "origin_count": 1,
+    "origins": {
+      "chatgpt-export": 2
+    },
+    "pending_embedding_sessions": 0,
+    "query": null,
+    "retrieval_ready": false,
+    "stale_embedding_messages": 0,
+    "total_attachments": 0,
+    "total_messages": 10,
+    "total_sessions": 2
+  }
   
   '''
 # ---
@@ -75,7 +106,7 @@
   
   '''
 # ---
-# name: test_json_list_snapshot
+# name: test_json_read_all_snapshot
   '''
   {
     "items": [
@@ -149,37 +180,6 @@
     "offset": 0,
     "origin": null,
     "total": 2
-  }
-  
-  '''
-# ---
-# name: test_json_stats_snapshot
-  '''
-  {
-    "avg_messages_per_session": 5.0,
-    "db_size_bytes": 532480,
-    "embedded_messages": 0,
-    "embedded_sessions": 0,
-    "embedding_coverage_percent": 0.0,
-    "embedding_dimensions": {},
-    "embedding_models": {},
-    "embedding_newest_at": null,
-    "embedding_oldest_at": null,
-    "embedding_readiness_status": "none",
-    "messages_missing_embedding_provenance": 0,
-    "mode": "stats",
-    "origin": null,
-    "origin_count": 1,
-    "origins": {
-      "chatgpt-export": 2
-    },
-    "pending_embedding_sessions": 0,
-    "query": null,
-    "retrieval_ready": false,
-    "stale_embedding_messages": 0,
-    "total_attachments": 0,
-    "total_messages": 10,
-    "total_sessions": 2
   }
   
   '''
@@ -1486,33 +1486,33 @@
   
   '''
 # ---
-# name: test_plain_count_snapshot
+# name: test_plain_analyze_count_snapshot
   '''
   2
   
   '''
 # ---
-# name: test_plain_list_origin_filter_snapshot
-  '''
-  chatgpt-export:402913ec-  <TIMESTAMP>  chatgpt-export            corpus-01 (5 msgs)
-  chatgpt-export:8a476a87-  <TIMESTAMP>  chatgpt-export            corpus-00 (5 msgs)
-  
-  '''
-# ---
-# name: test_plain_list_snapshot
-  '''
-  chatgpt-export:402913ec-  <TIMESTAMP>  chatgpt-export            corpus-01 (5 msgs)
-  chatgpt-export:8a476a87-  <TIMESTAMP>  chatgpt-export            corpus-00 (5 msgs)
-  
-  '''
-# ---
-# name: test_plain_stats_snapshot
+# name: test_plain_analyze_snapshot
   '''
   Sessions: 2
   Messages: 10
   Attachments: 0
   Origins: 1
   Average messages: 5.0
+  
+  '''
+# ---
+# name: test_plain_read_all_origin_filter_snapshot
+  '''
+  chatgpt-export:402913ec-  <TIMESTAMP>  chatgpt-export            corpus-01 (5 msgs)
+  chatgpt-export:8a476a87-  <TIMESTAMP>  chatgpt-export            corpus-00 (5 msgs)
+  
+  '''
+# ---
+# name: test_plain_read_all_snapshot
+  '''
+  chatgpt-export:402913ec-  <TIMESTAMP>  chatgpt-export            corpus-01 (5 msgs)
+  chatgpt-export:8a476a87-  <TIMESTAMP>  chatgpt-export            corpus-00 (5 msgs)
   
   '''
 # ---

@@ -1,5 +1,11 @@
 # CLI Command Audit
 
+> Historical audit, not current command guidance. The retained query-result
+> action floor is now `read`, `select`, `mark`, `analyze`, `delete`, and
+> `continue` (#1842). Old root verbs such as `list`, `count`, `stats`, and
+> `recent` were absorbed by `read --all`, `analyze --count`, `analyze --by`,
+> and root query filters.
+
 Ref [#1681](https://github.com/Sinity/polylogue/issues/1681). Status: audit phase.
 This document inventories every polylogue command surface and proposes
 keep/merge/rename/deprecate decisions. Implementation is staged across

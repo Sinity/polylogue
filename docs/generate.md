@@ -26,8 +26,8 @@ In a second terminal with the same environment:
 ```bash
 polylogue import --demo
 polylogue ops status
-polylogue stats
-polylogue "pytest" list --limit 5
+polylogue analyze
+polylogue find "pytest" then read --all --limit 5
 polylogue find "pytest" then read --view messages
 polylogue find "pytest" then analyze --facets
 

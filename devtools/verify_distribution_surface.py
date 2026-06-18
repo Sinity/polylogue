@@ -117,7 +117,7 @@ def _smoke_installed_wheel(wheel: Path, install_dir: Path) -> None:
     bin_dir = venv_dir / ("Scripts" if os.name == "nt" else "bin")
     _run((str(bin_dir / "polylogue"), "--version"), cwd=install_dir, env=env)
     _run((str(bin_dir / "polylogue"), "--help"), cwd=install_dir, env=env)
-    _run((str(bin_dir / "polylogue"), "--plain", "count"), cwd=install_dir, env=env)
+    _run((str(bin_dir / "polylogue"), "--plain", "analyze", "--count"), cwd=install_dir, env=env)
     _run((str(python), "-m", "polylogue", "--version"), cwd=install_dir, env=env)
     _run((str(bin_dir / "polylogued"), "--help"), cwd=install_dir, env=env)
     _run((str(bin_dir / "polylogue-mcp"), "--help"), cwd=install_dir, env=env)

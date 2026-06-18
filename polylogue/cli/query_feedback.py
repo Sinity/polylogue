@@ -18,7 +18,7 @@ def maybe_subcommand_typo_hint(query_terms: Sequence[str]) -> str | None:
     """Return a 'did you mean to run a subcommand?' hint for a single bare token.
 
     Query-first dispatch is surprising when a user types something like
-    ``polylogue stats-by-origin`` expecting a subcommand. If ``query_terms``
+    ``polylogue analyze-by-origin`` expecting a subcommand. If ``query_terms``
     is a single token and matches a registered subcommand by Levenshtein
     distance, we surface that explicitly in the no-results output. Both the
     archive no-results paths consume this helper so the
@@ -77,7 +77,7 @@ def emit_no_results(
         env.ui.console.print("No sessions matched filters:")
         for item in filters:
             env.ui.console.print(f"  {item}")
-        env.ui.console.print(hint or "Hint: try broadening your filters or use `list` to browse")
+        env.ui.console.print(hint or "Hint: try broadening your filters or use `read --all` to browse")
     else:
         env.ui.console.print(resolved_message)
 

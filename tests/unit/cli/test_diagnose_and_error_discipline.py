@@ -132,10 +132,9 @@ class TestUnknownTokenActionability:
         workspace_env: Mapping[str, Path],
     ) -> None:
         """Single-token query close to a real subcommand surfaces a typo hint."""
-        result = runner.invoke(cli, ["lst", "--limit", "0"])
-        assert "If you meant a subcommand" in result.output, f"missing did-you-mean hint for `lst`: {result.output!r}"
-        # The closest registered command for `lst` is `list`.
-        assert "polylogue list" in result.output
+        result = runner.invoke(cli, ["red", "--limit", "0"])
+        assert "If you meant a subcommand" in result.output, f"missing did-you-mean hint for `red`: {result.output!r}"
+        assert "polylogue read" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -156,7 +155,7 @@ class TestUsageErrorHints:
         assert "--help" in hint
 
     def test_actionable_hint_for_misplaced_root_option(self) -> None:
-        message = "Query filters and root output flags must appear before the verb. Move --provider before `list`."
+        message = "Query filters and root output flags must appear before the verb. Move --origin before `read`."
         hint = actionable_hint_for_usage_error(message)
         assert hint is not None
         assert "precede the verb" in hint or "before the verb" in hint
@@ -175,14 +174,14 @@ class TestUsageErrorHints:
 
 class TestParserDiagnosticsHelpers:
     def test_looks_like_subcommand_typo_matches_close_token(self) -> None:
-        suggestions = looks_like_subcommand_typo("lst", ["list", "stats", "delete"])
-        assert "list" in suggestions
+        suggestions = looks_like_subcommand_typo("red", ["read", "analyze", "delete"])
+        assert "read" in suggestions
 
     def test_looks_like_subcommand_typo_no_match_returns_empty(self) -> None:
-        suggestions = looks_like_subcommand_typo("zzz", ["list", "stats", "delete"])
+        suggestions = looks_like_subcommand_typo("zzz", ["read", "analyze", "delete"])
         assert suggestions == []
 
     def test_format_unknown_subcommand_hint_always_suggests_query(self) -> None:
-        hint = format_unknown_subcommand_hint("foo", ["list", "stats"])
+        hint = format_unknown_subcommand_hint("foo", ["read", "analyze"])
         assert 'polylogue "foo"' in hint
         assert "query-first dispatch" in hint

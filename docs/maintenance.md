@@ -341,7 +341,7 @@ backup, and open an issue with the probe output attached.
 ### Draining the convergence-debt queue
 
 **Symptoms.** `devtools daemon-workload-probe` reports a non-trivial
-`convergence_debt` section. `polylogue stats` shows derived
+`convergence_debt` section. `polylogue analyze` shows derived
 materialization counts (`session_profile`, `actions`,
 `work_threads`) lagging behind `sessions`.
 

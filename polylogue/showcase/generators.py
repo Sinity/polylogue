@@ -146,7 +146,7 @@ def _generate_single_flag_scenarios(flags: list[FilterFlagDescriptor]) -> list[E
             _generated_filter_exercise(
                 name=f"gen-filter-{flag.name}",
                 description=f"Generated: filter with {flag.cli_name}",
-                args=_make_flag_args(flag) + ["list", "-n", "3"],
+                args=_make_flag_args(flag) + ["read", "--all", "-n", "3"],
             )
         )
     return scenarios
@@ -161,7 +161,7 @@ def _generate_pairwise_flag_scenarios(flags: list[FilterFlagDescriptor]) -> list
             _generated_filter_exercise(
                 name=f"gen-filter-{left_flag.name}+{right_flag.name}",
                 description=f"Generated: {left_flag.cli_name} + {right_flag.cli_name}",
-                args=_make_flag_args(left_flag) + _make_flag_args(right_flag) + ["list", "-n", "3"],
+                args=_make_flag_args(left_flag) + _make_flag_args(right_flag) + ["read", "--all", "-n", "3"],
                 pairwise=True,
             )
         )
@@ -370,8 +370,8 @@ def generate_format_scenarios() -> tuple[Exercise, ...]:
 
     modes = [
         ("latest", ["--latest"]),
-        ("list", ["list", "-n", "1"]),
-        ("count", ["count"]),
+        ("list", ["read", "--all", "-n", "1"]),
+        ("count", ["analyze", "--count"]),
     ]
 
     for fmt, spec in _FORMAT_SPECS.items():
