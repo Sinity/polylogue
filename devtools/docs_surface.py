@@ -53,12 +53,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
     DocsEntry(
         "Execution Plan",
         "docs/execution-plan.md",
-        "Living sequencing plan — landed, in flight, queued, and frozen subsystems.",
+        "Current issue-driven sequencing plan for the remaining backlog.",
     ),
     DocsEntry(
         "Design Direction",
         "docs/design/README.md",
-        "Canonical MK3 archive-workbench design pack and historical design handoffs.",
+        "Historical design inputs and current guidance for using them without treating them as parallel roadmaps.",
     ),
     DocsEntry("Internals", "docs/internals.md", "Working implementation reference and debugging landmarks."),
     DocsEntry("MCP Integration", "docs/mcp-integration.md", "Model Context Protocol server setup and usage."),

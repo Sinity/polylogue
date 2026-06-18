@@ -1,23 +1,17 @@
 # GitHub triage plan — Polylogue Archive Workbench
 
-This plan is prepared for `Sinity/polylogue`. It uses the open-issue export generated on 2026-05-23 as the dedupe baseline.
+This plan is a historical design-pack artifact prepared for `Sinity/polylogue`.
+It used an open-issue export generated on 2026-05-23 as the dedupe baseline;
+that baseline is stale. Do not use this file as a current issue map.
 
 Use two actions:
 
 - `create`: open a new focused issue when the work is not already represented clearly.
 - `comment`: add the issue body as a design/acceptance update to an existing open issue when a matching issue already exists.
 
-Before running the helper script, refresh the GitHub issue list and confirm that referenced issues are still open.
-
-## Existing issue anchors
-
-- #993 — web reader advanced functionality tracking.
-- #1205 / #865 — reader visual smoke and degraded-state coverage.
-- #873 / #1267 / #1420 — ranked search explanation, facets, pagination, lane preservation.
-- #866 / #1261 — session identity, lineage graph, typed topology read model.
-- #1418 / #1419 / #1415 / #1414 — OpenAPI, surface parity, machine errors, shared list response.
-- #1446 / #1447 / #1321 / #999 — daemon health, catch-up, WAL/memory, metrics, operations.
-- #958 — CLI polish and command ergonomics.
+Before mining any idea from this pack, refresh the GitHub issue list, read the
+current issue bodies, and fold useful detail into the live owning issue instead
+of creating a parallel roadmap.
 
 ## Suggested milestones
 
