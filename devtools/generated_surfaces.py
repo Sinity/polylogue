@@ -39,6 +39,7 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
         command=control_plane_argv("render-agents"),
         main=render_agents.main,
         inputs=(
+            "devtools/render_agents.py",
             "CLAUDE.md",
             "CONTRIBUTING.md",
             "TESTING.md",
@@ -83,7 +84,7 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
         description="Render the generated command catalog inside docs/devtools.md.",
         command=control_plane_argv("render-devtools-reference"),
         main=render_devtools_reference.main,
-        inputs=("devtools/command_catalog.py",),
+        inputs=("devtools/command_catalog.py", "devtools/render_devtools_reference.py"),
     ),
     GeneratedSurface(
         name="quality-reference",
@@ -91,7 +92,7 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
         description="Render docs/test-quality-workflows.md from quality registries.",
         command=control_plane_argv("render-quality-reference"),
         main=render_quality_reference.main,
-        inputs=("devtools/run_validation_lanes.py", "pyproject.toml"),
+        inputs=("devtools/render_quality_reference.py", "devtools/run_validation_lanes.py", "pyproject.toml"),
     ),
     GeneratedSurface(
         name="docs-surface",
@@ -99,7 +100,7 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
         description="Render docs/README.md and the generated docs table in README.md.",
         command=control_plane_argv("render-docs-surface"),
         main=render_docs_surface.main,
-        inputs=("docs/", "README.md"),
+        inputs=("devtools/render_docs_surface.py", "docs/", "README.md"),
     ),
     GeneratedSurface(
         name="topology-status",
@@ -107,7 +108,7 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
         description="Render docs/topology-status.md from the topology projection and realized tree.",
         command=control_plane_argv("render-topology-status"),
         main=render_topology_status.main,
-        inputs=("docs/plans/topology-target.yaml",),
+        inputs=("devtools/render_topology_status.py", "docs/plans/topology-target.yaml"),
     ),
     GeneratedSurface(
         name="pages",
@@ -115,7 +116,7 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
         description="Build the GitHub Pages documentation site into .cache/site/.",
         command=control_plane_argv("render-pages"),
         main=render_pages.main,
-        inputs=("docs/", "README.md", "polylogue/", "pyproject.toml"),
+        inputs=("devtools/render_pages.py", "docs/", "README.md", "polylogue/", "pyproject.toml"),
     ),
 )
 
