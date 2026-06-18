@@ -449,6 +449,28 @@ class TestBooleanQueryExpression:
             ),
         )
 
+    def test_parse_observed_event_source_expression_preserves_terminal_unit(self) -> None:
+        source = parse_unit_source_expression(
+            "observed-events where session.repo:polylogue AND delivery_state:acted_on AND text:#2100"
+        )
+
+        assert source is not None
+        assert source.unit == "observed-event"
+        assert source.predicate == QueryBoolPredicate(
+            op="and",
+            children=(
+                QueryFieldPredicate(field="session.repo", values=("polylogue",)),
+                QueryFieldPredicate(field="delivery_state", values=("acted_on",)),
+                QueryFieldPredicate(field="text", values=("#2100",)),
+            ),
+        )
+        explanation = explain_expression(
+            "observed-events where session.repo:polylogue AND delivery_state:acted_on AND text:#2100"
+        )
+        assert explanation.selected_units == ("observed-event",)
+        assert explanation.lowering_plan is not None
+        assert "compatibility_selector" not in explanation.lowering_plan
+
     def test_action_source_where_lowers_to_structural_exists(self) -> None:
         ast = parse_expression_ast("actions where action:file_edit AND path:archive/query")
 
@@ -1220,6 +1242,55 @@ class TestBooleanQueryExpression:
         assert rows[0].evidence_refs == ("session:codex-session:ext-hit#message:m-hit",)
         assert rows[0].staleness == {"policy": "manual"}
         assert rows[0].context_policy == {"inject": False}
+
+    def test_terminal_observed_event_source_returns_runtime_rows(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.archive.query.unit_results import query_unit_rows
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from polylogue.surfaces.payloads import ObservedEventQueryRowPayload
+        from tests.infra.storage_records import SessionBuilder
+
+        archive_root = workspace_env["archive_root"]
+        index_db = archive_root / "index.db"
+        (
+            SessionBuilder(index_db, "hit")
+            .provider("codex")
+            .git_repository_url("polylogue")
+            .title("review handled")
+            .add_message("m-hit", role="assistant", text="Addressed review on PR #2100")
+            .save()
+        )
+        (
+            SessionBuilder(index_db, "wrong-repo")
+            .provider("codex")
+            .git_repository_url("sinex")
+            .title("review elsewhere")
+            .add_message("m-wrong-repo", role="assistant", text="Addressed review on PR #2100")
+            .save()
+        )
+
+        source = parse_unit_source_expression(
+            "observed-events where session.repo:polylogue AND delivery_state:acted_on AND text:#2100"
+        )
+        assert source is not None
+        with ArchiveStore.open_existing(archive_root) as archive:
+            envelope = query_unit_rows(
+                archive,
+                source,
+                query="observed-events where session.repo:polylogue AND delivery_state:acted_on AND text:#2100",
+                limit=10,
+            )
+
+        assert envelope.unit == "observed-event"
+        assert len(envelope.items) == 1
+        row = envelope.items[0]
+        assert isinstance(row, ObservedEventQueryRowPayload)
+        assert (row.kind, row.delivery_state, row.session_id) == (
+            "review_acted_on",
+            "acted_on",
+            "codex-session:ext-hit",
+        )
+        assert row.object_refs == ("github-review:#2100",)
+        assert row.evidence_refs == ("codex-session:ext-hit::codex-session:ext-hit:m-hit",)
 
     def test_exists_block_tool_predicate_executes_against_archive(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore

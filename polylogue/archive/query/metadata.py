@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-QueryUnitName = Literal["message", "action", "block", "assertion"]
+QueryUnitName = Literal["message", "action", "block", "assertion", "observed-event"]
 
 #: Recognized DSL field tokens and a short human description.
 #: ``spec_field`` values correspond to :class:`~polylogue.archive.query.spec.SessionQuerySpec`
@@ -134,6 +134,8 @@ _SOURCE_WHERE_SOURCES: tuple[tuple[str, QueryUnitName], ...] = (
     ("blocks", "block"),
     ("assertion", "assertion"),
     ("assertions", "assertion"),
+    ("observed-event", "observed-event"),
+    ("observed-events", "observed-event"),
 )
 _BOOLEAN_SUPPORTED_FIELDS = {
     "repo",
@@ -185,7 +187,19 @@ _ASSERTION_STRUCTURAL_FIELDS = {
     "evidence",
     "context",
 }
+_OBSERVED_EVENT_STRUCTURAL_FIELDS = {
+    "kind",
+    "summary",
+    "text",
+    "delivery_state",
+    "subject",
+    "subject_ref",
+    "object",
+    "object_ref",
+    "evidence",
+}
 _STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS.update(_ASSERTION_STRUCTURAL_FIELDS)
+_STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS.update(_OBSERVED_EVENT_STRUCTURAL_FIELDS)
 
 
 @dataclass(frozen=True)
@@ -261,6 +275,22 @@ _ASSERTION_STRUCTURAL_FIELD_INFO: dict[str, StructuralQueryFieldInfo] = {
     "visibility": _field_info("visibility", "Assertion visibility.", "visibility:private"),
 }
 
+_OBSERVED_EVENT_STRUCTURAL_FIELD_INFO: dict[str, StructuralQueryFieldInfo] = {
+    "delivery_state": _field_info(
+        "delivery_state",
+        "Observed-event delivery state, such as acted_on or acknowledged.",
+        "delivery_state:acted_on",
+    ),
+    "evidence": _field_info("evidence", "Observed-event evidence ref substring.", "evidence:message:"),
+    "kind": _field_info("kind", "Observed-event kind.", "kind:review_acted_on"),
+    "object": _field_info("object", "Observed-event object ref substring.", "object:#2100"),
+    "object_ref": _field_info("object_ref", "Observed-event object ref substring.", "object_ref:github-review:#2100"),
+    "subject": _field_info("subject", "Observed-event subject ref substring.", "subject:message"),
+    "subject_ref": _field_info("subject_ref", "Observed-event subject ref substring.", "subject_ref:message:"),
+    "summary": _field_info("summary", "Observed-event summary substring.", "summary:review"),
+    "text": _field_info("text", "Observed-event summary/ref substring.", "text:review"),
+}
+
 _SESSION_SCOPED_STRUCTURAL_EXAMPLES: dict[str, str] = {
     "action": "session.action:file_edit",
     "cwd": "session.cwd:/realm/project",
@@ -308,6 +338,11 @@ def _assertion_field_infos() -> tuple[StructuralQueryFieldInfo, ...]:
     return tuple(sorted((*infos, *_SCOPED_SESSION_STRUCTURAL_FIELD_INFO), key=lambda field: field.name))
 
 
+def _observed_event_field_infos() -> tuple[StructuralQueryFieldInfo, ...]:
+    infos = [_OBSERVED_EVENT_STRUCTURAL_FIELD_INFO[name] for name in sorted(_OBSERVED_EVENT_STRUCTURAL_FIELDS)]
+    return tuple(sorted((*infos, *_SCOPED_SESSION_STRUCTURAL_FIELD_INFO), key=lambda field: field.name))
+
+
 STRUCTURAL_QUERY_UNIT_REGISTRY: dict[str, StructuralQueryUnitInfo] = {
     "action": StructuralQueryUnitInfo(
         description="Match sessions with at least one action row satisfying the child predicate.",
@@ -328,6 +363,11 @@ STRUCTURAL_QUERY_UNIT_REGISTRY: dict[str, StructuralQueryUnitInfo] = {
         description="Match sessions with at least one session-targeted assertion satisfying the child predicate.",
         fields=_assertion_field_infos(),
         example="exists assertion(kind:decision AND status:active AND text:review)",
+    ),
+    "observed-event": StructuralQueryUnitInfo(
+        description="Return runtime-transform observed events satisfying the child predicate.",
+        fields=_observed_event_field_infos(),
+        example="observed-events where session.repo:polylogue AND delivery_state:acted_on",
     ),
 }
 
