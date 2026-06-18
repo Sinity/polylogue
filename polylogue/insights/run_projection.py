@@ -26,13 +26,18 @@ ObservedEventKind = Literal[
     "subagent_finished",
     "pr_opened",
     "pr_merged",
+    "review_posted",
+    "review_seen_by_tool",
+    "review_injected_context",
+    "review_acknowledged",
+    "review_acted_on",
     "issue_closed",
     "check_passed",
     "check_failed",
     "test_passed",
     "test_failed",
 ]
-ObservedDeliveryState = Literal["observed", "unknown"]
+ObservedDeliveryState = Literal["observed", "seen_by_tool", "injected_context", "acknowledged", "acted_on", "unknown"]
 
 
 class _RawRefLike(Protocol):
@@ -257,6 +262,7 @@ def build_run_projection(
                 kind=event.kind,
                 run_ref=main_run_ref,
                 summary=event.summary,
+                delivery_state=_delivery_state_for_event(event.kind),
                 subject_ref=ObjectRef(kind="message", object_id=evidence_refs[0].message_id or session_id),
                 object_refs=_event_object_refs(event),
                 evidence_refs=evidence_refs,
@@ -342,6 +348,18 @@ def _event_ref(session_id: str, kind: str, index: int) -> ObjectRef:
     return ObjectRef(kind="observed-event", object_id=f"{session_id}:{kind}:{index}")
 
 
+def _delivery_state_for_event(kind: ObservedEventKind) -> ObservedDeliveryState:
+    if kind == "review_seen_by_tool":
+        return "seen_by_tool"
+    if kind == "review_injected_context":
+        return "injected_context"
+    if kind == "review_acknowledged":
+        return "acknowledged"
+    if kind == "review_acted_on":
+        return "acted_on"
+    return "observed"
+
+
 def _harness_for_origin(source_origin: str) -> RunHarness:
     if source_origin == "codex-session":
         return "codex"
@@ -381,6 +399,8 @@ def _tool_object_refs(tool: _ToolSummaryLike) -> tuple[ObjectRef, ...]:
 def _event_object_refs(event: _RecoveryEventLike) -> tuple[ObjectRef, ...]:
     if event.kind.startswith("pr_"):
         return tuple(ObjectRef(kind="github-pr", object_id=ref) for ref in _number_refs(event.summary))
+    if event.kind.startswith("review_"):
+        return tuple(ObjectRef(kind="github-review", object_id=ref) for ref in _number_refs(event.summary))
     if event.kind == "issue_closed":
         return tuple(ObjectRef(kind="github-issue", object_id=ref) for ref in _number_refs(event.summary))
     if event.kind.startswith("check_"):

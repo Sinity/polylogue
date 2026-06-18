@@ -57,6 +57,7 @@ _ISSUE_RE = re.compile(
     re.IGNORECASE,
 )
 _PR_RE = re.compile(r"(?:pull/|PR\s+#?)(?P<number>\d{3,6})", re.IGNORECASE)
+_REVIEW_PR_RE = re.compile(r"\b(?:review|comment|finding)s?\b.*(?:pull/|PR\s+#?)(?P<number>\d{3,6})", re.IGNORECASE)
 _CREATED_PR_RE = re.compile(
     r"\b(?:created|opened)\s+(?:pull\s+request|PR)\s+#?(?P<number>\d{3,6})\b",
     re.IGNORECASE,
@@ -221,6 +222,11 @@ class RecoveryEvent(ArchiveInsightModel):
     kind: Literal[
         "pr_opened",
         "pr_merged",
+        "review_posted",
+        "review_seen_by_tool",
+        "review_injected_context",
+        "review_acknowledged",
+        "review_acted_on",
         "issue_closed",
         "check_passed",
         "check_failed",
@@ -813,10 +819,13 @@ def _to_evidence_refs(refs: Sequence[TransformRawRef]) -> tuple[EvidenceRef, ...
 def _event_packet_metadata(event: RecoveryEvent) -> dict[str, str]:
     metadata: dict[str, str] = {}
     pr_refs = tuple(_number_refs(_PR_RE, event.summary)) if event.kind.startswith("pr_") else ()
+    review_refs = tuple(_number_refs(_PR_RE, event.summary)) if event.kind.startswith("review_") else ()
     issue_refs = tuple(_number_refs(_ISSUE_RE, event.summary)) if event.kind == "issue_closed" else ()
     test_evidence = (event.summary,) if event.kind.startswith(("check_", "test_")) else ()
     if pr_refs:
         metadata["pr_refs"] = ", ".join(pr_refs)
+    if review_refs:
+        metadata["review_refs"] = ", ".join(review_refs)
     if issue_refs:
         metadata["issue_refs"] = ", ".join(issue_refs)
     if test_evidence:
@@ -829,6 +838,8 @@ def _event_object_refs(event: RecoveryEvent) -> tuple[ObjectRef, ...]:
 
     if event.kind.startswith("pr_"):
         return _github_object_refs("github-pr", _number_refs(_PR_RE, event.summary))
+    if event.kind.startswith("review_"):
+        return _github_object_refs("github-review", _number_refs(_PR_RE, event.summary))
     if event.kind == "issue_closed":
         return _github_object_refs("github-issue", _number_refs(_ISSUE_RE, event.summary))
     if event.kind.startswith("check_"):
@@ -861,7 +872,9 @@ def _tool_object_refs(tool: ToolSummary) -> tuple[ObjectRef, ...]:
     )
 
 
-def _github_object_refs(kind: Literal["github-issue", "github-pr"], refs: Iterable[str]) -> tuple[ObjectRef, ...]:
+def _github_object_refs(
+    kind: Literal["github-issue", "github-pr", "github-review"], refs: Iterable[str]
+) -> tuple[ObjectRef, ...]:
     """Format GitHub number refs as opaque public object refs."""
 
     return tuple(ObjectRef(kind=kind, object_id=ref) for ref in refs)
@@ -1420,6 +1433,33 @@ def _events_from_text(text: str, ref: TransformRawRef) -> Iterable[RecoveryEvent
                 summary=f"PR #{created_pr_match.group('number')} opened",
                 raw_refs=(ref,),
             )
+        review_match = _REVIEW_PR_RE.search(line)
+        if review_match is not None:
+            number = review_match.group("number")
+            review_kind: Literal[
+                "review_posted",
+                "review_seen_by_tool",
+                "review_injected_context",
+                "review_acknowledged",
+                "review_acted_on",
+            ] = "review_posted"
+            if any(term in lowered for term in ("addressed", "acted on", "fixed", "resolved")):
+                review_kind = "review_acted_on"
+            elif any(term in lowered for term in ("acknowledged", "classified", "triaged")):
+                review_kind = "review_acknowledged"
+            elif any(term in lowered for term in ("injected", "context")):
+                review_kind = "review_injected_context"
+            elif any(term in lowered for term in ("read", "fetched", "inspected", "seen")):
+                review_kind = "review_seen_by_tool"
+            review_label = {
+                "review_posted": "posted",
+                "review_seen_by_tool": "seen by tool",
+                "review_injected_context": "injected into context",
+                "review_acknowledged": "acknowledged",
+                "review_acted_on": "acted on",
+            }[review_kind]
+            yield RecoveryEvent(kind=review_kind, summary=f"Review on PR #{number} {review_label}", raw_refs=(ref,))
+            continue
         if "pull/" in lowered or "pr " in lowered:
             pr_match = _PR_RE.search(line)
             if pr_match is not None:
