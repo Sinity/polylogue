@@ -17,7 +17,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/archive.py
-    loc: 3386
+    loc: 3404
     target: polylogue/api/archive.py
     owner: stable
     cross_cut: { api: async }
@@ -1024,8 +1024,12 @@ files:
     owner: kernel
     reason: kernel root rule
   - path: polylogue/context/__init__.py
-    loc: 20
+    loc: 25
     target: polylogue/context/__init__.py
+    owner: stable
+  - path: polylogue/context/compiler.py
+    loc: 148
+    target: polylogue/context/compiler.py
     owner: stable
   - path: polylogue/context/pack.py
     loc: 308
@@ -1458,7 +1462,7 @@ files:
     target: polylogue/insights/rigor.py
     owner: stable
   - path: polylogue/insights/run_projection.py
-    loc: 444
+    loc: 448
     target: polylogue/insights/run_projection.py
     owner: stable
   - path: polylogue/insights/session_commit.py
@@ -1486,7 +1490,7 @@ files:
     target: polylogue/insights/topology.py
     owner: stable
   - path: polylogue/insights/transforms.py
-    loc: 1838
+    loc: 1879
     target: polylogue/insights/transforms.py
     owner: stable
   - path: polylogue/logging.py

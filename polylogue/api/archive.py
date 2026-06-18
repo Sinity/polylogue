@@ -60,6 +60,7 @@ if TYPE_CHECKING:
     from polylogue.archive.session.neighbor_candidates import SessionNeighborCandidate
     from polylogue.archive.stats import ArchiveStats as StorageArchiveStats
     from polylogue.config import Config
+    from polylogue.context.compiler import RecoveryContextCompilation
     from polylogue.insights.audit import InsightRigorAuditQuery, InsightRigorAuditReport
     from polylogue.insights.export_bundles import InsightExportBundleRequest, InsightExportBundleResult
     from polylogue.insights.readiness import InsightReadinessQuery, InsightReadinessReport
@@ -1217,19 +1218,36 @@ class PolylogueArchiveMixin:
 
     async def recovery_report(self, session_id: str, preset: RecoveryReportPreset) -> str | None:
         """Render one deterministic recovery report preset for a session."""
-        if preset == "work-packet":
-            packet = await self.recovery_work_packet(session_id)
-            return None if packet is None else packet.render_markdown()
         digest = await self.recovery_digest(session_id)
         if digest is None:
             return None
-        return digest.report_markdown(preset)
+        compilation = await self._compile_recovery_context_from_digest(digest, report=preset)
+        return compilation.markdown
 
     async def recovery_work_packet(self, session_id: str) -> RecoveryWorkPacket | None:
         """Return the storage-free continuation packet DTO for a session."""
         digest = await self.recovery_digest(session_id)
         if digest is None:
             return None
+        compilation = await self._compile_recovery_context_from_digest(digest, report="work-packet")
+        return compilation.work_packet
+
+    async def _compile_recovery_context_from_digest(
+        self,
+        digest: RecoveryDigest,
+        *,
+        report: RecoveryReportPreset | None = None,
+    ) -> RecoveryContextCompilation:
+        """Compile one recovery-context view without making callers branch on bundle shape."""
+        from polylogue.context.compiler import compile_recovery_context
+
+        packet: RecoveryWorkPacket | None = None
+        if report == "work-packet":
+            packet = await self._recovery_work_packet_from_digest(digest)
+        return compile_recovery_context(digest, report=report, work_packet=packet)
+
+    async def _recovery_work_packet_from_digest(self, digest: RecoveryDigest) -> RecoveryWorkPacket:
+        """Build the assertion-enriched work-packet bundle for a digest."""
         packet = digest.work_packet()
         claims = await self.list_assertion_claims(target_ref=f"session:{digest.session_id}", limit=20)
         assertion_entries = _archive_assertion_work_packet_entries(claims, digest.session_id)

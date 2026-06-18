@@ -144,7 +144,7 @@ READ_VIEW_PROFILES: tuple[SessionViewProfile, ...] = (
     SessionViewProfile(
         view_id="recovery",
         label="Recovery",
-        owner="polylogue.api.archive.Polylogue.recovery_digest / polylogue.api.archive.Polylogue.recovery_report",
+        owner="polylogue.context.compiler.compile_recovery_context",
         purpose="On-demand successor-agent recovery transform for one session.",
         input_scope="single session id",
         included_kinds=(
