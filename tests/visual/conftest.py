@@ -346,6 +346,34 @@ def _seed_reader_user_state(workspace: ReaderWorkspace) -> None:
         user_conn.close()
 
 
+def seed_reader_assertion_claims(workspace: ReaderWorkspace) -> None:
+    """Seed one assertion-backed overlay for the #1846 evidence panel."""
+
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
+
+    user_db = workspace.archive_root / "user.db"
+    initialize_archive_database(user_db, ArchiveTier.USER)
+    with sqlite3.connect(user_db) as user_conn:
+        upsert_assertion(
+            user_conn,
+            assertion_id="reader-evidence-decision",
+            target_ref=f"session:{READER_C1}",
+            scope_ref="repo:polylogue",
+            kind=AssertionKind.DECISION,
+            body_text="The evidence tab renders shared assertion claims.",
+            author_ref="agent:poly-07",
+            author_kind="agent",
+            evidence_refs=[f"message:{READER_C1_M1}"],
+            status="active",
+            visibility="private",
+            context_policy={"inject": False},
+            now_ms=1_760_000_000_000,
+        )
+        user_conn.commit()
+
+
 def _degrade_message_fts(workspace: ReaderWorkspace) -> None:
     """Drop the native message FTS virtual table and its sync triggers so a real
     query degrades to a sanitized 503 "Search index" response, mirroring an

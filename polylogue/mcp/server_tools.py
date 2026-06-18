@@ -25,7 +25,6 @@ from polylogue.mcp.payloads import (
     MCPArchiveSessionSummaryPayload,
     MCPArchiveStatsPayload,
     MCPAssertionClaimListPayload,
-    MCPAssertionClaimPayload,
     MCPBlackboardNoteListPayload,
     MCPEmbeddingPreflightPayload,
     MCPEmbeddingStatusPayload,
@@ -612,16 +611,25 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         async def run() -> str:
             poly = hooks.get_polylogue()
             clamped_limit = hooks.clamp_limit(limit)
-            claims = await poly.list_assertion_claims(
-                kinds=_split_archive_csv(kinds) or None,
+            kind_filter = _split_archive_csv(kinds) or None
+            status_filter = None if statuses is None else _split_archive_csv(statuses)
+            items = await poly.list_assertion_claim_payloads(
+                kinds=kind_filter,
                 target_ref=target_ref,
                 scope_ref=scope_ref,
-                statuses=None if statuses is None else _split_archive_csv(statuses),
+                statuses=status_filter,
                 context_inject=context_inject,
                 limit=clamped_limit,
             )
-            items = tuple(MCPAssertionClaimPayload.from_envelope(claim) for claim in claims)
-            return hooks.json_payload(MCPAssertionClaimListPayload(items=items, total=len(items), limit=clamped_limit))
+            return hooks.json_payload(
+                MCPAssertionClaimListPayload(
+                    items=tuple(items),
+                    total=len(items),
+                    limit=clamped_limit,
+                    statuses=status_filter,
+                    kinds=kind_filter,
+                )
+            )
 
         return await hooks.async_safe_call("list_assertion_claims", run)
 

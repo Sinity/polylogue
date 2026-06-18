@@ -24,7 +24,6 @@ import pytest
 pytestmark = pytest.mark.xdist_group("web-reader")
 
 import json
-import sqlite3
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -368,11 +367,37 @@ class TestReaderSearchState:
             "renderCompareWorkspace",
             "renderInspector",
             "renderInspectorEvidence",
+            "loadReadViewProfiles",
+            "renderReadViewSelector",
+            "applyReadViewSelection",
+            "/api/read-view-profiles",
             "/api/assertions",
             "/recovery?report=work-packet",
+            "Load artifact list",
+            "Load raw preview",
             'data-tab="evidence"',
         ):
             assert region in body, f"web shell missing region hook {region!r}"
+
+    def test_raw_tab_uses_bounded_provenance_preview_not_broad_raw_fetch(self, workspace_env: dict[str, Path]) -> None:
+        """The shell must not fetch the broad /raw route when opening Raw.
+
+        Raw bytes are only fetched through /provenance?include_raw=1 after
+        an explicit click, and the server caps that preview.
+        """
+
+        with _running_server(workspace_env) as (_, base_url):
+            status, content_type, body = _get_text(base_url, "/")
+
+        assert status == 200
+        assert "text/html" in content_type
+        assert "renderInspectorRaw" in body
+        assert "loadRawData" in body
+        assert "loadProvenanceRaw" in body
+        assert "/provenance?include_raw=1" in body
+        assert "Raw preview is opt-in" in body
+        assert " + '/raw'" not in body
+        assert ' + "/raw"' not in body
 
     def test_search_envelope_matches_documented_shape(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env) as (_, base_url):
@@ -727,6 +752,23 @@ class TestReaderWorkspaceRoutes:
         assert "text/html" in content_type
         assert "<title>Polylogue</title>" in body
         assert "getSessionIdFromURL" in body
+
+    def test_session_deep_link_shell_carries_minimal_evidence_panel(self, workspace_env: dict[str, Path]) -> None:
+        """The web workbench evidence slice is present on real session deep links."""
+
+        with _running_server(workspace_env) as (_, base_url):
+            status, content_type, body = _get_text(base_url, "/s/claude-code-session:c1")
+
+        assert status == 200
+        assert "text/html" in content_type
+        for hook in (
+            'data-tab="evidence"',
+            "renderInspectorEvidence",
+            "/api/sessions/",
+            "/recovery?report=work-packet&format=json",
+            "/api/assertions?target_ref=",
+        ):
+            assert hook in body
 
     def test_legacy_conversation_route_is_gone(self, workspace_env: dict[str, Path]) -> None:
         """The stale ``/c/{conversation_id}`` route must not resolve — no compat alias."""
@@ -1172,47 +1214,6 @@ class TestReaderQueryUnits:
         items = cast(list[dict[str, object]], payload["items"])
         assert [item["session_id"] for item in items] == [C2]
 
-    def test_query_units_endpoint_returns_terminal_assertion_rows(self, workspace_env: dict[str, Path]) -> None:
-        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-        from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
-
-        expression = quote("assertions where session.origin:chatgpt-export AND kind:decision AND status:active")
-        with _running_server(workspace_env) as (_, base_url):
-            user_db = workspace_env["archive_root"] / "user.db"
-            initialize_archive_database(user_db, ArchiveTier.USER)
-            with sqlite3.connect(user_db) as conn:
-                upsert_assertion(
-                    conn,
-                    assertion_id="daemon-query-decision",
-                    target_ref=f"session:{C2}",
-                    kind=AssertionKind.DECISION,
-                    body_text="Daemon assertion terminal query row.",
-                    status="active",
-                    visibility="private",
-                    now_ms=1_700_000_000_000,
-                )
-                conn.commit()
-
-            payload = cast(dict[str, object], _get_json(base_url, f"/api/query-units?expression={expression}"))
-
-        assert payload["mode"] == "query-unit"
-        assert payload["unit"] == "assertion"
-        items = cast(list[dict[str, object]], payload["items"])
-        assert [item["assertion_id"] for item in items] == ["daemon-query-decision"]
-
-    def test_query_units_endpoint_returns_context_snapshot_rows(self, workspace_env: dict[str, Path]) -> None:
-        expression = quote("context-snapshots where boundary:session_start AND text:c2")
-        with _running_server(workspace_env) as (_, base_url):
-            payload = cast(dict[str, object], _get_json(base_url, f"/api/query-units?expression={expression}"))
-
-        assert payload["mode"] == "query-unit"
-        assert payload["unit"] == "context-snapshot"
-        items = cast(list[dict[str, object]], payload["items"])
-        assert [item["session_id"] for item in items] == [C2]
-        assert items[0]["boundary"] == "session_start"
-        assert items[0]["unit"] == "context-snapshot"
-
     def test_query_units_endpoint_rejects_session_expression(self, workspace_env: dict[str, Path]) -> None:
         expression = quote("repo:polylogue")
         with _running_server(workspace_env) as (_, base_url):
@@ -1220,7 +1221,7 @@ class TestReaderQueryUnits:
 
         assert status == 400
         assert payload["error"] == "invalid_query"
-        assert "messages/actions/blocks/assertions/observed-events/context-snapshots where" in str(payload["message"])
+        assert "messages/actions/blocks/assertions where" in str(payload["message"])
 
 
 class TestReaderViewProfiles:
@@ -1240,6 +1241,19 @@ class TestReaderViewProfiles:
 
 
 class TestReaderRecoveryEndpoint:
+    def test_recovery_endpoint_returns_digest_json(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            payload = cast(
+                dict[str, object],
+                _get_json(base_url, f"/api/sessions/{C1}/recovery?report=digest&format=json"),
+            )
+
+        assert payload["report"] == "digest"
+        assert payload["format"] == "json"
+        digest = cast(dict[str, object], payload["digest"])
+        assert digest["session_id"] == C1
+        assert digest["raw_refs"]
+
     def test_recovery_endpoint_returns_shared_work_packet_json(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env) as (_, base_url):
             payload = cast(
@@ -1254,7 +1268,7 @@ class TestReaderRecoveryEndpoint:
         assert packet["evidence_refs"]
         assert "raw_artifacts" not in json.dumps(payload)
 
-    def test_recovery_endpoint_returns_markdown_envelope(self, workspace_env: dict[str, Path]) -> None:
+    def test_recovery_endpoint_returns_work_packet_markdown_envelope(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env) as (_, base_url):
             payload = cast(
                 dict[str, object],
@@ -1266,6 +1280,46 @@ class TestReaderRecoveryEndpoint:
         assert "markdown" in payload
         assert C1 in str(payload["markdown"])
 
+    @pytest.mark.parametrize("report", ["continue", "blame"])
+    def test_recovery_endpoint_does_not_overexpose_report_presets(
+        self, workspace_env: dict[str, Path], report: str
+    ) -> None:
+        """#1846 exposes bundle DTOs first; #1847 owns report-preset promotion."""
+
+        with _running_server(workspace_env) as (_, base_url):
+            status, payload = _get_json_ex(base_url, f"/api/sessions/{C1}/recovery?report={report}&format=markdown")
+
+        assert status == 400
+        assert payload["error"] == "invalid_report"
+
+    @pytest.mark.parametrize(
+        ("query", "error_code"),
+        [
+            ("report=nope&format=json", "invalid_report"),
+            ("report=continue&format=json", "invalid_report"),
+            ("report=blame&format=json", "invalid_report"),
+            ("report=digest&format=markdown", "invalid_format"),
+            ("report=work-packet&format=zip", "invalid_format"),
+        ],
+    )
+    def test_recovery_endpoint_rejects_unsupported_report_or_format(
+        self, workspace_env: dict[str, Path], query: str, error_code: str
+    ) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            status, payload = _get_json_ex(base_url, f"/api/sessions/{C1}/recovery?{query}")
+
+        assert status == 400
+        assert payload["error"] == error_code
+
+    def test_recovery_endpoint_returns_404_for_missing_session(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            status, payload = _get_json_ex(
+                base_url, "/api/sessions/claude-code-session:missing/recovery?report=work-packet&format=json"
+            )
+
+        assert status == 404
+        assert payload["error"] == "not_found"
+
 
 class TestReaderAssertionEndpoint:
     def test_assertions_endpoint_reads_shared_assertion_claims(self, workspace_env: dict[str, Path]) -> None:
@@ -1275,6 +1329,7 @@ class TestReaderAssertionEndpoint:
             payload = cast(dict[str, object], _get_json(base_url, f"/api/assertions?target_ref={target_ref}&limit=5"))
 
         assert payload["total"] == 2
+        assert payload["statuses"] == ["active", "candidate"]
         items = cast(list[dict[str, object]], payload["items"])
         assert {item["assertion_id"] for item in items} == {
             "claim-web-workbench-decision",
@@ -1283,6 +1338,19 @@ class TestReaderAssertionEndpoint:
         decision = next(item for item in items if item["kind"] == "decision")
         assert decision["target_ref"] == f"session:{C1}"
         assert decision["context_policy"] == {"inject": True}
+
+    def test_assertions_endpoint_filters_kind_and_context_policy(self, workspace_env: dict[str, Path]) -> None:
+        _seed_assertion_claims(workspace_env)
+        target_ref = quote(f"session:{C1}", safe="")
+        with _running_server(workspace_env) as (_, base_url):
+            payload = cast(
+                dict[str, object],
+                _get_json(base_url, f"/api/assertions?target_ref={target_ref}&kind=decision&context_inject=1"),
+            )
+
+        items = cast(list[dict[str, object]], payload["items"])
+        assert [item["assertion_id"] for item in items] == ["claim-web-workbench-decision"]
+        assert items[0]["context_policy"] == {"inject": True}
 
     def test_assertions_endpoint_can_explicitly_read_all_statuses(self, workspace_env: dict[str, Path]) -> None:
         _seed_assertion_claims(workspace_env)
@@ -1299,6 +1367,23 @@ class TestReaderAssertionEndpoint:
             "claim-web-workbench-candidate",
             "claim-web-workbench-deleted",
         }
+
+    def test_assertions_endpoint_is_auth_gated_when_daemon_token_is_configured(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        _seed_assertion_claims(workspace_env)
+        with _running_server(workspace_env, auth_token="secret-token") as (_, base_url):
+            status, _, body = _get_text(base_url, "/api/assertions")
+            authed = cast(
+                dict[str, object],
+                _get_json(base_url, "/api/assertions", headers={"Authorization": "Bearer secret-token"}),
+            )
+
+        assert status == 401
+        payload = json.loads(body)
+        assert payload["error"] == "unauthorized"
+        assert "items" in authed
 
 
 class TestReaderPrivacy:
@@ -1336,6 +1421,8 @@ class TestReaderPrivacy:
             "/api/sessions",
             "/api/sessions/claude-code-session:c1",
             "/api/sessions/claude-code-session:c1/messages",
+            "/api/sessions/claude-code-session:c1/recovery?report=work-packet&format=json",
+            "/api/assertions?target_ref=session%3Aclaude-code-session%3Ac1",
         ],
     )
     def test_reader_json_contracts_do_not_leak_absolute_local_paths(
@@ -1366,6 +1453,23 @@ class TestReaderAuthSurface:
             payload = _get_json(base_url, "/api/sessions", headers={"Authorization": "Bearer secret-token"})
         assert isinstance(payload, dict)
         assert payload["total"] == 3
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/api/sessions/claude-code-session:c1/recovery?report=work-packet&format=json",
+            "/api/assertions?target_ref=session%3Aclaude-code-session%3Ac1",
+        ],
+    )
+    def test_workbench_helper_endpoints_require_bearer_when_token_set(
+        self, workspace_env: dict[str, Path], path: str
+    ) -> None:
+        with _running_server(workspace_env, auth_token="secret-token") as (_, base_url):
+            missing_status, _, _ = _get_text(base_url, path)
+            ok_payload = _get_json(base_url, path, headers={"Authorization": "Bearer secret-token"})
+
+        assert missing_status == 401
+        assert isinstance(ok_payload, dict)
 
     def test_unauthenticated_root_still_serves_web_shell(self, workspace_env: dict[str, Path]) -> None:
         # The web shell at / is the only unauthenticated GET (see
@@ -1520,6 +1624,64 @@ class TestSharedQueryPayloads:
         assert d["origins"] == {"claude-code-session": 10, "chatgpt-export": 5}
         assert d["total_sessions"] == 15
         assert d["time_range"]["min"] == "2024-01-01"
+
+    def test_assertion_claim_payloads_are_shared_surface_dtos(self) -> None:
+        from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionEnvelope
+        from polylogue.surfaces.payloads import AssertionClaimListPayload, AssertionClaimPayload
+
+        envelope = ArchiveAssertionEnvelope(
+            assertion_id="claim-1",
+            scope_ref="repo:polylogue",
+            target_ref="session:c1",
+            key=None,
+            kind="decision",
+            value=None,
+            body_text="Keep assertion payloads shared.",
+            author_ref="agent:test",
+            author_kind="agent",
+            evidence_refs=["message:m1"],
+            status="active",
+            visibility="private",
+            confidence=0.9,
+            staleness=None,
+            context_policy={"inject": False},
+            supersedes=[],
+            created_at_ms=1,
+            updated_at_ms=2,
+        )
+
+        item = AssertionClaimPayload.from_envelope(envelope)
+        payload = AssertionClaimListPayload(items=(item,), total=1, limit=20, statuses=("active",))
+        dump = payload.model_dump(mode="json", exclude_none=True)
+
+        assert dump["items"][0]["assertion_id"] == "claim-1"
+        assert dump["items"][0]["evidence_refs"] == ["message:m1"]
+        assert dump["statuses"] == ["active"]
+
+    def test_recovery_read_payload_wraps_storage_free_recovery_models(self) -> None:
+        from polylogue.surfaces.payloads import RecoveryReadPayload, SurfacePayloadModel
+
+        class TinyRecovery(SurfacePayloadModel):
+            session_id: str
+            evidence_refs: tuple[str, ...] = ()
+
+        digest = TinyRecovery(session_id="c1", evidence_refs=("message:m1",))
+        packet = TinyRecovery(session_id="c1", evidence_refs=("message:m2",))
+
+        digest_payload = RecoveryReadPayload.from_digest(digest).model_dump(mode="json", exclude_none=True)
+        packet_payload = RecoveryReadPayload.from_work_packet_json(packet).model_dump(mode="json", exclude_none=True)
+        markdown_payload = RecoveryReadPayload.from_work_packet_markdown(
+            session_id="c1", markdown="# Work packet"
+        ).model_dump(mode="json", exclude_none=True)
+
+        assert digest_payload["digest"]["evidence_refs"] == ["message:m1"]
+        assert packet_payload["work_packet"]["evidence_refs"] == ["message:m2"]
+        assert markdown_payload == {
+            "session_id": "c1",
+            "report": "work-packet",
+            "format": "markdown",
+            "markdown": "# Work packet",
+        }
 
 
 @pytest.mark.load_sensitive

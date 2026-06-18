@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any, Generic, Literal, TypeAlias, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar
 
 from pydantic import RootModel
 from typing_extensions import TypedDict
@@ -84,8 +84,8 @@ if TYPE_CHECKING:
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
     from polylogue.storage.sqlite.archive_tiers.write import ArchiveBlockRow, ArchiveMessageRow, ArchiveSessionEnvelope
 
-MCPAssertionClaimPayload: TypeAlias = AssertionClaimPayload
-MCPAssertionClaimListPayload: TypeAlias = AssertionClaimListPayload
+MCPAssertionClaimPayload = AssertionClaimPayload
+MCPAssertionClaimListPayload = AssertionClaimListPayload
 
 TRoot = TypeVar("TRoot")
 
@@ -951,6 +951,8 @@ __all__ = [
     "MCPArchiveSessionListPayload",
     "MCPArchiveSessionPayload",
     "MCPArchiveSessionSummaryPayload",
+    "MCPAssertionClaimPayload",
+    "MCPAssertionClaimListPayload",
     "MCPSessionTreePayload",
     "MCPStatsByPayload",
     "MCPTagCountsPayload",

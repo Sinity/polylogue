@@ -38,6 +38,35 @@ def test_stable_routes_have_explicit_auth_and_response_contracts() -> None:
         assert route.response_contract
 
 
+def test_web_workbench_first_slice_routes_are_shell_supported_until_api_boundary_stabilizes() -> None:
+    """#1847 owns public daemon API stability for the new workbench routes."""
+
+    assertion_route = route_contract_for("GET", "/api/assertions")
+    recovery_route = route_contract_for("GET", "/api/sessions/codex-session:abc/recovery")
+
+    assert assertion_route is not None
+    assert assertion_route.stability == "shell_supported"
+    assert assertion_route.auth_policy == "bearer_if_configured"
+    assert assertion_route.response_contract == "AssertionClaimListPayload"
+
+    assert recovery_route is not None
+    assert recovery_route.stability == "shell_supported"
+    assert recovery_route.auth_policy == "bearer_if_configured"
+    assert "Recovery" in recovery_route.response_contract
+
+
+def test_web_workbench_candidate_routes_are_not_stable_public_api() -> None:
+    """New #1846 routes are real, but #1847 has not promoted them to stable API."""
+
+    candidate_patterns = {"/api/assertions", "/api/sessions/:id/recovery"}
+    stable_patterns = {route.pattern for route in stable_route_contracts()}
+    assert candidate_patterns.isdisjoint(stable_patterns)
+    for pattern in candidate_patterns:
+        route = next(route for route in ROUTE_CONTRACTS if route.pattern == pattern)
+        assert route.stability == "shell_supported"
+        assert route.auth_policy == "bearer_if_configured"
+
+
 @pytest.mark.parametrize(
     ("method", "path", "expected_pattern", "expected_kind", "expected_auth"),
     [
