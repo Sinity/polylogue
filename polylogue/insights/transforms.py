@@ -521,7 +521,16 @@ def render_work_packet(packet: RecoveryWorkPacket) -> str:
             lines.append(f"  - refs: {object_refs}")
         detail = _packet_metadata_line(
             entry.metadata,
-            keys=("role", "status", "harness", "boundary", "inheritance_mode", "delivery_state"),
+            keys=(
+                "role",
+                "status",
+                "harness",
+                "provider_origin",
+                "native_parent_session_id",
+                "boundary",
+                "inheritance_mode",
+                "delivery_state",
+            ),
         )
         if detail:
             lines.append(f"  - details: {detail}")
@@ -547,6 +556,9 @@ def render_work_packet(packet: RecoveryWorkPacket) -> str:
     for entry in subagent_entries[:8]:
         prompt = f" — {entry.text}" if entry.text else ""
         lines.append(f"- {_support_marker(entry)} {entry.label}{prompt}")
+        object_refs = _object_refs_line(entry)
+        if object_refs:
+            lines.append(f"  - refs: {object_refs}")
         refs = _subagent_metadata_line(entry.metadata)
         if refs:
             lines.append(f"  - refs: {refs}")
@@ -664,26 +676,34 @@ def _work_packet_entries(
     packet_raw_refs: Sequence[TransformRawRef],
 ) -> Iterable[RecoveryWorkPacketEntry]:
     packet_evidence_refs = _to_evidence_refs(packet_raw_refs)
+    packet_harness = run_projection.runs[0].harness if run_projection.runs else "unknown"
     for run in run_projection.runs:
-        metadata: dict[str, str] = {"role": run.role, "status": run.status, "harness": run.harness}
+        metadata: dict[str, str] = {
+            "role": run.role,
+            "status": run.status,
+            "harness": run.harness,
+            "provider_origin": run.provider_origin,
+        }
         if run.cwd:
             metadata["cwd"] = run.cwd
         if run.git_branch:
             metadata["branch"] = run.git_branch
+        if run.native_parent_session_id:
+            metadata["native_parent_session_id"] = run.native_parent_session_id
         yield RecoveryWorkPacketEntry(
             section="execution",
             label="run",
             text=run.title or run.run_ref.object_id,
             metadata=metadata,
-            object_refs=tuple(
-                ref
-                for ref in (
+            object_refs=_unique_object_refs(
+                (
                     run.run_ref,
                     run.parent_run_ref,
+                    run.agent_ref,
                     run.context_snapshot_ref,
+                    *run.lineage_refs,
                     ObjectRef(kind="branch", object_id=run.git_branch) if run.git_branch else None,
                 )
-                if ref is not None
             ),
             evidence_refs=run.evidence_refs,
         )
@@ -736,6 +756,10 @@ def _work_packet_entries(
             label=report.subagent_type,
             text=report.prompt,
             metadata=metadata,
+            object_refs=(
+                _subagent_report_object_ref(packet_raw_refs[0].session_id, report),
+                ObjectRef(kind="agent", object_id=f"{packet_harness}/{report.subagent_type or 'unknown'}"),
+            ),
             evidence_refs=_to_evidence_refs(report.raw_refs),
         )
     if run_state is not None:
@@ -841,6 +865,25 @@ def _event_packet_metadata(event: RecoveryEvent) -> dict[str, str]:
     return metadata
 
 
+def _unique_object_refs(refs: Iterable[ObjectRef | None]) -> tuple[ObjectRef, ...]:
+    seen: set[str] = set()
+    unique: list[ObjectRef] = []
+    for ref in refs:
+        if ref is None:
+            continue
+        key = ref.format()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(ref)
+    return tuple(unique)
+
+
+def _subagent_report_object_ref(session_id: str, report: SubagentReport) -> ObjectRef:
+    stable_id = report.tool_id or report.task_id or report.child_session_id or "unknown"
+    return ObjectRef(kind="subagent-report", object_id=f"{session_id}:{stable_id}")
+
+
 def _event_object_refs(event: RecoveryEvent) -> tuple[ObjectRef, ...]:
     """Return typed refs for addressable event targets extracted from summaries."""
 
@@ -875,12 +918,20 @@ def _tool_object_refs(tool: ToolSummary) -> tuple[ObjectRef, ...]:
     """Return typed refs for PR/issue/file evidence extracted from a tool row."""
 
     issue_refs = _refs_without_pr_refs(tool.issue_refs, tool.pr_refs)
+    tool_call_ref = _tool_call_object_ref(tool)
     return (
+        *(ref for ref in (tool_call_ref,) if ref is not None),
         *_github_object_refs("github-pr", tool.pr_refs),
         *_github_object_refs("github-issue", issue_refs),
         *(ObjectRef(kind="file", object_id=ref) for ref in tool.file_refs),
         *(ObjectRef(kind="commit", object_id=ref) for ref in tool.commit_refs),
     )
+
+
+def _tool_call_object_ref(tool: ToolSummary) -> ObjectRef | None:
+    if not tool.tool_id or not tool.raw_refs:
+        return None
+    return ObjectRef(kind="tool-call", object_id=f"{tool.raw_refs[0].session_id}:{tool.tool_id}")
 
 
 def _github_object_refs(

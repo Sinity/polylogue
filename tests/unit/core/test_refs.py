@@ -34,6 +34,9 @@ from polylogue.core.refs import (
         ("assertion:note-1", "assertion", "note-1", ()),
         ("saved_view:view-1", "saved_view", "view-1", ()),
         ("recall_pack:pack-1", "recall_pack", "pack-1", ()),
+        ("agent:codex/main", "agent", "codex/main", ()),
+        ("tool-call:codex-session:demo:tool-1", "tool-call", "codex-session:demo:tool-1", ()),
+        ("subagent-report:codex-session:demo:tool-2", "subagent-report", "codex-session:demo:tool-2", ()),
     ],
 )
 def test_object_ref_parses_and_formats_existing_assertion_ref_shapes(

@@ -223,13 +223,19 @@ def test_compile_recovery_digest_extracts_small_evidence_linked_bundle() -> None
     assert [run.role for run in projection.runs] == ["main", "subagent"]
     main_run, child_run = projection.runs
     assert main_run.run_ref == ObjectRef(kind="run", object_id="codex-session:demo")
+    assert main_run.agent_ref == ObjectRef(kind="agent", object_id="codex/main")
+    assert main_run.lineage_refs == (main_run.run_ref,)
+    assert main_run.provider_origin == "codex-session"
     assert main_run.harness == "codex"
     assert main_run.status == "completed"
     assert main_run.context_snapshot_ref == ObjectRef(
         kind="context-snapshot", object_id="codex-session:demo:session_start"
     )
     assert child_run.parent_run_ref == main_run.run_ref
+    assert child_run.agent_ref == ObjectRef(kind="agent", object_id="codex/Explore")
     assert child_run.native_session_id == "codex-session:child-42"
+    assert child_run.native_parent_session_id == "codex-session:demo"
+    assert child_run.lineage_refs == (main_run.run_ref, child_run.run_ref)
     assert child_run.status == "completed"
     assert {snapshot.boundary for snapshot in projection.context_snapshots} == {"session_start", "subagent_start"}
     observed_kinds = {event.kind for event in projection.events}
@@ -398,7 +404,14 @@ def test_work_packet_exposes_storage_free_continuation_bundle() -> None:
     assert any(
         entry.label == "run"
         and ObjectRef(kind="run", object_id="codex-session:demo") in entry.object_refs
+        and ObjectRef(kind="agent", object_id="codex/main") in entry.object_refs
         and entry.metadata["status"] == "completed"
+        for entry in execution_entries
+    )
+    assert any(
+        entry.label == "run"
+        and ObjectRef(kind="agent", object_id="codex/Explore") in entry.object_refs
+        and entry.metadata["native_parent_session_id"] == "codex-session:demo"
         for entry in execution_entries
     )
     assert any(
@@ -435,7 +448,10 @@ def test_work_packet_exposes_storage_free_continuation_bundle() -> None:
         "pr_refs": "#1911",
         "test_evidence": "ruff check ... ok | 20 passed in 50.28s",
     }
-    assert bash_entry.object_refs == (ObjectRef(kind="github-pr", object_id="#1911"),)
+    assert bash_entry.object_refs == (
+        ObjectRef(kind="tool-call", object_id="codex-session:demo:tool-1"),
+        ObjectRef(kind="github-pr", object_id="#1911"),
+    )
     close_entry = next(
         entry for entry in packet.entries if entry.section == "tools" and entry.text == "gh issue close 1818"
     )
@@ -444,14 +460,20 @@ def test_work_packet_exposes_storage_free_continuation_bundle() -> None:
         "status": "unknown",
         "issue_refs": "#1818",
     }
-    assert close_entry.object_refs == (ObjectRef(kind="github-issue", object_id="#1818"),)
+    assert close_entry.object_refs == (
+        ObjectRef(kind="tool-call", object_id="codex-session:demo:tool-close"),
+        ObjectRef(kind="github-issue", object_id="#1818"),
+    )
     read_entry = next(entry for entry in packet.entries if entry.section == "tools" and entry.label == "Read")
     assert read_entry.metadata == {
         "handler_kind": "file_read",
         "status": "unknown",
         "file_refs": "polylogue/insights/transforms.py",
     }
-    assert read_entry.object_refs == (ObjectRef(kind="file", object_id="polylogue/insights/transforms.py"),)
+    assert read_entry.object_refs == (
+        ObjectRef(kind="tool-call", object_id="codex-session:demo:tool-read"),
+        ObjectRef(kind="file", object_id="polylogue/insights/transforms.py"),
+    )
     commit_entry = next(
         entry for entry in packet.entries if entry.section == "tools" and entry.text == "git rev-parse HEAD"
     )
@@ -460,7 +482,17 @@ def test_work_packet_exposes_storage_free_continuation_bundle() -> None:
         "status": "unknown",
         "commit_refs": "a8cd1c1516b29068ec9ce1493f262d663407ffa5",
     }
-    assert commit_entry.object_refs == (ObjectRef(kind="commit", object_id="a8cd1c1516b29068ec9ce1493f262d663407ffa5"),)
+    assert commit_entry.object_refs == (
+        ObjectRef(kind="tool-call", object_id="codex-session:demo:tool-commit"),
+        ObjectRef(kind="commit", object_id="a8cd1c1516b29068ec9ce1493f262d663407ffa5"),
+    )
+    subagent_entry = next(
+        entry for entry in packet.entries if entry.section == "subagents" and entry.label == "Explore"
+    )
+    assert subagent_entry.object_refs == (
+        ObjectRef(kind="subagent-report", object_id="codex-session:demo:tool-2"),
+        ObjectRef(kind="agent", object_id="codex/Explore"),
+    )
     for entry in packet.entries:
         for ref in entry.object_refs:
             assert ObjectRef.parse(ref.format()) == ref
@@ -468,8 +500,12 @@ def test_work_packet_exposes_storage_free_continuation_bundle() -> None:
     assert "refs: session:codex-session:demo, branch:feature/demo" in rendered
     assert "## Execution Projection" in rendered
     assert "- [raw-evidence] run: Ship the backlog" in rendered
-    assert "refs: run:codex-session:demo, context-snapshot:codex-session:demo:session_start" in rendered
-    assert "details: role=main; status=completed; harness=codex" in rendered
+    assert (
+        "refs: run:codex-session:demo, agent:codex/main, context-snapshot:codex-session:demo:session_start" in rendered
+    )
+    assert "details: role=main; status=completed; harness=codex; provider_origin=codex-session" in rendered
+    assert "refs: run:codex-session:child-42, run:codex-session:demo, agent:codex/Explore" in rendered
+    assert "native_parent_session_id=codex-session:demo" in rendered
     assert "- [raw-evidence] context_snapshot: subagent_start" in rendered
     assert "details: boundary=subagent_start; inheritance_mode=summary" in rendered
     assert "- [raw-evidence] check_passed: ruff check passed" in rendered
@@ -479,13 +515,15 @@ def test_work_packet_exposes_storage_free_continuation_bundle() -> None:
     assert "details: pr_refs=#1911" in rendered
     assert "refs: github-issue:#1818" in rendered
     assert "refs: check-run:ruff check" in rendered
+    assert "refs: tool-call:codex-session:demo:tool-1, github-pr:#1911" in rendered
     assert "details: issue_refs=#1818" in rendered
     assert "details: test_evidence=ruff check passed" in rendered
     assert "- [caveat] blocker: none" in rendered
+    assert "refs: subagent-report:codex-session:demo:tool-2, agent:codex/Explore" in rendered
     assert "refs: tool_id=tool-2, task_id=task-42, child_session_id=codex-session:child-42" in rendered
     assert "- [raw-evidence] Bash [test] (ok) — devtools verify --quick" in rendered
-    assert "refs: file:polylogue/insights/transforms.py" in rendered
-    assert "refs: commit:a8cd1c1516b29068ec9ce1493f262d663407ffa5" in rendered
+    assert "refs: tool-call:codex-session:demo:tool-read, file:polylogue/insights/transforms.py" in rendered
+    assert "refs: tool-call:codex-session:demo:tool-commit, commit:a8cd1c1516b29068ec9ce1493f262d663407ffa5" in rendered
     assert "details: pr_refs=#1911; test_evidence=ruff check ... ok | 20 passed in 50.28s" in rendered
     assert "details: file_refs=polylogue/insights/transforms.py" in rendered
     assert "details: commit_refs=a8cd1c1516b29068ec9ce1493f262d663407ffa5" in rendered
@@ -638,11 +676,18 @@ def test_review_delivery_events_are_extracted_and_projected() -> None:
 
     digest = compile_recovery_digest(session)
     event_by_kind = {event.kind: event for event in digest.run_projection.events}
+    review_injection_snapshot = next(
+        snapshot for snapshot in digest.run_projection.context_snapshots if snapshot.boundary == "review_injection"
+    )
 
     assert event_by_kind["review_posted"].delivery_state == "observed"
     assert event_by_kind["review_seen_by_tool"].delivery_state == "seen_by_tool"
     injected_event = event_by_kind["review_injected_context"]
     assert injected_event.delivery_state == "injected_context"
+    assert injected_event.object_refs == (
+        review_injection_snapshot.snapshot_ref,
+        ObjectRef(kind="github-review", object_id="#2100"),
+    )
     assert event_by_kind["review_acknowledged"].delivery_state == "acknowledged"
     assert event_by_kind["review_acted_on"].delivery_state == "acted_on"
     assert event_by_kind["review_acted_on"].object_refs == (ObjectRef(kind="github-review", object_id="#2100"),)
