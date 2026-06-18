@@ -228,10 +228,10 @@ def _read_json_artifact(path: Path) -> dict[str, Any] | None:
     return raw if isinstance(raw, dict) else None
 
 
-def _pytest_metadata_from_report(report: dict[str, Any]) -> dict[str, Any]:
+def _pytest_metadata_from_report(report: dict[str, Any], *, report_path: Path) -> dict[str, Any]:
     """Project a pytest-json-report dict into verify-step metadata."""
     summary = report.get("summary")
-    metadata: dict[str, Any] = {"report_path": str(PYTEST_REPORT_PATH)}
+    metadata: dict[str, Any] = {"report_path": str(report_path)}
     if isinstance(summary, dict):
         # `total` is collected count; sum the executed outcomes for the
         # number we previously scraped from the terminal.
@@ -265,11 +265,22 @@ def _pytest_command_metadata(cmd: list[str]) -> dict[str, Any]:
 
 
 def _pytest_artifact_paths(cmd: Sequence[str]) -> tuple[Path, ...]:
-    paths: list[Path] = [PYTEST_REPORT_PATH, PYTEST_JUNIT_REPORT_PATH]
+    json_paths: list[Path] = []
+    junit_paths: list[Path] = []
     for arg in cmd:
-        if arg.startswith("--json-report-file=") or arg.startswith("--junitxml="):
-            paths.append(Path(arg.split("=", 1)[1]))
+        if arg.startswith("--json-report-file="):
+            json_paths.append(Path(arg.split("=", 1)[1]))
+        elif arg.startswith("--junitxml="):
+            junit_paths.append(Path(arg.split("=", 1)[1]))
+    paths = [*(json_paths or [PYTEST_REPORT_PATH]), *(junit_paths or [PYTEST_JUNIT_REPORT_PATH])]
     return tuple(dict.fromkeys(paths))
+
+
+def _pytest_json_report_path(cmd: Sequence[str]) -> Path:
+    for arg in reversed(cmd):
+        if arg.startswith("--json-report-file="):
+            return Path(arg.split("=", 1)[1])
+    return PYTEST_REPORT_PATH
 
 
 def _clear_pytest_report(cmd: Sequence[str] = ()) -> None:
@@ -573,9 +584,10 @@ def _run(label: str, cmd: list[str], *, cwd: str | None = None) -> tuple[int, fl
         ]
         if junit_paths:
             metadata["junitxml_path"] = junit_paths[-1]
-        report = _read_pytest_report()
+        report_path = _pytest_json_report_path(cmd)
+        report = _read_json_artifact(report_path)
         if report is not None:
-            metadata.update(_pytest_metadata_from_report(report))
+            metadata.update(_pytest_metadata_from_report(report, report_path=report_path))
             metadata["report_status"] = "present"
         else:
             # Fallback: terminal scraping when the structured report is
