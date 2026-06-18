@@ -44,6 +44,42 @@ def test_compose_context_preamble_emits_preamble() -> None:
     assert preamble["project_state"]["branch"] == "master"
 
 
+def test_compose_context_preamble_includes_injectable_assertion_claims() -> None:
+    env = MagicMock()
+    env.polylogue.get_session = AsyncMock(return_value=_session())
+    env.polylogue.get_session_topology = AsyncMock(return_value=None)
+    env.polylogue.find_resume_candidates = AsyncMock(return_value=[])
+    env.polylogue.list_assertion_claim_payloads = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                kind="decision",
+                body_text="Keep context claims behind explicit injection.",
+                target_ref="session:target",
+                scope_ref="repo:polylogue",
+                evidence_refs=("target::m1",),
+            )
+        ]
+    )
+
+    preamble = json.loads(compose_context_preamble(env, session_id="target", related_limit=3))
+
+    env.polylogue.list_assertion_claim_payloads.assert_awaited_once_with(
+        target_ref="session:target",
+        statuses=("active",),
+        context_inject=True,
+        limit=20,
+    )
+    assert preamble["guidance"]["assertions"] == [
+        {
+            "kind": "decision",
+            "text": "Keep context claims behind explicit injection.",
+            "target_ref": "session:target",
+            "scope_ref": "repo:polylogue",
+            "evidence_refs": ["target::m1"],
+        }
+    ]
+
+
 def test_compose_context_preamble_missing_session_exits() -> None:
     env = MagicMock()
     env.polylogue.get_session = AsyncMock(return_value=None)

@@ -9,6 +9,7 @@ The standalone ``context-pack`` command was absorbed into the read-view surface
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -22,6 +23,7 @@ from polylogue.context.pack import run_context_pack_view
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
 
 
 def _archive_env(archive_root: Path) -> AppEnv:
@@ -73,3 +75,58 @@ def test_context_pack_view_reads_archive_from_archive_tiers(tmp_path: Path, caps
     assert "source" not in session
     assert session["messages"][0]["role"] == "user"
     assert session["messages"][0]["text"] == "hello archive pack"
+
+
+def test_context_pack_view_reads_injectable_assertions_from_user_tier(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    archive_root = tmp_path / "archive"
+    with ArchiveStore(archive_root) as archive:
+        archive.write_parsed(
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="context-pack-assertions",
+                title="Archive context pack assertions",
+                created_at="2026-01-01T00:00:00+00:00",
+                updated_at="2026-01-01T00:01:00+00:00",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.USER,
+                        text="assertion context pack",
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text="assertion context pack")],
+                    )
+                ],
+            )
+        )
+        with sqlite3.connect(archive.user_db_path) as conn:
+            upsert_assertion(
+                conn,
+                assertion_id="inject-decision",
+                target_ref="session:codex-session:context-pack-assertions",
+                scope_ref="repo:polylogue",
+                kind=AssertionKind.DECISION,
+                body_text="Use the shared assertion facade in context surfaces.",
+                status="active",
+                context_policy={"inject": True},
+                now_ms=1_700_000_000_000,
+            )
+            upsert_assertion(
+                conn,
+                assertion_id="private-caveat",
+                target_ref="session:codex-session:context-pack-assertions",
+                scope_ref="repo:polylogue",
+                kind=AssertionKind.CAVEAT,
+                body_text="This private caveat should stay out of context.",
+                status="active",
+                context_policy={"inject": False},
+                now_ms=1_700_000_000_100,
+            )
+            conn.commit()
+
+    run_context_pack_view(_archive_env(archive_root), query="assertion", max_sessions=1, max_messages=1)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["decisions"]["items"] == [
+        "decision: Use the shared assertion facade in context surfaces. [session:codex-session:context-pack-assertions]"
+    ]

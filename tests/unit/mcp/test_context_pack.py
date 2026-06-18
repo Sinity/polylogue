@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -16,6 +17,7 @@ from polylogue.core.enums import BlockType, Provider
 from polylogue.mcp.context_pack import select_context_pack_sessions
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.mcp import (
     EXPECTED_TOOL_NAMES,
@@ -205,6 +207,19 @@ class TestBuildContextPackRegistration:
                     ],
                 )
             )
+            with sqlite3.connect(archive.user_db_path) as conn:
+                upsert_assertion(
+                    conn,
+                    assertion_id="mcp-context-decision",
+                    target_ref="session:codex-session:mcp-context-v1",
+                    scope_ref="repo:polylogue",
+                    kind=AssertionKind.DECISION,
+                    body_text="Thread MCP context packs through assertion claims.",
+                    status="active",
+                    context_policy={"inject": True},
+                    now_ms=1_700_000_000_000,
+                )
+                conn.commit()
 
         tools = mcp_server._tool_manager._tools
         fn = tools["build_context_pack"].fn
@@ -228,6 +243,9 @@ class TestBuildContextPackRegistration:
             assert session["session_id"] == "codex-session:mcp-context-v1"
             assert session["origin"] == "codex-session"
             assert session["messages"][0]["text"] == "mcp context needle"
+            assert parsed["decisions"]["items"] == [
+                "decision: Thread MCP context packs through assertion claims. [session:codex-session:mcp-context-v1]"
+            ]
         finally:
             _set_runtime_services(None)
 

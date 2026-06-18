@@ -9,6 +9,7 @@ import click
 
 from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.archive.query.spec import SessionQuerySpec
+from polylogue.context.assertion_claims import context_claim_text, user_db_injectable_claim_texts
 from polylogue.mcp.context_pack import (
     ContextPackDateRange,
     ContextPackDecisions,
@@ -108,6 +109,23 @@ def run_context_pack_view(
         aggregated_events.extend(events)
 
     action_summaries = _summarize_actions(aggregated_events, redact=not no_redact)
+    assertion_decisions: list[str] = []
+    for conv_id in conv_ids:
+        try:
+            claims = run_coroutine_sync(
+                poly.list_assertion_claim_payloads(
+                    target_ref=f"session:{conv_id}",
+                    statuses=("active",),
+                    context_inject=True,
+                    limit=20,
+                )
+            )
+        except Exception:
+            claims = []
+        assertion_decisions.extend(
+            context_claim_text(kind=claim.kind, body_text=claim.body_text, target_ref=claim.target_ref)
+            for claim in claims
+        )
 
     dates: list[str] = []
     for conv in sessions:
@@ -155,7 +173,7 @@ def run_context_pack_view(
 
     payload = ContextPackPayload(
         intent=ContextPackIntent(),
-        decisions=ContextPackDecisions(),
+        decisions=ContextPackDecisions(items=assertion_decisions),
         project=_build_project_context(aggregated_events, redact=not no_redact),
         date_range=ContextPackDateRange(
             since=since,
@@ -233,6 +251,7 @@ def _build_archive_context_pack(
         )
         sessions = selection.sessions
         total_matching = len(sessions)
+        assertion_decisions: list[str] = []
         pack_sessions: list[ContextPackSession] = []
         total_msg = 0
         total_tools = 0
@@ -247,6 +266,7 @@ def _build_archive_context_pack(
                 dates.append(str(conv.created_at))
             if conv.updated_at is not None:
                 dates.append(str(conv.updated_at))
+            assertion_decisions.extend(user_db_injectable_claim_texts(archive.user_db_path, session_id=conv_id))
 
             messages: list[ContextPackMessage] = []
             try:
@@ -273,7 +293,7 @@ def _build_archive_context_pack(
 
     return ContextPackPayload(
         intent=ContextPackIntent(),
-        decisions=ContextPackDecisions(),
+        decisions=ContextPackDecisions(items=assertion_decisions),
         project=_build_project_context((), redact=redact),
         date_range=ContextPackDateRange(
             since=since,

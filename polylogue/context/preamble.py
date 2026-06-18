@@ -59,6 +59,33 @@ def compose_context_preamble(env: AppEnv, *, session_id: str, related_limit: int
             "branch": str(git_branch) if git_branch else None,
         }
 
+    assertion_guidance: list[dict[str, object]] = []
+    try:
+        claims = run_coroutine_sync(
+            env.polylogue.list_assertion_claim_payloads(
+                target_ref=f"session:{session_id}",
+                statuses=("active",),
+                context_inject=True,
+                limit=20,
+            )
+        )
+        assertion_guidance = [
+            {
+                "kind": claim.kind,
+                "text": claim.body_text,
+                "target_ref": claim.target_ref,
+                "scope_ref": claim.scope_ref,
+                "evidence_refs": list(claim.evidence_refs),
+            }
+            for claim in claims
+        ]
+    except Exception:
+        pass
+
+    guidance: dict[str, object] | None = None
+    if assertion_guidance:
+        guidance = {"assertions": assertion_guidance}
+
     preamble: dict[str, object] = {
         "preamble_version": "1.0",
         "injected_at": datetime.now(timezone.utc).isoformat(),
@@ -66,6 +93,6 @@ def compose_context_preamble(env: AppEnv, *, session_id: str, related_limit: int
         "recent_related_sessions": related,
         "open_issues": [],
         "project_state": project or None,
-        "guidance": None,
+        "guidance": guidance,
     }
     return json.dumps(preamble, indent=2, default=str)
