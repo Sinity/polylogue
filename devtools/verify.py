@@ -228,6 +228,26 @@ def _read_json_artifact(path: Path) -> dict[str, Any] | None:
     return raw if isinstance(raw, dict) else None
 
 
+def _read_latest_pytest_event(path: Path = PYTEST_EVENTS_PATH) -> dict[str, Any] | None:
+    """Return the latest valid pytest event from the live JSONL ledger."""
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - 65536))
+            lines = handle.read().splitlines()
+    except OSError:
+        return None
+    for raw in reversed(lines):
+        try:
+            event = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict):
+            return event
+    return None
+
+
 def _pytest_metadata_from_report(report: dict[str, Any], *, report_path: Path) -> dict[str, Any]:
     """Project a pytest-json-report dict into verify-step metadata."""
     summary = report.get("summary")
@@ -340,6 +360,15 @@ def _write_pytest_progress(
         payload["cpu_pct"] = round(cpu_pct, 2)
     if termination_reason is not None:
         payload["termination_reason"] = termination_reason
+    latest_event = _read_latest_pytest_event()
+    if latest_event is not None:
+        payload["latest_test_event"] = {
+            key: latest_event[key]
+            for key in ("event", "nodeid", "when", "outcome", "duration_s", "updated_at")
+            if key in latest_event
+        }
+        if latest_event.get("event") == "test_started" and isinstance(latest_event.get("nodeid"), str):
+            payload["current_test_nodeid"] = latest_event["nodeid"]
     PYTEST_PROGRESS_PATH.parent.mkdir(parents=True, exist_ok=True)
     tmp = PYTEST_PROGRESS_PATH.with_name(f"{PYTEST_PROGRESS_PATH.name}.{os.getpid()}.{time.monotonic_ns()}.tmp")
     tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
@@ -506,9 +535,16 @@ def _run_pytest_with_heartbeat(
             rss_text = f", rss={int(rss) // 1024} MiB" if isinstance(rss, int) else ""
             cpu_text = f", cpu={cpu_pct:.0f}%" if cpu_pct is not None else ""
             state_text = f", state={status['state']}" if status["state"] is not None else ""
+            latest_event = _read_latest_pytest_event()
+            if latest_event is not None:
+                event = latest_event.get("event")
+                nodeid = latest_event.get("nodeid")
+                node_text = f", latest={event}:{nodeid}" if isinstance(event, str) and isinstance(nodeid, str) else ""
+            else:
+                node_text = ""
             sys.stderr.write(
                 f"    still running: pid={process.pid}, elapsed={sample_now - t0:.0f}s, "
-                f"idle={sample_now - last_output:.0f}s{state_text}{cpu_text}{rss_text}\n"
+                f"idle={sample_now - last_output:.0f}s{state_text}{cpu_text}{rss_text}{node_text}\n"
             )
             sys.stderr.flush()
             _write_pytest_progress(
@@ -623,7 +659,7 @@ def _subprocess_env() -> dict[str, str]:
     env["POLYLOGUE_ROOT"] = str(ROOT)
     env["POLYLOGUE_REPO_ROOT"] = str(ROOT)
     env["PYTHONPYCACHEPREFIX"] = str(ROOT / ".cache" / "pycache")
-    env["POLYLOGUE_PYTEST_EVENTS_PATH"] = str(ROOT / PYTEST_EVENTS_PATH)
+    env["POLYLOGUE_PYTEST_EVENTS_PATH"] = str(Path.cwd() / PYTEST_EVENTS_PATH)
     return env
 
 

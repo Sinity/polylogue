@@ -289,7 +289,7 @@ def test_run_forces_subprocesses_to_current_checkout(monkeypatch: pytest.MonkeyP
     assert env["POLYLOGUE_ROOT"] == str(ROOT)
     assert env["POLYLOGUE_REPO_ROOT"] == str(ROOT)
     assert env["PYTHONPYCACHEPREFIX"] == str(ROOT / ".cache" / "pycache")
-    assert env["POLYLOGUE_PYTEST_EVENTS_PATH"] == str(ROOT / PYTEST_EVENTS_PATH)
+    assert env["POLYLOGUE_PYTEST_EVENTS_PATH"] == str(Path.cwd() / PYTEST_EVENTS_PATH)
 
 
 def test_run_reads_structured_pytest_report() -> None:
@@ -338,6 +338,31 @@ def test_pytest_run_emits_heartbeat_for_long_silent_child(
     assert "command:" in captured.err
     assert "still running: pid=" in captured.err
     assert "elapsed=" in captured.err
+
+
+def test_pytest_run_heartbeat_reports_latest_test_node(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("POLYLOGUE_VERIFY_HEARTBEAT_S", "0.05")
+    nodeid = "tests/unit/example.py::test_slow_node"
+    script = (
+        "import json, os, pathlib, time; "
+        "path = pathlib.Path(os.environ['POLYLOGUE_PYTEST_EVENTS_PATH']); "
+        "path.parent.mkdir(parents=True, exist_ok=True); "
+        f"path.write_text(json.dumps({{'event': 'test_started', 'nodeid': {nodeid!r}}}) + '\\n'); "
+        "time.sleep(0.2)"
+    )
+
+    rc, _elapsed, _metadata = _run("pytest heartbeat", [sys.executable, "-c", script])
+
+    captured = capsys.readouterr()
+    progress = json.loads((tmp_path / PYTEST_PROGRESS_PATH).read_text())
+    assert rc == 0
+    assert f"latest=test_started:{nodeid}" in captured.err
+    assert progress["latest_test_event"]["nodeid"] == nodeid
 
 
 def test_pytest_run_streams_child_output_live(capsys: pytest.CaptureFixture[str]) -> None:
