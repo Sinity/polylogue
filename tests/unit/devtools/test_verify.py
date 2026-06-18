@@ -339,12 +339,14 @@ def test_pytest_run_streams_child_output_live(capsys: pytest.CaptureFixture[str]
     assert "pytest-progress" in captured.err
 
 
-def test_pytest_run_writes_live_progress_artifact() -> None:
+def test_pytest_run_writes_live_progress_artifact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
     rc, _elapsed, metadata = _run("pytest progress", [sys.executable, "-c", "print('pytest-progress')"])
 
     assert rc == 0
+    progress_path = tmp_path / PYTEST_PROGRESS_PATH
     assert metadata["progress_path"] == str(PYTEST_PROGRESS_PATH)
-    progress = json.loads(PYTEST_PROGRESS_PATH.read_text())
+    progress = json.loads(progress_path.read_text())
     assert progress["event"] == "finished"
     assert progress["returncode"] == 0
     assert progress["output_bytes"]["stdout"] > 0
