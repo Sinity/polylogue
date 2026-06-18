@@ -145,6 +145,13 @@ __BULK_CSS__
 #conv-header .conv-stats .chip.repo { font-family: var(--font-mono); font-size: 11px; }
 __WORKSPACE_CSS__
 #msg-list { flex: 1; overflow-y: auto; }
+.read-profile-selector { display:flex; align-items:center; gap:8px; padding:7px 16px; border-bottom:1px solid var(--border);
+  background:var(--bg-raised); color:var(--text-muted); font-size:var(--small); }
+.read-profile-selector label { text-transform:uppercase; letter-spacing:0.5px; color:var(--text-dim); font-size:10px; }
+.read-profile-selector select { background:var(--panel-elevated); border:1px solid var(--border); color:var(--text);
+  border-radius:3px; padding:3px 6px; font-size:var(--small); }
+.read-profile-selector .profile-hint { color:var(--text-dim); font-family:var(--font-mono); font-size:10px; }
+.read-profile-selector.muted { color:var(--text-dim); }
 .msg-block { padding: 7px 16px; border-bottom: 1px solid var(--border); }
 .msg-block:hover { background: var(--bg-raised); }
 .msg-block .msg-header { display: flex; align-items: center; gap: 8px; margin-bottom: 3px; font-size: var(--small); }
@@ -355,6 +362,11 @@ var state = {
   // This is intentionally a read-side cache over shared DTOs, not a web-only
   // evidence model.
   evidencePanels: {},
+  // Shared read-view profile inventory (#1846/#1838). Loaded from
+  // /api/read-view-profiles so the shell does not grow a second profile
+  // registry. selectedReadView controls which existing route/inspector affordance
+  // is foregrounded; unsupported profiles remain disabled until HTTP execution exists.
+  readViewProfiles: [], selectedReadView: 'messages', readViewProfileError: '',
   // Per-session similarity panel cache (#1123). Keyed by
   // session_id; populated on demand when the Similar inspector
   // tab is opened. ``undefined`` means "not loaded yet"; the envelope
@@ -437,6 +449,18 @@ async function loadSessions(opts) {
   });
 }
 
+async function loadReadViewProfiles() {
+  try {
+    var payload = await fetchJSON('/api/read-view-profiles');
+    state.readViewProfiles = payload.read_views || [];
+    state.readViewProfileError = '';
+  } catch(e) {
+    state.readViewProfiles = [];
+    state.readViewProfileError = 'Read profiles unavailable';
+  }
+  renderMain();
+}
+
 async function loadUserState() {
   try {
     var marks = await fetchJSON('/api/user/marks');
@@ -479,7 +503,7 @@ async function loadSession(id, updateURL) {
 
 async function loadSessionRaw(id) {
   try {
-    var data = await fetchJSON('/api/sessions/' + id + '/raw');
+    var data = await fetchJSON('/api/sessions/' + encodeURIComponent(id) + '/provenance');
     state.selectedRaw = data;
   } catch(e) { state.selectedRaw = null; }
 }
@@ -711,6 +735,45 @@ function renderFacets() {
   document.getElementById('facet-bar').innerHTML = html;
 }
 
+function renderReadViewSelector(c) {
+  if (!c) return '';
+  var profiles = state.readViewProfiles || [];
+  var supported = {messages: true, recovery: true, raw: true};
+  var labels = {messages: 'Messages', recovery: 'Recovery', raw: 'Raw'};
+  if (!profiles.length) {
+    var fallback = state.readViewProfileError || 'Read profiles loading';
+    return '<div id="read-profile-selector" class="read-profile-selector muted">' + esc(fallback) + '</div>';
+  }
+  var html = '<div id="read-profile-selector" class="read-profile-selector"><label for="read-profile-select">Read view</label>'
+    + '<select id="read-profile-select" onchange="applyReadViewSelection(this.value)">';
+  profiles.forEach(function(profile) {
+    var id = profile.view_id || profile.id;
+    if (!id) return;
+    var disabled = supported[id] ? '' : ' disabled';
+    var suffix = supported[id] ? '' : ' (pending HTTP route)';
+    var selected = (state.selectedReadView === id) ? ' selected' : '';
+    var title = profile.description || profile.summary || '';
+    html += '<option value="' + escAttr(id) + '"' + selected + disabled + ' title="' + escAttr(title) + '">'
+      + esc(labels[id] || id) + esc(suffix) + '</option>';
+  });
+  html += '</select><span class="profile-hint">from /api/read-view-profiles</span></div>';
+  return html;
+}
+
+function applyReadViewSelection(viewId) {
+  state.selectedReadView = viewId || 'messages';
+  if (viewId === 'recovery') {
+    state.inspectorTab = 'evidence';
+  } else if (viewId === 'raw') {
+    state.inspectorTab = 'raw';
+  }
+  document.querySelectorAll('#inspector-tabs button').forEach(function(b) {
+    b.classList.toggle('active', b.dataset.tab === state.inspectorTab);
+  });
+  renderMain();
+  renderInspector();
+}
+
 function renderMain() {
   renderWorkspaceToolbar();
   if (state.mode === 'stack') { renderStackWorkspace(); return; }
@@ -778,15 +841,16 @@ function renderMain() {
   headerHtml += '</div>';
   headerEl.innerHTML = headerHtml;
 
+  var readViewSelector = renderReadViewSelector(c);
   if (!c.messages) {
-    msgEl.innerHTML = '<div class="main-empty"><h3>Loading messages...</h3></div>';
+    msgEl.innerHTML = readViewSelector + '<div class="main-empty"><h3>Loading messages...</h3></div>';
     return;
   }
   if (c.messages.length === 0) {
-    msgEl.innerHTML = '<div class="main-empty"><h3>No messages</h3><p>This session has no message content.</p></div>';
+    msgEl.innerHTML = readViewSelector + '<div class="main-empty"><h3>No messages</h3><p>This session has no message content.</p></div>';
     return;
   }
-  msgEl.innerHTML = messageBlocksHtml(c.messages);
+  msgEl.innerHTML = readViewSelector + messageBlocksHtml(c.messages);
 }
 
 function messageBlocksHtml(messages) {
@@ -1167,7 +1231,7 @@ function renderInspectorCost(el, c) {
 
 async function loadEvidencePanel(id) {
   try {
-    var recovery = await fetchJSON('/api/sessions/' + id + '/recovery?report=work-packet&format=json');
+    var recovery = await fetchJSON('/api/sessions/' + encodeURIComponent(id) + '/recovery?report=work-packet&format=json');
     var assertions = await fetchJSON('/api/assertions?target_ref=' + encodeURIComponent('session:' + id) + '&limit=20');
     state.evidencePanels[id] = {recovery: recovery, assertions: assertions};
   } catch(e) {
@@ -1285,17 +1349,6 @@ async function openCompareWith() {
     return;
   }
   await loadWorkspaceRoute({mode: 'compare', left: state.selected.id, right: other, align: 'prompt'}, true);
-}
-
-function renderInspectorRaw(el, c) {
-  var html = '<div class="inspector-section"><h4>Provenance</h4>';
-  html += '<div class="inspector-field"><span class="label">Origin</span><span class="value">' + esc(c.origin || '-') + '</span></div>';
-  html += '<div class="inspector-field"><span class="label">Branch</span><span class="value">' + esc(c.branch_type || 'main') + '</span></div>';
-  html += '<div class="inspector-field"><span class="label">Parent</span><span class="value">' + esc(c.parent_id || '-') + '</span></div>';
-  html += '</div><div class="inspector-section"><h4>Raw Artifacts</h4>';
-  html += '<button style="background:var(--panel-elevated);border:1px solid var(--border);color:var(--accent);padding:4px 10px;border-radius:3px;cursor:pointer;font-size:var(--small)" onclick="loadRawData()">Load raw data</button>';
-  html += '<div id="raw-data-area"></div></div>';
-  el.innerHTML = html;
 }
 
 function renderInspectorNotes(el, c) {
@@ -1439,31 +1492,46 @@ async function loadRawData() {
   if (!state.selected) return;
   var id = state.selected.id;
   var area = document.getElementById('raw-data-area');
-  area.innerHTML = '<div style="color:var(--text-dim);font-size:var(--small);padding:8px 0">Loading...</div>';
+  if (!area) return;
+  area.innerHTML = '<div style="color:var(--text-dim);font-size:var(--small);padding:8px 0">Loading artifact list...</div>';
   try {
     await loadSessionRaw(id);
     var raw = state.selectedRaw;
-    if (!raw) { area.innerHTML = '<div class="inspector-empty">No raw data available</div>'; return; }
-    var html = '';
-    var sessionFacts = {};
-    if (raw.git_repository_url) sessionFacts.git_repository_url = raw.git_repository_url;
-    if (raw.git_branch) sessionFacts.git_branch = raw.git_branch;
-    if (raw.working_directories && raw.working_directories.length > 0) sessionFacts.working_directories = raw.working_directories;
-    if (Object.keys(sessionFacts).length > 0) {
-      html += '<div class="inspector-section"><h4>Session Facts</h4>'
-        + '<div class="raw-block">' + esc(JSON.stringify(sessionFacts, null, 2)) + '</div></div>';
+    if (!raw) { area.innerHTML = '<div class="inspector-empty">No raw artifact metadata available</div>'; return; }
+    var artifacts = raw.raw_artifacts || ((raw.raw_id || raw.content_hash) ? [raw] : []);
+    var total = raw.raw_artifacts_total != null ? raw.raw_artifacts_total : artifacts.length;
+    var html = '<div class="inspector-section"><h4>Raw artifact metadata (' + esc(String(total)) + ')</h4>';
+    if (!artifacts.length) {
+      html += '<div class="inspector-empty">No raw artifacts are linked to this session.</div>';
     }
-    var artifacts = raw.raw_artifacts || [];
-    if (artifacts.length > 0) {
-      html += '<div class="inspector-section"><h4>Raw Artifacts (' + artifacts.length + ')</h4>';
-      artifacts.forEach(function(a) {
-        var summary = a.source_path || a.filename || a.name || JSON.stringify(a).substring(0, 80);
-        html += '<div class="raw-block" style="margin-bottom:4px">' + esc(summary) + '</div>';
+    artifacts.slice(0, 20).forEach(function(artifact) {
+      var rows = [
+        ['Raw id', artifact.raw_id],
+        ['Source', artifact.source_name || artifact.source_kind],
+        ['Source path', artifact.source_path_display],
+        ['Content hash', artifact.content_hash],
+        ['Blob size', artifact.blob_size_bytes != null ? Number(artifact.blob_size_bytes).toLocaleString() + ' B' : ''],
+        ['Acquired', artifact.acquired_at],
+        ['Parsed', artifact.parsed_at],
+        ['Validation', artifact.validation_status],
+        ['Quarantine', artifact.quarantined ? (artifact.quarantine_reason || 'yes') : 'no']
+      ];
+      html += '<div class="raw-block" style="margin-bottom:6px">';
+      rows.forEach(function(row) {
+        if (row[1] == null || row[1] === '') return;
+        html += '<div class="inspector-field"><span class="label">' + esc(row[0]) + '</span><span class="value">' + esc(String(row[1])) + '</span></div>';
       });
+      if (artifact.source_path_is_absolute || artifact.storage_path) {
+        html += '<div class="inspector-field"><span class="label">Path policy</span><span class="value">absolute path retained in source tier; shell shows sanitized metadata only</span></div>';
+      }
       html += '</div>';
-    } else { html += '<div class="inspector-empty" style="padding-top:8px">No raw artifacts</div>'; }
+    });
+    if (artifacts.length > 20) {
+      html += '<div class="inspector-empty">+' + esc(String(artifacts.length - 20)) + ' more artifacts omitted from the shell preview.</div>';
+    }
+    html += '<div class="inspector-empty" style="padding-top:8px">Raw bytes are behind the bounded provenance preview button above.</div></div>';
     area.innerHTML = html;
-  } catch(e) { area.innerHTML = '<div class="inspector-empty">Failed to load raw data</div>'; }
+  } catch(e) { area.innerHTML = '<div class="inspector-empty">Failed to load artifact list</div>'; }
 }
 
 async function selectSession(id, updateURL, opts) {
@@ -1571,6 +1639,7 @@ loadSessions().then(function() {
   if (cid) selectSession(cid, false);
 });
 loadFacets();
+loadReadViewProfiles();
 loadUserState();
 loadStatus();
 

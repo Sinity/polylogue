@@ -81,11 +81,15 @@ if TYPE_CHECKING:
     from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionEnvelope
     from polylogue.storage.sqlite.archive_tiers.write import ArchiveSessionEnvelope
     from polylogue.surfaces.payloads import (
+        AssertionClaimPayload,
         BulkTagMutationResult,
         DeleteSessionResult,
         FacetsResponse,
         MetadataMutationResult,
         QueryUnitEnvelope,
+        RecoveryReadPayload,
+        RecoveryReportFormat,
+        RecoveryReportKind,
         SearchEnvelope,
         SessionSearchHitPayload,
         TagMutationResult,
@@ -1279,6 +1283,76 @@ class PolylogueArchiveMixin:
                 limit=limit,
             ),
         )
+
+    async def list_assertion_claim_payloads(
+        self,
+        *,
+        kinds: Sequence[str] | None = None,
+        target_ref: str | None = None,
+        scope_ref: str | None = None,
+        statuses: Sequence[str] | None = ("active", "candidate"),
+        context_inject: bool | None = None,
+        limit: int | None = None,
+    ) -> list[AssertionClaimPayload]:
+        """List assertion claims using the shared API payload shape.
+
+        Daemon/MCP/web adapters should consume this method instead of
+        importing storage-tier assertion helpers directly. The storage
+        tier remains the durable owner of assertion rows; this API method
+        owns the cross-surface JSON boundary for read consumers.
+        """
+
+        from polylogue.surfaces.payloads import AssertionClaimPayload
+
+        claims = await self.list_assertion_claims(
+            kinds=kinds,
+            target_ref=target_ref,
+            scope_ref=scope_ref,
+            statuses=statuses,
+            context_inject=context_inject,
+            limit=limit,
+        )
+        return [AssertionClaimPayload.from_envelope(claim) for claim in claims]
+
+    async def recovery_read_payload(
+        self,
+        session_id: str,
+        *,
+        report: RecoveryReportKind = "work-packet",
+        output_format: RecoveryReportFormat = "json",
+    ) -> RecoveryReadPayload | None:
+        """Return one recovery/read payload through the shared surface DTO.
+
+        This is the cross-surface JSON boundary for daemon/web/API consumers.
+        It intentionally delegates content generation to the existing recovery
+        digest/work-packet/report methods instead of creating a web-specific
+        recovery model.
+        """
+
+        from polylogue.surfaces.payloads import RecoveryReadPayload
+
+        if output_format not in {"json", "markdown"}:
+            raise ValueError(f"unsupported recovery output format: {output_format}")
+        if report not in {"digest", "work-packet"}:
+            raise ValueError(f"unsupported recovery report: {report}")
+        if report == "digest" and output_format != "json":
+            raise ValueError("digest recovery reads are JSON-only")
+        if report == "digest":
+            digest = await self.recovery_digest(session_id)
+            if digest is None:
+                return None
+            return RecoveryReadPayload.from_digest(digest)
+        if report == "work-packet":
+            packet = await self.recovery_work_packet(session_id)
+            if packet is None:
+                return None
+            if output_format == "markdown":
+                return RecoveryReadPayload.from_work_packet_markdown(
+                    session_id=packet.session_id,
+                    markdown=packet.render_markdown(),
+                )
+            return RecoveryReadPayload.from_work_packet_json(packet)
+        raise ValueError(f"unsupported recovery report: {report}")
 
     async def list_read_view_profiles(self) -> list[JSONDocument]:
         """List executable read-view profile metadata."""

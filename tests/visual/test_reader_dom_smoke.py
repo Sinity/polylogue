@@ -17,6 +17,7 @@ from tests.visual.conftest import (
     get_text,
     parse_dom,
     running_reader_server,
+    seed_reader_assertion_claims,
     write_evidence_manifest,
 )
 
@@ -361,6 +362,59 @@ def test_reader_cost_panel_evidence(reader_workspace: ReaderWorkspace, tmp_path:
             "has_basis_split": True,
             "has_per_model_block": True,
             "chip_vocabulary_in_shell": True,
+            "private_path_safe": True,
+        },
+    )
+
+
+def test_reader_evidence_panel_endpoint_and_shell_smoke(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:
+    """Evidence tab uses shared recovery/assertion DTOs without raw leakage (#1846)."""
+
+    with running_reader_server(reader_workspace) as (_, base_url):
+        seed_reader_assertion_claims(reader_workspace)
+        status, content_type, shell = get_text(base_url, f"/s/{READER_C1}")
+        recovery = cast(
+            dict[str, object],
+            get_json(base_url, f"/api/sessions/{READER_C1}/recovery?report=work-packet&format=json"),
+        )
+        assertions = cast(
+            dict[str, object],
+            get_json(base_url, f"/api/assertions?target_ref=session%3A{READER_C1}&limit=10"),
+        )
+
+    assert status == 200
+    assert "text/html" in content_type
+    assert_no_private_paths(shell, context="reader evidence shell")
+    for phrase in (
+        'data-tab="evidence"',
+        "renderInspectorEvidence",
+        "loadEvidencePanel",
+        "/api/assertions?target_ref=",
+        "/recovery?report=work-packet&format=json",
+    ):
+        assert phrase in shell, f"missing evidence shell hook {phrase!r}"
+
+    assert recovery["report"] == "work-packet"
+    packet = cast(dict[str, object], recovery["work_packet"])
+    assert packet["session_id"] == READER_C1
+    assert packet["evidence_refs"]
+    assert "raw_artifacts" not in json.dumps(recovery)
+
+    claim_items = cast(list[dict[str, object]], assertions["items"])
+    assert [item["assertion_id"] for item in claim_items] == ["reader-evidence-decision"]
+    assert claim_items[0]["target_ref"] == f"session:{READER_C1}"
+
+    write_evidence_manifest(
+        tmp_path / "reader-evidence-panel-dom-evidence.json",
+        artifact_id="polylogue.local_reader.evidence_panel",
+        route=f"/s/{READER_C1}",
+        fixture_id="reader-visual-synthetic-v1",
+        checks={
+            "shell_status": status,
+            "recovery_report": recovery["report"],
+            "work_packet_evidence_refs": len(cast(list[object], packet["evidence_refs"])),
+            "assertion_count": assertions["total"],
+            "raw_artifacts_absent_from_recovery": True,
             "private_path_safe": True,
         },
     )

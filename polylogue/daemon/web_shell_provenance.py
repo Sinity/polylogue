@@ -26,6 +26,7 @@ function renderInspectorRaw(el, c) {
   html += '<div class="inspector-field"><span class="label">Parent</span><span class="value">' + esc(c.parent_id || '-') + '</span></div>';
   html += '<div id="provenance-area"><div class="inspector-empty" style="padding-top:8px">Loading provenance...</div></div>';
   html += '</div><div class="inspector-section"><h4>Raw Artifacts</h4>';
+  html += '<div class="inspector-empty">Raw bytes are opt-in. Metadata loads first; preview is bounded by the daemon cap.</div>';
   html += '<button style="background:var(--panel-elevated);border:1px solid var(--border);color:var(--accent);padding:4px 10px;border-radius:3px;cursor:pointer;font-size:var(--small)" onclick="loadRawData()">Load artifact list</button>';
   html += '<div id="raw-data-area"></div></div>';
   el.innerHTML = html;
@@ -70,7 +71,7 @@ function renderProvenancePanel(data) {
   // Raw preview is opt-in. The button reveals it only on explicit click,
   // and the server enforces the size cap regardless.
   html += '<div style="margin-top:8px">'
-    + '<button style="background:var(--panel-elevated);border:1px solid var(--border);color:var(--accent);padding:4px 10px;border-radius:3px;cursor:pointer;font-size:var(--small)" onclick="loadProvenanceRaw()">Load raw preview ('
+    + '<button style="background:var(--panel-elevated);border:1px solid var(--border);color:var(--accent);padding:4px 10px;border-radius:3px;cursor:pointer;font-size:var(--small)" onclick="loadProvenanceRaw()">Load bounded preview ('
     + (data.raw_preview_cap_bytes != null ? data.raw_preview_cap_bytes.toLocaleString() + ' B max' : 'bounded')
     + ')</button>'
     + '<div id="provenance-preview-area"></div></div>';

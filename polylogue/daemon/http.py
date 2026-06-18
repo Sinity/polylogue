@@ -40,6 +40,7 @@ from polylogue.daemon.web_shell_paste import (
 from polylogue.errors import PolylogueError
 from polylogue.logging import get_logger
 from polylogue.surfaces.payloads import (
+    AssertionClaimListPayload,
     MutationResultPayload,
     QueryErrorPayload,
     QueryMissDiagnosticsPayload,
@@ -55,14 +56,13 @@ if TYPE_CHECKING:
     from polylogue.api import Polylogue
     from polylogue.archive.query.spec import SessionQuerySpec
     from polylogue.archive.semantic.content_projection import ContentProjectionSpec
-    from polylogue.insights.transforms import RecoveryReportPreset
     from polylogue.storage.sqlite.archive_tiers.archive import (
         ArchiveSessionSearchHit,
         ArchiveSessionSummary,
         ArchiveStore,
     )
     from polylogue.storage.sqlite.archive_tiers.write import ArchiveBlockRow, ArchiveMessageRow
-    from polylogue.surfaces.payloads import FacetBucketsPayload
+    from polylogue.surfaces.payloads import FacetBucketsPayload, RecoveryReportFormat, RecoveryReportKind
 
 logger = get_logger(__name__)
 
@@ -1978,7 +1978,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         conv = await poly.get_session(conv_id)
         if conv is None:
             return None
-        raw_items = await poly.get_raw_artifacts_for_session(conv_id)
+        raw_artifacts, raw_artifacts_total = await poly.get_raw_artifacts_for_session(conv_id)
         return {
             "id": str(conv.id),
             "origin": conv.origin,
@@ -1989,7 +1989,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             "branch_type": str(conv.branch_type) if conv.branch_type else None,
             "parent_id": str(conv.parent_id) if conv.parent_id else None,
             "session_id": getattr(conv, "session_id", None),
-            "raw_artifacts": raw_items,
+            "raw_artifacts": raw_artifacts,
+            "raw_artifacts_total": raw_artifacts_total,
         }
 
     # ------------------------------------------------------------------
@@ -2289,7 +2290,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 HTTPStatus.BAD_REQUEST,
                 {
                     "error": "invalid_query",
-                    "message": "query-units requires a messages/actions/blocks/assertions/observed-events/context-snapshots where expression",
+                    "message": "query-units requires a messages/actions/blocks/assertions where expression",
                 },
             )
             return
@@ -2369,12 +2370,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         This is the web-workbench read side of #1883/#1846: the daemon
         does not invent an overlay model, it routes through
-        ``Polylogue.list_assertion_claims`` and serializes the same
-        ``ArchiveAssertionEnvelope`` fields that MCP/API consumers see.
+        ``Polylogue.list_assertion_claim_payloads`` and serializes through the
+        shared ``AssertionClaimPayload`` surface model.
         """
 
         from polylogue.archive.query.spec import clamp_query_limit
-        from polylogue.surfaces.payloads import AssertionClaimPayload
 
         kinds = _csv_values(params, "kind") + _csv_values(params, "kinds")
         statuses = self._assertion_status_filter(params)
@@ -2384,7 +2384,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         limit = clamp_query_limit(self._get_int(params, "limit", 20), default=20)
 
         async def _get(poly: Polylogue) -> object:
-            claims = await poly.list_assertion_claims(
+            items = await poly.list_assertion_claim_payloads(
                 kinds=tuple(dict.fromkeys(kinds)) or None,
                 target_ref=self._get_param(params, "target_ref"),
                 scope_ref=self._get_param(params, "scope_ref"),
@@ -2392,8 +2392,13 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 context_inject=context_inject,
                 limit=limit,
             )
-            items = [AssertionClaimPayload.from_envelope(claim).model_dump(mode="json") for claim in claims]
-            return {"items": items, "total": len(items), "limit": limit}
+            return AssertionClaimListPayload(
+                items=tuple(items),
+                total=len(items),
+                limit=limit,
+                statuses=statuses,
+                kinds=tuple(dict.fromkeys(kinds)) or None,
+            ).model_dump(mode="json", exclude_none=True)
 
         self._send_json(HTTPStatus.OK, self._sync_run(_get))
 
@@ -2409,8 +2414,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         raw_statuses = _csv_values(params, "status") + _csv_values(params, "statuses")
         if not raw_statuses:
             return ("active", "candidate")
-        normalized = tuple(dict.fromkeys(token.lower() for token in raw_statuses))
-        if normalized in {("all",), ("*",)}:
+        normalized = tuple(dict.fromkeys(token.lower() for token in raw_statuses if token.strip()))
+        if any(token in {"all", "*"} for token in normalized):
             return None
         return normalized
 
@@ -2426,11 +2431,15 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         - ``?report=digest&format=json`` returns ``RecoveryDigest``.
         - ``?report=work-packet&format=json`` returns ``RecoveryWorkPacket``.
         - ``?report=work-packet&format=markdown`` returns rendered markdown.
-        - ``?report=continue|blame`` returns the corresponding recovery
-          report markdown in a JSON envelope.
+
+        ``continue`` and ``blame`` remain CLI/MCP recovery-report presets for
+        now. The web workbench exposes only digest/work-packet because those
+        are the storage-free evidence bundle DTOs #1846 can consume without
+        turning report presets into a second read-profile execution API.
 
         Raw transcripts are not included; all support remains through the
-        recovery/work-packet evidence refs.
+        recovery/work-packet evidence refs. The route is marked
+        ``shell_supported`` until #1847 stabilizes daemon API DTOs.
         """
 
         report = (self._get_param(params, "report", "work-packet") or "work-packet").strip().lower()
@@ -2438,7 +2447,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if output_format not in {"json", "markdown"}:
             self._send_error(HTTPStatus.BAD_REQUEST, "invalid_format")
             return
-        if report not in {"digest", "work-packet", "continue", "blame"}:
+        if report not in {"digest", "work-packet"}:
             self._send_error(HTTPStatus.BAD_REQUEST, "invalid_report")
             return
         if report == "digest" and output_format != "json":
@@ -2461,44 +2470,14 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         report: str,
         output_format: str,
     ) -> object | None:
-        if report == "digest":
-            digest = await poly.recovery_digest(conv_id)
-            if digest is None:
-                return None
-            return {
-                "session_id": digest.session_id,
-                "report": "digest",
-                "format": "json",
-                "digest": digest.model_dump(mode="json"),
-            }
-
-        if report == "work-packet":
-            packet = await poly.recovery_work_packet(conv_id)
-            if packet is None:
-                return None
-            if output_format == "markdown":
-                return {
-                    "session_id": packet.session_id,
-                    "report": "work-packet",
-                    "format": "markdown",
-                    "markdown": packet.render_markdown(),
-                }
-            return {
-                "session_id": packet.session_id,
-                "report": "work-packet",
-                "format": "json",
-                "work_packet": packet.model_dump(mode="json"),
-            }
-
-        markdown = await poly.recovery_report(conv_id, cast("RecoveryReportPreset", report))
-        if markdown is None:
+        payload = await poly.recovery_read_payload(
+            conv_id,
+            report=cast("RecoveryReportKind", report),
+            output_format=cast("RecoveryReportFormat", output_format),
+        )
+        if payload is None:
             return None
-        return {
-            "session_id": conv_id,
-            "report": report,
-            "format": "markdown",
-            "markdown": markdown,
-        }
+        return payload.model_dump(mode="json", exclude_none=True)
 
     # ------------------------------------------------------------------
     # Handlers: per-session embedding similarity (#1123)
