@@ -61,7 +61,7 @@ BENCHMARK_SCENARIOS: tuple[BenchmarkCampaignEntry, ...] = (
             "Keeps #1880 recovery artifact shape in the generated benchmark inventory.",
         ),
         origin="authored.benchmark-domain",
-        artifact_targets=("recovery_digest", "forensic_index", "resume_bundle"),
+        artifact_targets=("recovery_digest", "forensic_index", "resume_bundle", "recovery_report_markdown"),
         operation_targets=(
             "compile-recovery-digest",
             "render-recovery-report",

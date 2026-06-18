@@ -92,6 +92,7 @@ class TestExercisesByGroup:
         }
         assert "json-doctor-action-preview" not in observed
         assert observed["json-doctor-session-insights-preview"].args == [
+            "ops",
             "doctor",
             "--format",
             "json",

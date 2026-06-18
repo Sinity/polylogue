@@ -142,9 +142,12 @@ def test_query_field_catalog_drives_plan_presence_descriptions_and_pushdown() ->
 def test_query_field_catalog_covers_public_spec_fields() -> None:
     descriptor_spec_attrs = {descriptor.spec_attr for descriptor in QUERY_FIELD_DESCRIPTORS if descriptor.spec_attr}
     spec_fields = {field.name for field in fields(SessionQuerySpec)}
+    internal_spec_fields = {"boolean_predicate"}
 
-    # All spec fields have descriptors (cursor was promoted from internal-only to exposed).
-    assert spec_fields - descriptor_spec_attrs == set()
+    # All public spec fields have descriptors (cursor was promoted from
+    # internal-only to exposed). ``boolean_predicate`` is the compiled AST
+    # carrier, not a user-authored field token.
+    assert spec_fields - descriptor_spec_attrs - internal_spec_fields == set()
 
 
 def test_query_field_catalog_covers_mcp_query_request_fields() -> None:

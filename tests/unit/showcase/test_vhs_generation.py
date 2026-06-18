@@ -42,7 +42,7 @@ class TestGenerateTape:
             name="test-cmd",
             group="structural",
             description="Test",
-            execution=polylogue_execution("status"),
+            execution=polylogue_execution("ops", "status"),
             vhs_capture=True,
         )
         tape = generate_tape(ex)

@@ -15,9 +15,9 @@ def _invoke(*args: str) -> tuple[int, str]:
     return result.exit_code, result.output
 
 
-def test_status_help_plain_output() -> None:
-    """status --help produces non-empty plain text output."""
-    exit_code, output = _invoke("status", "--help")
+def test_ops_status_help_plain_output() -> None:
+    """ops status --help produces non-empty plain text output."""
+    exit_code, output = _invoke("ops", "status", "--help")
     assert exit_code == 0
     assert "status" in output.lower()
     assert len(output.strip()) > 50
