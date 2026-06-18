@@ -549,7 +549,7 @@ tier constant:
 </li>
 <li><strong>Mismatch → re-ingest from source.</strong> Polylogue does not patch an
 out-of-band shape into the canonical one. The operator moves the
-database aside and runs <code>polylogue reset --database &amp;&amp; polylogued run</code>,
+database aside and runs <code>polylogue ops reset --database &amp;&amp; polylogued run</code>,
 which re-acquires from the source archives and rebuilds the canonical
 archive.</li>
 <li>Schema bumps are deletes-then-defines, never deltas. A schema change
@@ -582,10 +582,10 @@ attempts, convergence debt, stage events, embedding catch-up runs,
 and OTLP spans.</li>
 </ul>
 <p>The operator flow is explicit:</p>
-<pre><code class="language-bash">polylogue maintenance archive-plan
-polylogue maintenance archive-init --yes
+<pre><code class="language-bash">polylogue ops maintenance archive-plan
+polylogue ops maintenance archive-init --yes
 polylogued run
-polylogue maintenance archive-read --limit 20
+polylogue ops maintenance archive-read --limit 20
 </code></pre>
 <p><code>archive-init</code> bootstraps the archive file set. The daemon and explicit
 ingest paths populate <code>source.db</code> and <code>index.db</code> directly from source
@@ -922,7 +922,7 @@ running an operator CLI command. Missing tables degrade to zero samples
 rather than 5xx-ing, so a fresh archive still emits the discovery
 skeleton.</p>
 <p>Archive layout observability is emitted on the same scrape. The
-<code>polylogue_archive_storage_layout</code> gauge mirrors <code>polylogue paths</code>
+<code>polylogue_archive_storage_layout</code> gauge mirrors <code>polylogue ops paths</code>
 with bounded labels for <code>archive_missing</code>, <code>archive_partial</code>, and
 <code>archive_complete</code>; <code>polylogue_archive_tier_count</code> and
 <code>polylogue_archive_blocker_count</code> provide compact alerting

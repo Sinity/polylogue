@@ -722,7 +722,7 @@ bounded windows and records catch-up progress; when disabled, no embedding
 provider calls are made (<a href="https://github.com/Sinity/polylogue/issues/1503">#1503</a>).</li>
 </ul>
 <h3>Activation flow (#1217)</h3>
-<p>The <code>polylogue embed</code> group is the operator-facing onboarding surface:</p>
+<p>The <code>polylogue ops embed</code> group is the operator-facing onboarding surface:</p>
 <table>
 <thead>
 <tr>
@@ -732,23 +732,23 @@ provider calls are made (<a href="https://github.com/Sinity/polylogue/issues/150
 </thead>
 <tbody>
 <tr>
-<td><code>polylogue embed preflight</code></td>
+<td><code>polylogue ops embed preflight</code></td>
 <td>Count pending messages + Voyage cost estimate without contacting the provider.</td>
 </tr>
 <tr>
-<td><code>polylogue embed enable</code></td>
+<td><code>polylogue ops embed enable</code></td>
 <td>Verify <code>sqlite-vec</code>, capture the Voyage key, print the cost preflight, and on confirmation persist <code>[embedding] enabled = true</code> (and the API key unless <code>--no-store-key</code>) into the user <code>polylogue.toml</code>.</td>
 </tr>
 <tr>
-<td><code>polylogue embed backfill</code></td>
+<td><code>polylogue ops embed backfill</code></td>
 <td>Run a bounded, resumable embedding batch with per-session cost feedback; honours <code>embedding_max_cost_usd</code> as a soft cap and persists run progress.</td>
 </tr>
 <tr>
-<td><code>polylogue embed disable</code></td>
+<td><code>polylogue ops embed disable</code></td>
 <td>Flip <code>embedding.enabled = false</code> without dropping existing embeddings — previously-embedded messages remain queryable via <code>--similar</code>.</td>
 </tr>
 <tr>
-<td><code>polylogue embed status</code></td>
+<td><code>polylogue ops embed status</code></td>
 <td>Coverage / freshness / configured model+cap / latest catch-up / next-action snapshot via <code>embedding_status_payload</code>. Use <code>--detail</code> for exact pending-message and retrieval-band accounting.</td>
 </tr>
 </tbody>
@@ -772,7 +772,7 @@ request runs as a vector-only similarity probe (no FTS leg).</li>
 </ul>
 <p>See <a href="search.md#retrieval-lanes">docs/search.md § Retrieval Lanes</a> for the
 full lane semantics, ranking policy, and <code>SearchEnvelope</code> contract.</p>
-<p><code>polylogue status</code> includes an <code>Embeddings:</code> line whenever any
+<p><code>polylogue ops status</code> includes an <code>Embeddings:</code> line whenever any
 messages are embedded, so the operator can see coverage at a glance.</p>
 <h2>Blob Store</h2>
 <p>Content-addressed storage for large binary artifacts (message content,

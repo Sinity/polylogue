@@ -1014,9 +1014,9 @@ space. Like BM25, distances are not directly comparable across
 different query embeddings.</li>
 <li>Requires embeddings to be enabled and populated; see
 <a href="architecture.md#embedding-pipeline">docs/architecture.md § Embedding Pipeline</a>.</li>
-<li>Use <code>polylogue embed status</code> to check whether vector retrieval is disabled,
+<li>Use <code>polylogue ops embed status</code> to check whether vector retrieval is disabled,
 missing an API key, pending backlog catch-up, partially usable, or complete.
-<code>polylogue embed status --detail</code> performs exact pending-message and
+<code>polylogue ops embed status --detail</code> performs exact pending-message and
 retrieval-band accounting; the default status path stays cheap and reports
 the latest persisted catch-up run.</li>
 </ul>
@@ -1024,18 +1024,18 @@ the latest persisted catch-up run.</li>
 <p>Semantic search stays unavailable until embeddings are both enabled and
 materialized. The activation path is deliberately bounded:</p>
 <ol>
-<li><code>polylogue embed status</code> shows config state, key presence, coverage,
+<li><code>polylogue ops embed status</code> shows config state, key presence, coverage,
 configured model/dimension, monthly cost cap, backlog, latest catch-up
 progress, and <code>next_action</code> (<code>code</code>, <code>reason</code>, <code>command</code>) for automation.</li>
-<li><code>polylogue embed preflight --max-sessions 10</code> estimates the next
+<li><code>polylogue ops embed preflight --max-sessions 10</code> estimates the next
 bounded window without contacting Voyage. Use <code>--format json</code> for the
 scriptable form: it reports the exact window, pricing assumptions,
 effective cost cap, and a ready-to-run <code>backfill_args</code> list for the same
 bounded catch-up slice.</li>
-<li><code>polylogue embed enable --yes</code> enables the daemon stage when a Voyage key is
-already configured, or <code>polylogue embed enable --voyage-api-key ...</code> records
+<li><code>polylogue ops embed enable --yes</code> enables the daemon stage when a Voyage key is
+already configured, or <code>polylogue ops embed enable --voyage-api-key ...</code> records
 the key and enables the stage.</li>
-<li><code>polylogue embed backfill --max-sessions 10</code> runs an explicit bounded
+<li><code>polylogue ops embed backfill --max-sessions 10</code> runs an explicit bounded
 catch-up batch; after enablement, <code>polylogued</code> also processes bounded daemon
 batches for new or stale sessions.</li>
 </ol>
@@ -1433,7 +1433,7 @@ polylogue facets -f json --no-idf    # FacetsResponse, no IDF weighting
 <li>Expand the time window: <code>--since 2024-01</code> instead of <code>--since yesterday</code></li>
 <li>Verify the archive has data: <code>polylogue count</code> (no filters)</li>
 <li>Check FTS index health: <code>polylogued status</code> shows <code>fts_readiness</code></li>
-<li>Run <code>polylogue check</code> for schema and index integrity</li>
+<li>Run <code>polylogue ops doctor</code> for schema and index integrity</li>
 <li>If using <code>--similar</code>, ensure embeddings are built (check <code>polylogue stats</code> for embedding coverage)</li>
 </ol>
 

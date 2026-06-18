@@ -531,7 +531,7 @@ on-disk <code>PRAGMA user_version</code> is compared against its tier constant:<
 </ul>
 <p>A version mismatch is resolved by re-acquiring from source, not by patching the
 file in place. The operator moves the archive aside and re-ingests:</p>
-<pre><code class="language-bash">polylogue reset --database &amp;&amp; polylogued run
+<pre><code class="language-bash">polylogue ops reset --database &amp;&amp; polylogued run
 </code></pre>
 <p>Schema bumps are deletes-then-defines edits of the owning tier DDL, never
 deltas. The bootstrap branching that decides fresh-init vs. open vs. reject is
@@ -540,10 +540,10 @@ shared across sync and async backends in
 <a href="internals.md#schema-versioning-model">Internals § Schema Versioning Model</a> and
 <a href="../CONTRIBUTING.md#schema-touching-changes">CONTRIBUTING § Schema-Touching Changes</a>.</p>
 <h2>Inspecting an archive</h2>
-<pre><code class="language-bash">polylogue status                    # daemon/archive snapshot, including per-tier row counts
-polylogue maintenance archive-plan  # planned archive file set
-polylogue check                     # schema health + referential integrity
-polylogue check --schemas           # provider-schema conformance over raw records
+<pre><code class="language-bash">polylogue ops status                    # daemon/archive snapshot, including per-tier row counts
+polylogue ops maintenance archive-plan  # planned archive file set
+polylogue ops doctor                     # schema health + referential integrity
+polylogue ops doctor --schemas           # provider-schema conformance over raw records
 </code></pre>
 <p>The <code>devtools verify-schema-roundtrip</code> command verifies committed provider
 schema packages reload and roundtrip cleanly through typed models.</p>
