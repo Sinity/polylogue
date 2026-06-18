@@ -10,6 +10,7 @@ import pytest
 
 from devtools.verify import (
     PYTEST_EVENTS_PATH,
+    PYTEST_JUNIT_REPORT_PATH,
     PYTEST_OUTPUT_PATH,
     PYTEST_PROGRESS_PATH,
     PYTEST_REPORT_PATH,
@@ -363,6 +364,28 @@ def test_pytest_run_writes_live_progress_artifact(tmp_path: Path, monkeypatch: p
     assert "pytest-progress" in (tmp_path / PYTEST_OUTPUT_PATH).read_text()
 
 
+def test_pytest_run_removes_stale_reports_before_child_starts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    stale_json = tmp_path / PYTEST_REPORT_PATH
+    stale_junit = tmp_path / PYTEST_JUNIT_REPORT_PATH
+    stale_json.parent.mkdir(parents=True)
+    stale_junit.parent.mkdir(parents=True)
+    stale_json.write_text('{"summary": {"failed": 99, "total": 99}}')
+    stale_junit.write_text("<testsuite failures='99'/>")
+
+    rc, _elapsed, metadata = _run("pytest stale", [sys.executable, "-c", "print('ok')"])
+
+    assert rc == 0
+    assert metadata["report_path"] is None
+    assert metadata["report_status"] == "missing"
+    assert metadata["junitxml_path"] == str(PYTEST_JUNIT_REPORT_PATH)
+    assert not stale_json.exists()
+    assert not stale_junit.exists()
+
+
 def test_pytest_run_terminates_after_runtime_budget(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -378,6 +401,10 @@ def test_pytest_run_terminates_after_runtime_budget(
     assert metadata["stall_timeout_s"] == 0.0
     assert metadata["events_path"] == str(PYTEST_EVENTS_PATH)
     assert metadata["output_path"] == str(PYTEST_OUTPUT_PATH)
+    assert metadata["report_path"] is None
+    assert metadata["report_status"] == "missing"
+    assert metadata["progress_event"] == "terminated"
+    assert metadata["termination_reason"] == "pytest runtime exceeded 0.15s"
     assert "pytest runtime exceeded 0.15s" in captured.err
     assert "terminated pytest process group" in captured.err
 
