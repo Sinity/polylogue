@@ -73,10 +73,11 @@ def pytest_configure(config: pytest.Config) -> None:
         checkout = hashlib.sha1(str(config.rootpath).encode("utf-8"), usedforsecurity=False).hexdigest()[:8]
         os.environ["POLYLOGUE_PYTEST_CHECKOUT"] = checkout
         run_id = os.environ.get("POLYLOGUE_PYTEST_RUN_ID")
+        if not hasattr(config, "workerinput"):
+            _sweep_stale_polylogue_basetemps()
         if run_id is None:
             run_id = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
             os.environ["POLYLOGUE_PYTEST_RUN_ID"] = run_id
-            _sweep_stale_polylogue_basetemps()
         root, label = _managed_pytest_temp_root()
         config.option.basetemp = str(root / f"pytest-polylogue-{checkout}-{run_id}")
         sys.stderr.write(f"pytest: basetemp → {config.option.basetemp} ({label})\n")
