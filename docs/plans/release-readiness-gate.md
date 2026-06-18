@@ -96,20 +96,23 @@ Satisfied:
 - #1843 has deterministic demo corpus specs and the `polylogue import --demo`
   scheduling surface plus fixture-world convergence coverage.
 - #1848 static/rendering redundancy pruning is closed.
+- #1849 replaced proof theater with code-coupled tests and generated evidence
+  surfaces; release notes must still avoid claiming any detached confidence
+  layer.
+- #1825 MCP/Python parity is closed for the shared query/read contracts that
+  exist today; new route or mutation surfaces still need parity evidence in
+  their owning issues.
+- #1838 work packets are implemented as on-demand evidence bundles with
+  raw-ref/lossiness semantics for currently shipped recovery surfaces.
 
 Still blocking external release claims:
 
 - #1847/#1846 web/API release scope is not settled.
-- #1849 public docs/evidence vocabulary is not fully settled; do not advertise any
-  confidence layer that is not generated from live code, fixtures, schemas, or
-  benchmark artifacts.
 - #2006 advanced query language claims are scoped to shipped Lark grammar,
   lowerers, typed errors, docs, and fixture coverage; do not advertise future
   pipeline/run/event/assertion query units until they land.
-- #1825 MCP/Python parity must be proven for any command/read/query/mutation
-  behavior advertised as cross-surface.
-- #1838 work-packet/bundle release claims are scoped out unless on-demand
-  evidence-bundle rendering lands with raw-ref/lossiness semantics.
+- #1807 remains open until the README, CLI help, docs site, daemon shell, and
+  release notes tell one truthful product story over the shipped surfaces.
 
 ## Release PR Body Requirements
 
