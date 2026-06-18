@@ -12,6 +12,9 @@ from polylogue.core.json import is_json_document, json_document
 
 BROWSER_CAPTURE_KIND: Literal["browser_llm_session"] = "browser_llm_session"
 BROWSER_CAPTURE_SCHEMA_VERSION: Literal[1] = 1
+BROWSER_CAPTURE_TRANSPORT_SOURCE: Literal["browser-extension"] = "browser-extension"
+BROWSER_CAPTURE_RECEIVER: Literal["polylogue-browser-capture"] = "polylogue-browser-capture"
+BROWSER_CAPTURE_EXTENSION_ORIGIN_WILDCARD: Literal["chrome-extension://*"] = "chrome-extension://*"
 
 
 class BrowserCaptureAttachment(BaseModel):
@@ -119,7 +122,7 @@ class BrowserCaptureEnvelope(BaseModel):
     polylogue_capture_kind: Literal["browser_llm_session"] = BROWSER_CAPTURE_KIND
     schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
     capture_id: str | None = None
-    source: Literal["browser-extension"] = "browser-extension"
+    source: Literal["browser-extension"] = BROWSER_CAPTURE_TRANSPORT_SOURCE
     provenance: BrowserCaptureProvenance
     session: BrowserCaptureSession
     provider_meta: dict[str, object] = Field(default_factory=dict)
@@ -148,11 +151,12 @@ class BrowserCaptureReceiverStatusPayload(BaseModel):
     """Receiver readiness payload returned by ``GET /v1/status``."""
 
     ok: Literal[True] = True
-    receiver: Literal["polylogue-browser-capture"] = "polylogue-browser-capture"
+    receiver: Literal["polylogue-browser-capture"] = BROWSER_CAPTURE_RECEIVER
     schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
     spool_path: str
     allowed_origins: list[str]
     allow_remote: bool
+    auth_required: bool
     active: bool
     checked_at: str
 
@@ -173,6 +177,10 @@ class BrowserCaptureAcceptedPayload(BaseModel):
     """Accepted-capture payload returned by ``POST /v1/browser-captures``."""
 
     ok: Literal[True] = True
+    receiver: Literal["polylogue-browser-capture"] = BROWSER_CAPTURE_RECEIVER
+    schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
+    source: Literal["browser-extension"] = BROWSER_CAPTURE_TRANSPORT_SOURCE
+    capture_id: str
     provider: str
     provider_session_id: str
     artifact_path: str
@@ -184,6 +192,8 @@ class BrowserCaptureErrorPayload(BaseModel):
     """Safe receiver error payload with no paths or stack traces."""
 
     ok: Literal[False] = False
+    receiver: Literal["polylogue-browser-capture"] = BROWSER_CAPTURE_RECEIVER
+    schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
     error: str
 
 
@@ -200,8 +210,11 @@ def looks_like_browser_capture(payload: object) -> bool:
 
 
 __all__ = [
+    "BROWSER_CAPTURE_EXTENSION_ORIGIN_WILDCARD",
     "BROWSER_CAPTURE_KIND",
+    "BROWSER_CAPTURE_RECEIVER",
     "BROWSER_CAPTURE_SCHEMA_VERSION",
+    "BROWSER_CAPTURE_TRANSPORT_SOURCE",
     "BrowserCaptureAcceptedPayload",
     "BrowserCaptureArchiveStatePayload",
     "BrowserCaptureAttachment",
