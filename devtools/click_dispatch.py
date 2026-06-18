@@ -23,6 +23,7 @@ from devtools.command_catalog import (
 
 GROUP_HELP: dict[str, str] = {
     "render": "Render and check generated repository surfaces.",
+    "release": "Build, smoke, and validate release/distribution readiness.",
 }
 
 
