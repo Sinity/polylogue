@@ -19,6 +19,7 @@ from typing import Any
 import pytest
 
 _EVENTS_ENV = "POLYLOGUE_PYTEST_EVENTS_PATH"
+_EVENTS_DIR_ENV = "POLYLOGUE_PYTEST_EVENTS_DIR"
 _SELECTION_ENV = "POLYLOGUE_PYTEST_SELECTION_PATH"
 _SUMMARY_ENV = "POLYLOGUE_PYTEST_SUMMARY_PATH"
 _DESELECTED_NODEIDS: list[str] = []
@@ -30,14 +31,22 @@ _SLOW_REPORT_LIMIT = 20
 
 
 def _write_event(payload: dict[str, Any]) -> None:
+    raw_dir = os.environ.get(_EVENTS_DIR_ENV)
     raw_path = os.environ.get(_EVENTS_ENV)
-    if not raw_path:
+    if not raw_dir and not raw_path:
         return
     payload = {
         "updated_at": datetime.now(UTC).isoformat(),
+        "run_id": os.environ.get("POLYLOGUE_VERIFY_RUN_ID"),
+        "worker_id": os.environ.get("PYTEST_XDIST_WORKER", "controller"),
+        "pid": os.getpid(),
         **payload,
     }
-    path = Path(raw_path)
+    if raw_dir:
+        worker_id = str(payload["worker_id"]).replace("/", "-")
+        path = Path(raw_dir) / f"{worker_id}-{os.getpid()}.jsonl"
+    else:
+        path = Path(str(raw_path))
     with contextlib.suppress(OSError):
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as handle:
@@ -50,6 +59,9 @@ def _write_selection(payload: dict[str, Any]) -> None:
         return
     payload = {
         "updated_at": datetime.now(UTC).isoformat(),
+        "run_id": os.environ.get("POLYLOGUE_VERIFY_RUN_ID"),
+        "worker_id": os.environ.get("PYTEST_XDIST_WORKER", "controller"),
+        "pid": os.getpid(),
         **payload,
     }
     path = Path(raw_path)
@@ -66,6 +78,9 @@ def _write_summary(payload: dict[str, Any]) -> None:
         return
     payload = {
         "updated_at": datetime.now(UTC).isoformat(),
+        "run_id": os.environ.get("POLYLOGUE_VERIFY_RUN_ID"),
+        "worker_id": os.environ.get("PYTEST_XDIST_WORKER", "controller"),
+        "pid": os.getpid(),
         **payload,
     }
     path = Path(raw_path)

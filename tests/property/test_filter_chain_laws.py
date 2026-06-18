@@ -16,6 +16,9 @@ main independently-testable filter dimensions.
 
 from __future__ import annotations
 
+import atexit
+import shutil
+import sqlite3
 import tempfile
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -46,6 +49,7 @@ _SUPPRESS = [
 _BASE_DT = datetime(2024, 1, 1, tzinfo=timezone.utc)
 _MID_DT = datetime(2024, 6, 1, tzinfo=timezone.utc)
 _END_DT = datetime(2024, 12, 31, tzinfo=timezone.utc)
+_TEMPLATE_ARCHIVE_DIR: Path | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +183,30 @@ def _seed_diverse_archive(db_path: Path) -> None:
             builder.save()
 
 
+def _seeded_archive_template_dir() -> Path:
+    """Return a per-worker immutable archive template for filter-law examples."""
+    global _TEMPLATE_ARCHIVE_DIR
+    if _TEMPLATE_ARCHIVE_DIR is not None and _TEMPLATE_ARCHIVE_DIR.exists():
+        return _TEMPLATE_ARCHIVE_DIR
+
+    template_dir = Path(tempfile.mkdtemp(prefix="polylogue-filter-laws-template-"))
+    _seed_diverse_archive(template_dir / "index.db")
+    with sqlite3.connect(template_dir / "index.db") as conn:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    atexit.register(_cleanup_template_dir, template_dir)
+    _TEMPLATE_ARCHIVE_DIR = template_dir
+    return template_dir
+
+
+def _cleanup_template_dir(path: Path) -> None:
+    shutil.rmtree(path, ignore_errors=True)
+
+
+def _copy_seeded_archive(target_dir: Path) -> Path:
+    shutil.copytree(_seeded_archive_template_dir(), target_dir, dirs_exist_ok=True)
+    return target_dir / "index.db"
+
+
 # ---------------------------------------------------------------------------
 # Filter application helper
 # ---------------------------------------------------------------------------
@@ -255,8 +283,7 @@ def _apply_params(filter_obj: Any, params: FilterParams) -> Any:
 async def test_filter_result_is_subset_of_unfiltered(params: FilterParams) -> None:
     """filter(X) result IDs must be a subset of the unfiltered result IDs."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = Path(tmpdir) / "index.db"
-        _seed_diverse_archive(db_path)
+        db_path = _copy_seeded_archive(Path(tmpdir))
 
         async with Polylogue(archive_root=Path(tmpdir), db_path=db_path) as archive:
             all_convs = await archive.filter().list()
@@ -286,8 +313,7 @@ async def test_adding_filter_never_increases_count(params_a: FilterParams, param
     More constraints → same or fewer results.
     """
     with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = Path(tmpdir) / "index.db"
-        _seed_diverse_archive(db_path)
+        db_path = _copy_seeded_archive(Path(tmpdir))
 
         async with Polylogue(archive_root=Path(tmpdir), db_path=db_path) as archive:
             count_a = await _apply_params(archive.filter(), params_a).count()
@@ -316,8 +342,7 @@ async def test_adding_filter_never_increases_count(params_a: FilterParams, param
 async def test_filter_application_order_is_commutative(params_a: FilterParams, params_b: FilterParams) -> None:
     """filter(A).filter(B) and filter(B).filter(A) must yield identical IDs and counts."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = Path(tmpdir) / "index.db"
-        _seed_diverse_archive(db_path)
+        db_path = _copy_seeded_archive(Path(tmpdir))
 
         async with Polylogue(archive_root=Path(tmpdir), db_path=db_path) as archive:
             # A then B
@@ -354,8 +379,7 @@ async def test_filter_application_order_is_commutative(params_a: FilterParams, p
 async def test_filter_applied_twice_equals_once(params: FilterParams) -> None:
     """Applying the same filter params twice must yield the same result as once."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = Path(tmpdir) / "index.db"
-        _seed_diverse_archive(db_path)
+        db_path = _copy_seeded_archive(Path(tmpdir))
 
         async with Polylogue(archive_root=Path(tmpdir), db_path=db_path) as archive:
             # Apply once

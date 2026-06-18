@@ -41,29 +41,29 @@ def test_main_requires_a_selection(capsys: pytest.CaptureFixture[str]) -> None:
 def test_main_strips_dispatch_json_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, Any] = {}
 
-    def _fake_run(cmd: list[str], **kwargs: Any) -> Any:
+    def _fake_run(label: str, cmd: list[str], **kwargs: Any) -> tuple[int, float, dict[str, Any]]:
+        captured["label"] = label
         captured["cmd"] = cmd
-        captured["env"] = kwargs["env"]
-        return type("Result", (), {"returncode": 0, "stderr": ""})()
+        captured["run"] = kwargs["run"]
+        return 0, 0.01, {"diagnosis": "pytest_passed"}
 
     monkeypatch.setenv("POLYLOGUE_TEST_NO_LOCK", "1")
     monkeypatch.setattr("devtools.run_tests._clear_pytest_report", lambda _cmd: None)
-    monkeypatch.setattr("devtools.run_tests._run_pytest_with_heartbeat", _fake_run)
+    monkeypatch.setattr("devtools.run_tests._run", _fake_run)
     assert run_tests.main(["tests/unit/pipeline", "--json"]) == 0
     assert "--json" not in captured["cmd"]
     assert "tests/unit/pipeline" in captured["cmd"]
-    assert captured["env"]["POLYLOGUE_PYTEST_EVENTS_PATH"] == str(run_tests.ROOT / PYTEST_EVENTS_PATH)
-    assert captured["env"]["POLYLOGUE_PYTEST_SELECTION_PATH"] == str(run_tests.ROOT / PYTEST_SELECTION_PATH)
-    assert captured["env"]["POLYLOGUE_PYTEST_SUMMARY_PATH"] == str(run_tests.ROOT / PYTEST_SUMMARY_PATH)
+    assert captured["label"] == "pytest focused"
+    assert captured["run"].run_id
 
 
 def test_main_returns_pytest_exit_code(monkeypatch: pytest.MonkeyPatch) -> None:
-    def _fake_run(cmd: list[str], **kwargs: Any) -> Any:
-        return type("Result", (), {"returncode": 5, "stderr": ""})()
+    def _fake_run(label: str, cmd: list[str], **kwargs: Any) -> tuple[int, float, dict[str, Any]]:
+        return 5, 0.01, {"diagnosis": "pytest_failed"}
 
     monkeypatch.setenv("POLYLOGUE_TEST_NO_LOCK", "1")
     monkeypatch.setattr("devtools.run_tests._clear_pytest_report", lambda _cmd: None)
-    monkeypatch.setattr("devtools.run_tests._run_pytest_with_heartbeat", _fake_run)
+    monkeypatch.setattr("devtools.run_tests._run", _fake_run)
     assert run_tests.main(["tests/unit/does_not_exist"]) == 5
 
 

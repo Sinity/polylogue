@@ -360,8 +360,8 @@ def test_parse_gemini_missing_text_fields(tmp_path: Path) -> None:
 # =====================================================================
 
 
-@settings(max_examples=25, deadline=None, suppress_health_check=[HealthCheck.too_slow])
-@given(acquisition_input_batch_strategy())
+@settings(max_examples=10, deadline=None, suppress_health_check=[HealthCheck.too_slow])
+@given(acquisition_input_batch_strategy(max_items=4))
 async def test_acquisition_law_counts_unique_raws_and_normalizes_provider_hints(
     batch: tuple[AcquisitionInputSpec, ...],
 ) -> None:

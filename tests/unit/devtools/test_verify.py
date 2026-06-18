@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -16,6 +17,7 @@ from devtools.verify import (
     PYTEST_PROGRESS_PATH,
     PYTEST_REPORT_PATH,
     ROOT,
+    _enable_tmpfs_for_broad_pytest,
     _format_completion_notification,
     _parse_pytest_test_count,
     _pytest_command_metadata,
@@ -29,6 +31,7 @@ from devtools.verify import (
     build_verify_steps,
     main,
 )
+from devtools.verify_runs import ResourceSampler, classify_pytest_result, pytest_basetemp_path
 
 
 def test_quick_verify_omits_pytest() -> None:
@@ -65,6 +68,16 @@ def test_default_verify_uses_pytest_testmon() -> None:
     assert command[command.index("-n") + 1] == "0"
 
 
+def test_broad_default_verify_uses_parallel_testmon() -> None:
+    steps = build_verify_steps(quick=False, lab=False, skip_slow=False, broad_testmon=True)
+
+    label, command = steps[-1]
+    assert label == "pytest testmon (broad)"
+    assert "--testmon" in command
+    assert "--testmon-forceselect" in command
+    assert command[command.index("-n") + 1] == "4"
+
+
 def test_pytest_step_requests_structured_json_report() -> None:
     """Every pytest invocation must emit the report consumed by verify and dashboards (#1026)."""
     for kwargs in (
@@ -95,7 +108,7 @@ def test_seed_testmon_runs_full_collection_without_selection(monkeypatch: pytest
     assert "--testmon" in command
     assert "--testmon-noselect" in command
     assert "-n" in command
-    assert command[command.index("-n") + 1] == "16"
+    assert command[command.index("-n") + 1] == "4"
 
 
 def test_full_verify_includes_full_pytest_without_testmon(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -112,7 +125,7 @@ def test_full_verify_includes_full_pytest_without_testmon(monkeypatch: pytest.Mo
     assert bulk_label == "pytest full (parallel)"
     assert "--testmon" not in bulk_command
     assert "-n" in bulk_command
-    assert bulk_command[bulk_command.index("-n") + 1] == "16"
+    assert bulk_command[bulk_command.index("-n") + 1] == "4"
 
     isolated_label, isolated_command = steps[-1]
     assert isolated_label == "pytest load-sensitive (isolated)"
@@ -128,6 +141,33 @@ def test_seed_testmon_worker_count_can_be_overridden(monkeypatch: pytest.MonkeyP
     label, command = steps[-1]
     assert label == "pytest seed-testmon"
     assert command[command.index("-n") + 1] == "4"
+
+
+def test_seed_tmpfs_enabled_when_host_has_headroom(monkeypatch: pytest.MonkeyPatch) -> None:
+    env: dict[str, str] = {}
+    monkeypatch.setattr("devtools.verify._check_available_memory", lambda: (12 * 1024 * 1024, 32 * 1024 * 1024))
+    monkeypatch.setattr("devtools.verify._shm_free_gb", lambda: 12.0)
+
+    assert _enable_tmpfs_for_broad_pytest("pytest seed-testmon", env) is True
+    assert env["POLYLOGUE_PYTEST_TMPFS"] == "1"
+
+
+def test_broad_testmon_tmpfs_enabled_when_host_has_headroom(monkeypatch: pytest.MonkeyPatch) -> None:
+    env: dict[str, str] = {}
+    monkeypatch.setattr("devtools.verify._check_available_memory", lambda: (12 * 1024 * 1024, 32 * 1024 * 1024))
+    monkeypatch.setattr("devtools.verify._shm_free_gb", lambda: 12.0)
+
+    assert _enable_tmpfs_for_broad_pytest("pytest testmon (broad)", env) is True
+    assert env["POLYLOGUE_PYTEST_TMPFS"] == "1"
+
+
+def test_seed_tmpfs_not_enabled_when_host_is_tight(monkeypatch: pytest.MonkeyPatch) -> None:
+    env: dict[str, str] = {}
+    monkeypatch.setattr("devtools.verify._check_available_memory", lambda: (4 * 1024 * 1024, 32 * 1024 * 1024))
+    monkeypatch.setattr("devtools.verify._shm_free_gb", lambda: 12.0)
+
+    assert _enable_tmpfs_for_broad_pytest("pytest seed-testmon", env) is False
+    assert "POLYLOGUE_PYTEST_TMPFS" not in env
 
 
 def test_default_testmon_worker_count_can_be_overridden(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -241,7 +281,9 @@ def test_testmon_preflight_accepts_seeded_database(tmp_path: Path, monkeypatch: 
     assert _testmon_preflight(seed_testmon=False, full_pytest=False, quick=False, commit=False) is None
 
 
-def test_testmon_preflight_rejects_stale_git_head(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_testmon_preflight_warns_on_stale_git_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".testmondata").write_text("seeded")
     seed_stamp = tmp_path / ".cache" / "testmon" / "seed.json"
@@ -258,11 +300,13 @@ def test_testmon_preflight_rejects_stale_git_head(tmp_path: Path, monkeypatch: p
 
     message = _testmon_preflight(seed_testmon=False, full_pytest=False, quick=False, commit=False)
 
-    assert message is not None
-    assert "different git head" in message
+    assert message is None
+    assert "different git head" in capsys.readouterr().err
 
 
-def test_testmon_preflight_rejects_database_fingerprint_drift(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_testmon_preflight_warns_on_database_fingerprint_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".testmondata").write_text("mutated")
     seed_stamp = tmp_path / ".cache" / "testmon" / "seed.json"
@@ -279,8 +323,48 @@ def test_testmon_preflight_rejects_database_fingerprint_drift(tmp_path: Path, mo
 
     message = _testmon_preflight(seed_testmon=False, full_pytest=False, quick=False, commit=False)
 
-    assert message is not None
-    assert "database changed" in message
+    assert message is None
+    assert "database changed" in capsys.readouterr().err
+
+
+def test_classify_late_sigterm_after_pytest_success_summary() -> None:
+    diagnosis = classify_pytest_result(
+        returncode=-15,
+        termination_reason=None,
+        report_present=False,
+        summary={"exitstatus": 0},
+        progress_event="finished",
+    )
+
+    assert diagnosis == "report_missing_after_sessionfinish_success"
+
+
+def test_resource_sampler_records_process_tree_sample(tmp_path: Path) -> None:
+    path = tmp_path / "resources.jsonl"
+    sampler = ResourceSampler(
+        root_pid=os.getpid(),
+        run_id="test-run",
+        root=tmp_path,
+        env={"POLYLOGUE_PYTEST_BASETEMP_ROOT": str(tmp_path)},
+        output_path=path,
+    )
+
+    sample = sampler.sample(event="sample")
+    summary = sampler.summary()
+
+    assert sample["process_count"] >= 1
+    assert sample["tree_rss_kb"] > 0
+    assert summary["resource_sample_count"] == 1
+    assert summary["peak_tree_rss_kb"] == sample["tree_rss_kb"]
+
+
+def test_pytest_basetemp_path_tracks_tmpfs_opt_in(tmp_path: Path) -> None:
+    path = pytest_basetemp_path(root=tmp_path, run_id="run-1", env={"POLYLOGUE_PYTEST_TMPFS": "1"})
+
+    if Path("/dev/shm").is_dir():
+        assert path.parent == Path("/dev/shm")
+    else:
+        assert path.parent == Path("/realm/tmp/polylogue-pytest")
 
 
 def test_testmon_preflight_allows_seed_and_full_without_database(
@@ -622,7 +706,7 @@ def test_read_pytest_report_parses_valid_payload(tmp_path: Path) -> None:
 def test_verify_continues_after_failed_cheap_step(capsys: pytest.CaptureFixture[str]) -> None:
     calls: list[str] = []
 
-    def fake_run(label: str, command: list[str]) -> tuple[int, float, dict[str, object]]:
+    def fake_run(label: str, command: list[str], **kwargs: object) -> tuple[int, float, dict[str, object]]:
         calls.append(label)
         return 1, 0.01, {}
 
@@ -644,7 +728,7 @@ def test_verify_continues_after_failed_cheap_step(capsys: pytest.CaptureFixture[
 def test_verify_stops_after_failed_heavy_step(capsys: pytest.CaptureFixture[str]) -> None:
     calls: list[str] = []
 
-    def fake_run(label: str, command: list[str]) -> tuple[int, float, dict[str, object]]:
+    def fake_run(label: str, command: list[str], **kwargs: object) -> tuple[int, float, dict[str, object]]:
         calls.append(label)
         return (1 if label.startswith("pytest") else 0), 0.01, {}
 
@@ -726,7 +810,7 @@ def test_skip_slow_testmon_step_keeps_forceselect_with_compound_marker() -> None
 def test_verify_does_not_notify_on_pass() -> None:
     """Passing verify runs stay silent — only failures send a desktop popup."""
 
-    def fake_run(label: str, command: list[str]) -> tuple[int, float, dict[str, object]]:
+    def fake_run(label: str, command: list[str], **kwargs: object) -> tuple[int, float, dict[str, object]]:
         return 0, 0.01, {}
 
     with (
@@ -745,7 +829,7 @@ def test_verify_does_not_notify_on_pass() -> None:
 def test_verify_notifies_on_failure() -> None:
     """Failing verify runs still send a desktop popup so the operator notices."""
 
-    def fake_run(label: str, command: list[str]) -> tuple[int, float, dict[str, object]]:
+    def fake_run(label: str, command: list[str], **kwargs: object) -> tuple[int, float, dict[str, object]]:
         return 1, 0.01, {}
 
     with (

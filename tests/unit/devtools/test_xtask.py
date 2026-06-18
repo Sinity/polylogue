@@ -110,6 +110,57 @@ def test_stats_by_class_and_slowest(isolated_xtask_file: Path, capsys: pytest.Ca
     assert [t["duration_ms"] for t in payload["slowest"]] == [9000.0, 2000.0]
 
 
+def test_record_invocation_enriches_verify_run_metadata(
+    isolated_xtask_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    current = tmp_path / ".cache" / "verify" / "current-run.json"
+    current.parent.mkdir(parents=True)
+    current.write_text(
+        json.dumps(
+            {
+                "run_id": "run-abc",
+                "artifact_dir": ".cache/verify/runs/run-abc",
+                "status": "failed",
+                "diagnosis": "report_missing_after_sessionfinish_success",
+                "steps": [
+                    {
+                        "name": "pytest seed-testmon",
+                        "diagnosis": "report_missing_after_sessionfinish_success",
+                        "selected_count": 11295,
+                        "peak_tree_rss_mb": 8192.0,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("devtools.xtask._get_root", lambda: tmp_path)
+
+    xtask.record_invocation(command="verify", args=["--seed-testmon"], duration_ms=100.0, exit_code=-15)
+    assert xtask.main(["recent", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    entry = payload[0]
+    assert entry["verify_run_id"] == "run-abc"
+    assert entry["verify_diagnosis"] == "report_missing_after_sessionfinish_success"
+    assert entry["pytest_peak_tree_rss_mb"] == 8192.0
+
+
+def test_stats_resources_reports_peak_distribution(
+    isolated_xtask_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    xtask.record_invocation(command="verify", args=[], duration_ms=100.0, exit_code=0)
+    records = [json.loads(line) for line in isolated_xtask_file.read_text().splitlines()]
+    records[0]["pytest_peak_tree_rss_mb"] = 100.0
+    isolated_xtask_file.write_text(json.dumps(records[0]) + "\n", encoding="utf-8")
+
+    assert xtask.main(["stats", "--resources", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["resources"]["count"] == 1
+    assert payload["resources"]["peak_rss_mb_max"] == 100.0
+
+
 # ---------------------------------------------------------------------------
 # budget
 # ---------------------------------------------------------------------------
