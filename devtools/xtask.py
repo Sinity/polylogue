@@ -1,4 +1,4 @@
-"""Agent-visible task execution history (xtask).
+"""Agent-visible task execution history.
 
 Maintains an append-only JSONL log of task executions under
 ``.agent/xtask/tasks.jsonl`` for use by agents and operators.
@@ -124,6 +124,7 @@ def _latest_verify_run_metadata(command: str) -> dict[str, Any]:
 _CLASS_PREFIXES: tuple[tuple[str, str], ...] = (
     ("verify", "verify"),
     ("render", "render"),
+    ("release build-package", "render"),
     ("lab", "lab"),
     ("witness", "witness"),
     ("mutmut", "campaign"),
@@ -139,9 +140,10 @@ _CLASS_PREFIXES: tuple[tuple[str, str], ...] = (
     ("regression-capture", "query"),
     ("scenario-projections", "query"),
     ("coverage-gate", "verify"),
-    ("release build-package", "render"),
+    ("workspace tasks", "query"),
+    ("workspace failure-context", "query"),
+    ("workspace worktree-gc", "query"),
     ("status", "query"),
-    ("xtask", "query"),
 )
 
 
@@ -153,8 +155,10 @@ def classify_command(command_name: str) -> str:
     """
     if not command_name:
         return "other"
-    head = command_name.split()[0] if " " in command_name else command_name
     for prefix, klass in _CLASS_PREFIXES:
+        if command_name == prefix or command_name.startswith(f"{prefix} "):
+            return klass
+        head = command_name.split()[0]
         if head == prefix or head.startswith(f"{prefix}-") or head.startswith(f"{prefix}_"):
             return klass
     return "other"
@@ -552,7 +556,7 @@ def _cmd_prune(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="devtools xtask", description="Task execution history.")
+    parser = argparse.ArgumentParser(prog="devtools workspace tasks", description="Task execution history.")
     subparsers = parser.add_subparsers(dest="subcommand", required=True)
 
     log_parser = subparsers.add_parser("log", help="Append a task record.")

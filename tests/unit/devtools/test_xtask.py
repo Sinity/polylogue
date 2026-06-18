@@ -1,4 +1,4 @@
-"""Tests for ``devtools xtask`` task-history surface and harness wiring."""
+"""Tests for ``devtools workspace tasks`` task-history surface and harness wiring."""
 
 from __future__ import annotations
 
@@ -40,7 +40,10 @@ def isolated_xtask_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
         ("run-benchmark-campaigns", "campaign"),
         ("daemon-workload-probe", "query"),
         ("status", "query"),
-        ("xtask", "query"),
+        ("workspace tasks", "query"),
+        ("workspace failure-context", "query"),
+        ("workspace worktree-gc", "query"),
+        ("release build-package", "render"),
         ("totally-unknown-command", "other"),
         ("", "other"),
     ],

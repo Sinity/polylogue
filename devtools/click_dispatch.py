@@ -24,6 +24,7 @@ from devtools.command_catalog import (
 GROUP_HELP: dict[str, str] = {
     "render": "Render and check generated repository surfaces.",
     "release": "Build, smoke, and validate release/distribution readiness.",
+    "workspace": "Inspect and maintain local agent workspace state.",
 }
 
 
@@ -208,9 +209,9 @@ def main(argv: list[str] | None = None) -> int:
 
     Converts argv to Click invocation and returns the exit code.  Every
     invocation appends a JSONL record to ``.agent/xtask/tasks.jsonl`` so
-    agent task history is self-populating (see ``devtools xtask``).  Set
+    agent task history is self-populating (see ``devtools workspace tasks``).  Set
     ``POLYLOGUE_XTASK_DISABLE=1`` to opt out (also suppressed during a
-    ``devtools xtask replay`` to avoid double-logging the outer wrapper).
+    ``devtools workspace tasks replay`` to avoid double-logging the outer wrapper).
     """
     import os
     import time

@@ -5,9 +5,9 @@ witnesses into a single JSON envelope keyed by a pytest failure ID
 (e.g. ``tests/unit/storage/test_foo.py::test_bar``).
 
 Usage:
-  devtools failure-context tests/unit/storage/test_foo.py::test_bar
-  devtools failure-context tests/unit/storage/test_foo.py::test_bar --json
-  devtools failure-context tests/unit/storage/test_foo.py::test_bar --days 14
+  devtools workspace failure-context tests/unit/storage/test_foo.py::test_bar
+  devtools workspace failure-context tests/unit/storage/test_foo.py::test_bar --json
+  devtools workspace failure-context tests/unit/storage/test_foo.py::test_bar --days 14
 """
 
 from __future__ import annotations
