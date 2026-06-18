@@ -477,7 +477,7 @@ _QUERY_GRAMMAR = r"""
     FTS_QUOTED_TEXT.6: /~"(\\.|[^"\\])*"/
     FTS_BARE_TEXT.5: /~[^\s"()]+/
     COUNT_CLAUSE.8: /(messages|words):(>=|<=|=)\d+(?!\S)/
-    FIELD_CLAUSE.4: /-?[a-zA-Z_][a-zA-Z0-9_]*:(?:"(\\.|[^"\\])*"|\([^)]*\)|[^\s"()\[\]{}]+)/
+    FIELD_CLAUSE.4: /-?[a-zA-Z_][a-zA-Z0-9_.]*:(?:"(\\.|[^"\\])*"|\([^)]*\)|[^\s"()\[\]{}]+)/
     NEG_QUOTED_TEXT.3: /-"(\\.|[^"\\])*"/
     QUOTED_TEXT.2: /"(\\.|[^"\\])*"/
     NEG_BARE_TEXT.1: /-[^\s"]+/
@@ -500,7 +500,7 @@ _COUNT_CLAUSE_RE = re.compile(r"^(messages|words):(>=|<=|=)(\d+)$")
 _FIELD_CLAUSE_RE = re.compile(
     r"""
     ^(-?)
-    ([a-zA-Z_][a-zA-Z0-9_]*)
+    ([a-zA-Z_][a-zA-Z0-9_.]*)
     :
     (
         "(?:\\.|[^"\\])*"
@@ -554,6 +554,7 @@ _STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS = {
 _MESSAGE_STRUCTURAL_FIELDS = {"role", "type", "text", "tool", "action", "command", "path", "output", "words"}
 _ACTION_STRUCTURAL_FIELDS = {"tool", "action", "type", "command", "path", "output", "text"}
 _BLOCK_STRUCTURAL_FIELDS = {"type", "text", "tool", "action", "command", "path"}
+_SCOPED_SESSION_STRUCTURAL_FIELDS = tuple(f"session.{field}" for field in sorted(_BOOLEAN_SUPPORTED_FIELDS))
 
 
 @dataclass(frozen=True)
@@ -588,18 +589,18 @@ class DateQueryFieldInfo:
 STRUCTURAL_QUERY_UNIT_REGISTRY: dict[str, StructuralQueryUnitInfo] = {
     "action": StructuralQueryUnitInfo(
         description="Match sessions with at least one action row satisfying the child predicate.",
-        fields=tuple(sorted(_ACTION_STRUCTURAL_FIELDS)),
-        example="exists action(tool:bash AND text:pytest)",
+        fields=tuple(sorted((*_ACTION_STRUCTURAL_FIELDS, *_SCOPED_SESSION_STRUCTURAL_FIELDS))),
+        example="exists action(session.repo:polylogue AND tool:bash AND text:pytest)",
     ),
     "block": StructuralQueryUnitInfo(
         description="Match sessions with at least one parsed message block satisfying the child predicate.",
-        fields=tuple(sorted(_BLOCK_STRUCTURAL_FIELDS)),
-        example="exists block(type:code AND text:timeout)",
+        fields=tuple(sorted((*_BLOCK_STRUCTURAL_FIELDS, *_SCOPED_SESSION_STRUCTURAL_FIELDS))),
+        example="exists block(session.origin:codex-session AND type:code AND text:timeout)",
     ),
     "message": StructuralQueryUnitInfo(
         description="Match sessions with at least one message satisfying the child predicate.",
-        fields=tuple(sorted(_MESSAGE_STRUCTURAL_FIELDS)),
-        example="exists message(role:assistant AND text:timeout)",
+        fields=tuple(sorted((*_MESSAGE_STRUCTURAL_FIELDS, *_SCOPED_SESSION_STRUCTURAL_FIELDS))),
+        example="exists message(session.repo:polylogue AND role:assistant AND text:timeout)",
     ),
 }
 
@@ -831,19 +832,28 @@ _QUERY_TRANSFORMER = _QueryTransformer()
 
 def _field_token_to_predicate(token: _FieldToken) -> QueryPredicate:
     field_name = token.field
-    if field_name not in EXPRESSION_FIELD_REGISTRY and field_name not in _STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS:
+    session_field = _scoped_session_field(field_name)
+    validation_field = session_field or field_name
+    if (
+        session_field is None
+        and field_name not in EXPRESSION_FIELD_REGISTRY
+        and field_name not in _STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS
+    ):
         raise ExpressionCompileError(
             _unknown_query_field_message(field_name, include_structural=True),
             field=field_name,
         )
-    if field_name not in _BOOLEAN_SUPPORTED_FIELDS and field_name not in _STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS:
+    if (
+        validation_field not in _BOOLEAN_SUPPORTED_FIELDS
+        and validation_field not in _STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS
+    ):
         raise ExpressionCompileError(
             f"field {field_name!r} is not supported inside Boolean SQL predicates yet",
             field=field_name,
         )
 
     values = _split_alternation(token.raw_value) if token.raw_value else ()
-    if field_name == "origin":
+    if validation_field == "origin":
         known_origins = {o.value for o in Origin}
         for value in values:
             if value not in known_origins:
@@ -851,7 +861,7 @@ def _field_token_to_predicate(token: _FieldToken) -> QueryPredicate:
                     f"unknown origin {value!r}; recognized: " + ", ".join(sorted(known_origins)),
                     field="origin",
                 )
-    elif field_name == "action":
+    elif validation_field == "action":
         for value in values:
             candidate = value.strip().lower()
             if candidate not in QUERY_ACTION_TYPES:
@@ -860,11 +870,11 @@ def _field_token_to_predicate(token: _FieldToken) -> QueryPredicate:
                     field="action",
                 )
         values = tuple(value.strip().lower() for value in values if value.strip())
-    elif field_name in {"tool", "has", "role", "type", "command", "path", "output"}:
+    elif validation_field in {"tool", "has", "role", "type", "command", "path", "output"}:
         values = tuple(value.strip().lower() for value in values if value.strip())
-    elif field_name in {"since", "until"} and values:
+    elif validation_field in {"since", "until"} and values:
         values = (_parse_relative_date(values[-1]),)
-    elif field_name == "lineage":
+    elif validation_field == "lineage":
         if token.negated:
             raise ExpressionCompileError("negation is not supported for 'lineage'", field=field_name)
         seed = values[-1].strip() if values else ""
@@ -876,6 +886,16 @@ def _field_token_to_predicate(token: _FieldToken) -> QueryPredicate:
 
     predicate: QueryPredicate = QueryFieldPredicate(field=field_name, values=values)
     return QueryNotPredicate(predicate) if token.negated else predicate
+
+
+def _scoped_session_field(field_name: str) -> str | None:
+    prefix = "session."
+    if not field_name.startswith(prefix):
+        return None
+    scoped = field_name[len(prefix) :]
+    if not scoped:
+        raise ExpressionCompileError("session. predicates require a field name", field=field_name)
+    return scoped
 
 
 def _count_token_to_predicate(token: _CountToken) -> QueryFieldPredicate:
@@ -940,30 +960,37 @@ def _validate_predicate_context(
     predicate: QueryPredicate, *, unit: Literal["session", "message", "action", "block"]
 ) -> None:
     if isinstance(predicate, QueryFieldPredicate):
+        session_field = _scoped_session_field(predicate.field)
         if unit == "session":
             supported = _BOOLEAN_SUPPORTED_FIELDS
+            effective_field = predicate.field
         elif unit == "message":
             supported = _MESSAGE_STRUCTURAL_FIELDS
+            effective_field = session_field or predicate.field
         elif unit == "action":
             supported = _ACTION_STRUCTURAL_FIELDS
+            effective_field = session_field or predicate.field
         else:
             supported = _BLOCK_STRUCTURAL_FIELDS
-        if predicate.field not in supported:
+            effective_field = session_field or predicate.field
+        if session_field is not None and unit != "session":
+            supported = _BOOLEAN_SUPPORTED_FIELDS
+        if effective_field not in supported:
             raise ExpressionCompileError(
                 f"field {predicate.field!r} is not supported for {unit} predicates",
                 field=predicate.field,
             )
         if (
-            predicate.field in {"role", "type", "text", "tool", "action", "command", "path", "output"}
+            effective_field in {"role", "type", "text", "tool", "action", "command", "path", "output"}
             and not predicate.values
         ):
             raise ExpressionCompileError(f"field {predicate.field!r} requires a value", field=predicate.field)
-        if predicate.field == "date":
+        if effective_field == "date":
             if not predicate.values:
                 raise ExpressionCompileError("field 'date' requires a value", field="date")
             if predicate.op not in {">=", "<="}:
                 raise ExpressionCompileError("field 'date' supports only >=, <=, >, <, and between", field="date")
-        if predicate.field == "words":
+        if effective_field == "words":
             if not predicate.values:
                 raise ExpressionCompileError("field 'words' requires a numeric value", field="words")
             try:
