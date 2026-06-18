@@ -9,7 +9,7 @@ import click
 
 from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.archive.query.spec import SessionQuerySpec
-from polylogue.context.assertion_claims import context_claim_text, user_db_injectable_claim_texts
+from polylogue.context.assertion_claims import context_claim_text
 from polylogue.mcp.context_pack import (
     ContextPackDateRange,
     ContextPackDecisions,
@@ -266,7 +266,21 @@ def _build_archive_context_pack(
                 dates.append(str(conv.created_at))
             if conv.updated_at is not None:
                 dates.append(str(conv.updated_at))
-            assertion_decisions.extend(user_db_injectable_claim_texts(archive.user_db_path, session_id=conv_id))
+            try:
+                claims = run_coroutine_sync(
+                    env.polylogue.list_assertion_claim_payloads(
+                        target_ref=f"session:{conv_id}",
+                        statuses=("active",),
+                        context_inject=True,
+                        limit=20,
+                    )
+                )
+            except Exception:
+                claims = []
+            assertion_decisions.extend(
+                context_claim_text(kind=claim.kind, body_text=claim.body_text, target_ref=claim.target_ref)
+                for claim in claims
+            )
 
             messages: list[ContextPackMessage] = []
             try:
