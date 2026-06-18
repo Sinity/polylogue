@@ -13,7 +13,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
+
+from polylogue.core.json import JSONValue, require_json_value
 
 if TYPE_CHECKING:
     from polylogue.insights.transforms import DecisionCandidate, RecoveryDigest, TransformRawRef
@@ -48,6 +50,53 @@ class AssertionKind(StrEnum):
     RUN_STATE = "run_state"
     PROMPT_EVAL = "prompt_eval"
     TRANSFORM_CANDIDATE = "transform_candidate"
+
+
+ASSERTION_DEFAULT_STATUS: Final = "active"
+ASSERTION_DEFAULT_VISIBILITY: Final = "private"
+ASSERTION_DEFAULT_AUTHOR_KIND: Final = "user"
+ASSERTION_DEFAULT_AUTHOR_REF: Final = "user:local"
+ASSERTION_DEFAULT_CONTEXT_POLICY: Final[dict[str, JSONValue]] = {"inject": False}
+
+
+def _default_context_policy() -> dict[str, JSONValue]:
+    return dict(ASSERTION_DEFAULT_CONTEXT_POLICY)
+
+
+def _normalize_assertion_status(status: str | None) -> str:
+    return status if status is not None else ASSERTION_DEFAULT_STATUS
+
+
+def _normalize_assertion_visibility(visibility: str | None) -> str:
+    return visibility if visibility is not None else ASSERTION_DEFAULT_VISIBILITY
+
+
+def _normalize_assertion_author_kind(author_kind: str | None) -> str:
+    return author_kind if author_kind is not None else ASSERTION_DEFAULT_AUTHOR_KIND
+
+
+def _normalize_assertion_author_ref(author_ref: str | None) -> str:
+    return author_ref if author_ref is not None else ASSERTION_DEFAULT_AUTHOR_REF
+
+
+def _normalize_assertion_context_policy(context_policy: dict[str, object] | None) -> dict[str, JSONValue]:
+    """Return the stored assertion context policy.
+
+    Assertions are durable user-tier state first. They must not flow into future
+    context unless a caller opts in explicitly, so even caller-supplied policies
+    get an explicit ``inject`` key when omitted. This keeps generic overlay
+    writes private/no-inject while preserving explicit promotion/candidate
+    policy such as ``promotion_required``.
+    """
+
+    if context_policy is None:
+        return _default_context_policy()
+    normalized = {
+        key: require_json_value(value, context=f"assertion context_policy.{key}")
+        for key, value in context_policy.items()
+    }
+    normalized.setdefault("inject", False)
+    return normalized
 
 
 def _now_ms() -> int:
@@ -290,7 +339,7 @@ class ArchiveAssertionEnvelope:
     visibility: str | None
     confidence: float | None
     staleness: dict[str, object] | None
-    context_policy: dict[str, object] | None
+    context_policy: dict[str, JSONValue] | None
     supersedes: list[str]
     created_at_ms: int
     updated_at_ms: int
@@ -754,8 +803,13 @@ def upsert_assertion(
     ).fetchone()
     created_at_ms = int(existing[0]) if existing is not None else timestamp
 
-    evidence_refs_json = _dumps_optional(list(evidence_refs)) if evidence_refs is not None else None
-    supersedes_json = _dumps_optional(list(supersedes)) if supersedes is not None else None
+    resolved_status = _normalize_assertion_status(status)
+    resolved_visibility = _normalize_assertion_visibility(visibility)
+    resolved_author_ref = _normalize_assertion_author_ref(author_ref)
+    resolved_author_kind = _normalize_assertion_author_kind(author_kind)
+    resolved_context_policy = _normalize_assertion_context_policy(context_policy)
+    evidence_refs_json = _dumps_optional(list(evidence_refs or ()))
+    supersedes_json = _dumps_optional(list(supersedes or ()))
 
     conn.execute(
         """
@@ -790,14 +844,14 @@ def upsert_assertion(
             kind,
             _dumps_optional(value),
             body_text,
-            author_ref,
-            author_kind,
+            resolved_author_ref,
+            resolved_author_kind,
             evidence_refs_json,
-            status,
-            visibility,
+            resolved_status,
+            resolved_visibility,
             confidence,
             _dumps_optional(staleness),
-            _dumps_optional(context_policy),
+            _dumps_optional(resolved_context_policy),
             supersedes_json,
             created_at_ms,
             timestamp,
@@ -904,14 +958,14 @@ def _assertion_row_to_envelope(row: sqlite3.Row) -> ArchiveAssertionEnvelope:
         kind=str(row[4]),
         value=_loads_optional(row[5]),
         body_text=str(row[6]) if row[6] is not None else None,
-        author_ref=str(row[7]) if row[7] is not None else None,
-        author_kind=str(row[8]) if row[8] is not None else None,
+        author_ref=_normalize_assertion_author_ref(str(row[7]) if row[7] is not None else None),
+        author_kind=_normalize_assertion_author_kind(str(row[8]) if row[8] is not None else None),
         evidence_refs=_loads_str_list(row[9]),
-        status=str(row[10]) if row[10] is not None else None,
-        visibility=str(row[11]) if row[11] is not None else None,
+        status=_normalize_assertion_status(str(row[10]) if row[10] is not None else None),
+        visibility=_normalize_assertion_visibility(str(row[11]) if row[11] is not None else None),
         confidence=float(row[12]) if row[12] is not None else None,
         staleness=_loads_dict_optional(row[13]),
-        context_policy=_loads_dict_optional(row[14]),
+        context_policy=_normalize_assertion_context_policy(_loads_dict_optional(row[14])),
         supersedes=_loads_str_list(row[15]),
         created_at_ms=int(row[16]),
         updated_at_ms=int(row[17]),
@@ -1015,7 +1069,8 @@ def list_assertions_for_export(
         if not normalized_statuses:
             return []
         placeholders = ", ".join("?" for _ in normalized_statuses)
-        where.append(f"COALESCE(status, '') IN ({placeholders})")
+        where.append(f"COALESCE(status, ?) IN ({placeholders})")
+        params.append(ASSERTION_DEFAULT_STATUS)
         params.extend(normalized_statuses)
 
     sql = f"SELECT {_ASSERTION_COLUMNS} FROM assertions"
@@ -1081,7 +1136,8 @@ def list_assertion_claims(
         if not statuses:
             return []
         placeholders = ", ".join("?" for _ in statuses)
-        where.append(f"COALESCE(status, '') IN ({placeholders})")
+        where.append(f"COALESCE(status, ?) IN ({placeholders})")
+        params.append(ASSERTION_DEFAULT_STATUS)
         params.extend(str(status) for status in statuses)
 
     sql = f"SELECT {_ASSERTION_COLUMNS} FROM assertions"
@@ -1095,7 +1151,7 @@ def list_assertion_claims(
         claims = [
             claim
             for claim in claims
-            if isinstance(claim.context_policy, dict) and bool(claim.context_policy.get("inject")) is context_inject
+            if bool((claim.context_policy or ASSERTION_DEFAULT_CONTEXT_POLICY).get("inject")) is context_inject
         ]
     if limit is not None and limit >= 0:
         return claims[:limit]
@@ -1104,6 +1160,11 @@ def list_assertion_claims(
 
 __all__ = [
     "ASSERTION_CLAIM_KINDS",
+    "ASSERTION_DEFAULT_AUTHOR_KIND",
+    "ASSERTION_DEFAULT_AUTHOR_REF",
+    "ASSERTION_DEFAULT_CONTEXT_POLICY",
+    "ASSERTION_DEFAULT_STATUS",
+    "ASSERTION_DEFAULT_VISIBILITY",
     "ArchiveAnnotationEnvelope",
     "ArchiveAssertionEnvelope",
     "ArchiveBlackboardNoteEnvelope",
