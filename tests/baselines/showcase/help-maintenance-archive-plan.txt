@@ -1,4 +1,4 @@
-Usage: polylogue maintenance archive-plan [OPTIONS]
+Usage: polylogue ops maintenance archive-plan [OPTIONS]
 
   Inspect readiness for the archive file set.
 

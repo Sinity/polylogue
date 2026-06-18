@@ -34,6 +34,7 @@
       "execution": {
         "kind": "polylogue",
         "argv": [
+          "ops",
           "doctor",
           "--help"
         ]

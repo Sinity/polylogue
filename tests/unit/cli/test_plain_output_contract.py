@@ -70,7 +70,7 @@ class TestPlainOutputIsAscii:
             (["--plain", "stats"], "cli.plain.stats"),
             (["--plain", "config"], "cli.plain.config"),
             (
-                ["--plain", "status", "--daemon-url", "http://127.0.0.1:19999"],
+                ["--plain", "ops", "status", "--daemon-url", "http://127.0.0.1:19999"],
                 "cli.plain.status",
             ),
         ],

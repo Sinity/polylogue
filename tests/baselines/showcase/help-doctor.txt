@@ -1,4 +1,4 @@
-Usage: polylogue doctor [OPTIONS]
+Usage: polylogue ops doctor [OPTIONS]
 
   Health check with optional maintenance and cleanup previews.
 

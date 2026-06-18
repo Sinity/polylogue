@@ -64,7 +64,7 @@ named peer.
 | Similar / neighbors | — | partial (`neighbor_candidates`, different envelope) | yes (`/api/conversations/{id}/similar`) | yes |
 | Facets | — | — | partial (`providers`, `tags` only) | — |
 | Stats / coverage | yes (`polylogue stats`) | yes (`stats`, `archive_coverage`) | — | yes |
-| Daemon status | yes (`polylogue status`) | yes (`readiness_check`) | yes (`/api/status`, `/api/healthz`) | yes |
+| Daemon status | yes (`polylogue ops status`) | yes (`readiness_check`) | yes (`/api/status`, `/api/healthz`) | yes |
 | Session insights (profile, classification, phases, work events, threads) | yes (insights commands) | yes (per-insight tools) | yes (web shell + read endpoints) | yes |
 | Tag / metadata mutations | yes (`tags`) | yes (mutation tools) | yes (web shell routes) | yes |
 | Maintenance / convergence ops | yes (`check`, `reset`) | yes (maintenance tools) | yes (HTTP endpoints) | yes |

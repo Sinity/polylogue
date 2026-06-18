@@ -1,4 +1,4 @@
-Usage: polylogue maintenance plan [OPTIONS]
+Usage: polylogue ops maintenance plan [OPTIONS]
 
   Dry-run summary: show what would be rebuilt without executing.
 

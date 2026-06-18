@@ -98,7 +98,7 @@ The PR body must replace any upgrade-path section with a
 **re-ingest plan**:
 
 - which user-visible archive operation triggers re-acquisition from
-  source (e.g. `polylogue reset --database && polylogued run`),
+  source (e.g. `polylogue ops reset --database && polylogued run`),
 - which downstream products (insights, blob store, FTS) are rebuilt
   automatically vs. needing explicit recomputation,
 - the expected end-user impact (rebuild time, disk usage, anything

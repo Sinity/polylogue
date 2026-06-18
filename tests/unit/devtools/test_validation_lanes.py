@@ -429,6 +429,7 @@ class TestCommandConstruction:
     def test_live_maintenance_preview_lane_uses_doctor_preview(self) -> None:
         cmd = build_lane_command(LANES["live-maintenance-preview"])
         assert cmd[:1] == ["polylogue"]
+        assert "ops" in cmd
         assert "doctor" in cmd
         assert "--repair" in cmd
         assert "--cleanup" in cmd
@@ -464,7 +465,7 @@ class TestLaneAssertions:
             description="JSON contract lane",
             timeout_s=30,
             category="contract",
-            execution=polylogue_execution("doctor", "--format", "json"),
+            execution=polylogue_execution("ops", "doctor", "--format", "json"),
             assertion=AssertionSpec(stdout_is_valid_json=True),
         )
 
@@ -519,6 +520,7 @@ class TestLaneAssertions:
     def test_live_session_insight_repair_lane_uses_doctor_repair_target(self) -> None:
         cmd = build_lane_command(LANES["live-session-insight-repair"])
         assert cmd[:1] == ["polylogue"]
+        assert "ops" in cmd
         assert "doctor" in cmd
         assert "--repair" in cmd
         assert "--target" in cmd

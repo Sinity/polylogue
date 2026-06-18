@@ -11,11 +11,8 @@ ActionCardinality = Literal["any", "singleton", "explicit_multi", "destructive_m
 ActionFormat = Literal["human", "json", "ndjson"]
 MachineEnvelope = Literal["result_set", "item", "mutation", "error", "stream_item"]
 CompletionContext = Literal[
-    "archive_path",
     "config_key",
-    "daemon_url",
     "filesystem_path",
-    "maintenance_operation",
     "query_expression",
     "session_id",
 ]
@@ -60,11 +57,7 @@ PUBLIC_ACTION_FLOOR: tuple[tuple[str, ...], ...] = (
     ("delete",),
     ("import",),
     ("config",),
-    # Current ops reality is split across concrete root commands; there is no
-    # `polylogue ops` group yet.
-    ("status",),
-    ("doctor",),
-    ("maintenance",),
+    ("ops",),
 )
 
 
@@ -164,29 +157,7 @@ ACTION_CONTRACTS: tuple[CliActionContract, ...] = (
         completion_context="config_key",
     ),
     CliActionContract(
-        path=("status",),
-        effect="ops",
-        input_unit="runtime",
-        cardinality="any",
-        formats=frozenset({"human", "json"}),
-        default_format="human",
-        machine_envelope="item",
-        requires_daemon=False,
-        completion_context="daemon_url",
-    ),
-    CliActionContract(
-        path=("doctor",),
-        effect="ops",
-        input_unit="runtime",
-        cardinality="any",
-        formats=frozenset({"human", "json"}),
-        default_format="human",
-        machine_envelope="item",
-        requires_daemon=False,
-        completion_context="archive_path",
-    ),
-    CliActionContract(
-        path=("maintenance",),
+        path=("ops",),
         effect="ops",
         input_unit="runtime",
         cardinality="any",
@@ -194,7 +165,6 @@ ACTION_CONTRACTS: tuple[CliActionContract, ...] = (
         default_format="human",
         machine_envelope="item",
         requires_daemon=False,
-        completion_context="maintenance_operation",
     ),
 )
 

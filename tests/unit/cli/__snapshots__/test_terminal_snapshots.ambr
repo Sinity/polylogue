@@ -1,7 +1,7 @@
 # serializer version: 1
 # name: TestCommandOutputs.test_check_output_snapshot
   '''
-  Usage: polylogue doctor [OPTIONS]
+  Usage: polylogue ops doctor [OPTIONS]
     Health check with optional maintenance and cleanup previews.
   Options:
     -f, --format [json]             Output format
@@ -45,8 +45,8 @@
                                     status (repeatable)
     --artifact-kind TEXT            Limit artifact listing<PATH> to artifact
                                     kind (repeatable)
-    --artifact-limit INTEGER        Limit artifact coverage<PATH> to N
-                                    observation rows
+    --artifact-limit INTEGER        Limit artifact coverage<PATH> to
+                                    N observation rows
     --artifact-offset INTEGER       Start offset for artifact
                                     coverage<PATH>  [default: 0]
     --schema-samples TEXT           Validation samples per raw payload: positive
@@ -221,8 +221,6 @@
     -h, --help                      Show this message and exit.
   Commands:
     analyze
-    auth               Authenticate optional external services.
-    backup             Create a timestamped durability-tier backup.
     blackboard
     commands
     completions        Emit shell completion setup for polylogue.
@@ -232,24 +230,23 @@
     dashboard          Open the local dashboard.
     delete             Delete matched sessions.
     diagnostics        Temporal session diagnostics
-    doctor             Run archive health checks and repairs.
-    embed              Enable, preflight, and backfill the embedding pipeline.
     feedback           Record learning corrections for derived insights.
     import             Import sessions from configured sources.
     init               Detect chat sources and write a starter polylogue.toml.
     insights           Rebuild and inspect derived session insights.
     list               List matched sessions.
-    maintenance        Preview and run maintenance backfill operations.
     mark
-    paths              Print canonical archive paths and bind-mount detection.
+    ops                Run operational archive and daemon commands.
+    query-completions  Inspect structured query completion metadata.
+    query-explain      Explain query DSL parsing and lowering.
     read               Read matched sessions (route to view<PATH>).
+    read-views         List executable read-view profiles.
     recent             List the most recently updated sessions.
-    reset              Reset local archive state.
     resume             Resume from recent session context.
     resume-candidates  Rank resume candidates for the current context.
     schema             Inspect and audit provider schemas.
+    select
     stats              Show statistics for matched sessions.
-    status             Show daemon and archive status.
     tags               Manage session tags.
     tutorial           Interactive first-run walk-through.
     user-state         Manage durable reader user state.
@@ -485,10 +482,6 @@
   .
   Commands:
     analyze
-    auth               Authenticate optional external services
-  .
-    backup             Create a timestamped durability-tier ba
-  ckup.
     blackboard
     commands
     completions        Emit shell completion setup for polylog
@@ -500,9 +493,6 @@
     dashboard          Open the local dashboard.
     delete             Delete matched sessions.
     diagnostics        Temporal session diagnostics
-    doctor             Run archive health checks and repairs.
-    embed              Enable, preflight, and backfill the emb
-  edding pipeline.
     feedback           Record learning corrections for derived
    insights.
     import             Import sessions from configured sources
@@ -512,22 +502,23 @@
     insights           Rebuild and inspect derived session ins
   ights.
     list               List matched sessions.
-    maintenance        Preview and run maintenance backfill op
-  erations.
     mark
-    paths              Print canonical archive paths and bind-
-  mount detection.
+    ops                Run operational archive and daemon comm
+  ands.
+    query-completions  Inspect structured query completion met
+  adata.
+    query-explain      Explain query DSL parsing and lowering.
     read               Read matched sessions (route to view<PATH>
   stination).
+    read-views         List executable read-view profiles.
     recent             List the most recently updated sessions
   .
-    reset              Reset local archive state.
     resume             Resume from recent session context.
     resume-candidates  Rank resume candidates for the current
   context.
     schema             Inspect and audit provider schemas.
+    select
     stats              Show statistics for matched sessions.
-    status             Show daemon and archive status.
     tags               Manage session tags.
     tutorial           Interactive first-run walk-through.
     user-state         Manage durable reader user state.
@@ -682,8 +673,6 @@
     -h, --help                      Show this message and exit.
   Commands:
     analyze
-    auth               Authenticate optional external services.
-    backup             Create a timestamped durability-tier backup.
     blackboard
     commands
     completions        Emit shell completion setup for polylogue.
@@ -693,24 +682,23 @@
     dashboard          Open the local dashboard.
     delete             Delete matched sessions.
     diagnostics        Temporal session diagnostics
-    doctor             Run archive health checks and repairs.
-    embed              Enable, preflight, and backfill the embedding pipeline.
     feedback           Record learning corrections for derived insights.
     import             Import sessions from configured sources.
     init               Detect chat sources and write a starter polylogue.toml.
     insights           Rebuild and inspect derived session insights.
     list               List matched sessions.
-    maintenance        Preview and run maintenance backfill operations.
     mark
-    paths              Print canonical archive paths and bind-mount detection.
+    ops                Run operational archive and daemon commands.
+    query-completions  Inspect structured query completion metadata.
+    query-explain      Explain query DSL parsing and lowering.
     read               Read matched sessions (route to view<PATH>).
+    read-views         List executable read-view profiles.
     recent             List the most recently updated sessions.
-    reset              Reset local archive state.
     resume             Resume from recent session context.
     resume-candidates  Rank resume candidates for the current context.
     schema             Inspect and audit provider schemas.
+    select
     stats              Show statistics for matched sessions.
-    status             Show daemon and archive status.
     tags               Manage session tags.
     tutorial           Interactive first-run walk-through.
     user-state         Manage durable reader user state.

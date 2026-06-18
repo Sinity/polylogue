@@ -10,10 +10,11 @@ from polylogue.scenarios import (
 def test_build_operational_contract_surfaces_compiles_runtime_aligned_json_contracts() -> None:
     surfaces = {surface.name: surface for surface in build_operational_contract_surfaces()}
 
-    assert surfaces["json-doctor"].args == ("doctor", "--format", "json")
+    assert surfaces["json-doctor"].args == ("ops", "doctor", "--format", "json")
     assert surfaces["json-doctor"].tags == ("maintenance", "readiness")
     assert "json-doctor-action-preview" not in surfaces
     assert surfaces["json-doctor-session-insights-preview"].args == (
+        "ops",
         "doctor",
         "--format",
         "json",
@@ -28,7 +29,7 @@ def test_build_operational_contract_surfaces_compiles_runtime_aligned_json_contr
 def test_build_live_operational_surface_lanes_compiles_live_variants() -> None:
     surfaces = {surface.name: surface for surface in build_live_operational_surface_lanes()}
 
-    assert surfaces["live-readiness-json"].args == ("doctor", "--format", "json")
+    assert surfaces["live-readiness-json"].args == ("ops", "doctor", "--format", "json")
     assert surfaces["live-readiness-json"].tags == ("maintenance", "readiness")
     assert surfaces["live-retrieval-checks"].args == (
         "--provider",
@@ -74,6 +75,7 @@ def test_build_memory_budget_operational_surface_lanes_compiles_budget_variants(
     )
     assert surfaces["memory-budget"].max_rss_mb == 1536
     assert surfaces["maintenance-memory-budget"].args == (
+        "ops",
         "doctor",
         "--format",
         "json",

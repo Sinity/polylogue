@@ -1,7 +1,7 @@
 """Shared maintenance operation envelope across CLI, daemon HTTP, and MCP.
 
 This module owns the **single typed envelope** that every maintenance
-surface — CLI ``polylogue maintenance plan/run``, daemon HTTP
+surface — CLI ``polylogue ops maintenance plan/run``, daemon HTTP
 ``/api/maintenance/plan`` and ``/api/maintenance/run``, and MCP
 ``maintenance_preview`` / ``maintenance_execute`` — emits as its result
 shape. It exists so that an operator (or a script) can call any of the

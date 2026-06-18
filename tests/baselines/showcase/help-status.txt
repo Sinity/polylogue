@@ -1,4 +1,4 @@
-Usage: polylogue status [OPTIONS]
+Usage: polylogue ops status [OPTIONS]
 
   Show daemon and archive health.
 

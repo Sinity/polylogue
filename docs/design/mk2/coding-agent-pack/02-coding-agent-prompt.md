@@ -12,7 +12,7 @@ rg -n "QueryFirstGroupBase|RootModeRequest|query_first|query verbs|messages|raw|
 polylogue --help || true
 polylogue completions --help || true
 polylogue dashboard --help || true
-polylogue doctor --help || true
+polylogue ops doctor --help || true
 polylogue messages --help || true
 polylogue raw --help || true
 ```
@@ -47,7 +47,7 @@ polylogued run
 /api/facets
 /c/{id}
 polylogue --latest open
-polylogue doctor daemon
+polylogue ops doctor daemon
 polylogue select
 ```
 
@@ -123,7 +123,7 @@ When daemon is running, `polylogue --latest open` should open the local reader U
 
 ### Step 6: `doctor daemon`
 
-Add daemon health to `polylogue doctor`. Use existing doctor target style if one exists; otherwise use subcommands. Pick one spelling. Do not expose two equivalent forms.
+Add daemon health to `polylogue ops doctor`. Use existing doctor target style if one exists; otherwise use subcommands. Pick one spelling. Do not expose two equivalent forms.
 
 ### Step 7: `polylogue select`
 

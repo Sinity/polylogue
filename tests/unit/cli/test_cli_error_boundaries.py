@@ -160,7 +160,7 @@ class TestUnknownInputs:
 
     def test_unknown_flag_with_subcommand(self, runner: CliRunner) -> None:
         """Unknown flag in subcommand should not produce traceback."""
-        result = runner.invoke(cli, ["doctor", "--fake-flag"])
+        result = runner.invoke(cli, ["ops", "doctor", "--fake-flag"])
         assert TRACEBACK_SENTINEL not in result.output
 
 

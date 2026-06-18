@@ -25,7 +25,7 @@ In a second terminal with the same environment:
 
 ```bash
 polylogue import --demo
-polylogue status
+polylogue ops status
 polylogue stats
 polylogue "pytest" list --limit 5
 polylogue find "pytest" then read --view messages
@@ -40,7 +40,7 @@ devtools lab-scenario verify-baselines
 archive build. It materializes approved fixture sources under the configured
 archive root, stages them into the daemon inbox, and reports success only after
 the daemon accepts scheduling. Until the running daemon converges the staged
-source, `polylogue status` may show an empty or in-progress archive and
+source, `polylogue ops status` may show an empty or in-progress archive and
 search/read/analyze examples can legitimately return no rows.
 
 ## How It Works

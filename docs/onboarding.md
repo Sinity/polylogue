@@ -67,7 +67,7 @@ a catch-up pass over everything it finds.
 Check status at any time:
 
 ```bash
-polylogue status
+polylogue ops status
 polylogued status
 ```
 
@@ -88,12 +88,12 @@ If something looks wrong (missing FTS coverage, stale daemon, malformed
 records), run the health-check command:
 
 ```bash
-polylogue doctor
-polylogue doctor --repair
-polylogue doctor --runtime
+polylogue ops doctor
+polylogue ops doctor --repair
+polylogue ops doctor --runtime
 ```
 
-`doctor` reports schema mismatches, FTS coverage gaps, blob-store
+`ops doctor` reports schema mismatches, FTS coverage gaps, blob-store
 consistency, daemon liveness, and validation failures. `--repair`
 recreates dropped FTS triggers and rebuilds the index where it can do
 so safely; deeper recovery still requires the documented in-place

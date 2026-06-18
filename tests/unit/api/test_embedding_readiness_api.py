@@ -16,7 +16,7 @@ async def test_embedding_status_returns_canonical_payload(tmp_path: Path) -> Non
     payload = {
         "status": "none",
         "retrieval_ready": False,
-        "next_action": {"code": "enable_embeddings", "command": "polylogue embed enable --yes"},
+        "next_action": {"code": "enable_embeddings", "command": "polylogue ops embed enable --yes"},
     }
     try:
         with patch(
@@ -37,7 +37,7 @@ async def test_embedding_preflight_returns_canonical_payload(tmp_path: Path) -> 
     payload = {
         "pending_sessions": 2,
         "pending_messages": 100,
-        "backfill_command": "polylogue embed backfill --yes --max-sessions 2",
+        "backfill_command": "polylogue ops embed backfill --yes --max-sessions 2",
     }
     try:
         with (

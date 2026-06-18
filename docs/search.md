@@ -369,9 +369,9 @@ Implementation: `polylogue/storage/search_providers/fts5.py`,
   different query embeddings.
 - Requires embeddings to be enabled and populated; see
   [docs/architecture.md § Embedding Pipeline](architecture.md#embedding-pipeline).
-- Use `polylogue embed status` to check whether vector retrieval is disabled,
+- Use `polylogue ops embed status` to check whether vector retrieval is disabled,
   missing an API key, pending backlog catch-up, partially usable, or complete.
-  `polylogue embed status --detail` performs exact pending-message and
+  `polylogue ops embed status --detail` performs exact pending-message and
   retrieval-band accounting; the default status path stays cheap and reports
   the latest persisted catch-up run.
 
@@ -380,18 +380,18 @@ Implementation: `polylogue/storage/search_providers/fts5.py`,
 Semantic search stays unavailable until embeddings are both enabled and
 materialized. The activation path is deliberately bounded:
 
-1. `polylogue embed status` shows config state, key presence, coverage,
+1. `polylogue ops embed status` shows config state, key presence, coverage,
    configured model/dimension, monthly cost cap, backlog, latest catch-up
    progress, and `next_action` (`code`, `reason`, `command`) for automation.
-2. `polylogue embed preflight --max-sessions 10` estimates the next
+2. `polylogue ops embed preflight --max-sessions 10` estimates the next
    bounded window without contacting Voyage. Use `--format json` for the
    scriptable form: it reports the exact window, pricing assumptions,
    effective cost cap, and a ready-to-run `backfill_args` list for the same
    bounded catch-up slice.
-3. `polylogue embed enable --yes` enables the daemon stage when a Voyage key is
-   already configured, or `polylogue embed enable --voyage-api-key ...` records
+3. `polylogue ops embed enable --yes` enables the daemon stage when a Voyage key is
+   already configured, or `polylogue ops embed enable --voyage-api-key ...` records
    the key and enables the stage.
-4. `polylogue embed backfill --max-sessions 10` runs an explicit bounded
+4. `polylogue ops embed backfill --max-sessions 10` runs an explicit bounded
    catch-up batch; after enablement, `polylogued` also processes bounded daemon
    batches for new or stale sessions.
 
@@ -671,5 +671,5 @@ When a query returns no results:
 2. Expand the time window: `--since 2024-01` instead of `--since yesterday`
 3. Verify the archive has data: `polylogue count` (no filters)
 4. Check FTS index health: `polylogued status` shows `fts_readiness`
-5. Run `polylogue check` for schema and index integrity
+5. Run `polylogue ops doctor` for schema and index integrity
 6. If using `--similar`, ensure embeddings are built (check `polylogue stats` for embedding coverage)

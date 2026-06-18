@@ -1,4 +1,4 @@
-Usage: polylogue maintenance preview [OPTIONS]
+Usage: polylogue ops maintenance preview [OPTIONS]
 
   Staleness inventory by model and scope. Read-only.
 

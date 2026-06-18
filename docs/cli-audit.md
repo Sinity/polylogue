@@ -324,7 +324,7 @@ coverage of their result payloads.
 
 | Command | Format Invocation | Contract Test |
 |---------|-------------------|---------------|
-| `doctor` | `polylogue doctor --format json` | `TestCheckJsonEnvelope` |
+| `doctor` | `polylogue ops doctor --format json` | `TestCheckJsonEnvelope` |
 | `tags` | `polylogue tags --format json` | `TestTagsJsonEnvelope` |
 | `schema explain` | `polylogue schema explain --provider <p> --format json` | `TestSchemaExplainJsonContract` |
 | `schema list` | `polylogue schema list --format json` | `TestAllJsonCommandsProduceValidJson` |

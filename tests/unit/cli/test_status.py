@@ -424,7 +424,7 @@ class TestNoArchiveStatus:
             "retrieval_ready": True,
             "next_action": {
                 "code": "refresh_stale",
-                "command": "polylogue embed backfill --max-sessions 10",
+                "command": "polylogue ops embed backfill --max-sessions 10",
                 "reason": "Existing vectors are stale for at least one message.",
             },
         }
@@ -450,7 +450,7 @@ class TestNoArchiveStatus:
         assert readiness["counts"]["stale_messages"] == 4
         assert readiness["counts"]["retrieval_ready"] is True
         assert readiness["caveats"] == []
-        assert readiness["repair_hint"] == "polylogue embed backfill --max-sessions 10"
+        assert readiness["repair_hint"] == "polylogue ops embed backfill --max-sessions 10"
 
     def test_direct_status_json_maps_archive_surface_component_readiness(self, tmp_path: Path) -> None:
         env = _make_app_env()
@@ -522,10 +522,10 @@ class TestNoArchiveStatus:
         assert readiness["state"] == "stale"
         assert readiness["counts"] == {"text_block_count": 10, "messages_fts_count": 8}
         assert readiness["caveats"] == ["messages_fts_row_mismatch"]
-        assert readiness["repair_hint"] == "polylogue maintenance run --target dangling_fts"
+        assert readiness["repair_hint"] == "polylogue ops maintenance run --target dangling_fts"
         assert profiles["scope"] == "insights"
         assert profiles["state"] == "stale"
-        assert profiles["repair_hint"] == "polylogue maintenance run --target session_insights"
+        assert profiles["repair_hint"] == "polylogue ops maintenance run --target session_insights"
         assert tool_usage["scope"] == "actions"
         assert tool_usage["counts"] == {"action_count": 4}
         assert assertions["scope"] == "user"
@@ -566,7 +566,7 @@ class TestNoArchiveStatus:
         transforms = components["transforms"]
         assert assertions["state"] == "missing"
         assert assertions["summary"] == "assertions table missing"
-        assert assertions["repair_hint"] == "polylogue maintenance archive-init --yes"
+        assert assertions["repair_hint"] == "polylogue ops maintenance archive-init --yes"
         assert transforms["state"] == "missing"
         assert transforms["summary"] == "no sessions"
         assert transforms["repair_hint"] == "polylogue import --demo"
@@ -611,7 +611,7 @@ class TestNoArchiveStatus:
             "failure_count": 0,
             "freshness_status": "disabled",
             "retrieval_ready": False,
-            "next_action": {"code": "enable", "command": "polylogue embed enable"},
+            "next_action": {"code": "enable", "command": "polylogue ops embed enable"},
         }
 
         with (
@@ -629,7 +629,7 @@ class TestNoArchiveStatus:
         assert components["archive_sessions"]["state"] == "ready"
         assert components["search"]["state"] == "stale"
         assert components["search"]["caveats"] == ["messages_fts_row_mismatch"]
-        assert components["search"]["repair_hint"] == "polylogue maintenance run --target dangling_fts"
+        assert components["search"]["repair_hint"] == "polylogue ops maintenance run --target dangling_fts"
         assert components["session_profiles"]["state"] == "degraded"
         assert components["session_profiles"]["counts"] == {
             "profile_row_count": 1,
@@ -896,7 +896,7 @@ class TestNoArchiveStatus:
 
     @pytest.mark.integration
     def test_status_subprocess_no_archive(self, tmp_path: Path) -> None:
-        """polylogue status on fresh XDG paths shows actionable message."""
+        """polylogue ops status on fresh XDG paths shows actionable message."""
         from tests.infra.cli_subprocess import run_cli
 
         archive_root = tmp_path / "polylogue"
@@ -909,7 +909,7 @@ class TestNoArchiveStatus:
             "XDG_CACHE_HOME": str(tmp_path / "cache"),
             "HOME": str(tmp_path),
         }
-        result = run_cli(["--plain", "status"], env=env)
+        result = run_cli(["--plain", "ops", "status"], env=env)
         output_lower = result.output.lower()
         assert result.exit_code == 0
         assert "traceback" not in output_lower
@@ -946,7 +946,7 @@ class TestStatusDiagnosticIntegration:
         conn.commit()
         conn.close()
 
-        result = run_cli(["--plain", "status"], env=self._xdg_env(tmp_path))
+        result = run_cli(["--plain", "ops", "status"], env=self._xdg_env(tmp_path))
         output_lower = result.output.lower()
         assert result.exit_code == 0
         assert "traceback" not in output_lower
@@ -966,7 +966,7 @@ class TestStatusDiagnosticIntegration:
         archive.mkdir(parents=True, exist_ok=True)
         (archive / "daemon.pid").write_text("99999999\n")
 
-        result = run_cli(["--plain", "status"], env=self._xdg_env(tmp_path))
+        result = run_cli(["--plain", "ops", "status"], env=self._xdg_env(tmp_path))
         output_lower = result.output.lower()
         assert result.exit_code == 0
         assert "traceback" not in output_lower
@@ -986,7 +986,7 @@ class TestStatusDiagnosticIntegration:
         config_home.mkdir(parents=True, exist_ok=True)
         (config_home / "polylogue.toml").write_text("[sources]\nroots = []\n")
 
-        result = run_cli(["--plain", "status"], env=self._xdg_env(tmp_path))
+        result = run_cli(["--plain", "ops", "status"], env=self._xdg_env(tmp_path))
         output_lower = result.output.lower()
         assert result.exit_code == 0
         assert "traceback" not in output_lower
@@ -1114,7 +1114,7 @@ class TestDaemonStatus:
 
 @pytest.mark.integration
 def test_status_command_accepts_json_alias_flag(tmp_path: Path) -> None:
-    """`polylogue status --json` is a documented alias for `--format json`.
+    """`polylogue ops status --json` is a documented alias for `--format json`.
 
     Sibling subcommands (`list`, `tags`, `sources`, `stats`) accept `--json`;
     `status` previously rejected it with "No such option '--json'". Closes #1612.
@@ -1131,7 +1131,7 @@ def test_status_command_accepts_json_alias_flag(tmp_path: Path) -> None:
         "HOME": str(tmp_path),
         "POLYLOGUE_DAEMON_URL": "http://127.0.0.1:1",
     }
-    result = run_cli(["--plain", "status", "--json"], env=env)
+    result = run_cli(["--plain", "ops", "status", "--json"], env=env)
     assert result.exit_code == 0, result.output
     assert "No such option" not in result.output
     parsed = json.loads(result.output)

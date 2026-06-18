@@ -99,6 +99,7 @@ _SHORT_HELP: dict[str, str] = {
     "init": "Detect chat sources and write a starter polylogue.toml.",
     "insights": "Rebuild and inspect derived session insights.",
     "maintenance": "Preview and run maintenance backfill operations.",
+    "ops": "Run operational archive and daemon commands.",
     "paths": "Print canonical archive paths and bind-mount detection.",
     "query_completions": "Inspect structured query completion metadata.",
     "query_explain": "Explain query DSL parsing and lowering.",
@@ -126,6 +127,7 @@ _GROUP_ATTRS: dict[str, str] = {
     "feedback": "feedback_command",
     "insights": "insights_command",
     "maintenance": "maintenance_group",
+    "ops": "ops_command",
     "schema": "schema_command",
 }
 
@@ -148,18 +150,12 @@ def _L(name: str) -> _LazyCommand:  # noqa: N802
 
 ROOT_COMMANDS: tuple[click.Command, ...] = (
     _L("commands"),
-    _L("backup"),
-    _L("check"),
     _L("config"),
     _L("cost"),
-    _L("reset"),
-    _L("status"),
     _L("import_command"),
     _L("init"),
-    _L("auth"),
     _L("completions"),
     _L("dashboard"),
-    _L("paths"),
     _L("query_completions"),
     _L("query_explain"),
     _L("read_views"),
@@ -171,10 +167,20 @@ ROOT_COMMANDS: tuple[click.Command, ...] = (
     _L("user_state"),
     _L("schema"),
     _L("diagnostics"),
-    _L("embed"),
-    _L("maintenance"),
+    _L("ops"),
     _L("tutorial"),
     _L("blackboard"),
+)
+
+OPS_COMMANDS: tuple[click.Command, ...] = (
+    _L("auth"),
+    _L("backup"),
+    _L("check"),
+    _L("embed"),
+    _L("maintenance"),
+    _L("paths"),
+    _L("reset"),
+    _L("status"),
 )
 
 
@@ -184,4 +190,10 @@ def register_root_commands(group: click.Group) -> None:
         group.add_command(command)
 
 
-__all__ = ["register_root_commands"]
+def register_ops_commands(group: click.Group) -> None:
+    """Attach operational commands under ``polylogue ops``."""
+    for command in OPS_COMMANDS:
+        group.add_command(command)
+
+
+__all__ = ["register_ops_commands", "register_root_commands"]

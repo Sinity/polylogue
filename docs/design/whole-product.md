@@ -229,7 +229,7 @@ Every number in polylogue has provenance. The user should never wonder
 
 - **Content hashing**: archive writes are idempotent by SHA-256. If a
   session was ingested, its content hasn't been silently modified.
-- **Verification dashboard**: `polylogue check` audits the archive for
+- **Verification dashboard**: `polylogue ops doctor` audits the archive for
   integrity — schema consistency, foreign key violations, orphan records,
   FTS5 index health.
 - **Provenance links**: stories and insights link back to source sessions.
@@ -278,7 +278,7 @@ presentation, not capability.
 | AI journey | `polylogue story ai-journey` | `polylogue_story_ai_journey` | Story page |
 | Project memory | `polylogue memory` | `polylogue_get_project_memory` | Memory page |
 | Tags | `polylogue tags` | `polylogue_tag_session` | Tag editor |
-| Health check | `polylogue check` | `polylogue_health` | Health dashboard |
+| Health check | `polylogue ops doctor` | `polylogue_health` | Health dashboard |
 | MCP server | `polylogue mcp` | (self) | — |
 | Daemon | `polylogued` | `polylogue_shutdown` | Daemon status |
 

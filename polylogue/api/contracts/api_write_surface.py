@@ -81,7 +81,7 @@ class APIWriteSurface:
         """Execute (or dry-run) the named maintenance targets.
 
         Delegates to :func:`execute_backfill`, the same shared planner
-        invoked by ``polylogue maintenance run`` so adapters do not
+        invoked by ``polylogue ops maintenance run`` so adapters do not
         invent their own maintenance semantics.
         """
         config = self._polylogue.config

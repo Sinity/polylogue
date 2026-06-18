@@ -80,30 +80,66 @@
   {
     "items": [
       {
+        "actions": {
+          "annotate": {
+            "enabled": true,
+            "state": "enabled"
+          },
+          "copy_link": {
+            "enabled": true,
+            "state": "enabled"
+          },
+          "open": {
+            "enabled": true,
+            "state": "enabled"
+          }
+        },
+        "anchor": "session-chatgpt-export-402913ec-9ef2-493e-b0ac-<HASH>",
         "created_at": "<TIMESTAMP>",
         "id": "chatgpt-export:402913ec-9ef2-493e-b0ac-<HASH>",
         "message_count": 5,
-        "native_id": "402913ec-9ef2-493e-b0ac-<HASH>",
         "origin": "chatgpt-export",
-        "session_id": "chatgpt-export:402913ec-9ef2-493e-b0ac-<HASH>",
-        "source": "chatgpt-export",
         "tags": [],
+        "target_ref": {
+          "identity_key": "session:chatgpt-export:402913ec-9ef2-493e-b0ac-<HASH>",
+          "session_id": "chatgpt-export:402913ec-9ef2-493e-b0ac-<HASH>",
+          "target_id": "chatgpt-export:402913ec-9ef2-493e-b0ac-<HASH>",
+          "target_type": "session"
+        },
         "title": "corpus-01",
         "updated_at": "<TIMESTAMP>",
-        "word_count": 90
+        "words": 90
       },
       {
+        "actions": {
+          "annotate": {
+            "enabled": true,
+            "state": "enabled"
+          },
+          "copy_link": {
+            "enabled": true,
+            "state": "enabled"
+          },
+          "open": {
+            "enabled": true,
+            "state": "enabled"
+          }
+        },
+        "anchor": "session-chatgpt-export-8a476a87-e49d-481d-91d8-<HASH>",
         "created_at": "<TIMESTAMP>",
         "id": "chatgpt-export:8a476a87-e49d-481d-91d8-<HASH>",
         "message_count": 5,
-        "native_id": "8a476a87-e49d-481d-91d8-<HASH>",
         "origin": "chatgpt-export",
-        "session_id": "chatgpt-export:8a476a87-e49d-481d-91d8-<HASH>",
-        "source": "chatgpt-export",
         "tags": [],
+        "target_ref": {
+          "identity_key": "session:chatgpt-export:8a476a87-e49d-481d-91d8-<HASH>",
+          "session_id": "chatgpt-export:8a476a87-e49d-481d-91d8-<HASH>",
+          "target_id": "chatgpt-export:8a476a87-e49d-481d-91d8-<HASH>",
+          "target_type": "session"
+        },
         "title": "corpus-00",
         "updated_at": "<TIMESTAMP>",
-        "word_count": 164
+        "words": 164
       }
     ],
     "limit": 20,
@@ -208,21 +244,13 @@
       "user": {
         "path": "<PATH>",
         "exists": true,
-        "size_bytes": 114688,
-        "expected_user_version": 1,
-        "user_version": 1,
+        "size_bytes": 32768,
+        "expected_user_version": 2,
+        "user_version": 2,
         "version_status": "ok",
         "table_counts": {
-          "marks": 0,
-          "annotations": 0,
-          "corrections": 0,
-          "suppressions": 0,
           "session_tags": 0,
-          "session_metadata": 0,
-          "saved_views": 0,
-          "recall_packs": 0,
-          "workspaces": 0,
-          "blackboard_notes": 0
+          "session_metadata": 0
         }
       },
       "ops": {
@@ -360,17 +388,17 @@
     "archive_facade_routes": {
       "checked": true,
       "source": "static_facade_route_catalog",
-      "total_method_count": 103,
-      "archive_ready_method_count": 102,
+      "total_method_count": 110,
+      "archive_ready_method_count": 109,
       "unsupported_method_count": 0,
       "route_counts": {
-        "archive_routed": 88,
+        "archive_routed": 95,
         "archive_direct": 14,
         "not_archive_runtime": 1
       },
       "tier_counts": {
         "user": 34,
-        "index": 65,
+        "index": 72,
         "none": 1,
         "source": 3
       },
@@ -485,6 +513,11 @@
           "route": "archive_direct",
           "tier": "index",
           "detail": "explains an empty index query result from index.db probes"
+        },
+        "explain_query_expression": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "explains query DSL parsing and lowering"
         },
         "export_insight_bundle": {
           "route": "archive_routed",
@@ -706,6 +739,11 @@
           "tier": "user",
           "detail": "reads marks through user.db"
         },
+        "list_read_view_profiles": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "lists executable read-view profiles"
+        },
         "list_recall_packs": {
           "route": "archive_routed",
           "tier": "user",
@@ -801,10 +839,20 @@
           "tier": "user",
           "detail": "writes blackboard notes through user.db"
         },
+        "query_completions": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "lists query DSL completion metadata"
+        },
         "query_sessions": {
           "route": "archive_routed",
           "tier": "index",
           "detail": "queries summaries from index.db"
+        },
+        "query_units": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "queries terminal archive units from index.db"
         },
         "rebuild_index": {
           "route": "archive_routed",
@@ -820,6 +868,21 @@
           "route": "archive_routed",
           "tier": "user",
           "detail": "writes corrections through user.db"
+        },
+        "recovery_digest": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "builds recovery digests from archive-routed session reads"
+        },
+        "recovery_report": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "renders recovery reports from archive-routed session reads"
+        },
+        "recovery_work_packet": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "renders recovery work packets from archive-routed session reads"
         },
         "remove_mark": {
           "route": "archive_routed",
@@ -954,7 +1017,7 @@
       ],
       "facade_tier_route_counts": {
         "user": 34,
-        "index": 65,
+        "index": 72,
         "none": 1,
         "source": 3
       },
@@ -966,6 +1029,448 @@
       "unsupported_primary_method_count": 0,
       "unsupported_primary_methods": [],
       "final_shape_blockers": []
+    },
+    "component_readiness": {
+      "archive_sessions": {
+        "component": "archive_sessions",
+        "scope": "archive",
+        "state": "ready",
+        "summary": "ready",
+        "last_success": null,
+        "last_attempt": null,
+        "counts": {
+          "session_count": 2,
+          "message_count": 10
+        },
+        "caveats": [],
+        "repair_hint": null,
+        "evidence_refs": []
+      },
+      "raw_artifacts": {
+        "component": "raw_artifacts",
+        "scope": "source",
+        "state": "ready",
+        "summary": "ready",
+        "last_success": null,
+        "last_attempt": null,
+        "counts": {
+          "source_check_available": true,
+          "raw_link_count": 2,
+          "missing_raw_session_count": 0
+        },
+        "caveats": [],
+        "repair_hint": null,
+        "evidence_refs": []
+      },
+      "search": {
+        "component": "search",
+        "scope": "lexical",
+        "state": "ready",
+        "summary": "ready",
+        "last_success": null,
+        "last_attempt": null,
+        "counts": {
+          "text_block_count": 27,
+          "messages_fts_count": 27
+        },
+        "caveats": [],
+        "repair_hint": null,
+        "evidence_refs": []
+      },
+      "session_profiles": {
+        "component": "session_profiles",
+        "scope": "insights",
+        "state": "stale",
+        "summary": "missing_profile_rows, missing_session_profile_materialization",
+        "last_success": null,
+        "last_attempt": null,
+        "counts": {
+          "profile_row_count": 0,
+          "missing_profile_row_count": 2,
+          "missing_materialization_count": 2
+        },
+        "caveats": [
+          "missing_profile_rows",
+          "missing_session_profile_materialization"
+        ],
+        "repair_hint": "polylogue ops maintenance run --target session_insights",
+        "evidence_refs": []
+      },
+      "timeline_work_events": {
+        "component": "timeline_work_events",
+        "scope": "insights",
+        "state": "stale",
+        "summary": "missing_work_events_materialization",
+        "last_success": null,
+        "last_attempt": null,
+        "counts": {
+          "work_event_row_count": 0,
+          "missing_materialization_count": 2
+        },
+        "caveats": [
+          "missing_work_events_materialization"
+        ],
+        "repair_hint": "polylogue ops maintenance run --target session_insights",
+        "evidence_refs": []
+      },
+      "timeline_phases": {
+        "component": "timeline_phases",
+        "scope": "insights",
+        "state": "stale",
+        "summary": "missing_phases_materialization",
+        "last_success": null,
+        "last_attempt": null,
+        "counts": {
+          "phase_row_count": 0,
+          "missing_materialization_count": 2
+        },
+        "caveats": [
+          "missing_phases_materialization"
+        ],
+        "repair_hint": "polylogue ops maintenance run --target session_insights",
+        "evidence_refs": []
+      },
+      "threads": {
+        "component": "threads",
+        "scope": "insights",
+        "state": "stale",
+        "summary": "missing_thread_materialization",
+        "last_success": null,
+        "last_attempt": null,
+        "counts": {
+          "thread_count": 2,
+          "missing_materialization_count": 2
+        },
+        "caveats": [
+          "missing_thread_materialization"
+        ],
+        "repair_hint": "polylogue ops maintenance run --target session_insights",
+        "evidence_refs": []
+      },
+      "tool_usage": {
+        "component": "tool_usage",
+        "scope": "actions",
+        "state": "ready",
+        "summary": "ready",
+        "last_success": null,
+        "last_attempt": null,
+        "counts": {
+          "action_count": 0
+        },
+        "caveats": [],
+        "repair_hint": null,
+        "evidence_refs": []
+      },
+      "latency_profiles": {
+        "component": "latency_profiles",
+        "scope": "insights",
+        "state": "stale",
+        "summary": "missing_latency_materialization",
+        "last_success": null,
+        "last_attempt": null,
+        "counts": {
+          "missing_materialization_count": 2
+        },
+        "caveats": [
+          "missing_latency_materialization"
+        ],
+        "repair_hint": "polylogue ops maintenance run --target session_insights",
+        "evidence_refs": []
+      },
+      "embeddings": {
+        "component": "embeddings",
+        "scope": "semantic",
+        "state": "missing",
+        "summary": "none",
+        "last_success": null,
+        "last_attempt": null,
+        "counts": {
+          "total_sessions": 2,
+          "embedded_sessions": 0,
+          "embedded_messages": 0,
+          "pending_sessions": 2,
+          "stale_messages": 0,
+          "failure_count": 0,
+          "retrieval_ready": false
+        },
+        "caveats": [],
+        "repair_hint": "polylogue ops embed enable --voyage-api-key ...",
+        "evidence_refs": []
+      },
+      "assertions": {
+        "component": "assertions",
+        "scope": "user",
+        "state": "ready",
+        "summary": "ready",
+        "last_success": null,
+        "last_attempt": null,
+        "counts": {
+          "assertion_count": 0,
+          "target_count": 0,
+          "active_count": 0
+        },
+        "caveats": [],
+        "repair_hint": null,
+        "evidence_refs": [
+          "user.db:assertions"
+        ],
+        "metadata": {
+          "overlay_audit": {
+            "surfaces": [
+              {
+                "name": "marks",
+                "storage": "assertions",
+                "assertion_kind": "mark",
+                "table": "assertions",
+                "total_count": 0,
+                "active_count": 0,
+                "deleted_count": 0,
+                "candidate_count": 0,
+                "rationale": "assertion lifecycle claim"
+              },
+              {
+                "name": "highlights",
+                "storage": "assertions",
+                "assertion_kind": "highlight",
+                "table": "assertions",
+                "total_count": 0,
+                "active_count": 0,
+                "deleted_count": 0,
+                "candidate_count": 0,
+                "rationale": "assertion lifecycle claim"
+              },
+              {
+                "name": "annotations",
+                "storage": "assertions",
+                "assertion_kind": "annotation",
+                "table": "assertions",
+                "total_count": 0,
+                "active_count": 0,
+                "deleted_count": 0,
+                "candidate_count": 0,
+                "rationale": "assertion lifecycle claim"
+              },
+              {
+                "name": "suppressions",
+                "storage": "assertions",
+                "assertion_kind": "suppression",
+                "table": "assertions",
+                "total_count": 0,
+                "active_count": 0,
+                "deleted_count": 0,
+                "candidate_count": 0,
+                "rationale": "assertion lifecycle claim"
+              },
+              {
+                "name": "corrections",
+                "storage": "assertions",
+                "assertion_kind": "correction",
+                "table": "assertions",
+                "total_count": 0,
+                "active_count": 0,
+                "deleted_count": 0,
+                "candidate_count": 0,
+                "rationale": "assertion lifecycle claim"
+              },
+              {
+                "name": "tag_assertions",
+                "storage": "assertions",
+                "assertion_kind": "tag",
+                "table": "assertions",
+                "total_count": 0,
+                "active_count": 0,
+                "deleted_count": 0,
+                "candidate_count": 0,
+                "rationale": "assertion lifecycle claim"
+              },
+              {
+                "name": "metadata_assertions",
+                "storage": "assertions",
+                "assertion_kind": "metadata",
+                "table": "assertions",
+                "total_count": 0,
+                "active_count": 0,
+                "deleted_count": 0,
+                "candidate_count": 0,
+                "rationale": "assertion lifecycle claim"
+              },
+              {
+                "name": "saved_views",
+                "storage": "assertions",
+                "assertion_kind": "saved_query",
+                "table": "assertions",
+                "total_count": 0,
+                "active_count": 0,
+                "deleted_count": 0,
+                "candidate_count": 0,
+                "rationale": "assertion lifecycle claim"
+              },
+              {
+                "name": "recall_packs",
+                "storage": "assertions",
+                "assertion_kind": "recall_pack",
+                "table": "assertions",
+                "total_count": 0,
+                "active_count": 0,
+                "deleted_count": 0,
+                "candidate_count": 0,
+                "rationale": "assertion lifecycle claim"
+              },
+              {
+                "name": "workspaces",
+                "storage": "assertions",
+                "assertion_kind": "workspace_note",
+                "table": "assertions",
+                "total_count": 0,
+                "active_count": 0,
+                "deleted_count": 0,
+                "candidate_count": 0,
+                "rationale": "assertion lifecycle claim"
+              },
+              {
+                "name": "blackboard_notes",
+                "storage": "assertions",
+                "assertion_kind": "note",
+                "table": "assertions",
+                "total_count": 0,
+                "active_count": 0,
+                "deleted_count": 0,
+                "candidate_count": 0,
+                "rationale": "assertion lifecycle claim"
+              },
+              {
+                "name": "decisions",
+                "storage": "assertions",
+                "assertion_kind": "decision",
+                "table": "assertions",
+                "total_count": 0,
+                "active_count": 0,
+                "deleted_count": 0,
+                "candidate_count": 0,
+                "rationale": "assertion lifecycle claim"
+              },
+              {
+                "name": "caveats",
+                "storage": "assertions",
+                "assertion_kind": "caveat",
+                "table": "assertions",
+                "total_count": 0,
+                "active_count": 0,
+                "deleted_count": 0,
+                "candidate_count": 0,
+                "rationale": "assertion lifecycle claim"
+              },
+              {
+                "name": "lessons",
+                "storage": "assertions",
+                "assertion_kind": "lesson",
+                "table": "assertions",
+                "total_count": 0,
+                "active_count": 0,
+                "deleted_count": 0,
+                "candidate_count": 0,
+                "rationale": "assertion lifecycle claim"
+              },
+              {
+                "name": "blockers",
+                "storage": "assertions",
+                "assertion_kind": "blocker",
+                "table": "assertions",
+                "total_count": 0,
+                "active_count": 0,
+                "deleted_count": 0,
+                "candidate_count": 0,
+                "rationale": "assertion lifecycle claim"
+              },
+              {
+                "name": "handoffs",
+                "storage": "assertions",
+                "assertion_kind": "handoff",
+                "table": "assertions",
+                "total_count": 0,
+                "active_count": 0,
+                "deleted_count": 0,
+                "candidate_count": 0,
+                "rationale": "assertion lifecycle claim"
+              },
+              {
+                "name": "run_state",
+                "storage": "assertions",
+                "assertion_kind": "run_state",
+                "table": "assertions",
+                "total_count": 0,
+                "active_count": 0,
+                "deleted_count": 0,
+                "candidate_count": 0,
+                "rationale": "assertion lifecycle claim"
+              },
+              {
+                "name": "prompt_evals",
+                "storage": "assertions",
+                "assertion_kind": "prompt_eval",
+                "table": "assertions",
+                "total_count": 0,
+                "active_count": 0,
+                "deleted_count": 0,
+                "candidate_count": 0,
+                "rationale": "assertion lifecycle claim"
+              },
+              {
+                "name": "transform_candidates",
+                "storage": "assertions",
+                "assertion_kind": "transform_candidate",
+                "table": "assertions",
+                "total_count": 0,
+                "active_count": 0,
+                "deleted_count": 0,
+                "candidate_count": 0,
+                "rationale": "assertion lifecycle claim"
+              },
+              {
+                "name": "session_tags",
+                "storage": "table",
+                "assertion_kind": null,
+                "table": "session_tags",
+                "total_count": 0,
+                "active_count": 0,
+                "deleted_count": 0,
+                "candidate_count": 0,
+                "rationale": "simple session metadata table; not an assertion lifecycle claim"
+              },
+              {
+                "name": "session_metadata",
+                "storage": "table",
+                "assertion_kind": null,
+                "table": "session_metadata",
+                "total_count": 0,
+                "active_count": 0,
+                "deleted_count": 0,
+                "candidate_count": 0,
+                "rationale": "simple key/value session metadata table; not an assertion lifecycle claim"
+              }
+            ],
+            "legacy_tables_present": []
+          }
+        }
+      },
+      "transforms": {
+        "component": "transforms",
+        "scope": "recovery",
+        "state": "ready",
+        "summary": "ready",
+        "last_success": null,
+        "last_attempt": null,
+        "counts": {
+          "transform_count": 1,
+          "session_count": 2,
+          "recovery_transform_version": 1
+        },
+        "caveats": [],
+        "repair_hint": null,
+        "evidence_refs": [
+          "transform_registry"
+        ]
+      }
     },
     "next_action": "polylogue init",
     "diagnostic": {

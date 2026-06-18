@@ -251,7 +251,7 @@ def _embedding_metrics() -> Metrics:
     """Transcript-embedding metrics off the ``index.db`` connection.
 
     Embeddings persist in a separate ``embeddings.db`` tier, not ``index.db``;
-    embedding readiness has its own surface (``polylogue embed status`` /
+    embedding readiness has its own surface (``polylogue ops embed status`` /
     ``embedding_status_payload``). From the ``index.db`` connection the model
     is reported as empty/ready so derived-status previews do not flag it as
     perpetual debt.

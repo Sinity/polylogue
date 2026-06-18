@@ -46,7 +46,7 @@ class TestGenerateTape:
             vhs_capture=True,
         )
         tape = generate_tape(ex)
-        assert 'Type "polylogue status"' in tape
+        assert 'Type "polylogue ops status"' in tape
         assert "Enter" in tape
 
     def test_tape_with_no_args(self) -> None:

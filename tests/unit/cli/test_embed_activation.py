@@ -1,6 +1,6 @@
 """Tests for the embedding activation onboarding flow (#1217).
 
-Covers the new ``polylogue embed`` group:
+Covers the new ``polylogue ops embed`` group:
 
 * ``enable`` writes the ``[embedding]`` section into the user TOML and refuses
   to proceed when ``sqlite-vec`` or the Voyage API key is missing.
@@ -316,6 +316,7 @@ class TestPreflightCommand:
         assert payload["effective_cost_cap_usd"] == 0.10
         assert payload["pricing"]["approximate"] is True
         assert payload["backfill_args"] == [
+            "ops",
             "embed",
             "backfill",
             "--yes",
@@ -328,7 +329,7 @@ class TestPreflightCommand:
         ]
         assert (
             payload["backfill_command"]
-            == "polylogue embed backfill --yes --max-sessions 3 --max-messages 2000 --max-cost-usd 0.1"
+            == "polylogue ops embed backfill --yes --max-sessions 3 --max-messages 2000 --max-cost-usd 0.1"
         )
 
     def test_preflight_json_omits_backfill_command_when_backlog_empty(

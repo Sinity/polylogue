@@ -309,7 +309,7 @@ def build_preflight_report(
 def preflight_backfill_args(report: PreflightReport) -> list[str] | None:
     if report.pending_sessions <= 0:
         return None
-    args = ["embed", "backfill", "--yes"]
+    args = ["ops", "embed", "backfill", "--yes"]
     if report.max_sessions is not None:
         args.extend(["--max-sessions", str(report.max_sessions)])
     if report.max_messages is not None:

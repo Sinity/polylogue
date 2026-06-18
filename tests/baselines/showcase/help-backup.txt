@@ -1,4 +1,4 @@
-Usage: polylogue backup [OPTIONS]
+Usage: polylogue ops backup [OPTIONS]
 
   Back up the Polylogue archive durability tiers.
 

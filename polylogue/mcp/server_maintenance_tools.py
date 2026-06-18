@@ -137,7 +137,7 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         ``mode="execute"``. Per-target failures are isolated and
         reported through the bounded ``failure_samples`` envelope. The
         scope-filter parameters mirror the CLI flags on
-        ``polylogue maintenance run``.
+        ``polylogue ops maintenance run``.
         """
 
         async def run() -> str:

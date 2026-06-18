@@ -100,7 +100,7 @@ schema shape:
   - **Anything else** (older or newer): the database is rejected.
 - **Mismatch → re-ingest from source.** Polylogue does not patch an
   out-of-band shape into the canonical one. The operator moves the
-  database aside and runs `polylogue reset --database && polylogued run`,
+  database aside and runs `polylogue ops reset --database && polylogued run`,
   which re-acquires from the source archives and rebuilds the canonical
   archive.
 - Schema bumps are deletes-then-defines, never deltas. A schema change
@@ -137,10 +137,10 @@ The archive file set is split by durability class:
 The operator flow is explicit:
 
 ```bash
-polylogue maintenance archive-plan
-polylogue maintenance archive-init --yes
+polylogue ops maintenance archive-plan
+polylogue ops maintenance archive-init --yes
 polylogued run
-polylogue maintenance archive-read --limit 20
+polylogue ops maintenance archive-read --limit 20
 ```
 
 `archive-init` bootstraps the archive file set. The daemon and explicit
@@ -480,7 +480,7 @@ rather than 5xx-ing, so a fresh archive still emits the discovery
 skeleton.
 
 Archive layout observability is emitted on the same scrape. The
-`polylogue_archive_storage_layout` gauge mirrors `polylogue paths`
+`polylogue_archive_storage_layout` gauge mirrors `polylogue ops paths`
 with bounded labels for `archive_missing`, `archive_partial`, and
 `archive_complete`; `polylogue_archive_tier_count` and
 `polylogue_archive_blocker_count` provide compact alerting

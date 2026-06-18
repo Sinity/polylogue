@@ -73,9 +73,9 @@ Replacement target:
 ```text
 polylogued run              # live ingestion + browser receiver + local API + web reader
 polylogue-mcp --role read   # MCP adapter
-polylogue doctor daemon     # daemon health
-polylogue doctor live       # live ingestion health
-polylogue doctor capture    # browser capture health
+polylogue ops doctor daemon     # daemon health
+polylogue ops doctor live       # live ingestion health
+polylogue ops doctor capture    # browser capture health
 ```
 
 If current `doctor` uses `--target`, keep one spelling consistently, but do not expose both `doctor capture` and `doctor --target capture` without a deliberate CLI decision.
@@ -310,7 +310,7 @@ Implement the smallest visible slice that proves the architecture:
 3. API exposes health, status, conversation list, conversation header, messages page, raw artifact page, and facets.
 4. Web reader has search/facets/result list/conversation reader/provenance/raw/status strip using real API data.
 5. `polylogue --latest open` opens daemon URL when daemon is running and falls back to existing behavior otherwise.
-6. `polylogue doctor daemon` reports daemon status.
+6. `polylogue ops doctor daemon` reports daemon status.
 7. `polylogue select` exists for conversations, backed by existing query/read renderers.
 8. Tests prove API/CLI parity for list/messages/raw.
 9. Tests prove `--format json` remains canonical and no new `--json` path is added.

@@ -154,9 +154,9 @@ Pipeline and maintenance verbs are explicit:
 ```bash
 polylogue init                       # first-run setup (writes polylogue.toml)
 polylogue import ~/.claude/projects  # ingest sessions from a source path
-polylogue doctor                     # FTS coverage, blob store, daemon liveness
-polylogue status                     # daemon + archive status
-polylogue paths                      # canonical archive paths
+polylogue ops doctor                 # FTS coverage, blob store, daemon liveness
+polylogue ops status                 # daemon + archive status
+polylogue ops paths                  # canonical archive paths
 polylogued run                       # daemon: convergence + insights + HTTP reader
 polylogued watch                     # watch source dirs and ingest live
 polylogue-mcp --role read            # MCP stdio bridge for AI assistants
@@ -255,7 +255,7 @@ In a second terminal with the same environment:
 
 ```bash
 polylogue import --demo
-polylogue status
+polylogue ops status
 polylogue stats
 polylogue "pytest" list --limit 5
 polylogue find "pytest" then read --view messages
@@ -263,7 +263,7 @@ polylogue find "pytest" then analyze --facets
 ```
 
 `polylogue import --demo` writes only approved synthetic source files and asks
-the running daemon to ingest them. The command is asynchronous: `status` shows
+the running daemon to ingest them. The command is asynchronous: `ops status` shows
 daemon/archive health, while `stats` and search/read/analyze commands are
 meaningful after daemon convergence. The current deterministic archive
 evidence is the in-process fixture evidence in

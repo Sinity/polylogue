@@ -1,6 +1,6 @@
 """CLI adapter implementing the shared write-surface protocols.
 
-The CLI's ``polylogue ingest`` and ``polylogue maintenance run``
+The CLI's ``polylogue ingest`` and ``polylogue ops maintenance run``
 commands already route input through :class:`ImportOperation` and
 :class:`BackfillOperation` respectively, and tag/delete subcommands
 route through the Polylogue facade write methods.  This adapter is the

@@ -105,7 +105,7 @@ class DaemonStatusSurface(Protocol):
     """Canonical daemon status contract.
 
     Returns the typed :class:`DaemonStatus` consumed by every status
-    surface (CLI ``polylogue status``, daemon HTTP ``/api/status``, MCP
+    surface (CLI ``polylogue ops status``, daemon HTTP ``/api/status``, MCP
     ``readiness_check``, web reader header).  Surfaces that cannot
     materialize a live status (e.g. a stateless CLI invocation when the
     daemon is offline) still produce a ``DaemonStatus`` populated with

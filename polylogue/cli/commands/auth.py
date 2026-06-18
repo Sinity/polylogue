@@ -23,9 +23,9 @@ def auth_command(env: AppEnv, service: str, refresh: bool, revoke: bool) -> None
 
     \b
     Examples:
-        polylogue auth           # Interactive OAuth for Google Drive
-        polylogue auth --refresh # Force token refresh
-        polylogue auth --revoke  # Revoke stored credentials
+        polylogue ops auth           # Interactive OAuth for Google Drive
+        polylogue ops auth --refresh # Force token refresh
+        polylogue ops auth --revoke  # Revoke stored credentials
     """
     if service != "drive":
         click.echo(f"Unknown auth service: {service}", err=True)
@@ -118,7 +118,7 @@ def _revoke_drive_credentials(env: AppEnv) -> None:
     auth_manager.revoke()
 
     click.echo("Credentials revoked.")
-    click.echo("Run `polylogue auth` to re-authenticate.")
+    click.echo("Run `polylogue ops auth` to re-authenticate.")
 
 
 __all__ = ["auth_command"]

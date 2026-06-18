@@ -115,7 +115,7 @@ def _write_evidence_artifact(
 
     The issue requires the evidence to be "committed as a
     ``.local/convergence-evidence/`` artifact (gitignored, but referenced in
-    PR)". When running outside a polylogue checkout (or in a sandbox
+    PR)". When running outside a polylogue ops doctorout (or in a sandbox
     that forbids writes there) we silently skip — the assertions still
     run on the in-memory snapshots.
     """

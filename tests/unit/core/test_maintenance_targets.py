@@ -65,8 +65,8 @@ def test_maintenance_target_catalog_renders_repair_hints_from_canonical_targets(
     catalog = build_maintenance_target_catalog()
 
     assert catalog.repair_hint(("session_insights",), include_run_all=True) == (
-        "Run `polylogue doctor --repair --target session_insights`, or `polylogued run`."
+        "Run `polylogue ops doctor --repair --target session_insights`, or `polylogued run`."
     )
     assert catalog.repair_hint(("dangling_fts",), include_run_all=False) == (
-        "Run `polylogue doctor --repair --target dangling_fts`."
+        "Run `polylogue ops doctor --repair --target dangling_fts`."
     )

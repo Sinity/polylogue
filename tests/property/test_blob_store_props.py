@@ -100,7 +100,7 @@ def test_detect_orphans_count_and_bytes_match_disk_minus_db(
 def test_cleanup_dry_run_never_deletes(orphans: int) -> None:
     """``cleanup_orphans(dry_run=True)`` must always leave every blob on disk.
 
-    This is the safety boundary for ``polylogue doctor`` previews.
+    This is the safety boundary for ``polylogue ops doctor`` previews.
     """
     import tempfile
 

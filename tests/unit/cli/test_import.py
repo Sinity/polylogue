@@ -100,7 +100,7 @@ def test_import_command_stages_local_path_before_daemon_request(
 
     # Truthfulness: success output must point at observable state — the
     # staged inbox path AND actionable next-step guidance. The old
-    # "polylogue status" message was misleading (status doesn't show
+    # "polylogue ops status" message was misleading (status doesn't show
     # recent completed operations); #1679 replaced it with journalctl
     # for live progress and polylogue stats to verify the import landed.
     assert str(staged) in result.output

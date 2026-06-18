@@ -1,4 +1,4 @@
-"""Fast-path coverage for ``polylogue embed status``."""
+"""Fast-path coverage for ``polylogue ops embed status``."""
 
 from __future__ import annotations
 
@@ -239,7 +239,7 @@ def test_status_json_bypasses_schema_version_gate_for_operator_readiness(tmp_pat
     assert payload["pending_sessions"] == 2
     assert payload["next_action"] == {
         "code": "enable_embeddings",
-        "command": "polylogue embed enable --yes",
+        "command": "polylogue ops embed enable --yes",
         "reason": "A Voyage key is available, but embedding convergence is disabled in config.",
     }
 
@@ -342,7 +342,7 @@ def test_status_text_prints_machine_readable_next_action(tmp_path: Path) -> None
     assert "Configured model:      voyage-4 (1024d)" in output
     assert "Monthly cost cap:      $5.00" in output
     assert "Next action:           enable_embeddings" in output
-    assert "Command:               polylogue embed enable --yes" in output
+    assert "Command:               polylogue ops embed enable --yes" in output
 
 
 def test_status_text_prints_daemon_catchup_when_enabled(tmp_path: Path) -> None:
@@ -352,7 +352,7 @@ def test_status_text_prints_daemon_catchup_when_enabled(tmp_path: Path) -> None:
     output = _run_status_text(db_path, cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
 
     assert "Next action:           drain_backlog" in output
-    assert "Command:               polylogue embed backfill --max-sessions 10" in output
+    assert "Command:               polylogue ops embed backfill --max-sessions 10" in output
 
 
 def test_status_json_reports_ready_next_action(tmp_path: Path) -> None:

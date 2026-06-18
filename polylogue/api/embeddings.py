@@ -21,7 +21,7 @@ class PolylogueEmbeddingsMixin:
     def embedding_status(self, *, detail: bool = False) -> dict[str, object]:
         """Return canonical embedding readiness status for API clients.
 
-        This is the same no-spend payload used by ``polylogue embed status``
+        This is the same no-spend payload used by ``polylogue ops embed status``
         and the MCP ``embedding_status`` tool.
         """
         from polylogue.storage.embeddings.status_payload import embedding_status_payload

@@ -226,7 +226,7 @@ The PR body must replace any upgrade-path section with a
 **re-ingest plan**:
 
 - which user-visible archive operation triggers re-acquisition from
-  source (e.g. `polylogue reset --database && polylogued run`),
+  source (e.g. `polylogue ops reset --database && polylogued run`),
 - which downstream products (insights, blob store, FTS) are rebuilt
   automatically vs. needing explicit recomputation,
 - the expected end-user impact (rebuild time, disk usage, anything
@@ -891,15 +891,15 @@ Vector embeddings for semantic search, powered by Voyage AI (`voyage-4`,
 
 ### Activation flow (#1217)
 
-The `polylogue embed` group is the operator-facing onboarding surface:
+The `polylogue ops embed` group is the operator-facing onboarding surface:
 
 | Command | Purpose |
 |---------|---------|
-| `polylogue embed preflight` | Count pending messages + Voyage cost estimate without contacting the provider. |
-| `polylogue embed enable` | Verify `sqlite-vec`, capture the Voyage key, print the cost preflight, and on confirmation persist `[embedding] enabled = true` (and the API key unless `--no-store-key`) into the user `polylogue.toml`. |
-| `polylogue embed backfill` | Run a bounded, resumable embedding batch with per-session cost feedback; honours `embedding_max_cost_usd` as a soft cap and persists run progress. |
-| `polylogue embed disable` | Flip `embedding.enabled = false` without dropping existing embeddings — previously-embedded messages remain queryable via `--similar`. |
-| `polylogue embed status` | Coverage / freshness / configured model+cap / latest catch-up / next-action snapshot via `embedding_status_payload`. Use `--detail` for exact pending-message and retrieval-band accounting. |
+| `polylogue ops embed preflight` | Count pending messages + Voyage cost estimate without contacting the provider. |
+| `polylogue ops embed enable` | Verify `sqlite-vec`, capture the Voyage key, print the cost preflight, and on confirmation persist `[embedding] enabled = true` (and the API key unless `--no-store-key`) into the user `polylogue.toml`. |
+| `polylogue ops embed backfill` | Run a bounded, resumable embedding batch with per-session cost feedback; honours `embedding_max_cost_usd` as a soft cap and persists run progress. |
+| `polylogue ops embed disable` | Flip `embedding.enabled = false` without dropping existing embeddings — previously-embedded messages remain queryable via `--similar`. |
+| `polylogue ops embed status` | Coverage / freshness / configured model+cap / latest catch-up / next-action snapshot via `embedding_status_payload`. Use `--detail` for exact pending-message and retrieval-band accounting. |
 
 The CLI orchestrates substrate primitives under
 `polylogue.storage.embeddings` (`iter_pending_sessions`,
@@ -923,7 +923,7 @@ overrides land on the root query surface:
 See [docs/search.md § Retrieval Lanes](search.md#retrieval-lanes) for the
 full lane semantics, ranking policy, and `SearchEnvelope` contract.
 
-`polylogue status` includes an `Embeddings:` line whenever any
+`polylogue ops status` includes an `Embeddings:` line whenever any
 messages are embedded, so the operator can see coverage at a glance.
 
 ## Blob Store
@@ -1084,7 +1084,7 @@ schema shape:
   - **Anything else** (older or newer): the database is rejected.
 - **Mismatch → re-ingest from source.** Polylogue does not patch an
   out-of-band shape into the canonical one. The operator moves the
-  database aside and runs `polylogue reset --database && polylogued run`,
+  database aside and runs `polylogue ops reset --database && polylogued run`,
   which re-acquires from the source archives and rebuilds the canonical
   archive.
 - Schema bumps are deletes-then-defines, never deltas. A schema change
@@ -1121,10 +1121,10 @@ The archive file set is split by durability class:
 The operator flow is explicit:
 
 ```bash
-polylogue maintenance archive-plan
-polylogue maintenance archive-init --yes
+polylogue ops maintenance archive-plan
+polylogue ops maintenance archive-init --yes
 polylogued run
-polylogue maintenance archive-read --limit 20
+polylogue ops maintenance archive-read --limit 20
 ```
 
 `archive-init` bootstraps the archive file set. The daemon and explicit
@@ -1464,7 +1464,7 @@ rather than 5xx-ing, so a fresh archive still emits the discovery
 skeleton.
 
 Archive layout observability is emitted on the same scrape. The
-`polylogue_archive_storage_layout` gauge mirrors `polylogue paths`
+`polylogue_archive_storage_layout` gauge mirrors `polylogue ops paths`
 with bounded labels for `archive_missing`, `archive_partial`, and
 `archive_complete`; `polylogue_archive_tier_count` and
 `polylogue_archive_blocker_count` provide compact alerting

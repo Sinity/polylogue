@@ -220,7 +220,7 @@ def component_from_assertion_substrate(
             "active_count": active_count,
         },
         caveats=caveats,
-        repair_hint=None if table_exists and not error else "polylogue maintenance archive-init --yes",
+        repair_hint=None if table_exists and not error else "polylogue ops maintenance archive-init --yes",
         evidence_refs=("user.db:assertions",) if table_exists else (),
         metadata={"overlay_audit": dict(overlay_audit)} if overlay_audit else {},
     )

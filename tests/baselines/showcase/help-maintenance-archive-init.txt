@@ -1,4 +1,4 @@
-Usage: polylogue maintenance archive-init [OPTIONS]
+Usage: polylogue ops maintenance archive-init [OPTIONS]
 
   Initialize the archive file set after explicit confirmation.
 

@@ -1,4 +1,4 @@
-Usage: polylogue maintenance blob-gc [OPTIONS]
+Usage: polylogue ops maintenance blob-gc [OPTIONS]
 
   Preview or run lease-safe blob garbage collection.
 

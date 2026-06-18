@@ -2,7 +2,7 @@
 
 Read-only enumeration of stale or missing derived artifacts in the archive,
 grouped by model and typed ``InvalidationReason``. Used by the maintenance
-planner (``polylogue maintenance preview``) and by operators who want to see
+planner (``polylogue ops maintenance preview``) and by operators who want to see
 "what will be rebuilt and why" before triggering any mutation.
 
 The inventory is sourced from

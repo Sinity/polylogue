@@ -43,12 +43,12 @@ _ARCHIVE_COMPONENT_SCOPES: dict[str, str] = {
 }
 
 _ARCHIVE_COMPONENT_REPAIR_HINTS: dict[str, str] = {
-    "search": "polylogue maintenance run --target dangling_fts",
-    "session_profiles": "polylogue maintenance run --target session_insights",
-    "timeline_work_events": "polylogue maintenance run --target session_insights",
-    "timeline_phases": "polylogue maintenance run --target session_insights",
-    "threads": "polylogue maintenance run --target session_insights",
-    "latency_profiles": "polylogue maintenance run --target session_insights",
+    "search": "polylogue ops maintenance run --target dangling_fts",
+    "session_profiles": "polylogue ops maintenance run --target session_insights",
+    "timeline_work_events": "polylogue ops maintenance run --target session_insights",
+    "timeline_phases": "polylogue ops maintenance run --target session_insights",
+    "threads": "polylogue ops maintenance run --target session_insights",
+    "latency_profiles": "polylogue ops maintenance run --target session_insights",
 }
 
 
@@ -200,6 +200,7 @@ _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
     "facets": ("archive_routed", "index", "computes scoped/global facets from index.db"),
     "find_resume_candidates": ("archive_routed", "index", "uses archive-routed resume operations"),
     "find_stuck_session_latency_profile_insights": ("archive_routed", "index", "reads latency profiles from index.db"),
+    "explain_query_expression": ("archive_routed", "index", "explains query DSL parsing and lowering"),
     "get_actions": ("archive_direct", "index", "derives actions from index.db content blocks"),
     "get_actions_batch": (
         "archive_direct",
@@ -241,6 +242,7 @@ _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
     "list_blackboard_notes": ("archive_routed", "user", "reads blackboard notes through user.db"),
     "list_archive_coverage_insights": ("archive_routed", "index", "reads coverage insights from index.db"),
     "list_archive_debt_insights": ("archive_routed", "index", "reads archive debt projection from index.db"),
+    "list_read_view_profiles": ("archive_routed", "index", "lists executable read-view profiles"),
     "list_sessions": ("archive_routed", "index", "reads full sessions from index.db"),
     "list_sessions_for_spec": ("archive_direct", "index", "runs a query spec directly against index.db"),
     "list_corrections": ("archive_routed", "user", "reads corrections through user.db"),
@@ -263,11 +265,19 @@ _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
     "parse_file": ("archive_routed", "source", "writes source.db and index.db directly"),
     "post_blackboard_note": ("archive_routed", "user", "writes blackboard notes through user.db"),
     "parse_sources": ("archive_routed", "source", "writes source.db and index.db directly"),
+    "query_completions": ("archive_routed", "index", "lists query DSL completion metadata"),
+    "query_units": ("archive_routed", "index", "queries terminal archive units from index.db"),
     "query_sessions": ("archive_routed", "index", "queries summaries from index.db"),
     "rebuild_index": ("archive_routed", "index", "rebuilds messages_fts from index.db"),
     "rebuild_insights": ("archive_routed", "index", "rebuilds insight tables"),
     "record_correction": ("archive_routed", "user", "writes corrections through user.db"),
     "recovery_digest": ("archive_routed", "index", "builds recovery digests from archive-routed session reads"),
+    "recovery_report": ("archive_routed", "index", "renders recovery reports from archive-routed session reads"),
+    "recovery_work_packet": (
+        "archive_routed",
+        "index",
+        "renders recovery work packets from archive-routed session reads",
+    ),
     "remove_mark": ("archive_routed", "user", "writes user marks through user.db"),
     "remove_tag": ("archive_routed", "user", "writes user tags through user.db"),
     "resume_brief": ("archive_routed", "index", "builds resume briefs from archive-routed reads"),

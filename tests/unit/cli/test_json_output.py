@@ -70,11 +70,11 @@ def _looks_like_json_output(text: str) -> bool:
 # shown because a required argument is missing" cases.
 #
 # Commands intentionally excluded:
-#   - delete, reset        → destructive
+#   - delete, ops reset    → destructive
 #   - import               → requires source config, modifies archive
 #   - tutorial, auth, init → interactive or requires external service
 #   - dashboard, open      → side effect (opens browser)
-#   - backup               → creates backup file; needs populated archive
+#   - ops backup           → creates backup file; needs populated archive
 #   - recent               → pre-existing bug: passes sort=updated_at which
 #                            is not a valid sort field (hardcoded in verb)
 
@@ -86,7 +86,7 @@ _COMMANDS: list[tuple[list[str], bool]] = [
     (["read"], True),
     # ── Top-level commands ───────────────────────────────────────────
     (["commands"], False),
-    (["doctor"], False),
+    (["ops", "doctor"], False),
     (["config"], False),  # TOML output with root --json (not JSON, but pipeable)
     (["resume"], True),
     (["resume-candidates"], True),
@@ -109,11 +109,11 @@ _COMMANDS: list[tuple[list[str], bool]] = [
     (["diagnostics", "tools"], False),
     (["--latest", "diagnostics", "turns"], True),  # needs session; fails cleanly on empty
     # ── Embed, feedback, schema, maintenance ─────────────────────────
-    (["embed", "status"], False),
+    (["ops", "embed", "status"], False),
     (["feedback", "list"], False),
     (["schema", "list"], False),
-    (["maintenance", "status"], False),
-    (["maintenance", "preview"], False),
+    (["ops", "maintenance", "status"], False),
+    (["ops", "maintenance", "preview"], False),
     # ── Shell integration (emits scripts, not JSON; must not crash) ──
     (["completions", "--shell", "bash"], False),
 ]
@@ -121,14 +121,14 @@ _COMMANDS: list[tuple[list[str], bool]] = [
 # Excluded from COMMANDS for documented reasons:
 _EXCLUDED: list[str] = [
     "delete (destructive)",
-    "reset (destructive)",
+    "ops reset (destructive)",
     "import (requires source config, modifies archive)",
     "tutorial (interactive)",
-    "auth (interactive, requires external service)",
+    "ops auth (interactive, requires external service)",
     "init (interactive, writes config)",
     "dashboard (side effect: opens browser)",
     "open (side effect: opens browser)",
-    "backup (creates backup file)",
+    "ops backup (creates backup file)",
     "recent (pre-existing bug: hardcoded sort=updated_at is invalid)",
     "insights timeline (requires SESSION_ID argument)",
     "insights export (requires --out argument)",

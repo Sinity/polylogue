@@ -43,8 +43,8 @@ XDG environment variables. The defaults (when no override is set) are:
 | Config file | `~/.config/polylogue/polylogue.toml` | `POLYLOGUE_CONFIG` |
 | Config dir | `~/.config/polylogue/` | `XDG_CONFIG_HOME` |
 
-Use `polylogue paths` to print the resolved paths for the current
-environment, or `polylogue paths --format json` for machine-readable
+Use `polylogue ops paths` to print the resolved paths for the current
+environment, or `polylogue ops paths --format json` for machine-readable
 output. The command also reports any detected bind mounts.
 
 ### Bind Mounts and `/realm/data/captures/`
@@ -222,23 +222,23 @@ For Gemini sessions via Google Drive:
 
 1. Create OAuth credentials at [Google Cloud Console](https://console.cloud.google.com/)
 2. Download to `~/.config/polylogue/polylogue-credentials.json`
-3. Run `polylogue auth` to complete OAuth flow
+3. Run `polylogue ops auth` to complete OAuth flow
 
 Polylogue syncs the fixed `Google AI Studio` folder name used by Gemini exports.
 
 ## Observability
 
 Polylogue exposes daemon health through `polylogued status` and
-`polylogue status`. The archive database stores ingestion state, live cursors,
+`polylogue ops status`. The archive database stores ingestion state, live cursors,
 and derived read-model freshness so automation does not need to scrape terminal
 output.
 
 ### Health Checks
 
-- `polylogue doctor` validates config, archive root, DB reachability, index status, and Drive credential/token presence.
-- `polylogue doctor --repair` runs safe derived-data and database maintenance.
-- `polylogue doctor --cleanup` runs destructive archive cleanup; preview it first.
-- `polylogue doctor --repair --vacuum` compacts the database after maintenance.
+- `polylogue ops doctor` validates config, archive root, DB reachability, index status, and Drive credential/token presence.
+- `polylogue ops doctor --repair` runs safe derived-data and database maintenance.
+- `polylogue ops doctor --cleanup` runs destructive archive cleanup; preview it first.
+- `polylogue ops doctor --repair --vacuum` compacts the database after maintenance.
 - Workstation-specific policy such as cgroup slice placement and hard caps belongs in the host environment, not in the product CLI.
 
 ---

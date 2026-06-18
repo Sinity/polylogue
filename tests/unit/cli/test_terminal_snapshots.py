@@ -50,7 +50,7 @@ class TestCommandOutputs:
 
     def test_check_output_snapshot(self, snapshot: object) -> None:
         """Verify check command output renders correctly."""
-        result = run_in_pty(["doctor", "--help"], rows=80)
+        result = run_in_pty(["ops", "doctor", "--help"], rows=80)
         assert result.exit_code == 0
 
         grid = sanitize_grid(result.grid, strip_timestamps=False, strip_paths=True)

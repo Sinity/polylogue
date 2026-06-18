@@ -26,7 +26,7 @@ const Handoff = () => (
           <li><Check ok /> Web reader serves <Mono>/c/&lt;id&gt;</Mono> with header + paginated messages.</li>
           <li><Check ok /> Local API exposes the existing query/read kernel — no new semantics.</li>
           <li><Check ok /> <Mono>polylogue --latest open</Mono> opens the daemon URL when running, falls back to static HTML otherwise.</li>
-          <li><Check ok /> <Mono>polylogue doctor --target daemon</Mono> reports up/lag/uptime.</li>
+          <li><Check ok /> <Mono>polylogue ops doctor --target daemon</Mono> reports up/lag/uptime.</li>
         </ul>
       </Card>
 
@@ -114,7 +114,7 @@ diff <(polylogue --provider claude-code list --format json) \\
      <(curl -s 'http://127.0.0.1:8765/api/conversations?provider=claude-code')
 
 # 3. doctor sees daemon
-polylogue doctor --target daemon
+polylogue ops doctor --target daemon
 # → daemon  ok  uptime 0:00:14  pid 12345  archive ~/.local/share/polylogue/archive.sqlite
 
 # 4. open reuses daemon

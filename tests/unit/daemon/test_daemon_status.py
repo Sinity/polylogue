@@ -202,16 +202,16 @@ def test_daemon_status_payload_maps_component_readiness(tmp_path: Path) -> None:
     search_counts = cast(dict[str, object], search["counts"])
     assert search["state"] == "stale"
     assert search_counts["message_indexed_count"] == 4
-    assert search["repair_hint"] == "polylogue maintenance run --target dangling_fts"
+    assert search["repair_hint"] == "polylogue ops maintenance run --target dangling_fts"
     profile_counts = cast(dict[str, object], session_profiles["counts"])
     assert session_profiles["state"] == "degraded"
     assert session_profiles["scope"] == "insights"
     assert profile_counts["sessions_with_profiles"] == 7
     assert profile_counts["missing_profiles"] == 3
-    assert session_profiles["repair_hint"] == "polylogue maintenance preview --scope derived"
+    assert session_profiles["repair_hint"] == "polylogue ops maintenance preview --scope derived"
     assert embeddings["state"] == "stale"
     assert embeddings["scope"] == "semantic"
-    assert embeddings["repair_hint"] == "polylogue embed backfill"
+    assert embeddings["repair_hint"] == "polylogue ops embed backfill"
     assert api["state"] == "ready"
     assert ingest["state"] == "ready"
 

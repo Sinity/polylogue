@@ -129,7 +129,7 @@ def refresh_credentials_if_needed(
             creds.refresh(transport)
         except Exception as exc:
             raise DriveAuthError(
-                f"Failed to refresh OAuth token: {exc}. Try re-authenticating with 'polylogue auth'."
+                f"Failed to refresh OAuth token: {exc}. Try re-authenticating with 'polylogue ops auth'."
             ) from exc
 
     if creds and creds.valid:

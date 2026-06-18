@@ -19,7 +19,7 @@ This module is the pure read-side projection. It is consumed by:
 - :mod:`polylogue.daemon.cursor_lag_alert` for SLO evaluation and alert
   emission.
 - :mod:`polylogue.daemon.status` to surface per-family lag on the
-  ``polylogue status`` output and the ``/health`` envelope.
+  ``polylogue ops status`` output and the ``/health`` envelope.
 
 The projection only reads ``live_cursor`` columns that are durably populated
 by :mod:`polylogue.sources.live.cursor`; it never stats source files on disk,
@@ -41,7 +41,7 @@ class CursorLagBaselineState(BaseModel):
     """Per-family rolling-window baseline snapshot (#1349 anomaly band).
 
     Populated by :mod:`polylogue.daemon.cursor_lag_baseline` and joined into
-    the cursor-lag projection so ``polylogue status`` and ``/health`` show
+    the cursor-lag projection so ``polylogue ops status`` and ``/health`` show
     the same auto-calibration evidence the anomaly check evaluated against.
     """
 

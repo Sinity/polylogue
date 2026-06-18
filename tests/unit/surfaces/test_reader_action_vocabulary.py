@@ -117,10 +117,10 @@ def test_payload_carries_repair_and_inspect_paths() -> None:
         state="disabled",
         enabled=False,
         disabled_reason="vectors not ready",
-        repair_path="polylogue embed backfill",
+        repair_path="polylogue ops embed backfill",
         inspect_path="/inspect/embeddings",
     )
-    assert payload.repair_path == "polylogue embed backfill"
+    assert payload.repair_path == "polylogue ops embed backfill"
     assert payload.inspect_path == "/inspect/embeddings"
 
 
@@ -129,11 +129,11 @@ def test_payload_serializes_repair_and_inspect_paths_when_set() -> None:
         state="disabled",
         enabled=False,
         disabled_reason="vectors not ready",
-        repair_path="polylogue embed backfill",
+        repair_path="polylogue ops embed backfill",
         inspect_path="/inspect/embeddings",
     )
     blob = json.loads(payload.to_json(exclude_none=True))
-    assert blob["repair_path"] == "polylogue embed backfill"
+    assert blob["repair_path"] == "polylogue ops embed backfill"
     assert blob["inspect_path"] == "/inspect/embeddings"
     assert blob["state"] == "disabled"
 

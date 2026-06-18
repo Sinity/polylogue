@@ -16,7 +16,7 @@ def test_embedding_status_returns_canonical_payload(mcp_server: MCPServerUnderTe
         "status": "none",
         "next_action": {
             "code": "enable_embeddings",
-            "command": "polylogue embed enable --yes",
+            "command": "polylogue ops embed enable --yes",
             "reason": "A Voyage key is available, but embedding convergence is disabled in config.",
         },
     }
@@ -34,7 +34,7 @@ def test_embedding_status_returns_canonical_payload(mcp_server: MCPServerUnderTe
     assert component_readiness["embeddings"]["component"] == "embeddings"
     assert component_readiness["embeddings"]["scope"] == "semantic"
     assert component_readiness["embeddings"]["state"] == "missing"
-    assert component_readiness["embeddings"]["repair_hint"] == "polylogue embed enable --yes"
+    assert component_readiness["embeddings"]["repair_hint"] == "polylogue ops embed enable --yes"
     mock_get_config.assert_called_once()
     mock_status.assert_called_once()
     assert mock_status.call_args.kwargs == {
@@ -90,8 +90,8 @@ def test_embedding_preflight_returns_canonical_payload(mcp_server: MCPServerUnde
             "cost_usd_per_1m_tokens": 0.10,
             "approximate": True,
         },
-        "backfill_args": ["embed", "backfill", "--yes", "--max-sessions", "3"],
-        "backfill_command": "polylogue embed backfill --yes --max-sessions 3",
+        "backfill_args": ["ops", "embed", "backfill", "--yes", "--max-sessions", "3"],
+        "backfill_command": "polylogue ops embed backfill --yes --max-sessions 3",
     }
     with (
         patch("polylogue.mcp.server._get_config", return_value=MagicMock(db_path="/tmp/archive.db")),

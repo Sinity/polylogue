@@ -104,7 +104,7 @@ def _embedding_status_payload(
         "latest_catchup_run": None,
         "next_action": {
             "code": "archive_empty" if total_sessions == 0 else "set_voyage_key",
-            "command": None if total_sessions == 0 else "polylogue embed enable --voyage-api-key ...",
+            "command": None if total_sessions == 0 else "polylogue ops embed enable --voyage-api-key ...",
             "reason": "Archive contains no sessions to embed."
             if total_sessions == 0
             else "Semantic retrieval needs a Voyage API key before embedding can run.",

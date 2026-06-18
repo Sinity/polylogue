@@ -48,7 +48,7 @@ def test_archive_plan_cli_reports_tier_targets(cli_workspace: dict[str, Path], c
     _stage_uninitialized_archive(cli_workspace)
     result = cli_runner.invoke(
         cli,
-        ["--plain", "maintenance", "archive-plan", "--output-format", "json"],
+        ["--plain", "ops", "maintenance", "archive-plan", "--output-format", "json"],
         catch_exceptions=False,
     )
 
@@ -88,7 +88,7 @@ def test_archive_plan_cli_surfaces_existing_target_blocker(
 
     result = cli_runner.invoke(
         cli,
-        ["--plain", "maintenance", "archive-plan", "--output-format", "json"],
+        ["--plain", "ops", "maintenance", "archive-plan", "--output-format", "json"],
         catch_exceptions=False,
     )
 
@@ -106,7 +106,7 @@ def test_backup_plan_cli_reports_backup_profiles_and_tier_boundaries(
 ) -> None:
     result = cli_runner.invoke(
         cli,
-        ["--plain", "maintenance", "backup-plan", "--output-format", "json"],
+        ["--plain", "ops", "maintenance", "backup-plan", "--output-format", "json"],
         catch_exceptions=False,
     )
 
@@ -148,7 +148,7 @@ def test_backup_plan_cli_surfaces_missing_tiers_and_wal_checkpoint_warning(
 
     result = cli_runner.invoke(
         cli,
-        ["--plain", "maintenance", "backup-plan", "--output-format", "json"],
+        ["--plain", "ops", "maintenance", "backup-plan", "--output-format", "json"],
         catch_exceptions=False,
     )
 
@@ -167,7 +167,7 @@ def test_backup_plan_cli_renders_plain_summary(
 ) -> None:
     result = cli_runner.invoke(
         cli,
-        ["--plain", "maintenance", "backup-plan"],
+        ["--plain", "ops", "maintenance", "backup-plan"],
         catch_exceptions=False,
     )
 
@@ -186,7 +186,7 @@ def test_blob_gc_cli_dry_run_reports_without_deleting(
 
     result = cli_runner.invoke(
         cli,
-        ["--plain", "maintenance", "blob-gc", "--max-batch", "5", "--output-format", "json"],
+        ["--plain", "ops", "maintenance", "blob-gc", "--max-batch", "5", "--output-format", "json"],
         catch_exceptions=False,
     )
 
@@ -213,7 +213,7 @@ def test_blob_gc_cli_plain_preview_names_skip_counts(
 
     result = cli_runner.invoke(
         cli,
-        ["--plain", "maintenance", "blob-gc", "--max-batch", "5"],
+        ["--plain", "ops", "maintenance", "blob-gc", "--max-batch", "5"],
         catch_exceptions=False,
     )
 
@@ -233,7 +233,7 @@ def test_blob_gc_cli_yes_deletes_and_records_generation(
 
     result = cli_runner.invoke(
         cli,
-        ["--plain", "maintenance", "blob-gc", "--yes", "--output-format", "json"],
+        ["--plain", "ops", "maintenance", "blob-gc", "--yes", "--output-format", "json"],
         catch_exceptions=False,
     )
 
@@ -258,7 +258,7 @@ def test_archive_init_cli_is_dry_run_without_yes(cli_workspace: dict[str, Path],
     _stage_uninitialized_archive(cli_workspace)
     result = cli_runner.invoke(
         cli,
-        ["--plain", "maintenance", "archive-init", "--output-format", "json"],
+        ["--plain", "ops", "maintenance", "archive-init", "--output-format", "json"],
         catch_exceptions=False,
     )
 
@@ -291,7 +291,7 @@ def test_archive_init_cli_executes_confirmed_initialization(
 
     result = cli_runner.invoke(
         cli,
-        ["--plain", "maintenance", "archive-init", "--yes", "--output-format", "json"],
+        ["--plain", "ops", "maintenance", "archive-init", "--yes", "--output-format", "json"],
         catch_exceptions=False,
     )
 
@@ -310,7 +310,7 @@ def test_archive_init_cli_executes_confirmed_initialization(
 
 
 def test_archive_maintenance_help_omits_copy_activation_surface(cli_runner: CliRunner) -> None:
-    result = cli_runner.invoke(cli, ["--plain", "maintenance", "--help"], catch_exceptions=False)
+    result = cli_runner.invoke(cli, ["--plain", "ops", "maintenance", "--help"], catch_exceptions=False)
 
     assert result.exit_code == 0
     assert "archive-plan" in result.output
@@ -371,6 +371,7 @@ def test_archive_read_cli_lists_archive_sessions(
         cli,
         [
             "--plain",
+            "ops",
             "maintenance",
             "archive-read",
             "--origin",
@@ -443,6 +444,7 @@ def test_archive_read_cli_searches_archive_blocks(
         cli,
         [
             "--plain",
+            "ops",
             "maintenance",
             "archive-read",
             "--query",
