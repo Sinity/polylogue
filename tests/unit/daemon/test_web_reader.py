@@ -214,6 +214,61 @@ def _seed_test_db(workspace: dict[str, Path]) -> None:
             )
 
 
+def _seed_assertion_claims(workspace: dict[str, Path]) -> None:
+    """Seed user-tier assertion claims for the web overlay endpoint."""
+
+    import sqlite3
+
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
+
+    user_db = workspace["archive_root"] / "user.db"
+    initialize_archive_database(user_db, ArchiveTier.USER)
+    with sqlite3.connect(user_db) as conn:
+        upsert_assertion(
+            conn,
+            assertion_id="claim-web-workbench-decision",
+            target_ref=f"session:{C1}",
+            scope_ref="repo:polylogue",
+            kind=AssertionKind.DECISION,
+            body_text="Show assertion-backed overlays in the web workbench.",
+            author_ref="agent:poly-07",
+            author_kind="agent",
+            evidence_refs=[f"message:{M_C1}"],
+            status="active",
+            visibility="private",
+            context_policy={"inject": True},
+            now_ms=1_700_000_000_000,
+        )
+        upsert_assertion(
+            conn,
+            assertion_id="claim-web-workbench-candidate",
+            target_ref=f"session:{C1}",
+            scope_ref="repo:polylogue",
+            kind=AssertionKind.CAVEAT,
+            body_text="Candidate caveat stays visible in default web claim reads.",
+            author_ref="agent:poly-07",
+            author_kind="agent",
+            evidence_refs=[f"message:{M_C1}"],
+            status="candidate",
+            visibility="private",
+            context_policy={"inject": False},
+            now_ms=1_700_000_000_100,
+        )
+        upsert_assertion(
+            conn,
+            assertion_id="claim-web-workbench-deleted",
+            target_ref=f"session:{C1}",
+            kind=AssertionKind.DECISION,
+            body_text="Deleted claim is hidden by default.",
+            status="deleted",
+            visibility="private",
+            now_ms=1_700_000_000_200,
+        )
+        conn.commit()
+
+
 def _seed_archive_test_archive(workspace: dict[str, Path]) -> str:
     from polylogue.archive.message.roles import Role
     from polylogue.core.enums import BlockType, Provider
@@ -312,6 +367,10 @@ class TestReaderSearchState:
             "renderStackWorkspace",
             "renderCompareWorkspace",
             "renderInspector",
+            "renderInspectorEvidence",
+            "/api/assertions",
+            "/recovery?report=work-packet",
+            'data-tab="evidence"',
         ):
             assert region in body, f"web shell missing region hook {region!r}"
 
@@ -1178,6 +1237,68 @@ class TestReaderViewProfiles:
         assert profiles["raw"]["evidence_policy"] == "required"
         assert profiles["recovery"]["successor_handoff"] is True
         assert "markdown" in profiles["recovery"]["formats"]
+
+
+class TestReaderRecoveryEndpoint:
+    def test_recovery_endpoint_returns_shared_work_packet_json(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            payload = cast(
+                dict[str, object],
+                _get_json(base_url, f"/api/sessions/{C1}/recovery?report=work-packet&format=json"),
+            )
+
+        assert payload["report"] == "work-packet"
+        assert payload["format"] == "json"
+        packet = cast(dict[str, object], payload["work_packet"])
+        assert packet["session_id"] == C1
+        assert packet["evidence_refs"]
+        assert "raw_artifacts" not in json.dumps(payload)
+
+    def test_recovery_endpoint_returns_markdown_envelope(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            payload = cast(
+                dict[str, object],
+                _get_json(base_url, f"/api/sessions/{C1}/recovery?report=work-packet&format=markdown"),
+            )
+
+        assert payload["report"] == "work-packet"
+        assert payload["format"] == "markdown"
+        assert "markdown" in payload
+        assert C1 in str(payload["markdown"])
+
+
+class TestReaderAssertionEndpoint:
+    def test_assertions_endpoint_reads_shared_assertion_claims(self, workspace_env: dict[str, Path]) -> None:
+        _seed_assertion_claims(workspace_env)
+        target_ref = quote(f"session:{C1}", safe="")
+        with _running_server(workspace_env) as (_, base_url):
+            payload = cast(dict[str, object], _get_json(base_url, f"/api/assertions?target_ref={target_ref}&limit=5"))
+
+        assert payload["total"] == 2
+        items = cast(list[dict[str, object]], payload["items"])
+        assert {item["assertion_id"] for item in items} == {
+            "claim-web-workbench-decision",
+            "claim-web-workbench-candidate",
+        }
+        decision = next(item for item in items if item["kind"] == "decision")
+        assert decision["target_ref"] == f"session:{C1}"
+        assert decision["context_policy"] == {"inject": True}
+
+    def test_assertions_endpoint_can_explicitly_read_all_statuses(self, workspace_env: dict[str, Path]) -> None:
+        _seed_assertion_claims(workspace_env)
+        target_ref = quote(f"session:{C1}", safe="")
+        with _running_server(workspace_env) as (_, base_url):
+            payload = cast(
+                dict[str, object],
+                _get_json(base_url, f"/api/assertions?target_ref={target_ref}&status=all&limit=5"),
+            )
+
+        items = cast(list[dict[str, object]], payload["items"])
+        assert {item["assertion_id"] for item in items} == {
+            "claim-web-workbench-decision",
+            "claim-web-workbench-candidate",
+            "claim-web-workbench-deleted",
+        }
 
 
 class TestReaderPrivacy:

@@ -164,6 +164,15 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
         "bearer_if_configured",
         "read-view profile metadata",
     ),
+    RouteContract(
+        "GET",
+        "/api/assertions",
+        "user_overlay",
+        "stable",
+        "bearer_if_configured",
+        "assertion claim list envelope",
+        "Read-only assertion-backed overlay claims; writes stay on dedicated mutation routes.",
+    ),
     RouteContract("GET", "/api/sources", "read_detail", "shell_supported", "bearer_if_configured", "source list JSON"),
     RouteContract("GET", "/api/sessions/:id", "read_detail", "stable", "bearer_if_configured", "Session detail JSON"),
     RouteContract(
@@ -173,6 +182,15 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
         "stable",
         "bearer_if_configured",
         "session messages JSON",
+    ),
+    RouteContract(
+        "GET",
+        "/api/sessions/:id/recovery",
+        "read_detail",
+        "stable",
+        "bearer_if_configured",
+        "Recovery digest/work-packet envelope",
+        "Consumes shared recovery digest/work-packet DTOs; does not expose raw transcripts by default.",
     ),
     RouteContract(
         "GET",
