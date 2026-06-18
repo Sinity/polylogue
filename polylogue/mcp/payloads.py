@@ -80,6 +80,7 @@ if TYPE_CHECKING:
     from polylogue.readiness import ReadinessCheck, ReadinessReport
     from polylogue.storage.runtime import RawSessionRecord
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
+    from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionEnvelope
     from polylogue.storage.sqlite.archive_tiers.write import ArchiveBlockRow, ArchiveMessageRow, ArchiveSessionEnvelope
 
 TRoot = TypeVar("TRoot")
@@ -140,6 +141,60 @@ class MCPBlackboardNoteListPayload(SurfacePayloadModel):
 
     items: tuple[MCPBlackboardNotePayload, ...]
     total: int
+
+
+class MCPAssertionClaimPayload(SurfacePayloadModel):
+    """One assertion-backed lifecycle claim."""
+
+    assertion_id: str
+    scope_ref: str | None = None
+    target_ref: str
+    key: str | None = None
+    kind: str
+    value: object | None = None
+    body_text: str | None = None
+    author_ref: str | None = None
+    author_kind: str | None = None
+    evidence_refs: tuple[str, ...] = ()
+    status: str | None = None
+    visibility: str | None = None
+    confidence: float | None = None
+    staleness: dict[str, Any] | None = None
+    context_policy: dict[str, Any] | None = None
+    supersedes: tuple[str, ...] = ()
+    created_at_ms: int
+    updated_at_ms: int
+
+    @classmethod
+    def from_envelope(cls, envelope: ArchiveAssertionEnvelope) -> MCPAssertionClaimPayload:
+        return cls(
+            assertion_id=envelope.assertion_id,
+            scope_ref=envelope.scope_ref,
+            target_ref=envelope.target_ref,
+            key=envelope.key,
+            kind=envelope.kind,
+            value=envelope.value,
+            body_text=envelope.body_text,
+            author_ref=envelope.author_ref,
+            author_kind=envelope.author_kind,
+            evidence_refs=tuple(envelope.evidence_refs),
+            status=envelope.status,
+            visibility=envelope.visibility,
+            confidence=envelope.confidence,
+            staleness=envelope.staleness,
+            context_policy=envelope.context_policy,
+            supersedes=tuple(envelope.supersedes),
+            created_at_ms=envelope.created_at_ms,
+            updated_at_ms=envelope.updated_at_ms,
+        )
+
+
+class MCPAssertionClaimListPayload(SurfacePayloadModel):
+    """Envelope for assertion-backed lifecycle claims."""
+
+    items: tuple[MCPAssertionClaimPayload, ...]
+    total: int
+    limit: int
 
 
 class MCPFencedCodeBlock(TypedDict):

@@ -24,6 +24,8 @@ from polylogue.mcp.payloads import (
     MCPArchiveSessionPayload,
     MCPArchiveSessionSummaryPayload,
     MCPArchiveStatsPayload,
+    MCPAssertionClaimListPayload,
+    MCPAssertionClaimPayload,
     MCPBlackboardNoteListPayload,
     MCPEmbeddingPreflightPayload,
     MCPEmbeddingStatusPayload,
@@ -595,6 +597,33 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             return hooks.json_payload(MCPBlackboardNoteListPayload(items=items, total=len(items)))
 
         return await hooks.async_safe_call("blackboard_list", run)
+
+    @mcp.tool()
+    async def list_assertion_claims(
+        kinds: str | None = None,
+        target_ref: str | None = None,
+        scope_ref: str | None = None,
+        statuses: str | None = "active,candidate",
+        context_inject: bool | None = None,
+        limit: MCPToolLimit = 20,
+    ) -> str:
+        """List assertion-backed lifecycle claims."""
+
+        async def run() -> str:
+            poly = hooks.get_polylogue()
+            clamped_limit = hooks.clamp_limit(limit)
+            claims = await poly.list_assertion_claims(
+                kinds=_split_archive_csv(kinds) or None,
+                target_ref=target_ref,
+                scope_ref=scope_ref,
+                statuses=None if statuses is None else _split_archive_csv(statuses),
+                context_inject=context_inject,
+                limit=clamped_limit,
+            )
+            items = tuple(MCPAssertionClaimPayload.from_envelope(claim) for claim in claims)
+            return hooks.json_payload(MCPAssertionClaimListPayload(items=items, total=len(items), limit=clamped_limit))
+
+        return await hooks.async_safe_call("list_assertion_claims", run)
 
     @mcp.tool()
     async def get_session_summary(id: str) -> str:

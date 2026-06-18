@@ -62,6 +62,7 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     ),
     "get_messages": ("envelope", frozenset({"messages", "total"})),
     "list_read_view_profiles": ("envelope", frozenset({"read_views", "total"})),
+    "list_assertion_claims": ("envelope", frozenset({"items", "total", "limit"})),
     "explain_query_expression": "single_object",
     "query_completions": "single_object",
     "raw_artifacts": ("envelope", frozenset({"raw_artifacts", "total"})),
@@ -206,6 +207,7 @@ def _build_typed_envelope_classes() -> dict[str, type[BaseModel]]:
     from polylogue.mcp.payloads import (
         MCPArchiveSearchPayload,
         MCPArchiveSessionListPayload,
+        MCPAssertionClaimListPayload,
         MCPMessagesListPayload,
         MCPNeighborCandidatesPayload,
         MCPPaginatedQueryResultPayload,
@@ -223,6 +225,7 @@ def _build_typed_envelope_classes() -> dict[str, type[BaseModel]]:
         "get_session_tree": MCPSessionTreePayload,
         "get_session_topology": MCPSessionTopologyPayload,
         "get_messages": MCPMessagesListPayload,
+        "list_assertion_claims": MCPAssertionClaimListPayload,
         "raw_artifacts": MCPRawArtifactsListPayload,
         "archive_list_sessions": MCPArchiveSessionListPayload,
         "archive_search_sessions": MCPArchiveSearchPayload,
