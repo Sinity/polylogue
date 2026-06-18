@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from polylogue.archive.query.spec import SessionQuerySpec
-from polylogue.context.assertion_claims import user_db_injectable_claim_texts
+from polylogue.context.assertion_claims import context_claim_text
 from polylogue.mcp.context_pack import (
     ContextPackDateRange,
     ContextPackDecisions,
@@ -31,6 +31,7 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
 
+    from polylogue.api import Polylogue
     from polylogue.mcp.server_support import ServerCallbacks
 
 _DEFAULT_MAX_SESSIONS = 5
@@ -57,6 +58,7 @@ def _truncate_text(text: str, max_length: int) -> str:
 async def _build_archive_context_pack_payload(
     *,
     archive_root: Path,
+    polylogue: Polylogue,
     clamp_limit: Callable[[int | object], int],
     project_path: str | None,
     project_repo: str | None,
@@ -93,7 +95,19 @@ async def _build_archive_context_pack_payload(
 
         for conv in sessions[:conv_limit]:
             conv_id = str(conv.id)
-            assertion_decisions.extend(user_db_injectable_claim_texts(archive.user_db_path, session_id=conv_id))
+            try:
+                claims = await polylogue.list_assertion_claim_payloads(
+                    target_ref=f"session:{conv_id}",
+                    statuses=("active",),
+                    context_inject=True,
+                    limit=20,
+                )
+            except Exception:
+                claims = []
+            assertion_decisions.extend(
+                context_claim_text(kind=claim.kind, body_text=claim.body_text, target_ref=claim.target_ref)
+                for claim in claims
+            )
             messages: list[ContextPackMessage] = []
             if include_messages:
                 try:
@@ -205,6 +219,7 @@ def register_context_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             config = hooks.get_config()
             payload = await _build_archive_context_pack_payload(
                 archive_root=config.archive_root,
+                polylogue=hooks.get_polylogue(),
                 clamp_limit=hooks.clamp_limit,
                 project_path=project_path,
                 project_repo=project_repo,
