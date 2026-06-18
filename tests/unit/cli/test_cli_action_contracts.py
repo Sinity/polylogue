@@ -40,11 +40,8 @@ GUARD_BEHAVIOR_COVERAGE: dict[str, str] = {
 }
 
 COMPLETION_CONTEXT_COVERAGE: dict[str, str] = {
-    "archive_path": "doctor archive-path options are covered by help/format contracts",
     "config_key": "config command key space is covered by config guard/schema tests",
-    "daemon_url": "status daemon URL behavior is covered by status runtime tests",
     "filesystem_path": "import path handling is covered by path guard tests",
-    "maintenance_operation": "maintenance target handling is covered by maintenance workflow tests",
     "query_expression": "find/analyze query grammar is covered by query parser tests",
     "session_id": "session-id shell completion is covered by test_completion_matrix.py",
 }

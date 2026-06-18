@@ -135,7 +135,7 @@ class TestBlobOrphanLifecycle:
 class TestRepairOrphanedBlobsHandler:
     """The maintenance-target wiring (`repair_orphaned_blobs`).
 
-    Pins 818-A6: ``polylogue doctor --repair --target orphaned_blobs``
+    Pins 818-A6: ``polylogue ops doctor --repair --target orphaned_blobs``
     must route through this handler and converge an orphaned-blob state
     to a clean state.
     """
@@ -205,7 +205,7 @@ class TestRepairOrphanedBlobsHandler:
 class TestOrphanedBlobsCatalogRouting:
     """Pin the wiring from the maintenance-target catalog to the handler.
 
-    818-A6: ``polylogue doctor --repair --target orphaned_blobs`` resolves
+    818-A6: ``polylogue ops doctor --repair --target orphaned_blobs`` resolves
     via ``MaintenanceTargetCatalog`` to the ``orphaned_blobs`` spec and
     the ``_REPAIR_HANDLERS["orphaned_blobs"]`` entry. A regression that
     deletes the spec, deletes the handler dict entry, drops the destructive

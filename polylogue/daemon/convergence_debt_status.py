@@ -121,7 +121,7 @@ def _summary_from_parts(
     stage_summaries: list[ConvergenceDebtStageSummary],
     recent: list[ConvergenceDebtItem],
 ) -> ConvergenceDebtSummary:
-    # Per-family rollup over the recent items so polylogue status and the
+    # Per-family rollup over the recent items so polylogue ops status and the
     # /health envelope show which source family the debt belongs to. This
     # is the same view the convergence-debt alert (see
     # polylogue/daemon/convergence_debt_alert.py) thresholds against, so

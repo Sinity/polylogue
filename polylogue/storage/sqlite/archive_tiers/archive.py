@@ -5118,7 +5118,7 @@ def _ensure_messages_fts_ready(conn: sqlite3.Connection) -> None:
     """
     from polylogue.errors import DatabaseError
 
-    repair_hint = "Run `polylogue check --repair` to rebuild the search index."
+    repair_hint = "Run `polylogue ops doctor --repair` to rebuild the search index."
     if not _table_exists(conn, "messages_fts"):
         raise DatabaseError(f"Search index not built. {repair_hint}")
     text_blocks = _count_scalar(conn, "SELECT COUNT(*) FROM blocks WHERE search_text != ''")

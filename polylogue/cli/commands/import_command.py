@@ -12,7 +12,7 @@ The three observable outcomes are:
    ``archive_root()/inbox`` and the running daemon returned an
    ``ImportAck`` with status ``pending``/``accepted``. The user sees the
    staged path, the operation id, and the next-step pointer
-   (``polylogue status``) so they can watch the work converge.
+   (``polylogue ops status``) so they can watch the work converge.
 2. **rejected (input)** — the supplied path does not exist, cannot be
    read, or cannot be staged into the inbox. Click rejects missing paths
    directly; staging errors raise a ``fail()`` with the offending path.
@@ -40,7 +40,7 @@ from polylogue.paths import archive_root
 _DEFAULT_DAEMON_URL = "http://127.0.0.1:8766"
 
 # Statuses that mean the daemon accepted scheduling and the work is now
-# observable through the inbox / ``polylogue status`` surfaces.
+# observable through the inbox / ``polylogue ops status`` surfaces.
 _ACCEPTED_STATUSES = frozenset({"accepted", "pending", "scheduled", "queued"})
 
 
@@ -150,7 +150,7 @@ def import_command(
     Stages PATH into the archive inbox and asks the running polylogued
     daemon to schedule it for processing. The command is truthful: it
     either confirms the daemon accepted scheduling (with a pointer to
-    'polylogue status' for observable progress) or fails with an
+    'polylogue ops status' for observable progress) or fails with an
     actionable error. It never reports success without observable
     processing.
     """

@@ -17,7 +17,7 @@ const Boundary = () => (
                examples={[
                  'polylogue [query] [filters] list',
                  'polylogue messages <id>  ·  polylogue raw <id>',
-                 'polylogue doctor  ·  polylogue select conversation',
+                 'polylogue ops doctor  ·  polylogue select conversation',
                ]} />
       <Surface name="polylogued"
                kind="long-running daemon"

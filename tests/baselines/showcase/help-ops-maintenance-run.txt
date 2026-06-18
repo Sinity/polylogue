@@ -1,4 +1,4 @@
-Usage: polylogue maintenance run [OPTIONS]
+Usage: polylogue ops maintenance run [OPTIONS]
 
   Run (or dry-run) maintenance backfill operations.
 

@@ -11,8 +11,8 @@ Pins the contract that:
    than swallowing the message to ``"search: DatabaseError"`` like the
    generic-PolylogueError path does.
 3. The error message names the same operator next step the CLI gives
-   (``polylogue embed status`` → ``polylogue embed backfill`` /
-   ``polylogue embed enable``).
+   (``polylogue ops embed status`` → ``polylogue ops embed backfill`` /
+   ``polylogue ops embed enable``).
 """
 
 from __future__ import annotations
@@ -43,8 +43,8 @@ def test_mcp_error_json_carries_actionable_message_verbatim() -> None:
     redacting it to the class name (#1503 AC4)."""
     err = EmbeddingRetrievalNotReadyError(
         "Semantic or hybrid retrieval requires retrieval-ready embeddings "
-        "(current status: none). Run `polylogue embed status`, then "
-        "`polylogue embed backfill` or let polylogued converge after enabling embeddings.",
+        "(current status: none). Run `polylogue ops embed status`, then "
+        "`polylogue ops embed backfill` or let polylogued converge after enabling embeddings.",
         readiness_status="none",
     )
     payload = json.loads(_exception_to_error_json("search", err))
@@ -53,8 +53,8 @@ def test_mcp_error_json_carries_actionable_message_verbatim() -> None:
     assert payload["detail"] == "EmbeddingRetrievalNotReadyError"
     assert payload["tool"] == "search"
     assert payload["readiness_status"] == "none"
-    assert "polylogue embed status" in payload["message"]
-    assert "polylogue embed backfill" in payload["message"]
+    assert "polylogue ops embed status" in payload["message"]
+    assert "polylogue ops embed backfill" in payload["message"]
 
 
 def test_mcp_error_json_distinct_from_generic_polylogue_error() -> None:
@@ -79,9 +79,9 @@ def test_mcp_error_json_includes_readiness_status_for_other_states() -> None:
 @pytest.mark.parametrize(
     "command_hint",
     [
-        "polylogue embed status",
-        "polylogue embed backfill",
-        "polylogue embed enable",
+        "polylogue ops embed status",
+        "polylogue ops embed backfill",
+        "polylogue ops embed enable",
     ],
 )
 def test_error_messages_name_the_canonical_operator_commands(command_hint: str) -> None:
@@ -93,13 +93,13 @@ def test_error_messages_name_the_canonical_operator_commands(command_hint: str) 
     """
     backfill_msg = EmbeddingRetrievalNotReadyError(
         "Semantic or hybrid retrieval requires retrieval-ready embeddings "
-        "(current status: none). Run `polylogue embed status`, then "
-        "`polylogue embed backfill` or let polylogued converge after enabling embeddings.",
+        "(current status: none). Run `polylogue ops embed status`, then "
+        "`polylogue ops embed backfill` or let polylogued converge after enabling embeddings.",
         readiness_status="none",
     )
     enable_msg = EmbeddingRetrievalNotReadyError(
         "Semantic or hybrid retrieval requires vector search support, but vector provider initialization "
-        "failed or embeddings are disabled. Run `polylogue embed status`, then `polylogue embed enable` "
+        "failed or embeddings are disabled. Run `polylogue ops embed status`, then `polylogue ops embed enable` "
         "if needed.",
         readiness_status="disabled",
     )

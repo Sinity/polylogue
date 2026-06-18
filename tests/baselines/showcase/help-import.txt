@@ -4,7 +4,7 @@ Usage: polylogue import [OPTIONS] [PATH]
 
   Stages PATH into the archive inbox and asks the running polylogued daemon to
   schedule it for processing. The command is truthful: it either confirms the
-  daemon accepted scheduling (with a pointer to 'polylogue status' for
+  daemon accepted scheduling (with a pointer to 'polylogue ops status' for
   observable progress) or fails with an actionable error. It never reports
   success without observable processing.
 

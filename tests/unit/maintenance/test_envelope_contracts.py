@@ -2,8 +2,8 @@
 
 The envelope is the single typed shape returned by:
 
-* CLI ``polylogue maintenance plan --output-format json`` /
-  ``polylogue maintenance run --output-format json``,
+* CLI ``polylogue ops maintenance plan --output-format json`` /
+  ``polylogue ops maintenance run --output-format json``,
 * daemon HTTP ``POST /api/maintenance/plan`` and
   ``POST /api/maintenance/run``,
 * MCP ``maintenance_preview`` and ``maintenance_execute``.

@@ -1,4 +1,4 @@
-Usage: polylogue maintenance archive-read [OPTIONS]
+Usage: polylogue ops maintenance archive-read [OPTIONS]
 
   Read index sessions from the archive.
 

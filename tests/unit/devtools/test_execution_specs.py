@@ -31,16 +31,17 @@ def test_pytest_execution_normalizes_leading_pytest_binary() -> None:
 
 
 def test_polylogue_execution_renders_runtime_and_display_forms() -> None:
-    execution = polylogue_execution("doctor", "--format", "json")
+    execution = polylogue_execution("ops", "doctor", "--format", "json")
 
     assert execution.kind is ExecutionKind.POLYLOGUE
-    assert execution.command == ("polylogue", "--plain", "doctor", "--format", "json")
-    assert execution.display_command == ("polylogue", "doctor", "--format", "json")
-    assert execution.polylogue_invoke_args == ("--plain", "doctor", "--format", "json")
+    assert execution.command == ("polylogue", "--plain", "ops", "doctor", "--format", "json")
+    assert execution.display_command == ("polylogue", "ops", "doctor", "--format", "json")
+    assert execution.polylogue_invoke_args == ("--plain", "ops", "doctor", "--format", "json")
 
 
 def test_polylogue_doctor_targeted_execution_uses_maintenance_target_catalog_metadata() -> None:
     execution = polylogue_execution(
+        "ops",
         "doctor",
         "--repair",
         "--target",
@@ -61,7 +62,7 @@ def test_polylogue_doctor_targeted_execution_uses_maintenance_target_catalog_met
 
 
 def test_polylogue_doctor_target_aliases_resolve_through_catalog() -> None:
-    execution = polylogue_execution("doctor", "--target", "raw_snapshots")
+    execution = polylogue_execution("ops", "doctor", "--target", "raw_snapshots")
 
     assert execution.metadata.operation_targets == ()
     assert execution.metadata.maintenance_targets == ("superseded_raw_snapshots",)
@@ -88,7 +89,7 @@ def test_pipeline_probe_execution_renders_control_plane_command() -> None:
 
 
 def test_memory_budget_execution_wraps_structured_execution() -> None:
-    wrapped = polylogue_execution("doctor", "--format", "json")
+    wrapped = polylogue_execution("ops", "doctor", "--format", "json")
     execution = memory_budget_execution(1536, wrapped)
 
     assert execution.kind is ExecutionKind.MEMORY_BUDGET
@@ -100,6 +101,7 @@ def test_memory_budget_execution_wraps_structured_execution() -> None:
         "--",
         "polylogue",
         "--plain",
+        "ops",
         "doctor",
         "--format",
         "json",
@@ -111,6 +113,7 @@ def test_memory_budget_execution_wraps_structured_execution() -> None:
         "1536",
         "--",
         "polylogue",
+        "ops",
         "doctor",
         "--format",
         "json",

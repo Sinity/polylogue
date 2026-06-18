@@ -1,4 +1,4 @@
-Usage: polylogue embed enable [OPTIONS]
+Usage: polylogue ops embed enable [OPTIONS]
 
   Turn on the embedding pipeline.
 

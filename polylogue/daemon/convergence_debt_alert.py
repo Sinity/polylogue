@@ -219,7 +219,7 @@ def aggregate_debt_by_family(summary: ConvergenceDebtSummary) -> dict[str, int]:
     sufficient to ground a per-family threshold check because the alert
     fires on the visible failed/retry-due counts, not on long-tail
     rollups: the operator-visible severity follows what an operator
-    would see in ``polylogue status`` or ``/health``.
+    would see in ``polylogue ops status`` or ``/health``.
     """
     counts: dict[str, int] = {}
     for item in summary.recent:

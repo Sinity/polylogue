@@ -158,7 +158,7 @@ A version mismatch is resolved by re-acquiring from source, not by patching the
 file in place. The operator moves the archive aside and re-ingests:
 
 ```bash
-polylogue reset --database && polylogued run
+polylogue ops reset --database && polylogued run
 ```
 
 Schema bumps are deletes-then-defines edits of the owning tier DDL, never
@@ -171,10 +171,10 @@ shared across sync and async backends in
 ## Inspecting an archive
 
 ```bash
-polylogue status                    # daemon/archive snapshot, including per-tier row counts
-polylogue maintenance archive-plan  # planned archive file set
-polylogue check                     # schema health + referential integrity
-polylogue check --schemas           # provider-schema conformance over raw records
+polylogue ops status                    # daemon/archive snapshot, including per-tier row counts
+polylogue ops maintenance archive-plan  # planned archive file set
+polylogue ops doctor                     # schema health + referential integrity
+polylogue ops doctor --schemas           # provider-schema conformance over raw records
 ```
 
 The `devtools verify-schema-roundtrip` command verifies committed provider

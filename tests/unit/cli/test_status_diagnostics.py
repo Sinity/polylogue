@@ -65,7 +65,7 @@ class TestDiagnoseSchemaMismatch:
         diag = diagnose_first_run(daemon_alive=False)
         assert diag.kind == "schema_mismatch"
         assert "99" in diag.headline
-        assert "polylogue reset" in diag.next_action
+        assert "polylogue ops reset" in diag.next_action
 
     def test_schema_match_returns_none_for_this_probe(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         data_home, _ = _set_xdg(monkeypatch, tmp_path)
@@ -111,7 +111,7 @@ class TestDiagnoseLockedDb:
         with patch("sqlite3.connect", side_effect=_raise_locked):
             diag = diagnose_first_run(daemon_alive=False)
         assert diag.kind == "locked_db"
-        assert "polylogue check" in diag.next_action
+        assert "polylogue ops doctor" in diag.next_action
 
 
 class TestDiagnoseStalePidfile:

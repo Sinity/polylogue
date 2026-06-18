@@ -219,7 +219,7 @@ def init_command(
     console.print(
         "\nNext steps:\n"
         "  1. [bold]polylogued run[/bold]   — start the ingest daemon\n"
-        "  2. [bold]polylogue status[/bold] — check archive health\n"
+        "  2. [bold]polylogue ops status[/bold] — check archive health\n"
         "  3. [bold]polylogue 'query terms'[/bold] — search\n"
     )
 

@@ -74,7 +74,7 @@ class TestResetCommandSubprocess:
         workspace = setup_isolated_workspace(tmp_path)
         env = workspace["env"]
 
-        result = run_cli(["reset"], env=env)
+        result = run_cli(["ops", "reset"], env=env)
         assert result.exit_code != 0
         output_lower = result.output.lower()
         assert "specify" in output_lower or "target" in output_lower or "--database" in output_lower
@@ -84,7 +84,7 @@ class TestResetCommandSubprocess:
         workspace = setup_isolated_workspace(tmp_path)
         env = workspace["env"]
 
-        result = run_cli(["--plain", "reset", "--database"], env=env)
+        result = run_cli(["--plain", "ops", "reset", "--database"], env=env)
         # In plain mode without --yes, should exit without deleting
         # (may succeed if no db exists, or show "use --yes" message)
         output_lower = result.output.lower()
@@ -103,7 +103,7 @@ class TestResetCommandSubprocess:
         run_cli(["--plain", "run", "parse"], env=env)
 
         # Now reset
-        result = run_cli(["--plain", "reset", "--database", "--yes"], env=env)
+        result = run_cli(["--plain", "ops", "reset", "--database", "--yes"], env=env)
         # Should succeed (either deleted or nothing existed)
         assert result.exit_code == 0
 
@@ -113,7 +113,7 @@ class TestResetCommandSubprocess:
         env = workspace["env"]
 
         # With --yes in plain mode
-        result = run_cli(["--plain", "reset", "--all", "--yes"], env=env)
+        result = run_cli(["--plain", "ops", "reset", "--all", "--yes"], env=env)
         # Should succeed (nothing to delete in fresh workspace)
         assert result.exit_code == 0
 
@@ -131,7 +131,7 @@ class TestResetCommandValidation:
         monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
 
         runner = CliRunner()
-        result = runner.invoke(cli, ["reset"])
+        result = runner.invoke(cli, ["ops", "reset"])
 
         assert result.exit_code == 1
         assert "specify" in result.output.lower()
@@ -149,7 +149,7 @@ class TestResetCommandValidation:
             patch("polylogue.cli.commands.reset.drive_token_path", return_value=tmp_path / "token.json"),
         ):
             runner = CliRunner()
-            result = runner.invoke(cli, ["reset", "--all", "--yes"])
+            result = runner.invoke(cli, ["ops", "reset", "--all", "--yes"])
 
             # Should not error even if files don't exist
             assert result.exit_code == 0
@@ -211,7 +211,7 @@ class TestResetCommandDeletion:
             for p in patches:
                 stack.enter_context(p)
             runner = CliRunner()
-            result = runner.invoke(cli, ["reset", flag, "--yes"])
+            result = runner.invoke(cli, ["ops", "reset", flag, "--yes"])
 
             assert result.exit_code == 0
             assert not target_path.exists()
@@ -235,7 +235,7 @@ class TestResetCommandDeletion:
             patch("polylogue.cli.commands.reset.data_home", return_value=data_home),
         ):
             runner = CliRunner()
-            result = runner.invoke(cli, ["reset", "--database", "--assets", "--yes"])
+            result = runner.invoke(cli, ["ops", "reset", "--database", "--assets", "--yes"])
 
             assert result.exit_code == 0
             assert not archive_db.exists()
@@ -272,7 +272,7 @@ class TestResetCommandDeletion:
             patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root),
             patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path),
         ):
-            result = CliRunner().invoke(cli, ["reset", "--database", "--yes"])
+            result = CliRunner().invoke(cli, ["ops", "reset", "--database", "--yes"])
 
         assert result.exit_code == 0
         assert all(not path.exists() for path in rebuildable), "rebuildable tiers should be deleted"
@@ -291,7 +291,7 @@ class TestResetCommandDeletion:
             patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root),
             patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path),
         ):
-            result = CliRunner().invoke(cli, ["reset", "--database", "--include-user-db", "--yes"])
+            result = CliRunner().invoke(cli, ["ops", "reset", "--database", "--include-user-db", "--yes"])
 
         assert result.exit_code == 0
         assert all(not path.exists() for path in [*rebuildable, user_db])
@@ -306,7 +306,7 @@ class TestResetCommandDeletion:
             patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root),
             patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path),
         ):
-            result = CliRunner().invoke(cli, ["reset", "--all", "--yes"])
+            result = CliRunner().invoke(cli, ["ops", "reset", "--all", "--yes"])
 
         assert result.exit_code == 0
         assert user_db.exists(), "user.db must survive --all without an explicit --include-user-db opt-in"
@@ -323,7 +323,7 @@ class TestResetCommandDeletion:
 
         with patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root):
             runner = CliRunner()
-            result = runner.invoke(cli, ["reset", "--session", session_id])
+            result = runner.invoke(cli, ["ops", "reset", "--session", session_id])
 
         assert result.exit_code == 0
         assert "1 suppression" in result.output
@@ -359,7 +359,7 @@ class TestResetCommandDeletion:
 
         with patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root):
             runner = CliRunner()
-            result = runner.invoke(cli, ["reset", "--source", str(source_root)])
+            result = runner.invoke(cli, ["ops", "reset", "--source", str(source_root)])
 
         assert result.exit_code == 0
         assert "Tombstoned 1 session" in result.output
@@ -399,7 +399,7 @@ class TestResetConfirmation:
             patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path),
         ):
             runner = CliRunner()
-            result = runner.invoke(cli, ["reset", "--database"])
+            result = runner.invoke(cli, ["ops", "reset", "--database"])
 
             # In plain mode without --yes, should not delete
             assert result.exit_code == 0
@@ -420,7 +420,7 @@ class TestResetConfirmation:
             patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path),
         ):
             runner = CliRunner()
-            result = runner.invoke(cli, ["reset", "--database", "--yes"])
+            result = runner.invoke(cli, ["ops", "reset", "--database", "--yes"])
 
             assert result.exit_code == 0
             assert not archive_db.exists()
@@ -440,7 +440,7 @@ class TestResetEmptyTargets:
             patch("polylogue.cli.commands.reset.drive_token_path", return_value=tmp_path / "nonexistent.json"),
         ):
             runner = CliRunner()
-            result = runner.invoke(cli, ["reset", "--all", "--yes"])
+            result = runner.invoke(cli, ["ops", "reset", "--all", "--yes"])
 
             assert result.exit_code == 0
             assert "nothing to reset" in result.output.lower()
@@ -459,7 +459,7 @@ class TestResetEmptyTargets:
             patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path / "nonexistent"),
         ):
             runner = CliRunner()
-            result = runner.invoke(cli, ["reset", "--database", "--assets", "--yes"])
+            result = runner.invoke(cli, ["ops", "reset", "--database", "--assets", "--yes"])
 
             assert result.exit_code == 0
             assert not archive_db.exists()
@@ -486,7 +486,7 @@ class TestResetErrorHandling:
             mock_unlink.side_effect = OSError("Permission denied")
 
             runner = CliRunner()
-            result = runner.invoke(cli, ["reset", "--database", "--yes"])
+            result = runner.invoke(cli, ["ops", "reset", "--database", "--yes"])
 
             # Should report failure but not crash
             assert "failed" in result.output.lower() or result.exit_code == 0
@@ -510,7 +510,7 @@ class TestResetErrorHandling:
             patch("polylogue.cli.commands.reset.data_home", return_value=data_home),
         ):
             runner = CliRunner()
-            result = runner.invoke(cli, ["reset", "--database", "--assets"])
+            result = runner.invoke(cli, ["ops", "reset", "--database", "--assets"])
 
             # Should show paths in output
             assert "database" in result.output.lower()

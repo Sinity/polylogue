@@ -1,4 +1,4 @@
-Usage: polylogue embed preflight [OPTIONS]
+Usage: polylogue ops embed preflight [OPTIONS]
 
   Estimate token count and Voyage cost for the pending backlog.
 

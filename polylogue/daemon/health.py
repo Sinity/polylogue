@@ -554,7 +554,7 @@ def _check_fts_trigger_drift_fast() -> HealthAlert:
                 consecutive_failures=_record_failure("fts_trigger_drift", True),
             )
 
-        restore_cmd = "polylogue check --repair-fts"
+        restore_cmd = "polylogue ops doctor --repair-fts"
         missing_text = ", ".join(missing)
         try:
             cfg = load_polylogue_config()

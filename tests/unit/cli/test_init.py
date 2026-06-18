@@ -128,7 +128,7 @@ def test_init_command_json_format_is_machine_readable(isolated_home: Path) -> No
 def test_status_first_run_hint_suggests_init(isolated_home: Path) -> None:
     """Bare status on a fresh install must point at ``polylogue init``."""
     runner = CliRunner()
-    result = runner.invoke(cli, ["--plain", "status"], catch_exceptions=False)
+    result = runner.invoke(cli, ["--plain", "ops", "status"], catch_exceptions=False)
     assert result.exit_code == 0
     assert "polylogue init" in result.output
 
@@ -138,7 +138,7 @@ def test_status_first_run_hint_drops_init_after_init(isolated_home: Path) -> Non
     init_result = runner.invoke(cli, ["--plain", "init"], catch_exceptions=False)
     assert init_result.exit_code == 0
 
-    result = runner.invoke(cli, ["--plain", "status"], catch_exceptions=False)
+    result = runner.invoke(cli, ["--plain", "ops", "status"], catch_exceptions=False)
     assert result.exit_code == 0
     # Once the starter config exists, the hint shifts to the daemon.
     assert "polylogue init" not in result.output

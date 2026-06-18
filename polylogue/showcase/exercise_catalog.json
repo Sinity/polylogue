@@ -28,24 +28,6 @@
       "vhs_capture": true
     },
     {
-      "name": "help-doctor",
-      "group": "structural",
-      "description": "Doctor subcommand help",
-      "execution": {
-        "kind": "polylogue",
-        "argv": [
-          "doctor",
-          "--help"
-        ]
-      },
-      "assertion": {
-        "stdout_contains": [
-          "--repair"
-        ]
-      },
-      "tier": 0
-    },
-    {
       "name": "help-tags",
       "group": "structural",
       "description": "Tags subcommand help",

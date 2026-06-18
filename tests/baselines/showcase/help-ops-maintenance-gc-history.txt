@@ -1,4 +1,4 @@
-Usage: polylogue maintenance gc-history [OPTIONS]
+Usage: polylogue ops maintenance gc-history [OPTIONS]
 
   Show recent blob-GC passes recorded in ``gc_generations``.
 

@@ -57,9 +57,8 @@ _PIPELINE_PROBE_DEFAULT_SEED = 42
 _KNOWN_POLYLOGUE_SUBCOMMANDS = frozenset(
     {
         "audit",
-        "doctor",
-        "embed",
         "insights",
+        "ops",
         "render",
         "schema",
         "site",

@@ -1,7 +1,7 @@
 """Cross-surface envelope contract for the typed maintenance scope filter (#1303).
 
 One typed :class:`MaintenanceScopeFilter` must round-trip identically
-through every surface — CLI ``polylogue maintenance plan`` flags, the
+through every surface — CLI ``polylogue ops maintenance plan`` flags, the
 daemon ``POST /api/maintenance/plan`` JSON body, and MCP
 ``maintenance_preview`` typed parameters — and every surface must echo
 it back as the same envelope JSON. The test pins:
@@ -93,7 +93,7 @@ def _make_config(tmp_path: Path) -> Config:
 
 
 def _invoke_cli_plan(operation: BackfillOperation, tmp_path: Path) -> tuple[dict[str, Any], MaintenanceScopeFilter]:
-    """Run ``polylogue maintenance plan`` and return (envelope JSON, captured filter)."""
+    """Run ``polylogue ops maintenance plan`` and return (envelope JSON, captured filter)."""
     captured: dict[str, MaintenanceScopeFilter] = {}
 
     def _capture(_config: Any, *, targets: tuple[str, ...], scope_filter: MaintenanceScopeFilter) -> BackfillOperation:

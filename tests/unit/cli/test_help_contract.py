@@ -135,7 +135,7 @@ class TestHelpStaysOnStdout:
         assert "Usage:" not in result.stderr
 
     def test_subcommand_help_goes_to_stdout(self, runner: CliRunner) -> None:
-        result = runner.invoke(cli, ["doctor", "--help"])
+        result = runner.invoke(cli, ["ops", "doctor", "--help"])
         assert result.exit_code == 0
         assert "Usage:" in result.stdout
         assert "Usage:" not in result.stderr

@@ -165,8 +165,6 @@ Options:
 
 Commands:
   analyze
-  auth               Authenticate optional external services.
-  backup             Create a timestamped durability-tier backup.
   blackboard
   commands
   completions        Emit shell completion setup for polylogue.
@@ -176,28 +174,23 @@ Commands:
   dashboard          Open the local dashboard.
   delete             Delete matched sessions.
   diagnostics        Temporal session diagnostics
-  doctor             Run archive health checks and repairs.
-  embed              Enable, preflight, and backfill the embedding pipeline.
   feedback           Record learning corrections for derived insights.
   import             Import sessions from configured sources.
   init               Detect chat sources and write a starter polylogue.toml.
   insights           Rebuild and inspect derived session insights.
   list               List matched sessions.
-  maintenance        Preview and run maintenance backfill operations.
   mark
-  paths              Print canonical archive paths and bind-mount detection.
+  ops                Run operational archive and daemon commands.
   query-completions  Inspect structured query completion metadata.
   query-explain      Explain query DSL parsing and lowering.
   read               Read matched sessions (route to view/destination).
   read-views         List executable read-view profiles.
   recent             List the most recently updated sessions.
-  reset              Reset local archive state.
   resume             Resume from recent session context.
   resume-candidates  Rank resume candidates for the current context.
   schema             Inspect and audit provider schemas.
   select
   stats              Show statistics for matched sessions.
-  status             Show daemon and archive status.
   tags               Manage session tags.
   tutorial           Interactive first-run walk-through.
   user-state         Manage durable reader user state.
@@ -393,10 +386,31 @@ Admin:
   status
 ```
 
+## Operations
+
+```text
+Usage: polylogue ops [OPTIONS] COMMAND [ARGS]...
+
+  Run operational archive, daemon, auth, embedding, and maintenance commands.
+
+Options:
+  --help  Show this message and exit.
+
+Commands:
+  auth         Authenticate optional external services.
+  backup       Create a timestamped durability-tier backup.
+  doctor       Run archive health checks and repairs.
+  embed        Enable, preflight, and backfill the embedding pipeline.
+  maintenance  Preview and run maintenance backfill operations.
+  paths        Print canonical archive paths and bind-mount detection.
+  reset        Reset local archive state.
+  status       Show daemon and archive status.
+```
+
 ## Doctor
 
 ```text
-Usage: polylogue doctor [OPTIONS]
+Usage: polylogue ops doctor [OPTIONS]
 
   Health check with optional maintenance and cleanup previews.
 
@@ -501,14 +515,14 @@ Commands:
 ## Auth
 
 ```text
-Usage: polylogue auth [OPTIONS]
+Usage: polylogue ops auth [OPTIONS]
 
   Authenticate with external services (Google Drive for Gemini).
 
   Examples:
-      polylogue auth           # Interactive OAuth for Google Drive
-      polylogue auth --refresh # Force token refresh
-      polylogue auth --revoke  # Revoke stored credentials
+      polylogue ops auth           # Interactive OAuth for Google Drive
+      polylogue ops auth --refresh # Force token refresh
+      polylogue ops auth --revoke  # Revoke stored credentials
 
 Options:
   --service TEXT  Auth service (default: drive)
@@ -520,7 +534,7 @@ Options:
 ## Reset
 
 ```text
-Usage: polylogue reset [OPTIONS]
+Usage: polylogue ops reset [OPTIONS]
 
   Reset database, blob store, assets, cache, or auth state.
 
@@ -609,9 +623,7 @@ It records the public action floor, not every utility command in the Click tree.
 | `polylogue delete` | `destructive` | `query_result_set` | `destructive_multi` | `human` | `human` | `mutation` | `dry_run_or_yes_required`, `single_match_unless_all` | `session_id` |
 | `polylogue import` | `import` | `path` | `singleton` | `human` | `human` | `mutation` | `path_exists_or_demo`, `daemon_accepts_schedule` | `filesystem_path` |
 | `polylogue config` | `config` | `config` | `any` | `human`, `json` | `human` | `item` | `secret_values_redacted` | `config_key` |
-| `polylogue status` | `ops` | `runtime` | `any` | `human`, `json` | `human` | `item` | - | `daemon_url` |
-| `polylogue doctor` | `ops` | `runtime` | `any` | `human`, `json` | `human` | `item` | - | `archive_path` |
-| `polylogue maintenance` | `ops` | `runtime` | `any` | `human` | `human` | `item` | - | `maintenance_operation` |
+| `polylogue ops` | `ops` | `runtime` | `any` | `human` | `human` | `item` | - | - |
 
 ## Published Machine Output Schemas
 

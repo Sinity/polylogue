@@ -1,4 +1,4 @@
-Usage: polylogue reset [OPTIONS]
+Usage: polylogue ops reset [OPTIONS]
 
   Reset database, blob store, assets, cache, or auth state.
 

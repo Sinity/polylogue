@@ -380,7 +380,7 @@ class TestQueryFirstGroupParseArgs:
     def test_subcommand_dispatches_normally(self, cli_runner: CliRunner) -> None:
         from polylogue.cli.click_app import cli
 
-        result = cli_runner.invoke(cli, ["doctor", "--help"], catch_exceptions=False)
+        result = cli_runner.invoke(cli, ["ops", "doctor", "--help"], catch_exceptions=False)
         assert result.exit_code == 0
         assert "health" in result.output.lower() or "repair" in result.output.lower()
 
@@ -498,7 +498,7 @@ class TestQueryFirstGroupInvoke:
     def test_subcommand_invokes_super(self, cli_runner: CliRunner) -> None:
         from polylogue.cli.click_app import cli
 
-        result = cli_runner.invoke(cli, ["doctor", "--help"])
+        result = cli_runner.invoke(cli, ["ops", "doctor", "--help"])
         assert result.exit_code == 0
 
     def test_no_subcommand_routes_to_archive_executor(self, cli_runner: CliRunner) -> None:
@@ -740,7 +740,7 @@ class TestCliMetadata:
 
         result = cli_runner.invoke(cli, ["--help"])
         assert result.exit_code == 0
-        for command in ("doctor", "import", "tags", "list", "count", "stats"):
+        for command in ("ops", "import", "tags", "list", "count", "stats"):
             assert command in result.output
         assert result.output.count("Commands:") == 1
 
@@ -748,19 +748,13 @@ class TestCliMetadata:
         from polylogue.cli.click_app import cli
 
         expected = {
-            "doctor",
-            "reset",
-            "status",
             "import",
             "init",
-            "auth",
-            "backup",
             "completions",
             "config",
             "cost",
             "blackboard",
             "commands",
-            "paths",
             "query-explain",
             "read-views",
             "query-completions",
@@ -774,8 +768,7 @@ class TestCliMetadata:
             "feedback",
             "user-state",
             "diagnostics",
-            "embed",
-            "maintenance",
+            "ops",
             "tutorial",
             # Query verbs
             "list",

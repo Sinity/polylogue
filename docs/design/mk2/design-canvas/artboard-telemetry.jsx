@@ -20,7 +20,7 @@ const Telemetry = () => {
   const policy = [
     'sqlite at $XDG_STATE_HOME/polylogue/telemetry.db — same disk as the archive',
     'no network egress — daemon binds 127.0.0.1 only · same posture as the reader',
-    '`polylogue doctor --target=daemon` prints the table; `--json` for piping',
+    '`polylogue ops doctor --target=daemon` prints the table; `--json` for piping',
     '`polylogue telemetry purge --since=30d` is the only export-shaped command',
     'opt-in flag for sharing: prints to stdout, never auto-uploads',
   ];
@@ -57,7 +57,7 @@ const Telemetry = () => {
             {policy.map((p,i) => <li key={i}>{p}</li>)}
           </ul>
           <header style={{ marginTop: 16 }}><Mono>example · doctor output</Mono></header>
-          <pre className="codeblock">$ polylogue doctor --target=daemon
+          <pre className="codeblock">$ polylogue ops doctor --target=daemon
 [ok]   daemon         pid 7842   up 2d 04:11
 [ok]   archive        14,031 conversations · 2.1 GB
 [warn] capture        lag 4.6s  (extension v0.3.1)

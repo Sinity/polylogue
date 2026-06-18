@@ -680,7 +680,7 @@ files:
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
-    loc: 187
+    loc: 199
     target: polylogue/cli/click_command_registration.py
     owner: stable
   - path: polylogue/cli/click_option_groups.py
@@ -736,7 +736,7 @@ files:
     target: polylogue/cli/commands/diagnostics.py
     owner: stable
   - path: polylogue/cli/commands/embed.py
-    loc: 617
+    loc: 619
     target: polylogue/cli/commands/embed.py
     owner: stable
   - path: polylogue/cli/commands/feedback.py
@@ -758,6 +758,10 @@ files:
   - path: polylogue/cli/commands/maintenance.py
     loc: 1121
     target: polylogue/cli/commands/maintenance.py
+    owner: stable
+  - path: polylogue/cli/commands/ops.py
+    loc: 18
+    target: polylogue/cli/commands/ops.py
     owner: stable
   - path: polylogue/cli/commands/paths.py
     loc: 311
@@ -792,7 +796,7 @@ files:
     target: polylogue/cli/commands/schema.py
     owner: stable
   - path: polylogue/cli/commands/status.py
-    loc: 1324
+    loc: 1334
     target: polylogue/cli/commands/status.py
     owner: stable
   - path: polylogue/cli/commands/status_diagnostics.py
@@ -1011,11 +1015,11 @@ files:
     target: polylogue/context/__init__.py
     owner: stable
   - path: polylogue/context/pack.py
-    loc: 306
+    loc: 308
     target: polylogue/context/pack.py
     owner: stable
   - path: polylogue/context/preamble.py
-    loc: 69
+    loc: 71
     target: polylogue/context/preamble.py
     owner: stable
   - path: polylogue/core/__init__.py
@@ -1397,7 +1401,7 @@ files:
     target: polylogue/insights/confidence.py
     owner: stable
   - path: polylogue/insights/correlation_view.py
-    loc: 233
+    loc: 232
     target: polylogue/insights/correlation_view.py
     owner: stable
   - path: polylogue/insights/cost_enrichment.py
@@ -1594,7 +1598,7 @@ files:
     target: polylogue/operations/__init__.py
     owner: stable
   - path: polylogue/operations/action_contracts.py
-    loc: 243
+    loc: 213
     target: polylogue/operations/action_contracts.py
     owner: stable
   - path: polylogue/operations/archive.py
@@ -1866,7 +1870,7 @@ files:
     target: polylogue/scenarios/executable.py
     owner: stable
   - path: polylogue/scenarios/execution.py
-    loc: 615
+    loc: 614
     target: polylogue/scenarios/execution.py
     owner: stable
   - path: polylogue/scenarios/insight_surfaces.py

@@ -67,8 +67,8 @@ class EmbeddingRetrievalNotReadyError(DatabaseError):
     """Raised when ``--similar``/``--semantic`` is asked for but vectors aren't ready.
 
     Carries an operator-actionable message naming the current readiness
-    status and the next step (``polylogue embed status`` →
-    ``polylogue embed backfill``/``enable``). Unlike a generic
+    status and the next step (``polylogue ops embed status`` →
+    ``polylogue ops embed backfill``/``enable``). Unlike a generic
     :class:`DatabaseError`, this class lets surfaces forward the message
     verbatim to the client because the contents are by construction free
     of secrets — the readiness status enum is a closed vocabulary

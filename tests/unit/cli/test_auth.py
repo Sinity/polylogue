@@ -21,12 +21,12 @@ class TestAuthCommandRouting:
     """CLI command routing tests — service dispatch and error handling."""
 
     def test_unknown_service_fails(self, cli_runner: CliRunner) -> None:
-        result = cli_runner.invoke(click_cli, ["auth", "--service", "unknown", "--plain"])
+        result = cli_runner.invoke(click_cli, ["ops", "auth", "--service", "unknown", "--plain"])
         assert result.exit_code != 0
 
     def test_default_service_is_drive(self, cli_runner: CliRunner) -> None:
         with patch("polylogue.cli.commands.auth._drive_oauth_flow"):
-            result = cli_runner.invoke(click_cli, ["auth", "--plain"])
+            result = cli_runner.invoke(click_cli, ["ops", "auth", "--plain"])
             assert "Unknown auth service" not in result.output
 
 
@@ -191,14 +191,14 @@ class TestAuthCommand:
         from tests.infra.cli_subprocess import run_cli, setup_isolated_workspace
 
         workspace = setup_isolated_workspace(tmp_path)
-        result = run_cli(["auth", "--service", "unknown"], env=workspace["env"])
+        result = run_cli(["ops", "auth", "--service", "unknown"], env=workspace["env"])
         assert result.exit_code != 0
 
     def test_auth_revoke_no_token(self, tmp_path: Path) -> None:
         from tests.infra.cli_subprocess import run_cli, setup_isolated_workspace
 
         workspace = setup_isolated_workspace(tmp_path)
-        result = run_cli(["auth", "--revoke"], env=workspace["env"])
+        result = run_cli(["ops", "auth", "--revoke"], env=workspace["env"])
         output_lower = result.output.lower()
         assert result.exit_code == 0 or "no token" in output_lower or "not found" in output_lower
 
@@ -206,7 +206,7 @@ class TestAuthCommand:
         from tests.infra.cli_subprocess import run_cli, setup_isolated_workspace
 
         workspace = setup_isolated_workspace(tmp_path)
-        result = run_cli(["auth"], env=workspace["env"])
+        result = run_cli(["ops", "auth"], env=workspace["env"])
         assert result.exit_code != 0
         output_lower = result.output.lower()
         assert "credentials" in output_lower or "missing" in output_lower or "oauth" in output_lower

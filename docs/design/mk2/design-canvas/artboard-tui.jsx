@@ -61,7 +61,7 @@ const TUICockpit = () => {
           <div className="next">
             <Mono>›</Mono>
             <span>backfill fts triggers — 1,210 rows · ~12s</span>
-            <Mono className="muted">polylogue doctor --target fts --fix</Mono>
+            <Mono className="muted">polylogue ops doctor --target fts --fix</Mono>
           </div>
           <div className="next next--muted">
             <Mono>·</Mono>

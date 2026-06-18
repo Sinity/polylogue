@@ -598,7 +598,7 @@ def run_runtime_readiness(config: Config) -> ReadinessReport:
                         VerifyStatus.ERROR,
                         summary=(
                             f"schema version {current} is not expected v{INDEX_SCHEMA_VERSION}; "
-                            "rebuild from source with `polylogue reset --database && polylogued run`"
+                            "rebuild from source with `polylogue ops reset --database && polylogued run`"
                         ),
                     )
                 )

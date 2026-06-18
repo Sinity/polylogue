@@ -1,4 +1,4 @@
-Usage: polylogue embed disable [OPTIONS]
+Usage: polylogue ops embed disable [OPTIONS]
 
   Disable the embedding pipeline without dropping existing embeddings.
 

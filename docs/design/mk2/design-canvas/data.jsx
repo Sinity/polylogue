@@ -82,7 +82,7 @@ const CONV_DETAIL = {
               tags: ['daemon','architecture','#635'], has: ['tool_use','thinking','paste'] },
     messages: [
       { i: 1,  role: 'user', t: '14:02:11', body: 'split browser-capture serve out of click_app — should it move to polylogued or stay reachable as `polylogue browser-capture serve`?', has: ['paste'] },
-      { i: 2,  role: 'assistant', t: '14:02:18', body: 'Move it. Long-running serve is daemon work; the interactive CLI should not own a port. Concretely:\n  • polylogued run → starts live ingestion + receiver + local API + web app\n  • polylogue doctor --target browser-capture → reads daemon status\n  • extension popup mirrors the same status\nKeep no `polylogue watch` alias — clean break.', has: ['thinking'] },
+      { i: 2,  role: 'assistant', t: '14:02:18', body: 'Move it. Long-running serve is daemon work; the interactive CLI should not own a port. Concretely:\n  • polylogued run → starts live ingestion + receiver + local API + web app\n  • polylogue ops doctor --target browser-capture → reads daemon status\n  • extension popup mirrors the same status\nKeep no `polylogue watch` alias — clean break.', has: ['thinking'] },
       { i: 3,  role: 'user', t: '14:03:02', body: 'and `polylogue mcp`?' },
       { i: 4,  role: 'assistant', t: '14:03:09', body: 'Separate executable: `polylogue-mcp`. MCP clients launch it directly with --role read|write|admin. It can talk to polylogued when present, falls back to direct archive access otherwise. Don\'t require every MCP client to spin up live ingestion.' },
       { i: 5,  role: 'user', t: '14:05:44', body: 'show me the click_app diff for removing the serve command', has: [] },

@@ -1,4 +1,4 @@
-Usage: polylogue maintenance status [OPTIONS]
+Usage: polylogue ops maintenance status [OPTIONS]
 
   Inspect persisted maintenance operations (#1197).
 

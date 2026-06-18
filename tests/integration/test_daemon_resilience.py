@@ -877,7 +877,7 @@ def test_concurrent_access_safety(workspace_env: dict[str, Path]) -> None:
             timeout=30,
         )
         assert status_result.returncode == 0, (
-            f"polylogue status failed: {status_result.returncode}\n"
+            f"polylogue ops status failed: {status_result.returncode}\n"
             f"stderr: {status_result.stderr.decode(errors='replace')[:500]}"
         )
 

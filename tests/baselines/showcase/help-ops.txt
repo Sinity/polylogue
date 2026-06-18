@@ -1,0 +1,16 @@
+Usage: polylogue ops [OPTIONS] COMMAND [ARGS]...
+
+  Run operational archive, daemon, auth, embedding, and maintenance commands.
+
+Options:
+  -h, --help  Show this message and exit.
+
+Commands:
+  auth         Authenticate optional external services.
+  backup       Create a timestamped durability-tier backup.
+  doctor       Run archive health checks and repairs.
+  embed        Enable, preflight, and backfill the embedding pipeline.
+  maintenance  Preview and run maintenance backfill operations.
+  paths        Print canonical archive paths and bind-mount detection.
+  reset        Reset local archive state.
+  status       Show daemon and archive status.

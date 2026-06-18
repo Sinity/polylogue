@@ -1,4 +1,4 @@
-"""First-run diagnostics for ``polylogue status``.
+"""First-run diagnostics for ``polylogue ops status``.
 
 Probes archive/daemon/source state and returns a single ``StatusDiagnostic``
 that surface layers (``status``, ``tutorial``) can render or marshal to JSON.
@@ -142,7 +142,7 @@ def _probe_schema(db: Path) -> StatusDiagnostic | None:
             kind="unknown_db_error",
             headline="Archive database could not be inspected.",
             detail=f"Internal error loading schema metadata: {exc}",
-            next_action="polylogue check",
+            next_action="polylogue ops doctor",
         )
 
     conn: sqlite3.Connection | None = None
@@ -159,22 +159,22 @@ def _probe_schema(db: Path) -> StatusDiagnostic | None:
                 detail=(
                     "Another process (likely the daemon) holds the database. "
                     "Stop or wait for it, then retry. If no daemon is running, "
-                    "remove a stale lock with `polylogue check --repair`."
+                    "remove a stale lock with `polylogue ops doctor --repair`."
                 ),
-                next_action="polylogue check --repair",
+                next_action="polylogue ops doctor --repair",
             )
         return StatusDiagnostic(
             kind="unknown_db_error",
             headline="Archive database could not be opened.",
-            detail=f"SQLite reported: {exc}. Try `polylogue check` to diagnose.",
-            next_action="polylogue check",
+            detail=f"SQLite reported: {exc}. Try `polylogue ops doctor` to diagnose.",
+            next_action="polylogue ops doctor",
         )
     except Exception as exc:
         return StatusDiagnostic(
             kind="unknown_db_error",
             headline="Archive database could not be opened.",
-            detail=f"Unexpected error: {exc}. Try `polylogue check` to diagnose.",
-            next_action="polylogue check",
+            detail=f"Unexpected error: {exc}. Try `polylogue ops doctor` to diagnose.",
+            next_action="polylogue ops doctor",
         )
     finally:
         if conn is not None:
@@ -193,7 +193,7 @@ def _probe_schema(db: Path) -> StatusDiagnostic | None:
             kind="schema_mismatch",
             headline=f"Schema version {current_version} is not runtime {expected_version}.",
             detail=detail,
-            next_action="polylogue reset --database && polylogued run",
+            next_action="polylogue ops reset --database && polylogued run",
         )
     return None
 

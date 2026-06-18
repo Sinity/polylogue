@@ -91,8 +91,8 @@ class TestCheckJsonEnvelope:
         monkeypatch: pytest.MonkeyPatch,
         workspace_env: dict[str, Path],  # deterministic empty archive, no skip
     ) -> None:
-        """polylogue check --format json output has status: ok."""
-        parsed = _invoke_json_command(["doctor", "--format", "json"], monkeypatch)
+        """polylogue ops doctor --format json output has status: ok."""
+        parsed = _invoke_json_command(["ops", "doctor", "--format", "json"], monkeypatch)
         assert parsed["status"] == "ok"
         assert "result" in parsed
 
@@ -379,12 +379,12 @@ class TestStatsVerbJsonContract:
 
 
 # ---------------------------------------------------------------------------
-# status --format json
+# ops status --format json
 # ---------------------------------------------------------------------------
 
 
 class TestStatusJsonContract:
-    """status --format json emits raw JSON (no envelope — direct archive query)."""
+    """ops status --format json emits raw JSON (no envelope — direct archive query)."""
 
     @pytest.mark.contract
     def test_status_json_daemon_not_running(
@@ -392,16 +392,16 @@ class TestStatusJsonContract:
         monkeypatch: pytest.MonkeyPatch,
         workspace_env: dict[str, Path],
     ) -> None:
-        """polylogue status --format json returns JSON when daemon is not running.
+        """polylogue ops status --format json returns JSON when daemon is not running.
 
         Uses an unreachable daemon URL so the command falls back to the
         direct archive read path, which always returns structured JSON.
         """
         exit_code, output = _invoke_raw_json_command(
-            ["status", "--daemon-url", "http://127.0.0.1:19999", "--format", "json"],
+            ["ops", "status", "--daemon-url", "http://127.0.0.1:19999", "--format", "json"],
             monkeypatch,
         )
-        assert exit_code == 0, f"status --format json exited {exit_code}: {output!r}"
+        assert exit_code == 0, f"ops status --format json exited {exit_code}: {output!r}"
         assert TRACEBACK_SENTINEL not in output
         parsed = json.loads(output)
         assert isinstance(parsed, dict)
@@ -413,9 +413,9 @@ class TestStatusJsonContract:
         monkeypatch: pytest.MonkeyPatch,
         workspace_env: dict[str, Path],
     ) -> None:
-        """status with malformed daemon URL exits cleanly without traceback."""
+        """ops status with malformed daemon URL exits cleanly without traceback."""
         exit_code, output = _invoke_raw_json_command(
-            ["status", "--daemon-url", "not-a-url", "--format", "json"],
+            ["ops", "status", "--daemon-url", "not-a-url", "--format", "json"],
             monkeypatch,
         )
         # May exit 0 (fallback) or non-zero; must not produce traceback
@@ -518,14 +518,14 @@ class TestAllJsonCommandsProduceValidJson:
     @pytest.mark.parametrize(
         ("args", "contract_id", "allow_no_results"),
         [
-            (["doctor", "--format", "json"], "cli.doctor_json_matrix", False),
+            (["ops", "doctor", "--format", "json"], "cli.doctor_json_matrix", False),
             (["tags", "--format", "json"], "cli.tags_json_matrix", False),
             (["schema", "list", "--format", "json"], "cli.schema_list_json_matrix", False),
             (["config", "--format", "json"], "cli.config_json_matrix", False),
             # list browse on empty archive → exit 0 + empty archive envelope (valid JSON)
             (["list", "--format", "json"], "cli.list_verb_json_matrix", True),
             (
-                ["status", "--daemon-url", "http://127.0.0.1:19999", "--format", "json"],
+                ["ops", "status", "--daemon-url", "http://127.0.0.1:19999", "--format", "json"],
                 "cli.status_json_matrix",
                 False,
             ),

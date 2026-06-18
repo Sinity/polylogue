@@ -1,4 +1,4 @@
-Usage: polylogue maintenance backup-plan [OPTIONS]
+Usage: polylogue ops maintenance backup-plan [OPTIONS]
 
   Inspect archive backup boundaries without copying data.
 

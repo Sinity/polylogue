@@ -1,4 +1,4 @@
-Usage: polylogue embed status [OPTIONS]
+Usage: polylogue ops embed status [OPTIONS]
 
   Show embedding coverage and freshness.
 

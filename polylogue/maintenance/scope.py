@@ -2,7 +2,7 @@
 
 Replaces the legacy free-form ``MaintenanceScope.filter`` JSON dict with
 a typed :class:`MaintenanceScopeFilter` Pydantic model so every surface
-(CLI ``polylogue maintenance plan/run``, daemon HTTP, MCP
+(CLI ``polylogue ops maintenance plan/run``, daemon HTTP, MCP
 ``maintenance_preview``/``maintenance_execute``) agrees on the same
 scope dimensions.
 

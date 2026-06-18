@@ -2,7 +2,7 @@
 
 The probes in this module classify blob-store health without deleting files.
 Garbage collection remains owned by :mod:`polylogue.storage.blob_gc`; this
-surface exists so daemon health and ``polylogue doctor`` can report the same
+surface exists so daemon health and ``polylogue ops doctor`` can report the same
 integrity classes with bounded default cost.
 """
 
@@ -237,7 +237,7 @@ def scan_blob_integrity(
                 count=len(orphan_hashes),
                 sample=tuple(orphan_hashes[:_MAX_FINDING_SAMPLE]),
                 bytes_total=sum(_blob_size(blob_store, blob_hash) for blob_hash in orphan_hashes),
-                suggested_action="preview cleanup with `polylogue doctor --cleanup --preview --target orphaned_blobs`",
+                suggested_action="preview cleanup with `polylogue ops doctor --cleanup --preview --target orphaned_blobs`",
             )
         )
 

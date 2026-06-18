@@ -1,6 +1,6 @@
 """Regression tests for the `devtools` CLI shell wrapper (`nix/devtools-wrapper.sh`).
 
-The wrapper resolves the polylogue checkout from the caller's cwd via
+The wrapper resolves the polylogue ops doctorout from the caller's cwd via
 `git rev-parse --show-toplevel` so it is worktree-aware (issue #1209,
 companion to #1193). These tests guard that contract directly against the
 shell script — the same script is read verbatim into the flake's
@@ -126,7 +126,7 @@ def test_wrapper_errors_when_no_checkout_resolvable(tmp_path: Path) -> None:
 
     result = _run_wrapper(cwd=outside_git, env={})
     assert result.returncode != 0
-    assert "cannot locate a polylogue checkout" in result.stderr
+    assert "cannot locate a polylogue ops doctorout" in result.stderr
 
 
 def test_wrapper_ignores_invalid_env_var(tmp_path: Path) -> None:

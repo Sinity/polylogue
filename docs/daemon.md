@@ -287,7 +287,7 @@ rate-limiting are out of scope for this backend.
 Maintenance tasks are split between daemon-owned (fast, inline) and
 operator-owned (heavy, scheduled externally via systemd timers or cron).
 
-For the operator-facing maintenance surface — `polylogue maintenance
+For the operator-facing maintenance surface — `polylogue ops maintenance
 preview/plan/run`, the resume/`--operation-id` pattern, scope filters,
 the status and failure surfaces, and incident runbooks — see
 [maintenance.md](maintenance.md). The daemon's inline convergence
@@ -323,8 +323,8 @@ these — operators are responsible for scheduling them:
 
 | Task | Tool | Frequency | Description |
 |------|------|-----------|-------------|
-| Durability-tier backup | `polylogue backup` | Daily | archives copy `source.db`, `user.db`, `embeddings.db`, and referenced blobs while omitting rebuildable `index.db` and disposable `ops.db`. |
-| Blob store backup | `polylogue backup` | Weekly | backup copies referenced blob files. For large archives, restic or similar incremental backup tools can also target `blob/` directly. |
+| Durability-tier backup | `polylogue ops backup` | Daily | archives copy `source.db`, `user.db`, `embeddings.db`, and referenced blobs while omitting rebuildable `index.db` and disposable `ops.db`. |
+| Blob store backup | `polylogue ops backup` | Weekly | backup copies referenced blob files. For large archives, restic or similar incremental backup tools can also target `blob/` directly. |
 | Database vacuum | `sqlite3 <db> "VACUUM"` | Monthly | Reclaims space after large deletes or updates. Requires downtime or `VACUUM INTO` to a new file while the daemon runs. |
 | Litestream replication | Litestream | Continuous | Real-time WAL replication to S3-compatible storage. Configure Litestream to watch the database and WAL files; the daemon's periodic WAL checkpoint is compatible with Litestream's replication model. |
 
@@ -364,7 +364,7 @@ The blob store uses content-addressed storage under
 `<archive_root>/blob/`. Each blob's filename is its SHA-256 hash, so
 identical content is automatically deduplicated. For backup:
 
-- `polylogue backup` copies archive blobs referenced by `source.db`
+- `polylogue ops backup` copies archive blobs referenced by `source.db`
 - For large archives, use restic or rsync targeting the `blob/` directory
 - Blobs are write-once, read-many — incremental backup tools work well
 
@@ -373,7 +373,7 @@ identical content is automatically deduplicated. For backup:
 SQLite `VACUUM` rebuilds the database file, reclaiming free pages. It
 requires the full database size in free disk space. Two approaches:
 
-1. **Online** (preferred): `polylogue backup` uses `VACUUM INTO` to
+1. **Online** (preferred): `polylogue ops backup` uses `VACUUM INTO` to
    produce a clean copy without blocking the daemon. Swap the new file
    in during a maintenance window.
 2. **Offline**: Stop the daemon, run `sqlite3 <db> "VACUUM"`, then
@@ -447,14 +447,14 @@ and recreates the vec0 virtual table.
 
 ```bash
 polylogue stats                      # embedding coverage in archive stats
-polylogue embed status               # cheap readiness + latest catch-up run
-polylogue embed status --detail      # exact pending-message/retrieval accounting
+polylogue ops embed status               # cheap readiness + latest catch-up run
+polylogue ops embed status --detail      # exact pending-message/retrieval accounting
 polylogued status                    # daemon status includes embedding readiness
 ```
 
-`polylogue embed backfill` records each bounded catch-up window in the local
+`polylogue ops embed backfill` records each bounded catch-up window in the local
 archive as `embedding_catchup_runs`. The latest run is shown by
-`polylogue embed status`, including terminal state, stop reason, processed
+`polylogue ops embed status`, including terminal state, stop reason, processed
 sessions, embedded messages, errors, and estimated cost. This is the
 operator recovery point after interruption, OOM, restart, or a cost/error
 window stop; per-session retry state still lives in `embedding_status`.

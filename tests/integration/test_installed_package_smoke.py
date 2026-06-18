@@ -200,7 +200,7 @@ def test_installed_polylogue_entrypoints_under_fresh_xdg(
         env=env,
         timeout=60,
     )
-    assert status.stdout.strip(), "polylogue status produced no output"
+    assert status.stdout.strip(), "polylogue ops status produced no output"
     assert "Traceback" not in status.stdout + status.stderr
 
     # polylogued status: daemon-side status against fresh XDG paths (#1265 AC).

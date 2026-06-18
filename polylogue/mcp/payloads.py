@@ -115,7 +115,7 @@ class MCPErrorPayload(SurfacePayloadModel):
     # Embedding-readiness surface (#1503 AC4): when an MCP tool body
     # raises ``EmbeddingRetrievalNotReadyError`` the readiness status
     # enum value is exposed so clients can render the same actionable
-    # operator message ``polylogue embed status`` does.
+    # operator message ``polylogue ops embed status`` does.
     readiness_status: str | None = None
     is_error: Literal[True] = True
 

@@ -2,8 +2,8 @@
 
 The CLI uses a hybrid structure:
 - Positional args without subcommand prefix → query mode
-- Known subcommand prefixes (doctor, schema, check, etc.) → subcommand mode
-- No args → stats mode
+- Known subcommand prefixes (`ops`, `schema`, etc.) → subcommand mode
+- No args → status / stats mode
 """
 
 from __future__ import annotations

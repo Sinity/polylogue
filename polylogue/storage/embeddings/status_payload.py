@@ -191,31 +191,31 @@ def _next_action(
     if not has_voyage_api_key:
         return {
             "code": "set_voyage_key",
-            "command": "polylogue embed enable --voyage-api-key ...",
+            "command": "polylogue ops embed enable --voyage-api-key ...",
             "reason": "Semantic retrieval needs a Voyage API key before embedding can run.",
         }
     if not config_enabled:
         return {
             "code": "enable_embeddings",
-            "command": "polylogue embed enable --yes",
+            "command": "polylogue ops embed enable --yes",
             "reason": "A Voyage key is available, but embedding convergence is disabled in config.",
         }
     if failure_count > 0 and pending_sessions > 0:
         return {
             "code": "inspect_failures",
-            "command": "polylogue embed status --detail",
+            "command": "polylogue ops embed status --detail",
             "reason": "Recent embedding failures exist while backlog remains.",
         }
     if stale_messages > 0:
         return {
             "code": "refresh_stale",
-            "command": "polylogue embed backfill --max-sessions 10",
+            "command": "polylogue ops embed backfill --max-sessions 10",
             "reason": "Existing vectors are stale for at least one message.",
         }
     if pending_sessions > 0:
         return {
             "code": "drain_backlog",
-            "command": "polylogue embed backfill --max-sessions 10",
+            "command": "polylogue ops embed backfill --max-sessions 10",
             "reason": "Embedding convergence is enabled and pending sessions remain.",
         }
     if retrieval_ready:
@@ -226,7 +226,7 @@ def _next_action(
         }
     return {
         "code": "run_preflight",
-        "command": "polylogue embed preflight --detail",
+        "command": "polylogue ops embed preflight --detail",
         "reason": "Embedding state is inconclusive; inspect exact pending-message and retrieval-band details.",
     }
 

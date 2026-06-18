@@ -9,7 +9,7 @@ Pins:
   :func:`execute_replay` accept the typed filter, surface it on the
   returned :class:`BackfillOperation.scope`, and shrink
   ``affected_rows`` when ``session_ids`` narrows the scope;
-* cross-surface parity — CLI ``polylogue maintenance plan``, daemon
+* cross-surface parity — CLI ``polylogue ops maintenance plan``, daemon
   ``POST /api/maintenance/plan``, and MCP ``maintenance_preview``
   all serialize an equivalent filter into the same envelope payload.
 """

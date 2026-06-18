@@ -17,7 +17,7 @@ The configured archive root contains these durable paths:
 | `ops.db` | Daemon cursors, attempts, convergence debt, stage events, and operational telemetry. | Disposable. Include only in diagnostics bundles or incident snapshots. |
 | `blob/` | Content-addressed binary payloads keyed by SHA-256. | Back up referenced blobs with `source.db`/`user.db`; do not prune by age alone. |
 
-`polylogue maintenance archive-plan --output-format json` is the machine-readable
+`polylogue ops maintenance archive-plan --output-format json` is the machine-readable
 inventory for tier filenames, expected versions, backup-required tiers, and
 missing blockers. Run it before backup automation rather than hard-coding only
 the files that happen to exist locally.
@@ -43,22 +43,22 @@ Restore into an isolated archive root first:
 
 ```bash
 export POLYLOGUE_ARCHIVE_ROOT=/tmp/polylogue-restore-check
-polylogue maintenance archive-plan --output-format json
-polylogue status --format json
+polylogue ops maintenance archive-plan --output-format json
+polylogue ops status --format json
 ```
 
 Then verify the restored root before pointing the daemon at it:
 
 ```bash
 devtools daemon-workload-probe --json
-polylogue check --format json
+polylogue ops doctor --format json
 polylogue find pytest then read --view summary
 ```
 
 Restore expectations:
 
-- `user.db` must survive ordinary `polylogue reset --database` and
-  `polylogue reset --all`; deleting it requires the explicit
+- `user.db` must survive ordinary `polylogue ops reset --database` and
+  `polylogue ops reset --all`; deleting it requires the explicit
   `--include-user-db` opt-in.
 - `index.db` may be rebuilt from `source.db` when schema versions change.
 - `embeddings.db` may be rebuilt, but restore it when possible to avoid

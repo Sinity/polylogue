@@ -1,11 +1,11 @@
-Usage: polylogue auth [OPTIONS]
+Usage: polylogue ops auth [OPTIONS]
 
   Authenticate with external services (Google Drive for Gemini).
 
   Examples:
-      polylogue auth           # Interactive OAuth for Google Drive
-      polylogue auth --refresh # Force token refresh
-      polylogue auth --revoke  # Revoke stored credentials
+      polylogue ops auth           # Interactive OAuth for Google Drive
+      polylogue ops auth --refresh # Force token refresh
+      polylogue ops auth --revoke  # Revoke stored credentials
 
 Options:
   --service TEXT  Auth service (default: drive)

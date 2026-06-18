@@ -204,7 +204,7 @@ Use skeleton rows with stable layout, not spinners everywhere.
 
 ### Failure
 
-Show sanitized error summaries and next diagnostic command, e.g. `polylogue doctor capture`.
+Show sanitized error summaries and next diagnostic command, e.g. `polylogue ops doctor capture`.
 
 ## Accessibility
 

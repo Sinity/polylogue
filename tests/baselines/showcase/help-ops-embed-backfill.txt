@@ -1,4 +1,4 @@
-Usage: polylogue embed backfill [OPTIONS]
+Usage: polylogue ops embed backfill [OPTIONS]
 
   Run the first embedding batch with per-session cost feedback.
 

@@ -1,7 +1,7 @@
 """Staleness inventory preview surface contracts.
 
 Validates ``polylogue.maintenance.preview.staleness_inventory`` and
-``polylogue maintenance preview`` against the acceptance criteria of
+``polylogue ops maintenance preview`` against the acceptance criteria of
 issue #1145:
 
 * multiple :class:`InvalidationReason` values exercised (not just

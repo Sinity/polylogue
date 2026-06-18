@@ -1558,7 +1558,7 @@ def _component_from_fts_readiness(readiness: FTSReadiness) -> ComponentReadiness
             "message_indexable_count": readiness.message_indexable_count,
             "coverage_pct": readiness.coverage_pct,
         },
-        repair_hint=None if readiness.messages_ready else "polylogue maintenance run --target dangling_fts",
+        repair_hint=None if readiness.messages_ready else "polylogue ops maintenance run --target dangling_fts",
     )
 
 
@@ -1589,7 +1589,7 @@ def _component_from_insight_freshness(freshness: InsightFreshness) -> ComponentR
         },
         repair_hint=None
         if state is CapabilityReadinessState.READY
-        else "polylogue maintenance preview --scope derived",
+        else "polylogue ops maintenance preview --scope derived",
     )
 
 
@@ -1631,7 +1631,7 @@ def _daemon_embedding_repair_hint(
     state: CapabilityReadinessState,
 ) -> str | None:
     if state == CapabilityReadinessState.MISSING and not readiness.embedding_config_enabled:
-        return "polylogue embed enable"
+        return "polylogue ops embed enable"
     if state == CapabilityReadinessState.BLOCKED:
         return "configure Voyage API key"
     if state in {
@@ -1639,7 +1639,7 @@ def _daemon_embedding_repair_hint(
         CapabilityReadinessState.STALE,
         CapabilityReadinessState.DEGRADED,
     }:
-        return "polylogue embed backfill"
+        return "polylogue ops embed backfill"
     return None
 
 
@@ -1665,7 +1665,7 @@ def _component_from_archive_storage(storage: ArchiveStorageStatus) -> ComponentR
             "final_shape_ready": storage.final_shape_ready,
         },
         caveats=caveats,
-        repair_hint=None if state == CapabilityReadinessState.READY else "polylogue maintenance archive-init --yes",
+        repair_hint=None if state == CapabilityReadinessState.READY else "polylogue ops maintenance archive-init --yes",
     )
 
 

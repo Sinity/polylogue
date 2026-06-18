@@ -2,12 +2,12 @@
 
 This is the operator-facing onboarding surface for the embedding pipeline
 described in [`docs/architecture.md`](../../../docs/architecture.md) —
-``polylogue embed enable`` writes the config flip and records the Voyage API
-key in ``polylogue.toml``; ``polylogue embed preflight`` counts the sessions
+``polylogue ops embed enable`` writes the config flip and records the Voyage API
+key in ``polylogue.toml``; ``polylogue ops embed preflight`` counts the sessions
 that would be embedded plus the Voyage cost estimate without contacting the
-provider; ``polylogue embed backfill`` runs the first batch with per-session
+provider; ``polylogue ops embed backfill`` runs the first batch with per-session
 cost feedback against the cost cap; and
-``polylogue embed disable`` flips the gate back off without dropping any
+``polylogue ops embed disable`` flips the gate back off without dropping any
 existing embeddings.
 
 The substrate-side primitives (token-count and cost estimation,
@@ -302,7 +302,9 @@ def enable_subcommand(
     click.echo(f"\nEmbeddings enabled. Wrote {path}")
     if no_store_key:
         click.echo("API key not stored in config; ensure VOYAGE_API_KEY remains set for daemon and CLI.")
-    click.echo("Run [bold]polylogue embed backfill[/bold] to start the first embedding batch, or restart polylogued.")
+    click.echo(
+        "Run [bold]polylogue ops embed backfill[/bold] to start the first embedding batch, or restart polylogued."
+    )
 
 
 @embed_command.command("disable")
@@ -317,7 +319,7 @@ def disable_subcommand(env: AppEnv) -> None:
     cfg_key = env.config.index_config.voyage_api_key if env.config.index_config else None
     path = _write_embedding_section(enabled=False, voyage_api_key=cfg_key)
     click.echo(f"Embeddings disabled. Wrote {path}")
-    click.echo("Existing embeddings remain; re-run [bold]polylogue embed enable[/bold] to resume.")
+    click.echo("Existing embeddings remain; re-run [bold]polylogue ops embed enable[/bold] to resume.")
 
 
 @embed_command.command("preflight")
@@ -443,7 +445,7 @@ def backfill_subcommand(
     key = _resolve_voyage_key(env, None)
     if not key:
         click.echo(
-            "Error: Voyage API key not configured. Run [bold]polylogue embed enable[/bold] first.",
+            "Error: Voyage API key not configured. Run [bold]polylogue ops embed enable[/bold] first.",
             err=True,
         )
         raise click.Abort()

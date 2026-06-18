@@ -196,5 +196,5 @@ def test_json_status_snapshot(
 ) -> None:
     """``polylogue --plain status --format json`` pins JSON status shape when daemon is unreachable."""
     monkeypatch.setenv("POLYLOGUE_DAEMON_URL", "http://127.0.0.1:1")
-    output = _invoke_json(runner, ["status", "--format", "json"])
+    output = _invoke_json(runner, ["ops", "status", "--format", "json"])
     assert output == snapshot

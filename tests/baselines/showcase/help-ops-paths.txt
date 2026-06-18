@@ -1,4 +1,4 @@
-Usage: polylogue paths [OPTIONS]
+Usage: polylogue ops paths [OPTIONS]
 
   Print canonical archive paths and filesystem topology.
 

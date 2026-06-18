@@ -438,7 +438,7 @@ class TestDaemonVectorOnlyTypedError:
         handler._send_json = send_json  # type: ignore[method-assign]
 
         exc = EmbeddingRetrievalNotReadyError(
-            "embeddings not ready; run polylogue embed status",
+            "embeddings not ready; run polylogue ops embed status",
             readiness_status="disabled",
         )
 

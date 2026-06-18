@@ -44,7 +44,7 @@ def test_component_readiness_serializes_machine_shape() -> None:
         summary="needs catch-up",
         counts={"pending_messages": 3},
         caveats=("daemon stage disabled",),
-        repair_hint="polylogue embed backfill",
+        repair_hint="polylogue ops embed backfill",
         evidence_refs=("embedding_status:latest",),
     ).to_dict()
 
@@ -57,7 +57,7 @@ def test_component_readiness_serializes_machine_shape() -> None:
         "last_attempt": None,
         "counts": {"pending_messages": 3},
         "caveats": ["daemon stage disabled"],
-        "repair_hint": "polylogue embed backfill",
+        "repair_hint": "polylogue ops embed backfill",
         "evidence_refs": ["embedding_status:latest"],
     }
 
@@ -158,14 +158,14 @@ def test_archive_surface_maps_search_mismatch_to_stale_component() -> None:
             "evidence": {"text_block_count": 10, "messages_fts_count": 8},
         },
         scope="lexical",
-        repair_hint="polylogue maintenance run --target dangling_fts",
+        repair_hint="polylogue ops maintenance run --target dangling_fts",
     )
 
     assert component.state is CapabilityReadinessState.STALE
     assert component.scope == "lexical"
     assert component.counts == {"text_block_count": 10, "messages_fts_count": 8}
     assert component.caveats == ("messages_fts_row_mismatch",)
-    assert component.repair_hint == "polylogue maintenance run --target dangling_fts"
+    assert component.repair_hint == "polylogue ops maintenance run --target dangling_fts"
 
 
 def test_assertion_substrate_maps_missing_ready_and_error_states() -> None:
@@ -230,7 +230,7 @@ def test_insight_entry_operation_and_catchup_adapters() -> None:
             display_name="Session Profiles",
             verdict="incompatible",
             row_count=3,
-            repair_command="polylogue maintenance repair session-insights",
+            repair_command="polylogue ops maintenance repair session-insights",
             evidence=("session_insight_status",),
         )
     )

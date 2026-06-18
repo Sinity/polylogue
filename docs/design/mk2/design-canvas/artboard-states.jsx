@@ -22,11 +22,11 @@ const States = () => (
         </StateRow>
         <StateRow tone="degraded" title="fts trigger drift">
           <p>Title search is current; body search may miss recent edits.</p>
-          <Mono className="cta">polylogue doctor --target fts --fix</Mono>
+          <Mono className="cta">polylogue ops doctor --target fts --fix</Mono>
         </StateRow>
         <StateRow tone="failure" title="archive locked">
           <p>Another writer holds the SQLite write lock.</p>
-          <Mono className="cta">polylogue doctor --target lock</Mono>
+          <Mono className="cta">polylogue ops doctor --target lock</Mono>
         </StateRow>
         <StateRow tone="privacy" title="private window">
           <p>Capture paused while a private browser window is foregrounded.</p>
@@ -42,7 +42,7 @@ const States = () => (
 hint: drop --provider, or try \`polylogue select conversation\`.`}</pre>
         </StateRow>
         <StateRow tone="loading" title="streaming">
-<pre>{`polylogue status --daemon
+<pre>{`polylogue ops status --daemon
 [live] claude-code · caught up · lag 0.4s`}</pre>
         </StateRow>
         <StateRow tone="degraded" title="daemon down">
