@@ -14,6 +14,7 @@ from polylogue.archive.query.metadata import (
     count_query_operators,
     date_query_fields,
     date_query_operators,
+    structural_query_field_info,
     structural_query_fields,
     structural_query_units,
 )
@@ -171,6 +172,12 @@ def query_structural_field_candidates(unit: str, incomplete: str) -> list[QueryC
     for field_name in structural_query_fields(unit):
         if current and not field_name.startswith(current):
             continue
+        info = structural_query_field_info(unit, field_name)
+        description = f"Field accepted inside exists {unit}(...)."
+        if info is not None:
+            description = info.description
+            if info.example:
+                description = f"{description} Example: {info.example}"
         candidates.append(
             QueryCompletionCandidate(
                 value=field_name,
@@ -178,7 +185,7 @@ def query_structural_field_candidates(unit: str, incomplete: str) -> list[QueryC
                 display=f"{field_name}:",
                 kind="query-structural-field",
                 group=f"{unit} structural fields",
-                description=f"Field accepted inside exists {unit}(...).",
+                description=description,
                 source="STRUCTURAL_QUERY_UNIT_REGISTRY",
             )
         )

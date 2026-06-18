@@ -186,7 +186,15 @@ _ASSERTION_STRUCTURAL_FIELDS = {
     "context",
 }
 _STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS.update(_ASSERTION_STRUCTURAL_FIELDS)
-_SCOPED_SESSION_STRUCTURAL_FIELDS = tuple(f"session.{field}" for field in sorted(_BOOLEAN_SUPPORTED_FIELDS))
+
+
+@dataclass(frozen=True)
+class StructuralQueryFieldInfo:
+    """Completion/query-builder metadata for one structural predicate field."""
+
+    name: str
+    description: str
+    example: str
 
 
 @dataclass(frozen=True)
@@ -194,7 +202,7 @@ class StructuralQueryUnitInfo:
     """Completion/query-builder metadata for one ``exists <unit>(...)`` unit."""
 
     description: str
-    fields: tuple[str, ...]
+    fields: tuple[StructuralQueryFieldInfo, ...]
     example: str
 
 
@@ -218,25 +226,107 @@ class DateQueryFieldInfo:
     example: str
 
 
+def _field_info(name: str, description: str, example: str) -> StructuralQueryFieldInfo:
+    return StructuralQueryFieldInfo(name=name, description=description, example=example)
+
+
+_COMMON_STRUCTURAL_FIELD_INFO: dict[str, StructuralQueryFieldInfo] = {
+    "action": _field_info("action", "Semantic action category on tool/action evidence.", "action:file_edit"),
+    "command": _field_info("command", "Tool command or invocation text substring.", 'command:"pytest"'),
+    "output": _field_info("output", "Tool output substring.", "output:FAILED"),
+    "path": _field_info("path", "Referenced file or artifact path substring.", "path:polylogue/archive"),
+    "role": _field_info("role", "Message role.", "role:assistant"),
+    "text": _field_info("text", "Text/content substring for the selected unit.", "text:timeout"),
+    "tool": _field_info("tool", "Normalized tool name.", "tool:bash"),
+    "type": _field_info("type", "Unit-specific type token.", "type:code"),
+    "words": _field_info("words", "Word-count predicate for the selected unit.", "words:>=200"),
+}
+
+_ASSERTION_STRUCTURAL_FIELD_INFO: dict[str, StructuralQueryFieldInfo] = {
+    "author": _field_info("author", "Assertion author display/name substring.", "author:codex"),
+    "author_kind": _field_info("author_kind", "Assertion author kind.", "author_kind:agent"),
+    "author_ref": _field_info("author_ref", "Assertion author ObjectRef.", "author_ref:agent:codex"),
+    "body": _field_info("body", "Assertion body text substring.", "body:review"),
+    "context": _field_info("context", "Assertion context JSON/text substring.", "context:branch"),
+    "evidence": _field_info("evidence", "Assertion evidence ref substring.", "evidence:session:"),
+    "key": _field_info("key", "Assertion key string.", "key:lesson.query"),
+    "kind": _field_info("kind", "Assertion kind.", "kind:decision"),
+    "scope": _field_info("scope", "Assertion scope string.", "scope:repo:polylogue"),
+    "scope_ref": _field_info("scope_ref", "Assertion scope ObjectRef.", "scope_ref:repo:polylogue"),
+    "status": _field_info("status", "Assertion status.", "status:active"),
+    "target": _field_info("target", "Assertion target string.", "target:session"),
+    "target_ref": _field_info("target_ref", "Assertion target ObjectRef.", "target_ref:session:abc"),
+    "text": _field_info("text", "Assertion body/value/evidence text substring.", "text:query"),
+    "value": _field_info("value", "Assertion value JSON/text substring.", "value:priority"),
+    "visibility": _field_info("visibility", "Assertion visibility.", "visibility:private"),
+}
+
+_SESSION_SCOPED_STRUCTURAL_EXAMPLES: dict[str, str] = {
+    "action": "session.action:file_edit",
+    "cwd": "session.cwd:/realm/project",
+    "has": "session.has:tools",
+    "id": "session.id:abc123",
+    "messages": "session.messages:10",
+    "origin": "session.origin:claude-code-session",
+    "path": "session.path:polylogue/cli",
+    "repo": "session.repo:polylogue",
+    "since": "session.since:7d",
+    "tag": "session.tag:review",
+    "title": "session.title:refactor",
+    "tool": "session.tool:bash",
+    "until": "session.until:2024-01-15",
+    "words": "session.words:200",
+}
+
+
+def _session_scoped_field_info() -> tuple[StructuralQueryFieldInfo, ...]:
+    fields: list[StructuralQueryFieldInfo] = []
+    for field, example in sorted(_SESSION_SCOPED_STRUCTURAL_EXAMPLES.items()):
+        info = EXPRESSION_FIELD_REGISTRY.get(field)
+        description = info["description"] if info is not None else f"Owning session {field} predicate."
+        fields.append(
+            _field_info(
+                f"session.{field}",
+                f"Owning session scope: {description}",
+                example,
+            )
+        )
+    return tuple(fields)
+
+
+_SCOPED_SESSION_STRUCTURAL_FIELD_INFO = _session_scoped_field_info()
+_SCOPED_SESSION_STRUCTURAL_FIELDS = tuple(field.name for field in _SCOPED_SESSION_STRUCTURAL_FIELD_INFO)
+
+
+def _structural_field_infos(*names: str) -> tuple[StructuralQueryFieldInfo, ...]:
+    infos = [_COMMON_STRUCTURAL_FIELD_INFO[name] for name in names]
+    return tuple(sorted((*infos, *_SCOPED_SESSION_STRUCTURAL_FIELD_INFO), key=lambda field: field.name))
+
+
+def _assertion_field_infos() -> tuple[StructuralQueryFieldInfo, ...]:
+    infos = [_ASSERTION_STRUCTURAL_FIELD_INFO[name] for name in sorted(_ASSERTION_STRUCTURAL_FIELDS)]
+    return tuple(sorted((*infos, *_SCOPED_SESSION_STRUCTURAL_FIELD_INFO), key=lambda field: field.name))
+
+
 STRUCTURAL_QUERY_UNIT_REGISTRY: dict[str, StructuralQueryUnitInfo] = {
     "action": StructuralQueryUnitInfo(
         description="Match sessions with at least one action row satisfying the child predicate.",
-        fields=tuple(sorted((*_ACTION_STRUCTURAL_FIELDS, *_SCOPED_SESSION_STRUCTURAL_FIELDS))),
+        fields=_structural_field_infos(*_ACTION_STRUCTURAL_FIELDS),
         example="exists action(session.repo:polylogue AND tool:bash AND text:pytest)",
     ),
     "block": StructuralQueryUnitInfo(
         description="Match sessions with at least one parsed message block satisfying the child predicate.",
-        fields=tuple(sorted((*_BLOCK_STRUCTURAL_FIELDS, *_SCOPED_SESSION_STRUCTURAL_FIELDS))),
+        fields=_structural_field_infos(*_BLOCK_STRUCTURAL_FIELDS),
         example="exists block(session.origin:codex-session AND type:code AND text:timeout)",
     ),
     "message": StructuralQueryUnitInfo(
         description="Match sessions with at least one message satisfying the child predicate.",
-        fields=tuple(sorted((*_MESSAGE_STRUCTURAL_FIELDS, *_SCOPED_SESSION_STRUCTURAL_FIELDS))),
+        fields=_structural_field_infos(*_MESSAGE_STRUCTURAL_FIELDS),
         example="exists message(session.repo:polylogue AND role:assistant AND text:timeout)",
     ),
     "assertion": StructuralQueryUnitInfo(
         description="Match sessions with at least one session-targeted assertion satisfying the child predicate.",
-        fields=tuple(sorted((*_ASSERTION_STRUCTURAL_FIELDS, *_SCOPED_SESSION_STRUCTURAL_FIELDS))),
+        fields=_assertion_field_infos(),
         example="exists assertion(kind:decision AND status:active AND text:review)",
     ),
 }
@@ -278,7 +368,20 @@ def structural_query_fields(unit: str) -> tuple[str, ...]:
     info = STRUCTURAL_QUERY_UNIT_REGISTRY.get(unit.lower())
     if info is None:
         return ()
-    return info.fields
+    return tuple(field.name for field in info.fields)
+
+
+def structural_query_field_info(unit: str, field: str) -> StructuralQueryFieldInfo | None:
+    """Return metadata for a structural field accepted by *unit*."""
+
+    info = STRUCTURAL_QUERY_UNIT_REGISTRY.get(unit.lower())
+    if info is None:
+        return None
+    normalized = field.lower()
+    for field_info in info.fields:
+        if field_info.name == normalized:
+            return field_info
+    return None
 
 
 def count_query_fields() -> tuple[str, ...]:
@@ -319,6 +422,7 @@ __all__ = [
     "EXPRESSION_FIELD_REGISTRY",
     "QueryUnitName",
     "STRUCTURAL_QUERY_UNIT_REGISTRY",
+    "StructuralQueryFieldInfo",
     "StructuralQueryUnitInfo",
     "_BOOLEAN_SUPPORTED_FIELDS",
     "_ACTION_STRUCTURAL_FIELDS",
@@ -331,6 +435,7 @@ __all__ = [
     "count_query_operators",
     "date_query_fields",
     "date_query_operators",
+    "structural_query_field_info",
     "structural_query_fields",
     "structural_query_units",
 ]
