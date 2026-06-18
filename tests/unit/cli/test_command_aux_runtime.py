@@ -180,6 +180,14 @@ def test_query_structural_field_candidates_come_from_expression_registry() -> No
     assert type_candidate.insert == "type:"
     assert type_candidate.kind == "query-structural-field"
     assert type_candidate.source == "STRUCTURAL_QUERY_UNIT_REGISTRY"
+    assert "Unit-specific type token" in type_candidate.description
+    assert "type:code" in type_candidate.description
+
+    session_candidates = shell_completion_values.query_structural_field_candidates("message", "session.or")
+    origin_candidate = next(candidate for candidate in session_candidates if candidate.value == "session.origin")
+    assert origin_candidate.insert == "session.origin:"
+    assert "Owning session scope" in origin_candidate.description
+    assert "session.origin:claude-code-session" in origin_candidate.description
 
 
 def test_query_count_operator_candidates_come_from_expression_registry() -> None:
