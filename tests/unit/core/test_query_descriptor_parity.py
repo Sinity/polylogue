@@ -12,18 +12,14 @@ from polylogue.mcp.query_contracts import MCPSessionQueryRequest
 
 
 def test_descriptor_mcp_names_match_mcp_query_request_fields() -> None:
-    """Every MCPSessionQueryRequest field with a descriptor must match."""
+    """Every query-bearing MCPSessionQueryRequest field has descriptor metadata."""
     mcp_fields = {field.name for field in fields(MCPSessionQueryRequest)}
     declared: set[str] = set()
     for d in QUERY_FIELD_DESCRIPTORS:
         declared.update(d.mcp_names)
-    # Control fields (limit, offset, sort) don't need descriptors
     control_fields = {"limit", "offset", "sort"}
     query_fields = mcp_fields - control_fields
-    missing = query_fields - declared
-    # Not all MCP fields need descriptors; this is informational
-    if missing:
-        pass  # flag for review, not blocking
+    assert query_fields - declared == set()
 
 
 def test_all_descriptors_have_mcp_or_api_name() -> None:

@@ -34,6 +34,7 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -135,6 +136,7 @@ TESTMON_DATA = Path(".testmondata")
 TESTMON_SEED_STAMP = Path(".cache/testmon/seed.json")
 PYTEST_REPORT_DIR = Path(".cache/verify")
 PYTEST_REPORT_PATH = PYTEST_REPORT_DIR / "last-pytest.json"
+PYTEST_PROGRESS_PATH = PYTEST_REPORT_DIR / "current-pytest-progress.json"
 PYTEST_HEARTBEAT_ENV = "POLYLOGUE_VERIFY_HEARTBEAT_S"
 PYTEST_TIMEOUT_ENV = "POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S"
 PYTEST_STALL_TIMEOUT_ENV = "POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S"
@@ -254,6 +256,52 @@ def _clear_pytest_report() -> None:
     """Remove a stale report before a pytest step runs."""
     with contextlib.suppress(FileNotFoundError):
         PYTEST_REPORT_PATH.unlink()
+    with contextlib.suppress(FileNotFoundError):
+        PYTEST_PROGRESS_PATH.unlink()
+
+
+def _write_pytest_progress(
+    *,
+    event: str,
+    cmd: list[str],
+    started_at: float,
+    pid: int | None = None,
+    returncode: int | None = None,
+    elapsed_s: float | None = None,
+    idle_s: float | None = None,
+    output_bytes: Mapping[str, int] | None = None,
+    status: Mapping[str, str | int | None] | None = None,
+    cpu_pct: float | None = None,
+    termination_reason: str | None = None,
+) -> None:
+    """Write a live pytest progress artifact for long verify runs."""
+    if elapsed_s is None:
+        elapsed_s = time.monotonic() - started_at
+    payload: dict[str, Any] = {
+        "event": event,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "elapsed_s": round(elapsed_s, 2),
+        "command": cmd,
+    }
+    if pid is not None:
+        payload["pid"] = pid
+    if returncode is not None:
+        payload["returncode"] = returncode
+    if idle_s is not None:
+        payload["idle_s"] = round(idle_s, 2)
+    if output_bytes is not None:
+        payload["output_bytes"] = dict(output_bytes)
+    if status is not None:
+        payload["process_state"] = status.get("state")
+        payload["rss_kb"] = status.get("rss_kb")
+    if cpu_pct is not None:
+        payload["cpu_pct"] = round(cpu_pct, 2)
+    if termination_reason is not None:
+        payload["termination_reason"] = termination_reason
+    PYTEST_PROGRESS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = PYTEST_PROGRESS_PATH.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
+    tmp.replace(PYTEST_PROGRESS_PATH)
 
 
 def _process_cpu_seconds(pid: int) -> float | None:
@@ -345,10 +393,18 @@ def _run_pytest_with_heartbeat(
     )
     assert process.stdout is not None
     assert process.stderr is not None
+    _write_pytest_progress(
+        event="started",
+        cmd=cmd,
+        started_at=t0,
+        pid=process.pid,
+        output_bytes={"stdout": 0, "stderr": 0},
+    )
     selector = selectors.DefaultSelector()
     selector.register(process.stdout, selectors.EVENT_READ, "stdout")
     selector.register(process.stderr, selectors.EVENT_READ, "stderr")
     output: dict[str, list[bytes]] = {"stdout": [], "stderr": []}
+    output_bytes = {"stdout": 0, "stderr": 0}
     last_cpu = _process_cpu_seconds(process.pid)
     last_sample = time.monotonic()
     last_output = last_sample
@@ -380,9 +436,19 @@ def _run_pytest_with_heartbeat(
                 if chunk:
                     stream_name = str(selector_key.data)
                     output[stream_name].append(chunk)
+                    output_bytes[stream_name] += len(chunk)
                     sys.stderr.write(chunk.decode(errors="replace"))
                     sys.stderr.flush()
                     last_output = time.monotonic()
+                    _write_pytest_progress(
+                        event="output",
+                        cmd=cmd,
+                        started_at=t0,
+                        pid=process.pid,
+                        idle_s=0.0,
+                        output_bytes=output_bytes,
+                        status=_process_status(process.pid),
+                    )
                 else:
                     selector.unregister(selector_key.fileobj)
         else:
@@ -403,6 +469,17 @@ def _run_pytest_with_heartbeat(
                 f"idle={sample_now - last_output:.0f}s{state_text}{cpu_text}{rss_text}\n"
             )
             sys.stderr.flush()
+            _write_pytest_progress(
+                event="heartbeat",
+                cmd=cmd,
+                started_at=t0,
+                pid=process.pid,
+                elapsed_s=sample_now - t0,
+                idle_s=sample_now - last_output,
+                output_bytes=output_bytes,
+                status=status,
+                cpu_pct=cpu_pct,
+            )
         if process.poll() is not None and not selector.get_map():
             break
 
@@ -412,11 +489,29 @@ def _run_pytest_with_heartbeat(
         if remaining:
             stream_name = "stdout" if stream is process.stdout else "stderr"
             output[stream_name].append(remaining)
+            output_bytes[stream_name] += len(remaining)
     stdout = b"".join(output["stdout"]).decode(errors="replace")
     stderr = b"".join(output["stderr"]).decode(errors="replace")
     if termination_reason is not None:
+        _write_pytest_progress(
+            event="terminated",
+            cmd=cmd,
+            started_at=t0,
+            pid=process.pid,
+            returncode=124,
+            output_bytes=output_bytes,
+            termination_reason=termination_reason,
+        )
         stderr = f"{stderr}\nverify: {termination_reason}; terminated pytest process group {process.pid}\n"
         return subprocess.CompletedProcess(cmd, 124, stdout, stderr)
+    _write_pytest_progress(
+        event="finished",
+        cmd=cmd,
+        started_at=t0,
+        pid=process.pid,
+        returncode=process.returncode or 0,
+        output_bytes=output_bytes,
+    )
     return subprocess.CompletedProcess(cmd, process.returncode or 0, stdout, stderr)
 
 
@@ -439,6 +534,7 @@ def _run(label: str, cmd: list[str], *, cwd: str | None = None) -> tuple[int, fl
         metadata["heartbeat_s"] = _pytest_heartbeat_interval()
         metadata["timeout_s"] = _pytest_timeout_s()
         metadata["stall_timeout_s"] = _pytest_stall_timeout_s()
+        metadata["progress_path"] = str(PYTEST_PROGRESS_PATH)
         report = _read_pytest_report()
         if report is not None:
             metadata.update(_pytest_metadata_from_report(report))
