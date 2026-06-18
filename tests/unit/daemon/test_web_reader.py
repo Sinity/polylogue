@@ -671,6 +671,8 @@ class TestReaderSessionState:
         workspace_env: dict[str, Path],
     ) -> None:
         session_id, unsafe_text = _seed_browser_capture_reader_archive(workspace_env)
+        dangerous_fragment = "<script>alert('captured')</script>"
+        prose_fragment = "Browser capture prose"
 
         with _running_server_without_seed() as (_, base_url):
             detail = _get_json(base_url, f"/api/sessions/{session_id}")
@@ -690,6 +692,10 @@ class TestReaderSessionState:
         assert "https://chatgpt.com/c/xss-reader" not in json.dumps(detail)
         assert unsafe_text not in root_shell
         assert unsafe_text not in link_shell
+        assert dangerous_fragment not in root_shell
+        assert dangerous_fragment not in link_shell
+        assert prose_fragment not in root_shell
+        assert prose_fragment not in link_shell
         assert "function esc" in root_shell
         assert "'<div class=\"msg-text\">' + esc(parts[0].body)" in root_shell
 
