@@ -1460,6 +1460,61 @@ class TestBooleanQueryExpression:
         assert isinstance(row, ContextSnapshotQueryRowPayload)
         assert row.session_id == "codex-session:ext-created-only"
 
+    def test_context_snapshot_session_summary_comparisons(self, workspace_env: dict[str, Path]) -> None:
+        """Runtime-transform rows honor scoped session count/date predicates."""
+        from polylogue.archive.query.unit_results import query_unit_rows
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from polylogue.surfaces.payloads import ContextSnapshotQueryRowPayload
+        from tests.infra.storage_records import SessionBuilder
+
+        archive_root = workspace_env["archive_root"]
+        index_db = archive_root / "index.db"
+        (
+            SessionBuilder(index_db, "summary-hit")
+            .provider("codex")
+            .created_at("2026-01-03T00:00:00+00:00")
+            .updated_at("2026-01-03T00:00:00+00:00")
+            .title("summary comparison hit")
+            .add_message("m-hit-1", role="user", text="one two")
+            .add_message("m-hit-2", role="assistant", text="three four")
+            .save()
+        )
+        (
+            SessionBuilder(index_db, "summary-control")
+            .provider("codex")
+            .created_at("2026-01-01T00:00:00+00:00")
+            .updated_at("2026-01-01T00:00:00+00:00")
+            .title("summary comparison control")
+            .add_message("m-control", role="user", text="one two three four five")
+            .save()
+        )
+
+        source = parse_unit_source_expression(
+            "context-snapshots where session.messages:>=2 "
+            "AND session.words:<=4 "
+            "AND session.date:>=2026-01-02 "
+            "AND boundary:session_start"
+        )
+        assert source is not None
+        with ArchiveStore.open_existing(archive_root) as archive:
+            envelope = query_unit_rows(
+                archive,
+                source,
+                query=(
+                    "context-snapshots where session.messages:>=2 "
+                    "AND session.words:<=4 "
+                    "AND session.date:>=2026-01-02 "
+                    "AND boundary:session_start"
+                ),
+                limit=10,
+            )
+
+        assert envelope.unit == "context-snapshot"
+        assert len(envelope.items) == 1
+        row = envelope.items[0]
+        assert isinstance(row, ContextSnapshotQueryRowPayload)
+        assert row.session_id == "codex-session:ext-summary-hit"
+
     def test_context_snapshot_unit_source_paginates_session_summaries(
         self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
     ) -> None:

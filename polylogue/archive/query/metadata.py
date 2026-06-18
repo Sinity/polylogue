@@ -330,7 +330,7 @@ _SESSION_SCOPED_STRUCTURAL_EXAMPLES: dict[str, str] = {
     "cwd": "session.cwd:/realm/project",
     "has": "session.has:tools",
     "id": "session.id:abc123",
-    "messages": "session.messages:10",
+    "messages": "session.messages:>=10",
     "origin": "session.origin:claude-code-session",
     "repo": "session.repo:polylogue",
     "since": "session.since:7d",
@@ -338,7 +338,7 @@ _SESSION_SCOPED_STRUCTURAL_EXAMPLES: dict[str, str] = {
     "title": "session.title:refactor",
     "tool": "session.tool:bash",
     "until": "session.until:2024-01-15",
-    "words": "session.words:200",
+    "words": "session.words:<=200",
 }
 
 

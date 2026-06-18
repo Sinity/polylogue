@@ -136,7 +136,37 @@ def _exact_or_contains(value: str | None, needles: Sequence[str], *, exact: bool
     return any(needle.lower() in lowered for needle in needles)
 
 
-def _summary_field_matches(summary: ArchiveSessionSummary, field: str, values: Sequence[str]) -> bool:
+def _numeric_field_matches(value: int | None, predicate: QueryFieldPredicate) -> bool:
+    if value is None or not predicate.values:
+        return False
+    try:
+        target = int(predicate.values[-1])
+    except ValueError:
+        return False
+    if predicate.op == ">=":
+        return value >= target
+    if predicate.op == "<=":
+        return value <= target
+    return value == target
+
+
+def _summary_timestamp_matches(summary: ArchiveSessionSummary, field: str, predicate: QueryFieldPredicate) -> bool:
+    if not predicate.values:
+        return False
+    timestamp = _summary_updated_or_created_ms(summary)
+    target = _epoch_ms(field, predicate.values[-1])
+    if timestamp is None or target is None:
+        return False
+    if predicate.op == ">=":
+        return timestamp >= target
+    if predicate.op == "<=":
+        return timestamp <= target
+    return timestamp == target
+
+
+def _summary_field_matches(summary: ArchiveSessionSummary, predicate: QueryFieldPredicate) -> bool:
+    field = predicate.field.removeprefix("session.")
+    values = predicate.values
     if field == "id":
         return _exact_or_contains(str(summary.session_id), values)
     if field == "origin":
@@ -155,17 +185,15 @@ def _summary_field_matches(summary: ArchiveSessionSummary, field: str, values: S
         # treating path as cwd and broadening/missing results unpredictably.
         return False
     if field == "messages":
-        return _exact_or_contains(str(summary.message_count), values, exact=True)
+        return _numeric_field_matches(summary.message_count, predicate)
     if field == "words":
-        return _exact_or_contains(str(summary.word_count), values, exact=True)
+        return _numeric_field_matches(summary.word_count, predicate)
+    if field == "date":
+        return _summary_timestamp_matches(summary, field, predicate)
     if field == "since":
-        threshold = _epoch_ms("since", values[0]) if values else None
-        updated = _summary_updated_or_created_ms(summary)
-        return threshold is not None and updated is not None and updated >= threshold
+        return _summary_timestamp_matches(summary, field, QueryFieldPredicate(field=field, values=values, op=">="))
     if field == "until":
-        threshold = _epoch_ms("until", values[0]) if values else None
-        updated = _summary_updated_or_created_ms(summary)
-        return threshold is not None and updated is not None and updated <= threshold
+        return _summary_timestamp_matches(summary, field, QueryFieldPredicate(field=field, values=values, op="<="))
     return False
 
 
@@ -180,7 +208,7 @@ def _observed_event_field_matches(
 ) -> bool:
     field = predicate.field
     if field.startswith("session."):
-        return _summary_field_matches(summary, field.removeprefix("session."), predicate.values)
+        return _summary_field_matches(summary, predicate)
     if field == "kind":
         return _exact_or_contains(event.kind, predicate.values, exact=True)
     if field == "delivery_state":
@@ -248,7 +276,7 @@ def _context_snapshot_field_matches(
 ) -> bool:
     field = predicate.field
     if field.startswith("session."):
-        return _summary_field_matches(summary, field.removeprefix("session."), predicate.values)
+        return _summary_field_matches(summary, predicate)
     if field == "boundary":
         return _exact_or_contains(snapshot.boundary, predicate.values, exact=True)
     if field == "inheritance_mode":
