@@ -77,6 +77,7 @@ if TYPE_CHECKING:
     from polylogue.storage.repository import SessionRepository
     from polylogue.storage.search.models import SearchResult
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
+    from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionEnvelope
     from polylogue.storage.sqlite.archive_tiers.write import ArchiveSessionEnvelope
     from polylogue.surfaces.payloads import (
         BulkTagMutationResult,
@@ -420,25 +421,56 @@ def _archive_tier_readiness_check(tier: ArchiveTier, path: Any) -> Any:
     )
 
 
-def _archive_assertion_work_packet_entries(config: Config, session_id: str) -> tuple[Any, ...]:
-    """Return assertion-backed work-packet rows for one target session."""
+def _archive_list_assertion_claims(
+    config: Config,
+    *,
+    kinds: Sequence[str] | None = None,
+    target_ref: str | None = None,
+    scope_ref: str | None = None,
+    statuses: Sequence[str] | None = ("active", "candidate"),
+    context_inject: bool | None = None,
+    limit: int | None = None,
+) -> list[Any]:
+    """Return assertion-backed lifecycle claims from ``user.db``."""
 
-    from polylogue.core.refs import EvidenceRef
-    from polylogue.insights.transforms import RecoveryWorkPacketEntry
     from polylogue.storage.sqlite.archive_tiers.user_write import list_assertion_claims
 
     user_db = _active_archive_root(config) / "user.db"
     if not user_db.exists():
-        return ()
+        return []
     try:
         conn = sqlite3.connect(f"file:{user_db}?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
         try:
-            claims = list_assertion_claims(conn, target_ref=f"session:{session_id}", limit=20)
+            if kinds is None:
+                return list_assertion_claims(
+                    conn,
+                    target_ref=target_ref,
+                    scope_ref=scope_ref,
+                    statuses=statuses,
+                    context_inject=context_inject,
+                    limit=limit,
+                )
+            return list_assertion_claims(
+                conn,
+                kinds=kinds,
+                target_ref=target_ref,
+                scope_ref=scope_ref,
+                statuses=statuses,
+                context_inject=context_inject,
+                limit=limit,
+            )
         finally:
             conn.close()
     except sqlite3.Error:
-        return ()
+        return []
+
+
+def _archive_assertion_work_packet_entries(claims: Sequence[Any], session_id: str) -> tuple[Any, ...]:
+    """Return assertion-backed work-packet rows for one target session."""
+
+    from polylogue.core.refs import EvidenceRef
+    from polylogue.insights.transforms import RecoveryWorkPacketEntry
 
     entries: list[RecoveryWorkPacketEntry] = []
     fallback_ref = EvidenceRef(session_id=session_id)
@@ -1199,10 +1231,36 @@ class PolylogueArchiveMixin:
         if digest is None:
             return None
         packet = digest.work_packet()
-        assertion_entries = _archive_assertion_work_packet_entries(self.config, digest.session_id)
+        claims = await self.list_assertion_claims(target_ref=f"session:{digest.session_id}", limit=20)
+        assertion_entries = _archive_assertion_work_packet_entries(claims, digest.session_id)
         if not assertion_entries:
             return packet
         return packet.model_copy(update={"entries": (*packet.entries, *assertion_entries)})
+
+    async def list_assertion_claims(
+        self,
+        *,
+        kinds: Sequence[str] | None = None,
+        target_ref: str | None = None,
+        scope_ref: str | None = None,
+        statuses: Sequence[str] | None = ("active", "candidate"),
+        context_inject: bool | None = None,
+        limit: int | None = None,
+    ) -> list[ArchiveAssertionEnvelope]:
+        """List assertion-backed lifecycle claims for read-surface consumers."""
+
+        return cast(
+            list["ArchiveAssertionEnvelope"],
+            _archive_list_assertion_claims(
+                self.config,
+                kinds=kinds,
+                target_ref=target_ref,
+                scope_ref=scope_ref,
+                statuses=statuses,
+                context_inject=context_inject,
+                limit=limit,
+            ),
+        )
 
     async def list_read_view_profiles(self) -> list[JSONDocument]:
         """List executable read-view profile metadata."""
