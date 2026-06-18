@@ -126,7 +126,7 @@ def test_wrapper_errors_when_no_checkout_resolvable(tmp_path: Path) -> None:
 
     result = _run_wrapper(cwd=outside_git, env={})
     assert result.returncode != 0
-    assert "cannot locate a polylogue ops doctorout" in result.stderr
+    assert "cannot locate a polylogue checkout" in result.stderr
 
 
 def test_wrapper_ignores_invalid_env_var(tmp_path: Path) -> None:

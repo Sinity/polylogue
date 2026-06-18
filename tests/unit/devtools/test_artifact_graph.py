@@ -50,7 +50,7 @@ def test_render_artifact_graph_text_mentions_the_current_runtime_paths() -> None
     assert "maintenance dangling_fts:" in rendered
     assert "maintenance session_insights:" in rendered
     assert (
-        "uncovered maintenance targets: empty_sessions, message_embeddings, message_type_backfill, orphaned_attachments, orphaned_blobs, orphaned_messages, superseded_raw_snapshots, wal_checkpoint"
+        "uncovered maintenance targets: empty_sessions, message_embeddings, message_type_backfill, orphaned_attachments, orphaned_messages, superseded_raw_snapshots, wal_checkpoint"
         in rendered
     )
     assert "uncovered artifacts:" not in rendered
@@ -220,7 +220,6 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
         "message_embeddings",
         "message_type_backfill",
         "orphaned_attachments",
-        "orphaned_blobs",
         "orphaned_messages",
         "superseded_raw_snapshots",
         "wal_checkpoint",

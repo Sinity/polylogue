@@ -70,7 +70,12 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     assert pipeline.tags == ("benchmark", "pipeline")
     recovery_digest = next(entry for entry in registry.benchmark_campaigns if entry.name == "recovery-digest")
     assert recovery_digest.origin == "authored.benchmark-domain"
-    assert recovery_digest.artifact_targets == ("recovery_digest", "forensic_index", "resume_bundle")
+    assert recovery_digest.artifact_targets == (
+        "recovery_digest",
+        "forensic_index",
+        "resume_bundle",
+        "recovery_report_markdown",
+    )
     assert recovery_digest.operation_targets == (
         "compile-recovery-digest",
         "render-recovery-report",

@@ -25,13 +25,13 @@ Current registry snapshot:
 
 ## Runtime Coverage
 
-- covered runtime paths: `22`
-- covered runtime artifacts: `46`
+- covered runtime paths: `23`
+- covered runtime artifacts: `47`
 - covered runtime operations: `27`
 - covered maintenance targets: `3`
 - covered declared operation targets: `45`
-- uncovered runtime paths: `recovery-digest-transform-loop`
-- uncovered runtime artifacts: `recovery_report_markdown`
+- uncovered runtime paths: —
+- uncovered runtime artifacts: —
 - uncovered runtime operations: `mutate-add-tag`, `mutate-bulk-tag-sessions`, `mutate-delete-metadata`, `mutate-delete-session`, `mutate-remove-tag`, `mutate-set-metadata`
 - uncovered maintenance targets: `empty_sessions`, `message_embeddings`, `message_type_backfill`, `orphaned_attachments`, `orphaned_messages`, `superseded_raw_snapshots`, `wal_checkpoint`
 - uncovered declared operation targets: `mutate-add-tag`, `mutate-bulk-tag-sessions`, `mutate-delete-metadata`, `mutate-delete-session`, `mutate-remove-tag`, `mutate-set-metadata`
@@ -303,7 +303,7 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `benchmark-campaign` | `daemon-convergence` | — | `daemon_convergence_timing` | `benchmark.daemon.convergence` | — | `benchmark`<br>`daemon`<br>`convergence` | Daemon ingest convergence at synthetic scale tiers — single-file and multi-session |
 | `benchmark-campaign` | `pipeline` | — | `index_state`<br>`pipeline_helpers` | `benchmark.pipeline.index-and-helpers` | — | `benchmark`<br>`pipeline` | Index rebuild/update plus hashing and semantic helper benchmark domain |
 | `benchmark-campaign` | `reader-api` | — | `reader_list_results`<br>`reader_facets` | `benchmark.reader.api` | — | `benchmark`<br>`reader`<br>`api` | Reader HTTP API list/get/facets/context-pack/cost-rollup benchmark domain |
-| `benchmark-campaign` | `recovery-digest` | — | `recovery_digest`<br>`forensic_index`<br>`resume_bundle` | `compile-recovery-digest`<br>`render-recovery-report`<br>`benchmark.transform.recovery-digest`<br>`benchmark.transform.recovery-report` | — | `benchmark`<br>`transform`<br>`recovery` | Deterministic recovery digest transform/render benchmark domain |
+| `benchmark-campaign` | `recovery-digest` | — | `recovery_digest`<br>`forensic_index`<br>`resume_bundle`<br>`recovery_report_markdown` | `compile-recovery-digest`<br>`render-recovery-report`<br>`benchmark.transform.recovery-digest`<br>`benchmark.transform.recovery-report` | — | `benchmark`<br>`transform`<br>`recovery` | Deterministic recovery digest transform/render benchmark domain |
 | `benchmark-campaign` | `search-filters` | — | `session_query_results`<br>`message_fts` | `query-sessions`<br>`benchmark.query.search-filters` | — | `benchmark`<br>`search`<br>`filters` | FTS and SessionFilter benchmark domain |
 | `benchmark-campaign` | `storage` | — | `session_rows`<br>`message_rows`<br>`raw_rows` | `benchmark.storage.crud` | — | `benchmark`<br>`storage` | Repository/backend list/get-many/save benchmark domain |
 | `exercise` | `combined-filters` | — | — | — | — | — | Combined provider + date filter |
