@@ -72,6 +72,7 @@ READ_BY_ID_NONE_METHODS: frozenset[str] = frozenset(
         "get_session_latency_profile_insight",
         "resume_brief",
         "recovery_digest",
+        "recovery_work_packet",
     }
 )
 
@@ -104,6 +105,7 @@ READ_NULLARY_METHODS: frozenset[str] = frozenset(
         "list_annotations",
         "list_views",
         "list_read_view_profiles",
+        "list_assertion_claims",
         "list_recall_packs",
         "list_workspaces",
         "list_corrections",
@@ -848,6 +850,95 @@ async def test_recovery_report_renders_seeded_session_presets(tmp_path: Path) ->
         assert "## Evidence" in work_packet_report
         assert await archive.recovery_report("nonexistent", "continue") is None
         assert await archive.recovery_work_packet("nonexistent") is None
+    finally:
+        await archive.close()
+
+
+async def test_list_assertion_claims_filters_lifecycle_claims(tmp_path: Path) -> None:
+    """``list_assertion_claims`` exposes policy-aware assertion reads."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
+
+    archive = _archive(tmp_path)
+    user_db = archive.config.archive_root / "user.db"
+    initialize_archive_database(user_db, ArchiveTier.USER)
+    with sqlite3.connect(user_db) as conn:
+        upsert_assertion(
+            conn,
+            assertion_id="claim-decision-inject",
+            target_ref="session:codex-session:claim-target",
+            scope_ref="repo:polylogue",
+            kind=AssertionKind.DECISION,
+            body_text="Use the shared query metadata module.",
+            author_ref="agent:codex",
+            author_kind="agent",
+            evidence_refs=["codex-session:claim-target::m1"],
+            status="active",
+            visibility="private",
+            context_policy={"inject": True},
+            now_ms=1_700_000_000_000,
+        )
+        upsert_assertion(
+            conn,
+            assertion_id="claim-caveat-private",
+            target_ref="session:codex-session:claim-target",
+            scope_ref="repo:polylogue",
+            kind=AssertionKind.CAVEAT,
+            body_text="Review evidence is still partial.",
+            author_ref="agent:codex",
+            author_kind="agent",
+            status="candidate",
+            visibility="private",
+            context_policy={"inject": False},
+            now_ms=1_700_000_000_100,
+        )
+        upsert_assertion(
+            conn,
+            assertion_id="claim-deleted",
+            target_ref="session:codex-session:claim-target",
+            scope_ref="repo:polylogue",
+            kind=AssertionKind.DECISION,
+            body_text="Deleted claims should not appear by default.",
+            status="deleted",
+            context_policy={"inject": True},
+            now_ms=1_700_000_000_200,
+        )
+        upsert_assertion(
+            conn,
+            assertion_id="claim-other-target",
+            target_ref="session:codex-session:other",
+            scope_ref="repo:polylogue",
+            kind=AssertionKind.LESSON,
+            body_text="Other target.",
+            status="active",
+            context_policy={"inject": True},
+            now_ms=1_700_000_000_300,
+        )
+        conn.commit()
+
+    try:
+        claims = await archive.list_assertion_claims(target_ref="session:codex-session:claim-target")
+        assert [claim.assertion_id for claim in claims] == ["claim-caveat-private", "claim-decision-inject"]
+
+        injectable = await archive.list_assertion_claims(
+            target_ref="session:codex-session:claim-target",
+            context_inject=True,
+        )
+        assert [claim.assertion_id for claim in injectable] == ["claim-decision-inject"]
+
+        decisions = await archive.list_assertion_claims(
+            kinds=(AssertionKind.DECISION,),
+            target_ref="session:codex-session:claim-target",
+            statuses=("active",),
+        )
+        assert [claim.assertion_id for claim in decisions] == ["claim-decision-inject"]
+
+        deleted = await archive.list_assertion_claims(
+            target_ref="session:codex-session:claim-target",
+            statuses=("deleted",),
+        )
+        assert [claim.assertion_id for claim in deleted] == ["claim-deleted"]
     finally:
         await archive.close()
 
