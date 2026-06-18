@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -8,6 +9,7 @@ from unittest.mock import patch
 import pytest
 
 from devtools.verify import (
+    PYTEST_PROGRESS_PATH,
     PYTEST_REPORT_PATH,
     ROOT,
     _format_completion_notification,
@@ -335,6 +337,20 @@ def test_pytest_run_streams_child_output_live(capsys: pytest.CaptureFixture[str]
     captured = capsys.readouterr()
     assert rc == 0
     assert "pytest-progress" in captured.err
+
+
+def test_pytest_run_writes_live_progress_artifact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    rc, _elapsed, metadata = _run("pytest progress", [sys.executable, "-c", "print('pytest-progress')"])
+
+    assert rc == 0
+    progress_path = tmp_path / PYTEST_PROGRESS_PATH
+    assert metadata["progress_path"] == str(PYTEST_PROGRESS_PATH)
+    progress = json.loads(progress_path.read_text())
+    assert progress["event"] == "finished"
+    assert progress["returncode"] == 0
+    assert progress["output_bytes"]["stdout"] > 0
+    assert "updated_at" in progress
 
 
 def test_pytest_run_terminates_after_runtime_budget(
