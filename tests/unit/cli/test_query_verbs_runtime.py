@@ -105,6 +105,51 @@ def test_read_all_and_analyze_count_update_parent_request() -> None:
     assert request.query_params()["list_mode"] is True
     assert request.query_params()["output_format"] == "json"
 
+    out_path = "/tmp/polylogue-sessions.json"
+    with patch("polylogue.cli.query_verbs._execute_query_verb") as execute:
+        with patch("polylogue.cli.query_verbs.run_bulk_export_view") as bulk_export:
+            wrapped_read(
+                child,
+                "summary",
+                "file",
+                "json",
+                out_path,
+                True,
+                (),
+                None,
+                None,
+                0,
+                24,
+                None,
+                2,
+                0.3,
+                True,
+                False,
+                5,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                5,
+                20,
+                False,
+                False,
+                False,
+                False,
+                False,
+                False,
+                None,
+                False,
+            )
+
+    bulk_export.assert_not_called()
+    file_request = execute.call_args.args[1]
+    assert isinstance(file_request, RootModeRequest)
+    assert file_request.query_params()["list_mode"] is True
+    assert file_request.query_params()["output"] == out_path
+
     wrapped_analyze = getattr(query_verbs.analyze_verb.callback, "__wrapped__", None)
     assert callable(wrapped_analyze)
     with patch("polylogue.cli.query_verbs._execute_query_verb") as execute:

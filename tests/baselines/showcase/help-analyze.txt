@@ -3,22 +3,26 @@ Usage: polylogue analyze [OPTIONS]
   Analyze matched sessions: statistics, facets, and aggregates.
 
   Applies to the full result set by default (no cardinality restriction).
-  Wraps the existing stats and facets surfaces over the matched session set.
+  Wraps aggregate and facet views over the matched session set.
 
   Examples:
       polylogue find 'repo:polylogue since:7d' then analyze
+      polylogue find 'repo:polylogue since:7d' then analyze --count
       polylogue find 'repo:polylogue since:7d' then analyze --by origin
       polylogue find 'repo:polylogue since:7d' then analyze --by month
       polylogue find 'repo:polylogue' then analyze --facets
       polylogue find 'repo:polylogue' then analyze --by day --format json
 
 Options:
+  --count                         Print only the matched-session count.
   --by [origin|month|year|day|action|tool|repo|work-kind]
                                   Group statistics by dimension
   --facets                        Show facet aggregates for the matched result
                                   set
   --no-idf                        With --facets, skip inverse-document-
                                   frequency weighting
-  -f, --format [markdown|json|ndjson|html|plaintext|csv]
-                                  Output format
+  -f, --format [markdown|json|ndjson|html|obsidian|org|yaml|plaintext|csv]
+                                  Output format (ndjson = one JSON document
+                                  per row, streaming-friendly)
+  -l, -n, --limit INTEGER         Max matched sessions before grouping
   --help                          Show this message and exit.

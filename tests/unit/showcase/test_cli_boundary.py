@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from polylogue.scenarios import ExecutionResult, ExecutionSpec, polylogue_execution
@@ -20,8 +22,19 @@ def _captured_kwargs(captured: dict[str, object]) -> dict[str, object]:
     return dict(kwargs)
 
 
-def test_invoke_showcase_cli_uses_public_polylogue_command(monkeypatch: pytest.MonkeyPatch) -> None:
+def _make_project_cli(project_root: Path) -> Path:
+    cli_path = project_root / ".venv" / "bin" / "polylogue"
+    cli_path.parent.mkdir(parents=True)
+    cli_path.write_text("#!/bin/sh\n", encoding="utf-8")
+    return cli_path
+
+
+def test_invoke_showcase_cli_uses_current_project_polylogue_command(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     captured: dict[str, object] = {}
+    cli_path = _make_project_cli(tmp_path)
 
     def fake_run(execution: ExecutionSpec, **kwargs: object) -> ExecutionResult:
         captured["execution"] = execution
@@ -30,10 +43,7 @@ def test_invoke_showcase_cli_uses_public_polylogue_command(monkeypatch: pytest.M
         assert command is not None
         return ExecutionResult(execution=execution, command=command, exit_code=0, stdout="ok\n", stderr="")
 
-    monkeypatch.setattr(
-        "polylogue.showcase.cli_boundary.shutil.which",
-        lambda name: "/tmp/polylogue" if name == "polylogue" else None,
-    )
+    monkeypatch.setattr(cli_boundary, "_PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(cli_boundary, "run_execution", fake_run)
 
     result = cli_boundary.invoke_showcase_cli(polylogue_execution("--help"))
@@ -42,12 +52,16 @@ def test_invoke_showcase_cli_uses_public_polylogue_command(monkeypatch: pytest.M
 
     assert result.exit_code == 0
     assert result.stdout == "ok\n"
-    assert kwargs["binary_overrides"] == {"polylogue": "/tmp/polylogue"}
+    assert kwargs["binary_overrides"] == {"polylogue": str(cli_path)}
     assert execution.command == ("polylogue", "--plain", "--help")
 
 
-def test_invoke_showcase_cli_passes_runtime_options(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_invoke_showcase_cli_passes_runtime_options(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     captured: dict[str, object] = {}
+    _make_project_cli(tmp_path)
 
     def fake_run(execution: ExecutionSpec, **kwargs: object) -> ExecutionResult:
         captured["execution"] = execution
@@ -56,10 +70,7 @@ def test_invoke_showcase_cli_passes_runtime_options(monkeypatch: pytest.MonkeyPa
         assert command is not None
         return ExecutionResult(execution=execution, command=command, exit_code=0, stdout="ok\n", stderr="")
 
-    monkeypatch.setattr(
-        "polylogue.showcase.cli_boundary.shutil.which",
-        lambda name: "/tmp/polylogue" if name == "polylogue" else None,
-    )
+    monkeypatch.setattr(cli_boundary, "_PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(cli_boundary, "run_execution", fake_run)
 
     cli_boundary.invoke_showcase_cli(
@@ -76,8 +87,11 @@ def test_invoke_showcase_cli_passes_runtime_options(monkeypatch: pytest.MonkeyPa
     assert kwargs["timeout"] == 30.0
 
 
-def test_invoke_showcase_cli_requires_public_command_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("polylogue.showcase.cli_boundary.shutil.which", lambda _name: None)
+def test_invoke_showcase_cli_requires_project_command(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli_boundary, "_PROJECT_ROOT", tmp_path)
 
-    with pytest.raises(RuntimeError, match="requires `polylogue` on PATH"):
+    with pytest.raises(RuntimeError, match=r"requires `.venv/bin/polylogue`"):
         cli_boundary.invoke_showcase_cli(polylogue_execution("--help"))

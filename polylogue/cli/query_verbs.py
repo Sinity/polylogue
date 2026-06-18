@@ -123,6 +123,17 @@ def _emit_read_view_profiles(output_format: str | None) -> None:
     click.echo(_render_read_view_profiles_plain())
 
 
+def _summary_all_output_param(destination: str, out_path: str | None) -> str | None:
+    """Translate read delivery options to the root query output contract."""
+    if destination == "file":
+        if not out_path:
+            raise click.UsageError("--to file requires --out <path>.")
+        return out_path
+    if destination in {"browser", "clipboard", "stdout"}:
+        return destination
+    return None
+
+
 @click.command("select")
 @click.option(
     "--limit", "-n", default=20, show_default=True, type=click.IntRange(min=1), help="Max candidate sessions."
@@ -341,6 +352,9 @@ def read_verb(
             request = request.with_param_updates(list_mode=True)
             if output_format:
                 request = request.with_param_updates(output_format=output_format)
+            output = _summary_all_output_param(destination, out_path)
+            if output is not None:
+                request = request.with_param_updates(output=output)
             if fields:
                 request = request.with_param_updates(fields=fields)
             _execute_query_verb(ctx, request)
