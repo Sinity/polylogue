@@ -91,6 +91,17 @@ def _session() -> Session:
                             "tool_id": "tool-read",
                             "text": "class ToolSummary\nhandler_kind: Literal",
                         },
+                        {
+                            "type": "tool_use",
+                            "id": "tool-commit",
+                            "name": "Bash",
+                            "tool_input": {"command": "git rev-parse HEAD"},
+                        },
+                        {
+                            "type": "tool_result",
+                            "tool_id": "tool-commit",
+                            "text": "a8cd1c1516b29068ec9ce1493f262d663407ffa5",
+                        },
                     ],
                 ),
                 Message(
@@ -161,7 +172,7 @@ def test_compile_recovery_digest_extracts_small_evidence_linked_bundle() -> None
     assert digest.size_metrics.resume_bundle_bytes >= digest.size_metrics.normal_read_bytes
     assert digest.role_counts == {"user": 1, "assistant": 2}
 
-    assert len(digest.tool_summaries) == 3
+    assert len(digest.tool_summaries) == 4
     tool = next(item for item in digest.tool_summaries if item.tool_name == "Bash")
     assert tool.tool_name == "Bash"
     assert tool.command == "devtools verify --quick"
@@ -181,6 +192,10 @@ def test_compile_recovery_digest_extracts_small_evidence_linked_bundle() -> None
     assert read_tool.command == "polylogue/insights/transforms.py"
     assert read_tool.line_count == 2
     assert read_tool.file_refs == ("polylogue/insights/transforms.py",)
+
+    commit_tool = next(item for item in digest.tool_summaries if item.command == "git rev-parse HEAD")
+    assert commit_tool.handler_kind == "git"
+    assert commit_tool.commit_refs == ("a8cd1c1516b29068ec9ce1493f262d663407ffa5",)
 
     assert len(digest.subagent_reports) == 1
     subagent = digest.subagent_reports[0]
@@ -231,6 +246,10 @@ def test_compile_recovery_digest_extracts_small_evidence_linked_bundle() -> None
     check_projection = next(event for event in projection.events if event.kind == "check_passed")
     assert check_projection.delivery_state == "observed"
     assert check_projection.object_refs == (ObjectRef(kind="check-run", object_id="ruff check"),)
+    commit_projection = next(event for event in projection.events if event.summary.endswith("git rev-parse HEAD"))
+    assert (
+        ObjectRef(kind="commit", object_id="a8cd1c1516b29068ec9ce1493f262d663407ffa5") in commit_projection.object_refs
+    )
     review_projection = next(event for event in projection.events if event.kind == "review_acted_on")
     assert review_projection.delivery_state == "acted_on"
     assert review_projection.object_refs == (ObjectRef(kind="github-review", object_id="#1911"),)
@@ -433,6 +452,15 @@ def test_work_packet_exposes_storage_free_continuation_bundle() -> None:
         "file_refs": "polylogue/insights/transforms.py",
     }
     assert read_entry.object_refs == (ObjectRef(kind="file", object_id="polylogue/insights/transforms.py"),)
+    commit_entry = next(
+        entry for entry in packet.entries if entry.section == "tools" and entry.text == "git rev-parse HEAD"
+    )
+    assert commit_entry.metadata == {
+        "handler_kind": "git",
+        "status": "unknown",
+        "commit_refs": "a8cd1c1516b29068ec9ce1493f262d663407ffa5",
+    }
+    assert commit_entry.object_refs == (ObjectRef(kind="commit", object_id="a8cd1c1516b29068ec9ce1493f262d663407ffa5"),)
     for entry in packet.entries:
         for ref in entry.object_refs:
             assert ObjectRef.parse(ref.format()) == ref
@@ -457,8 +485,10 @@ def test_work_packet_exposes_storage_free_continuation_bundle() -> None:
     assert "refs: tool_id=tool-2, task_id=task-42, child_session_id=codex-session:child-42" in rendered
     assert "- [raw-evidence] Bash [test] (ok) — devtools verify --quick" in rendered
     assert "refs: file:polylogue/insights/transforms.py" in rendered
+    assert "refs: commit:a8cd1c1516b29068ec9ce1493f262d663407ffa5" in rendered
     assert "details: pr_refs=#1911; test_evidence=ruff check ... ok | 20 passed in 50.28s" in rendered
     assert "details: file_refs=polylogue/insights/transforms.py" in rendered
+    assert "details: commit_refs=a8cd1c1516b29068ec9ce1493f262d663407ffa5" in rendered
 
 
 def test_work_packet_marks_missing_evidence_explicitly() -> None:
@@ -474,6 +504,40 @@ def test_work_packet_marks_missing_evidence_explicitly() -> None:
     assert "## Evidence Gaps" in rendered
     assert "- [missing-evidence] run_state: No structured RunState section was extracted" in rendered
     assert "- [missing-evidence] tools: No tool execution summary was extracted." in rendered
+
+
+def test_work_packet_does_not_promote_random_hex_to_commit_ref() -> None:
+    session = Session(
+        id=SessionId("codex-session:hex-output"),
+        origin=Origin.CODEX_SESSION,
+        title="Random hex output",
+        messages=MessageCollection(
+            messages=[
+                Message(
+                    id="m-hex",
+                    role=Role.ASSISTANT,
+                    text="Tool output contained opaque ids.",
+                    blocks=[
+                        {
+                            "type": "tool_use",
+                            "id": "tool-hex",
+                            "name": "Bash",
+                            "tool_input": {"command": "cat artefact-id.txt"},
+                        },
+                        {
+                            "type": "tool_result",
+                            "tool_id": "tool-hex",
+                            "text": "a8cd1c1516b29068ec9ce1493f262d663407ffa5",
+                        },
+                    ],
+                )
+            ]
+        ),
+    )
+
+    [tool] = compile_recovery_digest(session).tool_summaries
+
+    assert tool.commit_refs == ()
 
 
 def test_continue_report_renders_successor_boot_packet_with_evidence_refs() -> None:
