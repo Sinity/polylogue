@@ -3221,7 +3221,7 @@ class ArchiveStore:
 
         normalized_limit = max(int(limit), 0)
         normalized_offset = max(int(offset), 0)
-        clause, params = _structural_predicate_clause("message", "m", predicate)
+        clause, params = _structural_predicate_clause("message", "m", predicate, session_alias="s")
         session_clause = ""
         session_params: list[object] = []
         if session_filters:
@@ -3283,7 +3283,7 @@ class ArchiveStore:
 
         normalized_limit = max(int(limit), 0)
         normalized_offset = max(int(offset), 0)
-        clause, params = _structural_predicate_clause("action", "a", predicate)
+        clause, params = _structural_predicate_clause("action", "a", predicate, session_alias="s")
         session_clause = ""
         session_params: list[object] = []
         if session_filters:
@@ -3343,7 +3343,7 @@ class ArchiveStore:
 
         normalized_limit = max(int(limit), 0)
         normalized_offset = max(int(offset), 0)
-        clause, params = _structural_predicate_clause("block", "b", predicate)
+        clause, params = _structural_predicate_clause("block", "b", predicate, session_alias="s")
         session_clause = ""
         session_params: list[object] = []
         if session_filters:
@@ -4421,6 +4421,14 @@ def _field_predicate_clause(
     return _clause_without_prefix(where, prefix="WHERE"), params
 
 
+def _scoped_session_field(field: str) -> str | None:
+    prefix = "session."
+    if not field.startswith(prefix):
+        return None
+    scoped = field[len(prefix) :]
+    return scoped or None
+
+
 def _in_or_equals_clause(column: str, values: tuple[str, ...], *, lower: bool = False) -> tuple[str, list[object]]:
     normalized = tuple(value.strip().lower() if lower else value.strip() for value in values if value.strip())
     if not normalized:
@@ -4568,8 +4576,19 @@ def _structural_predicate_clause(
     unit: str,
     row_alias: str,
     predicate: QueryPredicate,
+    *,
+    session_alias: str | None = None,
 ) -> tuple[str, list[object]]:
     if isinstance(predicate, QueryFieldPredicate):
+        session_field = _scoped_session_field(predicate.field)
+        if session_field is not None:
+            if session_alias is None:
+                raise ValueError(f"session-scoped {unit} predicate requires a session alias")
+            return _field_predicate_clause(
+                session_alias,
+                QueryFieldPredicate(field=session_field, values=predicate.values, op=predicate.op),
+                tags_relation="session_tags",
+            )
         if unit == "message":
             return _message_field_predicate_clause(row_alias, predicate)
         if unit == "action":
@@ -4577,13 +4596,13 @@ def _structural_predicate_clause(
         if unit == "block":
             return _block_field_predicate_clause(row_alias, predicate)
     if isinstance(predicate, QueryNotPredicate):
-        clause, params = _structural_predicate_clause(unit, row_alias, predicate.child)
+        clause, params = _structural_predicate_clause(unit, row_alias, predicate.child, session_alias=session_alias)
         return (f"NOT ({clause})" if clause else "", params)
     if isinstance(predicate, QueryBoolPredicate):
         child_clauses: list[str] = []
         merged_params: list[object] = []
         for child in predicate.children:
-            clause, child_params = _structural_predicate_clause(unit, row_alias, child)
+            clause, child_params = _structural_predicate_clause(unit, row_alias, child, session_alias=session_alias)
             if clause:
                 child_clauses.append(f"({clause})")
                 merged_params.extend(child_params)
@@ -4597,7 +4616,12 @@ def _structural_predicate_clause(
 def _exists_predicate_clause(table_alias: str, predicate: QueryExistsPredicate) -> tuple[str, list[object]]:
     if predicate.unit == "message":
         row_alias = "exists_messages"
-        child_clause, params = _structural_predicate_clause(predicate.unit, row_alias, predicate.child)
+        child_clause, params = _structural_predicate_clause(
+            predicate.unit,
+            row_alias,
+            predicate.child,
+            session_alias=table_alias,
+        )
         return (
             f"""
             EXISTS (
@@ -4611,7 +4635,12 @@ def _exists_predicate_clause(table_alias: str, predicate: QueryExistsPredicate) 
         )
     if predicate.unit == "action":
         row_alias = "exists_actions"
-        child_clause, params = _structural_predicate_clause(predicate.unit, row_alias, predicate.child)
+        child_clause, params = _structural_predicate_clause(
+            predicate.unit,
+            row_alias,
+            predicate.child,
+            session_alias=table_alias,
+        )
         return (
             f"""
             EXISTS (
@@ -4625,7 +4654,12 @@ def _exists_predicate_clause(table_alias: str, predicate: QueryExistsPredicate) 
         )
     if predicate.unit == "block":
         row_alias = "exists_blocks"
-        child_clause, params = _structural_predicate_clause(predicate.unit, row_alias, predicate.child)
+        child_clause, params = _structural_predicate_clause(
+            predicate.unit,
+            row_alias,
+            predicate.child,
+            session_alias=table_alias,
+        )
         return (
             f"""
             EXISTS (

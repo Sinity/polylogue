@@ -74,7 +74,7 @@ Unit queries select terminal rows instead of sessions:
 
 ```bash
 polylogue messages where 'role:assistant AND text:timeout'
-polylogue actions where 'action:file_edit AND path:polylogue/archive'
+polylogue actions where 'session.repo:polylogue AND action:file_edit AND path:polylogue/archive'
 polylogue blocks where 'type:code AND text:sqlite'
 ```
 
@@ -140,10 +140,16 @@ one child row matching the nested predicate.
 | `action` | `action`, `command`, `output`, `path`, `text`, `tool`, `type` |
 | `block` | `action`, `command`, `path`, `text`, `tool`, `type` |
 
+All three structural units also accept `session.<field>` predicates for the
+owning session fields, such as `session.repo`, `session.origin`,
+`session.tag`, `session.title`, `session.date`, `session.since`, and
+`session.until`. This lets a unit query carry its session scope inline instead
+of splitting selection between the query string and parallel parameters.
+
 Examples:
 
 ```bash
-polylogue sessions where 'exists action(tool:bash AND text:pytest)'
+polylogue sessions where 'exists action(session.repo:polylogue AND tool:bash AND text:pytest)'
 polylogue sessions where 'exists block(type:code AND text:timeout)'
 ```
 
@@ -169,7 +175,7 @@ rows instead:
 
 ```bash
 polylogue --format json messages where role:assistant AND text:timeout
-polylogue --format ndjson actions where action:file_edit AND path:polylogue/archive
+polylogue --format ndjson actions where session.repo:polylogue AND action:file_edit AND path:polylogue/archive
 polylogue --format yaml blocks where type:code AND text:sqlite
 ```
 
@@ -180,6 +186,15 @@ transport-specific renderings of the same message/action/block row payloads.
 Those surfaces share the same session-scoping filters for the row source
 where applicable, such as origin, tag, repo, title, date bounds, message-type
 and tool/paste/thinking feature filters.
+
+Use `session.<field>` inside the expression when the unit rows should be scoped
+by their owning session:
+
+```bash
+polylogue messages where session.origin:claude-code-session AND role:assistant
+polylogue actions where session.repo:polylogue AND action:file_edit
+polylogue blocks where session.since:7d AND type:code
+```
 
 Session filters such as `--origin`, `--tag`, `--repo`, `--since`, and `--until`
 still narrow the owning sessions before rows are returned. Session-only actions
