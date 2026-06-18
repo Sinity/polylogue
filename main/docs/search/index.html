@@ -419,7 +419,7 @@ polylogue sessions where 'seq(action:file_edit -&gt; action:shell)'
 </code></pre>
 <p>Unit queries select terminal rows instead of sessions:</p>
 <pre><code class="language-bash">polylogue messages where 'role:assistant AND text:timeout'
-polylogue actions where 'action:file_edit AND path:polylogue/archive'
+polylogue actions where 'session.repo:polylogue AND action:file_edit AND path:polylogue/archive'
 polylogue blocks where 'type:code AND text:sqlite'
 </code></pre>
 <p>Unsupported forms raise typed <code>ExpressionCompileError</code>s and must not broaden
@@ -553,8 +553,13 @@ one child row matching the nested predicate.</p>
 </tr>
 </tbody>
 </table>
+<p>All three structural units also accept <code>session.&lt;field&gt;</code> predicates for the
+owning session fields, such as <code>session.repo</code>, <code>session.origin</code>,
+<code>session.tag</code>, <code>session.title</code>, <code>session.date</code>, <code>session.since</code>, and
+<code>session.until</code>. This lets a unit query carry its session scope inline instead
+of splitting selection between the query string and parallel parameters.</p>
 <p>Examples:</p>
-<pre><code class="language-bash">polylogue sessions where 'exists action(tool:bash AND text:pytest)'
+<pre><code class="language-bash">polylogue sessions where 'exists action(session.repo:polylogue AND tool:bash AND text:pytest)'
 polylogue sessions where 'exists block(type:code AND text:timeout)'
 </code></pre>
 <h3>FTS And Semantic Leaves</h3>
@@ -571,7 +576,7 @@ error instead of falling back to broad lexical search.</p>
 <p>Most query expressions select sessions. Explicit unit sources select terminal
 rows instead:</p>
 <pre><code class="language-bash">polylogue --format json messages where role:assistant AND text:timeout
-polylogue --format ndjson actions where action:file_edit AND path:polylogue/archive
+polylogue --format ndjson actions where session.repo:polylogue AND action:file_edit AND path:polylogue/archive
 polylogue --format yaml blocks where type:code AND text:sqlite
 </code></pre>
 <p>The row shape is the shared <code>QueryUnitEnvelope</code> used by CLI JSON/NDJSON/YAML,
@@ -581,6 +586,12 @@ transport-specific renderings of the same message/action/block row payloads.
 Those surfaces share the same session-scoping filters for the row source
 where applicable, such as origin, tag, repo, title, date bounds, message-type
 and tool/paste/thinking feature filters.</p>
+<p>Use <code>session.&lt;field&gt;</code> inside the expression when the unit rows should be scoped
+by their owning session:</p>
+<pre><code class="language-bash">polylogue messages where session.origin:claude-code-session AND role:assistant
+polylogue actions where session.repo:polylogue AND action:file_edit
+polylogue blocks where session.since:7d AND type:code
+</code></pre>
 <p>Session filters such as <code>--origin</code>, <code>--tag</code>, <code>--repo</code>, <code>--since</code>, and <code>--until</code>
 still narrow the owning sessions before rows are returned. Session-only actions
 and result-shaping modes that do not have row semantics yet, such as
