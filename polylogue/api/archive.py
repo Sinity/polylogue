@@ -64,7 +64,12 @@ if TYPE_CHECKING:
     from polylogue.insights.export_bundles import InsightExportBundleRequest, InsightExportBundleResult
     from polylogue.insights.readiness import InsightReadinessQuery, InsightReadinessReport
     from polylogue.insights.resume import ResumeBrief, ResumeCandidate
-    from polylogue.insights.transforms import RecoveryDigest, RecoveryReportPreset, RecoveryWorkPacket
+    from polylogue.insights.transforms import (
+        RecoveryDigest,
+        RecoveryReportPreset,
+        RecoveryWorkPacket,
+        WorkPacketSupport,
+    )
     from polylogue.operations import ArchiveStats
     from polylogue.protocols import ProgressCallback, SessionQueryRuntimeStore
     from polylogue.readiness import ReadinessReport
@@ -413,6 +418,70 @@ def _archive_tier_readiness_check(tier: ArchiveTier, path: Any) -> Any:
         VerifyStatus.OK if version == expected else VerifyStatus.ERROR,
         summary=f"v{version}/{expected}: {path}",
     )
+
+
+def _archive_assertion_work_packet_entries(config: Config, session_id: str) -> tuple[Any, ...]:
+    """Return assertion-backed work-packet rows for one target session."""
+
+    from polylogue.core.refs import EvidenceRef
+    from polylogue.insights.transforms import RecoveryWorkPacketEntry
+    from polylogue.storage.sqlite.archive_tiers.user_write import list_assertion_claims
+
+    user_db = _active_archive_root(config) / "user.db"
+    if not user_db.exists():
+        return ()
+    try:
+        conn = sqlite3.connect(f"file:{user_db}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            claims = list_assertion_claims(conn, target_ref=f"session:{session_id}", limit=20)
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return ()
+
+    entries: list[RecoveryWorkPacketEntry] = []
+    fallback_ref = EvidenceRef(session_id=session_id)
+    for claim in claims:
+        text = claim.body_text
+        if not text:
+            text = json.dumps(claim.value, sort_keys=True) if claim.value is not None else claim.assertion_id
+        entries.append(
+            RecoveryWorkPacketEntry(
+                section="assertions",
+                label=claim.kind,
+                text=text,
+                support=_archive_assertion_support(claim.kind),
+                evidence_refs=_archive_assertion_evidence_refs(claim.evidence_refs, fallback_ref),
+                metadata={
+                    "assertion_id": claim.assertion_id,
+                    "status": claim.status or "",
+                    "visibility": claim.visibility or "",
+                    "author_ref": claim.author_ref or "",
+                },
+            )
+        )
+    return tuple(entries)
+
+
+def _archive_assertion_support(kind: str) -> WorkPacketSupport:
+    if kind in {"blocker", "caveat"}:
+        return "caveat"
+    if kind == "transform_candidate":
+        return "inference"
+    return "assertion"
+
+
+def _archive_assertion_evidence_refs(raw_refs: Sequence[str], fallback: Any) -> tuple[Any, ...]:
+    from polylogue.core.refs import EvidenceRef
+
+    parsed: list[EvidenceRef] = []
+    for raw_ref in raw_refs:
+        try:
+            parsed.append(EvidenceRef.parse(raw_ref))
+        except ValueError:
+            continue
+    return tuple(parsed) or (fallback,)
 
 
 def _archive_count_table_rows(conn: Any, table_name: str) -> int | None:
@@ -1116,6 +1185,9 @@ class PolylogueArchiveMixin:
 
     async def recovery_report(self, session_id: str, preset: RecoveryReportPreset) -> str | None:
         """Render one deterministic recovery report preset for a session."""
+        if preset == "work-packet":
+            packet = await self.recovery_work_packet(session_id)
+            return None if packet is None else packet.render_markdown()
         digest = await self.recovery_digest(session_id)
         if digest is None:
             return None
@@ -1126,7 +1198,11 @@ class PolylogueArchiveMixin:
         digest = await self.recovery_digest(session_id)
         if digest is None:
             return None
-        return digest.work_packet()
+        packet = digest.work_packet()
+        assertion_entries = _archive_assertion_work_packet_entries(self.config, digest.session_id)
+        if not assertion_entries:
+            return packet
+        return packet.model_copy(update={"entries": (*packet.entries, *assertion_entries)})
 
     async def list_read_view_profiles(self) -> list[JSONDocument]:
         """List executable read-view profile metadata."""
