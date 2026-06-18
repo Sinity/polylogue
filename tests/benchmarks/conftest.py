@@ -7,8 +7,8 @@ Generated DBs are cached in a temp directory per session to avoid
 regeneration overhead dominating benchmark measurements.
 
 Usage:
-    devtools benchmark-campaign list
-    devtools benchmark-campaign run search-filters
+    devtools bench campaign list
+    devtools bench campaign run search-filters
 """
 
 from __future__ import annotations

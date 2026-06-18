@@ -394,7 +394,7 @@ CONTRACT_LANES: dict[str, LaneEntry] = {
         description="Small reproducible benchmark/long-haul campaign",
         timeout_s=1800,
         category="contract",
-        execution=devtools_execution("run-benchmark-campaigns", "--scale", "small"),
+        execution=devtools_execution("bench synthetic", "--scale", "small"),
     ),
 }
 

@@ -1,9 +1,9 @@
 """CLI entry point for running benchmark campaigns.
 
 Usage:
-    devtools run-benchmark-campaigns --scale medium --output .local/benchmark-campaigns/
-    devtools run-benchmark-campaigns --scale large --campaign fts-rebuild
-    devtools run-benchmark-campaigns --list
+    devtools bench synthetic --scale medium --output .local/benchmark-campaigns/
+    devtools bench synthetic --scale large --campaign fts-rebuild
+    devtools bench synthetic --list
 """
 
 from __future__ import annotations

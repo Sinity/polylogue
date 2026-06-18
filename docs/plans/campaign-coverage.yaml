@@ -1,8 +1,8 @@
 # Campaign-coverage manifest.
 #
 # Documents active mutation and benchmark campaigns, their paths,
-# and their coverage targets. Consumed by devtools mutmut-campaign
-# and devtools benchmark-campaign.
+# and their coverage targets. Consumed by devtools bench mutation
+# and devtools bench campaign.
 #
 # Each mutation_campaigns entry may carry:
 #   freshness_days  — Only declare per-entry when overriding the default.

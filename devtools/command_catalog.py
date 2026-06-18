@@ -30,7 +30,7 @@ CATEGORY_ORDER: tuple[str, ...] = (
     "release",
     "verification lab",
     "verification",
-    "campaigns",
+    "benchmarking",
     "workspace",
     "maintenance",
 )
@@ -254,8 +254,8 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "ingest-amplification-probe",
-        "verification",
+        "bench ingest-amplification",
+        "benchmarking",
         "Measure deterministic per-tier ingest write amplification on a synthetic fixture (#1851).",
         "devtools.ingest_amplification_probe",
         use_when=(
@@ -265,9 +265,9 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "per append batch. Additive measurement only — does not touch production ingest logic."
         ),
         examples=(
-            "devtools ingest-amplification-probe",
-            "devtools ingest-amplification-probe --json",
-            "devtools ingest-amplification-probe --batches 8 --seed 1851",
+            "devtools bench ingest-amplification",
+            "devtools bench ingest-amplification --json",
+            "devtools bench ingest-amplification --batches 8 --seed 1851",
         ),
     ),
     CommandSpec(
@@ -406,8 +406,8 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools verify-closure-matrix", "devtools verify-closure-matrix --json"),
     ),
     CommandSpec(
-        "verify-slos",
-        "verification",
+        "bench slo",
+        "benchmarking",
         "Check read-surface latency budgets in docs/plans/slo-catalog.yaml against benchmark measurements.",
         "devtools.verify_slos",
         use_when=(
@@ -416,9 +416,9 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "Exits non-zero when any measured surface exceeds its budget."
         ),
         examples=(
-            "devtools verify-slos",
-            "devtools verify-slos --json",
-            "devtools verify-slos --skip-benchmarks --json",
+            "devtools bench slo",
+            "devtools bench slo --json",
+            "devtools bench slo --skip-benchmarks --json",
         ),
     ),
     CommandSpec(
@@ -519,12 +519,12 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "query-memory-budget",
-        "verification",
+        "bench memory",
+        "benchmarking",
         "Measure query-memory envelopes on generated fixtures.",
         "devtools.query_memory_budget",
         use_when="Assert memory budgets around a concrete query or archive-facing command.",
-        examples=("devtools query-memory-budget --max-rss-mb 1536 -- polylogue --plain analyze",),
+        examples=("devtools bench memory --max-rss-mb 1536 -- polylogue --plain analyze",),
     ),
     CommandSpec(
         "lab scenario",
@@ -623,32 +623,37 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools release build-package",),
     ),
     CommandSpec(
-        "mutmut-campaign",
-        "campaigns",
+        "bench mutation",
+        "benchmarking",
         "Run focused mutation campaigns and maintain their local index.",
         "devtools.mutmut_campaign",
         use_when="Run or inspect focused mutation-testing work without shrinking the committed mutmut scope.",
-        examples=("devtools mutmut-campaign list", "devtools mutmut-campaign run filters"),
+        examples=("devtools bench mutation list", "devtools bench mutation run filters"),
         featured=True,
     ),
     CommandSpec(
-        "benchmark-campaign",
-        "campaigns",
+        "bench campaign",
+        "benchmarking",
         "Run or compare benchmark campaigns.",
         "devtools.benchmark_campaign",
         use_when="Record durable benchmark artifacts or compare a candidate run against a baseline artifact.",
         examples=(
-            "devtools benchmark-campaign list",
-            "devtools benchmark-campaign run search-filters",
-            "devtools benchmark-campaign compare baseline.json candidate.json",
+            "devtools bench campaign list",
+            "devtools bench campaign run search-filters",
+            "devtools bench campaign compare baseline.json candidate.json",
         ),
         featured=True,
     ),
     CommandSpec(
-        "run-benchmark-campaigns",
-        "campaigns",
+        "bench synthetic",
+        "benchmarking",
         "Run synthetic benchmark campaigns over generated archives.",
         "devtools.run_campaign",
+        use_when="Generate synthetic archives and run long-haul benchmark workloads.",
+        examples=(
+            "devtools bench synthetic --list",
+            "devtools bench synthetic --scale medium --campaign search-filters",
+        ),
     ),
     CommandSpec(
         "workspace tasks",

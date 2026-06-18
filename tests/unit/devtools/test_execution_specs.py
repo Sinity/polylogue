@@ -97,7 +97,8 @@ def test_memory_budget_execution_wraps_structured_execution() -> None:
     assert execution.kind is ExecutionKind.MEMORY_BUDGET
     assert execution.command == (
         "devtools",
-        "query-memory-budget",
+        "bench",
+        "memory",
         "--max-rss-mb",
         "1536",
         "--",
@@ -110,7 +111,8 @@ def test_memory_budget_execution_wraps_structured_execution() -> None:
     )
     assert execution.display_command == (
         "devtools",
-        "query-memory-budget",
+        "bench",
+        "memory",
         "--max-rss-mb",
         "1536",
         "--",

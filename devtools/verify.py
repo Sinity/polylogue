@@ -879,7 +879,7 @@ def _subprocess_env() -> dict[str, str]:
 
 
 def _stop_after_failed_step(label: str) -> bool:
-    return label.startswith("pytest") or label in {"lab scenario", "verify-slos"}
+    return label.startswith("pytest") or label in {"lab scenario", "bench slo"}
 
 
 # ── step builder ────────────────────────────────────────────────────
@@ -925,7 +925,7 @@ def build_verify_steps(
         # Scale-tier policy (issue #1183): default verify includes
         # ``scale_small`` but excludes ``scale_medium`` / ``scale_large``.
         # ``--lab`` lets the medium tier in; the large tier is reserved
-        # for nightly CI and explicit ``devtools benchmark-campaign``
+        # for nightly CI and explicit ``devtools bench campaign``
         # invocations.
         scale_marker_expr = "not scale_large" if lab else "not scale_medium and not scale_large"
         pytest_cmd = [
@@ -985,7 +985,7 @@ def build_verify_steps(
 
     if lab:
         steps.append(("lab scenario", _devtools_cmd("lab scenario", "run", "archive-smoke", "--tier", "0")))
-        steps.append(("verify-slos", _devtools_cmd("verify-slos", "--include-lab")))
+        steps.append(("bench slo", _devtools_cmd("bench slo", "--include-lab")))
         steps.append(("lab policy schema-versioning", _devtools_cmd("lab policy schema-versioning")))
         steps.append(("verify-test-coverage-contracts", _devtools_cmd("verify-test-coverage-contracts")))
     return steps

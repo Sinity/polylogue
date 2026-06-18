@@ -70,10 +70,10 @@ These are the commands worth remembering during normal repo work:
   Common forms: `devtools verify`, `devtools verify --quick`, `devtools verify --lab`.
 - `devtools test`: Run a specific test file, directory, or -k/-m selection in the inner loop without invoking raw pytest.
   Common forms: `devtools test tests/unit/pipeline`, `devtools test -k hybrid`, `devtools test tests/unit/storage -x`.
-- `devtools mutmut-campaign`: Run or inspect focused mutation-testing work without shrinking the committed mutmut scope.
-  Common forms: `devtools mutmut-campaign list`, `devtools mutmut-campaign run filters`.
-- `devtools benchmark-campaign`: Record durable benchmark artifacts or compare a candidate run against a baseline artifact.
-  Common forms: `devtools benchmark-campaign list`, `devtools benchmark-campaign run search-filters`, `devtools benchmark-campaign compare baseline.json candidate.json`.
+- `devtools bench mutation`: Run or inspect focused mutation-testing work without shrinking the committed mutmut scope.
+  Common forms: `devtools bench mutation list`, `devtools bench mutation run filters`.
+- `devtools bench campaign`: Record durable benchmark artifacts or compare a candidate run against a baseline artifact.
+  Common forms: `devtools bench campaign list`, `devtools bench campaign run search-filters`, `devtools bench campaign compare baseline.json candidate.json`.
 
 ### Core
 
@@ -130,8 +130,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools coverage-gate` | Run pytest with the repository coverage floor from pyproject.toml. |
 | `devtools daemon-workload-probe` | Inspect daemon ingest workload, convergence debt, and hot query plans. |
 | `devtools evidence-dashboard` | Render the pytest-first evidence dashboard or a changed-path trace. |
-| `devtools ingest-amplification-probe` | Measure deterministic per-tier ingest write amplification on a synthetic fixture (#1851). |
-| `devtools query-memory-budget` | Measure query-memory envelopes on generated fixtures. |
 | `devtools test` | Run a focused pytest selection through the managed harness. |
 | `devtools verify` | Run the local verification baseline before pushing or creating a PR. |
 | `devtools verify-ci-workflows` | Verify CI workflow files reference locally-known devtools commands and existing paths. |
@@ -140,19 +138,21 @@ These are the commands worth remembering during normal repo work:
 | `devtools verify-lane-assertions` | Verify scenario lanes classified as SEMANTIC_OUTPUT carry semantic assertions. |
 | `devtools verify-layering` | Check inter-package imports against declared layering rules from docs/plans/layering.yaml. |
 | `devtools verify-manifests` | Verify internal consistency across all docs/plans/*.yaml manifest files. |
-| `devtools verify-slos` | Check read-surface latency budgets in docs/plans/slo-catalog.yaml against benchmark measurements. |
 | `devtools verify-test-clock-hygiene` | Verify test files use the frozen_clock fixture instead of reading the host wall clock (#1300). |
 | `devtools verify-test-coverage-contracts` | Verify every production module >150 AST lines has a matching test file or exemption. |
 | `devtools verify-test-infra-currency` | Verify tests/infra/ helpers reference only tables that exist in the current SCHEMA_VERSION. |
 | `devtools verify-topology` | Verify the realized polylogue tree against the topology projection. |
 
-### Campaigns
+### Benchmarking
 
 | Command | Description |
 | --- | --- |
-| `devtools benchmark-campaign` | Run or compare benchmark campaigns. |
-| `devtools mutmut-campaign` | Run focused mutation campaigns and maintain their local index. |
-| `devtools run-benchmark-campaigns` | Run synthetic benchmark campaigns over generated archives. |
+| `devtools bench campaign` | Run or compare benchmark campaigns. |
+| `devtools bench ingest-amplification` | Measure deterministic per-tier ingest write amplification on a synthetic fixture (#1851). |
+| `devtools bench memory` | Measure query-memory envelopes on generated fixtures. |
+| `devtools bench mutation` | Run focused mutation campaigns and maintain their local index. |
+| `devtools bench slo` | Check read-surface latency budgets in docs/plans/slo-catalog.yaml against benchmark measurements. |
+| `devtools bench synthetic` | Run synthetic benchmark campaigns over generated archives. |
 
 ### Workspace
 
@@ -178,7 +178,7 @@ When changing semantics, validation, or surfaces:
 devtools lab lanes --list
 devtools lab lanes --lane frontier-local
 devtools lab scenario verify-baselines
-devtools query-memory-budget --max-rss-mb 1536 -- polylogue --plain analyze
+devtools bench memory --max-rss-mb 1536 -- polylogue --plain analyze
 ```
 
 Campaign outputs live under `.local/`, not in tracked docs trees.

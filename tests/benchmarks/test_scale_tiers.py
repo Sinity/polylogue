@@ -14,7 +14,7 @@ Marker plumbing (issue #1183):
 The default ``devtools verify`` pytest step passes ``-m "not scale_medium
 and not scale_large"`` so only the small tier runs in the inner loop.
 Tests that want measured timings should also carry ``@pytest.mark.benchmark``
-and run under ``devtools benchmark-campaign``.
+and run under ``devtools bench campaign``.
 """
 
 from __future__ import annotations

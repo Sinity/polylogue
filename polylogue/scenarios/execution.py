@@ -442,7 +442,7 @@ class ExecutionSpec:
 
             return tuple(
                 control_plane_argv(
-                    "query-memory-budget",
+                    "bench memory",
                     "--max-rss-mb",
                     str(self.max_rss_mb),
                     "--",
@@ -464,13 +464,10 @@ class ExecutionSpec:
             wrapped_display = self.wrapped.display_command or self.wrapped.command
             if wrapped_display is None:
                 return command
-            return (
-                "devtools",
-                "query-memory-budget",
-                "--max-rss-mb",
-                str(self.max_rss_mb),
-                "--",
-                *wrapped_display,
+            from devtools.command_catalog import control_plane_argv
+
+            return tuple(
+                control_plane_argv("bench memory", "--max-rss-mb", str(self.max_rss_mb), "--", *wrapped_display)
             )
         return command
 
