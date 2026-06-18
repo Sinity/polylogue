@@ -118,7 +118,11 @@ class ProjectedRun(ArchiveInsightModel):
 
     run_ref: ObjectRef
     native_session_id: str | None = None
+    native_parent_session_id: str | None = None
     parent_run_ref: ObjectRef | None = None
+    agent_ref: ObjectRef | None = None
+    lineage_refs: tuple[ObjectRef, ...] = ()
+    provider_origin: str = "unknown"
     harness: RunHarness = "unknown"
     role: Literal["main", "subagent"] = "main"
     title: str = ""
@@ -206,10 +210,14 @@ def build_run_projection(
     session_evidence = _to_evidence_refs(session_raw_refs)
     main_run_ref = _run_ref(session_id)
     main_snapshot_ref = _context_snapshot_ref(session_id, "session_start")
+    harness = _harness_for_origin(source_origin)
     main_run = ProjectedRun(
         run_ref=main_run_ref,
         native_session_id=session_id,
-        harness=_harness_for_origin(source_origin),
+        agent_ref=_agent_ref(harness, "main"),
+        lineage_refs=(main_run_ref,),
+        provider_origin=source_origin,
+        harness=harness,
         role="main",
         title=title or session_id,
         cwd=working_directories[0] if working_directories else None,
@@ -261,6 +269,9 @@ def build_run_projection(
         evidence_refs = _to_evidence_refs(event.raw_refs)
         event_ref = _event_ref(session_id, event.kind, index)
         event_object_refs = _event_object_refs(event)
+        context_snapshot_ref: ObjectRef | None = None
+        if event.kind == "review_injected_context":
+            context_snapshot_ref = _context_snapshot_ref(session_id, f"review_injection:{index}")
         observed.append(
             ObservedEvent(
                 event_ref=event_ref,
@@ -269,7 +280,10 @@ def build_run_projection(
                 summary=event.summary,
                 delivery_state=_delivery_state_for_event(event.kind),
                 subject_ref=ObjectRef(kind="message", object_id=evidence_refs[0].message_id or session_id),
-                object_refs=event_object_refs,
+                object_refs=(
+                    *(ref for ref in (context_snapshot_ref,) if ref is not None),
+                    *event_object_refs,
+                ),
                 evidence_refs=evidence_refs,
             )
         )
@@ -295,12 +309,18 @@ def build_run_projection(
         child_run_ref = _run_ref(child_id)
         child_snapshot_ref = _context_snapshot_ref(child_id, "subagent_start")
         evidence_refs = _to_evidence_refs(report.raw_refs)
+        child_agent_ref = _agent_ref(harness, report.subagent_type)
+        report_ref = _subagent_report_ref(session_id, report, index)
         runs.append(
             ProjectedRun(
                 run_ref=child_run_ref,
                 native_session_id=report.child_session_id,
+                native_parent_session_id=session_id,
                 parent_run_ref=main_run_ref,
-                harness=_harness_for_origin(source_origin),
+                agent_ref=child_agent_ref,
+                lineage_refs=(main_run_ref, child_run_ref),
+                provider_origin=source_origin,
+                harness=harness,
                 role="subagent",
                 title=report.prompt or report.subagent_type,
                 cwd=working_directories[0] if working_directories else None,
@@ -318,7 +338,7 @@ def build_run_projection(
                 run_ref=child_run_ref,
                 boundary="subagent_start",
                 inheritance_mode="summary",
-                segment_refs=(ObjectRef(kind="run", object_id=session_id),),
+                segment_refs=(main_run_ref, report_ref),
                 evidence_refs=evidence_refs,
                 metadata={"subagent_type": report.subagent_type},
             )
@@ -330,6 +350,7 @@ def build_run_projection(
                 run_ref=main_run_ref,
                 summary=f"{report.subagent_type} subagent started",
                 subject_ref=child_run_ref,
+                object_refs=(child_agent_ref, report_ref),
                 evidence_refs=evidence_refs,
             )
         )
@@ -341,6 +362,7 @@ def build_run_projection(
                     run_ref=child_run_ref,
                     summary=report.final_report_preview,
                     subject_ref=child_run_ref,
+                    object_refs=(child_agent_ref, report_ref),
                     evidence_refs=evidence_refs,
                 )
             )
@@ -359,6 +381,15 @@ def _to_evidence_refs(raw_refs: Sequence[_RawRefLike]) -> tuple[EvidenceRef, ...
 
 def _run_ref(run_id: str) -> ObjectRef:
     return ObjectRef(kind="run", object_id=run_id)
+
+
+def _agent_ref(harness: RunHarness, role_or_type: str) -> ObjectRef:
+    return ObjectRef(kind="agent", object_id=f"{harness}/{role_or_type or 'unknown'}")
+
+
+def _subagent_report_ref(session_id: str, report: _SubagentReportLike, index: int) -> ObjectRef:
+    stable_id = report.tool_id or report.task_id or str(index)
+    return ObjectRef(kind="subagent-report", object_id=f"{session_id}:{stable_id}")
 
 
 def _context_snapshot_ref(run_id: str, boundary: str) -> ObjectRef:
@@ -410,12 +441,21 @@ def _tool_event_summary(tool: _ToolSummaryLike) -> str:
 
 
 def _tool_object_refs(tool: _ToolSummaryLike) -> tuple[ObjectRef, ...]:
+    tool_ref = _tool_call_ref(tool)
     return (
+        *(ref for ref in (tool_ref,) if ref is not None),
         *(ObjectRef(kind="github-pr", object_id=ref) for ref in tool.pr_refs),
         *(ObjectRef(kind="github-issue", object_id=ref) for ref in tool.issue_refs if ref not in set(tool.pr_refs)),
         *(ObjectRef(kind="file", object_id=ref) for ref in tool.file_refs),
         *(ObjectRef(kind="commit", object_id=ref) for ref in tool.commit_refs),
     )
+
+
+def _tool_call_ref(tool: _ToolSummaryLike) -> ObjectRef | None:
+    if not tool.tool_id or not tool.raw_refs:
+        return None
+    session_id = tool.raw_refs[0].to_evidence_ref().session_id
+    return ObjectRef(kind="tool-call", object_id=f"{session_id}:{tool.tool_id}")
 
 
 def _event_object_refs(event: _RecoveryEventLike) -> tuple[ObjectRef, ...]:
