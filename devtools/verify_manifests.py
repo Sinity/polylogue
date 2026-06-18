@@ -322,7 +322,7 @@ def _check_campaign_freshness(
     ``freshness_days`` is set) be newer than the declared window. Without an
     explicit ``artifact_glob``, benchmark campaigns default to
     ``.local/benchmark-campaigns/*-<name>.json`` — the path written by
-    ``devtools benchmark-campaign run``.
+    ``devtools bench campaign run``.
     """
     errors: list[str] = []
     freshness_days = item.get("freshness_days")

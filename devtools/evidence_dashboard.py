@@ -172,7 +172,7 @@ def _benchmark_slo(root: Path, *, now: datetime) -> dict[str, Any]:
     else:
         out["benchmark_campaigns"] = {
             "available": False,
-            "reason": f"missing {BENCHMARK_CAMPAIGNS_REL} — run devtools benchmark-campaign run <name>",
+            "reason": f"missing {BENCHMARK_CAMPAIGNS_REL} — run devtools bench campaign run <name>",
             "path": str(BENCHMARK_CAMPAIGNS_REL),
         }
     slo_path = root / SLO_CATALOG_REL
@@ -342,7 +342,7 @@ def _mutation_campaigns(root: Path, *, now: datetime) -> dict[str, Any]:
     if not mut_dir.exists():
         return {
             "available": False,
-            "reason": f"missing {MUTATION_CAMPAIGNS_REL} — run devtools mutmut-campaign run <name>",
+            "reason": f"missing {MUTATION_CAMPAIGNS_REL} — run devtools bench mutation run <name>",
             "path": str(MUTATION_CAMPAIGNS_REL),
         }
     campaigns: dict[str, dict[str, Any]] = {}

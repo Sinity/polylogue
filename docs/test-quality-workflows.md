@@ -106,22 +106,22 @@ devtools lab policy schema-versioning --json
 ### Mutation campaigns
 
 ```bash
-devtools mutmut-campaign list
-devtools mutmut-campaign run <campaign>
-devtools mutmut-campaign index
+devtools bench mutation list
+devtools bench mutation run <campaign>
+devtools bench mutation index
 ```
 
 ### Benchmark campaigns
 
 ```bash
-devtools benchmark-campaign list
-devtools benchmark-campaign run <campaign>
-devtools benchmark-campaign compare \
+devtools bench campaign list
+devtools bench campaign run <campaign>
+devtools bench campaign compare \
   .local/benchmark-campaigns/<baseline>.json \
   .local/benchmark-campaigns/<candidate>.json
-devtools benchmark-campaign index
-devtools run-benchmark-campaigns --list
-devtools run-benchmark-campaigns --scale medium --campaign <campaign>
+devtools bench campaign index
+devtools bench synthetic --list
+devtools bench synthetic --scale medium --campaign <campaign>
 ```
 
 ### Fast pipeline probes
@@ -267,7 +267,7 @@ Benchmark comparisons are manual.
 
 ## Synthetic Benchmark Campaign Catalog
 
-These campaigns generate synthetic archives and run long-haul benchmark workloads through `devtools run-benchmark-campaigns`.
+These campaigns generate synthetic archives and run long-haul benchmark workloads through `devtools bench synthetic`.
 
 | Campaign | Tests | Warn | Fail | Description |
 | --- | --- | ---: | ---: | --- |
@@ -581,7 +581,7 @@ fixture seeds.
 | --- | --- | --- | --- |
 | small | `@pytest.mark.scale_small` | ~100 convs / ~1k msgs | default `devtools verify` |
 | medium | `@pytest.mark.scale_medium` | ~1k convs / ~10k msgs | `devtools verify --lab` |
-| large | `@pytest.mark.scale_large` | ~10k convs / ~100k msgs | nightly CI (`.github/workflows/nightly-scale.yml`) or explicit `devtools benchmark-campaign` |
+| large | `@pytest.mark.scale_large` | ~10k convs / ~100k msgs | nightly CI (`.github/workflows/nightly-scale.yml`) or explicit `devtools bench campaign` |
 
 Fixtures live in `tests/infra/scale_fixtures.py` as `tier_small_db`,
 `tier_medium_db`, and `tier_large_db`. They are session-scoped and seed

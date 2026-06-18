@@ -15,8 +15,8 @@ on-disk WAL file size for each tier database (``source.db`` / ``index.db`` /
 
 Operators run::
 
-    devtools ingest-amplification-probe --json > baseline.json
-    devtools ingest-amplification-probe --batches 8 --seed 1851
+    devtools bench ingest-amplification --json > baseline.json
+    devtools bench ingest-amplification --batches 8 --seed 1851
 
 The emitted report carries per-batch, per-tier byte deltas plus a summary with
 the bytes-written-per-payload-byte amplification ratio.  No wallclock thresholds
@@ -272,7 +272,7 @@ def measure_ingest_amplification(
         return {
             "ok": True,
             "report_version": REPORT_VERSION,
-            "tool": "ingest-amplification-probe",
+            "tool": "bench ingest-amplification",
             "fixture": {
                 "provider": provider,
                 "batch_count": len(batch_reports),

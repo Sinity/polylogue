@@ -19,7 +19,7 @@ jobs:
       - name: Run rotating campaign group
         # Rotate a curated core over four weekly groups so every group runs at
         # least once per month (#1733 AC1/AC5). These are real campaign names
-        # from the authored scenario catalog (`devtools mutmut-campaign list`) —
+        # from the authored scenario catalog (`devtools bench mutation list`) —
         # the previous job invoked `run --module <path>`, an interface that does
         # not exist, so `|| true` silently swallowed the argparse error and the
         # job ran no mutation testing at all.
@@ -39,8 +39,8 @@ jobs:
           idx=$(( $(date +%U) % ${#groups[@]} ))
           echo "Running mutation campaign group $idx: ${groups[$idx]}"
           for campaign in ${groups[$idx]}; do
-            echo "::group::mutmut-campaign run $campaign"
-            uv run devtools mutmut-campaign run "$campaign" || echo "campaign $campaign exited non-zero (survivors/timeout)"
+            echo "::group::bench mutation run $campaign"
+            uv run devtools bench mutation run "$campaign" || echo "campaign $campaign exited non-zero (survivors/timeout)"
             echo "::endgroup::"
           done
       - name: Enforce kill-rate thresholds on fresh campaigns

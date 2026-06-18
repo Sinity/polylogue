@@ -231,9 +231,9 @@ POLYLOGUE_FORCE_PLAIN=1 polylogue audit --live --only exercises --tier 0
 ## Mutation Testing
 
 ```bash
-devtools mutmut-campaign list
-devtools mutmut-campaign run <campaign>
-devtools mutmut-campaign index
+devtools bench mutation list
+devtools bench mutation run <campaign>
+devtools bench mutation index
 ```
 
 Policy:

@@ -48,7 +48,7 @@ def build_coverage_command(
         "--timeout-method=thread",
         # Benchmarks stay excluded from the coverage gate as a deliberate scope
         # decision, not a flake workaround. They are performance measurements
-        # with their own runner (`devtools run-benchmark-campaigns`,
+        # with their own runner (`devtools bench synthetic`,
         # `--benchmark-enable`) and add no unique coverage over the integration
         # convergence/ingest tests; several tiers (the xxl 100k-message and
         # huge-session memory probes) are heavy enough to bloat the gate. The

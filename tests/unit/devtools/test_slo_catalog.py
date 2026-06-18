@@ -1,4 +1,4 @@
-"""Tests for the read-surface SLO catalog and ``devtools verify-slos``.
+"""Tests for the read-surface SLO catalog and ``devtools bench slo``.
 
 The catalog at ``docs/plans/slo-catalog.yaml`` lists the SLOs that
 ``devtools/verify_slos.py`` consumes. These tests pin four contracts:

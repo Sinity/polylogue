@@ -1,7 +1,7 @@
 # Read-surface SLO catalog.
 #
 # Each surface declares the read path, the benchmark test that exercises it,
-# and the latency budget enforced by `devtools verify-slos`. Budgets are
+# and the latency budget enforced by `devtools bench slo`. Budgets are
 # starting points (#872) calibrated against the synthetic 5k/10k benchmark
 # fixtures; they are tightened as evidence accumulates. Tighten by lowering
 # p50_ms / p95_ms once a measured surface stays comfortably under budget
@@ -26,8 +26,8 @@
 #   * cheap-local — runnable in `devtools verify` defaults. Small fixtures, low
 #     repetition counts, total run under a few seconds. Always enforced.
 #   * lab — heavier benchmarks runnable via `devtools verify --lab` or
-#     `devtools verify-slos --include-lab` (or explicit
-#     `devtools benchmark-campaign run <name>`). Skipped in the default loop
+#     `devtools bench slo --include-lab` (or explicit
+#     `devtools bench campaign run <name>`). Skipped in the default loop
 #     so commit-frequency verification stays fast.
 
 surfaces:

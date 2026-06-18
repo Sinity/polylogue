@@ -379,13 +379,13 @@ class TestCommandConstruction:
 
     def test_memory_budget_lane_uses_budget_runner(self) -> None:
         cmd = build_lane_command(LANES["memory-budget"])
-        assert cmd[:2] == ["devtools", "query-memory-budget"]
+        assert cmd[:3] == ["devtools", "bench", "memory"]
         assert "--max-rss-mb" in cmd
         assert "polylogue" in cmd
 
     def test_maintenance_memory_budget_lane_uses_check_preview(self) -> None:
         cmd = build_lane_command(LANES["maintenance-memory-budget"])
-        assert cmd[:2] == ["devtools", "query-memory-budget"]
+        assert cmd[:3] == ["devtools", "bench", "memory"]
         assert "--repair" in cmd
         assert "--cleanup" in cmd
         assert "--preview" in cmd
@@ -415,7 +415,7 @@ class TestCommandConstruction:
 
     def test_long_haul_lane_uses_campaign_runner(self) -> None:
         cmd = build_lane_command(LANES["long-haul-small"])
-        assert cmd[:2] == ["devtools", "run-benchmark-campaigns"]
+        assert cmd[:3] == ["devtools", "bench", "synthetic"]
         assert "--scale" in cmd
         assert "small" in cmd
 

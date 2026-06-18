@@ -1,4 +1,4 @@
-"""Tests for ``devtools ingest-amplification-probe`` (#1851)."""
+"""Tests for ``devtools bench ingest-amplification`` (#1851)."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ def test_measure_emits_expected_shape(tmp_path: Path) -> None:
 
     assert report["ok"] is True
     assert report["report_version"] == REPORT_VERSION
-    assert report["tool"] == "ingest-amplification-probe"
+    assert report["tool"] == "bench ingest-amplification"
     assert set(report["components"]) == _COMPONENTS
     assert report["tiers"] == ["source", "index", "embeddings", "user", "ops"]
 

@@ -243,7 +243,7 @@ def test_lab_verify_delegates_to_lab_scenario() -> None:
 
     labels = [label for label, _command in steps]
     assert "lab scenario" in labels
-    assert "verify-slos" in labels
+    assert "bench slo" in labels
     lab_step = next(step for step in steps if step[0] == "lab scenario")
     assert lab_step == (
         "lab scenario",
@@ -760,7 +760,7 @@ def test_failed_step_stop_policy_distinguishes_cheap_and_heavy_steps() -> None:
     assert _stop_after_failed_step("verify-layering") is False
     assert _stop_after_failed_step("pytest testmon") is True
     assert _stop_after_failed_step("lab scenario") is True
-    assert _stop_after_failed_step("verify-slos") is True
+    assert _stop_after_failed_step("bench slo") is True
 
 
 def test_completion_notification_uses_pytest_count() -> None:
