@@ -77,7 +77,7 @@ Verification:
 - `ruff format --check <changed python files>`
 - `ruff check <changed python files>`
 - `python -m mypy <changed python files>`
-- `devtools render-all --check`
+- `devtools render all --check`
 - `devtools verify --quick`
 
 Resource note:
@@ -384,8 +384,8 @@ Outcome:
 
 Verification:
 
-- `devtools render-docs-surface --check`
-- `devtools render-all --check`
+- `devtools render docs-surface --check`
+- `devtools render all --check`
 - `devtools verify --quick`
 - GitHub checks on #1043
 
@@ -846,7 +846,7 @@ Verification:
 - `ruff check polylogue/api/archive.py polylogue/cli/commands/user_state.py polylogue/mcp/payloads.py polylogue/mcp/server_mutation_tools.py tests/unit/storage/test_user_state_contracts.py tests/unit/daemon/test_web_reader.py tests/unit/cli/test_user_state_command.py tests/unit/mcp/test_user_state_tools.py`
 - `python -m mypy polylogue/api/archive.py polylogue/cli/commands/user_state.py polylogue/mcp/payloads.py polylogue/mcp/server_mutation_tools.py`
 - `pytest -q -n0 tests/unit/mcp/test_tool_schema_witness.py tests/unit/mcp/test_envelope_contracts.py tests/unit/cli/test_click_app.py::TestCliMetadata::test_all_subcommands_registered tests/unit/mcp/test_user_state_tools.py tests/unit/cli/test_user_state_command.py`
-- `devtools render-all --check`
+- `devtools render all --check`
 
 ### 2026-05-15 - verification artifact conversion start
 
@@ -888,4 +888,4 @@ Verification:
 - `ruff check tests/infra/contract_evidence.py tests/infra/test_contract_evidence.py tests/conftest.py tests/unit/cli/test_json_envelope_contract.py tests/unit/mcp/test_server_surfaces.py`
 - `mypy --strict tests/infra/contract_evidence.py tests/infra/test_contract_evidence.py tests/conftest.py tests/unit/cli/test_json_envelope_contract.py tests/unit/mcp/test_server_surfaces.py`
 - `devtools verify-manifests`
-- `devtools render-all --check`
+- `devtools render all --check`

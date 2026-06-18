@@ -38,12 +38,16 @@ class CommandSpec:
     featured: bool = False
 
     @property
+    def command_path(self) -> tuple[str, ...]:
+        return tuple(part for part in self.name.split(" ") if part)
+
+    @property
     def invocation(self) -> str:
-        return control_plane_command(self.name)
+        return control_plane_command(*self.command_path)
 
     @property
     def argv(self) -> tuple[str, ...]:
-        return control_plane_argv(self.name)
+        return control_plane_argv(*self.command_path)
 
     def resolve_main(self) -> CommandMain:
         module = importlib.import_module(self.module)
@@ -76,30 +80,29 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools status", "devtools status --json", "devtools status --verify-generated"),
         featured=True,
     ),
-    CommandSpec("motd", "core", "Alias for `status`.", "devtools.project_motd"),
     CommandSpec(
-        "render-all",
+        "render all",
         "generated surfaces",
         "Refresh or verify generated docs and agent files.",
         "devtools.render_all",
         use_when="Refresh or verify every generated repo surface together after changing docs, CLI help, or agent memory.",
-        examples=("devtools render-all", "devtools render-all --check"),
+        examples=("devtools render all", "devtools render all --check"),
         featured=True,
     ),
     CommandSpec(
-        "render-agents",
+        "render agents",
         "generated surfaces",
         "Render AGENTS.md from CLAUDE.md and its included files.",
         "devtools.render_agents",
     ),
     CommandSpec(
-        "render-cli-reference",
+        "render cli-reference",
         "generated surfaces",
         "Render docs/cli-reference.md from live CLI help.",
         "devtools.render_cli_reference",
     ),
     CommandSpec(
-        "render-cli-output-schemas",
+        "render cli-output-schemas",
         "generated surfaces",
         "Render JSON Schema artifacts for stable CLI output payloads under docs/schemas/cli-output/.",
         "devtools.render_cli_output_schemas",
@@ -108,12 +111,12 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "that back stable CLI JSON output (#1272)."
         ),
         examples=(
-            "devtools render-cli-output-schemas",
-            "devtools render-cli-output-schemas --check",
+            "devtools render cli-output-schemas",
+            "devtools render cli-output-schemas --check",
         ),
     ),
     CommandSpec(
-        "render-openapi",
+        "render openapi",
         "generated surfaces",
         "Render docs/openapi/search.yaml from typed daemon query payload models.",
         "devtools.render_openapi",
@@ -122,42 +125,42 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "after changing a route handler or a shared surface payload model."
         ),
         examples=(
-            "devtools render-openapi",
-            "devtools render-openapi --check",
+            "devtools render openapi",
+            "devtools render openapi --check",
         ),
     ),
     CommandSpec(
-        "render-devtools-reference",
+        "render devtools-reference",
         "generated surfaces",
         "Render the command catalog inside docs/devtools.md.",
         "devtools.render_devtools_reference",
     ),
     CommandSpec(
-        "render-docs-surface",
+        "render docs-surface",
         "generated surfaces",
         "Render docs/README.md and the README documentation table.",
         "devtools.render_docs_surface",
     ),
     CommandSpec(
-        "render-quality-reference",
+        "render quality-reference",
         "generated surfaces",
         "Render docs/test-quality-workflows.md from live validation, mutation, and benchmark registries.",
         "devtools.render_quality_reference",
     ),
     CommandSpec(
-        "render-pages",
+        "render pages",
         "generated surfaces",
         "Build the GitHub Pages documentation site into .cache/site/.",
         "devtools.render_pages",
         use_when="Build or verify the full GitHub Pages documentation site after changing docs, templates, or design docs.",
-        examples=("devtools render-pages", "devtools render-pages --check", "devtools render-pages --serve"),
+        examples=("devtools render pages", "devtools render pages --check", "devtools render pages --serve"),
     ),
     CommandSpec(
         "verify",
         "verification",
         "Run the local verification baseline before pushing or creating a PR.",
         "devtools.verify",
-        use_when="Run format, lint, mypy, render-all, and test checks locally before pushing.",
+        use_when="Run format, lint, mypy, render all, and test checks locally before pushing.",
         examples=("devtools verify", "devtools verify --quick", "devtools verify --lab"),
         featured=True,
     ),
@@ -320,7 +323,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "build-topology-projection",
+        "render topology-projection",
         "generated surfaces",
         "Generate docs/plans/topology-target.yaml from the current tree using placement rules.",
         "devtools.build_topology_projection",
@@ -328,30 +331,30 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "Refresh the topology projection after editing placement rules in this script "
             "or after a topology refactor lands."
         ),
-        examples=("devtools build-topology-projection",),
+        examples=("devtools render topology-projection",),
     ),
     CommandSpec(
-        "render-topology-status",
+        "render topology-status",
         "generated surfaces",
         "Render docs/topology-status.md from the topology projection and realized tree.",
         "devtools.render_topology_status",
         use_when=(
             "Refresh the topology drift dashboard after a refactor PR lands. "
-            "Wired into devtools render-all so drift fails the generated-surface check."
+            "Wired into devtools render all so drift fails the generated-surface check."
         ),
-        examples=("devtools render-topology-status", "devtools render-topology-status --check"),
+        examples=("devtools render topology-status", "devtools render topology-status --check"),
     ),
     CommandSpec(
-        "render-readme-media",
+        "render readme-media",
         "generated surfaces",
         "Generate README media assets (architecture diagrams, flowcharts) under docs/media/.",
         "devtools.generate_readme_media",
         use_when="Refresh architecture diagrams, data-flow charts, and provider-detection flowcharts for the README.",
         examples=(
-            "devtools render-readme-media",
-            "devtools render-readme-media --list",
-            "devtools render-readme-media --name data-flow",
-            "devtools render-readme-media --check",
+            "devtools render readme-media",
+            "devtools render readme-media --list",
+            "devtools render readme-media --name data-flow",
+            "devtools render readme-media --check",
         ),
     ),
     CommandSpec(
@@ -633,7 +636,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "devtools.xtask",
         use_when="Log, view recent, or summarize agent task execution history during development sessions.",
         examples=(
-            "devtools xtask log --command 'devtools render-all' --duration-ms 3200 --exit-code 0",
+            "devtools xtask log --command 'devtools render all' --duration-ms 3200 --exit-code 0",
             "devtools xtask recent",
             "devtools xtask recent --count 20",
             "devtools xtask stats",
@@ -669,13 +672,31 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
 COMMANDS: dict[str, CommandSpec] = {spec.name: spec for spec in COMMAND_SPECS}
 
 
+def command_name_from_tokens(tokens: Iterable[str], commands: Iterable[CommandSpec] = COMMAND_SPECS) -> str | None:
+    """Resolve leading argv tokens to a registered command name."""
+    token_tuple = tuple(tokens)
+    if not token_tuple:
+        return None
+    by_path = {spec.command_path: spec.name for spec in commands}
+    max_len = max((len(path) for path in by_path), default=0)
+    for length in range(min(max_len, len(token_tuple)), 0, -1):
+        candidate = token_tuple[:length]
+        if candidate in by_path:
+            return by_path[candidate]
+    return None
+
+
+def _flatten_argv_parts(args: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(part for arg in args for part in arg.split(" ") if part)
+
+
 def control_plane_command(*args: str) -> str:
-    parts = [CONTROL_PLANE, *args]
+    parts = [CONTROL_PLANE, *_flatten_argv_parts(args)]
     return " ".join(part for part in parts if part)
 
 
 def control_plane_argv(*args: str) -> tuple[str, ...]:
-    return tuple(part for part in (CONTROL_PLANE, *args) if part)
+    return tuple(part for part in (CONTROL_PLANE, *_flatten_argv_parts(args)) if part)
 
 
 def featured_command_specs(commands: Iterable[CommandSpec] = COMMAND_SPECS) -> tuple[CommandSpec, ...]:
@@ -704,6 +725,7 @@ __all__ = [
     "CONTROL_PLANE",
     "CommandMain",
     "CommandSpec",
+    "command_name_from_tokens",
     "control_plane_argv",
     "control_plane_command",
     "featured_command_specs",

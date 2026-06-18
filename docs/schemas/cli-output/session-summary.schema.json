@@ -139,7 +139,7 @@
   "$id": "https://polylogue.dev/schemas/cli-output/session-summary.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "Compact session identity payload used by stats/group-by and embedded inside search hits.\n\nGenerated from `polylogue.surfaces.payloads.SessionSummaryPayload` by `devtools render-cli-output-schemas`. Do not edit by hand.",
+  "description": "Compact session identity payload used by stats/group-by and embedded inside search hits.\n\nGenerated from `polylogue.surfaces.payloads.SessionSummaryPayload` by `devtools render cli-output-schemas`. Do not edit by hand.",
   "properties": {
     "actions": {
       "additionalProperties": {

@@ -57,9 +57,9 @@ These are the commands worth remembering during normal repo work:
 
 - `devtools status`: Check repo state, generated-surface drift, and the next default verification steps.
   Common forms: `devtools status`, `devtools status --json`, `devtools status --verify-generated`.
-- `devtools render-all`: Refresh or verify every generated repo surface together after changing docs, CLI help, or agent memory.
-  Common forms: `devtools render-all`, `devtools render-all --check`.
-- `devtools verify`: Run format, lint, mypy, render-all, and test checks locally before pushing.
+- `devtools render all`: Refresh or verify every generated repo surface together after changing docs, CLI help, or agent memory.
+  Common forms: `devtools render all`, `devtools render all --check`.
+- `devtools verify`: Run format, lint, mypy, render all, and test checks locally before pushing.
   Common forms: `devtools verify`, `devtools verify --quick`, `devtools verify --lab`.
 - `devtools test`: Run a specific test file, directory, or -k/-m selection in the inner loop without invoking raw pytest.
   Common forms: `devtools test tests/unit/pipeline`, `devtools test -k hybrid`, `devtools test tests/unit/storage -x`.
@@ -72,25 +72,24 @@ These are the commands worth remembering during normal repo work:
 
 | Command | Description |
 | --- | --- |
-| `devtools motd` | Alias for `status`. |
 | `devtools status` | Render the devshell status view. |
 
 ### Generated Surfaces
 
 | Command | Description |
 | --- | --- |
-| `devtools build-topology-projection` | Generate docs/plans/topology-target.yaml from the current tree using placement rules. |
-| `devtools render-agents` | Render AGENTS.md from CLAUDE.md and its included files. |
-| `devtools render-all` | Refresh or verify generated docs and agent files. |
-| `devtools render-cli-output-schemas` | Render JSON Schema artifacts for stable CLI output payloads under docs/schemas/cli-output/. |
-| `devtools render-cli-reference` | Render docs/cli-reference.md from live CLI help. |
-| `devtools render-devtools-reference` | Render the command catalog inside docs/devtools.md. |
-| `devtools render-docs-surface` | Render docs/README.md and the README documentation table. |
-| `devtools render-openapi` | Render docs/openapi/search.yaml from typed daemon query payload models. |
-| `devtools render-pages` | Build the GitHub Pages documentation site into .cache/site/. |
-| `devtools render-quality-reference` | Render docs/test-quality-workflows.md from live validation, mutation, and benchmark registries. |
-| `devtools render-readme-media` | Generate README media assets (architecture diagrams, flowcharts) under docs/media/. |
-| `devtools render-topology-status` | Render docs/topology-status.md from the topology projection and realized tree. |
+| `devtools render agents` | Render AGENTS.md from CLAUDE.md and its included files. |
+| `devtools render all` | Refresh or verify generated docs and agent files. |
+| `devtools render cli-output-schemas` | Render JSON Schema artifacts for stable CLI output payloads under docs/schemas/cli-output/. |
+| `devtools render cli-reference` | Render docs/cli-reference.md from live CLI help. |
+| `devtools render devtools-reference` | Render the command catalog inside docs/devtools.md. |
+| `devtools render docs-surface` | Render docs/README.md and the README documentation table. |
+| `devtools render openapi` | Render docs/openapi/search.yaml from typed daemon query payload models. |
+| `devtools render pages` | Build the GitHub Pages documentation site into .cache/site/. |
+| `devtools render quality-reference` | Render docs/test-quality-workflows.md from live validation, mutation, and benchmark registries. |
+| `devtools render readme-media` | Generate README media assets (architecture diagrams, flowcharts) under docs/media/. |
+| `devtools render topology-projection` | Generate docs/plans/topology-target.yaml from the current tree using placement rules. |
+| `devtools render topology-status` | Render docs/topology-status.md from the topology projection and realized tree. |
 
 ### Verification
 

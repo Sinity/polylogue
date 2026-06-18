@@ -21,7 +21,7 @@ def test_coverage_gap_manifest_records_require_closure_path(tmp_path: Path) -> N
     declared_at: "2026-05-02"
     review_after: "2026-08-01"
     issue: 590
-    next_evidence: devtools render-docs-surface --check
+    next_evidence: devtools render docs-surface --check
 """,
         encoding="utf-8",
     )
@@ -109,7 +109,7 @@ def test_coverage_gap_manifest_rejects_proof_subject_slug_collision(tmp_path: Pa
     declared_at: "2026-05-02"
     review_after: "2026-08-01"
     issue: "#590"
-    next_evidence: devtools render-docs-surface --check
+    next_evidence: devtools render docs-surface --check
   - id: docs-media.generated-proof
     domain: docs_media
     gap: Missing generated media proof
@@ -118,7 +118,7 @@ def test_coverage_gap_manifest_rejects_proof_subject_slug_collision(tmp_path: Pa
     declared_at: "2026-05-02"
     review_after: "2026-08-01"
     issue: "#590"
-    next_evidence: devtools render-docs-surface --check
+    next_evidence: devtools render docs-surface --check
 """,
         encoding="utf-8",
     )

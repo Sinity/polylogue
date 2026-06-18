@@ -1,7 +1,7 @@
 """Click-based CLI dispatch for devtools commands.
 
 Generates Click commands from the CommandSpec catalog and preserves:
-- Flat CLI syntax: ``devtools <command> <args>``
+- Path syntax: ``devtools <group> <command> <args>``
 - ``--json`` flag forwarding to subcommands (root or local)
 - ``--list-commands --json`` machine-output contract
 - Generated docs rendering
@@ -20,6 +20,10 @@ from devtools.command_catalog import (
     grouped_command_specs,
     verification_lab_command_specs,
 )
+
+GROUP_HELP: dict[str, str] = {
+    "render": "Render and check generated repository surfaces.",
+}
 
 
 def _print_inventory(*, json: bool) -> None:
@@ -127,7 +131,7 @@ def _make_command(spec: CommandSpec) -> click.Command:
     ]
 
     cmd = _PreservedEpilogCommand(
-        name=spec.name,
+        name=spec.command_path[-1],
         help=spec.description,
         epilog=_build_epilog(spec),
         callback=callback,
@@ -140,6 +144,17 @@ def _make_command(spec: CommandSpec) -> click.Command:
     cmd.allow_extra_args = True
     cmd.ignore_unknown_options = True
     return cmd
+
+
+def _ensure_group(parent: click.Group, name: str) -> click.Group:
+    existing = parent.commands.get(name)
+    if existing is not None:
+        if not isinstance(existing, click.Group):
+            raise ValueError(f"cannot register devtools group {name!r}: command already exists")
+        return existing
+    group = click.Group(name=name, help=GROUP_HELP.get(name))
+    parent.add_command(group)
+    return group
 
 
 def _make_cli() -> click.Group:
@@ -166,7 +181,10 @@ def _make_cli() -> click.Group:
 
     for spec in COMMAND_SPECS:
         cmd = _make_command(spec)
-        cli.add_command(cmd)
+        parent = cli
+        for group_name in spec.command_path[:-1]:
+            parent = _ensure_group(parent, group_name)
+        parent.add_command(cmd)
 
     return cli
 
@@ -177,7 +195,7 @@ cli = _make_cli()
 def _dispatch(argv: list[str]) -> int:
     """Run the Click CLI and translate ``SystemExit`` to an int return code."""
     try:
-        cli(args=argv, standalone_mode=True)
+        cli(args=argv, prog_name="devtools", standalone_mode=True)
         return 0
     except SystemExit as e:
         code = e.code
@@ -205,6 +223,12 @@ def main(argv: list[str] | None = None) -> int:
 
     command_name = args_list[0]
     inner_args = args_list[1:]
+    for spec in COMMAND_SPECS:
+        path = spec.command_path
+        if tuple(args_list[: len(path)]) == path:
+            command_name = " ".join(path)
+            inner_args = args_list[len(path) :]
+            break
 
     if xtask_mod.auto_log_disabled():
         return _dispatch(args_list)

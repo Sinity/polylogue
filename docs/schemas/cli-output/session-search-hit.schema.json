@@ -382,7 +382,7 @@
   "$id": "https://polylogue.dev/schemas/cli-output/session-search-hit.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "A search match: session identity plus evidence (match surface, retrieval lane, snippet, score). Default query-mode JSON output uses this shape; the `ndjson` mode emits one per line as hits arrive.\n\nGenerated from `polylogue.surfaces.payloads.SessionSearchHitPayload` by `devtools render-cli-output-schemas`. Do not edit by hand.",
+  "description": "A search match: session identity plus evidence (match surface, retrieval lane, snippet, score). Default query-mode JSON output uses this shape; the `ndjson` mode emits one per line as hits arrive.\n\nGenerated from `polylogue.surfaces.payloads.SessionSearchHitPayload` by `devtools render cli-output-schemas`. Do not edit by hand.",
   "properties": {
     "match": {
       "$ref": "#/$defs/SessionSearchMatchPayload"

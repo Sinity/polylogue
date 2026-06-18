@@ -25,7 +25,7 @@ jobs:
           nix_path: nixpkgs=channel:nixos-unstable
 
       - name: Build site
-        run: nix develop --command devtools render-pages
+        run: nix develop --command devtools render pages
 
       - name: Deploy to gh-pages (main)
         if: github.ref == 'refs/heads/master'

@@ -595,7 +595,7 @@
   "$id": "https://polylogue.dev/schemas/cli-output/query-unit-envelope.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "Terminal row envelope for explicit `messages/actions/blocks/assertions/observed-events/context-snapshots where ...` query-unit expressions. Shared by CLI JSON output, Python API, MCP, and daemon HTTP.\n\nGenerated from `polylogue.surfaces.payloads.QueryUnitEnvelope` by `devtools render-cli-output-schemas`. Do not edit by hand.",
+  "description": "Terminal row envelope for explicit `messages/actions/blocks/assertions/observed-events/context-snapshots where ...` query-unit expressions. Shared by CLI JSON output, Python API, MCP, and daemon HTTP.\n\nGenerated from `polylogue.surfaces.payloads.QueryUnitEnvelope` by `devtools render cli-output-schemas`. Do not edit by hand.",
   "properties": {
     "items": {
       "items": {

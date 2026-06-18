@@ -2,7 +2,7 @@
   "$id": "https://polylogue.dev/schemas/cli-output/mutation-result.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "Shared result envelope for CLI, MCP, API, and daemon mutation surfaces. Used by tag, metadata, delete, and related bulk mutation actions to report status, affected counts, and optional session ids.\n\nGenerated from `polylogue.surfaces.payloads.MutationResultPayload` by `devtools render-cli-output-schemas`. Do not edit by hand.",
+  "description": "Shared result envelope for CLI, MCP, API, and daemon mutation surfaces. Used by tag, metadata, delete, and related bulk mutation actions to report status, affected counts, and optional session ids.\n\nGenerated from `polylogue.surfaces.payloads.MutationResultPayload` by `devtools render cli-output-schemas`. Do not edit by hand.",
   "properties": {
     "affected_count": {
       "anyOf": [

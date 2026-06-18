@@ -18,26 +18,26 @@ environments that back the test suite:
 - deterministic demo workspaces provide safe, synthetic session data;
 - verification-lab exercise baselines reproduce the scenarios used in any
   rendered capture;
-- `devtools render-readme-media` re-renders the diagrams committed here
+- `devtools render readme-media` re-renders the diagrams committed here
   from their Mermaid sources.
 
 ## What lives here
 
 The committed assets in this directory are architecture diagrams rendered
 from Mermaid (`.mmd`) source files by
-`devtools render-readme-media`. The `.mmd` sources are the authoritative
+`devtools render readme-media`. The `.mmd` sources are the authoritative
 input; the `.svg` files are generated.
 
 Verify they are up to date:
 
 ```bash
-devtools render-readme-media --check
+devtools render readme-media --check
 ```
 
 Regenerate after editing the diagram sources:
 
 ```bash
-devtools render-readme-media
+devtools render readme-media
 ```
 
 The Mermaid source files are part of the repository; the rendered SVGs are
@@ -62,7 +62,7 @@ must arrive together with:
 1. A render script that regenerates it deterministically from a demo fixture
    or verification-lab environment.
 2. A `--check` mode that fails when the committed asset diverges from the
-   freshly rendered output (the pattern used by `render-readme-media`).
+   freshly rendered output (the pattern used by `render readme-media`).
 3. A new row in `docs/plans/docs-media-coverage.yaml` pointing at that
    render/verify pair.
 

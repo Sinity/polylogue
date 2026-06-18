@@ -77,11 +77,11 @@ def _stamp(surface: GeneratedSurface) -> None:
 def _render_one(surface: GeneratedSurface, check: bool) -> int:
     """Render or check a single surface. Returns exit code."""
     if not check and _is_fresh(surface):
-        print(f"render-all: skip {surface.name} (inputs unchanged)", file=sys.stderr)
+        print(f"render all: skip {surface.name} (inputs unchanged)", file=sys.stderr)
         return 0
 
     mode = "check" if check else "render"
-    print(f"render-all: {mode} {surface.name}", file=sys.stderr)
+    print(f"render all: {mode} {surface.name}", file=sys.stderr)
     result = surface.main(["--check"] if check else [])
     if result == 0 and not check:
         _stamp(surface)
@@ -90,6 +90,12 @@ def _render_one(surface: GeneratedSurface, check: bool) -> int:
 
 def _selected_surfaces(skip: set[str]) -> list[GeneratedSurface]:
     return [surface for surface in GENERATED_SURFACES if surface.name not in skip]
+
+
+def _agents_last(surfaces: list[GeneratedSurface]) -> list[GeneratedSurface]:
+    return [surface for surface in surfaces if surface.name != "agents"] + [
+        surface for surface in surfaces if surface.name == "agents"
+    ]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -108,9 +114,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    selected = _selected_surfaces(set(args.skip))
+    selected = _agents_last(_selected_surfaces(set(args.skip)))
     if not selected:
-        print("render-all: no surfaces selected", file=sys.stderr)
+        print("render all: no surfaces selected", file=sys.stderr)
         return 2
 
     exit_code = 0
@@ -121,13 +127,21 @@ def main(argv: list[str] | None = None) -> int:
                 exit_code = result if exit_code == 0 else exit_code
         return exit_code
 
-    # Render independent surfaces in parallel.
+    # Render independent surfaces in parallel. AGENTS is rendered after the
+    # other surfaces because it transcludes generated docs such as
+    # docs/devtools.md.
+    agents = [surface for surface in selected if surface.name == "agents"]
+    parallel = [surface for surface in selected if surface.name != "agents"]
     with ThreadPoolExecutor(max_workers=4) as pool:
-        futures = {pool.submit(_render_one, s, bool(args.check)): s for s in selected}
+        futures = {pool.submit(_render_one, s, bool(args.check)): s for s in parallel}
         for future in futures:
             result = future.result()
             if result != 0:
                 exit_code = result if exit_code == 0 else exit_code
+    for surface in agents:
+        result = _render_one(surface, check=False)
+        if result != 0:
+            exit_code = result if exit_code == 0 else exit_code
     return exit_code
 
 

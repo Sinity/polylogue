@@ -1,7 +1,7 @@
 """Behavioral tests for the GitHub Pages site renderer (#1301).
 
 The renderer is implemented under ``devtools/pages_builder.py`` and is
-driven by ``devtools render-pages``. Until #1301, no test exercised its
+driven by ``devtools render pages``. Until #1301, no test exercised its
 output — a regression that produced broken HTML, missing navigation, or
 stale anchors would ship unnoticed. The tests below cover:
 
@@ -311,7 +311,7 @@ path = "/architecture/contributing/"
 title = "Contributing"
 template = "doc.html"
 [pages.data]
-source_command = "render-cli-reference"
+source_command = "render cli-reference"
 custom_marker = "frontmatter-roundtrip-ok"
 """,
         encoding="utf-8",
@@ -320,7 +320,7 @@ custom_marker = "frontmatter-roundtrip-ok"
     cfg = load_pages_config(config_path)
     page_entry = next(p for p in cfg.pages if p.path == "/architecture/contributing/")
     assert page_entry.data == {
-        "source_command": "render-cli-reference",
+        "source_command": "render cli-reference",
         "custom_marker": "frontmatter-roundtrip-ok",
     }
 
@@ -340,7 +340,7 @@ custom_marker = "frontmatter-roundtrip-ok"
     out = tmp_path / "out"
     build_site(config_path=config_path, output_dir=out)
 
-    assert captured.get("source_command") == "render-cli-reference"
+    assert captured.get("source_command") == "render cli-reference"
     assert captured.get("custom_marker") == "frontmatter-roundtrip-ok"
     assert captured.get("title") == "Contributing"
     assert captured.get("current_path") == "/architecture/contributing/"

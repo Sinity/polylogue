@@ -37,7 +37,7 @@ from pathlib import Path
 import click
 
 from devtools import repo_root as _get_root
-from devtools.command_catalog import COMMANDS
+from devtools.command_catalog import COMMANDS, command_name_from_tokens
 from polylogue.cli.command_inventory import iter_command_paths
 from polylogue.daemon.cli import main as polylogued_root
 
@@ -85,7 +85,7 @@ STALE_INVOCATIONS: tuple[tuple[str, str], ...] = (
     ),
     (
         "polylogue run site",
-        "polylogue: 'polylogue run site' was removed; site rendering lives in 'devtools render-pages'.",
+        "polylogue: 'polylogue run site' was removed; site rendering lives in 'devtools render pages'.",
     ),
     (
         "polylogue run --source",
@@ -125,16 +125,17 @@ def _polylogued_subcommands() -> frozenset[str]:
     return _click_subcommands(polylogued_root)
 
 
-def _first_real_token(rest: str) -> str | None:
-    """First plain token after a surface, ignoring flags and shell glue."""
+def _real_tokens(rest: str) -> tuple[str, ...]:
+    """Plain command tokens after a surface, ignoring flags and shell glue."""
     stripped = rest.lstrip()
     if not stripped:
-        return None
+        return ()
     for stop in ("&&", "||", "|", ";", "#", "$(", "`"):
         idx = stripped.find(stop)
         if idx >= 0:
             stripped = stripped[:idx]
     parts = stripped.split()
+    tokens: list[str] = []
     for part in parts:
         cleaned = part.strip(".,:;\"'`()[]<>")
         if not cleaned:
@@ -145,8 +146,21 @@ def _first_real_token(rest: str) -> str | None:
             continue
         if not _TOKEN_RE.match(cleaned):
             continue
-        return cleaned
-    return None
+        tokens.append(cleaned)
+    return tuple(tokens)
+
+
+def _surface_subcommand(surface: str, rest: str) -> str | None:
+    tokens = _real_tokens(rest)
+    if not tokens:
+        return None
+    if surface != "devtools":
+        return tokens[0]
+    known = command_name_from_tokens(tokens)
+    if known is not None:
+        return known
+    max_len = max((len(spec.command_path) for spec in COMMANDS.values()), default=1)
+    return " ".join(tokens[: min(len(tokens), max_len)])
 
 
 _FENCE_RE = re.compile(r"^\s*```([A-Za-z0-9_+-]*)")
@@ -233,7 +247,7 @@ def _scan_file(path: Path, root: Path) -> tuple[list[DocCommandRef], list[str]]:
                 continue
             surface = match.group(1)
             rest = match.group(2)
-            token = _first_real_token(rest)
+            token = _surface_subcommand(surface, rest)
             if token is None:
                 continue
             refs.append(DocCommandRef(surface=surface, subcommand=token, file=path, line=line_no))

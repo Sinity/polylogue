@@ -32,8 +32,8 @@ def isolated_xtask_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
     [
         ("verify", "verify"),
         ("verify-topology", "verify"),
-        ("render-all", "render"),
-        ("render-cli-reference", "render"),
+        ("render all", "render"),
+        ("render cli-reference", "render"),
         ("lab-scenario", "lab"),
         ("mutmut-campaign", "campaign"),
         ("benchmark-campaign", "campaign"),
@@ -86,7 +86,7 @@ def test_stats_by_class_and_slowest(isolated_xtask_file: Path, capsys: pytest.Ca
         ("verify", 1000.0, 0),
         ("verify", 2000.0, 0),
         ("verify", 9000.0, 1),
-        ("render-all", 200.0, 0),
+        ("render all", 200.0, 0),
         ("status", 50.0, 0),
     ]
     for cmd, dur, code in samples:
@@ -245,7 +245,7 @@ def test_prune_zero_keeps_nothing(isolated_xtask_file: Path, capsys: pytest.Capt
 
 def test_replay_dry_run_round_trips_argv(isolated_xtask_file: Path, capsys: pytest.CaptureFixture[str]) -> None:
     xtask.record_invocation(
-        command="render-all",
+        command="render all",
         args=["--check", "--verbose"],
         duration_ms=42.0,
         exit_code=0,
@@ -253,9 +253,9 @@ def test_replay_dry_run_round_trips_argv(isolated_xtask_file: Path, capsys: pyte
     )
     assert xtask.main(["replay", "--dry-run", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["command"] == "render-all"
+    assert payload["command"] == "render all"
     assert payload["args"] == ["--check", "--verbose"]
-    assert payload["argv"] == ["render-all", "--check", "--verbose"]
+    assert payload["argv"] == ["render all", "--check", "--verbose"]
     assert payload["index"] == 1
 
 

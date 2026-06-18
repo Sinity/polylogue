@@ -32,13 +32,12 @@ from pathlib import Path
 import yaml
 
 from devtools import repo_root as _get_root
-from devtools.command_catalog import COMMANDS
+from devtools.command_catalog import COMMANDS, command_name_from_tokens
 
 ROOT = _get_root()
 WORKFLOWS_DIR = ROOT / ".github" / "workflows"
 
-_DEVTOOLS_RE = re.compile(r"\bdevtools\s+(\S+)")
-_UVX_DEVTOOLS_RE = re.compile(r"uv\s+run\s+devtools\s+(\S+)")
+_DEVTOOLS_RE = re.compile(r"(?<![\w./-])devtools(?![./\w-])([^\n]*)")
 _POLYLOGUE_CMD_RE = re.compile(r"(?:uv\s+run\s+)?polylogue\s+(\S+)")
 _RUFF_PATH_RE = re.compile(r"\bruff\s+(?:check|format)\s+(?:--\S+\s+)*(.+)$", re.MULTILINE)
 _MYPY_PATH_RE = re.compile(r"\bmypy\s+(.+)$", re.MULTILINE)
@@ -47,6 +46,25 @@ _PYTEST_PATH_RE = re.compile(r"\bpytest\s+(?:-\S+\s+)*(\S+)", re.MULTILINE)
 
 def _devtools_command_names() -> frozenset[str]:
     return frozenset(COMMANDS.keys())
+
+
+def _devtools_command_from_rest(rest: str) -> str | None:
+    for stop in ("&&", "||", "|", ";", "#", "$("):
+        idx = rest.find(stop)
+        if idx >= 0:
+            rest = rest[:idx]
+    try:
+        parts = shlex.split(rest)
+    except ValueError:
+        parts = rest.split()
+    tokens = tuple(part for part in parts if part and not part.startswith("-"))
+    if not tokens:
+        return None
+    known = command_name_from_tokens(tokens)
+    if known is not None:
+        return known
+    max_len = max((len(spec.command_path) for spec in COMMANDS.values()), default=1)
+    return " ".join(tokens[: min(len(tokens), max_len)])
 
 
 def _extract_run_steps(workflow: dict[str, object]) -> list[tuple[str, str, str]]:
@@ -77,7 +95,9 @@ def _check_devtools_commands(
 ) -> list[str]:
     errors: list[str] = []
     for match in _DEVTOOLS_RE.finditer(run):
-        cmd = match.group(1)
+        cmd = _devtools_command_from_rest(match.group(1))
+        if cmd is None:
+            continue
         if cmd not in known:
             errors.append(f"{workflow}:{job}/{step!r}: unknown devtools command {cmd!r}")
     return errors

@@ -162,7 +162,7 @@
   "$id": "https://polylogue.dev/schemas/cli-output/session-list-row.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "One row of `polylogue list --format json` output. The list verb emits an array of these objects; the `ndjson` format emits one per line as results stream.\n\nGenerated from `polylogue.surfaces.payloads.SessionListRowPayload` by `devtools render-cli-output-schemas`. Do not edit by hand.",
+  "description": "One row of `polylogue list --format json` output. The list verb emits an array of these objects; the `ndjson` format emits one per line as results stream.\n\nGenerated from `polylogue.surfaces.payloads.SessionListRowPayload` by `devtools render cli-output-schemas`. Do not edit by hand.",
   "properties": {
     "actions": {
       "additionalProperties": {

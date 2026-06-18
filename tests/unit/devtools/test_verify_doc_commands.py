@@ -41,7 +41,7 @@ class TestCheckDocsTmpFixtures:
         _write_docs(
             tmp_path,
             {
-                "README.md": "```bash\ndevtools render-all\n```\n",
+                "README.md": "```bash\ndevtools render all\n```\n",
             },
         )
         errors, files_checked = check_docs(root=tmp_path)
@@ -67,6 +67,16 @@ class TestCheckDocsTmpFixtures:
         )
         errors, _ = check_docs(root=tmp_path)
         assert any("not-a-real-command" in e for e in errors)
+
+    def test_unknown_nested_devtools_command_blocks(self, tmp_path: Path) -> None:
+        _write_docs(
+            tmp_path,
+            {
+                "README.md": "```bash\ndevtools render imaginary-surface\n```\n",
+            },
+        )
+        errors, _ = check_docs(root=tmp_path)
+        assert any("render imaginary-surface" in e for e in errors)
 
     def test_unknown_polylogued_command_blocks(self, tmp_path: Path) -> None:
         _write_docs(

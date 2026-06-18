@@ -370,7 +370,7 @@ machine-parseable output:
 ### JSON Schema Publication
 
 Published JSON Schemas for stable CLI output surfaces live under
-`docs/schemas/cli-output/`. Run `devtools render-cli-output-schemas` to
+`docs/schemas/cli-output/`. Run `devtools render cli-output-schemas` to
 regenerate after changing a Pydantic model that feeds a CLI output surface.
 
 ---

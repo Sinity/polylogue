@@ -11,7 +11,7 @@ Approach:
    using ``jsonschema``.
 
 If a payload model gains/loses a field, the schema must be regenerated
-(``devtools render-cli-output-schemas``), and these tests will start
+(``devtools render cli-output-schemas``), and these tests will start
 failing until that happens — closing the drift loop.
 """
 
@@ -72,7 +72,7 @@ def _invoke_live_cli(args: list[str]) -> str:
 def test_published_schema_matches_current_model(entry: object) -> None:
     """Published JSON Schema files must be in sync with the Pydantic models.
 
-    Equivalent to running ``devtools render-cli-output-schemas --check``,
+    Equivalent to running ``devtools render cli-output-schemas --check``,
     but expressed per-schema so failure messages name the drifting surface.
     """
     from devtools.render_cli_output_schemas import CliOutputSchema
@@ -84,7 +84,7 @@ def test_published_schema_matches_current_model(entry: object) -> None:
     assert actual == expected, (
         f"Published schema `{target}` is out of sync with "
         f"`{cli_entry.model.__name__}`. Run "
-        "`devtools render-cli-output-schemas` to refresh."
+        "`devtools render cli-output-schemas` to refresh."
     )
 
 

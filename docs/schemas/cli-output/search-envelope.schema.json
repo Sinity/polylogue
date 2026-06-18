@@ -504,7 +504,7 @@
   "$id": "https://polylogue.dev/schemas/cli-output/search-envelope.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "Typed ranked-result envelope (#1266) shared across CLI JSON, MCP, Python API, and daemon HTTP. Wraps the per-hit `SessionSearchHit` array with `total`, `limit`, `offset`, `next_cursor`, `query`, `retrieval_lane`, and the `ranking_policy`/`ranking_policy_version` declaration.\n\nGenerated from `polylogue.surfaces.payloads.SearchEnvelope` by `devtools render-cli-output-schemas`. Do not edit by hand.",
+  "description": "Typed ranked-result envelope (#1266) shared across CLI JSON, MCP, Python API, and daemon HTTP. Wraps the per-hit `SessionSearchHit` array with `total`, `limit`, `offset`, `next_cursor`, `query`, `retrieval_lane`, and the `ranking_policy`/`ranking_policy_version` declaration.\n\nGenerated from `polylogue.surfaces.payloads.SearchEnvelope` by `devtools render cli-output-schemas`. Do not edit by hand.",
   "properties": {
     "diagnostics": {
       "anyOf": [

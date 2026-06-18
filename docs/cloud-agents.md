@@ -10,7 +10,7 @@ This page is the operator checklist. The repo-side wiring lives in:
 - [`.claude/settings.json`](../.claude/settings.json) — env + Bash allowlist
 - [`.claude/setup.sh`](../.claude/setup.sh) — sandbox bootstrap
 - [`CLAUDE.md`](../CLAUDE.md) — "Cloud lane" section (agent-facing rules,
-  rendered into `AGENTS.md` by `devtools render-agents`)
+  rendered into `AGENTS.md` by `devtools render agents`)
 
 See also: `2026-05-27_Build_Plan.md` §D (Cloud agent enablement).
 
@@ -24,7 +24,7 @@ See also: `2026-05-27_Build_Plan.md` §D (Cloud agent enablement).
 | `uv run ruff format --check polylogue tests`  | yes       | Format gate (matches CI `lint` job).                        |
 | `uv run mypy polylogue`                       | yes       | Type check.                                                 |
 | `uv run devtools verify`                      | yes       | Slow. Prefer scoped invocations during iteration.           |
-| `uv run devtools render-all --check`          | yes       | Generated-file drift check (also runs in CI).               |
+| `uv run devtools render all --check`          | yes       | Generated-file drift check (also runs in CI).               |
 | `polylogued run --no-api --no-watch --no-browser-capture` | yes\*     | \*Only against synthetic fixtures in `/tmp/polylogue-archive`. `--no-api` alone is insufficient; you must also disable live watch and browser capture for a truly inert sandbox. |
 | Real archive imports (`~/.claude/projects/…`) | NO        | Never upload personal corpus into a managed sandbox.        |
 | Browser-capture flows                         | NO        | Needs interactive cookies; relocated to ethereal host.      |

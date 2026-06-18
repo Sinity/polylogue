@@ -139,7 +139,7 @@
   "$id": "https://polylogue.dev/schemas/cli-output/session-message-row.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "One message row emitted by `polylogue read --view messages --format ndjson` and embedded inside the finite messages response.\n\nGenerated from `polylogue.surfaces.payloads.SessionMessageRowPayload` by `devtools render-cli-output-schemas`. Do not edit by hand.",
+  "description": "One message row emitted by `polylogue read --view messages --format ndjson` and embedded inside the finite messages response.\n\nGenerated from `polylogue.surfaces.payloads.SessionMessageRowPayload` by `devtools render cli-output-schemas`. Do not edit by hand.",
   "properties": {
     "actions": {
       "additionalProperties": {

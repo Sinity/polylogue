@@ -77,7 +77,7 @@ def _mypy_cmd() -> list[str]:
 
 def _devtools_cmd(*args: str) -> list[str]:
     """Run repository devtools from the current checkout, not a stale PATH wrapper."""
-    return [sys.executable, "-m", "devtools", *args]
+    return [sys.executable, "-m", "devtools", *(part for arg in args for part in arg.split())]
 
 
 # ── resource preflight ─────────────────────────────────────────────
@@ -904,7 +904,7 @@ def build_verify_steps(
     if not commit:
         steps.extend(
             [
-                ("render-all", _devtools_cmd("render-all", "--check")),
+                ("render all", _devtools_cmd("render all", "--check")),
                 ("verify-topology", _devtools_cmd("verify-topology")),
                 ("verify-layering", _devtools_cmd("verify-layering")),
                 ("verify-closure-matrix", _devtools_cmd("verify-closure-matrix")),

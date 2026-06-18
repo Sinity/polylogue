@@ -29,7 +29,7 @@ devtools release-readiness --release-body-file /tmp/release-pr-body.md
 devtools verify --quick
 devtools verify --lab
 devtools build-package
-devtools render-pages
+devtools render pages
 devtools verify-doc-commands
 ```
 
