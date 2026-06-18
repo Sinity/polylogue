@@ -22,6 +22,7 @@ from polylogue.archive.message.models import Message
 from polylogue.archive.session.domain_models import Session
 from polylogue.core.refs import EvidenceRef, ObjectRef
 from polylogue.insights.archive_models import ArchiveInsightModel
+from polylogue.insights.run_projection import RunProjection, build_run_projection
 
 RECOVERY_TRANSFORM_ID = "recovery_digest_v0"
 RECOVERY_TRANSFORM_VERSION = 1
@@ -36,7 +37,16 @@ ForensicClaimKind = Literal[
     "decision_candidate",
 ]
 RecoveryReportPreset = Literal["continue", "blame", "work-packet"]
-WorkPacketSection = Literal["events", "subagents", "run_state", "tools", "decisions", "assertions", "evidence_gaps"]
+WorkPacketSection = Literal[
+    "execution",
+    "events",
+    "subagents",
+    "run_state",
+    "tools",
+    "decisions",
+    "assertions",
+    "evidence_gaps",
+]
 WorkPacketSupport = Literal["raw_evidence", "assertion", "inference", "caveat", "missing_evidence"]
 SubagentChildLinkStatus = Literal["resolved", "unresolved", "repaired", "quarantined"]
 
@@ -297,6 +307,7 @@ class RecoveryDigest(ArchiveInsightModel):
     run_state: RunStateSummary | None = None
     events: tuple[RecoveryEvent, ...] = ()
     decision_candidates: tuple[DecisionCandidate, ...] = ()
+    run_projection: RunProjection
     forensic_index: ForensicIndex
     resume_markdown: str
     raw_refs: tuple[TransformRawRef, ...]
@@ -365,6 +376,17 @@ def compile_recovery_digest(
     run_state = _extract_run_state(session, messages)
     events = tuple(_extract_events(session, messages))
     decisions = tuple(_extract_decision_candidates(session, messages))
+    run_projection = build_run_projection(
+        session_id=str(session.id),
+        source_origin=str(session.origin),
+        title=session.title,
+        git_branch=session.git_branch,
+        working_directories=tuple(session.working_directories),
+        session_raw_refs=(session_ref,),
+        tool_summaries=tool_summaries,
+        subagent_reports=subagent_reports,
+        recovery_events=events,
+    )
     role_counts = dict(Counter(_role_value(message) for message in messages))
     normal_read = _normal_read_text(messages)
     raw_bytes = _session_raw_bytes(session, messages)
@@ -375,6 +397,7 @@ def compile_recovery_digest(
         run_state=run_state,
         events=events,
         decisions=decisions,
+        run_projection=run_projection,
     )
     forensic_index = _build_forensic_index(
         session_id=str(session.id),
@@ -414,6 +437,7 @@ def compile_recovery_digest(
         run_state=run_state,
         events=events,
         decision_candidates=decisions,
+        run_projection=run_projection,
         forensic_index=forensic_index,
         resume_markdown=resume_markdown,
         raw_refs=(session_ref,),
@@ -428,6 +452,7 @@ def render_resume_bundle(
     run_state: RunStateSummary | None,
     events: Sequence[RecoveryEvent],
     decisions: Sequence[DecisionCandidate],
+    run_projection: RunProjection,
 ) -> str:
     """Render the small successor-session boot packet for a digest."""
 
@@ -446,6 +471,7 @@ def render_resume_bundle(
                 run_state=run_state,
                 tool_summaries=tool_summaries,
                 decisions=decisions,
+                run_projection=run_projection,
                 packet_raw_refs=(
                     TransformRawRef(
                         session_id=str(session.id),
@@ -478,6 +504,21 @@ def render_work_packet(packet: RecoveryWorkPacket) -> str:
         lines.append(f"- refs: {', '.join(ref.format() for ref in packet.target_refs)}")
     if packet.working_directories:
         lines.append(f"- workdirs: {', '.join(packet.working_directories)}")
+    lines.extend(["", "## Execution Projection"])
+    execution_entries = _packet_section(packet, "execution")
+    for entry in execution_entries[:20]:
+        lines.append(_work_packet_line(entry))
+        object_refs = _object_refs_line(entry)
+        if object_refs:
+            lines.append(f"  - refs: {object_refs}")
+        detail = _packet_metadata_line(
+            entry.metadata,
+            keys=("role", "status", "harness", "boundary", "inheritance_mode", "delivery_state"),
+        )
+        if detail:
+            lines.append(f"  - details: {detail}")
+    if not execution_entries:
+        lines.append("- none projected")
     lines.extend(["", "## Events"])
     event_entries = _packet_section(packet, "events")
     for entry in event_entries[:8]:
@@ -560,6 +601,7 @@ def build_recovery_work_packet(digest: RecoveryDigest) -> RecoveryWorkPacket:
                 run_state=digest.run_state,
                 tool_summaries=digest.tool_summaries,
                 decisions=digest.decision_candidates,
+                run_projection=digest.run_projection,
                 packet_raw_refs=digest.raw_refs,
             )
         ),
@@ -604,9 +646,64 @@ def _work_packet_entries(
     run_state: RunStateSummary | None,
     tool_summaries: Sequence[ToolSummary],
     decisions: Sequence[DecisionCandidate],
+    run_projection: RunProjection,
     packet_raw_refs: Sequence[TransformRawRef],
 ) -> Iterable[RecoveryWorkPacketEntry]:
     packet_evidence_refs = _to_evidence_refs(packet_raw_refs)
+    for run in run_projection.runs:
+        metadata: dict[str, str] = {"role": run.role, "status": run.status, "harness": run.harness}
+        if run.cwd:
+            metadata["cwd"] = run.cwd
+        if run.git_branch:
+            metadata["branch"] = run.git_branch
+        yield RecoveryWorkPacketEntry(
+            section="execution",
+            label="run",
+            text=run.title or run.run_ref.object_id,
+            metadata=metadata,
+            object_refs=tuple(
+                ref
+                for ref in (
+                    run.run_ref,
+                    run.parent_run_ref,
+                    run.context_snapshot_ref,
+                    ObjectRef(kind="branch", object_id=run.git_branch) if run.git_branch else None,
+                )
+                if ref is not None
+            ),
+            evidence_refs=run.evidence_refs,
+        )
+    for snapshot in run_projection.context_snapshots:
+        yield RecoveryWorkPacketEntry(
+            section="execution",
+            label="context_snapshot",
+            text=snapshot.boundary,
+            metadata={
+                "boundary": snapshot.boundary,
+                "inheritance_mode": snapshot.inheritance_mode,
+                **snapshot.metadata,
+            },
+            object_refs=(snapshot.snapshot_ref, snapshot.run_ref, *snapshot.segment_refs),
+            evidence_refs=snapshot.evidence_refs,
+        )
+    for observed in run_projection.events:
+        yield RecoveryWorkPacketEntry(
+            section="execution",
+            label=observed.kind,
+            text=observed.summary,
+            metadata={"delivery_state": observed.delivery_state},
+            object_refs=tuple(
+                ref
+                for ref in (
+                    observed.event_ref,
+                    observed.run_ref,
+                    observed.subject_ref,
+                    *observed.object_refs,
+                )
+                if ref is not None
+            ),
+            evidence_refs=observed.evidence_refs,
+        )
     for event in events:
         yield RecoveryWorkPacketEntry(
             section="events",

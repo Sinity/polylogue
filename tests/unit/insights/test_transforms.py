@@ -198,6 +198,32 @@ def test_compile_recovery_digest_extracts_small_evidence_linked_bundle() -> None
     assert digest.run_state.next_actions == ("merge PR #1911",)
     assert digest.run_state.raw_refs[0].message_id == "m1"
 
+    projection = digest.run_projection
+    assert projection.session_id == "codex-session:demo"
+    assert [run.role for run in projection.runs] == ["main", "subagent"]
+    main_run, child_run = projection.runs
+    assert main_run.run_ref == ObjectRef(kind="run", object_id="codex-session:demo")
+    assert main_run.harness == "codex"
+    assert main_run.status == "completed"
+    assert main_run.context_snapshot_ref == ObjectRef(
+        kind="context-snapshot", object_id="codex-session:demo:session_start"
+    )
+    assert child_run.parent_run_ref == main_run.run_ref
+    assert child_run.native_session_id == "codex-session:child-42"
+    assert child_run.status == "completed"
+    assert {snapshot.boundary for snapshot in projection.context_snapshots} == {"session_start", "subagent_start"}
+    observed_kinds = {event.kind for event in projection.events}
+    assert {
+        "session_started",
+        "tool_finished",
+        "subagent_started",
+        "subagent_finished",
+        "check_passed",
+    } <= observed_kinds
+    check_projection = next(event for event in projection.events if event.kind == "check_passed")
+    assert check_projection.delivery_state == "observed"
+    assert check_projection.object_refs == (ObjectRef(kind="check-run", object_id="ruff check"),)
+
     event_summaries = {event.summary for event in digest.events}
     assert "PR #1911 opened" in event_summaries
     assert "PR #1910 merged" in event_summaries
@@ -295,7 +321,8 @@ def test_forensic_index_groups_claims_by_raw_ref() -> None:
     merged_event_entry = entries["codex-session:demo::m3"]
     assert merged_event_entry.claim_kinds == ("event",)
     assert any(label.startswith("event:pr_merged:") for label in merged_event_entry.claim_labels)
-    assert any(label.startswith("event:issue_closed:") for label in merged_event_entry.claim_labels)
+    issue_closed_entry = entries["codex-session:demo::m2"]
+    assert any(label.startswith("event:issue_closed:") for label in issue_closed_entry.claim_labels)
 
     assert digest.forensic_index.claim_count > len(digest.forensic_index.entries)
 
@@ -324,6 +351,7 @@ def test_work_packet_exposes_storage_free_continuation_bundle() -> None:
         ObjectRef(kind="branch", object_id="feature/demo"),
     )
     assert {entry.section for entry in packet.entries} == {
+        "execution",
         "events",
         "subagents",
         "run_state",
@@ -333,6 +361,25 @@ def test_work_packet_exposes_storage_free_continuation_bundle() -> None:
     assert all(entry.evidence_refs for entry in packet.entries)
     assert {entry.support for entry in packet.entries} >= {"raw_evidence", "assertion", "caveat", "inference"}
     assert any(ref.format() == "codex-session:demo::m2::0" for entry in packet.entries for ref in entry.evidence_refs)
+    execution_entries = tuple(entry for entry in packet.entries if entry.section == "execution")
+    assert any(
+        entry.label == "run"
+        and ObjectRef(kind="run", object_id="codex-session:demo") in entry.object_refs
+        and entry.metadata["status"] == "completed"
+        for entry in execution_entries
+    )
+    assert any(
+        entry.label == "context_snapshot"
+        and entry.metadata["boundary"] == "subagent_start"
+        and entry.metadata["inheritance_mode"] == "summary"
+        for entry in execution_entries
+    )
+    assert any(
+        entry.label == "check_passed"
+        and ObjectRef(kind="check-run", object_id="ruff check") in entry.object_refs
+        and entry.metadata["delivery_state"] == "observed"
+        for entry in execution_entries
+    )
     pr_event = next(entry for entry in packet.entries if entry.section == "events" and entry.label == "pr_opened")
     assert pr_event.metadata == {"pr_refs": "#1911"}
     assert pr_event.object_refs == (ObjectRef(kind="github-pr", object_id="#1911"),)
@@ -371,6 +418,14 @@ def test_work_packet_exposes_storage_free_continuation_bundle() -> None:
             assert ObjectRef.parse(ref.format()) == ref
     assert "# Resume: Ship the backlog" in rendered
     assert "refs: session:codex-session:demo, branch:feature/demo" in rendered
+    assert "## Execution Projection" in rendered
+    assert "- [raw-evidence] run: Ship the backlog" in rendered
+    assert "refs: run:codex-session:demo, context-snapshot:codex-session:demo:session_start" in rendered
+    assert "details: role=main; status=completed; harness=codex" in rendered
+    assert "- [raw-evidence] context_snapshot: subagent_start" in rendered
+    assert "details: boundary=subagent_start; inheritance_mode=summary" in rendered
+    assert "- [raw-evidence] check_passed: ruff check passed" in rendered
+    assert "details: delivery_state=observed" in rendered
     assert "- [raw-evidence] pr_opened: PR #1911 opened" in rendered
     assert "refs: github-pr:#1911" in rendered
     assert "details: pr_refs=#1911" in rendered
@@ -431,7 +486,7 @@ def test_blame_report_renders_forensic_evidence_report_with_raw_refs() -> None:
     assert f"- extracted_claims: {digest.forensic_index.claim_count} [evidence: codex-session:demo]" in report
     assert "- check_passed: ruff check passed [evidence: codex-session:demo::m2]" in report
     assert "- test_passed: 20 tests passed [evidence: codex-session:demo::m2]" in report
-    assert "- issue_closed: Issue #1818 closed [evidence: codex-session:demo::m3]" in report
+    assert "- issue_closed: Issue #1818 closed [evidence: codex-session:demo::m2]" in report
     assert "- Bash [test] status=ok lines=3 — devtools verify --quick [evidence: codex-session:demo::m2::0" in report
     assert "output: ruff check ... ok 20 passed in 50.28s" in report
     assert "Explore [tool_id=tool-2, task_id=task-42, child_session_id=codex-session:child-42]:" in report
@@ -502,10 +557,26 @@ def test_raw_refs_include_message_and_block_preview() -> None:
     assert tool_ref.preview == "devtools verify --quick"
 
     event_ref = next(event for event in digest.events if event.summary == "Issue #1818 closed").raw_refs[0]
-    assert event_ref.message_id == "m3"
-    assert event_ref.preview.startswith("MERGED #1910")
+    assert event_ref.message_id == "m2"
+    assert event_ref.preview.startswith("Decision: keep benchmarks")
 
 
 def test_raw_ref_requires_session_id() -> None:
     with pytest.raises(ValidationError):
         TransformRawRef(session_id="", message_id="m1")
+
+
+def test_run_projection_refs_round_trip() -> None:
+    digest = compile_recovery_digest(_session())
+
+    refs = {
+        ref
+        for entry in digest.work_packet().entries
+        if entry.section == "execution"
+        for ref in entry.object_refs
+        if ref.kind in {"run", "context-snapshot", "observed-event"}
+    }
+
+    assert refs
+    for ref in refs:
+        assert ObjectRef.parse(ref.format()) == ref

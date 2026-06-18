@@ -14,6 +14,9 @@ ObjectRefKind: TypeAlias = Literal[
     "check-run",
     "workspace",
     "agent",
+    "run",
+    "context-snapshot",
+    "observed-event",
     "github-issue",
     "github-pr",
 ]
@@ -29,6 +32,9 @@ _OBJECT_REF_KINDS: Final[dict[str, ObjectRefKind]] = {
     "check-run": "check-run",
     "workspace": "workspace",
     "agent": "agent",
+    "run": "run",
+    "context-snapshot": "context-snapshot",
+    "observed-event": "observed-event",
     "github-issue": "github-issue",
     "github-pr": "github-pr",
 }

@@ -17,7 +17,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/archive.py
-    loc: 3328
+    loc: 3386
     target: polylogue/api/archive.py
     owner: stable
     cross_cut: { api: async }
@@ -289,7 +289,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/completions.py
-    loc: 342
+    loc: 349
     target: polylogue/archive/query/completions.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -309,7 +309,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/metadata.py
-    loc: 336
+    loc: 441
     target: polylogue/archive/query/metadata.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -681,7 +681,7 @@ files:
     target: polylogue/cli/bulk_export.py
     owner: stable
   - path: polylogue/cli/click_app.py
-    loc: 355
+    loc: 356
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
@@ -873,11 +873,11 @@ files:
     target: polylogue/cli/query_stats.py
     owner: stable
   - path: polylogue/cli/query_verbs.py
-    loc: 769
+    loc: 833
     target: polylogue/cli/query_verbs.py
     owner: stable
   - path: polylogue/cli/read_view_handlers.py
-    loc: 528
+    loc: 537
     target: polylogue/cli/read_view_handlers.py
     owner: stable
   - path: polylogue/cli/root_request.py
@@ -1011,7 +1011,7 @@ files:
     target: polylogue/cli/verb_cardinality.py
     owner: stable
   - path: polylogue/cli/verb_names.py
-    loc: 21
+    loc: 22
     target: polylogue/cli/verb_names.py
     owner: stable
   - path: polylogue/config.py
@@ -1102,7 +1102,7 @@ files:
     owner: core-primitive
     reason: core primitive
   - path: polylogue/core/refs.py
-    loc: 147
+    loc: 159
     target: polylogue/core/refs.py
     owner: core-primitive
     reason: core primitive
@@ -1453,6 +1453,10 @@ files:
     loc: 263
     target: polylogue/insights/rigor.py
     owner: stable
+  - path: polylogue/insights/run_projection.py
+    loc: 406
+    target: polylogue/insights/run_projection.py
+    owner: stable
   - path: polylogue/insights/session_commit.py
     loc: 548
     target: polylogue/insights/session_commit.py
@@ -1478,7 +1482,7 @@ files:
     target: polylogue/insights/topology.py
     owner: stable
   - path: polylogue/insights/transforms.py
-    loc: 1625
+    loc: 1798
     target: polylogue/insights/transforms.py
     owner: stable
   - path: polylogue/logging.py
@@ -1559,7 +1563,7 @@ files:
     target: polylogue/mcp/insight_tool_contracts.py
     owner: stable
   - path: polylogue/mcp/payloads.py
-    loc: 972
+    loc: 1027
     target: polylogue/mcp/payloads.py
     owner: stable
   - path: polylogue/mcp/query_contracts.py
@@ -1599,7 +1603,7 @@ files:
     target: polylogue/mcp/server_support.py
     owner: stable
   - path: polylogue/mcp/server_tools.py
-    loc: 849
+    loc: 904
     target: polylogue/mcp/server_tools.py
     owner: stable
   - path: polylogue/operations/__init__.py
@@ -1607,7 +1611,7 @@ files:
     target: polylogue/operations/__init__.py
     owner: stable
   - path: polylogue/operations/action_contracts.py
-    loc: 213
+    loc: 225
     target: polylogue/operations/action_contracts.py
     owner: stable
   - path: polylogue/operations/archive.py
@@ -2323,7 +2327,7 @@ files:
     owner: stable
     reason: verification-lab showcase substrate retained
   - path: polylogue/showcase/generators.py
-    loc: 547
+    loc: 548
     target: polylogue/showcase/generators.py
     owner: stable
     reason: verification-lab showcase substrate retained
