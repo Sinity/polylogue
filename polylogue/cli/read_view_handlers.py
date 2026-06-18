@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Literal, cast
 
 import click
 
-from polylogue.archive.viewport import read_view_choices
+from polylogue.archive.viewport import READ_VIEW_PROFILE_BY_ID, read_view_choices
 from polylogue.cli.shared.types import AppEnv
 
 if TYPE_CHECKING:
@@ -82,6 +82,14 @@ class ReadViewHandler:
             if not query_seed:
                 raise click.UsageError(
                     f"read --view {self.view_id} requires a seed (use --id, id:prefix, --latest, or a query)."
+                )
+        if invocation.output_format is not None:
+            profile = READ_VIEW_PROFILE_BY_ID[self.view_id]
+            if invocation.output_format not in profile.formats:
+                supported = ", ".join(profile.formats)
+                raise click.UsageError(
+                    f"read --view {self.view_id} does not support --format {invocation.output_format}. "
+                    f"Supported formats: {supported}."
                 )
 
 
