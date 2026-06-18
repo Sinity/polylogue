@@ -27,6 +27,7 @@ _SYNTHETIC_CONV_ID = "test:conv-discovery-nonexistent"
 #: for an empty archive, etc.).
 _KNOWN_MINIMAL: dict[str, dict[str, object]] = {
     "search": {"query": "hello", "limit": 1},
+    "query_units": {"expression": "messages where text:hello", "limit": 1},
     "blackboard_list": {},
     "get_session": {"id": _SYNTHETIC_CONV_ID},
     "get_session_summary": {"id": _SYNTHETIC_CONV_ID},
@@ -70,6 +71,9 @@ _KNOWN_MINIMAL: dict[str, dict[str, object]] = {
     "find_abandoned_sessions": {"limit": 1},
     "get_stats_by": {"group_by": "origin"},
     "list_read_view_profiles": {},
+    "list_assertion_claims": {"target_ref": f"session:{_SYNTHETIC_CONV_ID}", "limit": 1},
+    "get_recovery_report": {"session_id": "demo", "report": "continue"},
+    "get_recovery_work_packet": {"session_id": _SYNTHETIC_CONV_ID},
     "explain_query_expression": {"expression": "repo:polylogue"},
     "query_completions": {"kind": "field", "incomplete": "d"},
     "embedding_status": {},

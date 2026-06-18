@@ -49,6 +49,7 @@ EXPECTED_TOOL_NAMES = {
     "get_logical_session",
     "get_stats_by",
     "list_read_view_profiles",
+    "get_recovery_report",
     "get_recovery_work_packet",
     "explain_query_expression",
     "query_completions",
@@ -200,6 +201,7 @@ def make_polylogue_mock(*, resolved_id: str | None = None) -> MagicMock:
     poly.get_logical_session = AsyncMock(return_value=None)
     poly.list_read_view_profiles = AsyncMock(return_value=[])
     poly.list_assertion_claims = AsyncMock(return_value=[])
+    poly.recovery_report = AsyncMock(return_value=None)
     poly.recovery_work_packet = AsyncMock(return_value=None)
     poly.explain_query_expression = AsyncMock(return_value={})
     poly.query_completions = AsyncMock(return_value={})

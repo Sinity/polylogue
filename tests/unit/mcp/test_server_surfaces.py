@@ -792,6 +792,42 @@ class TestArchiveGenericToolSurfaces:
         mock_poly.recovery_work_packet.assert_awaited_once_with("session-1")
 
     @pytest.mark.asyncio
+    async def test_get_recovery_report_reads_shared_facade_report(self: object, mcp_server: MCPServerUnderTest) -> None:
+        mock_poly = make_polylogue_mock()
+        mock_poly.recovery_report.return_value = "# Continue: Recovery target"
+
+        with patch("polylogue.mcp.server._get_polylogue", return_value=mock_poly):
+            result = await invoke_surface_async(
+                mcp_server._tool_manager._tools["get_recovery_report"].fn,
+                session_id="session-1",
+                report="continue",
+            )
+
+        payload = json.loads(result)
+        assert payload["session_id"] == "session-1"
+        assert payload["report"] == "continue"
+        assert payload["content"] == "# Continue: Recovery target"
+        mock_poly.recovery_report.assert_awaited_once_with("session-1", "continue")
+
+    @pytest.mark.asyncio
+    async def test_get_recovery_report_reports_missing_session(self: object, mcp_server: MCPServerUnderTest) -> None:
+        mock_poly = make_polylogue_mock()
+        mock_poly.recovery_report.return_value = None
+
+        with patch("polylogue.mcp.server._get_polylogue", return_value=mock_poly):
+            result = await invoke_surface_async(
+                mcp_server._tool_manager._tools["get_recovery_report"].fn,
+                session_id="missing",
+                report="blame",
+            )
+
+        payload = json.loads(result)
+        assert payload["is_error"] is True
+        assert payload["code"] == "not_found"
+        assert payload["tool"] == "get_recovery_report"
+        mock_poly.recovery_report.assert_awaited_once_with("missing", "blame")
+
+    @pytest.mark.asyncio
     async def test_get_recovery_work_packet_reports_missing_session(
         self: object, mcp_server: MCPServerUnderTest
     ) -> None:
