@@ -15,6 +15,7 @@ from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, Pa
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import archive_tier_spec
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, list_assertions_for_target
 
 USER_STATE_SESSION_ID = "claude-code-session:conv-user-state"
 ARCHIVE_USER_STATE_SESSION_ID = "claude-code-session:conv-v1-user-state"
@@ -199,6 +200,89 @@ async def test_user_state_mutations_write_archive_user_tier(
     assert correction_row is not None
     assert correction_row[0:2] == (f"insight:{ARCHIVE_USER_STATE_SESSION_ID}", "tag_accept")
     assert json.loads(correction_row[2])["payload"] == {"tag": "archive"}
+
+
+@pytest.mark.asyncio
+async def test_blackboard_public_surface_writes_assertion_metadata(
+    workspace_env: dict[str, Path],
+) -> None:
+    archive_root = workspace_env["archive_root"]
+    session_id, message_id = _seed_user_state_session(
+        archive_root,
+        native_id="conv-blackboard-assertion",
+        message_native_id="msg-blackboard-assertion",
+    )
+
+    async with Polylogue(db_path=archive_root / "index.db", archive_root=archive_root) as poly:
+        note = await poly.post_blackboard_note(
+            kind="finding",
+            title="Assertion-backed blackboard",
+            content="The public blackboard surface should persist assertion metadata.",
+            scope_session=session_id,
+            author_ref="agent:codex-session:unit",
+            author_kind="agent",
+            evidence_refs=(f"message:{message_id}",),
+            staleness={"expires_after_days": 7},
+            context_policy={"inject": False, "promotion_required": True},
+        )
+        notes = await poly.list_blackboard_notes(kind="finding", limit=5)
+
+    assert [listed.note_id for listed in notes] == [note.note_id]
+    with sqlite3.connect(archive_root / "user.db") as conn:
+        conn.row_factory = sqlite3.Row
+        mirrored = list_assertions_for_target(conn, f"session:{session_id}", kind=AssertionKind.NOTE)
+
+    assert len(mirrored) == 1
+    assertion = mirrored[0]
+    assert assertion.key == note.note_id
+    assert assertion.author_ref == "agent:codex-session:unit"
+    assert assertion.author_kind == "agent"
+    assert assertion.evidence_refs == [f"message:{message_id}"]
+    assert assertion.staleness == {"expires_after_days": 7}
+    assert assertion.context_policy == {"inject": False, "promotion_required": True}
+
+
+@pytest.mark.asyncio
+async def test_tags_and_metadata_remain_table_backed_user_metadata(
+    workspace_env: dict[str, Path],
+) -> None:
+    archive_root = workspace_env["archive_root"]
+    session_id, _message_id = _seed_user_state_session(
+        archive_root,
+        native_id="conv-tag-metadata",
+        message_native_id="msg-tag-metadata",
+    )
+
+    async with Polylogue(db_path=archive_root / "index.db", archive_root=archive_root) as poly:
+        tag_result = await poly.add_tag(session_id, "Planning")
+        metadata_result = await poly.set_metadata(session_id, "owner", {"name": "sinity"})
+
+    assert tag_result.outcome == "added"
+    assert metadata_result.outcome == "set"
+    with sqlite3.connect(archive_root / "user.db") as conn:
+        tag_row = conn.execute(
+            """
+            SELECT tag, tag_source, method
+            FROM session_tags
+            WHERE session_id = ?
+            """,
+            (session_id,),
+        ).fetchone()
+        metadata_row = conn.execute(
+            """
+            SELECT key, value_json
+            FROM session_metadata
+            WHERE session_id = ?
+            """,
+            (session_id,),
+        ).fetchone()
+        assertion_rows = conn.execute("SELECT kind FROM assertions WHERE kind IN ('tag', 'metadata')").fetchall()
+
+    assert tag_row == ("planning", "user", "cli")
+    assert metadata_row is not None
+    assert metadata_row[0] == "owner"
+    assert json.loads(metadata_row[1]) == {"name": "sinity"}
+    assert assertion_rows == []
 
 
 @pytest.mark.asyncio

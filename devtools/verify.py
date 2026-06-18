@@ -137,6 +137,8 @@ TESTMON_SEED_STAMP = Path(".cache/testmon/seed.json")
 PYTEST_REPORT_DIR = Path(".cache/verify")
 PYTEST_REPORT_PATH = PYTEST_REPORT_DIR / "last-pytest.json"
 PYTEST_PROGRESS_PATH = PYTEST_REPORT_DIR / "current-pytest-progress.json"
+PYTEST_EVENTS_PATH = PYTEST_REPORT_DIR / "current-pytest-events.jsonl"
+PYTEST_OUTPUT_PATH = PYTEST_REPORT_DIR / "current-pytest-output.log"
 PYTEST_HEARTBEAT_ENV = "POLYLOGUE_VERIFY_HEARTBEAT_S"
 PYTEST_TIMEOUT_ENV = "POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S"
 PYTEST_STALL_TIMEOUT_ENV = "POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S"
@@ -254,10 +256,15 @@ def _pytest_command_metadata(cmd: list[str]) -> dict[str, Any]:
 
 def _clear_pytest_report() -> None:
     """Remove a stale report before a pytest step runs."""
-    with contextlib.suppress(FileNotFoundError):
-        PYTEST_REPORT_PATH.unlink()
-    with contextlib.suppress(FileNotFoundError):
-        PYTEST_PROGRESS_PATH.unlink()
+    for path in (PYTEST_REPORT_PATH, PYTEST_PROGRESS_PATH, PYTEST_EVENTS_PATH, PYTEST_OUTPUT_PATH):
+        with contextlib.suppress(FileNotFoundError):
+            path.unlink()
+
+
+def _write_pytest_output(stdout: str, stderr: str) -> None:
+    """Persist captured pytest output for killed runs and post-mortem review."""
+    PYTEST_OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    PYTEST_OUTPUT_PATH.write_text(stdout + ("\n" if stdout and stderr else "") + stderr, encoding="utf-8")
 
 
 def _write_pytest_progress(
@@ -492,6 +499,7 @@ def _run_pytest_with_heartbeat(
             output_bytes[stream_name] += len(remaining)
     stdout = b"".join(output["stdout"]).decode(errors="replace")
     stderr = b"".join(output["stderr"]).decode(errors="replace")
+    _write_pytest_output(stdout, stderr)
     if termination_reason is not None:
         _write_pytest_progress(
             event="terminated",
@@ -535,6 +543,8 @@ def _run(label: str, cmd: list[str], *, cwd: str | None = None) -> tuple[int, fl
         metadata["timeout_s"] = _pytest_timeout_s()
         metadata["stall_timeout_s"] = _pytest_stall_timeout_s()
         metadata["progress_path"] = str(PYTEST_PROGRESS_PATH)
+        metadata["events_path"] = str(PYTEST_EVENTS_PATH)
+        metadata["output_path"] = str(PYTEST_OUTPUT_PATH)
         report = _read_pytest_report()
         if report is not None:
             metadata.update(_pytest_metadata_from_report(report))
@@ -562,6 +572,7 @@ def _subprocess_env() -> dict[str, str]:
     env["POLYLOGUE_ROOT"] = str(ROOT)
     env["POLYLOGUE_REPO_ROOT"] = str(ROOT)
     env["PYTHONPYCACHEPREFIX"] = str(ROOT / ".cache" / "pycache")
+    env["POLYLOGUE_PYTEST_EVENTS_PATH"] = str(ROOT / PYTEST_EVENTS_PATH)
     return env
 
 
@@ -624,6 +635,8 @@ def build_verify_steps(
             "--json-report",
             "--json-report-omit=collectors,log,streams,warnings",
             f"--json-report-file={PYTEST_REPORT_PATH}",
+            "-p",
+            "devtools.pytest_progress_plugin",
         ]
         base_marker = f"not slow and {scale_marker_expr}" if skip_slow else scale_marker_expr
         if seed_testmon:
