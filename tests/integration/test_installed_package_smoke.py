@@ -11,7 +11,7 @@ The test asserts that:
   (no leakage into ``$HOME`` or other host paths).
 
 This closes #1265 (slice D of #869): the existing
-``devtools verify-distribution-surface`` smoke only exercised ``--help``/
+``devtools release verify-distribution`` smoke only exercised ``--help``/
 ``--version``/``analyze --count``; daemon status under fresh XDG paths was not covered.
 """
 
