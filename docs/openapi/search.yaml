@@ -762,6 +762,87 @@ components:
       - tool_use_block_id
       title: ActionQueryRowPayload
       type: object
+    AssertionQueryRowPayload:
+      additionalProperties: false
+      description: Shared terminal-query row for user-tier assertions.
+      properties:
+        unit:
+          const: assertion
+          default: assertion
+          title: Unit
+          type: string
+        assertion_id:
+          title: Assertion Id
+          type: string
+        target_ref:
+          title: Target Ref
+          type: string
+        scope_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Scope Ref
+        kind:
+          title: Kind
+          type: string
+        key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Key
+        body_text:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Body Text
+        value:
+          title: Value
+        author_ref:
+          title: Author Ref
+          type: string
+        author_kind:
+          title: Author Kind
+          type: string
+        status:
+          title: Status
+          type: string
+        visibility:
+          title: Visibility
+          type: string
+        evidence_refs:
+          items:
+            type: string
+          title: Evidence Refs
+          type: array
+        staleness:
+          title: Staleness
+        context_policy:
+          title: Context Policy
+        created_at_ms:
+          title: Created At Ms
+          type: integer
+        updated_at_ms:
+          title: Updated At Ms
+          type: integer
+      required:
+      - assertion_id
+      - target_ref
+      - kind
+      - value
+      - author_ref
+      - author_kind
+      - status
+      - visibility
+      - evidence_refs
+      - staleness
+      - context_policy
+      - created_at_ms
+      - updated_at_ms
+      title: AssertionQueryRowPayload
+      type: object
     BlockQueryRowPayload:
       additionalProperties: false
       description: Shared terminal-query row for archive content blocks.
@@ -886,7 +967,7 @@ components:
       type: object
     QueryUnitEnvelope:
       additionalProperties: false
-      description: Shared envelope for ``messages/actions/blocks where ...`` query results.
+      description: Shared envelope for explicit terminal unit-source query results.
       properties:
         mode:
           const: query-unit
@@ -898,6 +979,7 @@ components:
           - message
           - action
           - block
+          - assertion
           title: Unit
           type: string
         query:
@@ -909,6 +991,7 @@ components:
             - $ref: '#/components/schemas/MessageQueryRowPayload'
             - $ref: '#/components/schemas/ActionQueryRowPayload'
             - $ref: '#/components/schemas/BlockQueryRowPayload'
+            - $ref: '#/components/schemas/AssertionQueryRowPayload'
           title: Items
           type: array
         total:

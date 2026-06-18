@@ -18,6 +18,7 @@ from polylogue.archive.query.spec import (
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.surfaces.payloads import (
     ActionQueryRowPayload,
+    AssertionQueryRowPayload,
     BlockQueryRowPayload,
     MessageQueryRowPayload,
     QueryUnitEnvelope,
@@ -47,7 +48,7 @@ def _epoch_ms(field: str, value: object) -> int | None:
 def query_unit_session_filters(**params: object) -> dict[str, object]:
     """Normalize shared session filters for terminal query-unit rows.
 
-    Terminal ``messages/actions/blocks where ...`` execution returns row-level
+    Terminal unit-source execution returns row-level
     results, but callers still need the same surrounding session scope as the
     normal session query surfaces.  This helper is the single cross-surface
     adapter into ``ArchiveStore.query_*``'s ``session_filters`` argument.
@@ -108,7 +109,7 @@ def query_unit_rows(
     offset: int = 0,
     session_filters: Mapping[str, object] | None = None,
 ) -> QueryUnitEnvelope:
-    """Execute an explicit ``messages/actions/blocks where`` source query."""
+    """Execute an explicit unit-source query."""
 
     fetch_limit = limit + 1
     if source.unit == "message":
@@ -140,6 +141,21 @@ def query_unit_rows(
             limit=limit,
             offset=offset,
             has_next=len(action_rows) > limit,
+        )
+    if source.unit == "assertion":
+        assertion_rows = archive.query_assertions(
+            source.predicate,
+            limit=fetch_limit,
+            offset=offset,
+            session_filters=session_filters,
+        )
+        return build_query_unit_envelope(
+            tuple(AssertionQueryRowPayload.from_row(row) for row in assertion_rows[:limit]),
+            unit=source.unit,
+            query=query,
+            limit=limit,
+            offset=offset,
+            has_next=len(assertion_rows) > limit,
         )
     block_rows = archive.query_blocks(
         source.predicate,

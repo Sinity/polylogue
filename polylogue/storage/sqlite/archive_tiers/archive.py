@@ -32,6 +32,7 @@ from polylogue.archive.semantic.pricing import (
 from polylogue.archive.stats import ArchiveStats
 from polylogue.core.dates import parse_date
 from polylogue.core.enums import Provider
+from polylogue.core.json import JSONValue, require_json_value
 from polylogue.core.sources import origin_from_provider
 from polylogue.insights.archive import (
     ArchiveCoverageInsight,
@@ -221,6 +222,28 @@ class ArchiveBlockQueryRow:
     semantic_type: str | None
     tool_command: str | None
     tool_path: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveAssertionQueryRow:
+    """Terminal query projection over user-tier assertion rows."""
+
+    assertion_id: str
+    target_ref: str
+    scope_ref: str | None
+    kind: str
+    key: str | None
+    body_text: str | None
+    value: JSONValue
+    author_ref: str
+    author_kind: str
+    status: str
+    visibility: str
+    evidence_refs: tuple[str, ...]
+    staleness: JSONValue
+    context_policy: JSONValue
+    created_at_ms: int
+    updated_at_ms: int
 
 
 class ArchiveStore:
@@ -3391,6 +3414,76 @@ class ArchiveStore:
             for row in rows
         ]
 
+    def query_assertions(
+        self,
+        predicate: QueryPredicate,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        session_filters: Mapping[str, object] | None = None,
+    ) -> list[ArchiveAssertionQueryRow]:
+        """Return user-tier assertion rows matching a unit-scoped predicate."""
+
+        if not self.user_db_path.exists():
+            return []
+        self._attach_user_tier_if_present()
+        normalized_limit = max(int(limit), 0)
+        normalized_offset = max(int(offset), 0)
+        clause, params = _structural_predicate_clause("assertion", "a", predicate, session_alias="s")
+        session_clause = ""
+        session_params: list[object] = []
+        if session_filters:
+            session_clause, session_params = cast(Any, _session_filter_clause)("s", prefix="AND", **session_filters)
+        rows = self._conn.execute(
+            f"""
+            SELECT
+                a.assertion_id,
+                a.target_ref,
+                a.scope_ref,
+                a.kind,
+                a.key,
+                a.body_text,
+                a.value_json,
+                a.author_ref,
+                a.author_kind,
+                a.status,
+                a.visibility,
+                a.evidence_refs_json,
+                a.staleness_json,
+                a.context_policy_json,
+                a.created_at_ms,
+                a.updated_at_ms
+            FROM user_tier.assertions a
+            LEFT JOIN sessions s ON a.target_ref = 'session:' || s.session_id
+            WHERE {clause}
+            {session_clause}
+            ORDER BY a.updated_at_ms DESC, a.assertion_id
+            LIMIT ? OFFSET ?
+            """,
+            [*params, *session_params, normalized_limit, normalized_offset],
+        ).fetchall()
+        return [
+            ArchiveAssertionQueryRow(
+                assertion_id=str(row["assertion_id"]),
+                target_ref=str(row["target_ref"]),
+                scope_ref=str(row["scope_ref"]) if row["scope_ref"] is not None else None,
+                kind=str(row["kind"]),
+                key=str(row["key"]) if row["key"] is not None else None,
+                body_text=str(row["body_text"]) if row["body_text"] is not None else None,
+                value=_json_value(row["value_json"], default={}),
+                author_ref=str(row["author_ref"]),
+                author_kind=str(row["author_kind"]),
+                status=str(row["status"]),
+                visibility=str(row["visibility"]),
+                evidence_refs=_json_str_tuple(row["evidence_refs_json"]),
+                staleness=_json_value(row["staleness_json"], default={}),
+                context_policy=_json_value(row["context_policy_json"], default={}),
+                created_at_ms=int(row["created_at_ms"]),
+                updated_at_ms=int(row["updated_at_ms"]),
+            )
+            for row in rows
+        ]
+
     def stats(
         self,
         *,
@@ -4247,6 +4340,24 @@ def _json_object_from_text(value: object) -> dict[str, object]:
     return decoded if isinstance(decoded, dict) else {}
 
 
+def _json_value(value: object, *, default: JSONValue) -> JSONValue:
+    try:
+        decoded = json.loads(str(value or json.dumps(default)))
+    except json.JSONDecodeError:
+        return default
+    try:
+        return require_json_value(decoded)
+    except TypeError:
+        return default
+
+
+def _json_str_tuple(value: object) -> tuple[str, ...]:
+    decoded = _json_value(value, default=[])
+    if not isinstance(decoded, list):
+        return ()
+    return tuple(str(item) for item in decoded)
+
+
 def _stats_by_sql(group_by: str, where: str, *, tags_relation: str = "session_tags") -> str:
     if group_by in {"provider", "origin"}:
         return f"""
@@ -4572,6 +4683,27 @@ def _block_field_predicate_clause(block_alias: str, predicate: QueryFieldPredica
     raise ValueError(f"unsupported block predicate field: {field}")
 
 
+def _assertion_field_predicate_clause(assertion_alias: str, predicate: QueryFieldPredicate) -> tuple[str, list[object]]:
+    field = predicate.field
+    if field in {"kind", "status", "key", "author_kind", "visibility"}:
+        return _in_or_equals_clause(f"{assertion_alias}.{field}", predicate.values, lower=True)
+    if field in {"target", "target_ref"}:
+        return _like_clause(f"{assertion_alias}.target_ref", predicate.values)
+    if field in {"scope", "scope_ref"}:
+        return _like_clause(f"{assertion_alias}.scope_ref", predicate.values)
+    if field in {"author", "author_ref"}:
+        return _like_clause(f"{assertion_alias}.author_ref", predicate.values)
+    if field in {"text", "body"}:
+        return _like_clause(f"{assertion_alias}.body_text", predicate.values)
+    if field == "value":
+        return _like_clause(f"{assertion_alias}.value_json", predicate.values)
+    if field == "evidence":
+        return _like_clause(f"{assertion_alias}.evidence_refs_json", predicate.values)
+    if field == "context":
+        return _like_clause(f"{assertion_alias}.context_policy_json", predicate.values)
+    raise ValueError(f"unsupported assertion predicate field: {field}")
+
+
 def _structural_predicate_clause(
     unit: str,
     row_alias: str,
@@ -4595,6 +4727,8 @@ def _structural_predicate_clause(
             return _action_field_predicate_clause(row_alias, predicate)
         if unit == "block":
             return _block_field_predicate_clause(row_alias, predicate)
+        if unit == "assertion":
+            return _assertion_field_predicate_clause(row_alias, predicate)
     if isinstance(predicate, QueryNotPredicate):
         clause, params = _structural_predicate_clause(unit, row_alias, predicate.child, session_alias=session_alias)
         return (f"NOT ({clause})" if clause else "", params)
@@ -4666,6 +4800,25 @@ def _exists_predicate_clause(table_alias: str, predicate: QueryExistsPredicate) 
                 SELECT 1
                 FROM blocks {row_alias}
                 WHERE {row_alias}.session_id = {table_alias}.session_id
+                  AND {child_clause}
+            )
+            """.strip(),
+            params,
+        )
+    if predicate.unit == "assertion":
+        row_alias = "exists_assertions"
+        child_clause, params = _structural_predicate_clause(
+            predicate.unit,
+            row_alias,
+            predicate.child,
+            session_alias=table_alias,
+        )
+        return (
+            f"""
+            EXISTS (
+                SELECT 1
+                FROM user_tier.assertions {row_alias}
+                WHERE {row_alias}.target_ref = 'session:' || {table_alias}.session_id
                   AND {child_clause}
             )
             """.strip(),
