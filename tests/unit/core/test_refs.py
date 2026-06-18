@@ -16,6 +16,7 @@ from polylogue.core.refs import EvidenceRef, ObjectRef
         ("block:codex-session:demo:message-1:2", "block", "codex-session:demo:message-1", ("2",)),
         ("file:polylogue/insights/transforms.py", "file", "polylogue/insights/transforms.py", ()),
         ("branch:feature/demo", "branch", "feature/demo", ()),
+        ("check-run:ruff check", "check-run", "ruff check", ()),
         ("github-issue:Sinity/polylogue#1883", "github-issue", "Sinity/polylogue#1883", ()),
     ],
 )
