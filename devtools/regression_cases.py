@@ -84,7 +84,7 @@ class RegressionCase:
     ) -> RegressionCase:
         """Create a regression case from a ``devtools lab probe pipeline`` summary."""
         if "probe" not in summary or "result" not in summary:
-            raise ValueError("pipeline probe regression cases require `probe` and `result` summary keys")
+            raise ValueError("lab probe pipeline regression cases require `probe` and `result` summary keys")
         selected = _selected_summary(summary, capture_keys)
         provenance = require_json_document(summary.get("provenance", {}), context="probe provenance")
         case_id = f"{_slug(name)}-{_stable_digest(selected)}"

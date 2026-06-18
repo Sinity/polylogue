@@ -37,6 +37,7 @@ from devtools.verify_runs import ResourceSampler, classify_pytest_result, pytest
 def _pytest_marker_expr(command: list[str]) -> str:
     marker_indexes = [idx for idx, item in enumerate(command) if item == "-m"]
     assert marker_indexes
+    assert marker_indexes[-1] + 1 < len(command)
     return command[marker_indexes[-1] + 1]
 
 

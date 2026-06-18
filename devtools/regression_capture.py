@@ -31,7 +31,7 @@ def main(argv: list[str] | None = None) -> int:
         "-i",
         type=Path,
         default=None,
-        help="Pipeline-probe JSON summary path. Reads stdin when omitted or set to '-'.",
+        help="Lab probe pipeline JSON summary path. Reads stdin when omitted or set to '-'.",
     )
     parser.add_argument("--name", required=True, help="Human-readable regression case name.")
     parser.add_argument(
