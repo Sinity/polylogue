@@ -15,7 +15,12 @@ if TYPE_CHECKING:
     from polylogue.cli.root_request import RootModeRequest
     from polylogue.cli.select import SelectPrintField
 
-from polylogue.archive.viewport import READ_VIEW_PROFILE_BY_ID, READ_VIEW_PROFILES, read_view_choices
+from polylogue.archive.viewport import (
+    READ_VIEW_PROFILE_BY_ID,
+    READ_VIEW_PROFILES,
+    read_view_choices,
+    read_view_profile_payloads,
+)
 from polylogue.cli.click_option_groups import _LazyChoice
 from polylogue.cli.read_view_handlers import ReadViewInvocation, run_bulk_export_view, run_read_view
 from polylogue.cli.shared.types import AppEnv
@@ -93,6 +98,29 @@ def _complete_read_format(ctx: click.Context, param: click.Parameter, incomplete
                 continue
             items.setdefault(output_format, f"Supported by read --view {profile.view_id}")
     return [CompletionItem(output_format, help=help_text) for output_format, help_text in sorted(items.items())]
+
+
+def _render_read_view_profiles_plain() -> str:
+    lines = ["Read views:"]
+    for profile in READ_VIEW_PROFILES:
+        handoff = " handoff" if profile.successor_handoff else ""
+        lines.append(
+            f"  {profile.view_id:<12} {profile.lossiness:<10} evidence={profile.evidence_policy:<10}"
+            f" formats={','.join(profile.formats)}{handoff}"
+        )
+        lines.append(f"      {profile.purpose}")
+    return "\n".join(lines)
+
+
+def _emit_read_view_profiles(output_format: str | None) -> None:
+    if output_format == "json":
+        from polylogue.cli.shared.machine_errors import emit_success
+
+        emit_success({"read_views": read_view_profile_payloads()})
+        return
+    if output_format is not None:
+        raise click.UsageError("`read --views` only supports terminal text or --format json")
+    click.echo(_render_read_view_profiles_plain())
 
 
 @click.command("list")
@@ -314,6 +342,7 @@ def recent_verb(
 @click.option("--no-file-reads", is_flag=True, help="Exclude file reads (--view messages).")
 @click.option("--prose-only", is_flag=True, help="Show only prose text (--view messages).")
 @click.option("--fields", help="Fields for JSON/YAML outputs (--all).")
+@click.option("--views", "show_views", is_flag=True, help="List executable read-view profiles and exit.")
 @click.pass_context
 def read_verb(
     ctx: click.Context,
@@ -349,6 +378,7 @@ def read_verb(
     no_file_reads: bool,
     prose_only: bool,
     fields: str | None,
+    show_views: bool,
 ) -> None:
     """Read matched sessions.
 
@@ -367,6 +397,8 @@ def read_verb(
         polylogue find 'cost tracking' then read --view context-pack --max-sessions 5
         polylogue read --view context-pack --project-repo github.com/Sinity/polylogue --since 2026-01-01
         polylogue find id:abc then read --view recovery
+        polylogue read --views
+        polylogue read --views --format json
         polylogue find id:abc then read --view neighbors --window-hours 48
         polylogue --latest read --view neighbors --format json
         polylogue find id:abc then read --view correlation --since-hours 4
@@ -377,6 +409,9 @@ def read_verb(
         timeline, tools, files, metadata, continuation
     """
     env: AppEnv = ctx.obj
+    if show_views:
+        _emit_read_view_profiles(output_format)
+        return
     request = _parent_request(ctx)
 
     # Bulk-export mode: applies to all matched sessions.

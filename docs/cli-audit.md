@@ -244,7 +244,8 @@ Option B: Add intermediate Click groups (`insights sessions profiles`, etc.).
 Cleaner namespace but doubles command depth and breaks existing muscle memory.
 
 Recommendation: **Option A** for now. Revisit if users report the flat list as
-confusing. The `polylogue commands` listing already provides discoverability.
+confusing. Root `--help` plus the generated CLI reference provide
+discoverability; `polylogue commands` is no longer a separate product surface.
 
 ---
 

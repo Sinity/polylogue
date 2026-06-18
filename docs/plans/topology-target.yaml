@@ -685,11 +685,11 @@ files:
     target: polylogue/cli/bulk_export.py
     owner: stable
   - path: polylogue/cli/click_app.py
-    loc: 356
+    loc: 350
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
-    loc: 199
+    loc: 196
     target: polylogue/cli/click_command_registration.py
     owner: stable
   - path: polylogue/cli/click_option_groups.py
@@ -719,10 +719,6 @@ files:
   - path: polylogue/cli/commands/check.py
     loc: 116
     target: polylogue/cli/commands/check.py
-    owner: stable
-  - path: polylogue/cli/commands/commands.py
-    loc: 29
-    target: polylogue/cli/commands/commands.py
     owner: stable
   - path: polylogue/cli/commands/completions.py
     loc: 66
@@ -783,10 +779,6 @@ files:
   - path: polylogue/cli/commands/query_explain.py
     loc: 106
     target: polylogue/cli/commands/query_explain.py
-    owner: stable
-  - path: polylogue/cli/commands/read_views.py
-    loc: 34
-    target: polylogue/cli/commands/read_views.py
     owner: stable
   - path: polylogue/cli/commands/reset.py
     loc: 335
@@ -877,7 +869,7 @@ files:
     target: polylogue/cli/query_stats.py
     owner: stable
   - path: polylogue/cli/query_verbs.py
-    loc: 833
+    loc: 868
     target: polylogue/cli/query_verbs.py
     owner: stable
   - path: polylogue/cli/read_view_handlers.py

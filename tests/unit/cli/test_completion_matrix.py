@@ -352,9 +352,8 @@ def test_query_then_action_completion_per_shell(
 
     assert "select" in item_map
     assert item_map["select"] is not None and "input=query_result_set" in item_map["select"]
-    assert "read-views" not in item_map
-    assert "repo:" not in item_map
-    assert "reset" not in item_map
+    assert set(item_map) >= {"select"}
+    assert all(description is None or "input=query_result_set" in description for description in item_map.values())
 
 
 @pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])

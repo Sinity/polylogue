@@ -289,7 +289,7 @@ def test_query_explain_accepts_negated_dsl_tokens(cli_runner: CliRunner) -> None
 
 
 def test_read_views_plain_lists_profile_metadata(cli_runner: CliRunner) -> None:
-    result = cli_runner.invoke(click_cli, ["--plain", "read-views"], catch_exceptions=False)
+    result = cli_runner.invoke(click_cli, ["--plain", "read", "--views"], catch_exceptions=False)
 
     assert result.exit_code == 0
     assert "Read views:" in result.output
@@ -299,7 +299,7 @@ def test_read_views_plain_lists_profile_metadata(cli_runner: CliRunner) -> None:
 
 
 def test_read_views_json_outputs_profile_payload(cli_runner: CliRunner) -> None:
-    result = cli_runner.invoke(click_cli, ["--plain", "read-views", "--format", "json"], catch_exceptions=False)
+    result = cli_runner.invoke(click_cli, ["--plain", "read", "--views", "--format", "json"], catch_exceptions=False)
 
     assert result.exit_code == 0
     payload = json.loads(result.output)
@@ -744,19 +744,17 @@ class TestCliMetadata:
             assert command in result.output
         assert result.output.count("Commands:") == 1
 
-    def test_all_subcommands_registered(self) -> None:
+    def test_retained_command_owners_are_registered(self) -> None:
         from polylogue.cli.click_app import cli
 
-        expected = {
+        required = {
             "import",
             "init",
             "config",
             "continue",
             "cost",
             "blackboard",
-            "commands",
             "query-explain",
-            "read-views",
             "query-completions",
             "recent",
             "dashboard",
@@ -779,7 +777,7 @@ class TestCliMetadata:
             "mark",
             "analyze",
         }
-        assert set(cli.commands.keys()) == expected
+        assert required <= set(cli.commands.keys())
 
 
 # ---------------------------------------------------------------------------

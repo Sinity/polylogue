@@ -85,7 +85,6 @@ _COMMANDS: list[tuple[list[str], bool]] = [
     (["stats"], True),
     (["read"], True),
     # ── Top-level commands ───────────────────────────────────────────
-    (["commands"], False),
     (["ops", "doctor"], False),
     (["config"], False),  # TOML output with root --json (not JSON, but pipeable)
     (["resume"], True),
