@@ -13,8 +13,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from polylogue.archive.query.spec import SessionQuerySpec
+from polylogue.context.assertion_claims import user_db_injectable_claim_texts
 from polylogue.mcp.context_pack import (
     ContextPackDateRange,
+    ContextPackDecisions,
     ContextPackMessage,
     ContextPackPayload,
     ContextPackProvenance,
@@ -87,9 +89,11 @@ async def _build_archive_context_pack_payload(
         sessions = selection.sessions
         dates = [d for conv in sessions for d in (conv.created_at, conv.updated_at) if d is not None]
         pack_sessions: list[ContextPackSession] = []
+        assertion_decisions: list[str] = []
 
         for conv in sessions[:conv_limit]:
             conv_id = str(conv.id)
+            assertion_decisions.extend(user_db_injectable_claim_texts(archive.user_db_path, session_id=conv_id))
             messages: list[ContextPackMessage] = []
             if include_messages:
                 try:
@@ -124,6 +128,7 @@ async def _build_archive_context_pack_payload(
 
     total_matching = len(sessions)
     return ContextPackPayload(
+        decisions=ContextPackDecisions(items=assertion_decisions),
         project=_build_project_context((), redact=redact_paths),
         date_range=ContextPackDateRange(
             since=since,

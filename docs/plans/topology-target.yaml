@@ -17,7 +17,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/archive.py
-    loc: 3404
+    loc: 3478
     target: polylogue/api/archive.py
     owner: stable
     cross_cut: { api: async }
@@ -1027,16 +1027,20 @@ files:
     loc: 25
     target: polylogue/context/__init__.py
     owner: stable
+  - path: polylogue/context/assertion_claims.py
+    loc: 34
+    target: polylogue/context/assertion_claims.py
+    owner: stable
   - path: polylogue/context/compiler.py
     loc: 148
     target: polylogue/context/compiler.py
     owner: stable
   - path: polylogue/context/pack.py
-    loc: 308
+    loc: 328
     target: polylogue/context/pack.py
     owner: stable
   - path: polylogue/context/preamble.py
-    loc: 71
+    loc: 98
     target: polylogue/context/preamble.py
     owner: stable
   - path: polylogue/core/__init__.py
@@ -1110,7 +1114,7 @@ files:
     owner: core-primitive
     reason: core primitive
   - path: polylogue/core/refs.py
-    loc: 211
+    loc: 215
     target: polylogue/core/refs.py
     owner: core-primitive
     reason: core primitive
@@ -1247,7 +1251,7 @@ files:
     target: polylogue/daemon/healthz.py
     owner: stable
   - path: polylogue/daemon/http.py
-    loc: 3095
+    loc: 3074
     target: polylogue/daemon/http.py
     owner: stable
   - path: polylogue/daemon/live_ingest_attempt_models.py
@@ -1336,7 +1340,7 @@ files:
     target: polylogue/daemon/user_state_http.py
     owner: stable
   - path: polylogue/daemon/web_shell.py
-    loc: 1601
+    loc: 1670
     target: polylogue/daemon/web_shell.py
     owner: stable
   - path: polylogue/daemon/web_shell_attachments.py
@@ -1356,7 +1360,7 @@ files:
     target: polylogue/daemon/web_shell_paste.py
     owner: stable
   - path: polylogue/daemon/web_shell_provenance.py
-    loc: 103
+    loc: 104
     target: polylogue/daemon/web_shell_provenance.py
     owner: stable
   - path: polylogue/daemon/web_shell_reader.py
@@ -1462,7 +1466,7 @@ files:
     target: polylogue/insights/rigor.py
     owner: stable
   - path: polylogue/insights/run_projection.py
-    loc: 448
+    loc: 488
     target: polylogue/insights/run_projection.py
     owner: stable
   - path: polylogue/insights/session_commit.py
@@ -1490,7 +1494,7 @@ files:
     target: polylogue/insights/topology.py
     owner: stable
   - path: polylogue/insights/transforms.py
-    loc: 1879
+    loc: 1930
     target: polylogue/insights/transforms.py
     owner: stable
   - path: polylogue/logging.py
@@ -1571,7 +1575,7 @@ files:
     target: polylogue/mcp/insight_tool_contracts.py
     owner: stable
   - path: polylogue/mcp/payloads.py
-    loc: 977
+    loc: 979
     target: polylogue/mcp/payloads.py
     owner: stable
   - path: polylogue/mcp/query_contracts.py
@@ -1583,7 +1587,7 @@ files:
     target: polylogue/mcp/server.py
     owner: stable
   - path: polylogue/mcp/server_context_tools.py
-    loc: 311
+    loc: 316
     target: polylogue/mcp/server_context_tools.py
     owner: stable
   - path: polylogue/mcp/server_insight_tools.py
@@ -1611,7 +1615,7 @@ files:
     target: polylogue/mcp/server_support.py
     owner: stable
   - path: polylogue/mcp/server_tools.py
-    loc: 904
+    loc: 912
     target: polylogue/mcp/server_tools.py
     owner: stable
   - path: polylogue/operations/__init__.py
@@ -3532,7 +3536,7 @@ files:
     target: polylogue/surfaces/__init__.py
     owner: stable
   - path: polylogue/surfaces/payloads.py
-    loc: 1738
+    loc: 1798
     target: polylogue/surfaces/payloads.py
     owner: stable
   - path: polylogue/types.py
