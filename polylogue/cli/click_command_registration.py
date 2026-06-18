@@ -103,7 +103,6 @@ _SHORT_HELP: dict[str, str] = {
     "paths": "Print canonical archive paths and bind-mount detection.",
     "query_completions": "Inspect structured query completion metadata.",
     "query_explain": "Explain query DSL parsing and lowering.",
-    "read_views": "List executable read-view profiles.",
     "reset": "Reset local archive state.",
     "resume": "Resume from recent session context.",
     "resume_candidates": "Rank resume candidates for the current context.",
@@ -149,7 +148,6 @@ def _L(name: str) -> _LazyCommand:  # noqa: N802
 # ── command list ───────────────────────────────────────────────────
 
 ROOT_COMMANDS: tuple[click.Command, ...] = (
-    _L("commands"),
     _L("config"),
     _L("cost"),
     _L("import_command"),
@@ -157,7 +155,6 @@ ROOT_COMMANDS: tuple[click.Command, ...] = (
     _L("dashboard"),
     _L("query_completions"),
     _L("query_explain"),
-    _L("read_views"),
     _L("resume"),
     _L("resume_candidates"),
     _L("insights"),

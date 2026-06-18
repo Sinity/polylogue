@@ -248,48 +248,42 @@ def cli(
 
     \b
     Dispatch model (query-first):
-        Any positional token that is NOT a registered subcommand or verb is
-        treated as a search query against the archive. So `polylogue foo`
-        searches for `foo` — it does NOT raise "unknown subcommand".
+        Use `polylogue find QUERY then ACTION` for query-result workflows.
+        Quoted query text is also accepted when followed by an action:
+        `polylogue 'QUERY' then read`.
         Run `polylogue --help` to see the full subcommand list, or
         `polylogue --diagnose <args>` to have the parser explain how it
         routed your invocation.
 
     \b
     Query mode (default):
-        polylogue "search terms"
-        polylogue --origin claude-ai-export --since "last week"
-        polylogue --latest --output browser
+        polylogue find "search terms"
+        polylogue --origin claude-ai-export --since "last week" find "search terms"
+        polylogue --latest find 'repo:polylogue' then read --to browser
 
     \b
     Verbs (actions on matched sessions):
-        polylogue "error" --origin claude-ai-export --since 2025-01 list
-        polylogue --has thinking --sort tokens list --limit 10
-        polylogue --origin chatgpt-export count
-        polylogue --origin codex-session stats --by origin
-        polylogue --latest read
-        polylogue "urgent" --tag review delete --dry-run
-        polylogue list --format json
         polylogue find id:abc then read
         polylogue find id:abc then read --view messages
         polylogue find id:abc then read --to browser
+        polylogue find id:abc then analyze --facets
+        polylogue find "urgent" then delete --dry-run
         polylogue find 'repo:polylogue' then read --all --format ndjson
 
     \b
     Combined filters:
-        polylogue --referenced-path README.md --action file_read list
-        polylogue --action search --action file_edit list
-        polylogue --action-sequence file_read,file_edit,shell list
-        polylogue --action-text "pytest -q" list
-        polylogue "pytest -q tests/unit/core/test_semantic_facts.py" --retrieval-lane actions --limit 5
-        polylogue --action other stats --by tool --format json
-        polylogue --origin claude-code-session --since 2026-01-01 stats --by repo --format json
-        polylogue --tool bash --exclude-tool read list
-        polylogue --similar "sqlite locking bug in parser" --limit 5
+        polylogue --referenced-path README.md find 'repo:polylogue' then read
+        polylogue find 'actions where tool:bash AND text:pytest' then read --view messages
+        polylogue --action-sequence file_read,file_edit,shell find 'repo:polylogue' then analyze
+        polylogue --action-text "pytest -q" find 'repo:polylogue' then read
+        polylogue find 'pytest -q tests/unit/core/test_semantic_facts.py' --retrieval-lane actions
+        polylogue --origin claude-code-session --since 2026-01-01 find 'repo:polylogue' then analyze --by repo --format json
+        polylogue find 'actions where action:file_edit AND path:polylogue/cli' then read --view messages
+        polylogue find 'near:"sqlite locking bug in parser"' then read
 
     \b
     Modifiers (write operations):
-        polylogue "urgent" --add-tag review
+        polylogue find "urgent" then mark --tag-add review
 
     \b
     See also:

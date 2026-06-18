@@ -14,10 +14,10 @@ Current registry snapshot:
 - mutation campaigns: `19`
 - benchmark campaigns: `7`
 - synthetic benchmark campaigns: `6`
-- scenario projections: `273`
+- scenario projections: `271`
 - inferred corpus scenarios: `8`
   - benchmark-campaign: `7`
-  - exercise: `166`
+  - exercise: `164`
   - inferred-corpus-scenario: `8`
   - mutation-campaign: `19`
   - synthetic-benchmark: `6`
@@ -349,7 +349,6 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-blackboard` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | blackboard help |
 | `exercise` | `help-blackboard-list` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | blackboard list help |
 | `exercise` | `help-blackboard-post` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | blackboard post help |
-| `exercise` | `help-commands` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | commands help |
 | `exercise` | `help-config` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | config help |
 | `exercise` | `help-continue` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | continue help |
 | `exercise` | `help-cost` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | cost help |
@@ -418,7 +417,6 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-query-completions` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | query-completions help |
 | `exercise` | `help-query-explain` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | query-explain help |
 | `exercise` | `help-read` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | read help |
-| `exercise` | `help-read-views` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | read-views help |
 | `exercise` | `help-recent` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | recent help |
 | `exercise` | `help-resume` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | resume help |
 | `exercise` | `help-resume-candidates` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | resume-candidates help |

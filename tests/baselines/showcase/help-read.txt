@@ -15,6 +15,8 @@ Usage: polylogue read [OPTIONS]
       polylogue find 'cost tracking' then read --view context-pack --max-sessions 5
       polylogue read --view context-pack --project-repo github.com/Sinity/polylogue --since 2026-01-01
       polylogue find id:abc then read --view recovery
+      polylogue read --views
+      polylogue read --views --format json
       polylogue find id:abc then read --view neighbors --window-hours 48
       polylogue --latest read --view neighbors --format json
       polylogue find id:abc then read --view correlation --since-hours 4
@@ -79,4 +81,5 @@ Options:
   --no-file-reads                 Exclude file reads (--view messages).
   --prose-only                    Show only prose text (--view messages).
   --fields TEXT                   Fields for JSON/YAML outputs (--all).
+  --views                         List executable read-view profiles and exit.
   --help                          Show this message and exit.
