@@ -8,7 +8,7 @@ from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.domain_models import Session
 from polylogue.core.enums import Origin
-from polylogue.core.refs import EvidenceRef
+from polylogue.core.refs import EvidenceRef, ObjectRef
 from polylogue.insights.transforms import (
     RECOVERY_TRANSFORM,
     TRANSFORM_REGISTRY,
@@ -316,10 +316,13 @@ def test_work_packet_exposes_storage_free_continuation_bundle() -> None:
     assert any(ref.format() == "codex-session:demo::m2::0" for entry in packet.entries for ref in entry.evidence_refs)
     pr_event = next(entry for entry in packet.entries if entry.section == "events" and entry.label == "pr_opened")
     assert pr_event.metadata == {"pr_refs": "#1911"}
+    assert pr_event.object_refs == (ObjectRef(kind="github-pr", object_id="#1911"),)
     issue_event = next(entry for entry in packet.entries if entry.section == "events" and entry.label == "issue_closed")
     assert issue_event.metadata == {"issue_refs": "#1818"}
+    assert issue_event.object_refs == (ObjectRef(kind="github-issue", object_id="#1818"),)
     check_event = next(entry for entry in packet.entries if entry.section == "events" and entry.label == "check_passed")
     assert check_event.metadata == {"test_evidence": "ruff check passed"}
+    assert check_event.object_refs == ()
     bash_entry = next(entry for entry in packet.entries if entry.section == "tools" and entry.label == "Bash")
     assert bash_entry.metadata == {
         "handler_kind": "test",
@@ -327,20 +330,28 @@ def test_work_packet_exposes_storage_free_continuation_bundle() -> None:
         "pr_refs": "#1911",
         "test_evidence": "ruff check ... ok | 20 passed in 50.28s",
     }
+    assert bash_entry.object_refs == (ObjectRef(kind="github-pr", object_id="#1911"),)
     read_entry = next(entry for entry in packet.entries if entry.section == "tools" and entry.label == "Read")
     assert read_entry.metadata == {
         "handler_kind": "file_read",
         "status": "unknown",
         "file_refs": "polylogue/insights/transforms.py",
     }
+    assert read_entry.object_refs == (ObjectRef(kind="file", object_id="polylogue/insights/transforms.py"),)
+    for entry in packet.entries:
+        for ref in entry.object_refs:
+            assert ObjectRef.parse(ref.format()) == ref
     assert "# Resume: Ship the backlog" in rendered
     assert "- [raw-evidence] pr_opened: PR #1911 opened" in rendered
+    assert "refs: github-pr:#1911" in rendered
     assert "details: pr_refs=#1911" in rendered
+    assert "refs: github-issue:#1818" in rendered
     assert "details: issue_refs=#1818" in rendered
     assert "details: test_evidence=ruff check passed" in rendered
     assert "- [caveat] blocker: none" in rendered
     assert "refs: tool_id=tool-2, task_id=task-42, child_session_id=codex-session:child-42" in rendered
     assert "- [raw-evidence] Bash [test] (ok) — devtools verify --quick" in rendered
+    assert "refs: file:polylogue/insights/transforms.py" in rendered
     assert "details: pr_refs=#1911; test_evidence=ruff check ... ok | 20 passed in 50.28s" in rendered
     assert "details: file_refs=polylogue/insights/transforms.py" in rendered
 
