@@ -91,7 +91,7 @@ async def test_list_decodes_assertion_backed_blackboard_body(workspace_env: dict
         upsert_assertion(
             conn,
             assertion_id=assertion_id_for_blackboard_note(posted.note_id),
-            target_ref=posted.note_id,
+            target_ref=f"assertion:{posted.note_id}",
             kind=AssertionKind.NOTE,
             body_text="[decision] asserted title\n\nassertion body\n\nscope_repo: polylogue",
             now_ms=1_700_000_000_000,

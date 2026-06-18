@@ -11,18 +11,27 @@ ObjectRefKind: TypeAlias = Literal[
     "block",
     "file",
     "branch",
+    "commit",
     "check-run",
     "workspace",
     "agent",
+    "user",
+    "repo",
+    "insight",
     "run",
     "context-snapshot",
     "observed-event",
+    "assertion",
+    "saved_view",
+    "recall_pack",
+    "transform",
     "github-issue",
     "github-pr",
     "github-review",
 ]
 
 EvidenceRefKind: TypeAlias = Literal["session", "message", "block"]
+PublicRef: TypeAlias = "ObjectRef | EvidenceRef"
 
 _OBJECT_REF_KINDS: Final[dict[str, ObjectRefKind]] = {
     "session": "session",
@@ -30,12 +39,20 @@ _OBJECT_REF_KINDS: Final[dict[str, ObjectRefKind]] = {
     "block": "block",
     "file": "file",
     "branch": "branch",
+    "commit": "commit",
     "check-run": "check-run",
     "workspace": "workspace",
     "agent": "agent",
+    "user": "user",
+    "repo": "repo",
+    "insight": "insight",
     "run": "run",
     "context-snapshot": "context-snapshot",
     "observed-event": "observed-event",
+    "assertion": "assertion",
+    "saved_view": "saved_view",
+    "recall_pack": "recall_pack",
+    "transform": "transform",
     "github-issue": "github-issue",
     "github-pr": "github-pr",
     "github-review": "github-review",
@@ -151,6 +168,30 @@ class EvidenceRef:
         return ObjectRef(kind="session", object_id=self.session_id)
 
 
+def parse_public_ref(value: str) -> ObjectRef | EvidenceRef:
+    """Parse a public object or raw evidence reference."""
+
+    try:
+        return ObjectRef.parse(value)
+    except ValueError as object_exc:
+        try:
+            return EvidenceRef.parse(value)
+        except ValueError:
+            raise ValueError(f"unsupported public ref: {value!r}") from object_exc
+
+
+def normalize_object_ref_text(value: str) -> str:
+    """Return canonical object-ref text or raise ``ValueError``."""
+
+    return ObjectRef.parse(value).format()
+
+
+def normalize_public_ref_text(value: str) -> str:
+    """Return canonical object/evidence-ref text or raise ``ValueError``."""
+
+    return parse_public_ref(value).format()
+
+
 def _parse_object_ref_kind(value: str) -> ObjectRefKind:
     try:
         return _OBJECT_REF_KINDS[value]
@@ -158,4 +199,13 @@ def _parse_object_ref_kind(value: str) -> ObjectRefKind:
         raise ValueError(f"unsupported object ref kind: {value!r}") from exc
 
 
-__all__ = ["EvidenceRef", "EvidenceRefKind", "ObjectRef", "ObjectRefKind"]
+__all__ = [
+    "EvidenceRef",
+    "EvidenceRefKind",
+    "ObjectRef",
+    "ObjectRefKind",
+    "PublicRef",
+    "normalize_object_ref_text",
+    "normalize_public_ref_text",
+    "parse_public_ref",
+]

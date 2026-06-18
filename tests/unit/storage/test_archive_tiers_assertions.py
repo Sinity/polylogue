@@ -3,6 +3,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import Role
@@ -220,6 +222,30 @@ def test_legacy_null_lifecycle_assertions_read_as_active_private_no_inject(tmp_p
 
         assert [claim.assertion_id for claim in list_assertion_claims(conn, statuses=("active",))] == ["legacy-null"]
         assert [row.assertion_id for row in list_assertions_for_export(conn, statuses=("active",))] == ["legacy-null"]
+    finally:
+        conn.close()
+
+
+def test_assertion_write_rejects_unparseable_public_refs(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "user.db")
+    try:
+        with pytest.raises(ValueError, match="object ref must use"):
+            upsert_assertion(
+                conn,
+                assertion_id="bad-target",
+                target_ref="bare-target-id",
+                kind=AssertionKind.DECISION,
+                now_ms=1_700_000_000_000,
+            )
+        with pytest.raises(ValueError, match="unsupported public ref"):
+            upsert_assertion(
+                conn,
+                assertion_id="bad-evidence",
+                target_ref="session:session-1",
+                kind=AssertionKind.DECISION,
+                evidence_refs=("session-1::message-1::not-a-block-index",),
+                now_ms=1_700_000_000_000,
+            )
     finally:
         conn.close()
 

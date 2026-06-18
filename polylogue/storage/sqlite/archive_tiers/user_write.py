@@ -16,6 +16,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Final
 
 from polylogue.core.json import JSONValue, require_json_value
+from polylogue.core.refs import ObjectRef, normalize_object_ref_text, normalize_public_ref_text
 
 if TYPE_CHECKING:
     from polylogue.insights.transforms import DecisionCandidate, RecoveryDigest, TransformRawRef
@@ -233,14 +234,14 @@ def assertion_id_for_transform_candidate(
 
 
 def _target_ref(target_type: str | None, target_id: str | None) -> str | None:
-    """Compose the assertions ``target_ref`` from a legacy ``(type, id)`` pair.
+    """Compose and validate an assertion ``target_ref`` from ``(type, id)``.
 
     Returns ``None`` when no archive target is attached (e.g. an unscoped
-    blackboard note); callers fall back to their own row identity for the
+    blackboard note); callers fall back to a typed assertion ref for the
     NOT NULL ``target_ref`` column.
     """
     if target_type and target_id:
-        return f"{target_type}:{target_id}"
+        return normalize_object_ref_text(f"{target_type}:{target_id}")
     return None
 
 
@@ -543,7 +544,7 @@ def upsert_blackboard_note(
     upsert_assertion(
         conn,
         assertion_id=assertion_id_for_blackboard_note(resolved_id),
-        target_ref=_target_ref(target_type, target_id) or resolved_id,
+        target_ref=_target_ref(target_type, target_id) or ObjectRef(kind="assertion", object_id=resolved_id).format(),
         kind=AssertionKind.NOTE,
         key=resolved_id,
         body_text=body,
@@ -738,11 +739,16 @@ def _blackboard_envelope_from_assertion(assertion: ArchiveAssertionEnvelope) -> 
     raw_target_type, raw_target_id = _split_target_ref(assertion.target_ref)
     target_type: str | None = raw_target_type
     target_id: str | None = raw_target_id
-    if raw_target_type == "":
+    note_id = str(assertion.key or assertion.target_ref)
+    if raw_target_type == "assertion":
+        note_id = raw_target_id
+        target_type = None
+        target_id = None
+    elif raw_target_type == "":
         target_type = None
         target_id = None
     return ArchiveBlackboardNoteEnvelope(
-        note_id=str(assertion.key or assertion.target_ref),
+        note_id=note_id,
         target_type=target_type,
         target_id=target_id,
         body=assertion.body_text or "",
@@ -803,12 +809,19 @@ def upsert_assertion(
     ).fetchone()
     created_at_ms = int(existing[0]) if existing is not None else timestamp
 
+    normalized_target_ref = normalize_object_ref_text(target_ref)
+    normalized_scope_ref = normalize_object_ref_text(scope_ref) if scope_ref is not None else None
+    normalized_author_ref = (
+        normalize_object_ref_text(_normalize_assertion_author_ref(author_ref))
+        if author_ref is not None
+        else ASSERTION_DEFAULT_AUTHOR_REF
+    )
+    normalized_evidence_refs = [normalize_public_ref_text(ref) for ref in evidence_refs or ()]
     resolved_status = _normalize_assertion_status(status)
     resolved_visibility = _normalize_assertion_visibility(visibility)
-    resolved_author_ref = _normalize_assertion_author_ref(author_ref)
     resolved_author_kind = _normalize_assertion_author_kind(author_kind)
     resolved_context_policy = _normalize_assertion_context_policy(context_policy)
-    evidence_refs_json = _dumps_optional(list(evidence_refs or ()))
+    evidence_refs_json = _dumps_optional(normalized_evidence_refs)
     supersedes_json = _dumps_optional(list(supersedes or ()))
 
     conn.execute(
@@ -838,13 +851,13 @@ def upsert_assertion(
         """,
         (
             assertion_id,
-            scope_ref,
-            target_ref,
+            normalized_scope_ref,
+            normalized_target_ref,
             key,
             kind,
             _dumps_optional(value),
             body_text,
-            resolved_author_ref,
+            normalized_author_ref,
             resolved_author_kind,
             evidence_refs_json,
             resolved_status,
