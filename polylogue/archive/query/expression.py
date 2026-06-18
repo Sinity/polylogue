@@ -113,6 +113,7 @@ from polylogue.archive.query.metadata import (
 )
 from polylogue.archive.query.predicate import (
     QueryBoolPredicate,
+    QueryCompareOp,
     QueryExistsPredicate,
     QueryFieldPredicate,
     QueryLineagePredicate,
@@ -618,6 +619,26 @@ def _field_token_to_predicate(token: _FieldToken) -> QueryPredicate:
         values = tuple(value.strip().lower() for value in values if value.strip())
     elif validation_field in {"since", "until"} and values:
         values = (_parse_relative_date(values[-1]),)
+    elif validation_field in {"messages", "words"}:
+        if not values:
+            raise ExpressionCompileError(f"field {field_name!r} requires a numeric value", field=field_name)
+        match = re.fullmatch(r"(>=|<=|=)?(\d+)", values[-1].strip())
+        if match is None:
+            raise ExpressionCompileError(f"field {field_name!r} requires a numeric value", field=field_name)
+        raw_op = match.group(1) or "="
+        op_text: QueryCompareOp = ">=" if raw_op == ">=" else "<=" if raw_op == "<=" else "="
+        values = (match.group(2),)
+        count_predicate = QueryFieldPredicate(field=field_name, values=values, op=op_text)
+        return QueryNotPredicate(count_predicate) if token.negated else count_predicate
+    elif validation_field == "date" and values:
+        raw_value = values[-1].strip()
+        match = re.fullmatch(r"(>=|<=|>|<)?(.+)", raw_value)
+        if match is not None:
+            raw_op = match.group(1) or "="
+            normalized_op: QueryCompareOp = ">=" if raw_op in {">", ">="} else "<=" if raw_op in {"<", "<="} else "="
+            values = (_parse_relative_date(match.group(2).strip()),)
+            date_predicate = QueryFieldPredicate(field=field_name, values=values, op=normalized_op)
+            return QueryNotPredicate(date_predicate) if token.negated else date_predicate
     elif validation_field == "lineage":
         if token.negated:
             raise ExpressionCompileError("negation is not supported for 'lineage'", field=field_name)

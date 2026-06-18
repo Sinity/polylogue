@@ -147,8 +147,11 @@ one child row matching the nested predicate.
 All three structural units also accept `session.<field>` predicates for the
 owning session fields, such as `session.repo`, `session.origin`,
 `session.tag`, `session.title`, `session.date`, `session.since`, and
-`session.until`. This lets a unit query carry its session scope inline instead
-of splitting selection between the query string and parallel parameters.
+`session.until`. Count and date session fields accept compact comparison
+prefixes such as `session.messages:>=2`, `session.words:<=500`, and
+`session.date:>=2026-01-02`. This lets a unit query carry its session scope
+inline instead of splitting selection between the query string and parallel
+parameters.
 
 Examples:
 
@@ -201,10 +204,10 @@ by their owning session:
 ```bash
 polylogue messages where session.origin:claude-code-session AND role:assistant
 polylogue actions where session.repo:polylogue AND action:file_edit
-polylogue blocks where session.since:7d AND type:code
+polylogue blocks where session.since:7d AND session.words:<=500 AND type:code
 polylogue assertions where session.repo:polylogue AND kind:caveat
 polylogue observed-events where session.origin:codex-session AND object_ref:github-review
-polylogue context-snapshots where session.repo:polylogue AND boundary:subagent_start
+polylogue context-snapshots where session.messages:>=2 AND session.date:>=2026-01-02 AND boundary:subagent_start
 ```
 
 `observed-events` and `context-snapshots` are runtime-transform row sources.
