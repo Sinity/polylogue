@@ -20,7 +20,7 @@ from pydantic import Field, field_validator, model_validator
 
 from polylogue.archive.message.models import Message
 from polylogue.archive.session.domain_models import Session
-from polylogue.core.refs import EvidenceRef
+from polylogue.core.refs import EvidenceRef, ObjectRef
 from polylogue.insights.archive_models import ArchiveInsightModel
 
 RECOVERY_TRANSFORM_ID = "recovery_digest_v0"
@@ -40,8 +40,13 @@ WorkPacketSection = Literal["events", "subagents", "run_state", "tools", "decisi
 WorkPacketSupport = Literal["raw_evidence", "assertion", "inference", "caveat", "missing_evidence"]
 SubagentChildLinkStatus = Literal["resolved", "unresolved", "repaired", "quarantined"]
 
-_ISSUE_RE = re.compile(r"(?:issues/|issue\s+|closed\s+|#)(?P<number>\d{3,6})", re.IGNORECASE)
-_PR_RE = re.compile(r"(?:pull/|PR\s+|#)(?P<number>\d{3,6})", re.IGNORECASE)
+_GITHUB_REPO_REF = r"[\w.-]+/[\w.-]+#"
+_ISSUE_RE = re.compile(
+    rf"(?:issues/|issue\s+(?:{_GITHUB_REPO_REF}|#?)|closed\s+(?:issue\s+)?(?:{_GITHUB_REPO_REF}|#?))"
+    r"(?P<number>\d{3,6})",
+    re.IGNORECASE,
+)
+_PR_RE = re.compile(r"(?:pull/|PR\s+#?)(?P<number>\d{3,6})", re.IGNORECASE)
 _CREATED_PR_RE = re.compile(
     r"\b(?:created|opened)\s+(?:pull\s+request|PR)\s+#?(?P<number>\d{3,6})\b",
     re.IGNORECASE,
@@ -241,6 +246,7 @@ class RecoveryWorkPacketEntry(ArchiveInsightModel):
     label: str
     text: str
     evidence_refs: tuple[EvidenceRef, ...]
+    object_refs: tuple[ObjectRef, ...] = ()
     support: WorkPacketSupport = "raw_evidence"
     metadata: dict[str, str] = Field(default_factory=dict)
 
@@ -468,6 +474,9 @@ def render_work_packet(packet: RecoveryWorkPacket) -> str:
     event_entries = _packet_section(packet, "events")
     for entry in event_entries[:8]:
         lines.append(_work_packet_line(entry))
+        object_refs = _object_refs_line(entry)
+        if object_refs:
+            lines.append(f"  - refs: {object_refs}")
         detail = _packet_metadata_line(entry.metadata, keys=("pr_refs", "issue_refs", "test_evidence"))
         if detail:
             lines.append(f"  - details: {detail}")
@@ -499,6 +508,9 @@ def render_work_packet(packet: RecoveryWorkPacket) -> str:
         handler = entry.metadata.get("handler_kind", "generic")
         status = entry.metadata.get("status", "unknown")
         lines.append(f"- {_support_marker(entry)} {entry.label} [{handler}] ({status}){command}")
+        object_refs = _object_refs_line(entry)
+        if object_refs:
+            lines.append(f"  - refs: {object_refs}")
         detail = _packet_metadata_line(entry.metadata, keys=("pr_refs", "issue_refs", "file_refs", "test_evidence"))
         if detail:
             lines.append(f"  - details: {detail}")
@@ -556,6 +568,12 @@ def _work_packet_line(entry: RecoveryWorkPacketEntry) -> str:
     return f"- {_support_marker(entry)} {entry.label}: {entry.text}"
 
 
+def _object_refs_line(entry: RecoveryWorkPacketEntry) -> str:
+    """Render packet object refs in their public string form."""
+
+    return ", ".join(ref.format() for ref in entry.object_refs)
+
+
 def _packet_metadata_line(metadata: Mapping[str, str], *, keys: Sequence[str]) -> str:
     parts = [f"{key}={metadata[key]}" for key in keys if metadata.get(key)]
     return "; ".join(parts)
@@ -577,6 +595,7 @@ def _work_packet_entries(
             label=event.kind,
             text=event.summary,
             metadata=_event_packet_metadata(event),
+            object_refs=_event_object_refs(event),
             evidence_refs=_to_evidence_refs(event.raw_refs),
         )
     for report in subagent_reports:
@@ -627,6 +646,7 @@ def _work_packet_entries(
             label=tool.tool_name,
             text=tool.command or "",
             metadata=_tool_packet_metadata(tool),
+            object_refs=_tool_object_refs(tool),
             evidence_refs=_to_evidence_refs(tool.raw_refs),
         )
     for decision in decisions:
@@ -689,6 +709,16 @@ def _event_packet_metadata(event: RecoveryEvent) -> dict[str, str]:
     return metadata
 
 
+def _event_object_refs(event: RecoveryEvent) -> tuple[ObjectRef, ...]:
+    """Return typed refs for PR/issue events extracted from event summaries."""
+
+    if event.kind.startswith("pr_"):
+        return _github_object_refs("github-pr", _number_refs(_PR_RE, event.summary))
+    if event.kind == "issue_closed":
+        return _github_object_refs("github-issue", _number_refs(_ISSUE_RE, event.summary))
+    return ()
+
+
 def _tool_packet_metadata(tool: ToolSummary) -> dict[str, str]:
     metadata: dict[str, str] = {"handler_kind": tool.handler_kind, "status": tool.status}
     issue_refs = _refs_without_pr_refs(tool.issue_refs, tool.pr_refs)
@@ -701,6 +731,23 @@ def _tool_packet_metadata(tool: ToolSummary) -> dict[str, str]:
     if tool.test_evidence:
         metadata["test_evidence"] = " | ".join(tool.test_evidence)
     return metadata
+
+
+def _tool_object_refs(tool: ToolSummary) -> tuple[ObjectRef, ...]:
+    """Return typed refs for PR/issue/file evidence extracted from a tool row."""
+
+    issue_refs = _refs_without_pr_refs(tool.issue_refs, tool.pr_refs)
+    return (
+        *_github_object_refs("github-pr", tool.pr_refs),
+        *_github_object_refs("github-issue", issue_refs),
+        *(ObjectRef(kind="file", object_id=ref) for ref in tool.file_refs),
+    )
+
+
+def _github_object_refs(kind: Literal["github-issue", "github-pr"], refs: Iterable[str]) -> tuple[ObjectRef, ...]:
+    """Format GitHub number refs as opaque public object refs."""
+
+    return tuple(ObjectRef(kind=kind, object_id=ref) for ref in refs)
 
 
 def _refs_without_pr_refs(issue_refs: Sequence[str], pr_refs: Sequence[str]) -> tuple[str, ...]:
@@ -1574,7 +1621,7 @@ def _tool_file_refs(
     for value in (command or "", output_text):
         for token in value.split():
             cleaned = token.strip("`'\"(),:")
-            if "/" in cleaned and not cleaned.startswith(("http://", "https://")):
+            if "/" in cleaned and "#" not in cleaned and not cleaned.startswith(("http://", "https://")):
                 yield cleaned
 
 
