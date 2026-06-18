@@ -691,6 +691,8 @@ def analyze_verb(
         raise click.UsageError("Choose only one analyze mode: --count, --facets, --by, or default stats.")
 
     if count_only:
+        if limit is not None:
+            raise click.UsageError("`analyze --count` does not support --limit.")
         updated = request.with_param_updates(count_only=True)
         if output_format:
             updated = updated.with_param_updates(output_format=output_format)

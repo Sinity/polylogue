@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +14,13 @@ from devtools.verify import PYTEST_EVENTS_PATH, PYTEST_SELECTION_PATH, PYTEST_SU
 
 def test_build_pytest_cmd_defaults_to_single_process() -> None:
     cmd = run_tests.build_pytest_cmd(["tests/unit/pipeline"])
-    assert cmd[:3] == ["pytest", "-p", "devtools.pytest_progress_plugin"]
+    assert cmd[:5] == [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-p",
+        "devtools.pytest_progress_plugin",
+    ]
     assert "tests/unit/pipeline" in cmd
     assert cmd[-2:] == ["-n", "0"]
 

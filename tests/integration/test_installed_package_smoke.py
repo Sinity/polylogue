@@ -234,7 +234,7 @@ def test_installed_polylogue_writes_only_under_xdg_roots(
     )
 
     before = _snapshot(home)
-    _run((str(bin_dir / "polylogue"), "--plain", "count"), env=env, timeout=60)
+    _run((str(bin_dir / "polylogue"), "--plain", "analyze", "--count"), env=env, timeout=60)
     _run((str(bin_dir / "polylogue"), "--plain", "status"), env=env, timeout=60)
     after = _snapshot(home)
 

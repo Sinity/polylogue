@@ -125,7 +125,7 @@ class TestPlainEmptyArchiveMessages:
         """
         _init_empty_archive(workspace_env)
         exit_code, stdout, _stderr = _invoke_plain(["--plain", "read", "--all"], monkeypatch)
-        assert exit_code in (0, 2), f"unexpected exit {exit_code}: {stdout!r}"
+        assert exit_code == 0, f"unexpected exit {exit_code}: {stdout!r}"
         assert not stdout.lstrip().startswith("{"), (
             f"plain read --all emitted JSON-shaped output instead of human text: {stdout!r}"
         )
@@ -138,7 +138,7 @@ class TestPlainEmptyArchiveMessages:
         """``polylogue --plain analyze`` reports empty archive in human prose."""
         _init_empty_archive(workspace_env)
         exit_code, stdout, _stderr = _invoke_plain(["--plain", "analyze"], monkeypatch)
-        assert exit_code in (0, 2), f"unexpected exit {exit_code}: {stdout!r}"
+        assert exit_code == 0, f"unexpected exit {exit_code}: {stdout!r}"
         assert not stdout.lstrip().startswith("{"), (
             f"plain analyze emitted JSON-shaped output instead of human text: {stdout!r}"
         )

@@ -707,4 +707,4 @@ When a query returns no results:
 3. Verify the archive has data: `polylogue analyze --count` (no filters)
 4. Check FTS index health: `polylogued status` shows `fts_readiness`
 5. Run `polylogue ops doctor` for schema and index integrity
-6. If using `--similar`, ensure embeddings are built (check `polylogue analyze` for embedding coverage)
+6. If using `--similar`, ensure embeddings are built (check `polylogue ops embed status --detail` for embedding readiness/coverage)

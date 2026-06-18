@@ -525,7 +525,7 @@ class TestAllJsonCommandsProduceValidJson:
             (["ops", "schema", "list", "--format", "json"], "cli.schema_list_json_matrix", False),
             (["config", "--format", "json"], "cli.config_json_matrix", False),
             # read --all browse on empty archive → exit 0 + empty archive envelope (valid JSON)
-            (["read", "--all", "--format", "json"], "cli.read_all_json_matrix", True),
+            (["read", "--all", "--format", "json"], "cli.read_all_json_matrix", False),
             (
                 ["ops", "status", "--daemon-url", "http://127.0.0.1:19999", "--format", "json"],
                 "cli.status_json_matrix",

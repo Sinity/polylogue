@@ -159,6 +159,9 @@ def test_read_all_and_analyze_count_update_parent_request() -> None:
     assert isinstance(count_request, RootModeRequest)
     assert count_request.query_params()["count_only"] is True
 
+    with pytest.raises(click.UsageError, match="does not support --limit"):
+        wrapped_analyze(child, True, None, False, False, None, 5)
+
 
 def test_analyze_verb_toggles_stats_only_and_updates_grouping() -> None:
     _, child = _context_pair(query_terms=("alpha",))
