@@ -341,7 +341,7 @@ def test_work_packet_exposes_storage_free_continuation_bundle() -> None:
     assert issue_event.object_refs == (ObjectRef(kind="github-issue", object_id="#1818"),)
     check_event = next(entry for entry in packet.entries if entry.section == "events" and entry.label == "check_passed")
     assert check_event.metadata == {"test_evidence": "ruff check passed"}
-    assert check_event.object_refs == ()
+    assert check_event.object_refs == (ObjectRef(kind="check-run", object_id="ruff check"),)
     bash_entry = next(entry for entry in packet.entries if entry.section == "tools" and entry.label == "Bash")
     assert bash_entry.metadata == {
         "handler_kind": "test",
@@ -375,6 +375,7 @@ def test_work_packet_exposes_storage_free_continuation_bundle() -> None:
     assert "refs: github-pr:#1911" in rendered
     assert "details: pr_refs=#1911" in rendered
     assert "refs: github-issue:#1818" in rendered
+    assert "refs: check-run:ruff check" in rendered
     assert "details: issue_refs=#1818" in rendered
     assert "details: test_evidence=ruff check passed" in rendered
     assert "- [caveat] blocker: none" in rendered

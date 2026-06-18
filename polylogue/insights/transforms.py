@@ -728,12 +728,14 @@ def _event_packet_metadata(event: RecoveryEvent) -> dict[str, str]:
 
 
 def _event_object_refs(event: RecoveryEvent) -> tuple[ObjectRef, ...]:
-    """Return typed refs for PR/issue events extracted from event summaries."""
+    """Return typed refs for addressable event targets extracted from summaries."""
 
     if event.kind.startswith("pr_"):
         return _github_object_refs("github-pr", _number_refs(_PR_RE, event.summary))
     if event.kind == "issue_closed":
         return _github_object_refs("github-issue", _number_refs(_ISSUE_RE, event.summary))
+    if event.kind.startswith("check_"):
+        return _check_run_object_refs(event.summary)
     return ()
 
 
@@ -766,6 +768,15 @@ def _github_object_refs(kind: Literal["github-issue", "github-pr"], refs: Iterab
     """Format GitHub number refs as opaque public object refs."""
 
     return tuple(ObjectRef(kind=kind, object_id=ref) for ref in refs)
+
+
+def _check_run_object_refs(summary: str) -> tuple[ObjectRef, ...]:
+    """Format a named check event summary as a public check-run ref."""
+
+    name = summary.removesuffix(" passed").removesuffix(" failed").strip()
+    if not name:
+        return ()
+    return (ObjectRef(kind="check-run", object_id=name),)
 
 
 def _refs_without_pr_refs(issue_refs: Sequence[str], pr_refs: Sequence[str]) -> tuple[str, ...]:
