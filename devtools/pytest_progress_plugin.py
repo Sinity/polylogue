@@ -8,6 +8,7 @@ operator still has node-level failure evidence after an interrupted run.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from datetime import UTC, datetime
@@ -19,7 +20,9 @@ _EVENTS_ENV = "POLYLOGUE_PYTEST_EVENTS_PATH"
 
 def pytest_runtest_logreport(report: Any) -> None:
     """Append one test-call event when configured by ``devtools verify``."""
-    if getattr(report, "when", None) != "call":
+    when = str(getattr(report, "when", ""))
+    outcome = str(getattr(report, "outcome", ""))
+    if when != "call" and outcome not in {"failed", "error"}:
         return
     raw_path = os.environ.get(_EVENTS_ENV)
     if not raw_path:
@@ -28,12 +31,14 @@ def pytest_runtest_logreport(report: Any) -> None:
         "event": "test_report",
         "updated_at": datetime.now(UTC).isoformat(),
         "nodeid": str(getattr(report, "nodeid", "")),
-        "outcome": str(getattr(report, "outcome", "")),
+        "when": when,
+        "outcome": outcome,
         "duration_s": round(float(getattr(report, "duration", 0.0) or 0.0), 4),
     }
     if payload["outcome"] == "failed":
         payload["longrepr"] = str(getattr(report, "longrepr", ""))
     path = Path(raw_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    with contextlib.suppress(OSError):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
