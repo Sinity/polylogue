@@ -516,6 +516,23 @@ def test_read_view_recovery_requires_session_id() -> None:
         )
 
 
+def test_read_view_rejects_format_outside_selected_profile() -> None:
+    env = SimpleNamespace(polylogue=SimpleNamespace())
+
+    with pytest.raises(click.UsageError, match="read --view context-pack does not support --format json"):
+        read_view_handlers.run_read_view(
+            cast(AppEnv, env),
+            RootModeRequest.from_params({}),
+            ReadViewInvocation(
+                view="context-pack",
+                session_id=None,
+                output_format="json",
+                destination="terminal",
+                out_path=None,
+            ),
+        )
+
+
 def test_resolve_target_session_id_uses_explicit_conv_id() -> None:
     request = RootModeRequest.from_params({"conv_id": "claude-code:abc123"})
     assert query_verbs._resolve_target_session_id(request) == "claude-code:abc123"
