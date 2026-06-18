@@ -46,10 +46,18 @@ def test_stable_routes_have_explicit_auth_and_response_contracts() -> None:
         ("GET", "/metrics", "/metrics", "operational", "unauthenticated_loopback"),
         ("GET", "/api/sessions", "/api/sessions", "read_query", "bearer_if_configured"),
         ("GET", "/api/query-units", "/api/query-units", "read_query", "bearer_if_configured"),
+        ("GET", "/api/assertions", "/api/assertions", "user_overlay", "bearer_if_configured"),
         (
             "GET",
             "/api/sessions/codex-session:abc/messages",
             "/api/sessions/:id/messages",
+            "read_detail",
+            "bearer_if_configured",
+        ),
+        (
+            "GET",
+            "/api/sessions/codex-session:abc/recovery",
+            "/api/sessions/:id/recovery",
             "read_detail",
             "bearer_if_configured",
         ),

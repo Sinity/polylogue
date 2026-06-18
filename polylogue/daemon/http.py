@@ -55,6 +55,7 @@ if TYPE_CHECKING:
     from polylogue.api import Polylogue
     from polylogue.archive.query.spec import SessionQuerySpec
     from polylogue.archive.semantic.content_projection import ContentProjectionSpec
+    from polylogue.insights.transforms import RecoveryReportPreset
     from polylogue.storage.sqlite.archive_tiers.archive import (
         ArchiveSessionSearchHit,
         ArchiveSessionSummary,
@@ -867,6 +868,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._handle_query_completions(params)
         elif path == ["api", "read-view-profiles"]:
             self._handle_read_view_profiles()
+        elif path == ["api", "assertions"]:
+            self._handle_assertions(params)
         elif path == ["api", "paste-browser"]:
             self._handle_paste_browser(params)
         elif path == ["api", "attachments"]:
@@ -885,6 +888,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._handle_get_session(path[2])
         elif len(path) == 4 and path[:2] == ["api", "sessions"] and path[3] == "messages":
             self._handle_get_messages(path[2], params)
+        elif len(path) == 4 and path[:2] == ["api", "sessions"] and path[3] == "recovery":
+            self._handle_get_session_recovery(path[2], params)
         elif len(path) == 4 and path[:2] == ["api", "sessions"] and path[3] == "raw":
             self._handle_get_session_raw(path[2])
         elif len(path) == 4 and path[:2] == ["api", "sessions"] and path[3] == "cost":
@@ -2357,6 +2362,143 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         profiles = read_view_profile_payloads()
         self._send_json(HTTPStatus.OK, {"read_views": profiles, "total": len(profiles)})
+
+    @daemon_safe_handler
+    def _handle_assertions(self, params: dict[str, list[str]]) -> None:
+        """``GET /api/assertions`` lists assertion-backed overlay claims.
+
+        This is the web-workbench read side of #1883/#1846: the daemon
+        does not invent an overlay model, it routes through
+        ``Polylogue.list_assertion_claims`` and serializes the same
+        ``ArchiveAssertionEnvelope`` fields that MCP/API consumers see.
+        """
+
+        from polylogue.archive.query.spec import clamp_query_limit
+        from polylogue.surfaces.payloads import AssertionClaimPayload
+
+        kinds = _csv_values(params, "kind") + _csv_values(params, "kinds")
+        statuses = self._assertion_status_filter(params)
+        context_inject = None
+        if "context_inject" in params:
+            context_inject = self._get_bool(params, "context_inject")
+        limit = clamp_query_limit(self._get_int(params, "limit", 20), default=20)
+
+        async def _get(poly: Polylogue) -> object:
+            claims = await poly.list_assertion_claims(
+                kinds=tuple(dict.fromkeys(kinds)) or None,
+                target_ref=self._get_param(params, "target_ref"),
+                scope_ref=self._get_param(params, "scope_ref"),
+                statuses=statuses,
+                context_inject=context_inject,
+                limit=limit,
+            )
+            items = [AssertionClaimPayload.from_envelope(claim).model_dump(mode="json") for claim in claims]
+            return {"items": items, "total": len(items), "limit": limit}
+
+        self._send_json(HTTPStatus.OK, self._sync_run(_get))
+
+    def _assertion_status_filter(self, params: dict[str, list[str]]) -> tuple[str, ...] | None:
+        """Return status filters for ``GET /api/assertions``.
+
+        The default mirrors ``Polylogue.list_assertion_claims``
+        (``active,candidate``). ``status=all`` / ``statuses=all`` gives
+        the operator an explicit all-status read without special casing in
+        the underlying store.
+        """
+
+        raw_statuses = _csv_values(params, "status") + _csv_values(params, "statuses")
+        if not raw_statuses:
+            return ("active", "candidate")
+        normalized = tuple(dict.fromkeys(token.lower() for token in raw_statuses))
+        if normalized in {("all",), ("*",)}:
+            return None
+        return normalized
+
+    # ------------------------------------------------------------------
+    # Handlers: recovery/work-packet read surface (#1846/#1838/#1845)
+    # ------------------------------------------------------------------
+
+    @daemon_safe_handler
+    def _handle_get_session_recovery(self, conv_id: str, params: dict[str, list[str]]) -> None:
+        """``GET /api/sessions/{id}/recovery`` exposes shared recovery DTOs.
+
+        Supported forms:
+        - ``?report=digest&format=json`` returns ``RecoveryDigest``.
+        - ``?report=work-packet&format=json`` returns ``RecoveryWorkPacket``.
+        - ``?report=work-packet&format=markdown`` returns rendered markdown.
+        - ``?report=continue|blame`` returns the corresponding recovery
+          report markdown in a JSON envelope.
+
+        Raw transcripts are not included; all support remains through the
+        recovery/work-packet evidence refs.
+        """
+
+        report = (self._get_param(params, "report", "work-packet") or "work-packet").strip().lower()
+        output_format = (self._get_param(params, "format", "json") or "json").strip().lower()
+        if output_format not in {"json", "markdown"}:
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_format")
+            return
+        if report not in {"digest", "work-packet", "continue", "blame"}:
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_report")
+            return
+        if report == "digest" and output_format != "json":
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_format")
+            return
+
+        async def _get(poly: Polylogue) -> object:
+            return await self._do_get_session_recovery(poly, conv_id, report, output_format)
+
+        result = self._sync_run(_get)
+        if result is None:
+            self._send_error(HTTPStatus.NOT_FOUND, "not_found")
+            return
+        self._send_json(HTTPStatus.OK, result)
+
+    async def _do_get_session_recovery(
+        self,
+        poly: Polylogue,
+        conv_id: str,
+        report: str,
+        output_format: str,
+    ) -> object | None:
+        if report == "digest":
+            digest = await poly.recovery_digest(conv_id)
+            if digest is None:
+                return None
+            return {
+                "session_id": digest.session_id,
+                "report": "digest",
+                "format": "json",
+                "digest": digest.model_dump(mode="json"),
+            }
+
+        if report == "work-packet":
+            packet = await poly.recovery_work_packet(conv_id)
+            if packet is None:
+                return None
+            if output_format == "markdown":
+                return {
+                    "session_id": packet.session_id,
+                    "report": "work-packet",
+                    "format": "markdown",
+                    "markdown": packet.render_markdown(),
+                }
+            return {
+                "session_id": packet.session_id,
+                "report": "work-packet",
+                "format": "json",
+                "work_packet": packet.model_dump(mode="json"),
+            }
+
+        markdown = await poly.recovery_report(conv_id, cast("RecoveryReportPreset", report))
+        if markdown is None:
+            return None
+        return {
+            "session_id": conv_id,
+            "report": report,
+            "format": "markdown",
+            "markdown": markdown,
+        }
 
     # ------------------------------------------------------------------
     # Handlers: per-session embedding similarity (#1123)

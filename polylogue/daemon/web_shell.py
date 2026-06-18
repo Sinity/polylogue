@@ -276,6 +276,7 @@ __WORKSPACE_HTML__
       <button data-tab="cost">Cost</button>
       <button data-tab="lineage">Lineage</button>
       <button data-tab="insights">Insights</button>
+      <button data-tab="evidence">Evidence</button>
       <button data-tab="raw">Raw</button>
       <button data-tab="similar">Similar</button>
       <button data-tab="attachments">Attachments</button>
@@ -349,6 +350,11 @@ var state = {
   // Per-session collapsed-section toggles for the Insights tab.
   // Keyed as ``"<session_id>:<kind>"``; default = expanded.
   insightsCollapsed: {},
+  // Per-session evidence/work-packet panel cache (#1846). Keyed by
+  // session_id; populated from the new daemon recovery/assertion routes.
+  // This is intentionally a read-side cache over shared DTOs, not a web-only
+  // evidence model.
+  evidencePanels: {},
   // Per-session similarity panel cache (#1123). Keyed by
   // session_id; populated on demand when the Similar inspector
   // tab is opened. ``undefined`` means "not loaded yet"; the envelope
@@ -871,6 +877,7 @@ function renderInspector() {
   else if (tab === 'cost') renderInspectorCost(el, c);
   else if (tab === 'lineage') renderInspectorLineage(el, c);
   else if (tab === 'insights') renderInspectorInsights(el, c);
+  else if (tab === 'evidence') renderInspectorEvidence(el, c);
   else if (tab === 'raw') renderInspectorRaw(el, c);
   else if (tab === 'similar') renderInspectorSimilar(el, c);
   else if (tab === 'attachments') renderInspectorAttachments(el, c);
@@ -1155,6 +1162,72 @@ function renderInspectorCost(el, c) {
     });
     html += '</div>';
   }
+  el.innerHTML = html;
+}
+
+async function loadEvidencePanel(id) {
+  try {
+    var recovery = await fetchJSON('/api/sessions/' + id + '/recovery?report=work-packet&format=json');
+    var assertions = await fetchJSON('/api/assertions?target_ref=' + encodeURIComponent('session:' + id) + '&limit=20');
+    state.evidencePanels[id] = {recovery: recovery, assertions: assertions};
+  } catch(e) {
+    state.evidencePanels[id] = {error: String(e)};
+  }
+  if (state.selected && state.selected.id === id && state.inspectorTab === 'evidence') {
+    renderInspector();
+  }
+}
+
+function renderRefList(refs) {
+  if (!refs || !refs.length) return '<div class="inspector-empty">No refs surfaced</div>';
+  var html = '';
+  refs.slice(0, 12).forEach(function(ref) {
+    var label = (typeof ref === 'string') ? ref : (ref.ref || ref.object_ref || JSON.stringify(ref));
+    html += '<div class="user-state-row"><span class="label">ref</span><span class="value">' + esc(label) + '</span></div>';
+  });
+  if (refs.length > 12) html += '<div class="inspector-field"><span class="value muted">+' + (refs.length - 12) + ' more refs</span></div>';
+  return html;
+}
+
+function renderInspectorEvidence(el, c) {
+  var panel = state.evidencePanels[c.id];
+  if (panel === undefined) {
+    el.innerHTML = '<div class="inspector-empty">Loading evidence...</div>';
+    loadEvidencePanel(c.id);
+    return;
+  }
+  if (!panel || panel.error) {
+    el.innerHTML = '<div class="inspector-empty">Evidence surface unavailable</div>';
+    return;
+  }
+  var packet = (panel.recovery && panel.recovery.work_packet) || {};
+  var assertions = (panel.assertions && panel.assertions.items) || [];
+  var html = '<div class="inspector-section"><h4>Work packet</h4>'
+    + '<div class="inspector-field"><span class="label">entries</span><span class="value">' + esc(String((packet.entries || []).length)) + '</span></div>'
+    + '<div class="inspector-field"><span class="label">evidence refs</span><span class="value">' + esc(String((packet.evidence_refs || []).length)) + '</span></div>'
+    + '</div>';
+  if ((packet.entries || []).length) {
+    html += '<div class="inspector-section"><h4>Packet entries</h4>';
+    (packet.entries || []).slice(0, 8).forEach(function(entry) {
+      html += '<div class="annotation-item"><div class="meta">' + esc(entry.section || 'entry') + ' / ' + esc(entry.support || 'support') + '</div>'
+        + '<div class="note"><strong>' + esc(entry.label || 'entry') + '</strong><br>' + esc(entry.text || '') + '</div>'
+        + '</div>';
+    });
+    html += '</div>';
+  }
+  html += '<div class="inspector-section"><h4>Evidence refs</h4>' + renderRefList(packet.evidence_refs || []) + '</div>';
+  html += '<div class="inspector-section"><h4>Target refs</h4>' + renderRefList(packet.target_refs || []) + '</div>';
+  html += '<div class="inspector-section"><h4>Assertions</h4>';
+  if (assertions.length) {
+    assertions.forEach(function(claim) {
+      html += '<div class="annotation-item"><div class="meta">' + esc(claim.kind || 'claim') + ' / ' + esc(claim.status || '-') + '</div>'
+        + '<div class="note">' + esc(claim.body_text || claim.assertion_id || '') + '</div>'
+        + '<div class="meta">' + esc(claim.target_ref || '') + '</div></div>';
+    });
+  } else {
+    html += '<div class="inspector-empty">No assertion-backed overlays for this session</div>';
+  }
+  html += '</div>';
   el.innerHTML = html;
 }
 
