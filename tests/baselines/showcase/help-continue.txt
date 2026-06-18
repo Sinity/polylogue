@@ -1,0 +1,14 @@
+Usage: polylogue continue [OPTIONS]
+
+  Compile a successor-agent continuation report for one matched session.
+
+  Examples:
+      polylogue find id:abc then continue
+      polylogue --latest continue --to clipboard
+      polylogue find 'repo:polylogue near:id:abc' then continue --to file --out handoff.md
+
+Options:
+  --to [terminal|stdout|browser|clipboard|file]
+                                  Output destination.  [default: terminal]
+  --out PATH                      File path for --to file.
+  --help                          Show this message and exit.

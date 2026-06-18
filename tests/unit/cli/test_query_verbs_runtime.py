@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import patch
@@ -364,6 +365,53 @@ def test_read_verb_recovery_report_selector_rejects_unknown() -> None:
 
     with pytest.raises(click.BadParameter, match="'incident' is not one of 'continue', 'blame', 'work-packet'"):
         option.type.convert("incident", option, click.Context(query_verbs.read_verb))
+
+
+def test_continue_verb_renders_recovery_continue_report() -> None:
+    """``find QUERY then continue`` reuses the recovery continue report surface."""
+    _, child = _context_pair(query_terms=("id:codex-session:abc123",))
+    wrapped = getattr(query_verbs.continue_verb.callback, "__wrapped__", None)
+    assert callable(wrapped)
+
+    with (
+        patch("polylogue.cli.query_verbs._resolve_target_session_id", return_value="codex-session:abc123"),
+        patch("polylogue.cli.query_verbs.run_read_view") as run_read_view,
+    ):
+        wrapped(child, "clipboard", None)
+
+    invocation = run_read_view.call_args.args[2]
+    assert invocation == ReadViewInvocation(
+        view="recovery",
+        session_id="codex-session:abc123",
+        output_format=None,
+        destination="clipboard",
+        out_path=None,
+        recovery_report="continue",
+    )
+
+
+def test_resolve_target_session_id_uses_query_terms(workspace_env: dict[str, Path]) -> None:
+    """Single-session verbs resolve ``find id:... then ...`` through the query DSL."""
+    from polylogue.config import Config
+    from tests.infra.storage_records import SessionBuilder
+
+    archive_root = workspace_env["archive_root"]
+    stored = (
+        SessionBuilder(archive_root / "index.db", "resolve-query-target").provider("codex").title("query target").save()
+    )
+    request = RootModeRequest.from_params(
+        {
+            "_config": Config(
+                archive_root=archive_root,
+                db_path=archive_root / "index.db",
+                render_root=archive_root / "render",
+                sources=[],
+            ),
+            "query": ("title:query",),
+        }
+    )
+
+    assert query_verbs._resolve_target_session_id(request) == f"{stored.origin.value}:{stored.native_id}"
 
 
 def test_read_view_recovery_json_uses_success_envelope(capsys: pytest.CaptureFixture[str]) -> None:

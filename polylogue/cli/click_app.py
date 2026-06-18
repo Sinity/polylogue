@@ -314,6 +314,7 @@ def cli(
 register_root_commands(cli)
 
 _QUERY_VERB_HELP: dict[str, str] = {
+    "continue": "Compile a successor-agent continuation report.",
     "count": "Print count of matched sessions.",
     "delete": "Delete matched sessions.",
     "list": "List matched sessions.",

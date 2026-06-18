@@ -5,6 +5,7 @@ from __future__ import annotations
 VERB_NAMES: frozenset[str] = frozenset(
     {
         "analyze",
+        "continue",
         "count",
         "delete",
         "list",
