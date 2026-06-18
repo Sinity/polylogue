@@ -109,6 +109,23 @@ def _session() -> Session:
     )
 
 
+def _sparse_session() -> Session:
+    return Session(
+        id=SessionId("codex-session:sparse"),
+        origin=Origin.CODEX_SESSION,
+        title="Sparse handoff",
+        messages=MessageCollection(
+            messages=[
+                Message(
+                    id="m1",
+                    role=Role.USER,
+                    text="Please look into the archive behavior when you get back.",
+                )
+            ]
+        ),
+    )
+
+
 def test_registry_declares_no_llm_recovery_transform() -> None:
     assert TRANSFORM_REGISTRY[RECOVERY_TRANSFORM.transform_id] == RECOVERY_TRANSFORM
     assert RECOVERY_TRANSFORM.deterministic is True
@@ -295,11 +312,28 @@ def test_work_packet_exposes_storage_free_continuation_bundle() -> None:
         "decisions",
     }
     assert all(entry.evidence_refs for entry in packet.entries)
+    assert {entry.support for entry in packet.entries} >= {"raw_evidence", "assertion", "caveat", "inference"}
     assert any(ref.format() == "codex-session:demo::m2::0" for entry in packet.entries for ref in entry.evidence_refs)
     assert "# Resume: Ship the backlog" in rendered
-    assert "- pr_opened: PR #1911 opened" in rendered
+    assert "- [raw-evidence] pr_opened: PR #1911 opened" in rendered
+    assert "- [caveat] blocker: none" in rendered
     assert "refs: tool_id=tool-2, task_id=task-42, child_session_id=codex-session:child-42" in rendered
-    assert "- Bash [test] (ok) — devtools verify --quick" in rendered
+    assert "- [raw-evidence] Bash [test] (ok) — devtools verify --quick" in rendered
+
+
+def test_work_packet_marks_missing_evidence_explicitly() -> None:
+    digest = compile_recovery_digest(_sparse_session())
+
+    packet = digest.work_packet()
+    rendered = packet.render_markdown()
+
+    gap_entries = tuple(entry for entry in packet.entries if entry.section == "evidence_gaps")
+    assert {entry.label for entry in gap_entries} == {"events", "subagents", "run_state", "tools", "decisions"}
+    assert all(entry.support == "missing_evidence" for entry in gap_entries)
+    assert all(entry.evidence_refs for entry in gap_entries)
+    assert "## Evidence Gaps" in rendered
+    assert "- [missing-evidence] run_state: No structured RunState section was extracted" in rendered
+    assert "- [missing-evidence] tools: No tool execution summary was extracted." in rendered
 
 
 def test_continue_report_renders_successor_boot_packet_with_evidence_refs() -> None:

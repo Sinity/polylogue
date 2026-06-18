@@ -36,7 +36,8 @@ ForensicClaimKind = Literal[
     "decision_candidate",
 ]
 RecoveryReportPreset = Literal["continue", "blame", "work-packet"]
-WorkPacketSection = Literal["events", "subagents", "run_state", "tools", "decisions"]
+WorkPacketSection = Literal["events", "subagents", "run_state", "tools", "decisions", "evidence_gaps"]
+WorkPacketSupport = Literal["raw_evidence", "assertion", "inference", "caveat", "missing_evidence"]
 SubagentChildLinkStatus = Literal["resolved", "unresolved", "repaired", "quarantined"]
 
 _ISSUE_RE = re.compile(r"(?:issues/|issue\s+|closed\s+|#)(?P<number>\d{3,6})", re.IGNORECASE)
@@ -240,6 +241,7 @@ class RecoveryWorkPacketEntry(ArchiveInsightModel):
     label: str
     text: str
     evidence_refs: tuple[EvidenceRef, ...]
+    support: WorkPacketSupport = "raw_evidence"
     metadata: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -432,6 +434,15 @@ def render_resume_bundle(
                 run_state=run_state,
                 tool_summaries=tool_summaries,
                 decisions=decisions,
+                packet_raw_refs=(
+                    TransformRawRef(
+                        session_id=str(session.id),
+                        message_id=None,
+                        block_index=None,
+                        ref_kind="session",
+                        preview=session.display_title,
+                    ),
+                ),
             )
         ),
         evidence_refs=(EvidenceRef(session_id=str(session.id)),),
@@ -455,14 +466,14 @@ def render_work_packet(packet: RecoveryWorkPacket) -> str:
         lines.append(f"- workdirs: {', '.join(packet.working_directories)}")
     lines.extend(["", "## Events"])
     event_entries = _packet_section(packet, "events")
-    lines.extend(f"- {entry.label}: {entry.text}" for entry in event_entries[:8])
+    lines.extend(_work_packet_line(entry) for entry in event_entries[:8])
     if not event_entries:
         lines.append("- none extracted")
     lines.extend(["", "## Subagents"])
     subagent_entries = _packet_section(packet, "subagents")
     for entry in subagent_entries[:8]:
         prompt = f" — {entry.text}" if entry.text else ""
-        lines.append(f"- {entry.label}{prompt}")
+        lines.append(f"- {_support_marker(entry)} {entry.label}{prompt}")
         refs = _subagent_metadata_line(entry.metadata)
         if refs:
             lines.append(f"  - refs: {refs}")
@@ -476,23 +487,27 @@ def render_work_packet(packet: RecoveryWorkPacket) -> str:
     if not run_state_entries:
         lines.append("- none extracted")
     else:
-        lines.extend(f"- {entry.label}: {entry.text}" for entry in run_state_entries[:33])
+        lines.extend(_work_packet_line(entry) for entry in run_state_entries[:33])
     lines.extend(["", "## Tools"])
     tool_entries = _packet_section(packet, "tools")
     for entry in tool_entries[:8]:
         command = f" — {entry.text}" if entry.text else ""
         handler = entry.metadata.get("handler_kind", "generic")
         status = entry.metadata.get("status", "unknown")
-        lines.append(f"- {entry.label} [{handler}] ({status}){command}")
+        lines.append(f"- {_support_marker(entry)} {entry.label} [{handler}] ({status}){command}")
     if not tool_entries:
         lines.append("- none extracted")
     lines.extend(["", "## Candidate Decisions / Run State"])
     decision_entries = _packet_section(packet, "decisions")
-    lines.extend(f"- {entry.label}: {entry.text}" for entry in decision_entries[:8])
+    lines.extend(_work_packet_line(entry) for entry in decision_entries[:8])
     if not decision_entries:
         lines.append("- none extracted")
+    gap_entries = _packet_section(packet, "evidence_gaps")
+    if gap_entries:
+        lines.extend(["", "## Evidence Gaps"])
+        lines.extend(_work_packet_line(entry) for entry in gap_entries[:8])
     lines.extend(["", "## Evidence"])
-    lines.append("Raw refs are available on every extracted event/tool/decision record.")
+    lines.append("Every packet row carries evidence refs and a support marker.")
     return "\n".join(lines).strip() + "\n"
 
 
@@ -511,6 +526,7 @@ def build_recovery_work_packet(digest: RecoveryDigest) -> RecoveryWorkPacket:
                 run_state=digest.run_state,
                 tool_summaries=digest.tool_summaries,
                 decisions=digest.decision_candidates,
+                packet_raw_refs=digest.raw_refs,
             )
         ),
         evidence_refs=tuple(ref.to_evidence_ref() for ref in digest.raw_refs),
@@ -521,6 +537,14 @@ def _packet_section(packet: RecoveryWorkPacket, section: WorkPacketSection) -> t
     return tuple(entry for entry in packet.entries if entry.section == section)
 
 
+def _support_marker(entry: RecoveryWorkPacketEntry) -> str:
+    return f"[{entry.support.replace('_', '-')}]"
+
+
+def _work_packet_line(entry: RecoveryWorkPacketEntry) -> str:
+    return f"- {_support_marker(entry)} {entry.label}: {entry.text}"
+
+
 def _work_packet_entries(
     *,
     events: Sequence[RecoveryEvent],
@@ -528,7 +552,9 @@ def _work_packet_entries(
     run_state: RunStateSummary | None,
     tool_summaries: Sequence[ToolSummary],
     decisions: Sequence[DecisionCandidate],
+    packet_raw_refs: Sequence[TransformRawRef],
 ) -> Iterable[RecoveryWorkPacketEntry]:
+    packet_evidence_refs = _to_evidence_refs(packet_raw_refs)
     for event in events:
         yield RecoveryWorkPacketEntry(
             section="events",
@@ -553,6 +579,7 @@ def _work_packet_entries(
                 section="run_state",
                 label="goal",
                 text=run_state.goal,
+                support="assertion",
                 evidence_refs=_to_evidence_refs(run_state.raw_refs),
             )
         for label, items in (
@@ -566,8 +593,17 @@ def _work_packet_entries(
                     section="run_state",
                     label=label,
                     text=item,
+                    support="caveat" if label == "blocker" else "assertion",
                     evidence_refs=_to_evidence_refs(run_state.raw_refs),
                 )
+    else:
+        yield RecoveryWorkPacketEntry(
+            section="evidence_gaps",
+            label="run_state",
+            text="No structured RunState section was extracted from the session.",
+            support="missing_evidence",
+            evidence_refs=packet_evidence_refs,
+        )
     for tool in tool_summaries:
         yield RecoveryWorkPacketEntry(
             section="tools",
@@ -581,7 +617,40 @@ def _work_packet_entries(
             section="decisions",
             label=decision.kind,
             text=decision.text,
+            support="inference",
             evidence_refs=_to_evidence_refs(decision.raw_refs),
+        )
+    if not events:
+        yield RecoveryWorkPacketEntry(
+            section="evidence_gaps",
+            label="events",
+            text="No PR, issue, test, check, or merge events were extracted.",
+            support="missing_evidence",
+            evidence_refs=packet_evidence_refs,
+        )
+    if not subagent_reports:
+        yield RecoveryWorkPacketEntry(
+            section="evidence_gaps",
+            label="subagents",
+            text="No subagent handoff or child-session evidence was extracted.",
+            support="missing_evidence",
+            evidence_refs=packet_evidence_refs,
+        )
+    if not tool_summaries:
+        yield RecoveryWorkPacketEntry(
+            section="evidence_gaps",
+            label="tools",
+            text="No tool execution summary was extracted.",
+            support="missing_evidence",
+            evidence_refs=packet_evidence_refs,
+        )
+    if not decisions:
+        yield RecoveryWorkPacketEntry(
+            section="evidence_gaps",
+            label="decisions",
+            text="No candidate decision statement was extracted.",
+            support="missing_evidence",
+            evidence_refs=packet_evidence_refs,
         )
 
 
