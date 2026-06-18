@@ -19,6 +19,7 @@ from polylogue.core.refs import EvidenceRef
 from polylogue.insights.transforms import RecoveryWorkPacket, RecoveryWorkPacketEntry
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionEnvelope
 from polylogue.types import SessionId
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.mcp import (
@@ -808,6 +809,57 @@ class TestArchiveGenericToolSurfaces:
         assert payload["code"] == "not_found"
         assert payload["tool"] == "get_recovery_work_packet"
         mock_poly.recovery_work_packet.assert_awaited_once_with("missing")
+
+    @pytest.mark.asyncio
+    async def test_list_assertion_claims_reads_shared_facade_claims(
+        self: object, mcp_server: MCPServerUnderTest
+    ) -> None:
+        claim = ArchiveAssertionEnvelope(
+            assertion_id="claim-1",
+            scope_ref="repo:polylogue",
+            target_ref="session:session-1",
+            key=None,
+            kind="decision",
+            value=None,
+            body_text="Use shared assertion claim reads.",
+            author_ref="agent:codex",
+            author_kind="agent",
+            evidence_refs=["session-1::m1"],
+            status="active",
+            visibility="private",
+            confidence=0.8,
+            staleness=None,
+            context_policy={"inject": True},
+            supersedes=[],
+            created_at_ms=1_700_000_000_000,
+            updated_at_ms=1_700_000_000_100,
+        )
+        mock_poly = make_polylogue_mock()
+        mock_poly.list_assertion_claims.return_value = [claim]
+
+        with patch("polylogue.mcp.server._get_polylogue", return_value=mock_poly):
+            result = await invoke_surface_async(
+                mcp_server._tool_manager._tools["list_assertion_claims"].fn,
+                kinds="decision,caveat",
+                target_ref="session:session-1",
+                statuses="active",
+                context_inject=True,
+                limit=5,
+            )
+
+        payload = json.loads(result)
+        assert payload["total"] == 1
+        assert payload["items"][0]["assertion_id"] == "claim-1"
+        assert payload["items"][0]["kind"] == "decision"
+        assert payload["items"][0]["context_policy"] == {"inject": True}
+        mock_poly.list_assertion_claims.assert_awaited_once_with(
+            kinds=("decision", "caveat"),
+            target_ref="session:session-1",
+            scope_ref=None,
+            statuses=("active",),
+            context_inject=True,
+            limit=5,
+        )
 
 
 class TestPromptSurfaces:
