@@ -189,18 +189,19 @@ def test_blackboard_note_write_through_scoped_and_unscoped(tmp_path: Path) -> No
     assert scoped_mirror[0].author_kind == "user"
 
     unscoped = upsert_blackboard_note(conn, "global body", now_ms=1_700_000_031_000)
-    # Unscoped note falls back to its own note_id as target_ref.
+    unscoped_target_ref = f"assertion:{unscoped.note_id}"
     unscoped_env = read_assertion_envelope(
         conn,
         next(
             r["assertion_id"]
             for r in conn.execute(
                 "SELECT assertion_id FROM assertions WHERE kind = ? AND target_ref = ?",
-                (AssertionKind.NOTE, unscoped.note_id),
+                (AssertionKind.NOTE, unscoped_target_ref),
             )
         ),
     )
     assert unscoped_env is not None
+    assert unscoped_env.target_ref == unscoped_target_ref
     assert unscoped_env.body_text == "global body"
 
     # Idempotency on the scoped note.

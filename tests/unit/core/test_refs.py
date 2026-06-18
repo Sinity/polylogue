@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from polylogue.core.refs import EvidenceRef, ObjectRef
+from polylogue.core.refs import (
+    EvidenceRef,
+    ObjectRef,
+    normalize_object_ref_text,
+    normalize_public_ref_text,
+    parse_public_ref,
+)
 
 
 @pytest.mark.parametrize(
@@ -16,9 +22,17 @@ from polylogue.core.refs import EvidenceRef, ObjectRef
         ("block:codex-session:demo:message-1:2", "block", "codex-session:demo:message-1", ("2",)),
         ("file:polylogue/insights/transforms.py", "file", "polylogue/insights/transforms.py", ()),
         ("branch:feature/demo", "branch", "feature/demo", ()),
+        ("commit:abc1234", "commit", "abc1234", ()),
         ("check-run:ruff check", "check-run", "ruff check", ()),
         ("github-issue:Sinity/polylogue#1883", "github-issue", "Sinity/polylogue#1883", ()),
         ("github-review:1911", "github-review", "1911", ()),
+        ("user:sinity", "user", "sinity", ()),
+        ("repo:polylogue", "repo", "polylogue", ()),
+        ("insight:session-1", "insight", "session-1", ()),
+        ("transform:recovery_digest_v0@v1", "transform", "recovery_digest_v0@v1", ()),
+        ("assertion:note-1", "assertion", "note-1", ()),
+        ("saved_view:view-1", "saved_view", "view-1", ()),
+        ("recall_pack:pack-1", "recall_pack", "pack-1", ()),
     ],
 )
 def test_object_ref_parses_and_formats_existing_assertion_ref_shapes(
@@ -71,3 +85,20 @@ def test_evidence_ref_parses_formats_and_projects_to_object_ref(
 def test_evidence_ref_rejects_unsupported_or_lossy_shapes(raw: str) -> None:
     with pytest.raises(ValueError):
         EvidenceRef.parse(raw)
+
+
+def test_public_ref_parser_prefers_object_refs_and_accepts_recovery_evidence_refs() -> None:
+    object_ref = parse_public_ref("session:codex-session:demo")
+    evidence_ref = parse_public_ref("codex-session:demo::m2::0")
+
+    assert isinstance(object_ref, ObjectRef)
+    assert object_ref.format() == "session:codex-session:demo"
+    assert isinstance(evidence_ref, EvidenceRef)
+    assert evidence_ref.to_object_ref().format() == "block:m2:0"
+    assert normalize_object_ref_text("repo:polylogue") == "repo:polylogue"
+    assert normalize_public_ref_text("codex-session:demo::m2") == "codex-session:demo::m2"
+
+
+def test_object_ref_normalizer_rejects_unscoped_raw_strings() -> None:
+    with pytest.raises(ValueError):
+        normalize_object_ref_text("demo-fixture-world")
