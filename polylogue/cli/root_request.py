@@ -101,10 +101,15 @@ class RootModeRequest:
     def verbose(self) -> bool:
         return bool(self.params.get("verbose", False))
 
+    @property
+    def explain_query(self) -> bool:
+        return bool(self.params.get("explain_query", False))
+
     def has_output_mode(self) -> bool:
         return any(
             self.params.get(key)
             for key in (
+                "explain_query",
                 "limit",
                 "stream",
                 "dialogue_only",

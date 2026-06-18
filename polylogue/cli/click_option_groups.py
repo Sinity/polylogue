@@ -312,6 +312,13 @@ OUTPUT_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
         ),
     ),
     click.option(
+        "--explain",
+        "explain_query",
+        is_flag=True,
+        default=False,
+        help="Explain query DSL parsing and lowering instead of executing the query.",
+    ),
+    click.option(
         "--transform",
         type=click.Choice(["strip-tools", "strip-thinking", "strip-all"]),
         help="Remove content: strip-tools (tool calls), strip-thinking (reasoning), strip-all (both)",
