@@ -834,6 +834,32 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         return await hooks.async_safe_call("get_recovery_work_packet", run)
 
     @mcp.tool()
+    async def get_recovery_report(
+        session_id: str,
+        report: Literal["continue", "blame", "work-packet"] = "continue",
+    ) -> str:
+        """Return a shared deterministic recovery report for one session."""
+
+        async def run() -> str:
+            content = await hooks.get_polylogue().recovery_report(session_id, report)
+            if content is None:
+                return hooks.error_json(
+                    f"Session not found: {session_id}",
+                    code="not_found",
+                    tool="get_recovery_report",
+                )
+            return hooks.json_payload(
+                MCPRootPayload(
+                    root=cast(
+                        dict[str, object],
+                        {"session_id": session_id, "report": report, "content": content},
+                    )
+                )
+            )
+
+        return await hooks.async_safe_call("get_recovery_report", run)
+
+    @mcp.tool()
     async def explain_query_expression(expression: str) -> str:
         """Explain query DSL parsing and lowering through the shared grammar."""
 
