@@ -387,7 +387,7 @@ counts with both views (<a href="https://github.com/Sinity/polylogue/issues/1269
 through the same typed AST and query planner:</p>
 <pre><code class="language-text">compact-query      ::= compact-clause*
 boolean-query      ::= [&quot;sessions&quot; &quot;where&quot;] predicate
-unit-query         ::= (&quot;messages&quot; | &quot;actions&quot; | &quot;blocks&quot;) &quot;where&quot; predicate
+unit-query         ::= (&quot;messages&quot; | &quot;actions&quot; | &quot;blocks&quot; | &quot;assertions&quot; | &quot;observed-events&quot; | &quot;context-snapshots&quot;) &quot;where&quot; predicate
 
 compact-clause     ::= field-clause
                      | quoted-text | bare-text
