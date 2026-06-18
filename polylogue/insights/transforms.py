@@ -466,7 +466,11 @@ def render_work_packet(packet: RecoveryWorkPacket) -> str:
         lines.append(f"- workdirs: {', '.join(packet.working_directories)}")
     lines.extend(["", "## Events"])
     event_entries = _packet_section(packet, "events")
-    lines.extend(_work_packet_line(entry) for entry in event_entries[:8])
+    for entry in event_entries[:8]:
+        lines.append(_work_packet_line(entry))
+        detail = _packet_metadata_line(entry.metadata, keys=("pr_refs", "issue_refs", "test_evidence"))
+        if detail:
+            lines.append(f"  - details: {detail}")
     if not event_entries:
         lines.append("- none extracted")
     lines.extend(["", "## Subagents"])
@@ -495,6 +499,9 @@ def render_work_packet(packet: RecoveryWorkPacket) -> str:
         handler = entry.metadata.get("handler_kind", "generic")
         status = entry.metadata.get("status", "unknown")
         lines.append(f"- {_support_marker(entry)} {entry.label} [{handler}] ({status}){command}")
+        detail = _packet_metadata_line(entry.metadata, keys=("pr_refs", "issue_refs", "file_refs", "test_evidence"))
+        if detail:
+            lines.append(f"  - details: {detail}")
     if not tool_entries:
         lines.append("- none extracted")
     lines.extend(["", "## Candidate Decisions / Run State"])
@@ -549,6 +556,11 @@ def _work_packet_line(entry: RecoveryWorkPacketEntry) -> str:
     return f"- {_support_marker(entry)} {entry.label}: {entry.text}"
 
 
+def _packet_metadata_line(metadata: Mapping[str, str], *, keys: Sequence[str]) -> str:
+    parts = [f"{key}={metadata[key]}" for key in keys if metadata.get(key)]
+    return "; ".join(parts)
+
+
 def _work_packet_entries(
     *,
     events: Sequence[RecoveryEvent],
@@ -564,6 +576,7 @@ def _work_packet_entries(
             section="events",
             label=event.kind,
             text=event.summary,
+            metadata=_event_packet_metadata(event),
             evidence_refs=_to_evidence_refs(event.raw_refs),
         )
     for report in subagent_reports:
@@ -613,7 +626,7 @@ def _work_packet_entries(
             section="tools",
             label=tool.tool_name,
             text=tool.command or "",
-            metadata={"handler_kind": tool.handler_kind, "status": tool.status},
+            metadata=_tool_packet_metadata(tool),
             evidence_refs=_to_evidence_refs(tool.raw_refs),
         )
     for decision in decisions:
@@ -660,6 +673,39 @@ def _work_packet_entries(
 
 def _to_evidence_refs(refs: Sequence[TransformRawRef]) -> tuple[EvidenceRef, ...]:
     return tuple(ref.to_evidence_ref() for ref in refs)
+
+
+def _event_packet_metadata(event: RecoveryEvent) -> dict[str, str]:
+    metadata: dict[str, str] = {}
+    pr_refs = tuple(_number_refs(_PR_RE, event.summary)) if event.kind.startswith("pr_") else ()
+    issue_refs = tuple(_number_refs(_ISSUE_RE, event.summary)) if event.kind == "issue_closed" else ()
+    test_evidence = (event.summary,) if event.kind.startswith(("check_", "test_")) else ()
+    if pr_refs:
+        metadata["pr_refs"] = ", ".join(pr_refs)
+    if issue_refs:
+        metadata["issue_refs"] = ", ".join(issue_refs)
+    if test_evidence:
+        metadata["test_evidence"] = " | ".join(test_evidence)
+    return metadata
+
+
+def _tool_packet_metadata(tool: ToolSummary) -> dict[str, str]:
+    metadata: dict[str, str] = {"handler_kind": tool.handler_kind, "status": tool.status}
+    issue_refs = _refs_without_pr_refs(tool.issue_refs, tool.pr_refs)
+    if tool.pr_refs:
+        metadata["pr_refs"] = ", ".join(tool.pr_refs)
+    if issue_refs:
+        metadata["issue_refs"] = ", ".join(issue_refs)
+    if tool.file_refs:
+        metadata["file_refs"] = ", ".join(tool.file_refs)
+    if tool.test_evidence:
+        metadata["test_evidence"] = " | ".join(tool.test_evidence)
+    return metadata
+
+
+def _refs_without_pr_refs(issue_refs: Sequence[str], pr_refs: Sequence[str]) -> tuple[str, ...]:
+    pr_ref_set = set(pr_refs)
+    return tuple(ref for ref in issue_refs if ref not in pr_ref_set)
 
 
 def render_recovery_report(digest: RecoveryDigest, *, preset: RecoveryReportPreset) -> str:
