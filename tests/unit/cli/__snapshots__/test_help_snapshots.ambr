@@ -156,8 +156,8 @@
     analyze
     blackboard
     commands
-    completions        Emit shell completion setup for polylogue.
     config             Show configuration paths and resolved settings.
+    continue           Compile a successor-agent continuation report.
     cost               Summarize session cost telemetry.
     count              Print count of matched sessions.
     dashboard          Open the local dashboard.
@@ -177,7 +177,6 @@
     recent             List the most recently updated sessions.
     resume             Resume from recent session context.
     resume-candidates  Rank resume candidates for the current context.
-    schema             Inspect and audit provider schemas.
     select
     stats              Show statistics for matched sessions.
     tags               Manage session tags.

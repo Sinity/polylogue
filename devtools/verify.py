@@ -233,10 +233,11 @@ def _pytest_metadata_from_report(report: dict[str, Any], *, report_path: Path) -
     summary = report.get("summary")
     metadata: dict[str, Any] = {"report_path": str(report_path)}
     if isinstance(summary, dict):
-        # `total` is collected count; sum the executed outcomes for the
-        # number we previously scraped from the terminal.
+        # Prefer pytest-json-report's explicit total when present. Older or
+        # reduced reports still get a stable executed count from outcome keys.
         outcome_keys = ("passed", "failed", "error", "skipped", "xfailed", "xpassed")
-        executed = sum(int(summary.get(k, 0) or 0) for k in outcome_keys)
+        total = summary.get("total")
+        executed = int(total) if isinstance(total, int) else sum(int(summary.get(k, 0) or 0) for k in outcome_keys)
         metadata["count"] = executed
         for key in ("passed", "failed", "error", "skipped", "xfailed", "xpassed", "total"):
             value = summary.get(key)
@@ -340,7 +341,7 @@ def _write_pytest_progress(
     if termination_reason is not None:
         payload["termination_reason"] = termination_reason
     PYTEST_PROGRESS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = PYTEST_PROGRESS_PATH.with_suffix(".tmp")
+    tmp = PYTEST_PROGRESS_PATH.with_name(f"{PYTEST_PROGRESS_PATH.name}.{os.getpid()}.{time.monotonic_ns()}.tmp")
     tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
     tmp.replace(PYTEST_PROGRESS_PATH)
 
@@ -585,7 +586,7 @@ def _run(label: str, cmd: list[str], *, cwd: str | None = None) -> tuple[int, fl
         if junit_paths:
             metadata["junitxml_path"] = junit_paths[-1]
         report_path = _pytest_json_report_path(cmd)
-        report = _read_json_artifact(report_path)
+        report = _read_pytest_report(report_path)
         if report is not None:
             metadata.update(_pytest_metadata_from_report(report, report_path=report_path))
             metadata["report_status"] = "present"

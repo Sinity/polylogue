@@ -150,11 +150,17 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     xdist workers share the controller's basetemp, so only the controller
     (no ``PYTEST_XDIST_WORKER`` in env) removes it, and only when we minted
     a per-run name — never a caller-supplied ``--basetemp`` or the shared
-    seeded corpus root.
+    seeded corpus root. Parallel xdist runs leave their per-run basetemp for
+    the next startup sweep instead of deleting it during session-finish
+    teardown, where xdist/json-report may still be flushing controller/worker
+    artifacts.
     """
     if os.environ.get("PYTEST_XDIST_WORKER"):
         return
     if not os.environ.get("POLYLOGUE_PYTEST_RUN_ID"):
+        return
+    numprocesses = getattr(session.config.option, "numprocesses", None)
+    if numprocesses not in (None, 0, "0"):
         return
     basetemp = session.config.option.basetemp
     if not basetemp:

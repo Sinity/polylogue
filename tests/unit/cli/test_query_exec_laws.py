@@ -451,8 +451,7 @@ def test_async_execute_query_archive_lists_archive(
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["mode"] == "list"
-    assert payload["items"][0]["session_id"] == "codex-session:native-1"
-    assert payload["items"][0]["source"] == "codex-session"
+    assert payload["items"][0]["id"] == "codex-session:native-1"
     assert payload["items"][0]["origin"] == "codex-session"
 
 
@@ -888,6 +887,21 @@ def test_async_execute_query_archive_search_maps_provider_to_origin(
                 )
             ]
 
+        def read_summary(self, session_id: str) -> ArchiveSessionSummary:
+            assert session_id == "codex-session:native-1"
+            return ArchiveSessionSummary(
+                session_id=session_id,
+                native_id="native-1",
+                origin="codex-session",
+                provider=Provider.CODEX,
+                title="Copied",
+                created_at=None,
+                updated_at=None,
+                message_count=1,
+                word_count=1,
+                tags=(),
+            )
+
     monkeypatch.setattr(
         "polylogue.cli.archive_query.ArchiveStore.open_existing",
         classmethod(lambda cls, root: FakeArchiveStore()),
@@ -930,9 +944,9 @@ def test_async_execute_query_archive_search_maps_provider_to_origin(
     payload = json.loads(capsys.readouterr().out)
     assert payload["mode"] == "search"
     assert payload["origin"] == "codex-session"
-    assert payload["items"][0]["block_id"] == "codex-session:native-1:m1:0"
-    assert payload["items"][0]["source"] == "codex-session"
-    assert payload["items"][0]["origin"] == "codex-session"
+    assert payload["items"][0]["session"]["id"] == "codex-session:native-1"
+    assert payload["items"][0]["session"]["origin"] == "codex-session"
+    assert payload["items"][0]["match"]["message_id"] == "codex-session:native-1:m1"
 
 
 def test_async_execute_query_archive_filters_multiple_providers(
@@ -1019,6 +1033,21 @@ def test_async_execute_query_archive_searches_within_session_id(
                 )
             ]
 
+        def read_summary(self, session_id: str) -> ArchiveSessionSummary:
+            assert session_id == "codex-session:native-1"
+            return ArchiveSessionSummary(
+                session_id=session_id,
+                native_id="native-1",
+                origin="codex-session",
+                provider=Provider.CODEX,
+                title="Copied",
+                created_at=None,
+                updated_at=None,
+                message_count=1,
+                word_count=1,
+                tags=(),
+            )
+
     monkeypatch.setattr(
         "polylogue.cli.archive_query.ArchiveStore.open_existing",
         classmethod(lambda cls, root: FakeArchiveStore()),
@@ -1038,7 +1067,7 @@ def test_async_execute_query_archive_searches_within_session_id(
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["mode"] == "search"
-    assert payload["items"][0]["session_id"] == "codex-session:native-1"
+    assert payload["items"][0]["session"]["id"] == "codex-session:native-1"
 
 
 def test_async_execute_query_archive_filters_since_session_id(
@@ -1140,7 +1169,7 @@ def test_async_execute_query_archive_paginates_lists_with_cursor(
     first_page = json.loads(capsys.readouterr().out)
     cursor = first_page["next_cursor"]
 
-    assert [item["session_id"] for item in first_page["items"]] == ["codex-session:one", "codex-session:two"]
+    assert [item["id"] for item in first_page["items"]] == ["codex-session:one", "codex-session:two"]
     assert decode_search_cursor(cursor).r == 2
     assert first_page["next_offset"] == 2
 
@@ -1153,7 +1182,7 @@ def test_async_execute_query_archive_paginates_lists_with_cursor(
     second_page = json.loads(capsys.readouterr().out)
 
     assert calls == [(3, 0), (3, 2)]
-    assert [item["session_id"] for item in second_page["items"]] == ["codex-session:three", "codex-session:four"]
+    assert [item["id"] for item in second_page["items"]] == ["codex-session:three", "codex-session:four"]
     assert second_page["next_cursor"] is None
 
 
@@ -1519,6 +1548,21 @@ def test_async_execute_query_archive_uses_vector_provider_for_semantic_search(
                 ),
             ]
 
+        def read_summary(self, session_id: str) -> ArchiveSessionSummary:
+            native_id = session_id.removeprefix("codex-session:")
+            return ArchiveSessionSummary(
+                session_id=session_id,
+                native_id=native_id,
+                origin="codex-session",
+                provider=Provider.CODEX,
+                title=f"Semantic {native_id[-1]}",
+                created_at=None,
+                updated_at=None,
+                message_count=1,
+                word_count=1,
+                tags=(),
+            )
+
     monkeypatch.setattr(
         "polylogue.cli.archive_query.ArchiveStore.open_existing",
         classmethod(lambda cls, root: FakeArchiveStore()),
@@ -1541,7 +1585,7 @@ def test_async_execute_query_archive_uses_vector_provider_for_semantic_search(
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["retrieval_lane"] == "semantic"
-    assert payload["items"][0]["session_id"] == "codex-session:native-1"
+    assert payload["items"][0]["session"]["id"] == "codex-session:native-1"
     assert decode_search_cursor(payload["next_cursor"]).lane == "semantic"
 
 
@@ -1590,6 +1634,21 @@ def test_async_execute_query_archive_accepts_explicit_semantic_lane(
                 )
             ]
 
+        def read_summary(self, session_id: str) -> ArchiveSessionSummary:
+            assert session_id == "codex-session:native-1"
+            return ArchiveSessionSummary(
+                session_id=session_id,
+                native_id="native-1",
+                origin="codex-session",
+                provider=Provider.CODEX,
+                title="Semantic",
+                created_at=None,
+                updated_at=None,
+                message_count=1,
+                word_count=1,
+                tags=(),
+            )
+
     monkeypatch.setattr(
         "polylogue.cli.archive_query.ArchiveStore.open_existing",
         classmethod(lambda cls, root: FakeArchiveStore()),
@@ -1612,7 +1671,7 @@ def test_async_execute_query_archive_accepts_explicit_semantic_lane(
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["retrieval_lane"] == "semantic"
-    assert payload["items"][0]["session_id"] == "codex-session:native-1"
+    assert payload["items"][0]["session"]["id"] == "codex-session:native-1"
 
 
 def test_archive_tiers_semantic_query_uses_active_root_embeddings_db(
@@ -1665,6 +1724,21 @@ def test_archive_tiers_semantic_query_uses_active_root_embeddings_db(
                     snippet="semantic hit",
                 )
             ]
+
+        def read_summary(self, session_id: str) -> ArchiveSessionSummary:
+            assert session_id == "codex-session:native-1"
+            return ArchiveSessionSummary(
+                session_id=session_id,
+                native_id="native-1",
+                origin="codex-session",
+                provider=Provider.CODEX,
+                title="Semantic",
+                created_at=None,
+                updated_at=None,
+                message_count=1,
+                word_count=1,
+                tags=(),
+            )
 
     def fake_open_existing(cls: type[object], root: Path) -> FakeArchiveStore:
         assert root == active_root

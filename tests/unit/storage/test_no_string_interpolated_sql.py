@@ -51,21 +51,56 @@ _AUDITED_SITES: Final[dict[tuple[str, int], str]] = {
     ("polylogue/storage/repository/archive/sessions.py", 300): (
         "chunked IN-clause: literal scoped_sql template + '?,?' placeholders, values bound"
     ),
-    # #1743 readiness fallback coverage (_archive_fallback_coverage):
-    #   degraded_row = self._conn.execute(f"... FROM {table_name} ... WHERE ({any_terms}){clause}")
-    # ``table_name`` is a closed insight-table identifier; ``any_terms`` is built
-    # from the (column, path) pairs in the closed ``_INSIGHT_FALLBACK_PAYLOAD``
-    # constant; ``clause`` comes from ``_readiness_session_filter`` whose values
-    # flow through bound params. No user input enters the format string.
-    ("polylogue/storage/sqlite/archive_tiers/archive.py", 2610): (
-        "readiness fallback coverage: closed insight-table + _INSIGHT_FALLBACK_PAYLOAD column/path; values bound"
-    ),
-    # #1743 readiness fallback reason counts (_archive_fallback_coverage):
-    #   rows = self._conn.execute(f"... FROM {table_name} ... json_each(... '{path}') ...{clause}")
-    # ``table_name``/``column``/``path`` are the closed-constant identifiers
-    # above; ``clause`` values are bound. No user input enters the format string.
-    ("polylogue/storage/sqlite/archive_tiers/archive.py", 2619): (
+    # #1743 readiness fallback degraded row count:
+    #   degraded_row = self._conn.execute(f"SELECT ... FROM {table_name} ... WHERE ({any_terms}){clause}", ...)
+    # ``table_name`` is a closed insight table name; ``any_terms`` is built
+    # immediately above from closed ``(column, path)`` fallback specs; ``clause``
+    # values are bound.
+    ("polylogue/storage/sqlite/archive_tiers/archive.py", 2584): (
         "readiness fallback reason counts: closed insight-table + _INSIGHT_FALLBACK_PAYLOAD column/path; values bound"
+    ),
+    # #1743 readiness fallback reason breakdown:
+    #   rows = self._conn.execute(f"... FROM {table_name} ... json_each(... '{path}') ...{clause}")
+    # ``table_name``/``column``/``path`` are closed fallback specs; ``clause``
+    # values are bound.
+    ("polylogue/storage/sqlite/archive_tiers/archive.py", 2593): (
+        "readiness fallback reason breakdown: closed insight-table + fallback payload column/path; values bound"
+    ),
+    # Terminal unit row readers:
+    #   rows = self._conn.execute(f"""... WHERE ({clause}){session_clause} ...""", ...)
+    # ``clause`` comes from the structural predicate lowerer, which returns SQL
+    # fragments plus bound params from closed field metadata; ``session_clause``
+    # comes from the shared session filter lowerer; pagination values are bound.
+    ("polylogue/storage/sqlite/archive_tiers/archive.py", 3252): (
+        "message query rows: structural predicate/session filter fragments from lowerers; values bound"
+    ),
+    ("polylogue/storage/sqlite/archive_tiers/archive.py", 3314): (
+        "action query rows: structural predicate/session filter fragments from lowerers; values bound"
+    ),
+    ("polylogue/storage/sqlite/archive_tiers/archive.py", 3374): (
+        "block query rows: structural predicate/session filter fragments from lowerers; values bound"
+    ),
+    ("polylogue/storage/sqlite/archive_tiers/archive.py", 3437): (
+        "assertion query rows: structural predicate/session filter fragments from lowerers; values bound"
+    ),
+    # Assertion readers:
+    #   rows = conn.execute(f"SELECT {_ASSERTION_COLUMNS} FROM assertions ...", ...)
+    # ``_ASSERTION_COLUMNS`` is a module-level literal projection list; all
+    # dynamic row values are passed through bound parameters.
+    ("polylogue/storage/sqlite/archive_tiers/user_write.py", 657): (
+        "assertion kind listing: literal projection column list; kind value bound"
+    ),
+    ("polylogue/storage/sqlite/archive_tiers/user_write.py", 671): (
+        "assertion kind/key lookup: literal projection column list; values bound"
+    ),
+    ("polylogue/storage/sqlite/archive_tiers/user_write.py", 930): (
+        "assertion id lookup: literal projection column list; assertion id bound"
+    ),
+    ("polylogue/storage/sqlite/archive_tiers/user_write.py", 947): (
+        "assertions for target: literal projection column list; target ref bound"
+    ),
+    ("polylogue/storage/sqlite/archive_tiers/user_write.py", 952): (
+        "assertions for target/kind: literal projection column list; values bound"
     ),
 }
 

@@ -14,10 +14,10 @@ Current registry snapshot:
 - mutation campaigns: `19`
 - benchmark campaigns: `7`
 - synthetic benchmark campaigns: `6`
-- scenario projections: `272`
+- scenario projections: `273`
 - inferred corpus scenarios: `8`
   - benchmark-campaign: `7`
-  - exercise: `165`
+  - exercise: `166`
   - inferred-corpus-scenario: `8`
   - mutation-campaign: `19`
   - synthetic-benchmark: `6`
@@ -400,6 +400,7 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-ops-maintenance-archive-init` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops maintenance archive-init help |
 | `exercise` | `help-ops-maintenance-archive-plan` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops maintenance archive-plan help |
 | `exercise` | `help-ops-maintenance-archive-read` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops maintenance archive-read help |
+| `exercise` | `help-ops-maintenance-assertion-export` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops maintenance assertion-export help |
 | `exercise` | `help-ops-maintenance-backup-plan` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops maintenance backup-plan help |
 | `exercise` | `help-ops-maintenance-blob-gc` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops maintenance blob-gc help |
 | `exercise` | `help-ops-maintenance-gc-history` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops maintenance gc-history help |

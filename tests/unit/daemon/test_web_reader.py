@@ -1119,7 +1119,7 @@ class TestReaderQueryUnits:
 
         assert status == 400
         assert payload["error"] == "invalid_query"
-        assert "messages/actions/blocks where" in str(payload["message"])
+        assert "messages/actions/blocks/assertions where" in str(payload["message"])
 
 
 class TestReaderViewProfiles:

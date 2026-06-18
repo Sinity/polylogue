@@ -80,6 +80,7 @@ def run_memory_budget(command: list[str], *, max_rss_mb: int, poll_interval_s: f
 
     peak_parent_rss_kb = max(peak_parent_rss_kb, _read_vm_rss_kb(proc.pid))
     peak_rss_kb = max(peak_rss_kb, _read_process_tree_rss_kb(proc.pid))
+    peak_rss_kb = max(peak_rss_kb, peak_parent_rss_kb)
     exit_code = int(proc.returncode or 0)
     peak_parent_rss_mb = round(peak_parent_rss_kb / 1024, 1)
     peak_rss_mb = round(peak_rss_kb / 1024, 1)

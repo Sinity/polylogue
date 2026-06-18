@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,9 @@ from polylogue.storage.sqlite.archive_tiers.archive_init import (
     ArchiveTierInitResult,
 )
 from polylogue.storage.sqlite.archive_tiers.archive_plan import ArchiveInitAction, ArchiveInitPlan
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
 
 _ARCHIVE_TIERS = ("source.db", "index.db", "embeddings.db", "ops.db", "user.db")
 
@@ -42,6 +46,40 @@ def _write_gc_candidate(cli_workspace: dict[str, Path], blob_hash: str) -> Path:
     old_epoch_s = 946684800
     os.utime(path, (old_epoch_s, old_epoch_s))
     return path
+
+
+def _seed_assertion_export_rows(archive_root: Path) -> None:
+    with sqlite3.connect(archive_root / "user.db") as conn:
+        conn.row_factory = sqlite3.Row
+        initialize_archive_tier(conn, ArchiveTier.USER)
+        upsert_assertion(
+            conn,
+            assertion_id="export-mark",
+            target_ref="session:s-1",
+            kind=AssertionKind.MARK,
+            scope_ref="run:r-1",
+            key="export/mark",
+            value={"label": "important"},
+            body_text="operator mark",
+            author_ref="user:operator",
+            author_kind="user",
+            evidence_refs=["message:s-1:1"],
+            status="active",
+            visibility="private",
+            now_ms=1_700_000_001_000,
+        )
+        upsert_assertion(
+            conn,
+            assertion_id="export-deleted-note",
+            target_ref="session:s-2",
+            kind=AssertionKind.NOTE,
+            scope_ref="run:r-2",
+            key="export/note",
+            body_text="deleted note retained for backup",
+            status="deleted",
+            visibility="private",
+            now_ms=1_700_000_002_000,
+        )
 
 
 def test_archive_plan_cli_reports_tier_targets(cli_workspace: dict[str, Path], cli_runner: CliRunner) -> None:
@@ -175,6 +213,61 @@ def test_backup_plan_cli_renders_plain_summary(
     assert "Archive backup plan" in result.output
     assert "source.db: critical policy=back_up present" in result.output
     assert "full_evidence:" in result.output
+
+
+def test_assertion_export_cli_emits_all_assertions_as_jsonl(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    _seed_assertion_export_rows(cli_workspace["archive_root"])
+
+    result = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "assertion-export"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    rows = [json.loads(line) for line in result.output.splitlines()]
+    assert [row["assertion_id"] for row in rows] == ["export-mark", "export-deleted-note"]
+    assert rows[0]["kind"] == "mark"
+    assert rows[0]["value"] == {"label": "important"}
+    assert rows[0]["evidence_refs"] == ["message:s-1:1"]
+    assert rows[1]["status"] == "deleted"
+
+
+def test_assertion_export_cli_filters_and_writes_json_file(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    _seed_assertion_export_rows(cli_workspace["archive_root"])
+    out_path = cli_workspace["archive_root"] / "exports" / "assertions.json"
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "assertion-export",
+            "--format",
+            "json",
+            "--kind",
+            "note",
+            "--status",
+            "deleted",
+            "--out",
+            str(out_path),
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    assert result.output == f"Exported 1 assertions to {out_path}\n"
+    payload = json.loads(out_path.read_text(encoding="utf-8"))
+    assert payload["mode"] == "assertion_export"
+    assert payload["count"] == 1
+    assert [row["assertion_id"] for row in payload["assertions"]] == ["export-deleted-note"]
 
 
 def test_blob_gc_cli_dry_run_reports_without_deleting(

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -79,3 +81,18 @@ def test_sweep_stale_polylogue_basetemps_preserves_seeded_and_recent(
     assert seeded.exists()
     assert recent.exists()
     assert unrelated.exists()
+
+
+def test_sessionfinish_leaves_xdist_basetemp_for_startup_sweep(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    basetemp = tmp_path / "pytest-polylogue-run-123"
+    basetemp.mkdir()
+    session = SimpleNamespace(config=SimpleNamespace(option=SimpleNamespace(basetemp=str(basetemp), numprocesses=8)))
+    monkeypatch.setenv("POLYLOGUE_PYTEST_RUN_ID", "run-123")
+    monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
+
+    conftest.pytest_sessionfinish(cast("pytest.Session", session), 0)
+
+    assert basetemp.exists()
