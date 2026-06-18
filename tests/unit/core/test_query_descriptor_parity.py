@@ -1,4 +1,4 @@
-"""Query descriptor parity tests for #621.
+"""Query descriptor parity tests for the shared query substrate.
 
 Proves that query-field names are consistent across CLI, MCP, and API surfaces.
 """
@@ -23,33 +23,20 @@ def test_descriptor_mcp_names_match_mcp_query_request_fields() -> None:
 
 
 def test_all_descriptors_have_mcp_or_api_name() -> None:
-    """Every descriptor with a selection_filter should declare at least one surface name.
-
-    This is currently informational: it collects gaps but doesn't fail.
-    The full parity enforcement lands when #621 is complete.
-    """
+    """Public selection filters declare at least one surface name."""
     missing = []
     for d in QUERY_FIELD_DESCRIPTORS:
         if d.selection_filter and not d.mcp_names and not d.api_names:
             missing.append(d.name)
-    legit_internal = {
-        "excluded_providers",
-        "excluded_tags",
-        "has_types",
-        "similar_text",
-        "session_id",
-        "latest",
+    internal_plan_only = {
         "parent_id",
         "continuation",
         "sidechain",
         "root",
         "has_branches",
         "predicates",
-        "exclude_text_terms",
-        "max_messages",
-        "until",
     }
-    actionable = [m for m in missing if m not in legit_internal]
+    actionable = [m for m in missing if m not in internal_plan_only]
     if actionable:
         raise AssertionError(f"Selection filters without surface names: {actionable}")
 

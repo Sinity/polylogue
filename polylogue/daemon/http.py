@@ -2266,7 +2266,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
     @daemon_safe_handler
     def _handle_query_units(self, params: dict[str, list[str]]) -> None:
-        """``GET /api/query-units`` returns terminal message/action/block rows."""
+        """``GET /api/query-units`` returns terminal query-unit rows."""
 
         from polylogue.archive.query.expression import ExpressionCompileError, parse_unit_source_expression
         from polylogue.archive.query.spec import clamp_query_limit
