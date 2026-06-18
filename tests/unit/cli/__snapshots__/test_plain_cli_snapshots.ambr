@@ -388,17 +388,17 @@
     "archive_facade_routes": {
       "checked": true,
       "source": "static_facade_route_catalog",
-      "total_method_count": 111,
-      "archive_ready_method_count": 110,
+      "total_method_count": 110,
+      "archive_ready_method_count": 109,
       "unsupported_method_count": 0,
       "route_counts": {
-        "archive_routed": 96,
+        "archive_routed": 95,
         "archive_direct": 14,
         "not_archive_runtime": 1
       },
       "tier_counts": {
         "user": 35,
-        "index": 72,
+        "index": 71,
         "none": 1,
         "source": 3
       },
@@ -844,11 +844,6 @@
           "tier": "user",
           "detail": "writes blackboard notes through user.db"
         },
-        "query_completions": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "lists query DSL completion metadata"
-        },
         "query_sessions": {
           "route": "archive_routed",
           "tier": "index",
@@ -1022,7 +1017,7 @@
       ],
       "facade_tier_route_counts": {
         "user": 35,
-        "index": 72,
+        "index": 71,
         "none": 1,
         "source": 3
       },
