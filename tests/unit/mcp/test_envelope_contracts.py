@@ -83,6 +83,7 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     # ------- single record -------
     "get_session": "single_object",
     "get_session_summary": "single_object",
+    "get_recovery_work_packet": "single_object",
     "archive_get_session": "single_object",
     "get_metadata": "single_object",
     "session_profile": "single_object",

@@ -782,6 +782,29 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         return await hooks.async_safe_call("list_read_view_profiles", run)
 
     @mcp.tool()
+    async def get_recovery_work_packet(session_id: str) -> str:
+        """Return the shared recovery work-packet DTO for one session."""
+
+        async def run() -> str:
+            packet = await hooks.get_polylogue().recovery_work_packet(session_id)
+            if packet is None:
+                return hooks.error_json(
+                    f"Session not found: {session_id}",
+                    code="not_found",
+                    tool="get_recovery_work_packet",
+                )
+            return hooks.json_payload(
+                MCPRootPayload(
+                    root=cast(
+                        dict[str, object],
+                        {"recovery_work_packet": packet.model_dump(mode="json", exclude_none=True)},
+                    )
+                )
+            )
+
+        return await hooks.async_safe_call("get_recovery_work_packet", run)
+
+    @mcp.tool()
     async def explain_query_expression(expression: str) -> str:
         """Explain query DSL parsing and lowering through the shared grammar."""
 
