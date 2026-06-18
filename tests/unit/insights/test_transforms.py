@@ -319,6 +319,10 @@ def test_work_packet_exposes_storage_free_continuation_bundle() -> None:
     assert packet.session_id == "codex-session:demo"
     assert packet.source_origin == "codex-session"
     assert packet.message_count == 3
+    assert packet.target_refs == (
+        ObjectRef(kind="session", object_id="codex-session:demo"),
+        ObjectRef(kind="branch", object_id="feature/demo"),
+    )
     assert {entry.section for entry in packet.entries} == {
         "events",
         "subagents",
@@ -366,6 +370,7 @@ def test_work_packet_exposes_storage_free_continuation_bundle() -> None:
         for ref in entry.object_refs:
             assert ObjectRef.parse(ref.format()) == ref
     assert "# Resume: Ship the backlog" in rendered
+    assert "refs: session:codex-session:demo, branch:feature/demo" in rendered
     assert "- [raw-evidence] pr_opened: PR #1911 opened" in rendered
     assert "refs: github-pr:#1911" in rendered
     assert "details: pr_refs=#1911" in rendered
