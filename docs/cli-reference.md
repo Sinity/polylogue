@@ -176,7 +176,6 @@ Commands:
   list               List matched sessions.
   mark
   ops                Run operational archive and daemon commands.
-  query-completions  Inspect structured query completion metadata.
   read               Read matched sessions (route to view/destination).
   recent             List the most recently updated sessions.
   resume             Resume from recent session context.

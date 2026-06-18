@@ -266,7 +266,6 @@ _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
     "parse_file": ("archive_routed", "source", "writes source.db and index.db directly"),
     "post_blackboard_note": ("archive_routed", "user", "writes blackboard notes through user.db"),
     "parse_sources": ("archive_routed", "source", "writes source.db and index.db directly"),
-    "query_completions": ("archive_routed", "index", "lists query DSL completion metadata"),
     "query_units": ("archive_routed", "index", "queries terminal archive units from index.db"),
     "query_sessions": ("archive_routed", "index", "queries summaries from index.db"),
     "rebuild_index": ("archive_routed", "index", "rebuilds messages_fts from index.db"),
