@@ -402,7 +402,9 @@ class TestQueryFirstGroupParseArgs:
         from polylogue.cli.click_app import cli
 
         result = cli_runner.invoke(
-            cli, ["--plain", "--origin", "claude-ai-export", "insights", "--help"], catch_exceptions=False
+            cli,
+            ["--plain", "--origin", "claude-ai-export", "ops", "insights", "--help"],
+            catch_exceptions=False,
         )
         assert result.exit_code == 0
         assert "insights" in result.output.lower()
@@ -449,7 +451,7 @@ class TestQueryFirstGroupParseArgs:
         result = cli_runner.invoke(cli, ["--help"], catch_exceptions=False)
         assert result.exit_code == 0
         assert "polylogue" in result.output.lower()
-        assert "insights" in result.output
+        assert "ops" in result.output
         assert "--origin" in result.output
         assert "--latest" in result.output
         assert "Subcommands:" not in result.output
@@ -747,7 +749,6 @@ class TestCliMetadata:
             "config",
             "continue",
             "resume",
-            "insights",
             "user-state",
             "ops",
             # Query verbs
