@@ -1,11 +1,11 @@
 """Tests for topology/layering gate classification: blocking vs advisory.
 
 These tests verify that:
-  - verify-topology blocks on orphans, missing, conflicts, kernel_rule
-  - verify-topology does NOT block on TBD (warning-only)
-  - verify-topology blocks on TBD with --strict-tbd
-  - verify-layering blocks on import-boundary violations
-  - verify-layering passes on clean imports
+  - verify topology blocks on orphans, missing, conflicts, kernel_rule
+  - verify topology does NOT block on TBD (warning-only)
+  - verify topology blocks on TBD with --strict-tbd
+  - verify layering blocks on import-boundary violations
+  - verify layering passes on clean imports
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ def _make_tmp_tree(tmp_path: Path, files: list[str]) -> set[str]:
 
 
 # ---------------------------------------------------------------------------
-# verify-topology: blocking classification
+# verify topology: blocking classification
 # ---------------------------------------------------------------------------
 
 
@@ -195,7 +195,7 @@ def test_blob_gc_not_tbd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 # ---------------------------------------------------------------------------
-# verify-layering: blocking classification
+# verify layering: blocking classification
 # ---------------------------------------------------------------------------
 
 

@@ -1,4 +1,4 @@
-"""Tests for ``devtools verify-closure-matrix``."""
+"""Tests for ``devtools verify closure-matrix``."""
 
 from __future__ import annotations
 

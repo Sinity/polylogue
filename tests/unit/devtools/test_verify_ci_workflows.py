@@ -152,7 +152,7 @@ class TestInventoryWorkflows:
                   - run: uv run ruff check polylogue/
               test:
                 steps:
-                  - run: uv run devtools coverage-gate
+                  - run: uv run devtools verify coverage
                   - uses: actions/upload-artifact@v7
                     with:
                       name: coverage-report
@@ -165,7 +165,7 @@ class TestInventoryWorkflows:
         assert set(inv.all_job_names) == {"lint", "test"}
         runs = inv.all_run_commands
         assert any("ruff check polylogue/" in r for r in runs)
-        assert any("devtools coverage-gate" in r for r in runs)
+        assert any("devtools verify coverage" in r for r in runs)
         assert inv.all_artifact_uploads == ("coverage-report",)
         assert set(inv.workflows[0].triggers) == {"workflow_dispatch", "pull_request"}
 

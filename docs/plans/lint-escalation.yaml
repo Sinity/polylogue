@@ -10,12 +10,12 @@
 description: Lint escalation registry with sunset clocks — soft warnings become hard errors on expiry.
 
 rules:
-  - id: verify-topology
+  - id: verify topology
     description: Topology projection matches realized tree
     severity: hard
     sunset: "2026-04-26"
 
-  - id: verify-manifests
+  - id: verify manifests
     description: Internal consistency across all docs/plans/*.yaml manifests
     severity: soft
     sunset: "2026-05-15"

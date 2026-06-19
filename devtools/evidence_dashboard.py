@@ -138,7 +138,7 @@ def _coverage(root: Path) -> dict[str, Any]:
         }
     return {
         "available": False,
-        "reason": "no coverage.xml or .coverage found — run devtools coverage-gate",
+        "reason": "no coverage.xml or .coverage found — run devtools verify coverage",
         "path": str(COVERAGE_XML_REL),
     }
 
@@ -223,11 +223,11 @@ _STATIC_GATE_NAMES: tuple[str, ...] = (
     "ruff check",
     "mypy",
     "render all",
-    "verify-topology",
-    "verify-layering",
+    "verify topology",
+    "verify layering",
     "lab schema roundtrip",
-    "verify-manifests",
-    "verify-lane-assertions",
+    "verify manifests",
+    "verify lane-assertions",
 )
 
 
@@ -377,7 +377,7 @@ def _mutation_campaigns(root: Path, *, now: datetime) -> dict[str, Any]:
 
 
 def build_dashboard(root: Path, *, now: datetime | None = None) -> dict[str, Any]:
-    """Build the complete evidence-dashboard payload from real artifacts."""
+    """Build the complete verify evidence payload from real artifacts."""
     when = now or datetime.now(timezone.utc)
     benchmark_section = _benchmark_slo(root, now=when)
     return {

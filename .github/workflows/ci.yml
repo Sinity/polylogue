@@ -60,7 +60,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --extra dev --frozen
-      - run: uv run devtools coverage-gate
+      - run: uv run devtools verify coverage
         env:
           POLYLOGUE_FORCE_PLAIN: "1"
           HYPOTHESIS_PROFILE: ci

@@ -203,15 +203,15 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         featured=True,
     ),
     CommandSpec(
-        "coverage-gate",
+        "verify coverage",
         "verification",
         "Run pytest with the repository coverage floor from pyproject.toml.",
         "devtools.coverage_gate",
         use_when="Enforce the committed coverage ratchet locally or in CI without duplicating threshold values.",
         examples=(
-            "devtools coverage-gate",
-            "devtools coverage-gate --ignore-integration --term-missing",
-            "devtools coverage-gate -- --maxfail=1",
+            "devtools verify coverage",
+            "devtools verify coverage --ignore-integration --term-missing",
+            "devtools verify coverage -- --maxfail=1",
         ),
     ),
     CommandSpec(
@@ -299,7 +299,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "verify-topology",
+        "verify topology",
         "verification",
         "Verify the realized polylogue tree against the topology projection.",
         "devtools.verify_topology",
@@ -308,9 +308,9 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "docs/plans/topology-target.yaml after moving files between packages."
         ),
         examples=(
-            "devtools verify-topology",
-            "devtools verify-topology --json",
-            "devtools verify-topology --strict-tbd",
+            "devtools verify topology",
+            "devtools verify topology --json",
+            "devtools verify topology --strict-tbd",
         ),
     ),
     CommandSpec(
@@ -349,7 +349,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "verify-test-coverage-contracts",
+        "verify test-coverage-contracts",
         "verification",
         "Verify every production module >150 AST lines has a matching test file or exemption.",
         "devtools.verify_test_coverage_contracts",
@@ -359,13 +359,13 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "Run as part of devtools verify --lab."
         ),
         examples=(
-            "devtools verify-test-coverage-contracts",
-            "devtools verify-test-coverage-contracts --json",
-            "devtools verify-test-coverage-contracts --threshold 100",
+            "devtools verify test-coverage-contracts",
+            "devtools verify test-coverage-contracts --json",
+            "devtools verify test-coverage-contracts --threshold 100",
         ),
     ),
     CommandSpec(
-        "verify-closure-matrix",
+        "verify closure-matrix",
         "verification",
         "Verify docs/plans/test-closure-matrix.yaml stays grounded in the realized tree.",
         "devtools.verify_closure_matrix",
@@ -373,7 +373,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "Keep the per-domain test-closure matrix honest — fails when a declared target file or "
             "representative test path is missing, or when a row violates the gate schema."
         ),
-        examples=("devtools verify-closure-matrix", "devtools verify-closure-matrix --json"),
+        examples=("devtools verify closure-matrix", "devtools verify closure-matrix --json"),
     ),
     CommandSpec(
         "bench slo",
@@ -392,7 +392,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "verify-manifests",
+        "verify manifests",
         "verification",
         "Verify internal consistency across all docs/plans/*.yaml manifest files.",
         "devtools.verify_manifests",
@@ -400,10 +400,10 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "Catch malformed manifests, duplicate rule IDs, missing required fields, "
             "and cross-manifest reference inconsistencies."
         ),
-        examples=("devtools verify-manifests",),
+        examples=("devtools verify manifests",),
     ),
     CommandSpec(
-        "verify-doc-commands",
+        "verify doc-commands",
         "verification",
         "Verify README/docs command examples resolve to live polylogue, polylogued, and devtools commands.",
         "devtools.verify_doc_commands",
@@ -413,10 +413,10 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "that is not registered, or a stale invocation like "
             "'polylogued run --enable-api' / 'polylogue run --source'."
         ),
-        examples=("devtools verify-doc-commands", "devtools verify-doc-commands --json"),
+        examples=("devtools verify doc-commands", "devtools verify doc-commands --json"),
     ),
     CommandSpec(
-        "verify-ci-workflows",
+        "verify ci-workflows",
         "verification",
         "Verify CI workflow files reference locally-known devtools commands and existing paths.",
         "devtools.verify_ci_workflows",
@@ -424,10 +424,10 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "Catch CI workflow files that reference unregistered devtools commands or "
             "non-existent paths. Checks only locally verifiable facts — not remote CI state."
         ),
-        examples=("devtools verify-ci-workflows", "devtools verify-ci-workflows --json"),
+        examples=("devtools verify ci-workflows", "devtools verify ci-workflows --json"),
     ),
     CommandSpec(
-        "verify-test-infra-currency",
+        "verify test-infra-currency",
         "verification",
         "Verify tests/infra/ helpers reference only tables that exist in the current SCHEMA_VERSION.",
         "devtools.verify_test_infra_currency",
@@ -437,7 +437,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "schema is invisible to testmon-selected runs until an unrelated change "
             "invalidates the affected tests."
         ),
-        examples=("devtools verify-test-infra-currency", "devtools verify-test-infra-currency --json"),
+        examples=("devtools verify test-infra-currency", "devtools verify test-infra-currency --json"),
     ),
     CommandSpec(
         "lab policy schema-versioning",
@@ -453,7 +453,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools lab policy schema-versioning", "devtools lab policy schema-versioning --json"),
     ),
     CommandSpec(
-        "verify-test-clock-hygiene",
+        "verify test-clock-hygiene",
         "verification",
         "Verify test files use the frozen_clock fixture instead of reading the host wall clock (#1300).",
         "devtools.verify_test_clock_hygiene",
@@ -464,7 +464,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "genuinely need the host clock add their path to the allowlist "
             "with a one-line rationale."
         ),
-        examples=("devtools verify-test-clock-hygiene", "devtools verify-test-clock-hygiene --json"),
+        examples=("devtools verify test-clock-hygiene", "devtools verify test-clock-hygiene --json"),
     ),
     CommandSpec(
         "release verify-distribution",
@@ -558,7 +558,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "verify-layering",
+        "verify layering",
         "verification",
         "Check inter-package imports against declared layering rules from docs/plans/layering.yaml.",
         "devtools.verify_layering",
@@ -566,10 +566,10 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "Diagnose architecture drift: which files import across declared "
             "package boundaries. This runs in verify --quick."
         ),
-        examples=("devtools verify-layering", "devtools verify-layering --json"),
+        examples=("devtools verify layering", "devtools verify layering --json"),
     ),
     CommandSpec(
-        "evidence-dashboard",
+        "verify evidence",
         "verification",
         "Render the pytest-first evidence dashboard or a changed-path trace.",
         "devtools.evidence_dashboard",
@@ -579,9 +579,9 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "trace which evidence artifacts cover the changed paths in a PR."
         ),
         examples=(
-            "devtools evidence-dashboard --json",
-            "devtools evidence-dashboard --markdown",
-            "devtools evidence-dashboard trace --base origin/master --head HEAD --markdown",
+            "devtools verify evidence --json",
+            "devtools verify evidence --markdown",
+            "devtools verify evidence trace --base origin/master --head HEAD --markdown",
         ),
     ),
     CommandSpec(
@@ -656,12 +656,12 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "verify-lane-assertions",
+        "verify lane-assertions",
         "verification",
         "Verify scenario lanes classified as SEMANTIC_OUTPUT carry semantic assertions.",
         "devtools.verify_lane_assertions",
         use_when="Catch vacuous semantic lanes that claim evidence but only check exit codes.",
-        examples=("devtools verify-lane-assertions",),
+        examples=("devtools verify lane-assertions",),
     ),
 )
 

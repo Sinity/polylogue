@@ -51,16 +51,16 @@ def test_quick_verify_omits_pytest() -> None:
         "ruff check",
         "mypy",
         "render all",
-        "verify-topology",
-        "verify-layering",
-        "verify-closure-matrix",
+        "verify topology",
+        "verify layering",
+        "verify closure-matrix",
         "lab schema roundtrip",
-        "verify-manifests",
-        "verify-ci-workflows",
-        "verify-doc-commands",
-        "verify-lane-assertions",
-        "verify-test-infra-currency",
-        "verify-test-clock-hygiene",
+        "verify manifests",
+        "verify ci-workflows",
+        "verify doc-commands",
+        "verify lane-assertions",
+        "verify test-infra-currency",
+        "verify test-clock-hygiene",
     ]
 
 
@@ -762,7 +762,7 @@ def test_verify_stops_after_failed_heavy_step(capsys: pytest.CaptureFixture[str]
 
 def test_failed_step_stop_policy_distinguishes_cheap_and_heavy_steps() -> None:
     assert _stop_after_failed_step("ruff check") is False
-    assert _stop_after_failed_step("verify-layering") is False
+    assert _stop_after_failed_step("verify layering") is False
     assert _stop_after_failed_step("pytest testmon") is True
     assert _stop_after_failed_step("lab scenario") is True
     assert _stop_after_failed_step("bench slo") is True

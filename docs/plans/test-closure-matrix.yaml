@@ -20,7 +20,7 @@
 #   - known_gaps: free-text bullets describing what is NOT covered for this
 #       domain. Optional for required/optional rows, required for absent rows.
 #
-# The verifier (devtools verify-closure-matrix) checks that:
+# The verifier (devtools verify closure-matrix) checks that:
 #   - every target_files entry exists,
 #   - every representative_tests file exists (or, for a nodeid, the file half),
 #   - every absent row carries at least one known_gaps bullet,
@@ -32,7 +32,7 @@
 description: >
   Four-column closure matrix mapping production domains to representative tests,
   the gate that runs them, and known gaps. Consumed by
-  `devtools verify-closure-matrix` in the default verify baseline.
+  `devtools verify closure-matrix` in the default verify baseline.
 
 deprecated_pointer:
   legacy_manifest: docs/plans/test-coverage-domains.yaml

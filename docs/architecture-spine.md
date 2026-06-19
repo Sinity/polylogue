@@ -15,7 +15,7 @@ with the implementation; this document records the *why* and the *rules*.
 
 **Rules:**
 - New semantics go into substrate or insights first, then surfaces adapt.
-- Surfaces may not import substrate internals directly (enforced by `devtools verify-layering`).
+- Surfaces may not import substrate internals directly (enforced by `devtools verify layering`).
 - Archive writes are idempotent by content hash.
 
 ## Guardrails
@@ -24,10 +24,10 @@ Every `docs/plans/*.yaml` manifest is enforced by a lint in `devtools verify`.
 
 | Manifest | Lint | What it prevents |
 |----------|------|-----------------|
-| `layering.yaml` | `verify-layering` | Surface-to-substrate coupling |
-| `topology-target.yaml` | `verify-topology` | Orphaned/unclassified modules |
-| `campaign-coverage.yaml` | `verify-manifests` | Missing campaign declarations |
-| `coverage-manifest.yaml` | `verify-manifests` | Stale gap/coverage declarations |
+| `layering.yaml` | `verify layering` | Surface-to-substrate coupling |
+| `topology-target.yaml` | `verify topology` | Orphaned/unclassified modules |
+| `campaign-coverage.yaml` | `verify manifests` | Missing campaign declarations |
+| `coverage-manifest.yaml` | `verify manifests` | Stale gap/coverage declarations |
 
 ## Major Decisions
 

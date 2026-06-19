@@ -1,6 +1,6 @@
 # Test-clock allowlist (#1300)
 #
-# Files listed here are exempt from `devtools verify-test-clock-hygiene`,
+# Files listed here are exempt from `devtools verify test-clock-hygiene`,
 # which otherwise flags any direct call to `datetime.now`, `datetime.utcnow`,
 # `time.time`, `time.time_ns`, `time.monotonic`, or `time.monotonic_ns` in a
 # test file.

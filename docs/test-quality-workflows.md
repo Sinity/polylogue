@@ -632,7 +632,7 @@ Adding a new scale benchmark:
 
 The per-domain closure matrix at `docs/plans/test-closure-matrix.yaml` maps each
 production domain to its representative tests, the verification gate that runs them,
-and any known gaps. `devtools verify-closure-matrix` (wired into `devtools verify`)
+and any known gaps. `devtools verify closure-matrix` (wired into `devtools verify`)
 fails when a declared target or representative test path disappears, when an
 `absent` row is missing a `known_gaps` bullet, or when a `required`/`optional`
 row has no representative tests.

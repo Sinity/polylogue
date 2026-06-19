@@ -105,7 +105,7 @@ def main(argv: list[str] | None = None) -> int:
         term_missing=bool(args.term_missing),
         extra_args=_strip_arg_separator(list(args.pytest_args)),
     )
-    sys.stderr.write(f"coverage-gate: enforcing fail_under={_format_threshold(threshold)} from {args.pyproject}\n")
+    sys.stderr.write(f"verify coverage: enforcing fail_under={_format_threshold(threshold)} from {args.pyproject}\n")
     return subprocess.run(command).returncode
 
 

@@ -29,7 +29,7 @@ REQUIRED_COMMANDS: tuple[GateCommand, ...] = (
     GateCommand(("devtools", "verify", "--lab"), True, "verification-lab baseline"),
     GateCommand(("devtools", "release", "build-package"), True, "wheel/sdist/Nix package smoke"),
     GateCommand(("devtools", "render", "pages"), True, "documentation site build"),
-    GateCommand(("devtools", "verify-doc-commands"), True, "README/docs command examples"),
+    GateCommand(("devtools", "verify doc-commands"), True, "README/docs command examples"),
 )
 
 FOCUSED_COMMANDS: tuple[GateCommand, ...] = (

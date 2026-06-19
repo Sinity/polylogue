@@ -6,7 +6,7 @@
 #
 # Each mutation_campaigns entry may carry:
 #   freshness_days  — Only declare per-entry when overriding the default.
-#                     verify-manifests treats a declared freshness_days as
+#                     `devtools verify manifests` treats a declared freshness_days as
 #                     a *hard* claim of a recent matching artifact, while
 #                     verify-mutation-freshness uses a 60-day default budget
 #                     as a soft warning when the entry omits freshness_days.

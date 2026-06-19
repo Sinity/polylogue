@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json as json_mod
 import sys
+from typing import Any
 
 import click
 
@@ -26,6 +27,7 @@ GROUP_HELP: dict[str, str] = {
     "lab": "Run verification-lab evidence, schema, probe, and policy commands.",
     "render": "Render and check generated repository surfaces.",
     "release": "Build, smoke, and validate release/distribution readiness.",
+    "verify": "Run the local verification baseline or focused checks. Use --inner-help for baseline flags.",
     "workspace": "Inspect and maintain local agent workspace state.",
 }
 
@@ -70,6 +72,30 @@ class _PreservedEpilogCommand(click.Command):
         formatter.write("\n")
         for line in self.epilog.splitlines():
             formatter.write(line + "\n")
+
+
+class _DefaultCommandGroup(click.Group):
+    """Group that falls back to a default command when no subcommand matches."""
+
+    def __init__(
+        self,
+        name: str,
+        *,
+        default_command: click.Command,
+        help: str | None = None,
+        context_settings: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(name=name, help=help, context_settings=context_settings)
+        self.default_command = default_command
+
+    def resolve_command(
+        self,
+        ctx: click.Context,
+        args: list[str],
+    ) -> tuple[str | None, click.Command | None, list[str]]:
+        if not args or args[0] not in self.commands:
+            return self.default_command.name, self.default_command, args
+        return super().resolve_command(ctx, args)
 
 
 def _build_epilog(spec: CommandSpec) -> str | None:
@@ -150,13 +176,29 @@ def _make_command(spec: CommandSpec) -> click.Command:
     return cmd
 
 
-def _ensure_group(parent: click.Group, name: str) -> click.Group:
+def _ensure_group(
+    parent: click.Group,
+    name: str,
+    *,
+    default_command: click.Command | None = None,
+) -> click.Group:
     existing = parent.commands.get(name)
     if existing is not None:
         if not isinstance(existing, click.Group):
             raise ValueError(f"cannot register devtools group {name!r}: command already exists")
         return existing
-    group = click.Group(name=name, help=GROUP_HELP.get(name))
+    if default_command is None:
+        group = click.Group(name=name, help=GROUP_HELP.get(name))
+    else:
+        group = _DefaultCommandGroup(
+            name=name,
+            help=GROUP_HELP.get(name),
+            default_command=default_command,
+            context_settings={
+                "ignore_unknown_options": True,
+                "allow_extra_args": True,
+            },
+        )
     parent.add_command(group)
     return group
 
@@ -183,9 +225,18 @@ def _make_cli() -> click.Group:
             click.echo(cli.get_help(ctx))
             ctx.exit(0)
 
+    nested_group_roots = {
+        spec.command_path[0]
+        for spec in COMMAND_SPECS
+        if len(spec.command_path) > 1 and any(other.command_path == spec.command_path[:1] for other in COMMAND_SPECS)
+    }
+
     for spec in COMMAND_SPECS:
         cmd = _make_command(spec)
         parent = cli
+        if len(spec.command_path) == 1 and spec.command_path[0] in nested_group_roots:
+            _ensure_group(parent, spec.command_path[0], default_command=cmd)
+            continue
         for group_name in spec.command_path[:-1]:
             parent = _ensure_group(parent, group_name)
         parent.add_command(cmd)
@@ -227,7 +278,7 @@ def main(argv: list[str] | None = None) -> int:
 
     command_name = args_list[0]
     inner_args = args_list[1:]
-    for spec in COMMAND_SPECS:
+    for spec in sorted(COMMAND_SPECS, key=lambda item: len(item.command_path), reverse=True):
         path = spec.command_path
         if tuple(args_list[: len(path)]) == path:
             command_name = " ".join(path)

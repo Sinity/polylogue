@@ -52,7 +52,7 @@ def _session() -> Session:
                     id="m2",
                     role=Role.ASSISTANT,
                     text=(
-                        "Decision: keep benchmarks outside coverage-gate for scope, not flakiness.\n"
+                        "Decision: keep benchmarks outside verify coverage for scope, not flakiness.\n"
                         "Review posted on PR #1911\n"
                         "Read review on PR #1911\n"
                         "Addressed review on PR #1911"
@@ -273,7 +273,7 @@ def test_compile_recovery_digest_extracts_small_evidence_linked_bundle() -> None
     candidates = {candidate.text for candidate in digest.decision_candidates}
     assert "goal: burn down the backlog" in candidates
     assert "next: merge PR #1911" in candidates
-    assert "keep benchmarks outside coverage-gate for scope, not flakiness." in candidates
+    assert "keep benchmarks outside verify coverage for scope, not flakiness." in candidates
 
     assert "# Resume: Ship the backlog" in digest.resume_markdown
     assert "feature/demo" in digest.resume_markdown
