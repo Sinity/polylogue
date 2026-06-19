@@ -877,8 +877,13 @@ amplification stats over completed attempts.</li>
 Missing tables surface as <code>-1</code> rather than crashing the probe.</li>
 <li><code>archive_tiers</code> — archive inventory for <code>source.db</code>,
 <code>index.db</code>, <code>embeddings.db</code>, <code>user.db</code>, and <code>ops.db</code>: file presence,
-durability/backup policy, <code>PRAGMA user_version</code>, <code>PRAGMA quick_check</code>,
-missing backup-required tiers, and cheap table counts per tier.</li>
+durability/backup policy, <code>PRAGMA user_version</code>, missing backup-required
+tiers, and cheap table counts per tier. It does not run SQLite
+<code>PRAGMA quick_check</code> by default because that is a full-file integrity scan
+on large archives; pass <code>--integrity-check</code> when the workload snapshot should
+include that expensive evidence. It also avoids exact generated-text
+reconciliation by default; pass <code>--exact-derived-counts</code> when diagnosing
+FTS/source-row drift and the archive can afford the scan.</li>
 <li><code>blob_lease_state</code> — pending lease count, distinct lease operations,
 oldest <code>acquired_at</code>. See the lease/GC concurrency model above.</li>
 <li><code>gc_state</code> — high-water <code>gc_generations</code> row, <code>last_completed_at</code>,
