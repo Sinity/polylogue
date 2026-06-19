@@ -252,6 +252,12 @@ class ArchiveAssertionQueryRow:
     updated_at_ms: int
 
 
+def _query_unit_order_direction(direction: Literal["asc", "desc"]) -> Literal["ASC", "DESC"]:
+    """Return a closed SQL direction token for terminal row ordering."""
+
+    return "DESC" if direction == "desc" else "ASC"
+
+
 class ArchiveStore:
     """Minimal archive-root façade for archive source/index/user tiers."""
 
@@ -3260,11 +3266,18 @@ class ArchiveStore:
         limit: int = 50,
         offset: int = 0,
         session_filters: Mapping[str, object] | None = None,
+        sort: Literal["time"] | None = None,
+        sort_direction: Literal["asc", "desc"] = "asc",
     ) -> list[ArchiveMessageQueryRow]:
         """Return message rows matching a unit-scoped query predicate."""
 
         normalized_limit = max(int(limit), 0)
         normalized_offset = max(int(offset), 0)
+        order_direction = _query_unit_order_direction(sort_direction)
+        if sort == "time":
+            order_by = f"COALESCE(m.occurred_at_ms, s.sort_key_ms, 0) {order_direction}, m.message_id {order_direction}"
+        else:
+            order_by = "COALESCE(m.occurred_at_ms, s.sort_key_ms, 0), m.message_id"
         clause, params = _structural_predicate_clause("message", "m", predicate, session_alias="s")
         session_clause = ""
         session_params: list[object] = []
@@ -3295,7 +3308,7 @@ class ArchiveStore:
             JOIN sessions s ON s.session_id = m.session_id
             WHERE {clause}
             {session_clause}
-            ORDER BY COALESCE(m.occurred_at_ms, s.sort_key_ms, 0), m.message_id
+            ORDER BY {order_by}
             LIMIT ? OFFSET ?
             """,
             [*params, *session_params, normalized_limit, normalized_offset],
@@ -3322,11 +3335,20 @@ class ArchiveStore:
         limit: int = 50,
         offset: int = 0,
         session_filters: Mapping[str, object] | None = None,
+        sort: Literal["time"] | None = None,
+        sort_direction: Literal["asc", "desc"] = "asc",
     ) -> list[ArchiveActionQueryRow]:
         """Return action rows matching a unit-scoped query predicate."""
 
         normalized_limit = max(int(limit), 0)
         normalized_offset = max(int(offset), 0)
+        order_direction = _query_unit_order_direction(sort_direction)
+        if sort == "time":
+            order_by = (
+                f"COALESCE(m.occurred_at_ms, s.sort_key_ms, 0) {order_direction}, a.tool_use_block_id {order_direction}"
+            )
+        else:
+            order_by = "COALESCE(m.occurred_at_ms, s.sort_key_ms, 0), a.tool_use_block_id"
         clause, params = _structural_predicate_clause("action", "a", predicate, session_alias="s")
         session_clause = ""
         session_params: list[object] = []
@@ -3351,7 +3373,7 @@ class ArchiveStore:
             JOIN messages m ON m.message_id = a.message_id
             WHERE {clause}
             {session_clause}
-            ORDER BY COALESCE(m.occurred_at_ms, s.sort_key_ms, 0), a.tool_use_block_id
+            ORDER BY {order_by}
             LIMIT ? OFFSET ?
             """,
             [*params, *session_params, normalized_limit, normalized_offset],
@@ -3382,11 +3404,18 @@ class ArchiveStore:
         limit: int = 50,
         offset: int = 0,
         session_filters: Mapping[str, object] | None = None,
+        sort: Literal["time"] | None = None,
+        sort_direction: Literal["asc", "desc"] = "asc",
     ) -> list[ArchiveBlockQueryRow]:
         """Return content-block rows matching a unit-scoped query predicate."""
 
         normalized_limit = max(int(limit), 0)
         normalized_offset = max(int(offset), 0)
+        order_direction = _query_unit_order_direction(sort_direction)
+        if sort == "time":
+            order_by = f"COALESCE(m.occurred_at_ms, s.sort_key_ms, 0) {order_direction}, b.block_id {order_direction}"
+        else:
+            order_by = "COALESCE(m.occurred_at_ms, s.sort_key_ms, 0), b.block_id"
         clause, params = _structural_predicate_clause("block", "b", predicate, session_alias="s")
         session_clause = ""
         session_params: list[object] = []
@@ -3412,7 +3441,7 @@ class ArchiveStore:
             JOIN messages m ON m.message_id = b.message_id
             WHERE {clause}
             {session_clause}
-            ORDER BY COALESCE(m.occurred_at_ms, s.sort_key_ms, 0), b.block_id
+            ORDER BY {order_by}
             LIMIT ? OFFSET ?
             """,
             [*params, *session_params, normalized_limit, normalized_offset],
@@ -3442,6 +3471,8 @@ class ArchiveStore:
         limit: int = 50,
         offset: int = 0,
         session_filters: Mapping[str, object] | None = None,
+        sort: Literal["time"] | None = None,
+        sort_direction: Literal["asc", "desc"] = "asc",
     ) -> list[ArchiveAssertionQueryRow]:
         """Return user-tier assertion rows matching a unit-scoped predicate."""
 
@@ -3450,6 +3481,13 @@ class ArchiveStore:
         self._attach_user_tier_if_present()
         normalized_limit = max(int(limit), 0)
         normalized_offset = max(int(offset), 0)
+        order_direction = _query_unit_order_direction(sort_direction)
+        if sort == "time":
+            order_by = (
+                f"COALESCE(a.updated_at_ms, a.created_at_ms, 0) {order_direction}, a.assertion_id {order_direction}"
+            )
+        else:
+            order_by = "a.updated_at_ms DESC, a.assertion_id"
         clause, params = _structural_predicate_clause("assertion", "a", predicate, session_alias="s")
         session_clause = ""
         session_params: list[object] = []
@@ -3478,7 +3516,7 @@ class ArchiveStore:
             LEFT JOIN sessions s ON a.target_ref = 'session:' || s.session_id
             WHERE {clause}
             {session_clause}
-            ORDER BY a.updated_at_ms DESC, a.assertion_id
+            ORDER BY {order_by}
             LIMIT ? OFFSET ?
             """,
             [*params, *session_params, normalized_limit, normalized_offset],

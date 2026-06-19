@@ -238,6 +238,14 @@ class QueryExpressionAST:
 
 
 @dataclass(frozen=True)
+class QueryUnitSort:
+    """Terminal query-unit sort stage."""
+
+    field: Literal["time"]
+    direction: Literal["asc", "desc"] = "asc"
+
+
+@dataclass(frozen=True)
 class QueryUnitSource:
     """Explicit unit-changing source parsed from ``<unit>s where ...``."""
 
@@ -246,6 +254,7 @@ class QueryUnitSource:
     session_predicate: QueryPredicate | None = None
     limit: int | None = None
     offset: int | None = None
+    sort: QueryUnitSort | None = None
 
 
 ExplainClauseKind = Literal["field", "count", "count_range", "date", "date_range", "text", "json"]
@@ -1150,7 +1159,38 @@ def _parse_non_negative_int_stage(stage: str, keyword: str) -> int | None:
     return value
 
 
+def _parse_sort_stage(stage: str) -> QueryUnitSort | None:
+    lower = stage.lower()
+    if not lower.startswith("sort by "):
+        return None
+    parts = lower.removeprefix("sort by ").split()
+    if not parts:
+        raise ExpressionCompileError("pipeline `sort by` stage requires a field", field="sort")
+    if parts[0] != "time":
+        raise ExpressionCompileError(
+            "pipeline `sort by` currently supports only `time` for terminal rows",
+            field="sort",
+        )
+    if len(parts) == 1:
+        return QueryUnitSort(field="time")
+    if len(parts) == 2 and parts[1] in {"asc", "desc"}:
+        return QueryUnitSort(field="time", direction=cast(Literal["asc", "desc"], parts[1]))
+    raise ExpressionCompileError(
+        "pipeline `sort by time` accepts an optional `asc` or `desc` direction",
+        field="sort",
+    )
+
+
 def _apply_pipeline_stage(source: QueryUnitSource, stage: str) -> QueryUnitSource:
+    sort = _parse_sort_stage(stage)
+    if sort is not None:
+        if source.unit not in {"message", "action", "block", "assertion"}:
+            raise ExpressionCompileError(
+                "pipeline `sort by time` currently supports message/action/block/assertion rows; "
+                "runtime-transform units need a streaming lowerer first",
+                field="sort",
+            )
+        return replace(source, sort=sort)
     limit = _parse_non_negative_int_stage(stage, "limit")
     if limit is not None:
         if limit == 0:
@@ -1160,7 +1200,8 @@ def _apply_pipeline_stage(source: QueryUnitSource, stage: str) -> QueryUnitSourc
     if offset is not None:
         return replace(source, offset=offset)
     raise ExpressionCompileError(
-        f"unsupported pipeline stage {stage!r}; supported terminal stages are `limit N` and `offset N`",
+        f"unsupported pipeline stage {stage!r}; supported terminal stages are "
+        "`sort by time [asc|desc]`, `limit N`, and `offset N`",
         field=None,
     )
 
@@ -1188,6 +1229,7 @@ def _parse_pipeline_unit_source(expression: str) -> QueryUnitSource | None:
         session_predicate=session_predicate,
         limit=terminal_source.limit,
         offset=terminal_source.offset,
+        sort=terminal_source.sort,
     )
     for stage in tail_stages:
         source = _apply_pipeline_stage(source, stage)
@@ -1476,6 +1518,11 @@ def _ast_payload(
             unit_payload["limit"] = unit_source.limit
         if unit_source.offset is not None:
             unit_payload["offset"] = unit_source.offset
+        if unit_source.sort is not None:
+            unit_payload["sort"] = {
+                "field": unit_source.sort.field,
+                "direction": unit_source.sort.direction,
+            }
         payload["unit_source"] = unit_payload
     return payload
 
@@ -2094,6 +2141,7 @@ __all__ = [
     "QueryExpressionExplainClause",
     "QueryExpressionExplanation",
     "QueryExpressionAST",
+    "QueryUnitSort",
     "QueryUnitSource",
     "_HAS_BOOL_MAP",
     "parse_unit_source_expression",

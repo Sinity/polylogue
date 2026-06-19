@@ -474,10 +474,26 @@ class TestBooleanQueryExpression:
         assert source.limit == 2
         assert source.offset == 3
 
+    def test_pipeline_sort_stage_is_parsed(self) -> None:
+        source = parse_unit_source_expression(
+            "sessions where repo:polylogue | messages where role:assistant | sort by time desc"
+        )
+
+        assert source is not None
+        assert source.sort is not None
+        assert source.sort.field == "time"
+        assert source.sort.direction == "desc"
+
     def test_pipeline_rejects_unknown_terminal_stage(self) -> None:
         with pytest.raises(ExpressionCompileError, match="unsupported pipeline stage"):
             parse_unit_source_expression(
                 "sessions where repo:polylogue | messages where role:assistant | group by role"
+            )
+
+    def test_pipeline_rejects_sort_on_runtime_transform_units(self) -> None:
+        with pytest.raises(ExpressionCompileError, match="runtime-transform units need a streaming lowerer"):
+            parse_unit_source_expression(
+                "sessions where repo:polylogue | runs where status:completed | sort by time desc"
             )
 
     def test_pipeline_rejects_unlowered_session_stage_predicates(self) -> None:
@@ -1046,6 +1062,42 @@ class TestBooleanQueryExpression:
         assert isinstance(next_row, MessageQueryRowPayload)
         assert next_row.message_id == "claude-code-session:ext-hit:m-3"
         assert next_row.text == "third"
+
+    def test_session_to_message_pipeline_sort_desc_executes_before_limit(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        from polylogue.archive.query.unit_results import query_unit_rows
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "hit")
+            .provider("claude-code")
+            .git_repository_url("polylogue")
+            .title("pipeline sorted")
+            .add_message("m-old", role="assistant", text="old", timestamp="2026-01-01T00:00:00+00:00")
+            .add_message("m-new", role="assistant", text="new", timestamp="2026-01-02T00:00:00+00:00")
+            .save()
+        )
+
+        source = parse_unit_source_expression(
+            "sessions where repo:polylogue | messages where role:assistant | sort by time desc | limit 1"
+        )
+        assert source is not None
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            envelope = query_unit_rows(archive, source, query="pipeline-sort", limit=20)
+
+        assert envelope.limit == 1
+        assert envelope.next_offset == 1
+        assert len(envelope.items) == 1
+        row = envelope.items[0]
+        from polylogue.surfaces.payloads import MessageQueryRowPayload
+
+        assert isinstance(row, MessageQueryRowPayload)
+        assert row.message_id == "claude-code-session:ext-hit:m-new"
+        assert row.text == "new"
 
     def test_exists_action_predicate_executes_against_archive(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
