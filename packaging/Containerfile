@@ -8,9 +8,9 @@
 #   3. distroless — gcr.io/distroless/python3-debian12; minimal, no shell
 #
 # Build the default (slim) image:
-#   docker buildx build --target runtime    -t polylogue:slim       .
+#   docker buildx build -f packaging/Containerfile --target runtime    -t polylogue:slim       .
 # Build the distroless image:
-#   docker buildx build --target distroless -t polylogue:distroless .
+#   docker buildx build -f packaging/Containerfile --target distroless -t polylogue:distroless .
 #
 # Console scripts on PATH in the runtime stage:
 #   polylogue, polylogued, polylogue-mcp  (CLI is included for `docker exec` debug)
@@ -36,7 +36,7 @@ WORKDIR /src
 COPY . /src
 
 # Build wheel into /dist. Hatchling embeds polylogue/_build_info.py via
-# hatch_build.py, so the resulting wheel knows its own version + commit.
+# packaging/hatch_build.py, so the wheel knows its own version + commit.
 ARG POLYLOGUE_BUILD_COMMIT=container-build
 ARG POLYLOGUE_BUILD_DIRTY=False
 RUN python - <<PY
@@ -132,7 +132,7 @@ LABEL org.opencontainers.image.title="polylogue" \
 # installed into /usr/local in the runtime stage. No shell, no package
 # manager — `docker exec` debugging is not possible against this image.
 #
-# Build with:  docker buildx build --target distroless -t polylogue:distroless .
+# Build with:  docker buildx build -f packaging/Containerfile --target distroless -t polylogue:distroless .
 #
 # Note: distroless does not ship curl, so HEALTHCHECK is omitted at the
 # image level. Operators using Kubernetes / compose should configure

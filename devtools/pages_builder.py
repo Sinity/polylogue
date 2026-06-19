@@ -24,6 +24,10 @@ from polylogue.rendering.renderers.html_sanitizer import sanitize_html
 ROOT = _get_root()
 
 
+def _default_config_path() -> Path:
+    return ROOT / "docs" / "site" / "pages.toml"
+
+
 @dataclass
 class NavItem:
     label: str
@@ -175,7 +179,7 @@ def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
 
 def build_site(config_path: Path | None = None, output_dir: Path | None = None) -> Path:
     if config_path is None:
-        config_path = ROOT / "pages.toml"
+        config_path = _default_config_path()
     if output_dir is None:
         output_dir = ROOT / ".cache" / "site"
 

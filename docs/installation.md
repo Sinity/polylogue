@@ -18,7 +18,7 @@ out so they can evolve independently.
 The image is published to
 [GitHub Container Registry](https://github.com/Sinity/polylogue/pkgs/container/polylogue)
 by [`.github/workflows/container.yml`](../.github/workflows/container.yml).
-Two variants ship from the same `Containerfile`:
+Two variants ship from the same [`packaging/Containerfile`](../packaging/Containerfile):
 
 | Tag pattern | Stage | Base | Notes |
 | --- | --- | --- | --- |
@@ -105,8 +105,8 @@ the same `GET /api/health` endpoint.
 ### Building locally
 
 ```bash
-docker buildx build --target runtime    -t polylogue:slim       .
-docker buildx build --target distroless -t polylogue:distroless .
+docker buildx build -f packaging/Containerfile --target runtime    -t polylogue:slim       .
+docker buildx build -f packaging/Containerfile --target distroless -t polylogue:distroless .
 ```
 
 For multi-arch local builds, set `--platform linux/amd64,linux/arm64` and

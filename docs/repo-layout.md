@@ -23,7 +23,6 @@ Every top-level entry has a reason.
 | `CHANGELOG.md` | Release changelog | repo |
 | `CLAUDE.md` | Primary project instructions | repo |
 | `CONTRIBUTING.md` | Contribution workflow and conventions | repo |
-| `Containerfile` | Container image definition for runtime packaging | packaging |
 | `LICENSE` | Project license | repo |
 | `README.md` | Project readme | repo |
 | `TESTING.md` | Test suite documentation | repo |
@@ -31,12 +30,13 @@ Every top-level entry has a reason.
 | `contrib/` | Community-contributed integrations | repo |
 | `devtools/` | Developer tooling (verify, render, campaigns) | repo |
 | `docs/` | Architecture, internals, plans, design documents | repo |
+| `docs/site/pages.toml` | GitHub Pages site configuration | docs tooling |
 | `flake.lock` | Nix flake lockfile (pinned dependencies) | nix |
 | `flake.nix` | Nix flake definition (devshell, package, checks) | repo |
-| `hatch_build.py` | Hatchling build hook (version injection) | build system |
 | `nix/` | Nix packaging expressions | repo |
 | `packaging/` | Distribution packaging helpers and metadata | repo |
-| `pages.toml` | GitHub Pages site configuration | build system |
+| `packaging/Containerfile` | Container image definition for runtime packaging | packaging |
+| `packaging/hatch_build.py` | Hatchling build hook (version injection) | build system |
 | `polylogue/` | Application source code | repo |
 | `pyproject.toml` | Python project metadata and tool config | repo |
 | `release-please-config.json` | Release Please configuration | release tooling |

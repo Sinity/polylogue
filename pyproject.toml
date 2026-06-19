@@ -118,7 +118,7 @@ polylogue-mcp = "polylogue.mcp.cli:main"
 packages = ["polylogue"]
 
 [tool.hatch.build.hooks.custom]
-path = "hatch_build.py"
+path = "packaging/hatch_build.py"
 
 [tool.pytest.ini_options]
 addopts = "-rfE --tb=line --benchmark-disable --benchmark-storage=file://./.cache/pytest-benchmark"
