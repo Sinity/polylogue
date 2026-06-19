@@ -59,7 +59,6 @@ _BOUNDARY_TABLES: tuple[str, ...] = (
     "session_repos",
     "session_commits",
     "blocks",
-    "messages_fts_data",
     "session_events",
     "session_links",
 )
@@ -85,7 +84,7 @@ _ARCHIVE_OBSERVABILITY_TABLES: dict[ArchiveTier, tuple[str, ...]] = {
         "sessions",
         "messages",
         "blocks",
-        "messages_fts_data",
+        "messages_fts_docsize",
         "session_events",
         "session_links",
         "threads",
@@ -158,6 +157,16 @@ def _scalar_int(conn: sqlite3.Connection, sql: str, params: tuple[object, ...] =
     except sqlite3.Error:
         return 0
     return int(row[0] or 0) if row is not None else 0
+
+
+def _presence_count(conn: sqlite3.Connection, table: str) -> int:
+    """Return 1 when a table has at least one row, without scanning it."""
+
+    try:
+        row = conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone()
+    except sqlite3.Error:
+        return 0
+    return 1 if row is not None else 0
 
 
 def _recent_attempts(conn: sqlite3.Connection, *, limit: int, ops_db: Path | None = None) -> list[dict[str, Any]]:
@@ -836,7 +845,13 @@ def _boundary_table_counts(
     return counts
 
 
-def _archive_tier_state(anchor_db: Path, *, observed_db: Path | None = None) -> dict[str, Any]:
+def _archive_tier_state(
+    anchor_db: Path,
+    *,
+    observed_db: Path | None = None,
+    integrity_check: bool = False,
+    exact_derived_counts: bool = False,
+) -> dict[str, Any]:
     """Report the archive database files around an archive root."""
 
     root = anchor_db.parent
@@ -854,7 +869,7 @@ def _archive_tier_state(anchor_db: Path, *, observed_db: Path | None = None) -> 
 
     for tier, spec in ARCHIVE_TIER_SPECS.items():
         path = root / spec.filename
-        tier_payload = _archive_single_tier_state(path, tier)
+        tier_payload = _archive_single_tier_state(path, tier, integrity_check=integrity_check)
         tier_payload.update(
             {
                 "tier": tier.value,
@@ -875,7 +890,7 @@ def _archive_tier_state(anchor_db: Path, *, observed_db: Path | None = None) -> 
                 missing_backup_required.append(tier.value)
         tiers[tier.value] = tier_payload
 
-    derived_readiness = _archive_derived_readiness(root)
+    derived_readiness = _archive_derived_readiness(root, exact_counts=exact_derived_counts)
     user_overlay_orphans = _archive_user_overlay_orphans(root)
     layout_readiness = _archive_layout_readiness(
         present_count=present_count,
@@ -962,7 +977,7 @@ def _archive_layout_readiness(
     }
 
 
-def _archive_single_tier_state(path: Path, tier: ArchiveTier) -> dict[str, Any]:
+def _archive_single_tier_state(path: Path, tier: ArchiveTier, *, integrity_check: bool = False) -> dict[str, Any]:
     if not path.exists():
         return {
             "path": str(path),
@@ -978,7 +993,7 @@ def _archive_single_tier_state(path: Path, tier: ArchiveTier) -> dict[str, Any]:
         "exists": True,
         "size_bytes": path.stat().st_size,
         "user_version": None,
-        "integrity": "unknown",
+        "integrity": "not_checked",
         "table_counts": {},
         "error": None,
     }
@@ -987,8 +1002,9 @@ def _archive_single_tier_state(path: Path, tier: ArchiveTier) -> dict[str, Any]:
         try:
             version_row = conn.execute("PRAGMA user_version").fetchone()
             payload["user_version"] = int(version_row[0] or 0) if version_row is not None else 0
-            integrity_row = conn.execute("PRAGMA quick_check").fetchone()
-            payload["integrity"] = str(integrity_row[0]) if integrity_row is not None else "unknown"
+            if integrity_check:
+                integrity_row = conn.execute("PRAGMA quick_check").fetchone()
+                payload["integrity"] = str(integrity_row[0]) if integrity_row is not None else "unknown"
             payload["table_counts"] = {
                 table: _scalar_int(conn, f"SELECT COUNT(*) FROM {table}") if _table_exists(conn, table) else -1
                 for table in _ARCHIVE_OBSERVABILITY_TABLES[tier]
@@ -1001,7 +1017,7 @@ def _archive_single_tier_state(path: Path, tier: ArchiveTier) -> dict[str, Any]:
     return payload
 
 
-def _archive_derived_readiness(root: Path) -> dict[str, Any]:
+def _archive_derived_readiness(root: Path, *, exact_counts: bool = False) -> dict[str, Any]:
     """Report cross-table readiness for derived surfaces."""
 
     index_db = root / ARCHIVE_TIER_SPECS[ArchiveTier.INDEX].filename
@@ -1024,12 +1040,18 @@ def _archive_derived_readiness(root: Path) -> dict[str, Any]:
             conn.execute("ATTACH DATABASE ? AS source_tier", (f"file:{source_db}?mode=ro",))
             source_attached = True
             source_check_available = _attached_table_exists(conn, "source_tier", "raw_sessions")
-        counts = _archive_derived_counts(conn, source_check_available=source_check_available)
+        counts = _archive_derived_counts(conn, source_check_available=source_check_available, exact_counts=exact_counts)
         materialization_counts = _archive_materialization_counts(conn)
         missing_materialization_counts = _archive_missing_materialization_counts(conn)
+        messages_fts_ready = (
+            counts["text_block_count"] == counts["messages_fts_count"]
+            if exact_counts
+            else _fts_trigger_state(conn)["all_present"]
+            and (counts["block_count"] == 0 or counts["messages_fts_count"] > 0)
+        )
         ready = {
             "raw_links_ready": counts["missing_raw_session_count"] == 0 if source_check_available else None,
-            "messages_fts_ready": counts["text_block_count"] == counts["messages_fts_count"],
+            "messages_fts_ready": messages_fts_ready,
             "profile_rows_ready": counts["missing_profile_row_count"] == 0 and counts["orphan_profile_row_count"] == 0,
             "profile_counts_ready": (
                 counts["profile_work_event_count_mismatch"] == 0 and counts["profile_phase_count_mismatch"] == 0
@@ -1072,7 +1094,9 @@ def _archive_derived_readiness(root: Path) -> dict[str, Any]:
         conn.close()
 
 
-def _archive_derived_counts(conn: sqlite3.Connection, *, source_check_available: bool) -> dict[str, int]:
+def _archive_derived_counts(
+    conn: sqlite3.Connection, *, source_check_available: bool, exact_counts: bool = False
+) -> dict[str, Any]:
     missing_raw = 0
     if source_check_available:
         missing_raw = _scalar_int(
@@ -1086,13 +1110,22 @@ def _archive_derived_counts(conn: sqlite3.Connection, *, source_check_available:
               )
             """,
         )
+    block_count = _scalar_int(conn, "SELECT COUNT(*) FROM blocks")
+    if exact_counts:
+        text_block_count = _scalar_int(conn, "SELECT COUNT(*) FROM blocks WHERE search_text != ''")
+        messages_fts_count = _scalar_int(conn, "SELECT COUNT(*) FROM messages_fts")
+    else:
+        text_block_count = block_count
+        messages_fts_count = _scalar_int(conn, "SELECT COUNT(*) FROM messages_fts_docsize")
     return {
         "session_count": _scalar_int(conn, "SELECT COUNT(*) FROM sessions"),
         "raw_link_count": _scalar_int(conn, "SELECT COUNT(*) FROM sessions WHERE raw_id IS NOT NULL"),
         "missing_raw_session_count": missing_raw,
         "message_count": _scalar_int(conn, "SELECT COUNT(*) FROM messages"),
-        "text_block_count": _scalar_int(conn, "SELECT COUNT(*) FROM blocks WHERE search_text != ''"),
-        "messages_fts_count": _scalar_int(conn, "SELECT COUNT(*) FROM messages_fts"),
+        "block_count": block_count,
+        "text_block_count": text_block_count,
+        "messages_fts_count": messages_fts_count,
+        "messages_fts_exact_counts": exact_counts,
         "profile_row_count": _scalar_int(conn, "SELECT COUNT(*) FROM session_profiles"),
         "missing_profile_row_count": _scalar_int(
             conn,
@@ -1119,7 +1152,10 @@ def _archive_derived_counts(conn: sqlite3.Connection, *, source_check_available:
         "thread_count": _scalar_int(conn, "SELECT COUNT(*) FROM threads"),
         "thread_session_count": _scalar_int(conn, "SELECT COUNT(*) FROM thread_sessions"),
         "session_tag_count": _scalar_int(conn, "SELECT COUNT(*) FROM session_tags"),
-        "action_count": _scalar_int(conn, "SELECT COUNT(*) FROM actions"),
+        "action_count": _scalar_int(conn, "SELECT COUNT(*) FROM actions")
+        if exact_counts
+        else _presence_count(conn, "actions"),
+        "action_count_exact": exact_counts,
         "cost_profile_count": _scalar_int(
             conn,
             """
@@ -1152,7 +1188,7 @@ def _archive_derived_counts(conn: sqlite3.Connection, *, source_check_available:
 
 
 def _archive_surface_readiness(
-    counts: dict[str, int],
+    counts: dict[str, Any],
     *,
     missing_materialization_counts: dict[str, int],
     source_check_available: bool,
@@ -1189,7 +1225,7 @@ def _archive_surface_readiness(
         raw_blockers.append("missing_source_raw_sessions")
 
     search_blockers: list[str] = []
-    if counts["text_block_count"] != counts["messages_fts_count"]:
+    if counts["messages_fts_exact_counts"] and counts["text_block_count"] != counts["messages_fts_count"]:
         search_blockers.append("messages_fts_row_mismatch")
 
     profile_ready = (
@@ -1241,6 +1277,7 @@ def _archive_surface_readiness(
             evidence={
                 "text_block_count": counts["text_block_count"],
                 "messages_fts_count": counts["messages_fts_count"],
+                "messages_fts_exact_counts": counts["messages_fts_exact_counts"],
             },
         ),
         "session_profiles": surface(
@@ -1286,7 +1323,7 @@ def _archive_surface_readiness(
         "tool_usage": surface(
             ready=True,
             blockers=[],
-            evidence={"action_count": counts["action_count"]},
+            evidence={"action_count": counts["action_count"], "action_count_exact": counts["action_count_exact"]},
         ),
         "session_costs": surface(
             ready=profile_ready,
@@ -1828,7 +1865,9 @@ def _archive_query_plans(root: Path) -> dict[str, Any]:
     return plans
 
 
-def probe(db: Path, *, limit: int = 5) -> dict[str, Any]:
+def probe(
+    db: Path, *, limit: int = 5, integrity_check: bool = False, exact_derived_counts: bool = False
+) -> dict[str, Any]:
     ops_db = db.with_name("ops.db")
     index_db = db.with_name("index.db")
     if not db.exists() and not index_db.exists() and not ops_db.exists():
@@ -1861,7 +1900,12 @@ def probe(db: Path, *, limit: int = 5) -> dict[str, Any]:
             "storage_route_counts": _storage_route_counts(conn, ops_db=ops_db),
             "convergence_stage_timings": _convergence_stage_timings(recent_attempts, conn),
             "boundary_table_counts": _boundary_table_counts(conn, ops_db=ops_db, source_db=db.with_name("source.db")),
-            "archive_tiers": _archive_tier_state(db, observed_db=observed_db),
+            "archive_tiers": _archive_tier_state(
+                db,
+                observed_db=observed_db,
+                integrity_check=integrity_check,
+                exact_derived_counts=exact_derived_counts,
+            ),
             "topology_quarantine_state": _topology_quarantine_state(conn),
             "blob_lease_state": _tier_state_or_current(conn, db.with_name("source.db"), _blob_lease_state),
             "gc_state": _tier_state_or_current(conn, db.with_name("source.db"), _gc_state),
@@ -2388,6 +2432,16 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     parser.add_argument("--limit", type=int, default=5, help="Recent attempt limit")
     parser.add_argument(
+        "--integrity-check",
+        action="store_true",
+        help="Run PRAGMA quick_check for each archive tier (can be expensive on large archives)",
+    )
+    parser.add_argument(
+        "--exact-derived-counts",
+        action="store_true",
+        help="Run exact derived-readiness reconciliation counts (can scan large archive tables)",
+    )
+    parser.add_argument(
         "--compare",
         nargs=2,
         metavar=("BEFORE", "AFTER"),
@@ -2415,7 +2469,12 @@ def main(argv: list[str] | None = None) -> int:
             print(_format_compare_human(diff))
         return 0 if diff.get("ok") else 1
 
-    payload = probe(args.db or active_index_db_path(), limit=max(1, args.limit))
+    payload = probe(
+        args.db or active_index_db_path(),
+        limit=max(1, args.limit),
+        integrity_check=args.integrity_check,
+        exact_derived_counts=args.exact_derived_counts,
+    )
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 0 if payload.get("ok") else 1

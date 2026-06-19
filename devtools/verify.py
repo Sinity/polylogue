@@ -47,6 +47,7 @@ from devtools.verify_runs import (
     ResourceSampler,
     VerifyRun,
     classify_pytest_result,
+    cleanup_managed_pytest_basetemp,
     copy_current_pytest_artifacts,
     env_for_pytest_step,
     latest_event_from_paths,
@@ -723,6 +724,7 @@ def _run(
         if run is not None and artifacts is not None:
             env = env_for_pytest_step(env, run=run, artifacts=artifacts)
         result = _run_pytest_with_heartbeat(cmd, cwd=cwd, env=env, t0=t0, run=run, artifacts=artifacts)
+        cleanup_managed_pytest_basetemp(root=ROOT, run_id=env.get("POLYLOGUE_PYTEST_RUN_ID", ""), env=env)
         if artifacts is not None:
             merge_worker_events(artifacts.events_dir, artifacts.events_merged_path)
             with contextlib.suppress(FileNotFoundError):

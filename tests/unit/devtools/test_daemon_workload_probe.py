@@ -338,11 +338,13 @@ def test_daemon_workload_probe_reports_archive_tier_inventory(tmp_path: Path) ->
     assert readiness["counts"]["missing_raw_session_count"] == 1
     assert readiness["counts"]["text_block_count"] == 1
     assert readiness["counts"]["messages_fts_count"] == 1
+    assert readiness["counts"]["messages_fts_exact_counts"] is False
     assert readiness["counts"]["profile_row_count"] == 1
     assert readiness["counts"]["missing_profile_row_count"] == 1
     assert readiness["counts"]["work_event_row_count"] == 1
     assert readiness["counts"]["session_tag_count"] == 0
     assert readiness["counts"]["action_count"] == 0
+    assert readiness["counts"]["action_count_exact"] is False
     assert readiness["materialization_counts"]["session_profile"] == 1
     assert readiness["missing_materialization_counts"]["session_profile"] == 1
     assert readiness["missing_materialization_counts"]["work_events"] == 2
@@ -355,6 +357,7 @@ def test_daemon_workload_probe_reports_archive_tier_inventory(tmp_path: Path) ->
     assert surfaces["raw_artifacts"]["ready"] is False
     assert surfaces["raw_artifacts"]["blockers"] == ["missing_source_raw_sessions"]
     assert surfaces["search"]["ready"] is True
+    assert surfaces["search"]["evidence"]["messages_fts_exact_counts"] is False
     assert surfaces["session_profiles"]["ready"] is False
     assert "missing_profile_rows" in surfaces["session_profiles"]["blockers"]
     assert "missing_session_profile_materialization" in surfaces["session_profiles"]["blockers"]
@@ -364,7 +367,13 @@ def test_daemon_workload_probe_reports_archive_tier_inventory(tmp_path: Path) ->
     assert surfaces["tag_rollups"]["evidence"]["session_tag_count"] == 0
     assert surfaces["tool_usage"]["ready"] is True
     assert surfaces["tool_usage"]["evidence"]["action_count"] == 0
+    assert surfaces["tool_usage"]["evidence"]["action_count_exact"] is False
     assert tiers["schema_mismatches"] == []
+    assert tiers["tiers"]["source"]["integrity"] == "not_checked"
+    expensive_payload = probe(db, integrity_check=True, exact_derived_counts=True)
+    assert expensive_payload["archive_tiers"]["tiers"]["source"]["integrity"] == "ok"
+    assert expensive_payload["archive_tiers"]["derived_readiness"]["counts"]["messages_fts_exact_counts"] is True
+    assert expensive_payload["archive_tiers"]["derived_readiness"]["counts"]["action_count_exact"] is True
     assert tiers["tiers"]["source"]["table_counts"]["raw_sessions"] == 1
     assert tiers["tiers"]["index"]["table_counts"]["sessions"] == 2
     assert tiers["tiers"]["user"]["table_counts"]["session_tags"] == 2
@@ -505,8 +514,14 @@ def test_probe_payload_carries_stable_top_level_shape(tmp_path: Path) -> None:
     counts = payload["boundary_table_counts"]
     assert counts["raw_sessions"] == 1
     assert counts["sessions"] == 1
+    assert counts["messages_fts_docsize"] >= 0
+    assert "messages_fts_data" not in counts
     assert counts["live_ingest_attempt"] == -1
     assert counts["ingest_attempts"] == 1
+
+    index_counts = payload["archive_tiers"]["tiers"]["index"]["table_counts"]
+    assert index_counts["messages_fts_docsize"] >= 0
+    assert "messages_fts_data" not in index_counts
 
     # FTS trigger state reports the full expected set.
     fts = payload["fts_trigger_state"]
