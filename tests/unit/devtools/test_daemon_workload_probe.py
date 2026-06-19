@@ -9,6 +9,8 @@ import pytest
 
 from devtools.daemon_workload_probe import (
     REPORT_VERSION,
+    UNKNOWN_TABLE_COUNT,
+    _table_count,
     compare,
     main,
     probe,
@@ -114,7 +116,7 @@ def test_daemon_workload_probe_reports_attempts_and_plan_shape(tmp_path: Path) -
     source = tmp_path / "session.jsonl"
     _seed_minimal_archive(db, source)
 
-    payload = probe(db)
+    payload = probe(db, exact_table_counts=True)
 
     assert payload["ok"] is True
     assert payload["attempt_counts"]["total"] == 1
@@ -122,6 +124,39 @@ def test_daemon_workload_probe_reports_attempts_and_plan_shape(tmp_path: Path) -
     source_plan = payload["query_plans"]["source_path_lookup"]
     assert source_plan["hazards"] == []
     assert any("idx_raw_sessions_source_path" in item for item in source_plan["plan"])
+
+
+def test_daemon_workload_probe_defaults_to_estimated_table_counts(tmp_path: Path) -> None:
+    db = tmp_path / "archive.sqlite"
+    _seed_minimal_archive(db, tmp_path / "session.jsonl")
+
+    default_payload = probe(db)
+    exact_payload = probe(db, exact_table_counts=True)
+
+    assert default_payload["boundary_table_count_mode"] == "estimated"
+    assert default_payload["archive_tiers"]["table_count_mode"] == "estimated"
+    assert default_payload["boundary_table_counts"]["sessions"] == UNKNOWN_TABLE_COUNT
+    assert exact_payload["boundary_table_count_mode"] == "exact"
+    assert exact_payload["archive_tiers"]["table_count_mode"] == "exact"
+    assert exact_payload["boundary_table_counts"]["raw_sessions"] == 1
+    assert exact_payload["boundary_table_counts"]["sessions"] == 1
+
+
+def test_daemon_workload_probe_table_count_uses_sqlite_stats_for_estimates(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "stats.sqlite"
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE sample (id INTEGER PRIMARY KEY, value TEXT)")
+        conn.executemany("INSERT INTO sample(value) VALUES (?)", [("a",), ("b",), ("c",)])
+
+        assert _table_count(conn, "sample", exact=False) == UNKNOWN_TABLE_COUNT
+        assert _table_count(conn, "sample", exact=True) == 3
+
+        conn.execute("ANALYZE")
+
+        assert _table_count(conn, "sample", exact=False) == 3
+        assert _table_count(conn, "missing", exact=False) == -1
 
 
 def test_daemon_workload_probe_reports_missing_database(tmp_path: Path) -> None:
@@ -185,7 +220,7 @@ def test_daemon_workload_probe_reports_ops_tier_from_db_anchor(tmp_path: Path) -
             sampled_at_ms=1_770_000_040_000,
         )
 
-    payload = probe(db)
+    payload = probe(db, exact_table_counts=True)
 
     assert payload["ok"] is True
     assert payload["attempt_counts"]["total"] == 1
@@ -307,7 +342,7 @@ def test_daemon_workload_probe_reports_archive_tier_inventory(tmp_path: Path) ->
             """
         )
 
-    payload = probe(db)
+    payload = probe(db, exact_table_counts=True)
     tiers = payload["archive_tiers"]
 
     assert tiers["present"] is True
@@ -370,7 +405,12 @@ def test_daemon_workload_probe_reports_archive_tier_inventory(tmp_path: Path) ->
     assert surfaces["tool_usage"]["evidence"]["action_count_exact"] is False
     assert tiers["schema_mismatches"] == []
     assert tiers["tiers"]["source"]["integrity"] == "not_checked"
-    expensive_payload = probe(db, integrity_check=True, exact_derived_counts=True)
+    expensive_payload = probe(
+        db,
+        integrity_check=True,
+        exact_derived_counts=True,
+        exact_table_counts=True,
+    )
     assert expensive_payload["archive_tiers"]["tiers"]["source"]["integrity"] == "ok"
     assert expensive_payload["archive_tiers"]["derived_readiness"]["counts"]["messages_fts_exact_counts"] is True
     assert expensive_payload["archive_tiers"]["derived_readiness"]["counts"]["action_count_exact"] is True
@@ -385,7 +425,7 @@ def test_daemon_workload_probe_reports_layout_ready_for_clean_five_tier_archive(
     for tier in ArchiveTier:
         initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
 
-    payload = probe(db)
+    payload = probe(db, exact_table_counts=True)
 
     layout = payload["archive_tiers"]["layout_readiness"]
     assert layout == {
@@ -458,7 +498,7 @@ def test_daemon_workload_probe_reports_archive_source_path_churn(tmp_path: Path)
             source_paths_json=json.dumps([source_path]),
         )
 
-    payload = probe(db)
+    payload = probe(db, exact_table_counts=True)
 
     assert payload["ok"] is True
     assert payload["source_path_churn"] == [
@@ -486,7 +526,7 @@ def test_probe_payload_carries_stable_top_level_shape(tmp_path: Path) -> None:
     db = tmp_path / "archive.sqlite"
     _seed_minimal_archive(db, tmp_path / "session.jsonl")
 
-    payload = probe(db)
+    payload = probe(db, exact_table_counts=True)
 
     expected_keys = {
         "ok",
@@ -497,6 +537,7 @@ def test_probe_payload_carries_stable_top_level_shape(tmp_path: Path) -> None:
         "storage_route_counts",
         "recent_attempts",
         "convergence_stage_timings",
+        "boundary_table_count_mode",
         "boundary_table_counts",
         "archive_tiers",
         "blob_lease_state",
@@ -509,6 +550,8 @@ def test_probe_payload_carries_stable_top_level_shape(tmp_path: Path) -> None:
     }
     assert expected_keys.issubset(payload.keys())
     assert payload["report_version"] == REPORT_VERSION
+    assert payload["boundary_table_count_mode"] == "exact"
+    assert payload["archive_tiers"]["table_count_mode"] == "exact"
 
     # Boundary counts cover the daemon-relevant tables.
     counts = payload["boundary_table_counts"]
@@ -651,7 +694,7 @@ def test_compare_computes_structured_delta(tmp_path: Path) -> None:
     source = tmp_path / "session.jsonl"
     _seed_minimal_archive(db, source)
 
-    before_payload = probe(db)
+    before_payload = probe(db, exact_table_counts=True)
 
     # Simulate a convergence cycle that added a second raw + session +
     # ran a second live attempt.
@@ -695,7 +738,7 @@ def test_compare_computes_structured_delta(tmp_path: Path) -> None:
         cursor_fingerprint_read_bytes=0,
     )
 
-    after_payload = probe(db)
+    after_payload = probe(db, exact_table_counts=True)
 
     diff = compare(before_payload, after_payload)
     assert diff["ok"] is True
@@ -718,7 +761,7 @@ def test_compare_reports_archive_derived_readiness_deltas(tmp_path: Path) -> Non
     db = tmp_path / "index.db"
     initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
 
-    before_payload = probe(db)
+    before_payload = probe(db, exact_table_counts=True)
     with sqlite3.connect(tmp_path / "index.db") as conn:
         conn.execute(
             """
@@ -728,7 +771,7 @@ def test_compare_reports_archive_derived_readiness_deltas(tmp_path: Path) -> Non
             """,
             (b"y" * 32,),
         )
-    after_payload = probe(db)
+    after_payload = probe(db, exact_table_counts=True)
 
     diff = compare(before_payload, after_payload)
 
