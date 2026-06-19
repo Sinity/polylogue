@@ -482,7 +482,15 @@ def test_reader_overlay_mutation_flow_evidence(reader_workspace: ReaderWorkspace
     assert status == 200
     assert "text/html" in content_type
     assert_no_private_paths(shell, context="reader overlay mutation shell")
-    for phrase in ("toggleMark", "saveAnnotation", "/api/user/marks", "/api/user/annotations"):
+    for phrase in (
+        "toggleMark",
+        "saveAnnotation",
+        "annotation-composer",
+        "annotation-target-select",
+        "annotation-note-input",
+        "/api/user/marks",
+        "/api/user/annotations",
+    ):
         assert phrase in shell, f"missing overlay shell hook {phrase!r}"
 
     mark_payload = cast(dict[str, object], mark)
@@ -515,6 +523,100 @@ def test_reader_overlay_mutation_flow_evidence(reader_workspace: ReaderWorkspace
             "annotation_operation": annotation_payload["operation"],
             "archive_mark_visible": "archive" in mark_types,
             "message_annotation_visible": "reader-visual-flow-note" in annotation_ids,
+            "private_path_safe": True,
+        },
+    )
+
+
+def test_reader_operator_flow_evidence(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:
+    """Representative workbench flow stays route-backed and privacy-bounded (#1846)."""
+
+    with running_reader_server(reader_workspace) as (_, base_url):
+        shell_status, content_type, shell = get_text(base_url, f"/s/{READER_C1}")
+        search = cast(dict[str, object], get_json(base_url, "/api/sessions?query=Hello&limit=5"))
+        messages = cast(dict[str, object], get_json(base_url, f"/api/sessions/{READER_C1}/read?view=messages"))
+        recovery = cast(
+            dict[str, object],
+            get_json(base_url, f"/api/sessions/{READER_C1}/read?view=recovery&format=json"),
+        )
+        context = cast(dict[str, object], get_json(base_url, f"/api/sessions/{READER_C1}/read?view=context"))
+        raw_view = cast(dict[str, object], get_json(base_url, f"/api/sessions/{READER_C1}/read?view=raw"))
+        work_packet = cast(
+            dict[str, object],
+            get_json(base_url, f"/api/sessions/{READER_C1}/recovery?report=work-packet&format=json"),
+        )
+        assertions = cast(
+            dict[str, object],
+            get_json(base_url, f"/api/assertions?target_ref=session%3A{READER_C1}&limit=10"),
+        )
+        mark_status, mark = _send_json(
+            base_url,
+            "POST",
+            "/api/user/marks",
+            {"session_id": READER_C1, "mark_type": "star"},
+        )
+        annotation_status, annotation = _send_json(
+            base_url,
+            "POST",
+            "/api/user/annotations",
+            {
+                "annotation_id": "reader-operator-flow-message-note",
+                "session_id": READER_C1,
+                "target_type": "message",
+                "message_id": READER_C1_M1,
+                "note_text": "Operator flow note",
+            },
+        )
+        annotations = cast(dict[str, object], get_json(base_url, f"/api/user/annotations?session_id={READER_C1}"))
+        provenance = cast(dict[str, object], get_json(base_url, f"/api/sessions/{READER_C1}/provenance"))
+
+    assert shell_status == 200
+    assert "text/html" in content_type
+    assert_no_private_paths(shell, context="reader operator-flow shell")
+    for phrase in (
+        "read-profile-selector",
+        "renderReadViewExecution",
+        "renderInspectorEvidence",
+        "annotation-composer",
+        "loadRawData",
+    ):
+        assert phrase in shell
+
+    assert search["total"] == 1
+    assert messages["view"] == "messages"
+    assert recovery["view"] == "recovery"
+    assert context["view"] == "context"
+    assert raw_view["view"] == "raw"
+    assert work_packet["report"] == "work-packet"
+    assert isinstance(assertions["total"], int)
+    assert assertions["total"] >= 0
+    assert mark_status in {200, 201}
+    assert cast(dict[str, object], mark)["operation"] == "mark.add"
+    assert annotation_status == 201
+    annotation_payload = cast(dict[str, object], annotation)
+    assert annotation_payload["operation"] == "annotation.save"
+    assert annotation_payload["target_type"] == "message"
+    assert annotation_payload["target_id"] == READER_C1_M1
+
+    annotation_ids = {str(item["annotation_id"]) for item in cast(list[dict[str, object]], annotations["items"])}
+    assert "reader-operator-flow-message-note" in annotation_ids
+    assert_no_private_paths(json.dumps(raw_view), context="reader raw read-view JSON")
+    assert_no_private_paths(json.dumps(provenance), context="reader provenance JSON")
+
+    write_evidence_manifest(
+        tmp_path / "reader-operator-flow-evidence.json",
+        artifact_id="polylogue.local_reader.operator_flow",
+        route=f"/s/{READER_C1}",
+        fixture_id="reader-visual-synthetic-v1",
+        checks={
+            "shell_status": shell_status,
+            "search_total": search["total"],
+            "read_views": [messages["view"], recovery["view"], context["view"], raw_view["view"]],
+            "work_packet_report": work_packet["report"],
+            "mark_status": mark_status,
+            "annotation_status": annotation_status,
+            "annotation_target": annotation_payload["target_id"],
+            "raw_provenance_private_path_safe": True,
             "private_path_safe": True,
         },
     )

@@ -213,6 +213,15 @@ __ATTACHMENT_CSS__
 .saved-view-item { display: flex; justify-content: space-between; gap: 8px; align-items: center;
   border: 1px solid var(--border); border-radius: var(--radius); padding: 6px; background: var(--panel-subtle); }
 .saved-view-item button { flex-shrink: 0; }
+.annotation-composer { display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 6px; background: var(--panel-subtle); margin-bottom: 8px; }
+.annotation-composer label { color: var(--text-dim); font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; }
+.annotation-composer select, .annotation-composer textarea { width: 100%; background: var(--panel-elevated);
+  border: 1px solid var(--border); color: var(--text); border-radius: 3px; font: inherit; font-size: var(--small); }
+.annotation-composer select { padding: 4px 6px; }
+.annotation-composer textarea { min-height: 68px; resize: vertical; padding: 6px; line-height: 1.4; }
+.annotation-composer textarea:focus, .annotation-composer select:focus { outline: none; border-color: var(--accent); }
+.annotation-composer .annotation-actions { margin-top: 0; }
 .annotation-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
 .annotation-item { border: 1px solid var(--border); border-radius: var(--radius); padding: 6px; background: var(--panel-subtle); }
 .annotation-item .meta { color: var(--text-dim); font-family: var(--font-mono); font-size: 10px; margin-bottom: 4px; }
@@ -1592,7 +1601,7 @@ function renderInspectorNotes(el, c) {
     html += '<div class="inspector-empty">' + esc(state.userStateError) + '</div>';
   }
   html += '</div><div class="inspector-section"><h4>Annotations</h4>'
-    + '<button class="user-action" onclick="saveAnnotation()">Add note</button>';
+    + renderAnnotationComposer(c);
   var annotations = annotationsFor(c.id);
   if (annotations.length) {
     html += '<div class="annotation-list">';
@@ -1654,18 +1663,79 @@ function findAnnotation(annotationId) {
   return annotations.find(function(a) { return a.annotation_id === annotationId; }) || null;
 }
 
+function messageTargetLabel(message) {
+  var role = message.role || message.author_role || 'message';
+  var text = (message.text || message.content || '').replace(/\s+/g, ' ').trim();
+  if (text.length > 54) text = text.slice(0, 51) + '...';
+  return role + (text ? ': ' + text : '');
+}
+
+function renderAnnotationComposer(c) {
+  var html = '<div id="annotation-composer" class="annotation-composer" data-editing-id="">'
+    + '<label for="annotation-target-select">Target</label>'
+    + '<select id="annotation-target-select">'
+    + '<option value="session::' + escAttr(c.id) + '">Session</option>';
+  (c.messages || []).forEach(function(message, idx) {
+    var messageId = message.id || message.message_id;
+    if (!messageId) return;
+    html += '<option value="message::' + escAttr(messageId) + '">Message ' + esc(String(idx + 1)) + ' - '
+      + esc(messageTargetLabel(message)) + '</option>';
+  });
+  html += '</select>'
+    + '<label for="annotation-note-input">Note</label>'
+    + '<textarea id="annotation-note-input" placeholder="Add an operator note for this target"></textarea>'
+    + '<div class="annotation-actions">'
+    + '<button class="user-action" onclick="saveAnnotation()">Save note</button>'
+    + '<button class="user-action" onclick="clearAnnotationComposer()">Clear</button>'
+    + '</div></div>';
+  return html;
+}
+
+function clearAnnotationComposer() {
+  var composer = document.getElementById('annotation-composer');
+  var target = document.getElementById('annotation-target-select');
+  var note = document.getElementById('annotation-note-input');
+  if (composer) composer.dataset.editingId = '';
+  if (target) target.selectedIndex = 0;
+  if (note) note.value = '';
+}
+
+function annotationTargetFromComposer() {
+  var target = document.getElementById('annotation-target-select');
+  var selected = target ? target.value : '';
+  var parts = selected.split('::');
+  var targetType = parts[0] || 'session';
+  var targetId = parts.slice(1).join('::') || (state.selected ? state.selected.id : '');
+  return {targetType: targetType, targetId: targetId};
+}
+
 async function saveAnnotation(annotationId) {
   if (!state.selected) return;
-  var existing = annotationId ? findAnnotation(annotationId) : null;
-  var note = window.prompt('Annotation note', existing ? existing.note_text : '');
-  if (!note) return;
-  var id = annotationId || ('annotation-' + Date.now().toString(36));
+  var composer = document.getElementById('annotation-composer');
+  var noteInput = document.getElementById('annotation-note-input');
+  var note = noteInput ? noteInput.value.trim() : '';
+  if (!note) {
+    state.userStateError = 'Annotation note is required';
+    renderInspector();
+    return;
+  }
+  var target = annotationTargetFromComposer();
+  var editingId = annotationId || (composer && composer.dataset.editingId) || '';
+  var id = editingId || ('annotation-' + Date.now().toString(36));
+  var payload = {
+    annotation_id: id,
+    session_id: state.selected.id,
+    note_text: note,
+    target_type: target.targetType
+  };
+  if (target.targetType === 'message') {
+    payload.message_id = target.targetId;
+  } else {
+    payload.target_id = state.selected.id;
+  }
   try {
-    await sendJSON('/api/user/annotations', 'POST', {
-      annotation_id: id,
-      session_id: state.selected.id,
-      note_text: note
-    });
+    await sendJSON('/api/user/annotations', 'POST', payload);
+    state.userStateError = '';
     await loadUserState();
   } catch(e) {
     state.userStateError = 'Failed to save annotation';
@@ -1674,7 +1744,19 @@ async function saveAnnotation(annotationId) {
 }
 
 function editAnnotation(annotationId) {
-  saveAnnotation(annotationId);
+  var existing = findAnnotation(annotationId);
+  if (!existing) return;
+  var composer = document.getElementById('annotation-composer');
+  var target = document.getElementById('annotation-target-select');
+  var note = document.getElementById('annotation-note-input');
+  if (composer) composer.dataset.editingId = annotationId;
+  if (note) note.value = existing.note_text || '';
+  if (target) {
+    var targetValue = existing.target_type === 'message'
+      ? ('message::' + (existing.message_id || existing.target_id || ''))
+      : ('session::' + existing.session_id);
+    target.value = targetValue;
+  }
 }
 
 async function deleteAnnotation(annotationId) {
