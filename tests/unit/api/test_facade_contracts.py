@@ -227,7 +227,9 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "post_blackboard_note",
         # Shared web/MCP payload DTO helpers covered by daemon/MCP surface tests.
         "list_assertion_claim_payloads",
+        "neighbor_candidate_payloads",
         "recovery_read_payload",
+        "session_correlation_payload",
     }
 )
 

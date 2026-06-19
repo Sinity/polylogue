@@ -769,8 +769,8 @@ function renderFacets() {
 function renderReadViewSelector(c) {
   if (!c) return '';
   var profiles = state.readViewProfiles || [];
-  var supported = {messages: true, recovery: true, raw: true, context: true, 'context-pack': true};
-  var labels = {messages: 'Messages', recovery: 'Recovery', raw: 'Raw', context: 'Context', 'context-pack': 'Context Pack'};
+  var supported = {messages: true, recovery: true, raw: true, context: true, 'context-pack': true, neighbors: true, correlation: true};
+  var labels = {messages: 'Messages', recovery: 'Recovery', raw: 'Raw', context: 'Context', 'context-pack': 'Context Pack', neighbors: 'Neighbors', correlation: 'Correlation'};
   if (!profiles.length) {
     var fallback = state.readViewProfileError || 'Read profiles loading';
     return '<div id="read-profile-selector" class="read-profile-selector muted">' + esc(fallback) + '</div>';
@@ -922,6 +922,8 @@ function renderReadViewExecution(c, viewId) {
   if (viewId === 'raw') return renderRawReadView(payload);
   if (viewId === 'context') return renderContextReadView(payload);
   if (viewId === 'context-pack') return renderContextPackReadView(payload);
+  if (viewId === 'neighbors') return renderNeighborsReadView(payload);
+  if (viewId === 'correlation') return renderCorrelationReadView(payload);
   return '<div class="main-empty"><h3>Unsupported read view</h3><p>' + esc(viewId) + '</p></div>';
 }
 
@@ -1000,6 +1002,53 @@ function renderContextPackReadView(payload) {
       + esc(String(messages.length)) + ' messages included</div></div>';
   });
   if (!sessions.length) html += '<div class="inspector-empty">No context-pack sessions surfaced for this selection.</div>';
+  html += '</div>';
+  return html;
+}
+
+function renderNeighborsReadView(payload) {
+  var neighbors = payload.neighbors || [];
+  var html = '<div class="read-view-panel"><h3>Neighbor sessions</h3>'
+    + '<p class="muted">Read through /api/sessions/:id/read using the shared neighbor-candidate DTO.</p>'
+    + '<div class="inspector-field"><span class="label">candidates</span><span class="value">' + esc(String(neighbors.length)) + '</span></div>';
+  neighbors.slice(0, 10).forEach(function(candidate) {
+    var session = candidate.session || {};
+    var reasons = candidate.reasons || [];
+    var reasonText = reasons.map(function(reason) {
+      return (reason.kind || 'reason') + ': ' + (reason.detail || '');
+    }).join(' / ');
+    html += '<div class="annotation-item"><div class="meta">rank ' + esc(String(candidate.rank || '?'))
+      + ' / score ' + esc(String(candidate.score || 0)) + '</div>'
+      + '<div class="note"><strong>' + esc(session.display_title || session.title || session.id || 'Untitled') + '</strong><br>'
+      + esc(session.id || session.session_id || '') + '<br><span class="muted">' + esc(reasonText || 'No reasons reported') + '</span></div></div>';
+  });
+  if (!neighbors.length) html += '<div class="inspector-empty">No neighboring sessions surfaced for this seed.</div>';
+  html += '</div>';
+  return html;
+}
+
+function renderCorrelationReadView(payload) {
+  var commits = payload.commits || [];
+  var issues = payload.issue_refs || [];
+  var prs = payload.pr_refs || [];
+  var files = payload.file_paths || [];
+  var html = '<div class="read-view-panel"><h3>Correlation evidence</h3>'
+    + '<p class="muted">Read through /api/sessions/:id/read using the shared correlation payload.</p>'
+    + '<div class="inspector-field"><span class="label">window</span><span class="value">' + esc((payload.window_start || '-') + ' -> ' + (payload.window_end || '-')) + '</span></div>'
+    + '<div class="inspector-field"><span class="label">commits</span><span class="value">' + esc(String(commits.length)) + '</span></div>'
+    + '<div class="inspector-field"><span class="label">issues / PRs</span><span class="value">' + esc(String(issues.length + prs.length)) + '</span></div>'
+    + '<div class="inspector-field"><span class="label">files</span><span class="value">' + esc(String(files.length)) + '</span></div>';
+  commits.slice(0, 8).forEach(function(commit) {
+    html += '<div class="annotation-item"><div class="meta">' + esc(commit.detection_method || 'commit') + ' / confidence ' + esc(String(commit.confidence || 0)) + '</div>'
+      + '<div class="note"><strong>' + esc(commit.short_sha || commit.commit_sha || 'commit') + '</strong><br>' + esc(commit.object_ref || '') + '</div></div>';
+  });
+  issues.concat(prs).slice(0, 8).forEach(function(ref) {
+    html += '<div class="annotation-item"><div class="meta">' + esc(ref.kind || 'ref') + '</div>'
+      + '<div class="note"><strong>' + esc(ref.object_ref || ref.raw_match || 'ref') + '</strong><br>' + esc(ref.url || '') + '</div></div>';
+  });
+  if (!commits.length && !issues.length && !prs.length && !files.length) {
+    html += '<div class="inspector-empty">No commit, issue, PR, or file evidence surfaced in this session window.</div>';
+  }
   html += '</div>';
   return html;
 }

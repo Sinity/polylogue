@@ -1516,6 +1516,14 @@ class TestReaderViewProfiles:
                 dict[str, object],
                 _get_json(base_url, f"/api/sessions/{C1}/read?view=context-pack&max_messages=5"),
             )
+            neighbors = cast(
+                dict[str, object],
+                _get_json(base_url, f"/api/sessions/{C1}/read?view=neighbors&limit=2"),
+            )
+            correlation = cast(
+                dict[str, object],
+                _get_json(base_url, f"/api/sessions/{C1}/read?view=correlation&since_hours=1"),
+            )
 
         assert messages["view"] == "messages"
         message_payload = cast(dict[str, object], messages["payload"])
@@ -1536,10 +1544,23 @@ class TestReaderViewProfiles:
         assert context_query["query_matched"] == 1
         context_sessions = cast(list[dict[str, object]], context_payload["sessions"])
         assert context_sessions[0]["session_id"] == C1
+        assert neighbors["view"] == "neighbors"
+        neighbor_payload = cast(dict[str, object], neighbors["payload"])
+        neighbor_rows = cast(list[dict[str, object]], neighbor_payload["neighbors"])
+        assert neighbor_rows
+        neighbor_session = cast(dict[str, object], neighbor_rows[0]["session"])
+        assert neighbor_session["id"] in {C2, C3}
+        neighbor_reasons = cast(list[dict[str, object]], neighbor_rows[0]["reasons"])
+        assert {reason["kind"] for reason in neighbor_reasons} & {"nearby_time", "query_match", "content_similarity"}
+        assert correlation["view"] == "correlation"
+        correlation_payload = cast(dict[str, object], correlation["payload"])
+        assert correlation_payload["session_id"] == C1
+        assert "window_start" in correlation_payload
+        assert "object_refs" in correlation_payload
 
     def test_read_view_execution_rejects_unknown_view_or_format(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env) as (_, base_url):
-            view_status, view_payload = _get_json_ex(base_url, f"/api/sessions/{C1}/read?view=neighbors")
+            view_status, view_payload = _get_json_ex(base_url, f"/api/sessions/{C1}/read?view=timeline")
             format_status, format_payload = _get_json_ex(base_url, f"/api/sessions/{C1}/read?view=messages&format=html")
 
         assert view_status == 400

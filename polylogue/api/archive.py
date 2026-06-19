@@ -2496,6 +2496,82 @@ class PolylogueArchiveMixin:
                 ),
             )
 
+    async def neighbor_candidate_payloads(
+        self,
+        *,
+        session_id: str | None = None,
+        query: str | None = None,
+        provider: str | None = None,
+        limit: int = 10,
+        window_hours: int = 24,
+    ) -> list[JSONDocument]:
+        """Return neighboring-session candidates as shared surface payloads."""
+
+        from polylogue.surfaces.payloads import SessionNeighborCandidatePayload, model_json_document
+
+        candidates = await self.neighbor_candidates(
+            session_id=session_id,
+            query=query,
+            provider=provider,
+            limit=limit,
+            window_hours=window_hours,
+        )
+        return [
+            model_json_document(SessionNeighborCandidatePayload.from_candidate(candidate), exclude_none=True)
+            for candidate in candidates
+        ]
+
+    async def session_correlation_payload(
+        self,
+        session_id: str,
+        *,
+        repo_path: str | None = None,
+        since_hours: int = 2,
+        confidence_threshold: float = 0.3,
+    ) -> JSONDocument | None:
+        """Return git/GitHub correlation evidence as a JSON surface payload."""
+
+        from polylogue.insights.session_commit import build_correlation_result, correlation_result_to_payload
+
+        session = await self.get_session(session_id)
+        if session is None:
+            return None
+        if session.created_at is None or session.updated_at is None:
+            raise SessionNotFoundError("Session has no timestamp data.")
+
+        repo = repo_path
+        if not repo:
+            repo_url = getattr(session, "git_repository_url", None)
+            if isinstance(repo_url, str) and repo_url:
+                repo = repo_url
+            else:
+                directories = getattr(session, "working_directories", ()) or ()
+                repo = str(directories[0]) if directories else "."
+
+        messages: list[dict[str, object]] = []
+        for message in session.messages:
+            content_blocks = list(message.blocks) if getattr(message, "blocks", ()) else []
+            messages.append(
+                {
+                    "id": message.id,
+                    "role": message.role.value if hasattr(message.role, "value") else str(message.role),
+                    "text": message.text,
+                    "content_blocks": content_blocks,
+                }
+            )
+
+        result = build_correlation_result(
+            session_id=session_id,
+            messages=messages,
+            session_created_at=session.created_at,
+            session_updated_at=session.updated_at,
+            repo_path=repo,
+            before_hours=since_hours,
+            after_hours=since_hours,
+            confidence_threshold=confidence_threshold,
+        )
+        return cast(JSONDocument, correlation_result_to_payload(result))
+
     async def get_session_tree(self, session_id: str) -> list[Session]:
         """Return the full session tree (parent + children) for a session."""
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
