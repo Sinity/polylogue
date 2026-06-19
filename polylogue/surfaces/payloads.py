@@ -236,6 +236,66 @@ class ProviderPackageCompletenessPayload(SurfacePayloadModel):
     caveats: tuple[str, ...] = ()
 
 
+ArchiveDebtKind = Literal[
+    "archive-tier",
+    "convergence",
+    "embedding",
+    "fts",
+]
+ArchiveDebtSeverity = Literal["info", "warning", "critical"]
+ArchiveDebtStatus = Literal["open", "actionable", "blocked"]
+
+
+class ArchiveDebtActionPayload(SurfacePayloadModel):
+    """Operator action that can resolve or inspect one archive debt row."""
+
+    label: str
+    command: tuple[str, ...] = ()
+    description: str | None = None
+
+
+class ArchiveDebtRowPayload(SurfacePayloadModel):
+    """One actionable archive debt row from an operational readiness provider."""
+
+    debt_ref: str
+    kind: ArchiveDebtKind
+    stage: str
+    subject_ref: str
+    severity: ArchiveDebtSeverity
+    status: ArchiveDebtStatus = "open"
+    owner: str
+    summary: str
+    details: str | None = None
+    source_family: str | None = None
+    observed_at: str | None = None
+    age_seconds: float | None = None
+    evidence_refs: tuple[str, ...] = ()
+    caveats: tuple[str, ...] = ()
+    actions: tuple[ArchiveDebtActionPayload, ...] = ()
+
+
+class ArchiveDebtTotalsPayload(SurfacePayloadModel):
+    """Aggregate counts for archive debt rows."""
+
+    total: int = 0
+    critical: int = 0
+    warning: int = 0
+    info: int = 0
+    actionable: int = 0
+    blocked: int = 0
+
+
+class ArchiveDebtListPayload(SurfacePayloadModel):
+    """Unified operational debt report across archive readiness providers."""
+
+    mode: Literal["archive-debt-list"] = "archive-debt-list"
+    generated_at: str
+    archive_root: str
+    rows: tuple[ArchiveDebtRowPayload, ...]
+    totals: ArchiveDebtTotalsPayload
+    caveats: tuple[str, ...] = ()
+
+
 def normalize_role(role: object) -> str:
     if not role:
         return "unknown"
@@ -2062,6 +2122,13 @@ __all__ = [
     "FacetBucketsPayload",
     "FacetTimeRange",
     "FacetsResponse",
+    "ArchiveDebtActionPayload",
+    "ArchiveDebtKind",
+    "ArchiveDebtListPayload",
+    "ArchiveDebtRowPayload",
+    "ArchiveDebtSeverity",
+    "ArchiveDebtStatus",
+    "ArchiveDebtTotalsPayload",
     "ImportDetectorEvidencePayload",
     "ImportExplainEntryPayload",
     "ImportExplainPayload",

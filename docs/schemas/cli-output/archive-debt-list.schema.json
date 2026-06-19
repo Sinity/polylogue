@@ -1,0 +1,265 @@
+{
+  "$defs": {
+    "ArchiveDebtActionPayload": {
+      "additionalProperties": false,
+      "description": "Operator action that can resolve or inspect one archive debt row.",
+      "properties": {
+        "command": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Command",
+          "type": "array"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label"
+      ],
+      "title": "ArchiveDebtActionPayload",
+      "type": "object"
+    },
+    "ArchiveDebtRowPayload": {
+      "additionalProperties": false,
+      "description": "One actionable archive debt row from an operational readiness provider.",
+      "properties": {
+        "actions": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArchiveDebtActionPayload"
+          },
+          "title": "Actions",
+          "type": "array"
+        },
+        "age_seconds": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Age Seconds"
+        },
+        "caveats": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Caveats",
+          "type": "array"
+        },
+        "debt_ref": {
+          "title": "Debt Ref",
+          "type": "string"
+        },
+        "details": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Details"
+        },
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "kind": {
+          "enum": [
+            "archive-tier",
+            "convergence",
+            "embedding",
+            "fts"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "observed_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Observed At"
+        },
+        "owner": {
+          "title": "Owner",
+          "type": "string"
+        },
+        "severity": {
+          "enum": [
+            "info",
+            "warning",
+            "critical"
+          ],
+          "title": "Severity",
+          "type": "string"
+        },
+        "source_family": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Family"
+        },
+        "stage": {
+          "title": "Stage",
+          "type": "string"
+        },
+        "status": {
+          "default": "open",
+          "enum": [
+            "open",
+            "actionable",
+            "blocked"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "subject_ref": {
+          "title": "Subject Ref",
+          "type": "string"
+        },
+        "summary": {
+          "title": "Summary",
+          "type": "string"
+        }
+      },
+      "required": [
+        "debt_ref",
+        "kind",
+        "stage",
+        "subject_ref",
+        "severity",
+        "owner",
+        "summary"
+      ],
+      "title": "ArchiveDebtRowPayload",
+      "type": "object"
+    },
+    "ArchiveDebtTotalsPayload": {
+      "additionalProperties": false,
+      "description": "Aggregate counts for archive debt rows.",
+      "properties": {
+        "actionable": {
+          "default": 0,
+          "title": "Actionable",
+          "type": "integer"
+        },
+        "blocked": {
+          "default": 0,
+          "title": "Blocked",
+          "type": "integer"
+        },
+        "critical": {
+          "default": 0,
+          "title": "Critical",
+          "type": "integer"
+        },
+        "info": {
+          "default": 0,
+          "title": "Info",
+          "type": "integer"
+        },
+        "total": {
+          "default": 0,
+          "title": "Total",
+          "type": "integer"
+        },
+        "warning": {
+          "default": 0,
+          "title": "Warning",
+          "type": "integer"
+        }
+      },
+      "title": "ArchiveDebtTotalsPayload",
+      "type": "object"
+    }
+  },
+  "$id": "https://polylogue.dev/schemas/cli-output/archive-debt-list.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Unified operational debt report for `polylogue ops debt list --format json`: archive tier, convergence, embedding, and FTS readiness rows that need operator attention.\n\nGenerated from `polylogue.surfaces.payloads.ArchiveDebtListPayload` by `devtools render cli-output-schemas`. Do not edit by hand.",
+  "properties": {
+    "archive_root": {
+      "title": "Archive Root",
+      "type": "string"
+    },
+    "caveats": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Caveats",
+      "type": "array"
+    },
+    "generated_at": {
+      "title": "Generated At",
+      "type": "string"
+    },
+    "mode": {
+      "const": "archive-debt-list",
+      "default": "archive-debt-list",
+      "title": "Mode",
+      "type": "string"
+    },
+    "rows": {
+      "items": {
+        "$ref": "#/$defs/ArchiveDebtRowPayload"
+      },
+      "title": "Rows",
+      "type": "array"
+    },
+    "totals": {
+      "$ref": "#/$defs/ArchiveDebtTotalsPayload"
+    }
+  },
+  "required": [
+    "generated_at",
+    "archive_root",
+    "rows",
+    "totals"
+  ],
+  "title": "Archive Debt List",
+  "type": "object",
+  "x-polylogue-cli-surfaces": [
+    "polylogue ops debt list --format json"
+  ],
+  "x-polylogue-source-model": "ArchiveDebtListPayload"
+}

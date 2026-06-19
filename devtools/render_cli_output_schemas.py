@@ -25,6 +25,7 @@ from devtools.command_catalog import control_plane_command
 from devtools.render_support import write_if_changed
 from polylogue.archive.query.metadata import terminal_query_source_list
 from polylogue.surfaces.payloads import (
+    ArchiveDebtListPayload,
     ImportExplainPayload,
     MachineErrorPayload,
     MachineSuccessPayload,
@@ -167,6 +168,16 @@ SCHEMAS: tuple[CliOutputSchema, ...] = (
             "polylogue import PATH --explain --format json",
             "polylogue import PATH --explain --format ndjson (entries)",
         ),
+    ),
+    CliOutputSchema(
+        name="archive-debt-list",
+        title="Archive Debt List",
+        description=(
+            "Unified operational debt report for `polylogue ops debt list --format json`: "
+            "archive tier, convergence, embedding, and FTS readiness rows that need operator attention."
+        ),
+        model=ArchiveDebtListPayload,
+        surfaces=("polylogue ops debt list --format json",),
     ),
     CliOutputSchema(
         name="session-neighbor-candidate",
