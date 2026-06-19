@@ -244,6 +244,8 @@ class QueryUnitSource:
     unit: QueryUnitName
     predicate: QueryPredicate
     session_predicate: QueryPredicate | None = None
+    limit: int | None = None
+    offset: int | None = None
 
 
 ExplainClauseKind = Literal["field", "count", "count_range", "date", "date_range", "text", "json"]
@@ -1053,14 +1055,15 @@ def _parse_boolean_predicate(expression: str) -> QueryPredicate:
     return transformed
 
 
-def _split_pipeline_expression(expression: str) -> tuple[str, str] | None:
-    """Split ``left | right`` outside quotes and parentheses.
+def _split_pipeline_stages(expression: str) -> tuple[str, ...]:
+    """Split ``|`` stages outside quotes and parentheses.
 
-    The first executable pipeline phase uses a single pipe between a
-    session-source predicate and a terminal unit-source predicate.  Values such
-    as ``origin:(codex-session|claude-code-session)`` must not split.
+    Values such as ``origin:(codex-session|claude-code-session)`` must not
+    split.
     """
 
+    stages: list[str] = []
+    stage_start = 0
     in_quote = False
     escaped = False
     depth = 0
@@ -1083,12 +1086,17 @@ def _split_pipeline_expression(expression: str) -> tuple[str, str] | None:
             depth = max(0, depth - 1)
             continue
         if char == "|" and depth == 0:
-            left = expression[:idx].strip()
-            right = expression[idx + 1 :].strip()
-            if not left or not right:
+            stage = expression[stage_start:idx].strip()
+            if not stage:
                 raise ExpressionCompileError("pipeline requires non-empty stages around '|'", field=None)
-            return left, right
-    return None
+            stages.append(stage)
+            stage_start = idx + 1
+    final = expression[stage_start:].strip()
+    if stages and not final:
+        raise ExpressionCompileError("pipeline requires non-empty stages around '|'", field=None)
+    if stages:
+        stages.append(final)
+    return tuple(stages)
 
 
 def _session_source_predicate(stage: str) -> QueryPredicate:
@@ -1125,11 +1133,45 @@ def _scope_session_predicate(predicate: QueryPredicate) -> QueryPredicate:
     )
 
 
-def _parse_pipeline_unit_source(expression: str) -> QueryUnitSource | None:
-    stages = _split_pipeline_expression(expression)
-    if stages is None:
+def _parse_non_negative_int_stage(stage: str, keyword: str) -> int | None:
+    lower = stage.lower()
+    prefix = f"{keyword} "
+    if not lower.startswith(prefix):
         return None
-    session_stage, terminal_stage = stages
+    raw_value = stage[len(prefix) :].strip()
+    if not raw_value:
+        raise ExpressionCompileError(f"pipeline `{keyword}` stage requires an integer", field=keyword)
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise ExpressionCompileError(f"pipeline `{keyword}` stage requires an integer", field=keyword) from exc
+    if value < 0:
+        raise ExpressionCompileError(f"pipeline `{keyword}` stage must be non-negative", field=keyword)
+    return value
+
+
+def _apply_pipeline_stage(source: QueryUnitSource, stage: str) -> QueryUnitSource:
+    limit = _parse_non_negative_int_stage(stage, "limit")
+    if limit is not None:
+        if limit == 0:
+            raise ExpressionCompileError("pipeline `limit` stage must be greater than zero", field="limit")
+        return replace(source, limit=limit)
+    offset = _parse_non_negative_int_stage(stage, "offset")
+    if offset is not None:
+        return replace(source, offset=offset)
+    raise ExpressionCompileError(
+        f"unsupported pipeline stage {stage!r}; supported terminal stages are `limit N` and `offset N`",
+        field=None,
+    )
+
+
+def _parse_pipeline_unit_source(expression: str) -> QueryUnitSource | None:
+    stages = _split_pipeline_stages(expression)
+    if not stages:
+        return None
+    if len(stages) < 2:
+        return None
+    session_stage, terminal_stage, *tail_stages = stages
     session_predicate = _session_source_predicate(session_stage)
     terminal_source = parse_unit_source_expression(terminal_stage)
     if terminal_source is None:
@@ -1140,11 +1182,16 @@ def _parse_pipeline_unit_source(expression: str) -> QueryUnitSource | None:
     scoped_session_predicate = _scope_session_predicate(session_predicate)
     combined = QueryBoolPredicate("and", (scoped_session_predicate, terminal_source.predicate))
     _validate_predicate_context(combined, unit=terminal_source.unit)
-    return QueryUnitSource(
+    source = QueryUnitSource(
         unit=terminal_source.unit,
         predicate=combined,
         session_predicate=session_predicate,
+        limit=terminal_source.limit,
+        offset=terminal_source.offset,
     )
+    for stage in tail_stages:
+        source = _apply_pipeline_stage(source, stage)
+    return source
 
 
 def parse_unit_source_expression(expression: str) -> QueryUnitSource | None:
@@ -1425,6 +1472,10 @@ def _ast_payload(
         }
         if unit_source.session_predicate is not None:
             unit_payload["session_predicate"] = unit_source.session_predicate.to_payload()
+        if unit_source.limit is not None:
+            unit_payload["limit"] = unit_source.limit
+        if unit_source.offset is not None:
+            unit_payload["offset"] = unit_source.offset
         payload["unit_source"] = unit_payload
     return payload
 

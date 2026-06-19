@@ -561,6 +561,11 @@ def query_unit_rows(
 ) -> QueryUnitEnvelope:
     """Execute an explicit unit-source query."""
 
+    caller_offset = offset
+    if source.limit is not None:
+        limit = min(limit, source.limit)
+    if source.offset is not None:
+        offset += source.offset
     fetch_limit = limit + 1
     if source.unit == "observed-event":
         event_rows = _query_observed_events(
@@ -575,7 +580,7 @@ def query_unit_rows(
             unit=source.unit,
             query=query,
             limit=limit,
-            offset=offset,
+            offset=caller_offset,
             has_next=len(event_rows) > limit,
         )
     if source.unit == "run":
@@ -591,7 +596,7 @@ def query_unit_rows(
             unit=source.unit,
             query=query,
             limit=limit,
-            offset=offset,
+            offset=caller_offset,
             has_next=len(run_rows) > limit,
         )
     if source.unit == "context-snapshot":
@@ -607,7 +612,7 @@ def query_unit_rows(
             unit=source.unit,
             query=query,
             limit=limit,
-            offset=offset,
+            offset=caller_offset,
             has_next=len(snapshot_rows) > limit,
         )
     if source.unit == "message":
@@ -622,7 +627,7 @@ def query_unit_rows(
             unit=source.unit,
             query=query,
             limit=limit,
-            offset=offset,
+            offset=caller_offset,
             has_next=len(message_rows) > limit,
         )
     if source.unit == "action":
@@ -637,7 +642,7 @@ def query_unit_rows(
             unit=source.unit,
             query=query,
             limit=limit,
-            offset=offset,
+            offset=caller_offset,
             has_next=len(action_rows) > limit,
         )
     if source.unit == "assertion":
@@ -652,7 +657,7 @@ def query_unit_rows(
             unit=source.unit,
             query=query,
             limit=limit,
-            offset=offset,
+            offset=caller_offset,
             has_next=len(assertion_rows) > limit,
         )
     block_rows = archive.query_blocks(
@@ -666,7 +671,7 @@ def query_unit_rows(
         unit=source.unit,
         query=query,
         limit=limit,
-        offset=offset,
+        offset=caller_offset,
         has_next=len(block_rows) > limit,
     )
 
