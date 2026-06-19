@@ -83,6 +83,20 @@ polylogue observed-events where 'delivery_state:acted_on AND text:#2100'
 polylogue context-snapshots where 'boundary:session_start AND session.repo:polylogue'
 ```
 
+The first executable pipeline form scopes a terminal row query through a
+session source stage:
+
+```bash
+polylogue 'sessions where repo:polylogue AND origin:claude-code-session | messages where role:assistant'
+polylogue 'sessions where origin:(codex-session|claude-code-session) | actions where action:file_edit'
+```
+
+The left stage is lowered into `session.<field>` predicates on the terminal
+unit query, so it uses the same row executor as direct `messages/actions/...`
+queries. For now the session stage accepts field/count/date predicates only;
+FTS, semantic, `exists`, lineage, and sequence stages are typed errors until
+they have dedicated unit-changing lowerers.
+
 Unsupported forms raise typed `ExpressionCompileError`s and must not broaden
 into looser full-text search. In particular, reserved unit prefixes such as
 `messages where` are errors when malformed; they are not treated as ordinary

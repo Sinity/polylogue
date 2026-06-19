@@ -243,6 +243,7 @@ class QueryUnitSource:
 
     unit: QueryUnitName
     predicate: QueryPredicate
+    session_predicate: QueryPredicate | None = None
 
 
 ExplainClauseKind = Literal["field", "count", "count_range", "date", "date_range", "text", "json"]
@@ -1052,6 +1053,100 @@ def _parse_boolean_predicate(expression: str) -> QueryPredicate:
     return transformed
 
 
+def _split_pipeline_expression(expression: str) -> tuple[str, str] | None:
+    """Split ``left | right`` outside quotes and parentheses.
+
+    The first executable pipeline phase uses a single pipe between a
+    session-source predicate and a terminal unit-source predicate.  Values such
+    as ``origin:(codex-session|claude-code-session)`` must not split.
+    """
+
+    in_quote = False
+    escaped = False
+    depth = 0
+    for idx, char in enumerate(expression):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\" and in_quote:
+            escaped = True
+            continue
+        if char == '"':
+            in_quote = not in_quote
+            continue
+        if in_quote:
+            continue
+        if char == "(":
+            depth += 1
+            continue
+        if char == ")":
+            depth = max(0, depth - 1)
+            continue
+        if char == "|" and depth == 0:
+            left = expression[:idx].strip()
+            right = expression[idx + 1 :].strip()
+            if not left or not right:
+                raise ExpressionCompileError("pipeline requires non-empty stages around '|'", field=None)
+            return left, right
+    return None
+
+
+def _session_source_predicate(stage: str) -> QueryPredicate:
+    lower = stage.lower()
+    marker = "sessions where"
+    if lower == marker:
+        raise ExpressionCompileError("sessions where requires a predicate before pipeline '|'", field=None)
+    if not lower.startswith(marker) or not lower[len(marker)].isspace():
+        raise ExpressionCompileError(
+            "pipeline queries currently start with `sessions where ...`",
+            field=None,
+        )
+    return _parse_boolean_predicate(stage)
+
+
+def _scope_session_predicate(predicate: QueryPredicate) -> QueryPredicate:
+    if isinstance(predicate, QueryFieldPredicate):
+        if predicate.field.startswith("session."):
+            return predicate
+        if predicate.field not in _BOOLEAN_SUPPORTED_FIELDS:
+            raise ExpressionCompileError(
+                f"session pipeline stage cannot scope unsupported field {predicate.field!r}",
+                field=predicate.field,
+            )
+        return QueryFieldPredicate(field=f"session.{predicate.field}", values=predicate.values, op=predicate.op)
+    if isinstance(predicate, QueryBoolPredicate):
+        return QueryBoolPredicate(predicate.op, tuple(_scope_session_predicate(child) for child in predicate.children))
+    if isinstance(predicate, QueryNotPredicate):
+        return QueryNotPredicate(_scope_session_predicate(predicate.child))
+    raise ExpressionCompileError(
+        "pipeline session stages currently support field/count/date predicates only; "
+        "FTS, semantic, exists, lineage, and sequence stages need dedicated lowerers.",
+        field=None,
+    )
+
+
+def _parse_pipeline_unit_source(expression: str) -> QueryUnitSource | None:
+    stages = _split_pipeline_expression(expression)
+    if stages is None:
+        return None
+    session_stage, terminal_stage = stages
+    session_predicate = _session_source_predicate(session_stage)
+    terminal_source = parse_unit_source_expression(terminal_stage)
+    if terminal_source is None:
+        raise ExpressionCompileError(
+            "pipeline terminal stage must be an executable `<unit>s where ...` query",
+            field=None,
+        )
+    scoped_session_predicate = _scope_session_predicate(session_predicate)
+    combined = QueryBoolPredicate("and", (scoped_session_predicate, terminal_source.predicate))
+    _validate_predicate_context(combined, unit=terminal_source.unit)
+    return QueryUnitSource(
+        unit=terminal_source.unit,
+        predicate=combined,
+        session_predicate=session_predicate,
+    )
+
+
 def parse_unit_source_expression(expression: str) -> QueryUnitSource | None:
     """Parse explicit unit-source ``... where ...`` expressions as terminal row sources.
 
@@ -1061,6 +1156,9 @@ def parse_unit_source_expression(expression: str) -> QueryUnitSource | None:
     """
 
     stripped = expression.strip()
+    pipeline_source = _parse_pipeline_unit_source(stripped)
+    if pipeline_source is not None:
+        return pipeline_source
     lower = stripped.lower()
     source_match: tuple[str, QueryUnitName, str] | None = None
     for source, unit in _SOURCE_WHERE_SOURCES:
@@ -1321,10 +1419,13 @@ def _ast_payload(
     if predicate is not None:
         payload["predicate"] = predicate.to_payload()
     if unit_source is not None:
-        payload["unit_source"] = {
+        unit_payload: dict[str, object] = {
             "unit": unit_source.unit,
             "predicate": unit_source.predicate.to_payload(),
         }
+        if unit_source.session_predicate is not None:
+            unit_payload["session_predicate"] = unit_source.session_predicate.to_payload()
+        payload["unit_source"] = unit_payload
     return payload
 
 

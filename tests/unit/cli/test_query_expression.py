@@ -422,6 +422,53 @@ class TestBooleanQueryExpression:
             ),
         )
 
+    def test_pipeline_session_source_scopes_terminal_unit_query(self) -> None:
+        source = parse_unit_source_expression(
+            "sessions where repo:polylogue AND origin:claude-code-session | messages where role:assistant"
+        )
+
+        assert source is not None
+        assert source.unit == "message"
+        assert source.session_predicate == QueryBoolPredicate(
+            op="and",
+            children=(
+                QueryFieldPredicate(field="repo", values=("polylogue",)),
+                QueryFieldPredicate(field="origin", values=("claude-code-session",)),
+            ),
+        )
+        assert source.predicate == QueryBoolPredicate(
+            op="and",
+            children=(
+                QueryBoolPredicate(
+                    op="and",
+                    children=(
+                        QueryFieldPredicate(field="session.repo", values=("polylogue",)),
+                        QueryFieldPredicate(field="session.origin", values=("claude-code-session",)),
+                    ),
+                ),
+                QueryFieldPredicate(field="role", values=("assistant",)),
+            ),
+        )
+
+    def test_pipeline_split_ignores_field_alternation_pipe(self) -> None:
+        source = parse_unit_source_expression(
+            "sessions where origin:(codex-session|claude-code-session) | actions where action:file_edit"
+        )
+
+        assert source is not None
+        assert source.unit == "action"
+        assert source.predicate == QueryBoolPredicate(
+            op="and",
+            children=(
+                QueryFieldPredicate(field="session.origin", values=("codex-session", "claude-code-session")),
+                QueryFieldPredicate(field="action", values=("file_edit",)),
+            ),
+        )
+
+    def test_pipeline_rejects_unlowered_session_stage_predicates(self) -> None:
+        with pytest.raises(ExpressionCompileError, match="FTS, semantic, exists, lineage, and sequence"):
+            parse_unit_source_expression('sessions where ~"timeout" | messages where role:assistant')
+
     def test_assertion_source_where_lowers_to_structural_exists(self) -> None:
         ast = parse_expression_ast("assertions where kind:decision AND text:review")
 
@@ -885,6 +932,55 @@ class TestBooleanQueryExpression:
 
         assert [(row.session_id, row.message_id) for row in rows] == [
             ("claude-code-session:ext-hit", "claude-code-session:ext-hit:m-hit")
+        ]
+
+    def test_session_to_message_pipeline_executes_terminal_rows(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "hit")
+            .provider("claude-code")
+            .git_repository_url("polylogue")
+            .title("pipeline hit")
+            .add_message("m-hit-user", role="user", text="please inspect")
+            .add_message("m-hit-assistant", role="assistant", text="the pipeline answer")
+            .save()
+        )
+        (
+            SessionBuilder(index_db, "wrong-repo")
+            .provider("claude-code")
+            .git_repository_url("sinex")
+            .title("pipeline wrong repo")
+            .add_message("m-wrong-repo", role="assistant", text="the pipeline answer")
+            .save()
+        )
+        (
+            SessionBuilder(index_db, "wrong-origin")
+            .provider("chatgpt")
+            .git_repository_url("polylogue")
+            .title("pipeline wrong origin")
+            .add_message("m-wrong-origin", role="assistant", text="the pipeline answer")
+            .save()
+        )
+
+        source = parse_unit_source_expression(
+            "sessions where repo:polylogue AND origin:claude-code-session | messages where role:assistant"
+        )
+        assert source is not None
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            rows = archive.query_messages(source.predicate, limit=100)
+
+        assert [(row.session_id, row.message_id, row.text) for row in rows] == [
+            (
+                "claude-code-session:ext-hit",
+                "claude-code-session:ext-hit:m-hit-assistant",
+                "the pipeline answer",
+            )
         ]
 
     def test_exists_action_predicate_executes_against_archive(self, workspace_env: dict[str, Path]) -> None:
