@@ -375,6 +375,25 @@ def pytest_basetemp_path(*, root: Path, run_id: str, env: dict[str, str]) -> Pat
     return scratch_root / f"pytest-polylogue-{checkout_hash(root)}-{run_id}"
 
 
+def cleanup_managed_pytest_basetemp(*, root: Path, run_id: str, env: dict[str, str]) -> Path | None:
+    """Remove the managed per-run pytest basetemp after pytest has exited.
+
+    The pytest sessionfinish hook intentionally does not delete xdist
+    basetemps while workers/reporters may still be flushing.  The supervisor is
+    outside that teardown window, so it can reclaim tmpfs-backed broad-run
+    basetemps immediately instead of waiting for the next pytest startup sweep.
+    """
+
+    basetemp = pytest_basetemp_path(root=root, run_id=run_id, env=env)
+    if not basetemp.name.startswith("pytest-polylogue-") or "-seeded-" in basetemp.name:
+        return None
+    with contextlib.suppress(OSError):
+        if basetemp.exists():
+            shutil.rmtree(basetemp, ignore_errors=True)
+            return basetemp
+    return None
+
+
 class ResourceSampler:
     """Samples host and process-tree resources for one subprocess tree."""
 

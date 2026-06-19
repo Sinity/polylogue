@@ -23,6 +23,16 @@ def diagnostics_group() -> None:
 @click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
 @click.option("--limit", "-l", type=int, default=5, help="Recent attempt limit.")
 @click.option(
+    "--integrity-check",
+    is_flag=True,
+    help="Run SQLite quick_check for each archive tier. This can be expensive on large archives.",
+)
+@click.option(
+    "--exact-derived-counts",
+    is_flag=True,
+    help="Run exact derived-readiness reconciliation counts. This can scan large archive tables.",
+)
+@click.option(
     "--compare",
     nargs=2,
     type=click.Path(path_type=Path),
@@ -34,6 +44,8 @@ def workload_command(
     db: Path | None,
     json_output: bool,
     limit: int,
+    integrity_check: bool,
+    exact_derived_counts: bool,
     compare: tuple[Path, Path] | None,
 ) -> None:
     """Inspect daemon ingest workload, convergence debt, and hot query plans."""
@@ -45,6 +57,10 @@ def workload_command(
     if json_output:
         argv.append("--json")
     argv.extend(("--limit", str(limit)))
+    if integrity_check:
+        argv.append("--integrity-check")
+    if exact_derived_counts:
+        argv.append("--exact-derived-counts")
     if compare is not None:
         before, after = compare
         argv.extend(("--compare", str(before), str(after)))

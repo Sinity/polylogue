@@ -32,7 +32,12 @@ from devtools.verify import (
     build_verify_steps,
     main,
 )
-from devtools.verify_runs import ResourceSampler, classify_pytest_result, pytest_basetemp_path
+from devtools.verify_runs import (
+    ResourceSampler,
+    classify_pytest_result,
+    cleanup_managed_pytest_basetemp,
+    pytest_basetemp_path,
+)
 
 
 def _pytest_marker_expr(command: list[str]) -> str:
@@ -377,6 +382,28 @@ def test_pytest_basetemp_path_tracks_tmpfs_opt_in(tmp_path: Path) -> None:
         assert path.parent == Path("/dev/shm")
     else:
         assert path.parent == Path("/realm/tmp/polylogue-pytest")
+
+
+def test_cleanup_managed_pytest_basetemp_removes_run_root(tmp_path: Path) -> None:
+    env = {"POLYLOGUE_PYTEST_BASETEMP_ROOT": str(tmp_path)}
+    basetemp = pytest_basetemp_path(root=tmp_path, run_id="run-1", env=env)
+    (basetemp / "worker-output").mkdir(parents=True)
+
+    cleaned = cleanup_managed_pytest_basetemp(root=tmp_path, run_id="run-1", env=env)
+
+    assert cleaned == basetemp
+    assert not basetemp.exists()
+
+
+def test_cleanup_managed_pytest_basetemp_keeps_seed_cache(tmp_path: Path) -> None:
+    env = {"POLYLOGUE_PYTEST_BASETEMP_ROOT": str(tmp_path)}
+    seeded = pytest_basetemp_path(root=tmp_path, run_id="seeded-cache", env=env)
+    seeded.mkdir()
+
+    cleaned = cleanup_managed_pytest_basetemp(root=tmp_path, run_id="seeded-cache", env=env)
+
+    assert cleaned is None
+    assert seeded.exists()
 
 
 def test_testmon_preflight_allows_seed_and_full_without_database(

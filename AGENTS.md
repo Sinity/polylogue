@@ -1459,8 +1459,13 @@ The report has a stable top-level shape carrying its `report_version`,
   Missing tables surface as `-1` rather than crashing the probe.
 - `archive_tiers` — archive inventory for `source.db`,
   `index.db`, `embeddings.db`, `user.db`, and `ops.db`: file presence,
-  durability/backup policy, `PRAGMA user_version`, `PRAGMA quick_check`,
-  missing backup-required tiers, and cheap table counts per tier.
+  durability/backup policy, `PRAGMA user_version`, missing backup-required
+  tiers, and cheap table counts per tier. It does not run SQLite
+  `PRAGMA quick_check` by default because that is a full-file integrity scan
+  on large archives; pass `--integrity-check` when the workload snapshot should
+  include that expensive evidence. It also avoids exact generated-text
+  reconciliation by default; pass `--exact-derived-counts` when diagnosing
+  FTS/source-row drift and the archive can afford the scan.
 - `blob_lease_state` — pending lease count, distinct lease operations,
   oldest `acquired_at`. See the lease/GC concurrency model above.
 - `gc_state` — high-water `gc_generations` row, `last_completed_at`,

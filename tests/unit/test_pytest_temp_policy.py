@@ -83,7 +83,7 @@ def test_sweep_stale_polylogue_basetemps_preserves_seeded_and_recent(
     assert unrelated.exists()
 
 
-def test_sessionfinish_leaves_xdist_basetemp_for_startup_sweep(
+def test_sessionfinish_leaves_xdist_basetemp_for_supervisor_cleanup(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
