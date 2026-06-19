@@ -769,8 +769,8 @@ function renderFacets() {
 function renderReadViewSelector(c) {
   if (!c) return '';
   var profiles = state.readViewProfiles || [];
-  var supported = {messages: true, recovery: true, raw: true};
-  var labels = {messages: 'Messages', recovery: 'Recovery', raw: 'Raw'};
+  var supported = {messages: true, recovery: true, raw: true, 'context-pack': true};
+  var labels = {messages: 'Messages', recovery: 'Recovery', raw: 'Raw', 'context-pack': 'Context Pack'};
   if (!profiles.length) {
     var fallback = state.readViewProfileError || 'Read profiles loading';
     return '<div id="read-profile-selector" class="read-profile-selector muted">' + esc(fallback) + '</div>';
@@ -920,6 +920,7 @@ function renderReadViewExecution(c, viewId) {
   var payload = envelope.payload || {};
   if (viewId === 'recovery') return renderRecoveryReadView(payload);
   if (viewId === 'raw') return renderRawReadView(payload);
+  if (viewId === 'context-pack') return renderContextPackReadView(payload);
   return '<div class="main-empty"><h3>Unsupported read view</h3><p>' + esc(viewId) + '</p></div>';
 }
 
@@ -949,6 +950,27 @@ function renderRawReadView(payload) {
       + '<div class="note">' + esc(artifact.raw_id || artifact.artifact_id || 'raw artifact') + '</div></div>';
   });
   if (!artifacts.length) html += '<div class="inspector-empty">No raw artifact metadata surfaced for this session.</div>';
+  html += '</div>';
+  return html;
+}
+
+function renderContextPackReadView(payload) {
+  var query = payload.query_context || {};
+  var sessions = payload.sessions || [];
+  var provenance = payload.provenance || {};
+  var html = '<div class="read-view-panel"><h3>Context pack</h3>'
+    + '<p class="muted">Read through /api/sessions/:id/read using the shared context-pack DTO.</p>'
+    + '<div class="inspector-field"><span class="label">sessions</span><span class="value">' + esc(String(payload.total_sessions || sessions.length || 0)) + '</span></div>'
+    + '<div class="inspector-field"><span class="label">messages</span><span class="value">' + esc(String(payload.total_messages || 0)) + '</span></div>'
+    + '<div class="inspector-field"><span class="label">strategy</span><span class="value">' + esc(query.match_strategy || 'session-id') + '</span></div>'
+    + '<div class="inspector-field"><span class="label">redacted</span><span class="value">' + esc(String(provenance.redacted !== false)) + '</span></div>';
+  sessions.slice(0, 5).forEach(function(session) {
+    var messages = session.messages || [];
+    html += '<div class="annotation-item"><div class="meta">' + esc(session.origin || 'origin') + ' / ' + esc(session.session_id || 'session') + '</div>'
+      + '<div class="note"><strong>' + esc(session.title || 'Untitled') + '</strong><br>'
+      + esc(String(messages.length)) + ' messages included</div></div>';
+  });
+  if (!sessions.length) html += '<div class="inspector-empty">No context-pack sessions surfaced for this selection.</div>';
   html += '</div>';
   return html;
 }

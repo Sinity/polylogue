@@ -12,7 +12,7 @@ Backend:
 
 - `GET /api/sessions/:id/recovery?report=digest&format=json`
 - `GET /api/sessions/:id/recovery?report=work-packet&format=json|markdown`
-- `GET /api/sessions/:id/read?view=messages|recovery|raw&format=json`
+- `GET /api/sessions/:id/read?view=messages|recovery|context-pack|raw&format=json`
 - `GET /api/assertions?target_ref=&scope_ref=&kind=&status=&context_inject=&limit=`
 
 Route contracts:
@@ -35,6 +35,7 @@ Web shell:
 - Loads `GET /api/read-view-profiles` and renders a small profile selector from shared read-view metadata.
 - Executes supported single-session profiles through `GET /api/sessions/:id/read`.
 - Keeps raw data behind an explicit opt-in drawer: metadata loads first from provenance; bounded preview requires a separate click.
+- Uses the existing user-state routes for overlay mutation flows: mark toggles, annotations, saved views, recall packs, and workspaces all return the shared mutation result envelope.
 
 Explicit non-exposure:
 
@@ -62,7 +63,7 @@ Search and query:
 Reader:
 
 - read-view profile payloads from `GET /api/read-view-profiles`.
-- read-view execution envelopes from `GET /api/sessions/:id/read`.
+- read-view execution envelopes from `GET /api/sessions/:id/read`, including the shared context-pack DTO.
 - session detail payload from `GET /api/sessions/:id`.
 - session message payloads from `GET /api/sessions/:id/messages`.
 - provenance/raw payloads from `/provenance` and `/raw`, still explicit opt-in.
@@ -80,8 +81,8 @@ Browser capture/readiness:
 
 ## Remaining backend endpoints
 
-1. Shared read-view execution route now covers the supported single-session profiles (`messages`, `recovery`, `raw`). Broader profiles (`context`, `context-pack`, `neighbors`, `correlation`) still need dedicated execution semantics before the selector enables them.
-2. Typed overlay mutation envelopes for marks/annotations/saved views/recall/workspaces are #1847-owned. These routes should keep same-origin write auth and return the shared mutation result envelope; detailed resource state belongs on the corresponding read endpoints.
+1. Shared read-view execution route now covers the supported single-session profiles (`messages`, `recovery`, `context-pack`, `raw`). Broader profiles (`context`, `neighbors`, `correlation`) still need dedicated execution semantics before the selector enables them.
+2. Overlay mutation envelopes for marks/annotations/saved views/recall/workspaces are implemented through `polylogue/daemon/user_state_http.py` and route through the shared mutation result envelope. Remaining work here is browser-flow polish, not another DTO family.
 3. Browser-capture readiness is satisfied by `GET /api/status`; add a dedicated adapter only if a future panel needs more than safe receiver state (`spool_ready`, `allowed_origins`, `auth_required`, component readiness).
 4. Bounded raw-preview contract promotion: this slice already prefers provenance `include_raw=1&bytes=` in the shell; #1847 can decide whether `/api/sessions/:id/raw` remains shell-supported only or becomes a narrower stable metadata route.
 5. Generated route/OpenAPI surface that includes stable routes and intentionally documented shell-supported workbench routes without implying public API stability.
@@ -90,7 +91,7 @@ Browser capture/readiness:
 
 PR-1846-B, landed by this slice: recovery/work-packet HTTP, assertion-read HTTP, route contracts, web evidence panel, focused reader tests.
 
-PR-1846-C: promote one overlay mutation path to shared mutation/error envelopes and keep same-origin/bearer tests strict.
+PR-1846-C, landed before this map refresh: overlay mutation paths use shared mutation/error envelopes and same-origin/bearer tests remain strict under #1847.
 
 PR-1846-D, partially landed after the first evidence slice: execute supported single-session read profiles over HTTP instead of only displaying profile metadata.
 

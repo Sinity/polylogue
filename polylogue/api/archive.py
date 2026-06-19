@@ -1382,6 +1382,42 @@ class PolylogueArchiveMixin:
 
         return list(read_view_profile_payloads())
 
+    async def context_pack_payload(
+        self,
+        *,
+        project_path: str | None = None,
+        project_repo: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        origin: str | None = None,
+        query: str | None = None,
+        max_sessions: int = 5,
+        max_messages_per_session: int = 20,
+        max_text: int = 200,
+        include_messages: bool = True,
+        redact_paths: bool = True,
+        seed_session_id: str | None = None,
+    ) -> Any:
+        """Build the shared archive-backed context-pack payload."""
+        from polylogue.context.pack import build_archive_context_pack_payload
+
+        return await build_archive_context_pack_payload(
+            archive_root=self.config.archive_root,
+            polylogue=self,
+            project_path=project_path,
+            project_repo=project_repo,
+            since=since,
+            until=until,
+            origin=origin,
+            query=query,
+            conv_limit=max(1, min(max_sessions, 20)),
+            msg_limit=max(1, min(max_messages_per_session, 100)),
+            max_text=max_text,
+            include_messages=include_messages,
+            redact_paths=redact_paths,
+            seed_session_id=seed_session_id,
+        )
+
     async def explain_query_expression(self, expression: str) -> JSONDocument:
         """Explain query DSL parsing, AST metadata, and lowering details."""
         from polylogue.archive.query.expression import explain_expression

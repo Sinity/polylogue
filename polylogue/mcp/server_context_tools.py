@@ -7,31 +7,13 @@ archive tables.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from datetime import UTC, datetime
-from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
-from polylogue.archive.query.spec import SessionQuerySpec
-from polylogue.context.assertion_claims import context_claim_text
-from polylogue.mcp.context_pack import (
-    ContextPackDateRange,
-    ContextPackDecisions,
-    ContextPackMessage,
-    ContextPackPayload,
-    ContextPackProvenance,
-    ContextPackQueryContext,
-    ContextPackSession,
-    _build_project_context,
-    query_archive_context_pack,
-    select_context_pack_sessions,
-)
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.context.pack import build_archive_context_pack_payload
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
 
-    from polylogue.api import Polylogue
     from polylogue.mcp.server_support import ServerCallbacks
 
 _DEFAULT_MAX_SESSIONS = 5
@@ -46,136 +28,6 @@ _DETAIL_DEFAULTS: dict[str, tuple[int, bool]] = {
 def _get_detail_settings(detail_level: str) -> tuple[int, bool]:
     """Return (max_text_length, include_messages) for a detail level."""
     return _DETAIL_DEFAULTS.get(detail_level, _DETAIL_DEFAULTS["compact"])
-
-
-def _truncate_text(text: str, max_length: int) -> str:
-    """Truncate text to max_length, appending ellipsis if truncated."""
-    if max_length > 0 and len(text) > max_length:
-        return text[:max_length] + "..."
-    return text
-
-
-async def _build_archive_context_pack_payload(
-    *,
-    archive_root: Path,
-    polylogue: Polylogue,
-    clamp_limit: Callable[[int | object], int],
-    project_path: str | None,
-    project_repo: str | None,
-    since: str | None,
-    until: str | None,
-    origin: str | None,
-    query: str | None,
-    conv_limit: int,
-    msg_limit: int,
-    max_text: int,
-    include_messages: bool,
-    redact_paths: bool,
-) -> ContextPackPayload:
-    with ArchiveStore.open_existing(archive_root) as archive:
-
-        async def query_sessions(spec: SessionQuerySpec) -> list[Any]:
-            return query_archive_context_pack(archive, spec, default_limit=_DEFAULT_MAX_SESSIONS)
-
-        selection = await select_context_pack_sessions(
-            query_sessions,
-            clamp_limit,
-            project_path=project_path,
-            project_repo=project_repo,
-            since=since,
-            until=until,
-            origin=origin,
-            query=query,
-            limit=conv_limit,
-        )
-        sessions = selection.sessions
-        dates = [d for conv in sessions for d in (conv.created_at, conv.updated_at) if d is not None]
-        pack_sessions: list[ContextPackSession] = []
-        assertion_decisions: list[str] = []
-
-        for conv in sessions[:conv_limit]:
-            conv_id = str(conv.id)
-            try:
-                claims = await polylogue.list_assertion_claim_payloads(
-                    target_ref=f"session:{conv_id}",
-                    statuses=("active",),
-                    context_inject=True,
-                    limit=20,
-                )
-            except Exception:
-                claims = []
-            assertion_decisions.extend(
-                context_claim_text(kind=claim.kind, body_text=claim.body_text, target_ref=claim.target_ref)
-                for claim in claims
-            )
-            messages: list[ContextPackMessage] = []
-            if include_messages:
-                try:
-                    envelope = archive.read_session(conv_id)
-                except Exception:
-                    envelope = None
-                if envelope is not None:
-                    for message in envelope.messages[:msg_limit]:
-                        text = "\n".join(block.text or "" for block in message.blocks if block.text)
-                        messages.append(
-                            ContextPackMessage(
-                                role=message.role,
-                                text=_truncate_text(text, max_text),
-                                has_tool_use=message.has_tool_use,
-                                has_thinking=message.has_thinking,
-                            )
-                        )
-
-            session_origin = str(conv.origin) if getattr(conv, "origin", None) is not None else "unknown"
-            pack_sessions.append(
-                ContextPackSession(
-                    session_id=conv_id,
-                    origin=session_origin,
-                    title=conv.title,
-                    created_at=conv.created_at.isoformat() if conv.created_at else None,
-                    updated_at=conv.updated_at.isoformat() if conv.updated_at else None,
-                    message_count=int(conv.message_count),
-                    tool_use_count=None,
-                    messages=messages,
-                )
-            )
-
-    total_matching = len(sessions)
-    return ContextPackPayload(
-        decisions=ContextPackDecisions(items=assertion_decisions),
-        project=_build_project_context((), redact=redact_paths),
-        date_range=ContextPackDateRange(
-            since=since,
-            until=until,
-            earliest=min(dates).isoformat() if dates else None,
-            latest=max(dates).isoformat() if dates else None,
-            session_count_in_range=total_matching,
-        ),
-        query_context=ContextPackQueryContext(
-            total_matching_sessions=total_matching,
-            sessions_included=min(total_matching, conv_limit),
-            project_path=project_path,
-            project_repo=project_repo,
-            origin=origin,
-            query=query,
-            query_matched=total_matching,
-            query_total=selection.query_total,
-            match_strategy=selection.match_strategy,
-            relaxed_filters=list(selection.relaxed_filters),
-        ),
-        sessions=pack_sessions,
-        action_summaries=[],
-        provenance=ContextPackProvenance(
-            generated_at=datetime.now(UTC).isoformat(),
-            redacted=redact_paths,
-            archive_runtime="archive_file_set",
-            archive_root=str(archive_root),
-            active_db_path=str(archive_root / "index.db"),
-        ),
-        total_sessions=total_matching,
-        total_messages=sum(int(conv.message_count) for conv in sessions[:conv_limit]),
-        total_tool_calls=0,
-    )
 
 
 def register_context_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
@@ -217,7 +69,7 @@ def register_context_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             max_text, include_messages = _get_detail_settings(valid_detail)
 
             config = hooks.get_config()
-            payload = await _build_archive_context_pack_payload(
+            payload = await build_archive_context_pack_payload(
                 archive_root=config.archive_root,
                 polylogue=hooks.get_polylogue(),
                 clamp_limit=hooks.clamp_limit,

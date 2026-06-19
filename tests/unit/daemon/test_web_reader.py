@@ -1497,7 +1497,7 @@ class TestReaderViewProfiles:
         assert profiles["recovery"]["successor_handoff"] is True
         assert "markdown" in profiles["recovery"]["formats"]
 
-    def test_read_view_execution_route_returns_messages_recovery_and_raw(
+    def test_read_view_execution_route_returns_messages_recovery_raw_and_context_pack(
         self,
         workspace_env: dict[str, Path],
     ) -> None:
@@ -1511,6 +1511,10 @@ class TestReaderViewProfiles:
                 _get_json(base_url, f"/api/sessions/{C1}/read?view=recovery&report=work-packet"),
             )
             raw = cast(dict[str, object], _get_json(base_url, f"/api/sessions/{C1}/read?view=raw"))
+            context_pack = cast(
+                dict[str, object],
+                _get_json(base_url, f"/api/sessions/{C1}/read?view=context-pack&max_messages=5"),
+            )
 
         assert messages["view"] == "messages"
         message_payload = cast(dict[str, object], messages["payload"])
@@ -1521,6 +1525,13 @@ class TestReaderViewProfiles:
         assert raw["view"] == "raw"
         raw_payload = cast(dict[str, object], raw["payload"])
         assert raw_payload["id"] == C1
+        assert context_pack["view"] == "context-pack"
+        context_payload = cast(dict[str, object], context_pack["payload"])
+        assert context_payload["total_sessions"] == 1
+        context_query = cast(dict[str, object], context_payload["query_context"])
+        assert context_query["query_matched"] == 1
+        context_sessions = cast(list[dict[str, object]], context_payload["sessions"])
+        assert context_sessions[0]["session_id"] == C1
 
     def test_read_view_execution_rejects_unknown_view_or_format(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env) as (_, base_url):
@@ -2299,10 +2310,10 @@ class TestReaderSavedViewsUI:
 class TestReaderBulkOperations:
     """``polylogue.local_reader.bulk``: selection toolbar + per-session envelope.
 
-    The bulk surface is composed client-side over existing daemon
-    endpoints (``/api/user/marks`` for tag mutations, ``/api/sessions/{id}``
-    for export). Delete and re-embed are exposed only through a preview
-    overlay because the daemon has no corresponding mutation routes yet.
+    The bulk surface composes existing daemon routes: ``/api/user/marks``
+    carries route-backed overlay mutations, and ``/api/sessions/{id}``
+    carries export reads. Delete and re-embed are exposed only through a
+    preview overlay because the daemon has no corresponding mutation routes yet.
 
     These tests assert the shipped HTML carries every load-bearing region
     hook and that the underlying tag endpoint accepts the per-session
