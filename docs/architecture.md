@@ -4,8 +4,7 @@ For the target shape, guardrails, and architectural decision log, see
 [Architecture Spine](architecture-spine.md). For current sequencing and active
 workstreams, see [Execution Plan](execution-plan.md). For the vocabulary split
 between provider-wire identity, public origin, source roots, capture mode,
-parser provenance, and refs, see
-[Provider, Origin, and Source Identity Map](provider-origin-identity.md).
+parser provenance, and refs, see `docs/provider-origin-identity.md`.
 
 Polylogue is a local archive for AI sessions. The system has four rings:
 
@@ -112,8 +111,8 @@ convergence stages.
 ## Provider and Origin Vocabulary
 
 The codebase has origin-related vocabularies with different scopes. See
-[Provider, Origin, and Source Identity Map](provider-origin-identity.md) for the
-full classification table and feature guidance.
+`docs/provider-origin-identity.md` for the full classification table and
+feature guidance.
 
 - **`Provider`** (`polylogue/core/enums.py`): the provider-wire enum used by
   provider-wire parsing, provider schema packages, and some internal storage
