@@ -83,28 +83,30 @@ polylogue observed-events where 'delivery_state:acted_on AND text:#2100'
 polylogue context-snapshots where 'boundary:session_start AND session.repo:polylogue'
 ```
 
-The first executable pipeline form scopes a terminal row query through a
-session source stage:
+Pipeline stages can either decorate a direct terminal row query or scope one
+through a session source stage:
 
 ```bash
+polylogue 'messages where role:assistant | sort by time desc | limit 10'
+polylogue 'actions where action:file_edit | limit 20 | offset 40'
 polylogue 'sessions where repo:polylogue AND origin:claude-code-session | messages where role:assistant'
 polylogue 'sessions where origin:(codex-session|claude-code-session) | actions where action:file_edit'
 polylogue 'sessions where repo:polylogue | messages where role:assistant | limit 10 | offset 20'
 polylogue 'sessions where repo:polylogue | messages where role:assistant | sort by time desc | limit 10'
 ```
 
-The left stage is lowered into `session.<field>` predicates on the terminal
-unit query, so it uses the same row executor as direct `messages/actions/...`
-queries. For now the session stage accepts field/count/date predicates only;
-FTS, semantic, `exists`, lineage, and sequence stages are typed errors until
-they have dedicated unit-changing lowerers. Terminal pipeline stages currently
-support `sort by time [asc|desc]`, `limit N`, and `offset N` for SQL-backed
-terminal rows (`messages`, `actions`, `blocks`, `assertions`). Query-string
-limits narrow the surface limit instead of expanding caller/API caps, and
-query-string offsets are added to the caller offset. Runtime-transform terminal
-rows (`runs`, `observed-events`, `context-snapshots`) reject sort stages until
-they have streaming lowerers; they must not collect every projected row in
-memory merely to sort a page.
+When a pipeline starts with `sessions where ...`, the left stage is lowered into
+`session.<field>` predicates on the terminal unit query, so it uses the same row
+executor as direct `messages/actions/...` pipelines. For now the session stage
+accepts field/count/date predicates only; FTS, semantic, `exists`, lineage, and
+sequence stages are typed errors until they have dedicated unit-changing
+lowerers. Terminal pipeline stages currently support `sort by time [asc|desc]`,
+`limit N`, and `offset N` for SQL-backed terminal rows (`messages`, `actions`,
+`blocks`, `assertions`). Query-string limits narrow the surface limit instead
+of expanding caller/API caps, and query-string offsets are added to the caller
+offset. Runtime-transform terminal rows (`runs`, `observed-events`,
+`context-snapshots`) reject sort stages until they have streaming lowerers;
+they must not collect every projected row in memory merely to sort a page.
 
 Unsupported forms raise typed `ExpressionCompileError`s and must not broaden
 into looser full-text search. In particular, reserved unit prefixes such as
