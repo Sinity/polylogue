@@ -315,6 +315,7 @@ Start with the generated command and architecture references; use [docs/README.m
 | [Library API](docs/library-api.md) | Async archive API, filters, and query patterns. |
 | [MCP Integration](docs/mcp-integration.md) | Model Context Protocol server setup and usage. |
 | [Configuration](docs/configuration.md) | XDG paths, environment variables, and runtime configuration. |
+| [Provider, Origin, and Source Identity](docs/provider-origin-identity.md) | Vocabulary map for provider-wire family, public origin, material source, capture mode, parser binding, and refs. |
 | [Archive Backup](docs/archive-backup.md) | Archive-tier backup profiles, restore boundaries, and blob-GC safety rules. |
 | [Developer Tools](docs/devtools.md) | `devtools` guide for generated surfaces, validation, and repo hygiene. |
 | [Providers](docs/providers/README.md) | Provider-specific parsing and export-format notes. |
