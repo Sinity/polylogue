@@ -173,7 +173,6 @@ Commands:
   read        Read matched sessions (route to view/destination).
   resume      Resume from recent session context.
   select
-  tags        Manage session tags.
   user-state  Manage durable reader user state.
 ```
 
@@ -517,28 +516,6 @@ Options:
   --help                          Show this message and exit.
 ```
 
-## Tags
-
-```text
-Usage: polylogue tags [OPTIONS]
-
-  List user tags with session counts.
-
-  Examples:
-      polylogue tags                         # List all tags
-      polylogue tags -o claude-ai-export     # Tags for Claude web sessions only
-      polylogue tags --format json           # Machine-readable output
-      polylogue tags -n 10                   # Top 10 tags
-      polylogue find id:abc then mark --tag-add tps
-      polylogue find id:abc then mark --tag-remove tps
-
-Options:
-  -o, --origin TEXT    Filter tags by origin
-  -f, --format [json]  Output format
-  -n, --count INTEGER  Show top N tags
-  --help               Show this message and exit.
-```
-
 ## User State
 
 ```text
@@ -556,7 +533,30 @@ Commands:
   marks         Manage session and message marks.
   recall-packs  Manage recall packs with explicit target evidence.
   saved-views   Manage saved query views.
+  tags          List user tags with session counts.
   workspaces    Manage durable reader workspaces.
+```
+
+## User State Tags
+
+```text
+Usage: polylogue user-state tags [OPTIONS]
+
+  List user tags with session counts.
+
+  Examples:
+      polylogue user-state tags                         # List all tags
+      polylogue user-state tags -o claude-ai-export     # Tags for Claude web sessions only
+      polylogue user-state tags --format json           # Machine-readable output
+      polylogue user-state tags -n 10                   # Top 10 tags
+      polylogue find id:abc then mark --tag-add tps
+      polylogue find id:abc then mark --tag-remove tps
+
+Options:
+  -o, --origin TEXT    Filter tags by origin
+  -f, --format [json]  Output format
+  -n, --count INTEGER  Show top N tags
+  --help               Show this message and exit.
 ```
 
 ## Auth

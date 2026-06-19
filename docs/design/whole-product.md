@@ -277,7 +277,7 @@ presentation, not capability.
 | Refactor story | `polylogue story refactor` | `polylogue_story_refactor` | Story page |
 | AI journey | `polylogue story ai-journey` | `polylogue_story_ai_journey` | Story page |
 | Project memory | `polylogue memory` | `polylogue_get_project_memory` | Memory page |
-| Tags | `polylogue tags` | `polylogue_tag_session` | Tag editor |
+| Tags | `polylogue user-state tags` | `polylogue_tag_session` | Tag editor |
 | Health check | `polylogue ops doctor` | `polylogue_health` | Health dashboard |
 | MCP server | `polylogue mcp` | (self) | — |
 | Daemon | `polylogued` | `polylogue_shutdown` | Daemon status |

@@ -689,7 +689,7 @@ files:
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
-    loc: 186
+    loc: 184
     target: polylogue/cli/click_command_registration.py
     owner: stable
   - path: polylogue/cli/click_option_groups.py
@@ -784,16 +784,12 @@ files:
     loc: 352
     target: polylogue/cli/commands/status_diagnostics.py
     owner: stable
-  - path: polylogue/cli/commands/tags.py
-    loc: 54
-    target: polylogue/cli/commands/tags.py
-    owner: stable
   - path: polylogue/cli/commands/tutorial.py
     loc: 216
     target: polylogue/cli/commands/tutorial.py
     owner: stable
   - path: polylogue/cli/commands/user_state.py
-    loc: 504
+    loc: 506
     target: polylogue/cli/commands/user_state.py
     owner: stable
   - path: polylogue/cli/commands/user_state_blackboard.py
@@ -803,6 +799,10 @@ files:
   - path: polylogue/cli/commands/user_state_feedback.py
     loc: 182
     target: polylogue/cli/commands/user_state_feedback.py
+    owner: stable
+  - path: polylogue/cli/commands/user_state_tags.py
+    loc: 54
+    target: polylogue/cli/commands/user_state_tags.py
     owner: stable
   - path: polylogue/cli/help_markdown.py
     loc: 59
@@ -2323,7 +2323,7 @@ files:
     owner: stable
     reason: verification-lab showcase substrate retained
   - path: polylogue/showcase/generators.py
-    loc: 548
+    loc: 556
     target: polylogue/showcase/generators.py
     owner: stable
     reason: verification-lab showcase substrate retained

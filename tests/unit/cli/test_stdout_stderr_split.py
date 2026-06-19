@@ -78,8 +78,8 @@ _ALL_COMMANDS: tuple[tuple[str, ...], ...] = (
     ("ops", "tutorial"),
     ("read",),
     ("resume",),
-    ("tags",),
     ("user-state",),
+    ("user-state", "tags"),
 )
 
 _CMD_IDS = [" ".join(args) if args else "root" for args in _ALL_COMMANDS]
@@ -124,11 +124,11 @@ class TestErrorOutputContent:
         assert TRACEBACK_SENTINEL not in result.output
 
     def test_unknown_format_exits_nonzero(self) -> None:
-        result = CliRunner().invoke(cli, ["tags", "--format", "totally_invalid_xyz"])
+        result = CliRunner().invoke(cli, ["user-state", "tags", "--format", "totally_invalid_xyz"])
         assert result.exit_code != 0
 
     def test_unknown_format_no_traceback(self) -> None:
-        result = CliRunner().invoke(cli, ["tags", "--format", "totally_invalid_xyz"])
+        result = CliRunner().invoke(cli, ["user-state", "tags", "--format", "totally_invalid_xyz"])
         assert TRACEBACK_SENTINEL not in result.output
 
     def test_run_unknown_subcommand_no_traceback(self) -> None:
@@ -138,7 +138,7 @@ class TestErrorOutputContent:
 
     def test_error_output_not_json_on_invalid_arg(self) -> None:
         """On invalid arg error, output must not look like JSON (would break pipe consumers)."""
-        result = CliRunner().invoke(cli, ["tags", "--format", "totally_invalid_xyz"])
+        result = CliRunner().invoke(cli, ["user-state", "tags", "--format", "totally_invalid_xyz"])
         if result.output.strip():
             assert not _looks_like_json(result.output), (
                 f"error output looks like JSON, which breaks pipe consumers: {result.output!r}"

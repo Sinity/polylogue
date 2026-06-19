@@ -65,10 +65,6 @@ def _default_daemon_url() -> str:
     return _BUILTIN_DAEMON_URL
 
 
-# Backwards-compatible name retained for the (rare) external import.
-_DEFAULT_DAEMON_URL = _BUILTIN_DAEMON_URL
-
-
 def _fast_count(conn: Any, sql: str, params: tuple[object, ...] = ()) -> int:
     row = conn.execute(sql, params).fetchone()
     return int(row[0] or 0) if row is not None else 0

@@ -162,5 +162,4 @@ Commands:
   read        Read matched sessions (route to view/destination).
   resume      Resume from recent session context.
   select
-  tags        Manage session tags.
   user-state  Manage durable reader user state.

@@ -10,6 +10,7 @@ import click
 
 from polylogue.cli.commands.user_state_blackboard import blackboard_command
 from polylogue.cli.commands.user_state_feedback import feedback_command
+from polylogue.cli.commands.user_state_tags import tags_command
 from polylogue.cli.shared.machine_errors import emit_success
 from polylogue.cli.shared.types import AppEnv
 from polylogue.core.user_state_targets import MARK_TYPE_NAMES, TARGET_KIND_NAMES, TARGET_SESSION
@@ -79,6 +80,7 @@ def user_state_command() -> None:
 
 user_state_command.add_command(blackboard_command)
 user_state_command.add_command(feedback_command)
+user_state_command.add_command(tags_command)
 
 
 @user_state_command.group("marks")

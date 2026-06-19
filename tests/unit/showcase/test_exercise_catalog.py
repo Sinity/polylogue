@@ -161,6 +161,25 @@ class TestExercisesByGroup:
             "threads",
         )
 
+        tags = observed["json-tags"]
+        assert tags.path_targets == ("session-query-loop",)
+        assert tags.artifact_targets == ("message_fts", "session_query_results")
+        assert tags.operation_targets == ("cli.json-contract", "query-sessions")
+
+        schema_list = observed["json-schema-list"]
+        assert schema_list.path_targets == ("schema-list-query-loop",)
+        assert schema_list.artifact_targets == (
+            "schema_packages",
+            "schema_cluster_manifests",
+            "inferred_corpus_specs",
+            "inferred_corpus_scenarios",
+            "schema_list_results",
+        )
+        assert schema_list.operation_targets == (
+            "cli.json-contract",
+            "query-schema-catalog",
+        )
+
     def test_exported_qa_extra_roots_match_generated_family(self) -> None:
         expected_names = [scenario.name for scenario in generate_qa_extra_scenarios()]
 

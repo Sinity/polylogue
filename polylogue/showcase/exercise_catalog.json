@@ -28,12 +28,13 @@
       "vhs_capture": true
     },
     {
-      "name": "help-tags",
+      "name": "help-user-state-tags",
       "group": "structural",
-      "description": "Tags subcommand help",
+      "description": "User-state tags subcommand help",
       "execution": {
         "kind": "polylogue",
         "argv": [
+          "user-state",
           "tags",
           "--help"
         ]
@@ -575,6 +576,7 @@
       "execution": {
         "kind": "polylogue",
         "argv": [
+          "user-state",
           "tags"
         ]
       },
@@ -776,6 +778,7 @@
       "execution": {
         "kind": "polylogue",
         "argv": [
+          "user-state",
           "tags",
           "--format",
           "json"

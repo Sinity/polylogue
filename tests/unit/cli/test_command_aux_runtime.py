@@ -9,7 +9,7 @@ from click.shell_completion import CompletionItem
 from click.testing import CliRunner
 
 from polylogue.cli import shell_completion_values
-from polylogue.cli.commands.tags import tags_command
+from polylogue.cli.commands.user_state_tags import tags_command
 
 
 def _ctx_param() -> tuple[click.Context, click.Parameter]:
@@ -278,7 +278,7 @@ def test_tags_command_plain_paths_cover_empty_hint_and_tabular_counts(cli_runner
     assert "5" in table.output
 
     env.polylogue.list_tags = AsyncMock(return_value={"alpha": 5})
-    with patch("polylogue.cli.commands.tags.emit_success") as emit_success:
+    with patch("polylogue.cli.commands.user_state_tags.emit_success") as emit_success:
         json_result = cli_runner.invoke(tags_command, ["--format", "json"], obj=env, catch_exceptions=False)
     assert json_result.exit_code == 0
     emit_success.assert_called_once_with({"tags": {"alpha": 5}})
