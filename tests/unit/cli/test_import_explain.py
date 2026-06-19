@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import json
 import shutil
+import zipfile
 from pathlib import Path
 
 from click.testing import CliRunner
+from pytest import MonkeyPatch
 
 from polylogue.cli.click_app import cli
+from polylogue.sources import import_explain as import_explain_module
 from polylogue.sources.import_explain import explain_import_path
 
 
@@ -65,3 +68,38 @@ def test_import_explain_cli_ndjson_emits_entries(tmp_path: Path) -> None:
     lines = [json.loads(line) for line in result.output.splitlines() if line.strip()]
     assert len(lines) == 1
     assert lines[0]["detected_provider"] == "codex"
+
+
+def test_import_explain_zip_propagates_member_decode_skip(tmp_path: Path) -> None:
+    archive = tmp_path / "broken.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("nested/broken.json", "{not json")
+
+    payload = explain_import_path(archive)
+
+    assert payload.produced.sessions == 0
+    assert payload.entries[0].skipped
+    assert payload.skipped
+    skipped_path = payload.skipped[0].source_path
+    assert skipped_path is not None
+    assert skipped_path.endswith("broken.zip:nested/broken.json")
+    assert payload.skipped[0].reason.startswith("decode failure:")
+
+
+def test_import_explain_zip_rejects_oversized_member_before_read(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    archive = tmp_path / "oversized.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("big.json", b"{}")
+    monkeypatch.setattr(import_explain_module, "MAX_UNCOMPRESSED_SIZE", 1)
+
+    payload = explain_import_path(archive)
+
+    assert payload.produced.sessions == 0
+    assert payload.skipped
+    skipped_path = payload.skipped[0].source_path
+    assert skipped_path is not None
+    assert skipped_path.endswith("oversized.zip:big.json")
+    assert "file size" in payload.skipped[0].reason

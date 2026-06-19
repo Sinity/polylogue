@@ -14,6 +14,12 @@ from polylogue.config import Source
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONValue
 from polylogue.core.sources import origin_from_provider
+from polylogue.sources.decoder_zip import (
+    MAX_COMPRESSION_RATIO,
+    MAX_UNCOMPRESSED_SIZE,
+    ZipBombError,
+    open_bounded_zip_entry,
+)
 from polylogue.sources.decoders import _decode_json_bytes, _iter_json_stream
 from polylogue.sources.dispatch import GROUP_PROVIDERS, detect_provider, parse_payload
 from polylogue.sources.parsers.base import ParsedSession
@@ -148,24 +154,34 @@ def _explain_zip(
     try:
         with zipfile.ZipFile(path) as archive:
             for info in archive.infolist():
-                if info.is_dir() or not info.filename.lower().endswith(_SUPPORTED_ENTRY_SUFFIXES):
+                skip_reason = _zip_entry_skip_reason(info)
+                if skip_reason is not None:
                     skipped.append(
                         ImportSkippedRowPayload(
-                            reason="unsupported ZIP entry",
+                            reason=skip_reason,
                             source_path=f"{path}:{info.filename}",
                         )
                     )
                     continue
-                with archive.open(info) as handle:
-                    entries.append(
-                        _explain_bytes(
-                            handle.read(),
+                try:
+                    with open_bounded_zip_entry(archive, info.filename) as handle:
+                        entry = _explain_bytes(
+                            handle.read(MAX_UNCOMPRESSED_SIZE + 1),
                             stream_name=info.filename,
                             source_path=f"{path}:{info.filename}",
                             provider_hint=provider_hint,
                             path_classification=None,
                         )
+                except ZipBombError as exc:
+                    skipped.append(
+                        ImportSkippedRowPayload(
+                            reason=f"zip entry rejected: {exc}",
+                            source_path=f"{path}:{info.filename}",
+                        )
                     )
+                    continue
+                entries.append(entry)
+                skipped.extend(entry.skipped)
     except (OSError, zipfile.BadZipFile) as exc:
         return _skipped_entry(
             path,
@@ -196,6 +212,16 @@ def _explain_zip(
         skipped=tuple(skipped),
         caveats=("ZIP explanation summarizes supported entries; raw bytes are omitted.",),
     )
+
+
+def _zip_entry_skip_reason(info: zipfile.ZipInfo) -> str | None:
+    if info.is_dir() or not info.filename.lower().endswith(_SUPPORTED_ENTRY_SUFFIXES):
+        return "unsupported ZIP entry"
+    if info.compress_size > 0 and (info.file_size / info.compress_size) > MAX_COMPRESSION_RATIO:
+        return f"zip entry compression ratio {info.file_size / info.compress_size:.1f} exceeds limit"
+    if info.file_size > MAX_UNCOMPRESSED_SIZE:
+        return f"zip entry file size {info.file_size} exceeds limit"
+    return None
 
 
 def _explain_bytes(
