@@ -16,6 +16,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, cast
 
+from polylogue.core.refs import ObjectRef
 from polylogue.insights.session_commit import (
     GitHubRef,
     SessionCommitEdge,
@@ -270,13 +271,27 @@ class TestCorrelationResultToPayload:
         commits = cast(list[dict[str, Any]], payload["commits"])
         assert len(commits) == 1
         assert commits[0]["short_sha"] == "abc12345"
+        assert commits[0]["object_ref"] == "commit:abc123456789"
+        assert ObjectRef.parse(str(commits[0]["object_ref"])).kind == "commit"
         assert commits[0]["confidence"] == 0.8
         issue_refs = cast(list[dict[str, Any]], payload["issue_refs"])
         assert len(issue_refs) == 1
+        assert issue_refs[0]["object_ref"] == "github-issue:owner/repo#1"
         pr_refs = cast(list[dict[str, Any]], payload["pr_refs"])
         assert len(pr_refs) == 1
+        assert pr_refs[0]["object_ref"] == "github-pr:owner/repo#2"
         file_paths = cast(list[str], payload["file_paths"])
         assert len(file_paths) == 2
+        assert payload["file_refs"] == ["file:a.py", "file:b.py"]
+        object_refs = cast(list[str], payload["object_refs"])
+        assert object_refs == [
+            "commit:abc123456789",
+            "github-issue:owner/repo#1",
+            "github-pr:owner/repo#2",
+            "file:a.py",
+            "file:b.py",
+        ]
+        assert all(ObjectRef.parse(ref).format() == ref for ref in object_refs)
 
 
 class TestBuildCorrelationResult:
