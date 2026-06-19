@@ -291,7 +291,8 @@ JSON_CONTRACT_SCENARIOS: tuple[Exercise, ...] = (
     _json_contract_scenario(
         "json-tags",
         "tags JSON contract",
-        "user-state",
+        "ops",
+        "state",
         "tags",
         "--format",
         "json",

@@ -1,6 +1,6 @@
-Usage: polylogue user-state [OPTIONS] COMMAND [ARGS]...
+Usage: polylogue ops state [OPTIONS] COMMAND [ARGS]...
 
-  Manage durable reader user state.
+  Manage durable reader state.
 
 Options:
   -h, --help  Show this message and exit.

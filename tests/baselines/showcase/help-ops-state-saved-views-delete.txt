@@ -1,4 +1,4 @@
-Usage: polylogue user-state saved-views delete [OPTIONS] VIEW_ID
+Usage: polylogue ops state saved-views delete [OPTIONS] VIEW_ID
 
   Delete a saved view.
 

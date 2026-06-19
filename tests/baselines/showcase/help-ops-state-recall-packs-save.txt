@@ -1,4 +1,4 @@
-Usage: polylogue user-state recall-packs save [OPTIONS] PACK_ID LABEL
+Usage: polylogue ops state recall-packs save [OPTIONS] PACK_ID LABEL
 
   Create or update a recall pack.
 

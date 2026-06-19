@@ -221,17 +221,15 @@
     -h, --help                      Show this message and exit.
   Commands:
     analyze
-    config      Show configuration paths and resolved settings.
-    continue    Compile a successor-agent continuation report.
-    delete      Delete matched sessions.
-    import      Import sessions from configured sources.
-    init        Detect chat sources and write a starter polylogue.toml.
+    config    Show configuration paths and resolved settings.
+    continue  Compile a successor-agent continuation report.
+    delete    Delete matched sessions.
+    import    Import sessions from configured sources.
+    init      Detect chat sources and write a starter polylogue.toml.
     mark
-    ops         Run operational archive and daemon commands.
-    read        Read matched sessions (route to view<PATH>).
-    resume      Resume from recent session context.
+    ops       Run operational archive and daemon commands.
+    read      Read matched sessions (route to view<PATH>).
     select
-    user-state  Manage durable reader user state.
   '''
 # ---
 # name: TestTerminalDimensions.test_help_at_narrow_width
@@ -465,20 +463,17 @@
   .
   Commands:
     analyze
-    config      Show configuration paths and resolved settings
-  .
-    continue    Compile a successor-agent continuation report.
-    delete      Delete matched sessions.
-    import      Import sessions from configured sources.
-    init        Detect chat sources and write a starter polylo
-  gue.toml.
+    config    Show configuration paths and resolved settings.
+    continue  Compile a successor-agent continuation report.
+    delete    Delete matched sessions.
+    import    Import sessions from configured sources.
+    init      Detect chat sources and write a starter polylogu
+  e.toml.
     mark
-    ops         Run operational archive and daemon commands.
-    read        Read matched sessions (route to view<PATH>
-  on).
-    resume      Resume from recent session context.
+    ops       Run operational archive and daemon commands.
+    read      Read matched sessions (route to view<PATH>
+  ).
     select
-    user-state  Manage durable reader user state.
   '''
 # ---
 # name: TestTerminalDimensions.test_help_at_wide_width
@@ -627,16 +622,14 @@
     -h, --help                      Show this message and exit.
   Commands:
     analyze
-    config      Show configuration paths and resolved settings.
-    continue    Compile a successor-agent continuation report.
-    delete      Delete matched sessions.
-    import      Import sessions from configured sources.
-    init        Detect chat sources and write a starter polylogue.toml.
+    config    Show configuration paths and resolved settings.
+    continue  Compile a successor-agent continuation report.
+    delete    Delete matched sessions.
+    import    Import sessions from configured sources.
+    init      Detect chat sources and write a starter polylogue.toml.
     mark
-    ops         Run operational archive and daemon commands.
-    read        Read matched sessions (route to view<PATH>).
-    resume      Resume from recent session context.
+    ops       Run operational archive and daemon commands.
+    read      Read matched sessions (route to view<PATH>).
     select
-    user-state  Manage durable reader user state.
   '''
 # ---

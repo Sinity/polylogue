@@ -1,4 +1,4 @@
-Usage: polylogue user-state workspaces delete [OPTIONS] WORKSPACE_ID
+Usage: polylogue ops state workspaces delete [OPTIONS] WORKSPACE_ID
 
   Delete a reader workspace.
 

@@ -1,10 +1,9 @@
-Usage: polylogue user-state marks list [OPTIONS]
+Usage: polylogue ops state annotations save [OPTIONS] ANNOTATION_ID SESSION_ID
+                                            NOTE_TEXT
 
-  List durable marks.
+  Create or update a durable annotation.
 
 Options:
-  --mark-type [star|pin|archive]
-  --session-id TEXT
   --target-type [session|message|work_event|thread|block|attachment|paste_span]
   --target-id TEXT
   --message-id TEXT

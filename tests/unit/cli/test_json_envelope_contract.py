@@ -98,15 +98,15 @@ class TestCheckJsonEnvelope:
 
 
 class TestTagsJsonEnvelope:
-    """user-state tags --format json wraps output in success envelope."""
+    """ops state tags --format json wraps output in success envelope."""
 
     def test_tags_json_has_status_ok(
         self: object,
         monkeypatch: pytest.MonkeyPatch,
         workspace_env: dict[str, Path],  # deterministic empty archive, no skip
     ) -> None:
-        """polylogue user-state tags --format json output has status: ok."""
-        parsed = _invoke_json_command(["user-state", "tags", "--format", "json"], monkeypatch)
+        """polylogue ops state tags --format json output has status: ok."""
+        parsed = _invoke_json_command(["ops", "state", "tags", "--format", "json"], monkeypatch)
         assert parsed["status"] == "ok"
         assert "result" in parsed
         assert "tags" in envelope_result(parsed, context="tags envelope")
@@ -116,8 +116,8 @@ class TestQueryShapedJsonMatrix:
     @pytest.mark.parametrize(
         ("args", "result_key"),
         [
-            (["user-state", "tags", "--format", "json"], "tags"),
             (["ops", "insights", "status", "--format", "json"], "insights"),
+            (["ops", "state", "tags", "--format", "json"], "tags"),
             (["ops", "schema", "list", "--format", "json"], "providers"),
         ],
     )
@@ -521,7 +521,7 @@ class TestAllJsonCommandsProduceValidJson:
         ("args", "contract_id", "allow_no_results"),
         [
             (["ops", "doctor", "--format", "json"], "cli.doctor_json_matrix", False),
-            (["user-state", "tags", "--format", "json"], "cli.tags_json_matrix", False),
+            (["ops", "state", "tags", "--format", "json"], "cli.tags_json_matrix", False),
             (["ops", "schema", "list", "--format", "json"], "cli.schema_list_json_matrix", False),
             (["config", "--format", "json"], "cli.config_json_matrix", False),
             # read --all browse on empty archive → exit 0 + empty archive envelope (valid JSON)

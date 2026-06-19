@@ -1,4 +1,4 @@
-"""User-state tag index command."""
+"""Durable reader tag index command."""
 
 from __future__ import annotations
 
@@ -23,10 +23,10 @@ def tags_command(
 
     \b
     Examples:
-        polylogue user-state tags                         # List all tags
-        polylogue user-state tags -o claude-ai-export     # Tags for Claude web sessions only
-        polylogue user-state tags --format json           # Machine-readable output
-        polylogue user-state tags -n 10                   # Top 10 tags
+        polylogue ops state tags                         # List all tags
+        polylogue ops state tags -o claude-ai-export     # Tags for Claude web sessions only
+        polylogue ops state tags --format json           # Machine-readable output
+        polylogue ops state tags -n 10                   # Top 10 tags
         polylogue find id:abc then mark --tag-add tps
         polylogue find id:abc then mark --tag-remove tps
     """

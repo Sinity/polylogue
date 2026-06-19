@@ -1,9 +1,0 @@
-Usage: polylogue resume [OPTIONS] COMMAND [ARGS]...
-
-  Reconstruct work-state context for a fresh agent session.
-
-Options:
-  -h, --help  Show this message and exit.
-
-Commands:
-  candidates  Rank archived logical sessions for the current working...

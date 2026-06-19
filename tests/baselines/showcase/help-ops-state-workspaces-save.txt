@@ -1,4 +1,4 @@
-Usage: polylogue user-state workspaces save [OPTIONS] WORKSPACE_ID NAME
+Usage: polylogue ops state workspaces save [OPTIONS] WORKSPACE_ID NAME
 
   Create or update a reader workspace.
 

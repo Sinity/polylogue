@@ -1,6 +1,6 @@
 Usage: polylogue mark [OPTIONS]
 
-  Mark matched sessions with tags, notes, or user-state marks.
+  Mark matched sessions with tags, notes, or durable marks.
 
   Requires exactly one matched session unless --all is present.
   Use --first to act on the first match when the query is non-specific.

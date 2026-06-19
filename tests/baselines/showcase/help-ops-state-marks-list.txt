@@ -1,8 +1,9 @@
-Usage: polylogue user-state annotations list [OPTIONS]
+Usage: polylogue ops state marks list [OPTIONS]
 
-  List durable annotations.
+  List durable marks.
 
 Options:
+  --mark-type [star|pin|archive]
   --session-id TEXT
   --target-type [session|message|work_event|thread|block|attachment|paste_span]
   --target-id TEXT

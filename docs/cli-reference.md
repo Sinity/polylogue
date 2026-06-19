@@ -161,17 +161,15 @@ Options:
 
 Commands:
   analyze
-  config      Show configuration paths and resolved settings.
-  continue    Compile a successor-agent continuation report.
-  delete      Delete matched sessions.
-  import      Import sessions from configured sources.
-  init        Detect chat sources and write a starter polylogue.toml.
+  config    Show configuration paths and resolved settings.
+  continue  Compile a successor-agent continuation report.
+  delete    Delete matched sessions.
+  import    Import sessions from configured sources.
+  init      Detect chat sources and write a starter polylogue.toml.
   mark
-  ops         Run operational archive and daemon commands.
-  read        Read matched sessions (route to view/destination).
-  resume      Resume from recent session context.
+  ops       Run operational archive and daemon commands.
+  read      Read matched sessions (route to view/destination).
   select
-  user-state  Manage durable reader user state.
 ```
 
 ## Analyze Verb
@@ -343,7 +341,7 @@ Options:
 ```text
 Usage: polylogue mark [OPTIONS]
 
-  Mark matched sessions with tags, notes, or user-state marks.
+  Mark matched sessions with tags, notes, or durable marks.
 
   Requires exactly one matched session unless --all is present.
   Use --first to act on the first match when the query is non-specific.
@@ -386,11 +384,22 @@ Usage: polylogue continue [OPTIONS]
       polylogue find id:abc then continue --format json
       polylogue --latest continue --to clipboard
       polylogue find 'repo:polylogue near:id:abc' then continue --to file --out handoff.md
+      polylogue continue --candidates --repo /workspace/polylogue --recent polylogue/cli/query_verbs.py
 
 Options:
   --to [terminal|stdout|browser|clipboard|file]
                                   Output destination.  [default: terminal]
   --out PATH                      File path for --to file.
+  --candidates                    Rank archived sessions that are likely
+                                  continuation targets for a repository
+                                  context.
+  --repo TEXT                     Repository path for --candidates ranking.
+  --cwd TEXT                      Current working directory for --candidates
+                                  prefix matching.
+  --recent TEXT                   Recently touched file path for --candidates.
+                                  Repeatable.
+  --limit INTEGER                 Maximum continuation candidates to return.
+                                  [default: 10]
   -f, --format [json]             Output format. JSON emits the shared
                                   ContextImage payload.
   --help                          Show this message and exit.
@@ -453,6 +462,7 @@ Commands:
   paths        Print canonical archive paths and bind-mount detection.
   reset        Reset local archive state.
   schema       Inspect and audit provider schemas.
+  state        Manage durable reader state.
   status       Show daemon and archive status.
   tutorial     Interactive first-run walk-through.
 ```
@@ -520,12 +530,12 @@ Options:
   --help                          Show this message and exit.
 ```
 
-## User State
+## Ops State
 
 ```text
-Usage: polylogue user-state [OPTIONS] COMMAND [ARGS]...
+Usage: polylogue ops state [OPTIONS] COMMAND [ARGS]...
 
-  Manage durable reader user state.
+  Manage durable reader state.
 
 Options:
   --help  Show this message and exit.
@@ -541,18 +551,18 @@ Commands:
   workspaces    Manage durable reader workspaces.
 ```
 
-## User State Tags
+## Ops State Tags
 
 ```text
-Usage: polylogue user-state tags [OPTIONS]
+Usage: polylogue ops state tags [OPTIONS]
 
   List user tags with session counts.
 
   Examples:
-      polylogue user-state tags                         # List all tags
-      polylogue user-state tags -o claude-ai-export     # Tags for Claude web sessions only
-      polylogue user-state tags --format json           # Machine-readable output
-      polylogue user-state tags -n 10                   # Top 10 tags
+      polylogue ops state tags                         # List all tags
+      polylogue ops state tags -o claude-ai-export     # Tags for Claude web sessions only
+      polylogue ops state tags --format json           # Machine-readable output
+      polylogue ops state tags -n 10                   # Top 10 tags
       polylogue find id:abc then mark --tag-add tps
       polylogue find id:abc then mark --tag-remove tps
 

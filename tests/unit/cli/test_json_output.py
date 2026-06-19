@@ -84,9 +84,9 @@ _COMMANDS: list[tuple[list[str], bool]] = [
     # ── Top-level commands ───────────────────────────────────────────
     (["ops", "doctor"], False),
     (["config"], False),  # TOML output with root --json (not JSON, but pipeable)
-    (["resume"], True),
-    (["resume", "candidates"], True),
-    (["user-state", "tags"], False),
+    (["continue"], True),
+    (["continue", "--candidates"], True),
+    (["ops", "state", "tags"], False),
     # ── Insights subcommands ─────────────────────────────────────────
     (["ops", "insights", "status"], False),
     (["ops", "insights", "audit"], False),
@@ -106,7 +106,7 @@ _COMMANDS: list[tuple[list[str], bool]] = [
     (["--latest", "ops", "diagnostics", "turns"], True),  # needs session; fails cleanly on empty
     # ── Embed, feedback, schema, maintenance ─────────────────────────
     (["ops", "embed", "status"], False),
-    (["user-state", "feedback", "list"], False),
+    (["ops", "state", "feedback", "list"], False),
     (["ops", "schema", "list"], False),
     (["ops", "maintenance", "status"], False),
     (["ops", "maintenance", "preview"], False),
@@ -128,7 +128,7 @@ _EXCLUDED: list[str] = [
     "recent (pre-existing bug: hardcoded sort=updated_at is invalid)",
     "insights timeline (requires SESSION_ID argument)",
     "insights export (requires --out argument)",
-    "user-state marks (not wired for lazy subcommand dispatch from root)",
+    "ops state marks (maintenance writes require explicit arguments)",
 ]
 
 _COMMAND_IDS: list[str] = [" ".join(args) for args, _ in _COMMANDS]

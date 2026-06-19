@@ -736,7 +736,7 @@ class TestCliMetadata:
 
         result = cli_runner.invoke(cli, ["--help"])
         assert result.exit_code == 0
-        for command in ("ops", "import", "user-state", "read", "analyze"):
+        for command in ("ops", "import", "continue", "read", "analyze"):
             assert command in result.output
         assert result.output.count("Commands:") == 1
 
@@ -748,8 +748,6 @@ class TestCliMetadata:
             "init",
             "config",
             "continue",
-            "resume",
-            "user-state",
             "ops",
             # Query verbs
             "read",

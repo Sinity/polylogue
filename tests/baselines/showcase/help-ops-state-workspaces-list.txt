@@ -1,6 +1,6 @@
-Usage: polylogue user-state recall-packs list [OPTIONS]
+Usage: polylogue ops state workspaces list [OPTIONS]
 
-  List recall packs.
+  List reader workspaces.
 
 Options:
   -f, --format [json]

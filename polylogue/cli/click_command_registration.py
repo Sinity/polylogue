@@ -101,16 +101,16 @@ _SHORT_HELP: dict[str, str] = {
     "ops": "Run operational archive and daemon commands.",
     "paths": "Print canonical archive paths and bind-mount detection.",
     "reset": "Reset local archive state.",
-    "resume": "Resume from recent session context.",
     "schema": "Inspect and audit provider schemas.",
     "status": "Show daemon and archive status.",
     "tutorial": "Interactive first-run walk-through.",
-    "user_state": "Manage durable reader user state.",
+    "user_state": "Manage durable reader state.",
 }
 
 _COMMAND_NAMES: dict[str, str] = {
     "check": "doctor",
     "import_command": "import",
+    "user_state": "state",
 }
 
 _GROUP_ATTRS: dict[str, str] = {
@@ -120,9 +120,8 @@ _GROUP_ATTRS: dict[str, str] = {
     "insights": "insights_command",
     "maintenance": "maintenance_group",
     "ops": "ops_command",
-    "resume": "resume_command",
     "schema": "schema_command",
-    "user_state": "user_state_command",
+    "user_state": "state_command",
 }
 
 _COMMAND_ATTRS: dict[str, str] = {
@@ -145,8 +144,6 @@ ROOT_COMMANDS: tuple[click.Command, ...] = (
     _L("config"),
     _L("import_command"),
     _L("init"),
-    _L("resume"),
-    _L("user_state"),
     _L("ops"),
 )
 
@@ -164,6 +161,7 @@ OPS_COMMANDS: tuple[click.Command, ...] = (
     _L("paths"),
     _L("reset"),
     _L("schema"),
+    _L("user_state"),
     _L("status"),
     _L("tutorial"),
 )

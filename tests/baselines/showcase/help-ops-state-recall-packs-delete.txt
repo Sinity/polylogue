@@ -1,4 +1,4 @@
-Usage: polylogue user-state recall-packs delete [OPTIONS] PACK_ID
+Usage: polylogue ops state recall-packs delete [OPTIONS] PACK_ID
 
   Delete a recall pack.
 

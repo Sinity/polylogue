@@ -7,11 +7,22 @@ Usage: polylogue continue [OPTIONS]
       polylogue find id:abc then continue --format json
       polylogue --latest continue --to clipboard
       polylogue find 'repo:polylogue near:id:abc' then continue --to file --out handoff.md
+      polylogue continue --candidates --repo /workspace/polylogue --recent polylogue/cli/query_verbs.py
 
 Options:
   --to [terminal|stdout|browser|clipboard|file]
                                   Output destination.  [default: terminal]
   --out PATH                      File path for --to file.
+  --candidates                    Rank archived sessions that are likely
+                                  continuation targets for a repository
+                                  context.
+  --repo TEXT                     Repository path for --candidates ranking.
+  --cwd TEXT                      Current working directory for --candidates
+                                  prefix matching.
+  --recent TEXT                   Recently touched file path for --candidates.
+                                  Repeatable.
+  --limit INTEGER                 Maximum continuation candidates to return.
+                                  [default: 10]
   -f, --format [json]             Output format. JSON emits the shared
                                   ContextImage payload.
   --help                          Show this message and exit.

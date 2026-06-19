@@ -1,4 +1,4 @@
-"""CLI contracts for durable reader user-state commands (#867)."""
+"""CLI contracts for durable reader state maintenance commands (#867)."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from click.testing import CliRunner
 
-from polylogue.cli.commands.user_state import user_state_command
+from polylogue.cli.commands.user_state import state_command
 
 
 def _result(output: str) -> dict[str, object]:
@@ -39,11 +39,11 @@ def _env() -> MagicMock:
     return env
 
 
-def test_user_state_marks_add_passes_message_target(cli_runner: CliRunner) -> None:
+def test_ops_state_marks_add_passes_message_target(cli_runner: CliRunner) -> None:
     env = _env()
 
     result = cli_runner.invoke(
-        user_state_command,
+        state_command,
         [
             "marks",
             "add",
@@ -72,7 +72,7 @@ def test_user_state_marks_add_passes_message_target(cli_runner: CliRunner) -> No
     )
 
 
-def test_user_state_annotations_list_returns_envelope(cli_runner: CliRunner) -> None:
+def test_ops_state_annotations_list_returns_envelope(cli_runner: CliRunner) -> None:
     env = _env()
     env.polylogue.list_annotations = AsyncMock(
         return_value=[
@@ -90,7 +90,7 @@ def test_user_state_annotations_list_returns_envelope(cli_runner: CliRunner) -> 
     )
 
     result = cli_runner.invoke(
-        user_state_command,
+        state_command,
         ["annotations", "list", "--session-id", "conv-1", "--format", "json"],
         obj=env,
         catch_exceptions=False,
@@ -110,11 +110,11 @@ def test_user_state_annotations_list_returns_envelope(cli_runner: CliRunner) -> 
     )
 
 
-def test_user_state_saved_view_save_validates_and_canonicalizes_query(cli_runner: CliRunner) -> None:
+def test_ops_state_saved_view_save_validates_and_canonicalizes_query(cli_runner: CliRunner) -> None:
     env = _env()
 
     result = cli_runner.invoke(
-        user_state_command,
+        state_command,
         [
             "saved-views",
             "save",
@@ -139,11 +139,11 @@ def test_user_state_saved_view_save_validates_and_canonicalizes_query(cli_runner
     )
 
 
-def test_user_state_saved_view_rejects_unknown_query_param(cli_runner: CliRunner) -> None:
+def test_ops_state_saved_view_rejects_unknown_query_param(cli_runner: CliRunner) -> None:
     env = _env()
 
     result = cli_runner.invoke(
-        user_state_command,
+        state_command,
         ["saved-views", "save", "Bad", '{"not_a_filter":true}', "--format", "json"],
         obj=env,
         catch_exceptions=False,
@@ -153,11 +153,11 @@ def test_user_state_saved_view_rejects_unknown_query_param(cli_runner: CliRunner
     assert "SessionQuerySpec" in result.output
 
 
-def test_user_state_recall_pack_save_passes_typed_items(cli_runner: CliRunner) -> None:
+def test_ops_state_recall_pack_save_passes_typed_items(cli_runner: CliRunner) -> None:
     env = _env()
 
     result = cli_runner.invoke(
-        user_state_command,
+        state_command,
         [
             "recall-packs",
             "save",
@@ -186,11 +186,11 @@ def test_user_state_recall_pack_save_passes_typed_items(cli_runner: CliRunner) -
     )
 
 
-def test_user_state_workspace_save_passes_canonical_layout_and_targets(cli_runner: CliRunner) -> None:
+def test_ops_state_workspace_save_passes_canonical_layout_and_targets(cli_runner: CliRunner) -> None:
     env = _env()
 
     result = cli_runner.invoke(
-        user_state_command,
+        state_command,
         [
             "workspaces",
             "save",

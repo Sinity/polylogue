@@ -66,6 +66,50 @@ _READ_VIEW_HELP = "What to render (" + ", ".join(_READ_VIEWS) + ")."
 _READ_DESTINATIONS = ("terminal", "stdout", "browser", "clipboard", "file")
 _READ_FORMATS = tuple(sorted({fmt for profile in READ_VIEW_PROFILES for fmt in profile.formats}))
 _RECOVERY_REPORT_PRESETS = ("continue", "blame", "work-packet")
+_CONTINUE_CANDIDATE_DEFAULT_LIMIT = 10
+
+
+def _wants_json(request: RootModeRequest, *, output_format: str | None) -> bool:
+    """Return whether the local/root output contract requests JSON."""
+
+    if output_format == "json":
+        return True
+    root_output = request.params.get("output_format")
+    return root_output == "json"
+
+
+def _emit_continue_candidates(
+    env: AppEnv,
+    request: RootModeRequest,
+    *,
+    repo_path: str,
+    cwd: str | None,
+    recent_files: tuple[str, ...],
+    limit: int,
+    output_format: str | None,
+) -> None:
+    """Rank archived sessions for continuation from the current work context."""
+
+    from polylogue.api.sync.bridge import run_coroutine_sync
+    from polylogue.cli.shared.machine_errors import emit_success
+
+    candidates = run_coroutine_sync(
+        env.polylogue.find_resume_candidates(
+            repo_path=repo_path,
+            cwd=cwd,
+            recent_files=recent_files,
+            limit=limit,
+        )
+    )
+    payload = {
+        "candidates": [candidate.model_dump(mode="json") for candidate in candidates],
+        "total": len(candidates),
+    }
+    if _wants_json(request, output_format=output_format):
+        emit_success(payload)
+        return
+    for candidate in candidates:
+        click.echo(f"{candidate.score:.3f} {candidate.logical_session_id} {candidate.title}")
 
 
 def _complete_read_view(ctx: click.Context, param: click.Parameter, incomplete: str) -> list[CompletionItem]:
@@ -446,6 +490,24 @@ def read_verb(
 )
 @click.option("--out", "out_path", type=click.Path(), default=None, help="File path for --to file.")
 @click.option(
+    "--candidates",
+    is_flag=True,
+    help="Rank archived sessions that are likely continuation targets for a repository context.",
+)
+@click.option("--repo", "repo_path", default=None, help="Repository path for --candidates ranking.")
+@click.option("--cwd", default=None, help="Current working directory for --candidates prefix matching.")
+@click.option(
+    "--recent", "recent_files", multiple=True, help="Recently touched file path for --candidates. Repeatable."
+)
+@click.option(
+    "--limit",
+    "candidate_limit",
+    type=int,
+    default=_CONTINUE_CANDIDATE_DEFAULT_LIMIT,
+    show_default=True,
+    help="Maximum continuation candidates to return.",
+)
+@click.option(
     "--format",
     "-f",
     "output_format",
@@ -454,7 +516,17 @@ def read_verb(
     help="Output format. JSON emits the shared ContextImage payload.",
 )
 @click.pass_context
-def continue_verb(ctx: click.Context, destination: str, out_path: str | None, output_format: str | None) -> None:
+def continue_verb(
+    ctx: click.Context,
+    destination: str,
+    out_path: str | None,
+    candidates: bool,
+    repo_path: str | None,
+    cwd: str | None,
+    recent_files: tuple[str, ...],
+    candidate_limit: int,
+    output_format: str | None,
+) -> None:
     """Compile a successor-agent continuation report for one matched session.
 
     \b
@@ -463,13 +535,37 @@ def continue_verb(ctx: click.Context, destination: str, out_path: str | None, ou
         polylogue find id:abc then continue --format json
         polylogue --latest continue --to clipboard
         polylogue find 'repo:polylogue near:id:abc' then continue --to file --out handoff.md
+        polylogue continue --candidates --repo /workspace/polylogue --recent polylogue/cli/query_verbs.py
     """
     env: AppEnv = ctx.obj
     request = _parent_request(ctx)
+    if candidates:
+        if destination not in ("terminal", "stdout") or out_path is not None:
+            raise click.UsageError("continue --candidates writes to terminal/stdout; omit --to/--out.")
+        if not repo_path:
+            raise click.UsageError("continue --candidates requires --repo.")
+        _emit_continue_candidates(
+            env,
+            request,
+            repo_path=repo_path,
+            cwd=cwd,
+            recent_files=recent_files,
+            limit=candidate_limit,
+            output_format=output_format,
+        )
+        return
+    if repo_path or cwd or recent_files:
+        raise click.UsageError("--repo, --cwd, and --recent are only valid with continue --candidates.")
+    if candidate_limit != _CONTINUE_CANDIDATE_DEFAULT_LIMIT:
+        raise click.UsageError("--limit is only valid with continue --candidates.")
     session_id = _resolve_target_session_id(request)
     if session_id is None:
         raise click.UsageError("continue requires one matched session (use --id, --latest, or a narrowing query).")
-    if output_format == "json":
+    root_format = request.params.get("output_format")
+    effective_format = (
+        output_format if output_format is not None else root_format if isinstance(root_format, str) else None
+    )
+    if effective_format == "json":
         if destination not in ("terminal", "stdout", "file"):
             raise click.UsageError("continue --format json supports terminal, stdout, or file destinations only.")
         if destination == "file" and not out_path:
@@ -500,7 +596,7 @@ def continue_verb(ctx: click.Context, destination: str, out_path: str | None, ou
         ReadViewInvocation(
             view="recovery",
             session_id=session_id,
-            output_format=None,
+            output_format=effective_format,
             destination=destination,
             out_path=out_path,
             recovery_report="continue",
@@ -586,7 +682,7 @@ def mark_verb(
     apply_all: bool,
     first_only: bool,
 ) -> None:
-    """Mark matched sessions with tags, notes, or user-state marks.
+    """Mark matched sessions with tags, notes, or durable marks.
 
     \b
     Requires exactly one matched session unless --all is present.

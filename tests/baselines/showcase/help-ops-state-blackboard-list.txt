@@ -1,4 +1,4 @@
-Usage: polylogue user-state blackboard list [OPTIONS]
+Usage: polylogue ops state blackboard list [OPTIONS]
 
   List blackboard notes.
 
