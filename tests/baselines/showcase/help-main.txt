@@ -154,7 +154,6 @@ Commands:
   config             Show configuration paths and resolved settings.
   continue           Compile a successor-agent continuation report.
   cost               Summarize session cost telemetry.
-  dashboard          Open the local dashboard.
   delete             Delete matched sessions.
   feedback           Record learning corrections for derived insights.
   import             Import sessions from configured sources.
@@ -167,5 +166,4 @@ Commands:
   resume-candidates  Rank resume candidates for the current context.
   select
   tags               Manage session tags.
-  tutorial           Interactive first-run walk-through.
   user-state         Manage durable reader user state.

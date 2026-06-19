@@ -252,7 +252,7 @@ Use `fzf` if configured/available, with a pure-Python fallback. Do not make an e
 Do not create a second reader. Keep or strengthen the existing terminal dashboard as an operator cockpit:
 
 ```text
-polylogue dashboard
+polylogue ops dashboard
 ```
 
 It answers:

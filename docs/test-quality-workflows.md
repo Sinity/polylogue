@@ -353,7 +353,6 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-continue` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | continue help |
 | `exercise` | `help-cost` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | cost help |
 | `exercise` | `help-cost-outlook` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | cost outlook help |
-| `exercise` | `help-dashboard` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | dashboard help |
 | `exercise` | `help-delete` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | delete help |
 | `exercise` | `help-feedback` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | feedback help |
 | `exercise` | `help-feedback-clear` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | feedback clear help |
@@ -382,6 +381,7 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-ops-auth` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops auth help |
 | `exercise` | `help-ops-backup` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops backup help |
 | `exercise` | `help-ops-completions` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops completions help |
+| `exercise` | `help-ops-dashboard` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops dashboard help |
 | `exercise` | `help-ops-diagnostics` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops diagnostics help |
 | `exercise` | `help-ops-diagnostics-pace` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops diagnostics pace help |
 | `exercise` | `help-ops-diagnostics-space` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops diagnostics space help |
@@ -414,12 +414,12 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-ops-schema-explain` | `schema-explain-query-loop` | `schema_packages`<br>`schema_explanation_results` | `cli.help`<br>`query-schema-explanations` | — | `generated`<br>`help`<br>`structural` | ops schema explain help |
 | `exercise` | `help-ops-schema-list` | `schema-list-query-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios`<br>`schema_list_results` | `cli.help`<br>`query-schema-catalog` | — | `generated`<br>`help`<br>`structural` | ops schema list help |
 | `exercise` | `help-ops-status` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops status help |
+| `exercise` | `help-ops-tutorial` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops tutorial help |
 | `exercise` | `help-read` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | read help |
 | `exercise` | `help-resume` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | resume help |
 | `exercise` | `help-resume-candidates` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | resume-candidates help |
 | `exercise` | `help-select` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | select help |
 | `exercise` | `help-tags` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | tags help |
-| `exercise` | `help-tutorial` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | tutorial help |
 | `exercise` | `help-user-state` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | user-state help |
 | `exercise` | `json-doctor` | `message-fts-readiness-loop`<br>`retrieval-band-readiness-loop` | `message_fts`<br>`session_insight_readiness`<br>`retrieval_band_readiness`<br>`archive_readiness` | `cli.json-contract`<br>`project-archive-readiness` | — | `generated`<br>`json-contract`<br>`maintenance`<br>`readiness` | doctor JSON contract |
 | `exercise` | `json-doctor-session-insights-preview` | `session-insight-repair-loop` | `session_insight_rows`<br>`session_insight_fts`<br>`session_insight_readiness` | `cli.json-contract`<br>`project-session-insight-readiness` | — | `generated`<br>`json-contract`<br>`maintenance`<br>`session-insights` | doctor JSON contract |

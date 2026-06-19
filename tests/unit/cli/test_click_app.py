@@ -725,7 +725,6 @@ class TestCliMetadata:
             "continue",
             "cost",
             "blackboard",
-            "dashboard",
             "resume",
             "resume-candidates",
             "insights",
@@ -733,7 +732,6 @@ class TestCliMetadata:
             "feedback",
             "user-state",
             "ops",
-            "tutorial",
             # Query verbs
             "read",
             "select",
@@ -810,7 +808,7 @@ class TestDashboardCommand:
         with patch("polylogue.ui.tui.app.PolylogueApp") as mock_app_cls:
             mock_app = MagicMock()
             mock_app_cls.return_value = mock_app
-            result = cli_runner.invoke(click_cli, ["--plain", "dashboard"])
+            result = cli_runner.invoke(click_cli, ["--plain", "ops", "dashboard"])
         assert result.exit_code == 0
         mock_app.run.assert_called_once()
 
@@ -822,7 +820,7 @@ class TestDashboardCommand:
         with patch("polylogue.ui.tui.app.PolylogueApp") as mock_app_cls:
             mock_app = MagicMock()
             mock_app_cls.return_value = mock_app
-            result = cli_runner.invoke(click_cli, ["--plain", "dashboard"])
+            result = cli_runner.invoke(click_cli, ["--plain", "ops", "dashboard"])
         assert result.exit_code == 0
         kwargs = mock_app_cls.call_args.kwargs
         assert kwargs["polylogue"] is not None

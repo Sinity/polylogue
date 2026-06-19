@@ -150,7 +150,6 @@ ROOT_COMMANDS: tuple[click.Command, ...] = (
     _L("cost"),
     _L("import_command"),
     _L("init"),
-    _L("dashboard"),
     _L("resume"),
     _L("resume_candidates"),
     _L("insights"),
@@ -158,7 +157,6 @@ ROOT_COMMANDS: tuple[click.Command, ...] = (
     _L("feedback"),
     _L("user_state"),
     _L("ops"),
-    _L("tutorial"),
     _L("blackboard"),
 )
 
@@ -167,6 +165,7 @@ OPS_COMMANDS: tuple[click.Command, ...] = (
     _L("backup"),
     _L("check"),
     _L("completions"),
+    _L("dashboard"),
     _L("diagnostics"),
     _L("embed"),
     _L("maintenance"),
@@ -174,6 +173,7 @@ OPS_COMMANDS: tuple[click.Command, ...] = (
     _L("reset"),
     _L("schema"),
     _L("status"),
+    _L("tutorial"),
 )
 
 

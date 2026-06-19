@@ -1,4 +1,4 @@
-Usage: polylogue tutorial [OPTIONS]
+Usage: polylogue ops tutorial [OPTIONS]
 
   Walk through a fresh polylogue install end-to-end.
 

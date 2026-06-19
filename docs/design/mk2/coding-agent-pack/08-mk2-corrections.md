@@ -42,7 +42,7 @@ Surface decision update from MK2 integration:
 
 Preserve the query-first CLI grammar. Do not replace it with a generic task tree.
 Move service/protocol modes out of `polylogue`: `polylogued` for live/capture/local API/web, and `polylogue-mcp` for MCP stdio.
-`polylogue dashboard` remains the terminal operator cockpit unless deliberately clean-break renamed.
+`polylogue ops dashboard` is the terminal operator cockpit.
 Do not add `polylogue ui`.
 Do not expose `polylogue mcp` once `polylogue-mcp` lands.
 Do not expose `polylogue watch` once `polylogued` owns live ingestion.

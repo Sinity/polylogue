@@ -165,6 +165,21 @@ class TestVerifyShowcaseBaselinesControlFlow:
         assert mod.verify_showcase_baselines(update=True) == 0
         assert (baseline_dir / "cmd-a.txt").read_text() == "fresh output\n"
 
+    def test_update_refuses_failed_exercise_output(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """--update does not save blank output when the exercise runner fails."""
+        import devtools.lab_scenario as mod
+
+        baseline_dir = tmp_path / "baselines"
+        monkeypatch.setattr(mod, "BASELINE_DIR", baseline_dir)
+
+        def _failed_run() -> dict[str, str]:
+            raise RuntimeError("tier-0 showcase exercises failed:\n  - help-main: exit -1: invoke crashed")
+
+        monkeypatch.setattr(mod, "run_tier_0", _failed_run)
+
+        assert mod.verify_showcase_baselines(update=True) == 1
+        assert not baseline_dir.exists()
+
     def test_main_returns_1_when_no_baselines_and_no_update(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

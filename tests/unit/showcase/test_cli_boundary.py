@@ -87,11 +87,31 @@ def test_invoke_showcase_cli_passes_runtime_options(
     assert kwargs["timeout"] == 30.0
 
 
-def test_invoke_showcase_cli_requires_project_command(
+def test_invoke_showcase_cli_uses_python_fallback_without_project_command(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(cli_boundary, "_PROJECT_ROOT", tmp_path)
+    captured: dict[str, object] = {}
 
-    with pytest.raises(RuntimeError, match=r"requires `.venv/bin/polylogue`"):
-        cli_boundary.invoke_showcase_cli(polylogue_execution("--help"))
+    def fake_run(command: list[str], **kwargs: object) -> object:
+        captured["command"] = tuple(command)
+        captured["kwargs"] = kwargs
+
+        class Result:
+            returncode = 0
+            stdout = "Usage: polylogue [OPTIONS]\n"
+            stderr = ""
+
+        return Result()
+
+    monkeypatch.setattr(cli_boundary, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr("polylogue.showcase.cli_boundary.subprocess.run", fake_run)
+
+    result = cli_boundary.invoke_showcase_cli(polylogue_execution("--help"))
+
+    command = captured["command"]
+    assert isinstance(command, tuple)
+    assert command[-1] == "--help"
+    assert any("cli(prog_name='polylogue')" in part for part in command)
+    assert result.exit_code == 0
+    assert result.stdout == "Usage: polylogue [OPTIONS]\n"

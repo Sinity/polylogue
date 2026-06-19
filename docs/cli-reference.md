@@ -165,7 +165,6 @@ Commands:
   config             Show configuration paths and resolved settings.
   continue           Compile a successor-agent continuation report.
   cost               Summarize session cost telemetry.
-  dashboard          Open the local dashboard.
   delete             Delete matched sessions.
   feedback           Record learning corrections for derived insights.
   import             Import sessions from configured sources.
@@ -178,7 +177,6 @@ Commands:
   resume-candidates  Rank resume candidates for the current context.
   select
   tags               Manage session tags.
-  tutorial           Interactive first-run walk-through.
   user-state         Manage durable reader user state.
 ```
 
@@ -447,6 +445,7 @@ Commands:
   auth         Authenticate optional external services.
   backup       Create a timestamped durability-tier backup.
   completions  Emit shell completion setup for polylogue.
+  dashboard    Open the local dashboard.
   diagnostics  Run archive and session diagnostics.
   doctor       Run archive health checks and repairs.
   embed        Enable, preflight, and backfill the embedding pipeline.
@@ -455,6 +454,7 @@ Commands:
   reset        Reset local archive state.
   schema       Inspect and audit provider schemas.
   status       Show daemon and archive status.
+  tutorial     Interactive first-run walk-through.
 ```
 
 ## Doctor
@@ -650,12 +650,28 @@ Options:
 ## Dashboard
 
 ```text
-Usage: polylogue dashboard [OPTIONS]
+Usage: polylogue ops dashboard [OPTIONS]
 
   Launch the dashboard TUI.
 
 Options:
   --help  Show this message and exit.
+```
+
+## Tutorial
+
+```text
+Usage: polylogue ops tutorial [OPTIONS]
+
+  Walk through a fresh polylogue install end-to-end.
+
+  Each stage is idempotent — already-satisfied stages are marked ``[skip]``.
+  Use ``--non-interactive`` to print the current state without prompting
+  (suitable for scripts and CI).
+
+Options:
+  --non-interactive  Skip prompts; print the stage diagnostic and exit.
+  --help             Show this message and exit.
 ```
 
 ## Public Action Contracts
