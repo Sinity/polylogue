@@ -74,7 +74,7 @@ def resume_session_command(
 @click.option("--repo", "repo_path", required=True, help="Repository path to rank sessions against.")
 @click.option("--cwd", default=None, help="Current working directory for prefix matching.")
 @click.option("--recent", "recent_files", multiple=True, help="Recently touched file path. Repeatable.")
-@click.option("--limit", type=int, default=10, show_default=True, help="Maximum candidates to return.")
+@click.option("--limit", "-l", type=int, default=10, show_default=True, help="Maximum candidates to return.")
 @click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None, help="Output format.")
 @click.pass_context
 def resume_candidates_command(

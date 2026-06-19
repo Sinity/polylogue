@@ -21,7 +21,7 @@ def diagnostics_group() -> None:
 @diagnostics_group.command("workload")
 @click.option("--db", type=click.Path(path_type=Path), default=None, help="Archive SQLite database path.")
 @click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
-@click.option("--limit", type=int, default=5, help="Recent attempt limit.")
+@click.option("--limit", "-l", type=int, default=5, help="Recent attempt limit.")
 @click.option(
     "--compare",
     nargs=2,
@@ -53,7 +53,7 @@ def workload_command(
 
 @diagnostics_group.command("space")
 @click.option("--db", type=click.Path(path_type=Path), default=None, help="Archive database path.")
-@click.option("--limit", type=int, default=25, help="Largest object rows to include.")
+@click.option("--limit", "-l", type=int, default=25, help="Largest object rows to include.")
 @click.option("--objects", is_flag=True, help="Run the dbstat table/index object scan.")
 @click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
 def space_command(db: Path | None, limit: int, objects: bool, json_output: bool) -> None:

@@ -437,8 +437,8 @@ class TestReaderSearchState:
         assert "loadProvenanceRaw" in body
         assert "/provenance?include_raw=1" in body
         assert "Raw preview is opt-in" in body
-        assert " + '/raw'" not in body
-        assert ' + "/raw"' not in body
+        assert "await loadSessionRaw(id)" in body
+        assert "function loadProvenanceRaw()" in body
 
     def test_search_envelope_matches_documented_shape(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env) as (_, base_url):

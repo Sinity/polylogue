@@ -233,7 +233,6 @@
     read        Read matched sessions (route to view<PATH>).
     resume      Resume from recent session context.
     select
-    tags        Manage session tags.
     user-state  Manage durable reader user state.
   '''
 # ---
@@ -483,7 +482,6 @@
   on).
     resume      Resume from recent session context.
     select
-    tags        Manage session tags.
     user-state  Manage durable reader user state.
   '''
 # ---
@@ -645,7 +643,6 @@
     read        Read matched sessions (route to view<PATH>).
     resume      Resume from recent session context.
     select
-    tags        Manage session tags.
     user-state  Manage durable reader user state.
   '''
 # ---
