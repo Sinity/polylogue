@@ -9,7 +9,12 @@ Usage: polylogue import [OPTIONS] [PATH]
   success without observable processing.
 
 Options:
-  --demo             Generate and schedule the approved deterministic demo
-                     fixture world.
-  --daemon-url TEXT  Daemon API URL.  [default: http://127.0.0.1:8766]
-  -h, --help         Show this message and exit.
+  --demo                      Generate and schedule the approved deterministic
+                              demo fixture world.
+  --daemon-url TEXT           Daemon API URL.  [default:
+                              http://127.0.0.1:8766]
+  --explain                   Explain detector/parser decisions without
+                              scheduling daemon import.
+  -f, --format [json|ndjson]  Machine-readable output format for --explain.
+                              [default: json]
+  -h, --help                  Show this message and exit.
