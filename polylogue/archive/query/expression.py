@@ -1081,12 +1081,23 @@ def parse_unit_source_expression(expression: str) -> QueryUnitSource | None:
     return QueryUnitSource(unit=unit, predicate=transformed)
 
 
+def _terminal_only_unit_source_error(unit: QueryUnitName) -> ExpressionCompileError:
+    source = f"{unit}s" if unit != "context-snapshot" else "context-snapshots"
+    if unit == "observed-event":
+        source = "observed-events"
+    return ExpressionCompileError(
+        f"{source} where expressions return terminal {unit} rows; "
+        "use query_units / /api/query-units or a CLI terminal-unit query instead of a session selector",
+        field=None,
+    )
+
+
 def _parse_source_where_predicate(expression: str) -> QueryExistsPredicate | None:
     source = parse_unit_source_expression(expression)
     if source is None:
         return None
-    if source.unit in {"observed-event", "context-snapshot"}:
-        return None
+    if source.unit in {"run", "observed-event", "context-snapshot"}:
+        raise _terminal_only_unit_source_error(source.unit)
     return QueryExistsPredicate(unit=cast(Any, source.unit), child=source.predicate)
 
 

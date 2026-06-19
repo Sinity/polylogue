@@ -492,6 +492,22 @@ class TestBooleanQueryExpression:
         assert explanation.lowering_plan is not None
         assert "compatibility_selector" not in explanation.lowering_plan
 
+    @pytest.mark.parametrize(
+        ("expression", "unit_text"),
+        (
+            ("runs where role:subagent", "terminal run rows"),
+            ("observed-events where kind:session_started", "terminal observed-event rows"),
+            ("context-snapshots where boundary:session_start", "terminal context-snapshot rows"),
+        ),
+    )
+    def test_terminal_only_unit_sources_do_not_compile_to_session_selectors(
+        self,
+        expression: str,
+        unit_text: str,
+    ) -> None:
+        with pytest.raises(ExpressionCompileError, match=unit_text):
+            compile_expression(expression)
+
     def test_parse_context_snapshot_source_expression_preserves_terminal_unit(self) -> None:
         source = parse_unit_source_expression(
             "context-snapshots where session.repo:polylogue AND boundary:session_start AND text:run"

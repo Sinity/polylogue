@@ -15,7 +15,7 @@ Quick links:
 - [Retrieval Lanes](#retrieval-lanes) — `dialogue`, `actions`, `hybrid`,
   `semantic`, and how `auto` elevates.
 - [Terminal Unit Queries](#terminal-unit-queries) — `messages/actions/blocks/
-  assertions/observed-events/context-snapshots where ...` row results.
+  assertions/runs/observed-events/context-snapshots where ...` row results.
 - [Ranking Policy](#ranking-policy) — current `mixed-bm25-rrf-vector`
   policy and version contract.
 - [SearchEnvelope Contract](#searchenvelope-contract) — the typed
@@ -33,7 +33,7 @@ through the same typed AST and query planner:
 ```text
 compact-query      ::= compact-clause*
 boolean-query      ::= ["sessions" "where"] predicate
-unit-query         ::= ("messages" | "actions" | "blocks" | "assertions" | "observed-events" | "context-snapshots") "where" predicate
+unit-query         ::= ("messages" | "actions" | "blocks" | "assertions" | "runs" | "observed-events" | "context-snapshots") "where" predicate
 
 compact-clause     ::= field-clause
                      | quoted-text | bare-text
@@ -52,7 +52,7 @@ predicate          ::= predicate "OR" predicate
                      | "exists" structural-unit "(" predicate ")"
                      | "seq" "(" sequence-step "->" sequence-step+ ")"
 
-structural-unit    ::= "message" | "action" | "block"
+structural-unit    ::= "message" | "action" | "block" | "assertion"
 ```
 
 Compact queries select sessions:
@@ -78,6 +78,7 @@ polylogue messages where 'role:assistant AND text:timeout'
 polylogue actions where 'session.repo:polylogue AND action:file_edit AND path:polylogue/archive'
 polylogue blocks where 'type:code AND text:sqlite'
 polylogue assertions where 'kind:decision AND status:active AND text:review'
+polylogue runs where 'role:subagent AND status:completed AND agent:Explore'
 polylogue observed-events where 'delivery_state:acted_on AND text:#2100'
 polylogue context-snapshots where 'boundary:session_start AND session.repo:polylogue'
 ```
@@ -143,9 +144,10 @@ one child row matching the nested predicate.
 | `message` | `action`, `command`, `output`, `path`, `role`, `text`, `tool`, `type`, `words` |
 | `action` | `action`, `command`, `output`, `path`, `text`, `tool`, `type` |
 | `block` | `action`, `command`, `path`, `text`, `tool`, `type` |
+| `assertion` | `author`, `author_kind`, `author_ref`, `body`, `context`, `evidence`, `key`, `kind`, `scope`, `scope_ref`, `status`, `target`, `target_ref`, `text`, `value`, `visibility` |
 
-All three structural units also accept `session.<field>` predicates for the
-owning session fields, such as `session.repo`, `session.origin`,
+Structural units also accept `session.<field>` predicates for the owning
+session fields, such as `session.repo`, `session.origin`,
 `session.tag`, `session.title`, `session.date`, `session.since`, and
 `session.until`. Count and date session fields accept compact comparison
 prefixes such as `session.messages:>=2`, `session.words:<=500`, and
@@ -185,6 +187,7 @@ polylogue --format json messages where role:assistant AND text:timeout
 polylogue --format ndjson actions where session.repo:polylogue AND action:file_edit AND path:polylogue/archive
 polylogue --format yaml blocks where type:code AND text:sqlite
 polylogue --format json assertions where kind:decision AND status:active AND text:review
+polylogue --format json runs where role:subagent AND status:completed AND agent:Explore
 polylogue --format json observed-events where delivery_state:acted_on AND text:#2100
 polylogue --format json context-snapshots where boundary:session_start AND session.repo:polylogue
 ```
@@ -192,7 +195,7 @@ polylogue --format json context-snapshots where boundary:session_start AND sessi
 The row shape is the shared `QueryUnitEnvelope` used by CLI JSON/NDJSON/YAML,
 Python `Polylogue.query_units()`, MCP `query_units`, and daemon
 `GET /api/query-units?expression=...`. Plain and CSV CLI output are
-transport-specific renderings of the same message/action/block/assertion/
+transport-specific renderings of the same message/action/block/assertion/run/
 observed-event/context-snapshot row payloads.
 Those surfaces share the same session-scoping filters for the row source
 where applicable, such as origin, tag, repo, title, date bounds, message-type
@@ -206,14 +209,15 @@ polylogue messages where session.origin:claude-code-session AND role:assistant
 polylogue actions where session.repo:polylogue AND action:file_edit
 polylogue blocks where session.since:7d AND session.words:<=500 AND type:code
 polylogue assertions where session.repo:polylogue AND kind:caveat
+polylogue runs where session.repo:polylogue AND role:subagent AND status:completed
 polylogue observed-events where session.origin:codex-session AND object_ref:github-review
 polylogue context-snapshots where session.messages:>=2 AND session.date:>=2026-01-02 AND boundary:subagent_start
 ```
 
-`observed-events` and `context-snapshots` are runtime-transform row sources.
-They return projected evidence from existing recovery/run-projection
+`runs`, `observed-events`, and `context-snapshots` are runtime-transform row
+sources. They return projected evidence from existing recovery/run-projection
 transforms, not durable SQL table rows, so they are terminal unit sources only;
-they do not act as `exists observed-event(...)` or
+they do not act as `exists run(...)`, `exists observed-event(...)`, or
 `exists context-snapshot(...)` session selectors.
 
 Session filters such as `--origin`, `--tag`, `--repo`, `--since`, and `--until`
