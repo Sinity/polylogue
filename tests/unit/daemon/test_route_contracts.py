@@ -6,6 +6,7 @@ from http import HTTPStatus
 
 import pytest
 
+from polylogue.daemon.http import implemented_daemon_route_patterns
 from polylogue.daemon.route_contracts import ROUTE_CONTRACTS, route_contract_for, stable_route_contracts
 from tests.unit.daemon.test_daemon_http_security import (
     ENDPOINTS_DELETE,
@@ -21,6 +22,22 @@ def test_route_contract_patterns_are_unique_per_method() -> None:
 
     pairs = [(route.method, route.pattern) for route in ROUTE_CONTRACTS]
     assert len(pairs) == len(set(pairs))
+
+
+def test_implemented_daemon_routes_have_contract_metadata() -> None:
+    """Every implemented daemon route must declare kind, auth, and payload posture."""
+
+    declared = {(route.method, route.pattern) for route in ROUTE_CONTRACTS}
+    implemented = set(implemented_daemon_route_patterns())
+    assert implemented - declared == set()
+
+
+def test_route_contract_metadata_targets_live_daemon_routes() -> None:
+    """Route contracts should describe actual dispatcher routes, not stale docs."""
+
+    declared = {(route.method, route.pattern) for route in ROUTE_CONTRACTS}
+    implemented = set(implemented_daemon_route_patterns())
+    assert declared - implemented == set()
 
 
 def test_stable_routes_have_explicit_auth_and_response_contracts() -> None:

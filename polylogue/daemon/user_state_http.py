@@ -4,12 +4,54 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
+from dataclasses import dataclass
 from http import HTTPStatus
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.core.user_state_targets import TARGET_SESSION, is_mark_type_supported, validate_target_kind
 from polylogue.surfaces.payloads import MutationResultPayload
+
+RouteMethod = Literal["GET", "POST", "DELETE"]
+
+
+@dataclass(frozen=True)
+class UserStateRoute:
+    method: RouteMethod
+    pattern: tuple[str, ...]
+    handler: Callable[..., None]
+    passes_params: bool = False
+
+
+def _pattern_matches(pattern: tuple[str, ...], path: list[str]) -> bool:
+    if len(pattern) != len(path):
+        return False
+    for expected, actual in zip(pattern, path, strict=True):
+        if expected.startswith(":"):
+            if not actual:
+                return False
+            continue
+        if expected != actual:
+            return False
+    return True
+
+
+def _pattern_path(pattern: tuple[str, ...]) -> str:
+    return "/api/user/" + "/".join(pattern)
+
+
+def _route_identifier(pattern: tuple[str, ...], path: list[str]) -> str | None:
+    for expected, actual in zip(pattern, path, strict=True):
+        if expected.startswith(":"):
+            return actual
+    return None
+
+
+def user_state_route_patterns() -> tuple[tuple[RouteMethod, str], ...]:
+    """Return the daemon paths implemented by this user-state adapter."""
+
+    return tuple((route.method, _pattern_path(route.pattern)) for route in _routes())
 
 
 def _read_json_body(handler: Any) -> dict[str, object] | None:
@@ -117,68 +159,15 @@ def _send_mutation_result(handler: Any, result: MutationResultPayload, *, create
 
 
 def dispatch_get(handler: Any, path: list[str], params: dict[str, list[str]]) -> bool:
-    if path == ["marks"]:
-        handler._handle_user_state(handle_list_marks, params)
-        return True
-    if path == ["annotations"]:
-        handler._handle_user_state(handle_list_annotations, params)
-        return True
-    if len(path) == 2 and path[0] == "annotations" and path[1]:
-        handler._handle_user_state(handle_get_annotation, path[1])
-        return True
-    if path == ["saved-views"]:
-        handler._handle_user_state(handle_list_saved_views)
-        return True
-    if len(path) == 2 and path[0] == "saved-views" and path[1]:
-        handler._handle_user_state(handle_get_saved_view, path[1])
-        return True
-    if path == ["recall-packs"]:
-        handler._handle_user_state(handle_list_recall_packs)
-        return True
-    if len(path) == 2 and path[0] == "recall-packs" and path[1]:
-        handler._handle_user_state(handle_get_recall_pack, path[1])
-        return True
-    if path == ["workspaces"]:
-        handler._handle_user_state(handle_list_workspaces)
-        return True
-    if len(path) == 2 and path[0] == "workspaces" and path[1]:
-        handler._handle_user_state(handle_get_workspace, path[1])
-        return True
-    return False
+    return _dispatch(handler, "GET", path, params)
 
 
 def dispatch_post(handler: Any, path: list[str]) -> bool:
-    routes: dict[tuple[str, ...], Any] = {
-        ("marks",): handle_create_mark,
-        ("annotations",): handle_save_annotation,
-        ("saved-views",): handle_save_view,
-        ("recall-packs",): handle_save_recall_pack,
-        ("workspaces",): handle_save_workspace,
-    }
-    route = routes.get(tuple(path))
-    if route is None:
-        return False
-    handler._handle_user_state(route)
-    return True
+    return _dispatch(handler, "POST", path, None)
 
 
 def dispatch_delete(handler: Any, path: list[str], params: dict[str, list[str]]) -> bool:
-    if path == ["marks"]:
-        handler._handle_user_state(handle_delete_mark, params)
-        return True
-    if len(path) == 2 and path[0] == "annotations" and path[1]:
-        handler._handle_user_state(handle_delete_annotation, path[1])
-        return True
-    if len(path) == 2 and path[0] == "saved-views" and path[1]:
-        handler._handle_user_state(handle_delete_saved_view, path[1])
-        return True
-    if len(path) == 2 and path[0] == "recall-packs" and path[1]:
-        handler._handle_user_state(handle_delete_recall_pack, path[1])
-        return True
-    if len(path) == 2 and path[0] == "workspaces" and path[1]:
-        handler._handle_user_state(handle_delete_workspace, path[1])
-        return True
-    return False
+    return _dispatch(handler, "DELETE", path, params)
 
 
 def handle_list_marks(handler: Any, params: dict[str, list[str]]) -> None:
@@ -600,3 +589,42 @@ def handle_delete_workspace(handler: Any, workspace_id: str) -> None:
 
     result = cast(MutationResultPayload, handler._sync_run(_delete))
     _send_mutation_result(handler, result)
+
+
+def _routes() -> tuple[UserStateRoute, ...]:
+    return (
+        UserStateRoute("GET", ("marks",), handle_list_marks, passes_params=True),
+        UserStateRoute("GET", ("annotations",), handle_list_annotations, passes_params=True),
+        UserStateRoute("GET", ("annotations", ":id"), handle_get_annotation),
+        UserStateRoute("GET", ("saved-views",), handle_list_saved_views),
+        UserStateRoute("GET", ("saved-views", ":id"), handle_get_saved_view),
+        UserStateRoute("GET", ("recall-packs",), handle_list_recall_packs),
+        UserStateRoute("GET", ("recall-packs", ":id"), handle_get_recall_pack),
+        UserStateRoute("GET", ("workspaces",), handle_list_workspaces),
+        UserStateRoute("GET", ("workspaces", ":id"), handle_get_workspace),
+        UserStateRoute("POST", ("marks",), handle_create_mark),
+        UserStateRoute("POST", ("annotations",), handle_save_annotation),
+        UserStateRoute("POST", ("saved-views",), handle_save_view),
+        UserStateRoute("POST", ("recall-packs",), handle_save_recall_pack),
+        UserStateRoute("POST", ("workspaces",), handle_save_workspace),
+        UserStateRoute("DELETE", ("marks",), handle_delete_mark, passes_params=True),
+        UserStateRoute("DELETE", ("annotations", ":id"), handle_delete_annotation),
+        UserStateRoute("DELETE", ("saved-views", ":id"), handle_delete_saved_view),
+        UserStateRoute("DELETE", ("recall-packs", ":id"), handle_delete_recall_pack),
+        UserStateRoute("DELETE", ("workspaces", ":id"), handle_delete_workspace),
+    )
+
+
+def _dispatch(handler: Any, method: RouteMethod, path: list[str], params: object | None) -> bool:
+    for route in _routes():
+        if route.method != method or not _pattern_matches(route.pattern, path):
+            continue
+        identifier = _route_identifier(route.pattern, path)
+        if identifier is not None:
+            handler._handle_user_state(route.handler, identifier)
+        elif route.passes_params:
+            handler._handle_user_state(route.handler, params)
+        else:
+            handler._handle_user_state(route.handler)
+        return True
+    return False
