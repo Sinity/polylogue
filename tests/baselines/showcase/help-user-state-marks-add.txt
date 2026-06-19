@@ -1,0 +1,10 @@
+Usage: polylogue user-state marks add [OPTIONS] SESSION_ID {star|pin|archive}
+
+  Add a durable mark.
+
+Options:
+  --target-type [session|message|work_event|thread|block|attachment|paste_span]
+  --target-id TEXT
+  --message-id TEXT
+  -f, --format [json]
+  -h, --help                      Show this message and exit.

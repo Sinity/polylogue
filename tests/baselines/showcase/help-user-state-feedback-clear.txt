@@ -1,4 +1,4 @@
-Usage: polylogue feedback clear [OPTIONS] SESSION_ID
+Usage: polylogue user-state feedback clear [OPTIONS] SESSION_ID
 
   Remove one or all corrections for ``session_id``.
 

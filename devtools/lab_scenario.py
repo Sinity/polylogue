@@ -36,7 +36,9 @@ def run_tier_0() -> dict[str, str]:
     exercises = topological_order(get_tier_0_exercises())
     results: dict[str, str] = {}
     failures: list[str] = []
-    for exercise in exercises:
+    total = len(exercises)
+    for index, exercise in enumerate(exercises, start=1):
+        print(f"  [{index:03d}/{total:03d}] {exercise.name}", flush=True)
         result = run_exercise(
             exercise,
             env_vars={},

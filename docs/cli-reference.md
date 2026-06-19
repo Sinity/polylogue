@@ -161,12 +161,10 @@ Options:
 
 Commands:
   analyze
-  blackboard
   config             Show configuration paths and resolved settings.
   continue           Compile a successor-agent continuation report.
   cost               Summarize session cost telemetry.
   delete             Delete matched sessions.
-  feedback           Record learning corrections for derived insights.
   import             Import sessions from configured sources.
   init               Detect chat sources and write a starter polylogue.toml.
   insights           Rebuild and inspect derived session insights.
@@ -547,13 +545,15 @@ Options:
 ```text
 Usage: polylogue user-state [OPTIONS] COMMAND [ARGS]...
 
-  Manage durable reader marks, annotations, and saved views.
+  Manage durable reader user state.
 
 Options:
   --help  Show this message and exit.
 
 Commands:
   annotations   Manage session and message annotations.
+  blackboard    Persistent agent-addressable notes surface.
+  feedback      Record and inspect learning corrections for derived...
   marks         Manage session and message marks.
   recall-packs  Manage recall packs with explicit target evidence.
   saved-views   Manage saved query views.

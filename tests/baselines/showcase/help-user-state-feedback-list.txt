@@ -1,4 +1,4 @@
-Usage: polylogue feedback list [OPTIONS] [SESSION_ID]
+Usage: polylogue user-state feedback list [OPTIONS] [SESSION_ID]
 
   List stored corrections, optionally filtered by session and/or kind.
 

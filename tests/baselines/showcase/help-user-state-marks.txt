@@ -1,0 +1,11 @@
+Usage: polylogue user-state marks [OPTIONS] COMMAND [ARGS]...
+
+  Manage session and message marks.
+
+Options:
+  -h, --help  Show this message and exit.
+
+Commands:
+  add     Add a durable mark.
+  list    List durable marks.
+  remove  Remove a durable mark.

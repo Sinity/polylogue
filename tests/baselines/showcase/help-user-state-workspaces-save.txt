@@ -1,0 +1,11 @@
+Usage: polylogue user-state workspaces save [OPTIONS] WORKSPACE_ID NAME
+
+  Create or update a reader workspace.
+
+Options:
+  --mode [tabs|stack|compare|timeline]
+  --open-targets-json TEXT        Workspace open target JSON list.
+  --layout-json TEXT              Workspace layout JSON object.
+  --active-target-json TEXT       Workspace active target JSON object.
+  -f, --format [json]
+  -h, --help                      Show this message and exit.

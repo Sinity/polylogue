@@ -1,0 +1,7 @@
+Usage: polylogue user-state saved-views delete [OPTIONS] VIEW_ID
+
+  Delete a saved view.
+
+Options:
+  -f, --format [json]
+  -h, --help           Show this message and exit.

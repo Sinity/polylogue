@@ -724,12 +724,10 @@ class TestCliMetadata:
             "config",
             "continue",
             "cost",
-            "blackboard",
             "resume",
             "resume-candidates",
             "insights",
             "tags",
-            "feedback",
             "user-state",
             "ops",
             # Query verbs
