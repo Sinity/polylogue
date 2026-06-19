@@ -11,7 +11,6 @@ and surface behavior those contracts need to support.
 |------|--------|---------|
 | [Archive workbench pack](archive-workbench/README.md) | Historical source material | Standalone design and issue-pack material. Mine for product detail only after checking the current issue set and code. |
 | [MK3 design pack](mk3/README.md) | Historical source material | Archive workbench direction for the daemon web reader, multi-chat workspace, topology, paste and attachment rendering, user state, realtime, degraded states, and implementation slices. |
-| [MK2 coding-agent pack](mk2/coding-agent-pack/README.md) | Historical source material | Earlier daemon-first reader shell and verification handoff. |
 
 ## How To Use These Docs
 
