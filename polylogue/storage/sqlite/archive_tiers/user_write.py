@@ -209,6 +209,12 @@ def assertion_id_for_blackboard_note(note_id: str) -> str:
     return _deterministic_id(f"assertion-{AssertionKind.NOTE}", note_id)
 
 
+def assertion_id_for_session_tag(session_id: str, tag: str, tag_source: str) -> str:
+    """Return the mirrored assertion id for one normalized session tag."""
+    normalized_tag = tag.strip().lower()
+    return _deterministic_id(f"assertion-{AssertionKind.TAG}", session_id, normalized_tag, tag_source)
+
+
 def assertion_id_for_transform_candidate(
     *,
     session_id: str,
@@ -396,6 +402,41 @@ def upsert_mark(
         now_ms=timestamp,
     )
     return read_archive_mark_envelope(conn, mark_id)
+
+
+def upsert_session_tag_assertion(
+    conn: sqlite3.Connection,
+    *,
+    session_id: str,
+    tag: str,
+    tag_source: str,
+    method: str | None = None,
+    confidence: float | None = None,
+    evidence: dict[str, object] | None = None,
+    now_ms: int | None = None,
+) -> ArchiveAssertionEnvelope | None:
+    """Mirror one user session tag as a first-class tag assertion."""
+    if tag_source != "user":
+        return None
+    normalized_tag = tag.strip().lower()
+    timestamp = now_ms if now_ms is not None else _now_ms()
+    value: dict[str, object] = {"tag_source": tag_source}
+    if method is not None:
+        value["method"] = method
+    if evidence is not None:
+        value["evidence"] = evidence
+    return upsert_assertion(
+        conn,
+        assertion_id=assertion_id_for_session_tag(session_id, normalized_tag, tag_source),
+        target_ref=f"session:{session_id}",
+        kind=AssertionKind.TAG,
+        key=normalized_tag,
+        value=value,
+        body_text=normalized_tag,
+        author_kind="user",
+        confidence=confidence,
+        now_ms=timestamp,
+    )
 
 
 def upsert_annotation(
@@ -1195,6 +1236,7 @@ __all__ = [
     "assertion_id_for_mark",
     "assertion_id_for_recall_pack",
     "assertion_id_for_saved_view",
+    "assertion_id_for_session_tag",
     "assertion_id_for_suppression",
     "assertion_id_for_transform_candidate",
     "assertion_id_for_workspace",
@@ -1221,6 +1263,7 @@ __all__ = [
     "upsert_mark",
     "upsert_recall_pack",
     "upsert_saved_view",
+    "upsert_session_tag_assertion",
     "upsert_suppression",
     "upsert_transform_candidate_assertions",
     "upsert_workspace",

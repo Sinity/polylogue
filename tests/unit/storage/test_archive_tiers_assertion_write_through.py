@@ -11,6 +11,7 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     AssertionKind,
     assertion_id_for_annotation,
     assertion_id_for_mark,
+    assertion_id_for_session_tag,
     list_archive_blackboard_note_envelopes,
     list_assertions_for_target,
     read_archive_annotation_envelope,
@@ -31,6 +32,7 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     upsert_suppression,
     upsert_workspace,
 )
+from polylogue.storage.sqlite.archive_tiers.write import upsert_session_tag
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -67,6 +69,32 @@ def test_mark_write_through_mirrors_assertion(tmp_path: Path) -> None:
     assert env.value == {"scope": "alpha"}
     assert env.author_kind == "user"
     assert env.created_at_ms == 1_700_000_000_000
+
+
+def test_user_session_tag_write_through_mirrors_assertion(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "user.db")
+
+    upsert_session_tag(
+        conn,
+        session_id="session-1",
+        tag="Review",
+        tag_source="user",
+        method="cli",
+        confidence=0.9,
+        evidence={"source": "mark"},
+    )
+
+    mirrored = list_assertions_for_target(conn, "session:session-1", kind=AssertionKind.TAG)
+    assert len(mirrored) == 1
+    env = mirrored[0]
+    assert env.assertion_id == assertion_id_for_session_tag("session-1", "review", "user")
+    assert env.kind == AssertionKind.TAG
+    assert env.target_ref == "session:session-1"
+    assert env.key == "review"
+    assert env.body_text == "review"
+    assert env.value == {"evidence": {"source": "mark"}, "method": "cli", "tag_source": "user"}
+    assert env.confidence == 0.9
+    assert env.author_kind == "user"
 
 
 def test_mark_write_through_is_idempotent(tmp_path: Path) -> None:

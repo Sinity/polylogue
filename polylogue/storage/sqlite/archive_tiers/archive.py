@@ -103,6 +103,7 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     assertion_id_for_mark,
     assertion_id_for_recall_pack,
     assertion_id_for_saved_view,
+    assertion_id_for_session_tag,
     assertion_id_for_workspace,
     correction_id_for,
     list_archive_blackboard_note_envelopes,
@@ -1222,7 +1223,14 @@ class ArchiveStore:
                             """,
                             (session_id, normalized_tag),
                         )
-                        removed += max(int(cursor.rowcount), 0)
+                        deleted = max(int(cursor.rowcount), 0)
+                        if deleted:
+                            mark_assertion_status(
+                                user_conn,
+                                assertion_id_for_session_tag(session_id, normalized_tag, "user"),
+                                "deleted",
+                            )
+                        removed += deleted
         finally:
             user_conn.close()
         self._attach_user_tier_if_present()

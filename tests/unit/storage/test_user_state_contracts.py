@@ -276,13 +276,15 @@ async def test_tags_and_metadata_remain_table_backed_user_metadata(
             """,
             (session_id,),
         ).fetchone()
-        assertion_rows = conn.execute("SELECT kind FROM assertions WHERE kind IN ('tag', 'metadata')").fetchall()
+        assertion_rows = conn.execute(
+            "SELECT kind, target_ref, key, status FROM assertions WHERE kind IN ('tag', 'metadata')"
+        ).fetchall()
 
     assert tag_row == ("planning", "user", "cli")
     assert metadata_row is not None
     assert metadata_row[0] == "owner"
     assert json.loads(metadata_row[1]) == {"name": "sinity"}
-    assert assertion_rows == []
+    assert assertion_rows == [("tag", f"session:{session_id}", "planning", "active")]
 
 
 @pytest.mark.asyncio

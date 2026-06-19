@@ -8,6 +8,7 @@ from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedPasteEvidence, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.user_write import assertion_id_for_session_tag, read_assertion_envelope
 from polylogue.storage.sqlite.archive_tiers.write import read_session_tags
 
 
@@ -155,6 +156,14 @@ def test_archive_tiers_archive_facade_adds_user_tags(tmp_path: Path) -> None:
     user_conn.row_factory = sqlite3.Row
     try:
         tags = read_session_tags(user_conn, session_id=session_id, tag_source="user")
+        review_assertion = read_assertion_envelope(
+            user_conn,
+            assertion_id_for_session_tag(session_id, "review", "user"),
+        )
+        ready_assertion = read_assertion_envelope(
+            user_conn,
+            assertion_id_for_session_tag(session_id, "ready", "user"),
+        )
     finally:
         user_conn.close()
 
@@ -163,6 +172,10 @@ def test_archive_tiers_archive_facade_adds_user_tags(tmp_path: Path) -> None:
     assert removed == 1
     assert sorted(tags) == ["review"]
     assert tag_counts == {"review": 1}
+    assert review_assertion is not None
+    assert review_assertion.status == "active"
+    assert ready_assertion is not None
+    assert ready_assertion.status == "deleted"
     assert [summary.session_id for summary in summaries] == [session_id]
 
 

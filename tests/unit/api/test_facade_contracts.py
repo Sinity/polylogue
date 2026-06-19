@@ -1814,6 +1814,7 @@ async def test_archive_tiers_api_user_mutations_write_user_tier(tmp_path: Path) 
     from polylogue.core.enums import BlockType
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.user_write import assertion_id_for_session_tag, read_assertion_envelope
 
     archive = _archive(tmp_path)
     session = ParsedSession(
@@ -1868,8 +1869,20 @@ async def test_archive_tiers_api_user_mutations_write_user_tier(tmp_path: Path) 
                 "SELECT key, value_json FROM session_metadata WHERE session_id = ? ORDER BY key",
                 (session_id,),
             ).fetchall()
+            review_assertion = read_assertion_envelope(
+                conn,
+                assertion_id_for_session_tag(session_id, "review", "user"),
+            )
+            bulk_a_assertion = read_assertion_envelope(
+                conn,
+                assertion_id_for_session_tag(session_id, "bulk-a", "user"),
+            )
         assert remaining_tags == 2
         assert remaining_metadata == [("priority", '"high"')]
+        assert review_assertion is not None
+        assert review_assertion.status == "deleted"
+        assert bulk_a_assertion is not None
+        assert bulk_a_assertion.status == "active"
     finally:
         await archive.close()
 
