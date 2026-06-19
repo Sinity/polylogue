@@ -298,6 +298,9 @@ JSON_CONTRACT_SCENARIOS: tuple[Exercise, ...] = (
         needs_data=False,
         tier=0,
         env="any",
+        path_targets=("session-query-loop",),
+        artifact_targets=("message_fts", "session_query_results"),
+        operation_targets=("query-sessions",),
     ),
     _json_contract_scenario(
         "json-schema-list",
@@ -310,6 +313,15 @@ JSON_CONTRACT_SCENARIOS: tuple[Exercise, ...] = (
         needs_data=False,
         tier=0,
         env="any",
+        path_targets=("schema-list-query-loop",),
+        artifact_targets=(
+            "schema_packages",
+            "schema_cluster_manifests",
+            "inferred_corpus_specs",
+            "inferred_corpus_scenarios",
+            "schema_list_results",
+        ),
+        operation_targets=("query-schema-catalog",),
     ),
     *_product_json_contract_scenarios(),
 )
