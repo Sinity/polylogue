@@ -14,10 +14,10 @@ Current registry snapshot:
 - mutation campaigns: `19`
 - benchmark campaigns: `7`
 - synthetic benchmark campaigns: `6`
-- scenario projections: `265`
+- scenario projections: `267`
 - inferred corpus scenarios: `8`
   - benchmark-campaign: `7`
-  - exercise: `158`
+  - exercise: `160`
   - inferred-corpus-scenario: `8`
   - mutation-campaign: `19`
   - synthetic-benchmark: `6`
@@ -355,10 +355,6 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-cost-outlook` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | cost outlook help |
 | `exercise` | `help-dashboard` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | dashboard help |
 | `exercise` | `help-delete` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | delete help |
-| `exercise` | `help-diagnostics` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | diagnostics help |
-| `exercise` | `help-diagnostics-pace` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | diagnostics pace help |
-| `exercise` | `help-diagnostics-tools` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | diagnostics tools help |
-| `exercise` | `help-diagnostics-turns` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | diagnostics turns help |
 | `exercise` | `help-feedback` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | feedback help |
 | `exercise` | `help-feedback-clear` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | feedback clear help |
 | `exercise` | `help-feedback-list` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | feedback list help |
@@ -386,6 +382,12 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-ops-auth` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops auth help |
 | `exercise` | `help-ops-backup` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops backup help |
 | `exercise` | `help-ops-completions` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops completions help |
+| `exercise` | `help-ops-diagnostics` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops diagnostics help |
+| `exercise` | `help-ops-diagnostics-pace` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops diagnostics pace help |
+| `exercise` | `help-ops-diagnostics-space` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops diagnostics space help |
+| `exercise` | `help-ops-diagnostics-tools` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops diagnostics tools help |
+| `exercise` | `help-ops-diagnostics-turns` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops diagnostics turns help |
+| `exercise` | `help-ops-diagnostics-workload` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops diagnostics workload help |
 | `exercise` | `help-ops-doctor` | `message-fts-readiness-loop`<br>`retrieval-band-readiness-loop` | `message_fts`<br>`session_insight_readiness`<br>`retrieval_band_readiness`<br>`archive_readiness` | `cli.help`<br>`project-archive-readiness` | — | `generated`<br>`help`<br>`structural` | ops doctor help |
 | `exercise` | `help-ops-embed` | `embedding-materialization-loop` | `archive_session_rows`<br>`embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors` | `cli.help`<br>`materialize-transcript-embeddings` | — | `generated`<br>`help`<br>`structural` | ops embed help |
 | `exercise` | `help-ops-embed-backfill` | `embedding-materialization-loop` | `archive_session_rows`<br>`embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors` | `cli.help`<br>`materialize-transcript-embeddings` | — | `generated`<br>`help`<br>`structural` | ops embed backfill help |

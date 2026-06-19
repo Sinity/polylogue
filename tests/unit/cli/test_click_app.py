@@ -732,7 +732,6 @@ class TestCliMetadata:
             "tags",
             "feedback",
             "user-state",
-            "diagnostics",
             "ops",
             "tutorial",
             # Query verbs

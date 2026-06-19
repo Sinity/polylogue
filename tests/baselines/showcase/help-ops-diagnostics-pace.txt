@@ -1,4 +1,4 @@
-Usage: polylogue diagnostics pace [OPTIONS] [SESSION_ID]
+Usage: polylogue ops diagnostics pace [OPTIONS] [SESSION_ID]
 
   Show inter-turn gap analysis for one or more sessions.
 

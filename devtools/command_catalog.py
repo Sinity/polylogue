@@ -239,21 +239,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "daemon-workload-probe",
-        "verification",
-        "Inspect daemon ingest workload, convergence debt, and hot query plans.",
-        "devtools.daemon_workload_probe",
-        use_when=(
-            "Diagnose live-ingest residual work, read amplification, convergence debt, and planner regressions "
-            "against a real archive without mutating daemon state."
-        ),
-        examples=(
-            "devtools daemon-workload-probe",
-            "devtools daemon-workload-probe --json",
-            "devtools daemon-workload-probe --db /path/to/index.db --limit 10",
-        ),
-    ),
-    CommandSpec(
         "bench ingest-amplification",
         "benchmarking",
         "Measure deterministic per-tier ingest write amplification on a synthetic fixture (#1851).",
@@ -299,21 +284,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools workspace worktree-gc --json",
             "devtools workspace worktree-gc --apply",
             "devtools workspace worktree-gc --apply --force",
-        ),
-    ),
-    CommandSpec(
-        "archive-space-report",
-        "maintenance",
-        "Report SQLite archive file/page/object space by table and index.",
-        "devtools.archive_space_report",
-        use_when=(
-            "Capture read-only dbstat evidence before/after schema rebuilds, VACUUM, "
-            "blob cleanup, or storage-layout changes."
-        ),
-        examples=(
-            "devtools archive-space-report",
-            "devtools archive-space-report --json",
-            "devtools archive-space-report --objects --db /path/to/index.db --limit 50",
         ),
     ),
     CommandSpec(

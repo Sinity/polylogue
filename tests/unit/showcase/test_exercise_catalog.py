@@ -68,7 +68,7 @@ class TestExercisesByGroup:
     def test_inventory_includes_nested_command_paths(self) -> None:
         observed = {command_path.display_name for command_path in inventory_command_paths()}
         assert {
-            "diagnostics turns",
+            "ops diagnostics turns",
             "ops schema explain",
         } <= observed
 

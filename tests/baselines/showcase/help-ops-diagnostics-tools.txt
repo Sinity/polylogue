@@ -1,4 +1,4 @@
-Usage: polylogue diagnostics tools [OPTIONS]
+Usage: polylogue ops diagnostics tools [OPTIONS]
 
   Show top tools by invocation count across filtered sessions.
 

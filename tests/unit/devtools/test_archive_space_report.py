@@ -1,4 +1,4 @@
-"""Tests for ``devtools archive-space-report``."""
+"""Tests for ``polylogue ops diagnostics space``."""
 
 from __future__ import annotations
 

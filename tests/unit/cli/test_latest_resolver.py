@@ -3,7 +3,7 @@
 Verifies the resolution rules apply uniformly:
 explicit conv_id wins, then ``--latest`` / any narrowing filter, then
 ``None``. The single-session surfaces (``read --view messages``/``raw``/
-``neighbors``, ``export``, ``diagnostics turns``) all route through
+``neighbors``, ``export``, ``ops diagnostics turns``) all route through
 this helper, so a single test here pins the contract for all of them.
 """
 

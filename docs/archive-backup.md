@@ -50,7 +50,7 @@ polylogue ops status --format json
 Then verify the restored root before pointing the daemon at it:
 
 ```bash
-devtools daemon-workload-probe --json
+polylogue ops diagnostics workload --json
 polylogue ops doctor --format json
 polylogue find pytest then read --view summary
 ```

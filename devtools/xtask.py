@@ -132,7 +132,6 @@ _CLASS_PREFIXES: tuple[tuple[str, str], ...] = (
     ("bench campaign", "campaign"),
     ("bench synthetic", "campaign"),
     ("schema", "verify"),
-    ("daemon-workload-probe", "query"),
     ("evidence", "query"),
     ("lab graph", "query"),
     ("lab probe pipeline", "query"),

@@ -1,8 +1,9 @@
-"""Temporal diagnostics: session pace, per-turn cost, and tool hotlist."""
+"""Archive and temporal diagnostics for the ops command surface."""
 
 from __future__ import annotations
 
 from datetime import timedelta
+from pathlib import Path
 
 import click
 
@@ -12,9 +13,62 @@ from polylogue.cli.shared.helpers import fail
 from polylogue.cli.shared.types import AppEnv
 
 
-@click.group("diagnostics", help="Temporal session diagnostics")
+@click.group("diagnostics", help="Run archive and session diagnostics.")
 def diagnostics_group() -> None:
     pass
+
+
+@diagnostics_group.command("workload")
+@click.option("--db", type=click.Path(path_type=Path), default=None, help="Archive SQLite database path.")
+@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+@click.option("--limit", type=int, default=5, help="Recent attempt limit.")
+@click.option(
+    "--compare",
+    nargs=2,
+    type=click.Path(path_type=Path),
+    default=None,
+    metavar="BEFORE AFTER",
+    help="Compare two saved probe reports and report structured deltas.",
+)
+def workload_command(
+    db: Path | None,
+    json_output: bool,
+    limit: int,
+    compare: tuple[Path, Path] | None,
+) -> None:
+    """Inspect daemon ingest workload, convergence debt, and hot query plans."""
+    from devtools.daemon_workload_probe import main as workload_main
+
+    argv: list[str] = []
+    if db is not None:
+        argv.extend(("--db", str(db)))
+    if json_output:
+        argv.append("--json")
+    argv.extend(("--limit", str(limit)))
+    if compare is not None:
+        before, after = compare
+        argv.extend(("--compare", str(before), str(after)))
+    raise click.exceptions.Exit(workload_main(argv))
+
+
+@diagnostics_group.command("space")
+@click.option("--db", type=click.Path(path_type=Path), default=None, help="Archive database path.")
+@click.option("--limit", type=int, default=25, help="Largest object rows to include.")
+@click.option("--objects", is_flag=True, help="Run the dbstat table/index object scan.")
+@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+def space_command(db: Path | None, limit: int, objects: bool, json_output: bool) -> None:
+    """Report SQLite archive file, page, table, and index space."""
+    from devtools.archive_space_report import main as space_main
+
+    argv: list[str] = []
+    if db is not None:
+        argv.extend(("--db", str(db)))
+    argv.extend(("--limit", str(limit)))
+    if objects:
+        argv.append("--objects")
+    if json_output:
+        argv.append("--json")
+    raise click.exceptions.Exit(space_main(argv))
 
 
 @diagnostics_group.command("pace")
