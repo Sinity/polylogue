@@ -150,18 +150,17 @@ Options:
 
 Commands:
   analyze
-  config             Show configuration paths and resolved settings.
-  continue           Compile a successor-agent continuation report.
-  cost               Summarize session cost telemetry.
-  delete             Delete matched sessions.
-  import             Import sessions from configured sources.
-  init               Detect chat sources and write a starter polylogue.toml.
-  insights           Rebuild and inspect derived session insights.
+  config      Show configuration paths and resolved settings.
+  continue    Compile a successor-agent continuation report.
+  cost        Summarize session cost telemetry.
+  delete      Delete matched sessions.
+  import      Import sessions from configured sources.
+  init        Detect chat sources and write a starter polylogue.toml.
+  insights    Rebuild and inspect derived session insights.
   mark
-  ops                Run operational archive and daemon commands.
-  read               Read matched sessions (route to view/destination).
-  resume             Resume from recent session context.
-  resume-candidates  Rank resume candidates for the current context.
+  ops         Run operational archive and daemon commands.
+  read        Read matched sessions (route to view/destination).
+  resume      Resume from recent session context.
   select
-  tags               Manage session tags.
-  user-state         Manage durable reader user state.
+  tags        Manage session tags.
+  user-state  Manage durable reader user state.

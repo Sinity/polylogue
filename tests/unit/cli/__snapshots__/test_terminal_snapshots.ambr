@@ -221,21 +221,20 @@
     -h, --help                      Show this message and exit.
   Commands:
     analyze
-    config             Show configuration paths and resolved settings.
-    continue           Compile a successor-agent continuation report.
-    cost               Summarize session cost telemetry.
-    delete             Delete matched sessions.
-    import             Import sessions from configured sources.
-    init               Detect chat sources and write a starter polylogue.toml.
-    insights           Rebuild and inspect derived session insights.
+    config      Show configuration paths and resolved settings.
+    continue    Compile a successor-agent continuation report.
+    cost        Summarize session cost telemetry.
+    delete      Delete matched sessions.
+    import      Import sessions from configured sources.
+    init        Detect chat sources and write a starter polylogue.toml.
+    insights    Rebuild and inspect derived session insights.
     mark
-    ops                Run operational archive and daemon commands.
-    read               Read matched sessions (route to view<PATH>).
-    resume             Resume from recent session context.
-    resume-candidates  Rank resume candidates for the current context.
+    ops         Run operational archive and daemon commands.
+    read        Read matched sessions (route to view<PATH>).
+    resume      Resume from recent session context.
     select
-    tags               Manage session tags.
-    user-state         Manage durable reader user state.
+    tags        Manage session tags.
+    user-state  Manage durable reader user state.
   '''
 # ---
 # name: TestTerminalDimensions.test_help_at_narrow_width
@@ -469,29 +468,23 @@
   .
   Commands:
     analyze
-    config             Show configuration paths and resolved s
-  ettings.
-    continue           Compile a successor-agent continuation
-  report.
-    cost               Summarize session cost telemetry.
-    delete             Delete matched sessions.
-    import             Import sessions from configured sources
+    config      Show configuration paths and resolved settings
   .
-    init               Detect chat sources and write a starter
-   polylogue.toml.
-    insights           Rebuild and inspect derived session ins
-  ights.
+    continue    Compile a successor-agent continuation report.
+    cost        Summarize session cost telemetry.
+    delete      Delete matched sessions.
+    import      Import sessions from configured sources.
+    init        Detect chat sources and write a starter polylo
+  gue.toml.
+    insights    Rebuild and inspect derived session insights.
     mark
-    ops                Run operational archive and daemon comm
-  ands.
-    read               Read matched sessions (route to view<PATH>
-  stination).
-    resume             Resume from recent session context.
-    resume-candidates  Rank resume candidates for the current
-  context.
+    ops         Run operational archive and daemon commands.
+    read        Read matched sessions (route to view<PATH>
+  on).
+    resume      Resume from recent session context.
     select
-    tags               Manage session tags.
-    user-state         Manage durable reader user state.
+    tags        Manage session tags.
+    user-state  Manage durable reader user state.
   '''
 # ---
 # name: TestTerminalDimensions.test_help_at_wide_width
@@ -640,20 +633,19 @@
     -h, --help                      Show this message and exit.
   Commands:
     analyze
-    config             Show configuration paths and resolved settings.
-    continue           Compile a successor-agent continuation report.
-    cost               Summarize session cost telemetry.
-    delete             Delete matched sessions.
-    import             Import sessions from configured sources.
-    init               Detect chat sources and write a starter polylogue.toml.
-    insights           Rebuild and inspect derived session insights.
+    config      Show configuration paths and resolved settings.
+    continue    Compile a successor-agent continuation report.
+    cost        Summarize session cost telemetry.
+    delete      Delete matched sessions.
+    import      Import sessions from configured sources.
+    init        Detect chat sources and write a starter polylogue.toml.
+    insights    Rebuild and inspect derived session insights.
     mark
-    ops                Run operational archive and daemon commands.
-    read               Read matched sessions (route to view<PATH>).
-    resume             Resume from recent session context.
-    resume-candidates  Rank resume candidates for the current context.
+    ops         Run operational archive and daemon commands.
+    read        Read matched sessions (route to view<PATH>).
+    resume      Resume from recent session context.
     select
-    tags               Manage session tags.
-    user-state         Manage durable reader user state.
+    tags        Manage session tags.
+    user-state  Manage durable reader user state.
   '''
 # ---

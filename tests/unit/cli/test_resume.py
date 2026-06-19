@@ -86,7 +86,8 @@ def test_resume_candidates_json_repeats_recent_files(cli_workspace: dict[str, Pa
         [
             "--format",
             "json",
-            "resume-candidates",
+            "resume",
+            "candidates",
             "--repo",
             "/workspace/polylogue",
             "--cwd",

@@ -1,4 +1,4 @@
-Usage: polylogue resume-candidates [OPTIONS]
+Usage: polylogue resume candidates [OPTIONS]
 
   Rank archived logical sessions for the current working context.
 
