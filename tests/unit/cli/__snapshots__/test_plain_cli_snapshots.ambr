@@ -966,21 +966,11 @@
         "archive_direct": 5
       },
       "tier_counts": {
-        "user": 3,
-        "source": 2
+        "source": 2,
+        "user": 3
       },
       "unsupported_commands": [],
       "routes": {
-        "blackboard.list": {
-          "route": "archive_direct",
-          "tier": "user",
-          "detail": "reads blackboard notes through active-root user.db"
-        },
-        "blackboard.post": {
-          "route": "archive_direct",
-          "tier": "user",
-          "detail": "writes blackboard notes through active-root user.db"
-        },
         "reset.database": {
           "route": "archive_direct",
           "tier": "source",
@@ -995,6 +985,16 @@
           "route": "archive_direct",
           "tier": "source",
           "detail": "resolves source paths through active-root source.db/index.db and writes user-tier suppressions"
+        },
+        "user-state.blackboard.list": {
+          "route": "archive_direct",
+          "tier": "user",
+          "detail": "reads blackboard notes through active-root user.db"
+        },
+        "user-state.blackboard.post": {
+          "route": "archive_direct",
+          "tier": "user",
+          "detail": "writes blackboard notes through active-root user.db"
         }
       }
     },
@@ -1022,8 +1022,8 @@
         "source": 3
       },
       "cli_tier_route_counts": {
-        "user": 3,
-        "source": 2
+        "source": 2,
+        "user": 3
       },
       "index_rebuild_store": "index_db",
       "unsupported_primary_method_count": 0,

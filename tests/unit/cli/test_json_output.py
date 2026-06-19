@@ -106,7 +106,7 @@ _COMMANDS: list[tuple[list[str], bool]] = [
     (["--latest", "ops", "diagnostics", "turns"], True),  # needs session; fails cleanly on empty
     # ── Embed, feedback, schema, maintenance ─────────────────────────
     (["ops", "embed", "status"], False),
-    (["feedback", "list"], False),
+    (["user-state", "feedback", "list"], False),
     (["ops", "schema", "list"], False),
     (["ops", "maintenance", "status"], False),
     (["ops", "maintenance", "preview"], False),
@@ -128,7 +128,6 @@ _EXCLUDED: list[str] = [
     "recent (pre-existing bug: hardcoded sort=updated_at is invalid)",
     "insights timeline (requires SESSION_ID argument)",
     "insights export (requires --out argument)",
-    "blackboard list (not wired for lazy subcommand dispatch from root)",
     "user-state marks (not wired for lazy subcommand dispatch from root)",
 ]
 

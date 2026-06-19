@@ -1,0 +1,7 @@
+Usage: polylogue user-state recall-packs delete [OPTIONS] PACK_ID
+
+  Delete a recall pack.
+
+Options:
+  -f, --format [json]
+  -h, --help           Show this message and exit.

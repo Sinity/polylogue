@@ -1,4 +1,4 @@
-"""``polylogue feedback`` — record and inspect learning corrections (#1131).
+"""``polylogue user-state feedback`` — record and inspect learning corrections (#1131).
 
 Corrections are user overrides applied to heuristic insights. They live
 outside the content-hashed session payload, so recording one never
@@ -7,9 +7,9 @@ corrections deterministically on the next materialization.
 
 Subcommands:
 
-- ``polylogue feedback record CONV KIND --value KEY=VAL [--note TEXT]``
-- ``polylogue feedback list [CONV] [--kind KIND]``
-- ``polylogue feedback clear CONV [--kind KIND]``
+- ``polylogue user-state feedback record CONV KIND --value KEY=VAL [--note TEXT]``
+- ``polylogue user-state feedback list [CONV] [--kind KIND]``
+- ``polylogue user-state feedback clear CONV [--kind KIND]``
 """
 
 from __future__ import annotations
@@ -82,8 +82,8 @@ def record_correction_cmd(
 
     \b
     Examples:
-        polylogue feedback record conv:abc tag_reject --value tag=costly --note "wrong"
-        polylogue feedback record conv:abc summary_override --value summary="Hand-written summary"
+        polylogue user-state feedback record conv:abc tag_reject --value tag=costly --note "wrong"
+        polylogue user-state feedback record conv:abc summary_override --value summary="Hand-written summary"
     """
 
     payload = _parse_value_pairs(values)

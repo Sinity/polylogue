@@ -1,0 +1,11 @@
+Usage: polylogue user-state annotations [OPTIONS] COMMAND [ARGS]...
+
+  Manage session and message annotations.
+
+Options:
+  -h, --help  Show this message and exit.
+
+Commands:
+  delete  Delete a durable annotation.
+  list    List durable annotations.
+  save    Create or update a durable annotation.

@@ -1,4 +1,4 @@
-"""polylogue blackboard — persistent agent-addressable notes (#1697)."""
+"""``polylogue user-state blackboard`` — persistent agent-addressable notes (#1697)."""
 
 from __future__ import annotations
 

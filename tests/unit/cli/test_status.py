@@ -84,10 +84,10 @@ def test_archive_cli_route_catalog_reports_user_tier_surfaces() -> None:
     assert routing["unsupported_commands"] == []
     assert routing["tier_counts"]["user"] == 3
     assert routing["tier_counts"]["source"] == 2
-    assert routing["routes"]["blackboard.post"]["route"] == "archive_direct"
-    assert routing["routes"]["blackboard.post"]["tier"] == "user"
-    assert routing["routes"]["blackboard.list"]["route"] == "archive_direct"
-    assert routing["routes"]["blackboard.list"]["tier"] == "user"
+    assert routing["routes"]["user-state.blackboard.post"]["route"] == "archive_direct"
+    assert routing["routes"]["user-state.blackboard.post"]["tier"] == "user"
+    assert routing["routes"]["user-state.blackboard.list"]["route"] == "archive_direct"
+    assert routing["routes"]["user-state.blackboard.list"]["tier"] == "user"
     assert routing["routes"]["reset.session"]["tier"] == "user"
     assert routing["routes"]["reset.database"]["tier"] == "source"
     assert routing["routes"]["reset.source"]["tier"] == "source"
@@ -234,7 +234,7 @@ class TestNoArchiveStatus:
         assert payload["archive_facade_routes"]["routes"]["get_session"]["route"] == "archive_routed"
         assert payload["archive_cli_routes"]["checked"] is True
         assert payload["archive_cli_routes"]["unsupported_command_count"] == 0
-        assert payload["archive_cli_routes"]["routes"]["blackboard.post"]["tier"] == "user"
+        assert payload["archive_cli_routes"]["routes"]["user-state.blackboard.post"]["tier"] == "user"
         assert payload["archive_cli_routes"]["routes"]["reset.database"]["route"] == "archive_direct"
         assert payload["archive_runtime_paths"]["archive_runtime_ready"] is True
         assert payload["archive_runtime_paths"]["primary_ingest_store"] == "archive_file_set"

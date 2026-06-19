@@ -94,7 +94,6 @@ _SHORT_HELP: dict[str, str] = {
     "dashboard": "Open the local dashboard.",
     "diagnostics": "Run archive and session diagnostics.",
     "embed": "Enable, preflight, and backfill the embedding pipeline.",
-    "feedback": "Record learning corrections for derived insights.",
     "import_command": "Import sessions from configured sources.",
     "init": "Detect chat sources and write a starter polylogue.toml.",
     "insights": "Rebuild and inspect derived session insights.",
@@ -117,15 +116,14 @@ _COMMAND_NAMES: dict[str, str] = {
 }
 
 _GROUP_ATTRS: dict[str, str] = {
-    "blackboard": "blackboard_command",
     "cost": "cost_command",
     "diagnostics": "diagnostics_group",
     "embed": "embed_command",
-    "feedback": "feedback_command",
     "insights": "insights_command",
     "maintenance": "maintenance_group",
     "ops": "ops_command",
     "schema": "schema_command",
+    "user_state": "user_state_command",
 }
 
 _COMMAND_ATTRS: dict[str, str] = {
@@ -154,10 +152,8 @@ ROOT_COMMANDS: tuple[click.Command, ...] = (
     _L("resume_candidates"),
     _L("insights"),
     _L("tags"),
-    _L("feedback"),
     _L("user_state"),
     _L("ops"),
-    _L("blackboard"),
 )
 
 OPS_COMMANDS: tuple[click.Command, ...] = (

@@ -1,4 +1,4 @@
-Usage: polylogue blackboard post [OPTIONS]
+Usage: polylogue user-state blackboard post [OPTIONS]
 
   Post a note to the blackboard.
 

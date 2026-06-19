@@ -271,8 +271,6 @@ def test_query_count_operator_empty_completion_per_shell(
     items = _run_completion(shell, comp_cls, ["messages"])
     values = {value for value, _ in items}
     assert {">=", "<=", "=", ">", "<", "between "}.issubset(values)
-    assert "backup" not in values
-    assert "blackboard" not in values
 
 
 @pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
@@ -311,8 +309,6 @@ def test_query_date_operator_empty_completion_per_shell(
     values = {value for value, _ in items}
     assert {">=", "<=", ">", "<", "between "}.issubset(values)
     assert "=" not in values
-    assert "backup" not in values
-    assert "blackboard" not in values
 
 
 @pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])

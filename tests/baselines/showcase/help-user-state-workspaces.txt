@@ -1,0 +1,11 @@
+Usage: polylogue user-state workspaces [OPTIONS] COMMAND [ARGS]...
+
+  Manage durable reader workspaces.
+
+Options:
+  -h, --help  Show this message and exit.
+
+Commands:
+  delete  Delete a reader workspace.
+  list    List reader workspaces.
+  save    Create or update a reader workspace.

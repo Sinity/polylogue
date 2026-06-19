@@ -1,0 +1,9 @@
+Usage: polylogue user-state recall-packs save [OPTIONS] PACK_ID LABEL
+
+  Create or update a recall pack.
+
+Options:
+  --item-json TEXT     Recall-pack item JSON object.
+  --payload-json TEXT  Additional recall-pack payload JSON object.
+  -f, --format [json]
+  -h, --help           Show this message and exit.

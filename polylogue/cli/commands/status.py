@@ -300,8 +300,8 @@ _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
 
 
 _ARCHIVE_CLI_ROUTES: dict[str, tuple[str, str, str]] = {
-    "blackboard.list": ("archive_direct", "user", "reads blackboard notes through active-root user.db"),
-    "blackboard.post": ("archive_direct", "user", "writes blackboard notes through active-root user.db"),
+    "user-state.blackboard.list": ("archive_direct", "user", "reads blackboard notes through active-root user.db"),
+    "user-state.blackboard.post": ("archive_direct", "user", "writes blackboard notes through active-root user.db"),
     "reset.session": (
         "archive_direct",
         "user",

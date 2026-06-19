@@ -1,0 +1,15 @@
+Usage: polylogue user-state feedback record [OPTIONS] SESSION_ID {tag_reject|t
+                                            ag_accept|summary_override}
+
+  Record a typed correction for ``session_id`` of ``kind``.
+
+  Examples:
+      polylogue user-state feedback record conv:abc tag_reject --value tag=costly --note "wrong"
+      polylogue user-state feedback record conv:abc summary_override --value summary="Hand-written summary"
+
+Options:
+  --value TEXT         One or more KEY=VAL pairs forming the correction
+                       payload
+  --note TEXT          Optional user-supplied reason text
+  -f, --format [json]
+  -h, --help           Show this message and exit.

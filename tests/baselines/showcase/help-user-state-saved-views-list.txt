@@ -1,0 +1,7 @@
+Usage: polylogue user-state saved-views list [OPTIONS]
+
+  List saved views.
+
+Options:
+  -f, --format [json]
+  -h, --help           Show this message and exit.

@@ -1,0 +1,7 @@
+Usage: polylogue user-state workspaces delete [OPTIONS] WORKSPACE_ID
+
+  Delete a reader workspace.
+
+Options:
+  -f, --format [json]
+  -h, --help           Show this message and exit.

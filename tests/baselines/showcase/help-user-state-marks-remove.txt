@@ -1,0 +1,11 @@
+Usage: polylogue user-state marks remove [OPTIONS] SESSION_ID
+                                         {star|pin|archive}
+
+  Remove a durable mark.
+
+Options:
+  --target-type [session|message|work_event|thread|block|attachment|paste_span]
+  --target-id TEXT
+  --message-id TEXT
+  -f, --format [json]
+  -h, --help                      Show this message and exit.
