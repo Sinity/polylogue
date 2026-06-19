@@ -455,8 +455,8 @@ Cost this month: $0.87
 <p>A 2-second habit that answers &quot;what did I do yesterday&quot; and &quot;what did it cost.&quot;
 The same command works with <code>--since monday</code>, <code>--since &quot;last week&quot;</code>, or any
 natural-language time expression.</p>
-<h3>Weekly check: <code>polylogue cost</code></h3>
-<pre><code>$ polylogue cost --this-week
+<h3>Weekly check: <code>polylogue ops cost</code></h3>
+<pre><code>$ polylogue ops cost outlook --plan claude-pro
 Week of 2026-04-28 — 2026-05-04
   claude-code  32 sessions  $18.42
   chatgpt       2 sessions   $0.00
@@ -650,7 +650,7 @@ presentation, not capability.</p>
 </tr>
 <tr>
 <td>Cost</td>
-<td><code>polylogue cost</code></td>
+<td><code>polylogue ops cost outlook</code></td>
 <td><code>polylogue_get_cost</code></td>
 <td>Dashboard cost panel</td>
 </tr>
@@ -757,7 +757,7 @@ knowledgebase, not in the archive.</li>
 <ol>
 <li><strong>Ship the core</strong> (current): ingestion, FTS5 search, session profiles.</li>
 <li><strong>Surface the basics</strong>: bare <code>polylogue</code> status, <code>polylogue stats</code>,
-<code>polylogue cost</code>, <code>polylogue --since</code>.</li>
+<code>polylogue ops cost outlook</code>, <code>polylogue --since</code>.</li>
 <li><strong>Add discovery</strong>: calendar heatmap, timeline, this-day-in-history.</li>
 <li><strong>Add narratives</strong>: day-in-life story, feature birth story, era detection.</li>
 <li><strong>Add persistence</strong>: project memory table, SessionStart hook injection.</li>

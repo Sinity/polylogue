@@ -387,7 +387,7 @@ polylogue --since &quot;last week&quot; -p claude-code list
 </code></pre>
 <h2>First cost check</h2>
 <p>Review estimated API costs:</p>
-<pre><code class="language-bash">polylogue cost --this-month
+<pre><code class="language-bash">polylogue ops cost outlook --plan claude-pro
 </code></pre>
 <p>Polylogue includes a 23-model pricing catalog covering Anthropic, OpenAI, and
 Google models. Session-level and provider-wide rollups are available.</p>
@@ -427,8 +427,8 @@ roots. Optionally exposes a local HTTP API and a browser-capture receiver.</p>
 <td>Grouped statistics</td>
 </tr>
 <tr>
-<td><code>polylogue cost --this-month</code></td>
-<td>Cost estimates</td>
+<td><code>polylogue ops cost outlook --plan claude-pro</code></td>
+<td>Subscription/quota cost outlook</td>
 </tr>
 <tr>
 <td><code>polylogue --id &lt;id&gt; read</code></td>
