@@ -267,7 +267,7 @@ def test_tags_command_plain_paths_cover_empty_hint_and_tabular_counts(cli_runner
     empty = cli_runner.invoke(tags_command, ["--origin", "chatgpt-export"], obj=env, catch_exceptions=False)
     assert empty.exit_code == 0
     assert "No tags found for origin 'chatgpt-export'." in empty.output
-    assert "Hint: use --add-tag" in empty.output
+    assert "polylogue find QUERY then mark --tag-add" in empty.output
     env.polylogue.list_tags.assert_awaited_with(origin="chatgpt-export")
 
     env.polylogue.list_tags = AsyncMock(return_value={"alpha": 5, "beta": 2})
@@ -287,4 +287,4 @@ def test_tags_command_plain_paths_cover_empty_hint_and_tabular_counts(cli_runner
     generic_empty = cli_runner.invoke(tags_command, [], obj=env, catch_exceptions=False)
     assert generic_empty.exit_code == 0
     assert "No tags found." in generic_empty.output
-    assert "Hint: use --add-tag" in generic_empty.output
+    assert "polylogue find QUERY then mark --tag-add" in generic_empty.output

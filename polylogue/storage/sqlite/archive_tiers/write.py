@@ -516,7 +516,52 @@ def upsert_session_tag(
                 _json_dumps(evidence) if evidence is not None else None,
             ),
         )
+        _mirror_session_tag_assertion_if_available(
+            conn,
+            session_id=session_id,
+            tag=normalized_tag,
+            tag_source=tag_source,
+            method=method,
+            confidence=confidence,
+            evidence=evidence,
+        )
     return read_session_tags(conn, session_id=session_id, tag_source=tag_source)[normalized_tag]
+
+
+def _mirror_session_tag_assertion_if_available(
+    conn: sqlite3.Connection,
+    *,
+    session_id: str,
+    tag: str,
+    tag_source: str,
+    method: str | None,
+    confidence: float | None,
+    evidence: dict[str, object] | None,
+) -> None:
+    """Mirror user tag writes when the active tier owns assertions."""
+    if tag_source != "user" or not _table_exists(conn, "assertions"):
+        return
+    from polylogue.storage.sqlite.archive_tiers.user_write import upsert_session_tag_assertion
+
+    upsert_session_tag_assertion(
+        conn,
+        session_id=session_id,
+        tag=tag,
+        tag_source=tag_source,
+        method=method,
+        confidence=confidence,
+        evidence=evidence,
+    )
+
+
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    return (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table,),
+        ).fetchone()
+        is not None
+    )
 
 
 def read_session_tags(
