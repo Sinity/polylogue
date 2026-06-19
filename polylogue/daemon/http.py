@@ -105,6 +105,7 @@ def _static_get_routes() -> tuple[_StaticGetRoute, ...]:
         _StaticGetRoute("/api/sessions", ("api", "sessions"), "_handle_list_sessions", passes_params=True),
         _StaticGetRoute("/api/facets", ("api", "facets"), "_handle_facets", passes_params=True),
         _StaticGetRoute("/api/query-units", ("api", "query-units"), "_handle_query_units", passes_params=True),
+        _StaticGetRoute("/api/refs/resolve", ("api", "refs", "resolve"), "_handle_ref_resolve", passes_params=True),
         _StaticGetRoute(
             "/api/query-completions", ("api", "query-completions"), "_handle_query_completions", passes_params=True
         ),
@@ -2473,6 +2474,28 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             )
 
         self._send_json(HTTPStatus.OK, payload.model_dump(mode="json"))
+
+    @daemon_safe_handler
+    def _handle_ref_resolve(self, params: dict[str, list[str]]) -> None:
+        """``GET /api/refs/resolve`` resolves public object/evidence refs."""
+
+        from polylogue import Polylogue
+        from polylogue.api.sync.bridge import run_coroutine_sync
+
+        ref = self._get_param(params, "ref")
+        if not ref:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST, {"error": "missing_ref", "message": "ref query parameter is required"}
+            )
+            return
+        archive_root = _web_reader_archive_root()
+        if archive_root is None:
+            self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "archive_unavailable")
+            return
+        payload = run_coroutine_sync(
+            Polylogue(archive_root=archive_root, db_path=archive_root / "index.db").resolve_ref(ref)
+        )
+        self._send_json(HTTPStatus.OK, payload.model_dump(mode="json", exclude_none=True))
 
     @daemon_safe_handler
     def _handle_query_completions(self, params: dict[str, list[str]]) -> None:

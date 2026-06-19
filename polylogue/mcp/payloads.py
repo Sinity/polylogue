@@ -42,6 +42,7 @@ from polylogue.surfaces.payloads import (
     AssertionClaimListPayload,
     AssertionClaimPayload,
     MutationResultPayload,
+    PublicRefResolutionPayload,
     SearchCursor,
     SearchEnvelope,
     SurfacePayloadModel,
@@ -86,6 +87,7 @@ if TYPE_CHECKING:
 
 MCPAssertionClaimPayload = AssertionClaimPayload
 MCPAssertionClaimListPayload = AssertionClaimListPayload
+MCPPublicRefResolutionPayload = PublicRefResolutionPayload
 
 TRoot = TypeVar("TRoot")
 
@@ -953,6 +955,7 @@ __all__ = [
     "MCPArchiveSessionSummaryPayload",
     "MCPAssertionClaimPayload",
     "MCPAssertionClaimListPayload",
+    "MCPPublicRefResolutionPayload",
     "MCPSessionTreePayload",
     "MCPStatsByPayload",
     "MCPTagCountsPayload",

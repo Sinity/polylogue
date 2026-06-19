@@ -229,6 +229,7 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "list_assertion_claim_payloads",
         "neighbor_candidate_payloads",
         "recovery_read_payload",
+        "resolve_ref",
         "session_correlation_payload",
     }
 )
@@ -1475,6 +1476,106 @@ async def test_query_units_returns_context_snapshot_rows(tmp_path: Path) -> None
         assert item.session_id == "codex-session:facade-context-snapshot-v1"
         assert item.boundary == "session_start"
         assert item.evidence_refs == ("codex-session:facade-context-snapshot-v1",)
+    finally:
+        await archive.close()
+
+
+async def test_resolve_ref_returns_bounded_session_message_block_and_runtime_payloads(tmp_path: Path) -> None:
+    """``resolve_ref()`` makes public refs actionable without broad search."""
+    archive = _archive(tmp_path)
+    try:
+        with ArchiveStore(archive.config.archive_root) as archive_db:
+            session_id = archive_db.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="ref-resolution-v1",
+                    title="Ref resolution fixture",
+                    working_directories=["/realm/project/polylogue"],
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id="m1",
+                            role=Role.USER,
+                            text="resolve this public ref",
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="resolve this public ref")],
+                        )
+                    ],
+                )
+            )
+
+        session_payload = await archive.resolve_ref(f"session:{session_id}")
+        assert session_payload.resolved is True
+        assert session_payload.payload_kind == "session-summary"
+        assert session_payload.payload is not None
+        assert session_payload.payload["id"] == session_id
+
+        message_id = f"{session_id}:m1"
+        message_payload = await archive.resolve_ref(f"message:{session_id}:{message_id}")
+        assert message_payload.resolved is True
+        assert message_payload.payload_kind == "message"
+        assert message_payload.payload is not None
+        assert message_payload.payload["id"] == message_id
+
+        evidence_message_payload = await archive.resolve_ref(f"{session_id}::{message_id}")
+        assert evidence_message_payload.resolved is True
+        assert evidence_message_payload.payload_kind == "message"
+        assert evidence_message_payload.evidence_refs == (f"{session_id}::{message_id}",)
+
+        block_payload = await archive.resolve_ref(f"block:{message_id}:0")
+        assert block_payload.resolved is True
+        assert block_payload.payload_kind == "block"
+        assert block_payload.payload is not None
+        assert block_payload.payload["block_id"] == f"{message_id}:0"
+
+        evidence_block_payload = await archive.resolve_ref(f"{session_id}::{message_id}::0")
+        assert evidence_block_payload.resolved is True
+        assert evidence_block_payload.payload_kind == "block"
+        assert evidence_block_payload.evidence_refs == (f"{session_id}::{message_id}::0",)
+
+        runtime_payload = await archive.resolve_ref(f"context-snapshot:{session_id}:session_start")
+        assert runtime_payload.resolved is True
+        assert runtime_payload.payload_kind == "context-snapshot"
+        assert runtime_payload.payload is not None
+        assert runtime_payload.payload["session_id"] == session_id
+
+        unsupported_payload = await archive.resolve_ref("commit:abc123")
+        assert unsupported_payload.resolved is False
+        assert unsupported_payload.kind == "commit"
+        assert unsupported_payload.payload is None
+
+        missing_payload = await archive.resolve_ref("session:missing")
+        assert missing_payload.resolved is False
+        assert missing_payload.payload is None
+    finally:
+        await archive.close()
+
+
+async def test_resolve_ref_returns_assertion_payload(tmp_path: Path) -> None:
+    """Assertion refs resolve through the shared assertion claim DTO."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
+
+    archive = _archive(tmp_path)
+    try:
+        user_db = archive.config.archive_root / "user.db"
+        initialize_archive_database(user_db, ArchiveTier.USER)
+        with sqlite3.connect(user_db) as conn:
+            upsert_assertion(
+                conn,
+                assertion_id="assertion-ref-resolution",
+                target_ref="session:codex-session:ref-resolution-v1",
+                kind=AssertionKind.DECISION,
+                body_text="Resolve assertion refs through shared payloads.",
+                evidence_refs=["codex-session:ref-resolution-v1"],
+            )
+
+        payload = await archive.resolve_ref("assertion:assertion-ref-resolution")
+
+        assert payload.resolved is True
+        assert payload.payload_kind == "assertion-claim"
+        assert payload.payload is not None
+        assert payload.payload["assertion_id"] == "assertion-ref-resolution"
+        assert payload.evidence_refs == ("codex-session:ref-resolution-v1",)
     finally:
         await archive.close()
 

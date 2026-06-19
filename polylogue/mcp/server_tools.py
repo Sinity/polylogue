@@ -208,6 +208,17 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
         return await hooks.async_safe_call("query_units", run)
 
+    @mcp.tool()
+    async def resolve_ref(ref: str) -> str:
+        """Resolve a public object/evidence ref into a bounded payload."""
+
+        async def run() -> str:
+            poly = hooks.get_polylogue()
+            payload = await poly.resolve_ref(ref)
+            return hooks.json_payload(payload)
+
+        return await hooks.async_safe_call("resolve_ref", run)
+
     async def _list_sessions(**kwargs: object) -> str:
         request = build_session_query_request(**kwargs)
 

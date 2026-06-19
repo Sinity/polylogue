@@ -249,6 +249,28 @@ and result-shaping modes that do not have row semantics yet, such as
 `delete`, `open`, `stats`, `count`, `--cursor`, and custom sort/reverse modes,
 are rejected instead of silently coercing row queries back to session queries.
 
+## Public Ref Resolution
+
+Query/read payloads carry public object and evidence refs so agents and the web
+shell can jump from a row, work packet, or assertion back to the exact archive
+object it cites. Resolve refs through the shared resolver rather than turning
+them into broad text search:
+
+```bash
+polylogue read session:codex-session:abc123 --format json
+polylogue read message:codex-session:abc123:m1 --format json
+polylogue read block:codex-session:abc123:m1:0 --format json
+polylogue read assertion:assertion-id --format json
+```
+
+The same `PublicRefResolutionPayload` is exposed by
+`Polylogue.resolve_ref()`, MCP `resolve_ref`, and daemon
+`GET /api/refs/resolve?ref=...`. The resolver supports session, message,
+block, assertion, and runtime projection refs (`run`, `observed-event`,
+`context-snapshot`) when the addressed object exists. Unsupported or missing
+refs return a bounded unresolved payload with caveats; they never widen into a
+session search.
+
 ## Filters
 
 ### Identity and content

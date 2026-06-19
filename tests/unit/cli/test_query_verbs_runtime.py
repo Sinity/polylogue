@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -13,6 +14,7 @@ from polylogue.cli import query_verbs, read_view_handlers
 from polylogue.cli.read_view_handlers import ReadViewInvocation
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
+from polylogue.surfaces.payloads import PublicRefResolutionPayload
 
 
 def _context_pair(
@@ -161,6 +163,66 @@ def test_read_all_and_analyze_count_update_parent_request() -> None:
 
     with pytest.raises(click.UsageError, match="does not support --limit"):
         wrapped_analyze(child, True, None, False, False, None, 5)
+
+
+def test_read_direct_ref_emits_shared_resolution_payload(capsys: pytest.CaptureFixture[str]) -> None:
+    _, child = _context_pair()
+    child.obj = SimpleNamespace(polylogue=SimpleNamespace(resolve_ref=lambda ref: f"resolve:{ref}"))
+    wrapped_read = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
+    assert callable(wrapped_read)
+    payload = PublicRefResolutionPayload(
+        ref="session:abc",
+        normalized_ref="session:abc",
+        kind="session",
+        resolved=True,
+        payload_kind="session-summary",
+        payload={"id": "abc", "title": "Resolved"},
+    )
+
+    with patch("polylogue.cli.query_verbs.run_coroutine_sync", return_value=payload) as run_sync:
+        wrapped_read(
+            ctx=child,
+            view="summary",
+            destination="terminal",
+            output_format="json",
+            out_path=None,
+            export_all=False,
+            message_role=(),
+            message_type=None,
+            limit=None,
+            offset=0,
+            window_hours=24,
+            repo_path=None,
+            since_hours=2,
+            confidence_threshold=0.3,
+            github_api=True,
+            otlp=False,
+            related_limit=5,
+            recovery_report=None,
+            project_path=None,
+            project_repo=None,
+            since=None,
+            until=None,
+            pack_origin=None,
+            pack_query=None,
+            max_sessions=5,
+            max_messages=20,
+            no_redact=False,
+            no_code_blocks=False,
+            no_tool_calls=False,
+            no_tool_outputs=False,
+            no_file_reads=False,
+            prose_only=False,
+            fields=None,
+            show_views=False,
+            ref="session:abc",
+        )
+
+    run_sync.assert_called_once()
+    emitted = json.loads(capsys.readouterr().out)
+    assert emitted["mode"] == "ref-resolution"
+    assert emitted["normalized_ref"] == "session:abc"
+    assert emitted["payload"]["id"] == "abc"
 
 
 def test_analyze_verb_toggles_stats_only_and_updates_grouping() -> None:

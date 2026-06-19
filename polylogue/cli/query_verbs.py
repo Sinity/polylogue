@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from polylogue.cli.root_request import RootModeRequest
     from polylogue.cli.select import SelectPrintField
 
+from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.archive.viewport import (
     READ_VIEW_PROFILE_BY_ID,
     READ_VIEW_PROFILES,
@@ -25,6 +26,7 @@ from polylogue.cli.click_option_groups import _LazyChoice
 from polylogue.cli.read_view_handlers import ReadViewInvocation, run_bulk_export_view, run_read_view
 from polylogue.cli.shared.types import AppEnv
 from polylogue.cli.verb_names import VERB_NAMES
+from polylogue.surfaces.payloads import serialize_surface_payload
 
 
 # Deferred imports: RootModeRequest triggers the archive.query.spec →
@@ -271,6 +273,7 @@ def select_verb(ctx: click.Context, limit: int, print_field: str, json_output: b
 @click.option("--prose-only", is_flag=True, help="Show only prose text (--view messages).")
 @click.option("--fields", help="Fields for JSON/YAML outputs (--all).")
 @click.option("--views", "show_views", is_flag=True, help="List executable read-view profiles and exit.")
+@click.argument("ref", required=False)
 @click.pass_context
 def read_verb(
     ctx: click.Context,
@@ -307,6 +310,7 @@ def read_verb(
     prose_only: bool,
     fields: str | None,
     show_views: bool = False,
+    ref: str | None = None,
 ) -> None:
     """Read matched sessions.
 
@@ -331,6 +335,7 @@ def read_verb(
         polylogue --latest read --view neighbors --format json
         polylogue find id:abc then read --view correlation --since-hours 4
         polylogue --latest read --view correlation --otlp --format json
+        polylogue read session:abc123 --format json
 
     \b
     Deferred views (not yet implemented; note in PR body):
@@ -341,6 +346,14 @@ def read_verb(
         _emit_read_view_profiles(output_format)
         return
     request = _parent_request(ctx)
+    if ref is not None:
+        if output_format not in (None, "json"):
+            raise click.UsageError("Direct ref reads currently support --format json only.")
+        if destination not in ("terminal", "stdout"):
+            raise click.UsageError("Direct ref reads write JSON to terminal/stdout only.")
+        payload = run_coroutine_sync(env.polylogue.resolve_ref(ref))
+        click.echo(serialize_surface_payload(payload, exclude_none=True))
+        return
 
     # Summary all-mode is the command-floor replacement for the old list verb:
     # it preserves the summary-list envelope and fields/limit behavior instead

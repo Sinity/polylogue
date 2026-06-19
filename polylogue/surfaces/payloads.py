@@ -1243,6 +1243,48 @@ class RecoveryReadPayload(SurfacePayloadModel):
         return cls(session_id=str(session_id), report="work-packet", format="markdown", markdown=markdown)
 
 
+class RefResolutionActionPayload(SurfacePayloadModel):
+    """One affordance a client can offer after resolving a public ref."""
+
+    label: str
+    command: str | None = None
+    href: str | None = None
+    enabled: bool = True
+
+
+class PublicRefResolutionPayload(SurfacePayloadModel):
+    """Bounded shared payload for resolving public object/evidence refs."""
+
+    mode: Literal["ref-resolution"] = "ref-resolution"
+    ref: str
+    normalized_ref: str | None = None
+    kind: str | None = None
+    resolved: bool
+    payload_kind: str | None = None
+    payload: dict[str, Any] | None = None
+    title: str | None = None
+    summary: str | None = None
+    object_refs: tuple[str, ...] = ()
+    evidence_refs: tuple[str, ...] = ()
+    caveats: tuple[str, ...] = ()
+    actions: tuple[RefResolutionActionPayload, ...] = ()
+
+    @field_validator("normalized_ref")
+    @classmethod
+    def _validate_normalized_ref(cls, value: str | None) -> str | None:
+        return normalize_public_ref_text(value) if value is not None else None
+
+    @field_validator("object_refs")
+    @classmethod
+    def _validate_resolution_object_refs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(normalize_object_ref_text(ref) for ref in value)
+
+    @field_validator("evidence_refs")
+    @classmethod
+    def _validate_resolution_evidence_refs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(normalize_public_ref_text(ref) for ref in value)
+
+
 class SessionReadViewEnvelope(SurfacePayloadModel):
     """Stable daemon envelope for one executed session read-view."""
 
@@ -2031,6 +2073,7 @@ __all__ = [
     "ProviderPackageCompletenessPayload",
     "ProviderPackageCompletenessRowPayload",
     "ProviderPackageCompletenessTotalsPayload",
+    "PublicRefResolutionPayload",
     "MachineErrorPayload",
     "MachineErrorEnvelope",
     "MachineSuccessEnvelope",
@@ -2054,6 +2097,7 @@ __all__ = [
     "RecoveryReadPayload",
     "RecoveryReportFormat",
     "RecoveryReportKind",
+    "RefResolutionActionPayload",
     "RANKING_POLICY_MIXED",
     "RANKING_POLICY_VERSION",
     "ReaderActionAvailabilityPayload",

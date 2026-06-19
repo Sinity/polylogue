@@ -28,6 +28,7 @@ _SYNTHETIC_CONV_ID = "test:conv-discovery-nonexistent"
 _KNOWN_MINIMAL: dict[str, dict[str, object]] = {
     "search": {"query": "hello", "limit": 1},
     "query_units": {"expression": "messages where text:hello", "limit": 1},
+    "resolve_ref": {"ref": f"session:{_SYNTHETIC_CONV_ID}"},
     "blackboard_list": {},
     "get_session": {"id": _SYNTHETIC_CONV_ID},
     "get_session_summary": {"id": _SYNTHETIC_CONV_ID},

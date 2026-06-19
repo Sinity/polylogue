@@ -65,6 +65,7 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     "list_assertion_claims": ("envelope", frozenset({"items", "total", "limit"})),
     "explain_query_expression": "single_object",
     "query_completions": "single_object",
+    "resolve_ref": "single_object",
     "raw_artifacts": ("envelope", frozenset({"raw_artifacts", "total"})),
     "archive_list_sessions": ("envelope", frozenset({"items", "total", "limit", "offset"})),
     "archive_search_sessions": ("envelope", frozenset({"items", "total", "limit", "query"})),
@@ -216,11 +217,12 @@ def _build_typed_envelope_classes() -> dict[str, type[BaseModel]]:
         MCPSessionTopologyPayload,
         MCPSessionTreePayload,
     )
-    from polylogue.surfaces.payloads import QueryUnitEnvelope, SearchEnvelope
+    from polylogue.surfaces.payloads import PublicRefResolutionPayload, QueryUnitEnvelope, SearchEnvelope
 
     return {
         "search": SearchEnvelope,
         "query_units": QueryUnitEnvelope,
+        "resolve_ref": PublicRefResolutionPayload,
         "list_sessions": MCPPaginatedQueryResultPayload,
         "neighbor_candidates": MCPNeighborCandidatesPayload,
         "get_session_tree": MCPSessionTreePayload,
