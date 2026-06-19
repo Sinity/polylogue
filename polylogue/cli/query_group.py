@@ -189,9 +189,17 @@ class QueryFirstGroupBase(click.Group):
     """Custom Click group that routes to query mode by default."""
 
     def shell_complete(self, ctx: click.Context, incomplete: str) -> list[click.shell_completion.CompletionItem]:
-        items = list(super().shell_complete(ctx, incomplete))
-        from polylogue.cli.shell_completion_values import complete_query_actions, complete_query_expression_fields
+        from polylogue.cli.shell_completion_values import (
+            complete_query_actions,
+            complete_query_expression_context_fields,
+            complete_query_expression_fields,
+        )
 
+        context_items = complete_query_expression_context_fields(ctx, None, incomplete)
+        if context_items is not None:
+            return context_items
+
+        items = list(super().shell_complete(ctx, incomplete))
         replacement_items = [
             *complete_query_actions(ctx, None, incomplete),
             *complete_query_expression_fields(ctx, None, incomplete),

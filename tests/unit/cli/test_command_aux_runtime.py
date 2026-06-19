@@ -241,6 +241,27 @@ def test_query_expression_completion_handles_structural_contexts() -> None:
     assert {"text:", "type:"}.issubset(values)
 
 
+def test_query_expression_completion_handles_terminal_contexts() -> None:
+    ctx, param = _ctx_param()
+
+    source_items = shell_completion_values.complete_query_expression_fields(ctx, param, "observed")
+    assert "observed-events where " in {item.value for item in source_items}
+
+    event_field_items = shell_completion_values.complete_query_expression_fields(
+        ctx,
+        param,
+        "observed-events where d",
+    )
+    assert [item.value for item in event_field_items] == ["delivery_state:"]
+
+    snapshot_field_items = shell_completion_values.complete_query_expression_fields(
+        ctx,
+        param,
+        "context-snapshots where bound",
+    )
+    assert [item.value for item in snapshot_field_items] == ["boundary:"]
+
+
 def test_query_action_candidates_come_from_action_contracts_with_danger_metadata() -> None:
     candidates = shell_completion_values.query_action_candidates("de")
 

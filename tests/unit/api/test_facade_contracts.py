@@ -800,6 +800,14 @@ async def test_query_completions_exposes_shared_completion_payload(tmp_path: Pat
         description = date_candidate["description"]
         assert isinstance(description, str)
         assert "date between 2026-01-01 and 2026-02-01" in description
+
+        terminal_payload = await archive.query_completions("terminal-field", unit="observed-events", incomplete="del")
+        assert terminal_payload["kind"] == "terminal-field"
+        terminal_candidates = terminal_payload["candidates"]
+        assert isinstance(terminal_candidates, list)
+        terminal_candidate_payloads = [cast(dict[str, object], candidate) for candidate in terminal_candidates]
+        assert [candidate["value"] for candidate in terminal_candidate_payloads] == ["delivery_state"]
+        assert terminal_candidate_payloads[0]["insert"] == "delivery_state:"
     finally:
         await archive.close()
 
