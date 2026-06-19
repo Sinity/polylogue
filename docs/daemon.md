@@ -82,7 +82,7 @@ classified with explicit auth and response posture.
 |-------------|-------------|----------|
 | Browser shell bootstrap | unauthenticated loopback HTML | `GET /`, `GET /s/:id`, `GET /p`, `GET /a` |
 | Operational probes | unauthenticated loopback probe/scrape | `GET /healthz/live`, `GET /healthz/ready`, `GET /metrics` |
-| Stable read/query API | bearer token when configured | `GET /api/sessions`, `GET /api/query-units`, `GET /api/sessions/:id`, `GET /api/sessions/:id/provenance` |
+| Stable read/query API | bearer token when configured | `GET /api/sessions`, `GET /api/query-units`, `GET /api/sessions/:id`, `GET /api/sessions/:id/read`, `GET /api/sessions/:id/recovery`, `GET /api/assertions`, `GET /api/sessions/:id/provenance` |
 | User overlay reads | bearer token when configured | `GET /api/user/marks`, `GET /api/user/saved-views/:id` |
 | Browser-accessible mutations | bearer token plus same-origin browser request | `POST /api/user/marks`, `DELETE /api/user/saved-views/:id`, `POST /api/maintenance/run` |
 | Observability ingest | explicit config flag plus loopback-or-bearer policy | `POST /v1/traces`, `POST /v1/metrics`, `POST /v1/logs` |
@@ -123,6 +123,26 @@ Return terminal rows for explicit query-unit expressions. Query params:
 `expression`, `limit`, `offset`. `expression` must be a
 `messages/actions/blocks/assertions/runs/observed-events/context-snapshots where ...` query and returns the shared
 `QueryUnitEnvelope`.
+
+### GET /api/sessions/:id/read
+
+Execute a supported single-session read profile and return the shared
+`SessionReadViewEnvelope`. Query params include `view`, `format`, and
+profile-specific options such as `report`, `limit`, `offset`,
+`window_hours`, and `since_hours`.
+
+### GET /api/sessions/:id/recovery
+
+Read storage-free recovery evidence for one session. Query params:
+`report=digest|work-packet` and `format=json|markdown`. Returns the
+shared `RecoveryReadPayload`; markdown is supported for `work-packet`.
+
+### GET /api/assertions
+
+List assertion-backed overlay claims through `AssertionClaimListPayload`.
+Query params include `target_ref`, `scope_ref`, `kind`, `status`,
+`context_inject`, and `limit`. The default status scope is
+`active,candidate`; use `status=all` for an explicit full lifecycle read.
 
 ### GET /api/facets
 

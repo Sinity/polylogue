@@ -70,22 +70,22 @@ def test_stable_user_overlay_mutations_use_shared_envelope_contract() -> None:
             assert route.response_contract == "mutation envelope"
 
 
-def test_workbench_helper_routes_declare_current_stability() -> None:
-    """Workbench helper routes distinguish stable API from shell-only helpers."""
+def test_evidence_routes_are_published_as_stable_api() -> None:
+    """Typed recovery/assertion routes are stable API contracts (#1847)."""
 
     assertion_route = route_contract_for("GET", "/api/assertions")
     recovery_route = route_contract_for("GET", "/api/sessions/codex-session:abc/recovery")
     read_route = route_contract_for("GET", "/api/sessions/codex-session:abc/read")
 
     assert assertion_route is not None
-    assert assertion_route.stability == "shell_supported"
+    assert assertion_route.stability == "stable"
     assert assertion_route.auth_policy == "bearer_if_configured"
     assert assertion_route.response_contract == "AssertionClaimListPayload"
 
     assert recovery_route is not None
-    assert recovery_route.stability == "shell_supported"
+    assert recovery_route.stability == "stable"
     assert recovery_route.auth_policy == "bearer_if_configured"
-    assert "Recovery" in recovery_route.response_contract
+    assert recovery_route.response_contract == "RecoveryReadPayload"
     assert read_route is not None
     assert read_route.stability == "stable"
     assert read_route.auth_policy == "bearer_if_configured"

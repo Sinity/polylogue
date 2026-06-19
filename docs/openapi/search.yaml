@@ -382,6 +382,104 @@ paths:
           description: Unsupported view or format.
         '404':
           description: Session not found.
+  /api/sessions/{session_id}/recovery:
+    get:
+      summary: Read recovery digest or work-packet evidence
+      description: Returns the stable ``RecoveryReadPayload`` for one session. The route exposes storage-free recovery digest
+        and work-packet DTOs shared with the web workbench and Python API. ``continue`` and ``blame`` are not accepted here;
+        use the read-view route or CLI/MCP report surfaces when those workflows are needed.
+      operationId: readSessionRecovery
+      parameters:
+      - name: session_id
+        in: path
+        description: Resolved Polylogue session id.
+        required: true
+        schema:
+          type: string
+      - name: report
+        in: query
+        description: Recovery report kind.
+        required: false
+        schema:
+          type: string
+          enum:
+          - digest
+          - work-packet
+          default: work-packet
+      - name: format
+        in: query
+        description: Response format. Digest is JSON-only; work-packet also supports markdown.
+        required: false
+        schema:
+          type: string
+          enum:
+          - json
+          - markdown
+          default: json
+      responses:
+        '200':
+          description: Recovery digest/work-packet envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecoveryReadPayload'
+        '400':
+          description: Unsupported report or format.
+        '404':
+          description: Session not found.
+  /api/assertions:
+    get:
+      summary: List assertion-backed overlay claims
+      description: Returns assertion claims through the stable ``AssertionClaimListPayload`` shared by the web workbench,
+        Python API, and MCP assertion-read surface. Defaults to active and candidate claims; use ``status=all`` for an explicit
+        full lifecycle read.
+      operationId: listAssertionClaims
+      parameters:
+      - name: target_ref
+        in: query
+        description: Optional target object ref, such as ``session:<id>``.
+        required: false
+        schema:
+          type: string
+      - name: scope_ref
+        in: query
+        description: Optional assertion scope object ref, such as ``repo:polylogue``.
+        required: false
+        schema:
+          type: string
+      - name: kind
+        in: query
+        description: Assertion kind filter. May be repeated or comma-separated.
+        required: false
+        schema:
+          type: string
+      - name: status
+        in: query
+        description: Lifecycle status filter. Defaults to active,candidate; ``all`` includes every persisted status.
+        required: false
+        schema:
+          type: string
+      - name: context_inject
+        in: query
+        description: Restrict by assertion context_policy.inject.
+        required: false
+        schema:
+          type: boolean
+      - name: limit
+        in: query
+        description: Maximum claims returned.
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          default: 50
+      responses:
+        '200':
+          description: Assertion claim list envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssertionClaimListPayload'
 components:
   schemas:
     QueryMissDiagnosticsPayload:
@@ -1376,6 +1474,195 @@ components:
       - format
       - payload
       title: SessionReadViewEnvelope
+      type: object
+    RecoveryReadPayload:
+      additionalProperties: false
+      description: Shared recovery/read envelope for daemon web and future API/MCP parity.
+      properties:
+        session_id:
+          title: Session Id
+          type: string
+        report:
+          enum:
+          - digest
+          - work-packet
+          title: Report
+          type: string
+        format:
+          enum:
+          - json
+          - markdown
+          title: Format
+          type: string
+        digest:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          default: null
+          title: Digest
+        work_packet:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          default: null
+          title: Work Packet
+        markdown:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Markdown
+      required:
+      - session_id
+      - report
+      - format
+      title: RecoveryReadPayload
+      type: object
+    AssertionClaimPayload:
+      additionalProperties: false
+      description: Shared payload for assertion-backed lifecycle claims.
+      properties:
+        assertion_id:
+          title: Assertion Id
+          type: string
+        scope_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Scope Ref
+        target_ref:
+          title: Target Ref
+          type: string
+        key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Key
+        kind:
+          title: Kind
+          type: string
+        value:
+          anyOf:
+          - {}
+          - type: 'null'
+          default: null
+          title: Value
+        body_text:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Body Text
+        author_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Author Ref
+        author_kind:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Author Kind
+        evidence_refs:
+          default: []
+          items:
+            type: string
+          title: Evidence Refs
+          type: array
+        status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Status
+        visibility:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Visibility
+        confidence:
+          anyOf:
+          - type: number
+          - type: 'null'
+          default: null
+          title: Confidence
+        staleness:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          default: null
+          title: Staleness
+        context_policy:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          default: null
+          title: Context Policy
+        supersedes:
+          default: []
+          items:
+            type: string
+          title: Supersedes
+          type: array
+        created_at_ms:
+          title: Created At Ms
+          type: integer
+        updated_at_ms:
+          title: Updated At Ms
+          type: integer
+      required:
+      - assertion_id
+      - target_ref
+      - kind
+      - created_at_ms
+      - updated_at_ms
+      title: AssertionClaimPayload
+      type: object
+    AssertionClaimListPayload:
+      additionalProperties: false
+      description: Shared list envelope for assertion-backed lifecycle claims.
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/AssertionClaimPayload'
+          title: Items
+          type: array
+        total:
+          title: Total
+          type: integer
+        limit:
+          title: Limit
+          type: integer
+        statuses:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          default: null
+          title: Statuses
+        kinds:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          default: null
+          title: Kinds
+      required:
+      - items
+      - total
+      - limit
+      title: AssertionClaimListPayload
       type: object
     SessionFlagsPayload:
       additionalProperties: false

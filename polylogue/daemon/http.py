@@ -2574,8 +2574,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         turning report presets into a second read-profile execution API.
 
         Raw transcripts are not included; all support remains through the
-        recovery/work-packet evidence refs. The route is marked
-        ``shell_supported`` until #1847 stabilizes daemon API DTOs.
+        recovery/work-packet evidence refs. The route is a stable local API
+        contract because it returns the shared ``RecoveryReadPayload``.
         """
 
         report = (self._get_param(params, "report", "work-packet") or "work-packet").strip().lower()
