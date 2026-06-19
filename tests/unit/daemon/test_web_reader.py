@@ -408,10 +408,13 @@ class TestReaderSearchState:
             "renderCompareWorkspace",
             "renderInspector",
             "renderInspectorEvidence",
+            "renderBrowserCaptureChip",
+            "renderReadViewExecution",
             "loadReadViewProfiles",
             "renderReadViewSelector",
             "applyReadViewSelection",
             "/api/read-view-profiles",
+            "/read?view=",
             "/api/assertions",
             "/recovery?report=work-packet",
             "Load artifact list",
@@ -1332,6 +1335,41 @@ class TestReaderViewProfiles:
         assert profiles["recovery"]["successor_handoff"] is True
         assert "markdown" in profiles["recovery"]["formats"]
 
+    def test_read_view_execution_route_returns_messages_recovery_and_raw(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            messages = cast(
+                dict[str, object],
+                _get_json(base_url, f"/api/sessions/{C1}/read?view=messages&limit=5"),
+            )
+            recovery = cast(
+                dict[str, object],
+                _get_json(base_url, f"/api/sessions/{C1}/read?view=recovery&report=work-packet"),
+            )
+            raw = cast(dict[str, object], _get_json(base_url, f"/api/sessions/{C1}/read?view=raw"))
+
+        assert messages["view"] == "messages"
+        message_payload = cast(dict[str, object], messages["payload"])
+        assert message_payload["total"] == 1
+        assert recovery["view"] == "recovery"
+        recovery_payload = cast(dict[str, object], recovery["payload"])
+        assert recovery_payload["report"] == "work-packet"
+        assert raw["view"] == "raw"
+        raw_payload = cast(dict[str, object], raw["payload"])
+        assert raw_payload["id"] == C1
+
+    def test_read_view_execution_rejects_unknown_view_or_format(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            view_status, view_payload = _get_json_ex(base_url, f"/api/sessions/{C1}/read?view=context")
+            format_status, format_payload = _get_json_ex(base_url, f"/api/sessions/{C1}/read?view=messages&format=html")
+
+        assert view_status == 400
+        assert view_payload["error"] == "unsupported_read_view"
+        assert format_status == 400
+        assert format_payload["error"] == "invalid_format"
+
 
 class TestReaderRecoveryEndpoint:
     def test_recovery_endpoint_returns_digest_json(self, workspace_env: dict[str, Path]) -> None:
@@ -1514,6 +1552,8 @@ class TestReaderPrivacy:
             "/api/sessions",
             "/api/sessions/claude-code-session:c1",
             "/api/sessions/claude-code-session:c1/messages",
+            "/api/sessions/claude-code-session:c1/read?view=messages",
+            "/api/sessions/claude-code-session:c1/read?view=recovery",
             "/api/sessions/claude-code-session:c1/recovery?report=work-packet&format=json",
             "/api/assertions?target_ref=session%3Aclaude-code-session%3Ac1",
         ],
@@ -1551,6 +1591,7 @@ class TestReaderAuthSurface:
         "path",
         [
             "/api/sessions/claude-code-session:c1/recovery?report=work-packet&format=json",
+            "/api/sessions/claude-code-session:c1/read?view=recovery",
             "/api/assertions?target_ref=session%3Aclaude-code-session%3Ac1",
         ],
     )
@@ -1886,8 +1927,10 @@ class TestReaderInformability:
         assert "renderSemanticChip(readiness.embeddings || null)" in body
         assert "renderInsightChip(readiness.session_profiles || null, s.insight_freshness || {})" in body
         assert "renderIngestChip(readiness.daemon_ingest || null, s.live || {})" in body
+        assert "renderBrowserCaptureChip(readiness.browser_capture || null, s.browser_capture || {})" in body
         assert "function renderComponentReadinessChip(" in body
         assert "function readinessQuality(" in body
+        assert "function renderBrowserCaptureChip(" in body
 
     def test_fts_chip_keeps_legacy_tri_state_fallback(self, workspace_env: dict[str, Path]) -> None:
         """``renderFtsChip`` must still distinguish ok / partial /
@@ -1914,6 +1957,29 @@ class TestReaderInformability:
         assert "function renderIngestChip(" in body
         assert "'semantic'" in body
         assert "'ingest'" in body
+
+    def test_browser_capture_readiness_chip_consumes_safe_status_payload(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        """The web workbench displays browser-capture readiness from the
+        daemon status envelope without learning the receiver's local spool path.
+        """
+        with _running_server(workspace_env) as (_, base_url):
+            _, _, body = _get_text(base_url, "/")
+            status = cast(dict[str, object], _get_json(base_url, "/api/status"))
+
+        capture = cast(dict[str, object], status["browser_capture"])
+        readiness = cast(dict[str, object], status["component_readiness"])
+
+        assert 'id="status-browser-capture"' in body
+        assert "function renderBrowserCaptureChip(" in body
+        assert "spool_ready" in capture
+        assert "allowed_origins" in capture
+        assert "auth_required" in capture
+        assert "spool_path" not in capture
+        assert "artifact_path" not in capture
+        assert "browser_capture" in readiness
 
     def test_insight_freshness_chip_keeps_legacy_fallback(self, workspace_env: dict[str, Path]) -> None:
         """Session insight freshness gets its own status-strip chip. It now

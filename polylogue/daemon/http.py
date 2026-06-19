@@ -890,6 +890,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._handle_get_messages(path[2], params)
         elif len(path) == 4 and path[:2] == ["api", "sessions"] and path[3] == "recovery":
             self._handle_get_session_recovery(path[2], params)
+        elif len(path) == 4 and path[:2] == ["api", "sessions"] and path[3] == "read":
+            self._handle_get_session_read(path[2], params)
         elif len(path) == 4 and path[:2] == ["api", "sessions"] and path[3] == "raw":
             self._handle_get_session_raw(path[2])
         elif len(path) == 4 and path[:2] == ["api", "sessions"] and path[3] == "cost":
@@ -2478,6 +2480,74 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if payload is None:
             return None
         return payload.model_dump(mode="json", exclude_none=True)
+
+    # ------------------------------------------------------------------
+    # Handlers: shared single-session read-view execution (#1846)
+    # ------------------------------------------------------------------
+
+    @daemon_safe_handler
+    def _handle_get_session_read(self, conv_id: str, params: dict[str, list[str]]) -> None:
+        """``GET /api/sessions/{id}/read`` executes supported read profiles.
+
+        This is a thin workbench adapter over existing read handlers. Accepted
+        ``view`` values must already exist in ``/api/read-view-profiles``; the
+        route does not introduce a second read-view registry.
+        """
+
+        view = (self._get_param(params, "view", "messages") or "messages").strip().lower()
+        output_format = (self._get_param(params, "format", "json") or "json").strip().lower()
+        if view not in {"messages", "recovery", "raw"}:
+            self._send_error(HTTPStatus.BAD_REQUEST, "unsupported_read_view")
+            return
+        if output_format != "json" and not (view == "recovery" and output_format == "markdown"):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_format")
+            return
+
+        if view == "messages":
+            limit = self._get_int(params, "limit", 50)
+            offset = self._get_int(params, "offset", 0)
+            projection = _content_projection_from_params(params)
+            archive_root = _web_reader_archive_root()
+            if archive_root is not None:
+                payload: object | None = self._do_archive_get_messages(archive_root, conv_id, limit, offset, projection)
+            else:
+
+                async def _get(poly: Polylogue) -> object:
+                    return await self._do_get_messages(poly, conv_id, limit, offset, projection)
+
+                payload = self._sync_run(_get)
+        elif view == "recovery":
+            report = (self._get_param(params, "report", "work-packet") or "work-packet").strip().lower()
+            if report not in {"digest", "work-packet"}:
+                self._send_error(HTTPStatus.BAD_REQUEST, "invalid_report")
+                return
+            if report == "digest" and output_format != "json":
+                self._send_error(HTTPStatus.BAD_REQUEST, "invalid_format")
+                return
+
+            async def _get(poly: Polylogue) -> object | None:
+                return await self._do_get_session_recovery(poly, conv_id, report, output_format)
+
+            payload = self._sync_run(_get)
+        else:
+
+            async def _get(poly: Polylogue) -> object | None:
+                return await self._do_get_session_raw(poly, conv_id)
+
+            payload = self._sync_run(_get)
+
+        if payload is None:
+            self._send_error(HTTPStatus.NOT_FOUND, "not_found")
+            return
+        self._send_json(
+            HTTPStatus.OK,
+            {
+                "session_id": conv_id,
+                "view": view,
+                "format": output_format,
+                "payload": payload,
+            },
+        )
 
     # ------------------------------------------------------------------
     # Handlers: per-session embedding similarity (#1123)
