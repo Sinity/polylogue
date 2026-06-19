@@ -81,7 +81,7 @@ Browser capture/readiness:
 ## Remaining backend endpoints
 
 1. Shared read-view execution route now covers the supported single-session profiles (`messages`, `recovery`, `raw`). Broader profiles (`context`, `context-pack`, `neighbors`, `correlation`) still need dedicated execution semantics before the selector enables them.
-2. Typed overlay mutation envelopes for marks/annotations/saved views/recall/workspaces. Existing routes work, but #1847 should decide stability and shared mutation DTO guarantees.
+2. Typed overlay mutation envelopes for marks/annotations/saved views/recall/workspaces are #1847-owned. These routes should keep same-origin write auth and return the shared mutation result envelope; detailed resource state belongs on the corresponding read endpoints.
 3. Browser-capture readiness is satisfied by `GET /api/status`; add a dedicated adapter only if a future panel needs more than safe receiver state (`spool_ready`, `allowed_origins`, `auth_required`, component readiness).
 4. Bounded raw-preview contract promotion: this slice already prefers provenance `include_raw=1&bytes=` in the shell; #1847 can decide whether `/api/sessions/:id/raw` remains shell-supported only or becomes a narrower stable metadata route.
 5. Generated route/OpenAPI surface that includes stable routes and intentionally documented shell-supported workbench routes without implying public API stability.

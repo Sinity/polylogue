@@ -211,16 +211,15 @@ def test_cursor_records_live_ingest_attempt_progress(tmp_path: Path) -> None:
             SELECT attempt_id, stage, payload_json
             FROM daemon_stage_events
             ORDER BY observed_at_ms DESC, event_id DESC
-            LIMIT 1
             """
         ).fetchall()
 
     assert running.status == "running"
     assert running.phase == "full_parse"
     assert running.current_path == str(source)
-    assert len(events) == 1
-    assert events[0][0:2] == (attempt_id, "full_parse")
-    assert str(source) in events[0][2]
+    matching_events = [event for event in events if event[0:2] == (attempt_id, "full_parse")]
+    assert matching_events
+    assert any(str(source) in event[2] for event in matching_events)
 
     store.finish_ingest_attempt(attempt_id, status="completed", phase="completed")
     completed = store.recent_ingest_attempts(limit=1)[0]

@@ -917,37 +917,38 @@ class TestReaderUserState:
             empty = _get_json(base_url, "/api/user/marks?session_id=claude-code-session:c1")
 
         marks_payload = cast(dict[str, object], marks)
+        created_payload = cast(dict[str, object], created)
+        duplicate_payload = cast(dict[str, object], duplicate)
+        deleted_payload = cast(dict[str, object], deleted)
         assert status == 201
-        assert created == {
-            "target_type": "session",
-            "target_id": "claude-code-session:c1",
-            "session_id": "claude-code-session:c1",
-            "message_id": None,
-            "mark_type": "star",
-            "created": True,
-        }
+        assert created_payload["status"] == "ok"
+        assert created_payload["operation"] == "mark.add"
+        assert created_payload["affected_count"] == 1
+        assert created_payload["target_type"] == "session"
+        assert created_payload["target_id"] == "claude-code-session:c1"
+        assert created_payload["session_id"] == "claude-code-session:c1"
+        assert created_payload["mark_type"] == "star"
         assert status2 == 200
-        assert duplicate == {
-            "target_type": "session",
-            "target_id": "claude-code-session:c1",
-            "session_id": "claude-code-session:c1",
-            "message_id": None,
-            "mark_type": "star",
-            "created": False,
-        }
+        assert duplicate_payload["status"] == "unchanged"
+        assert duplicate_payload["detail"] == "already_present"
+        assert duplicate_payload["operation"] == "mark.add"
+        assert duplicate_payload["affected_count"] == 0
+        assert duplicate_payload["target_type"] == "session"
+        assert duplicate_payload["target_id"] == "claude-code-session:c1"
+        assert duplicate_payload["session_id"] == "claude-code-session:c1"
+        assert duplicate_payload["mark_type"] == "star"
         mark_items = cast(list[dict[str, object]], marks_payload["items"])
         assert mark_items[0]["mark_type"] == "star"
         assert mark_items[0]["target_type"] == "session"
         assert mark_items[0]["target_id"] == "claude-code-session:c1"
         assert delete_status == 200
-        assert deleted == {
-            "target_type": "session",
-            "target_id": "claude-code-session:c1",
-            "session_id": "claude-code-session:c1",
-            "message_id": None,
-            "mark_type": "star",
-            "deleted": True,
-        }
+        assert deleted_payload["status"] == "deleted"
+        assert deleted_payload["operation"] == "mark.delete"
+        assert deleted_payload["affected_count"] == 1
+        assert deleted_payload["target_type"] == "session"
+        assert deleted_payload["target_id"] == "claude-code-session:c1"
+        assert deleted_payload["session_id"] == "claude-code-session:c1"
+        assert deleted_payload["mark_type"] == "star"
         assert empty == {"items": [], "total": 0}
 
     def test_message_marks_are_target_aware(self, workspace_env: dict[str, Path]) -> None:
@@ -968,6 +969,8 @@ class TestReaderUserState:
         marks_payload = cast(dict[str, object], marks)
         created_payload = cast(dict[str, object], created)
         assert status == 201
+        assert created_payload["status"] == "ok"
+        assert created_payload["operation"] == "mark.add"
         assert created_payload["target_type"] == "message"
         assert created_payload["target_id"] == "claude-code-session:c1:m-c1"
         assert created_payload["message_id"] == "claude-code-session:c1:m-c1"
@@ -1010,6 +1013,7 @@ class TestReaderUserState:
             listed = _get_json(base_url, "/api/user/annotations?session_id=claude-code-session:c1")
             fetched = _get_json(base_url, "/api/user/annotations/ann-m1")
             delete_status, deleted = _request_json(base_url, "DELETE", "/api/user/annotations/ann-c1")
+            missing_delete_status, missing_deleted = _request_json(base_url, "DELETE", "/api/user/annotations/ann-c1")
 
         listed_payload = cast(dict[str, object], listed)
         conv_note_payload = cast(dict[str, object], conv_note)
@@ -1017,15 +1021,40 @@ class TestReaderUserState:
         fetched_payload = cast(dict[str, object], fetched)
         items = cast(list[dict[str, object]], listed_payload["items"])
         assert conv_status == 201
+        assert conv_note_payload["status"] == "ok"
+        assert conv_note_payload["operation"] == "annotation.save"
+        assert conv_note_payload["affected_count"] == 1
+        assert conv_note_payload["resource_type"] == "annotation"
+        assert conv_note_payload["resource_id"] == "ann-c1"
         assert conv_note_payload["target_type"] == "session"
         assert conv_note_payload["target_id"] == "claude-code-session:c1"
         assert msg_status == 201
+        assert msg_note_payload["status"] == "ok"
+        assert msg_note_payload["operation"] == "annotation.save"
+        assert msg_note_payload["affected_count"] == 1
+        assert msg_note_payload["resource_type"] == "annotation"
+        assert msg_note_payload["resource_id"] == "ann-m1"
         assert msg_note_payload["target_type"] == "message"
         assert msg_note_payload["target_id"] == "claude-code-session:c1:m-c1"
         assert fetched_payload["note_text"] == "Important request"
         assert {item["annotation_id"] for item in items} == {"ann-c1", "ann-m1"}
         assert delete_status == 200
-        assert deleted == {"annotation_id": "ann-c1", "deleted": True}
+        assert deleted == {
+            "status": "deleted",
+            "affected_count": 1,
+            "operation": "annotation.delete",
+            "resource_type": "annotation",
+            "resource_id": "ann-c1",
+        }
+        assert missing_delete_status == 200
+        assert missing_deleted == {
+            "status": "not_found",
+            "detail": "annotation_not_found",
+            "affected_count": 0,
+            "operation": "annotation.delete",
+            "resource_type": "annotation",
+            "resource_id": "ann-c1",
+        }
 
     def test_saved_views_roundtrip_query_specs(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env) as (_, base_url):
@@ -1047,17 +1076,29 @@ class TestReaderUserState:
         listed_payload = cast(dict[str, object], listed)
         fetched_payload = cast(dict[str, object], fetched)
         assert status == 201
-        assert saved_payload["created"] is True
-        assert saved_payload["query"] == {"limit": 5, "origin": "claude-code-session", "query": "auth"}
+        assert saved_payload == {
+            "status": "ok",
+            "affected_count": 1,
+            "operation": "saved_view.save",
+            "resource_type": "saved_view",
+            "resource_id": "view-auth",
+        }
         assert listed_payload["total"] == 1
         assert fetched_payload["view_id"] == "view-auth"
+        assert fetched_payload["query"] == {"limit": 5, "origin": "claude-code-session", "query": "auth"}
         assert json.loads(str(fetched_payload["query_json"])) == {
             "limit": 5,
             "origin": "claude-code-session",
             "query": "auth",
         }
         assert delete_status == 200
-        assert deleted == {"view_id": "view-auth", "deleted": True}
+        assert deleted == {
+            "status": "deleted",
+            "affected_count": 1,
+            "operation": "saved_view.delete",
+            "resource_type": "saved_view",
+            "resource_id": "view-auth",
+        }
 
     def test_saved_view_rejects_unknown_query_params(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env) as (_, base_url):
@@ -1104,7 +1145,13 @@ class TestReaderUserState:
         listed_payload = cast(dict[str, object], listed)
         fetched_payload = cast(dict[str, object], fetched)
         assert status == 201
-        assert saved_payload["created"] is True
+        assert saved_payload == {
+            "status": "ok",
+            "affected_count": 1,
+            "operation": "recall_pack.save",
+            "resource_type": "recall_pack",
+            "resource_id": "pack-auth",
+        }
         assert listed_payload["total"] == 1
         assert fetched_payload["session_ids"] == ["claude-code-session:c1"]
         payload = cast(dict[str, object], fetched_payload["payload"])
@@ -1118,7 +1165,13 @@ class TestReaderUserState:
             ("message", "missing"),
         ]
         assert delete_status == 200
-        assert deleted == {"pack_id": "pack-auth", "deleted": True}
+        assert deleted == {
+            "status": "deleted",
+            "affected_count": 1,
+            "operation": "recall_pack.delete",
+            "resource_type": "recall_pack",
+            "resource_id": "pack-auth",
+        }
 
     def test_recall_pack_rejects_session_ids_compat_input(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env) as (_, base_url):
@@ -1178,7 +1231,13 @@ class TestReaderUserState:
         listed_payload = cast(dict[str, object], listed)
         fetched_payload = cast(dict[str, object], fetched)
         assert status == 201
-        assert saved_payload["created"] is True
+        assert saved_payload == {
+            "status": "ok",
+            "affected_count": 1,
+            "operation": "workspace.save",
+            "resource_type": "workspace",
+            "resource_id": "workspace-auth",
+        }
         assert listed_payload["total"] == 1
         assert fetched_payload["mode"] == "compare"
         assert fetched_payload["layout"] == {"panes": [{"width": 0.5}, {"width": 0.5}]}
@@ -1195,7 +1254,13 @@ class TestReaderUserState:
         # over the full message id, so the session prefix appears twice.
         assert active_target["identity_key"] == f"message:{C1}:{M_C1}"
         assert delete_status == 200
-        assert deleted == {"workspace_id": "workspace-auth", "deleted": True}
+        assert deleted == {
+            "status": "deleted",
+            "affected_count": 1,
+            "operation": "workspace.delete",
+            "resource_type": "workspace",
+            "resource_id": "workspace-auth",
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -2108,11 +2173,24 @@ class TestReaderSavedViewsUI:
         empty_payload = cast(dict[str, object], empty_listing)
         items = cast(list[dict[str, object]], listed_payload["items"])
         assert save_status == 201
-        assert saved_payload["name"] == "Reader UI flow"
+        assert saved_payload == {
+            "status": "ok",
+            "affected_count": 1,
+            "operation": "saved_view.save",
+            "resource_type": "saved_view",
+            "resource_id": "view-ui",
+        }
         assert listed_payload["total"] == 1
         assert items[0]["view_id"] == "view-ui"
+        assert items[0]["name"] == "Reader UI flow"
         assert delete_status == 200
-        assert deleted == {"view_id": "view-ui", "deleted": True}
+        assert deleted == {
+            "status": "deleted",
+            "affected_count": 1,
+            "operation": "saved_view.delete",
+            "resource_type": "saved_view",
+            "resource_id": "view-ui",
+        }
         assert empty_payload == {"items": [], "total": 0}
 
 

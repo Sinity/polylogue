@@ -299,17 +299,21 @@ class TestMarksContract:
         send_error.assert_not_called()
         status, payload = send_json.call_args.args
         assert status == HTTPStatus.CREATED
+        assert payload["status"] == "ok"
+        assert payload["operation"] == "mark.add"
+        assert payload["affected_count"] == 1
         assert payload["mark_type"] == "star"
         assert payload["session_id"] == conv_id
-        assert payload["created"] is True
 
-        # CREATE again — idempotent, ``created=False`` and OK (not CREATED)
+        # CREATE again — idempotent, unchanged and OK (not CREATED)
         handler = _make_handler("POST", "/api/user/marks", body=body)
         _, send_json = _capture(handler)
         handler.do_POST()
         status, payload = send_json.call_args.args
         assert status == HTTPStatus.OK
-        assert payload["created"] is False
+        assert payload["status"] == "unchanged"
+        assert payload["detail"] == "already_present"
+        assert payload["affected_count"] == 0
 
         # LIST — envelope shape, contains the mark
         handler = _make_handler("GET", "/api/user/marks")
@@ -328,7 +332,9 @@ class TestMarksContract:
         handler.do_DELETE()
         status, payload = send_json.call_args.args
         assert status == HTTPStatus.OK
-        assert payload["deleted"] is True
+        assert payload["status"] == "deleted"
+        assert payload["operation"] == "mark.delete"
+        assert payload["affected_count"] == 1
         assert payload["mark_type"] == "star"
 
     @pytest.mark.parametrize(
@@ -413,7 +419,11 @@ class TestAnnotationsContract:
         handler.do_POST()
         status, payload = send_json.call_args.args
         assert status == HTTPStatus.CREATED
-        assert payload["created"] is True
+        assert payload["status"] == "ok"
+        assert payload["operation"] == "annotation.save"
+        assert payload["affected_count"] == 1
+        assert payload["resource_type"] == "annotation"
+        assert payload["resource_id"] == "ann-1"
 
         # GET
         handler = _make_handler("GET", "/api/user/annotations/ann-1")
@@ -431,13 +441,15 @@ class TestAnnotationsContract:
         _, payload = send_json.call_args.args
         assert payload["total"] >= 1
 
-        # Re-save — ``created=False``, status OK
+        # Re-save updates the existing resource and remains an affected mutation.
         handler = _make_handler("POST", "/api/user/annotations", body=body)
         _, send_json = _capture(handler)
         handler.do_POST()
         status, payload = send_json.call_args.args
         assert status == HTTPStatus.OK
-        assert payload["created"] is False
+        assert payload["status"] == "ok"
+        assert payload["detail"] == "updated"
+        assert payload["affected_count"] == 1
 
         # DELETE
         handler = _make_handler("DELETE", "/api/user/annotations/ann-1")
@@ -445,7 +457,11 @@ class TestAnnotationsContract:
         handler.do_DELETE()
         status, payload = send_json.call_args.args
         assert status == HTTPStatus.OK
-        assert payload["deleted"] is True
+        assert payload["status"] == "deleted"
+        assert payload["operation"] == "annotation.delete"
+        assert payload["affected_count"] == 1
+        assert payload["resource_type"] == "annotation"
+        assert payload["resource_id"] == "ann-1"
 
     def test_get_missing_annotation_returns_404(
         self,
@@ -506,11 +522,13 @@ class TestSavedViewsContract:
         handler.do_POST()
         status, payload = send_json.call_args.args
         assert status == HTTPStatus.CREATED
-        assert payload["view_id"] == "v-1"
-        assert payload["created"] is True
-        # query is exposed both as parsed dict and as canonical JSON string
-        assert payload["query"] == {"limit": 10}
-        assert isinstance(payload["query_json"], str)
+        assert payload == {
+            "status": "ok",
+            "affected_count": 1,
+            "operation": "saved_view.save",
+            "resource_type": "saved_view",
+            "resource_id": "v-1",
+        }
 
         # GET
         handler = _make_handler("GET", "/api/user/saved-views/v-1")
@@ -520,6 +538,8 @@ class TestSavedViewsContract:
         assert status == HTTPStatus.OK
         assert payload["view_id"] == "v-1"
         assert payload["name"] == "Recent stars"
+        assert payload["query"] == {"limit": 10}
+        assert isinstance(payload["query_json"], str)
 
         # LIST envelope
         handler = _make_handler("GET", "/api/user/saved-views")
@@ -529,13 +549,36 @@ class TestSavedViewsContract:
         assert payload["total"] >= 1
         assert all({"view_id", "name", "query", "query_json"} <= set(item.keys()) for item in payload["items"])
 
+        # Re-save updates the existing resource and remains an affected mutation.
+        updated_body = json.dumps(
+            {
+                "view_id": "v-1",
+                "name": "Recent stars",
+                "query": {"limit": 25},
+            }
+        ).encode()
+        handler = _make_handler("POST", "/api/user/saved-views", body=updated_body)
+        _, send_json = _capture(handler)
+        handler.do_POST()
+        status, payload = send_json.call_args.args
+        assert status == HTTPStatus.OK
+        assert payload["status"] == "ok"
+        assert payload["detail"] == "updated"
+        assert payload["affected_count"] == 1
+        assert payload["resource_type"] == "saved_view"
+        assert payload["resource_id"] == "v-1"
+
         # DELETE
         handler = _make_handler("DELETE", "/api/user/saved-views/v-1")
         _, send_json = _capture(handler)
         handler.do_DELETE()
         status, payload = send_json.call_args.args
         assert status == HTTPStatus.OK
-        assert payload["deleted"] is True
+        assert payload["status"] == "deleted"
+        assert payload["operation"] == "saved_view.delete"
+        assert payload["affected_count"] == 1
+        assert payload["resource_type"] == "saved_view"
+        assert payload["resource_id"] == "v-1"
 
     def test_get_missing_view_returns_404(
         self,
@@ -601,9 +644,13 @@ class TestRecallPacksContract:
         send_error.assert_not_called()
         status, payload = send_json.call_args.args
         assert status == HTTPStatus.CREATED
-        assert payload["pack_id"] == "rp-1"
-        assert payload["label"] == "First pack"
-        assert payload["created"] is True
+        assert payload == {
+            "status": "ok",
+            "affected_count": 1,
+            "operation": "recall_pack.save",
+            "resource_type": "recall_pack",
+            "resource_id": "rp-1",
+        }
 
         # GET
         handler = _make_handler("GET", "/api/user/recall-packs/rp-1")
@@ -628,7 +675,11 @@ class TestRecallPacksContract:
         handler.do_DELETE()
         status, payload = send_json.call_args.args
         assert status == HTTPStatus.OK
-        assert payload["deleted"] is True
+        assert payload["status"] == "deleted"
+        assert payload["operation"] == "recall_pack.delete"
+        assert payload["affected_count"] == 1
+        assert payload["resource_type"] == "recall_pack"
+        assert payload["resource_id"] == "rp-1"
 
     def test_get_missing_pack_returns_404(
         self,
@@ -692,20 +743,23 @@ class TestWorkspacesContract:
         send_error.assert_not_called()
         status, payload = send_json.call_args.args
         assert status == HTTPStatus.CREATED
-        assert payload["workspace_id"] == "ws-1"
-        assert payload["mode"] == "tabs"
-        assert isinstance(payload["open_targets"], list)
-        assert isinstance(payload["layout"], dict)
-        assert isinstance(payload["active_target"], dict)
-        assert payload["created"] is True
+        assert payload == {
+            "status": "ok",
+            "affected_count": 1,
+            "operation": "workspace.save",
+            "resource_type": "workspace",
+            "resource_id": "ws-1",
+        }
 
-        # Resave (no changes) — created=False
+        # Resave (no changes) — unchanged
         handler = _make_handler("POST", "/api/user/workspaces", body=body)
         _, send_json = _capture(handler)
         handler.do_POST()
         status, payload = send_json.call_args.args
         assert status == HTTPStatus.OK
-        assert payload["created"] is False
+        assert payload["status"] == "ok"
+        assert payload["detail"] == "updated"
+        assert payload["affected_count"] == 1
 
         # GET
         handler = _make_handler("GET", "/api/user/workspaces/ws-1")
@@ -714,6 +768,10 @@ class TestWorkspacesContract:
         status, payload = send_json.call_args.args
         assert status == HTTPStatus.OK
         assert payload["workspace_id"] == "ws-1"
+        assert payload["mode"] == "tabs"
+        assert isinstance(payload["open_targets"], list)
+        assert isinstance(payload["layout"], dict)
+        assert isinstance(payload["active_target"], dict)
 
         # LIST
         handler = _make_handler("GET", "/api/user/workspaces")
@@ -728,7 +786,11 @@ class TestWorkspacesContract:
         handler.do_DELETE()
         status, payload = send_json.call_args.args
         assert status == HTTPStatus.OK
-        assert payload["deleted"] is True
+        assert payload["status"] == "deleted"
+        assert payload["operation"] == "workspace.delete"
+        assert payload["affected_count"] == 1
+        assert payload["resource_type"] == "workspace"
+        assert payload["resource_id"] == "ws-1"
 
     def test_get_missing_workspace_returns_404(
         self,

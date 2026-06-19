@@ -86,6 +86,11 @@ silently.
 | Browser-accessible mutations | bearer token plus same-origin browser request | `POST /api/user/marks`, `DELETE /api/user/saved-views/:id`, `POST /api/maintenance/run` |
 | Observability ingest | explicit config flag plus loopback-or-bearer policy | `POST /v1/traces`, `POST /v1/metrics`, `POST /v1/logs` |
 
+User overlay mutation routes return the shared mutation result envelope
+(`status`, `operation`, `affected_count`, and resource/target identity fields).
+Detailed overlay resources are read through the corresponding `GET
+/api/user/...` endpoints.
+
 ### GET /api/health
 
 Health check with database statistics.
