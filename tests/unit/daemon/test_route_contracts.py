@@ -70,8 +70,8 @@ def test_stable_user_overlay_mutations_use_shared_envelope_contract() -> None:
             assert route.response_contract == "mutation envelope"
 
 
-def test_web_workbench_first_slice_routes_are_shell_supported_until_api_boundary_stabilizes() -> None:
-    """#1847 owns public daemon API stability for the new workbench routes."""
+def test_workbench_helper_routes_declare_current_stability() -> None:
+    """Workbench helper routes distinguish stable API from shell-only helpers."""
 
     assertion_route = route_contract_for("GET", "/api/assertions")
     recovery_route = route_contract_for("GET", "/api/sessions/codex-session:abc/recovery")
@@ -87,20 +87,20 @@ def test_web_workbench_first_slice_routes_are_shell_supported_until_api_boundary
     assert recovery_route.auth_policy == "bearer_if_configured"
     assert "Recovery" in recovery_route.response_contract
     assert read_route is not None
-    assert read_route.stability == "shell_supported"
+    assert read_route.stability == "stable"
     assert read_route.auth_policy == "bearer_if_configured"
+    assert read_route.response_contract == "SessionReadViewEnvelope"
 
 
-def test_web_workbench_candidate_routes_are_not_stable_public_api() -> None:
-    """New #1846 routes are real, but #1847 has not promoted them to stable API."""
+def test_read_view_execution_route_is_published_as_stable_api() -> None:
+    """The read-view route has a typed envelope and stable route contract."""
 
-    candidate_patterns = {"/api/assertions", "/api/sessions/:id/recovery", "/api/sessions/:id/read"}
     stable_patterns = {route.pattern for route in stable_route_contracts()}
-    assert candidate_patterns.isdisjoint(stable_patterns)
-    for pattern in candidate_patterns:
-        route = next(route for route in ROUTE_CONTRACTS if route.pattern == pattern)
-        assert route.stability == "shell_supported"
-        assert route.auth_policy == "bearer_if_configured"
+    assert "/api/sessions/:id/read" in stable_patterns
+    route = route_contract_for("GET", "/api/sessions/codex-session:abc/read")
+    assert route is not None
+    assert route.kind == "read_detail"
+    assert route.response_contract == "SessionReadViewEnvelope"
 
 
 @pytest.mark.parametrize(
