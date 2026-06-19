@@ -261,6 +261,13 @@ def test_query_expression_completion_handles_terminal_contexts() -> None:
     )
     assert [item.value for item in snapshot_field_items] == ["boundary:"]
 
+    chained_snapshot_items = shell_completion_values.complete_query_expression_fields(
+        ctx,
+        param,
+        "context-snapshots where boundary:session_start AND sess",
+    )
+    assert "session.repo:" in {item.value for item in chained_snapshot_items}
+
 
 def test_query_action_candidates_come_from_action_contracts_with_danger_metadata() -> None:
     candidates = shell_completion_values.query_action_candidates("de")

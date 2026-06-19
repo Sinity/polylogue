@@ -251,7 +251,8 @@ def _complete_structural_query_context(incomplete: str) -> list[CompletionItem] 
 def _terminal_completion_context(incomplete: str) -> tuple[str, str] | None:
     stripped = incomplete.strip()
     lower = stripped.lower()
-    for source in terminal_query_sources():
+    sources = terminal_query_sources()
+    for source in sources:
         prefix = f"{source} where "
         if lower.startswith(prefix):
             return source, stripped[len(prefix) :].rsplit(" ", 1)[-1]
@@ -265,13 +266,10 @@ def _terminal_completion_context(incomplete: str) -> tuple[str, str] | None:
         words = words[1:]
     if not words:
         return None
-    if words[-1].lower() == "where" and len(words) >= 2:
-        source = words[-2].lower()
-        if source in terminal_query_sources():
-            return source, stripped
-    if len(words) >= 3 and words[-2].lower() == "where":
-        source = words[-3].lower()
-        if source in terminal_query_sources():
+    lowered_words = tuple(word.lower() for word in words)
+    for index, word in enumerate(lowered_words[:-1]):
+        if lowered_words[index + 1] == "where" and word in sources:
+            source = word
             return source, stripped
     return None
 
@@ -295,7 +293,7 @@ def complete_query_expression_context_fields(
     """Complete only when the cursor is already inside query syntax."""
 
     if incomplete.startswith("--"):
-        return []
+        return None
     terminal_items = _complete_terminal_query_context(incomplete)
     if terminal_items is not None:
         return terminal_items
