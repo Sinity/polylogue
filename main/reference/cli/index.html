@@ -559,7 +559,7 @@ Options:
   --help                          Show this message and exit.
 </code></pre>
 <h2>Read Verb</h2>
-<pre><code class="language-text">Usage: polylogue read [OPTIONS]
+<pre><code class="language-text">Usage: polylogue read [OPTIONS] [REF]
 
   Read matched sessions.
 
@@ -582,6 +582,7 @@ Options:
       polylogue --latest read --view neighbors --format json
       polylogue find id:abc then read --view correlation --since-hours 4
       polylogue --latest read --view correlation --otlp --format json
+      polylogue read session:abc123 --format json
 
   Deferred views (not yet implemented; note in PR body):
       timeline, tools, files, metadata, continuation
