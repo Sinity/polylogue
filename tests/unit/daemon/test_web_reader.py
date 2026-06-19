@@ -1375,6 +1375,55 @@ class TestReaderQueryUnits:
         items = cast(list[dict[str, object]], payload["items"])
         assert [item["session_id"] for item in items] == [C2]
 
+    def test_query_units_endpoint_returns_run_rows(self, workspace_env: dict[str, Path]) -> None:
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "daemon-run")
+            .provider("codex")
+            .git_repository_url("polylogue")
+            .working_directories(["/realm/project/polylogue"])
+            .title("Daemon run query")
+            .add_message(
+                "m-run",
+                role="assistant",
+                text="Subagent finished daemon run query wiring.",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "id": "tool-run",
+                        "name": "Task",
+                        "tool_input": {
+                            "subagent_type": "Explore",
+                            "taskId": "task-run",
+                            "child_session_id": "codex-session:daemon-run-child",
+                            "prompt": "Map daemon run query wiring.",
+                        },
+                    },
+                    {
+                        "type": "tool_result",
+                        "tool_id": "tool-run",
+                        "text": "Subagent done: daemon run query wired.\n2 passed in 0.10s",
+                    },
+                ],
+            )
+            .save()
+        )
+
+        expression = quote("runs where session.repo:polylogue AND role:subagent AND status:completed")
+        with _running_server(workspace_env) as (_, base_url):
+            payload = cast(dict[str, object], _get_json(base_url, f"/api/query-units?expression={expression}"))
+
+        assert payload["unit"] == "run"
+        items = cast(list[dict[str, object]], payload["items"])
+        assert len(items) == 1
+        assert items[0]["unit"] == "run"
+        assert items[0]["session_id"] == "codex-session:ext-daemon-run"
+        assert items[0]["role"] == "subagent"
+        assert items[0]["status"] == "completed"
+        assert items[0]["agent_ref"] == "agent:codex/Explore"
+
     def test_query_units_endpoint_rejects_session_expression(self, workspace_env: dict[str, Path]) -> None:
         expression = quote("repo:polylogue")
         with _running_server(workspace_env) as (_, base_url):
@@ -1382,7 +1431,7 @@ class TestReaderQueryUnits:
 
         assert status == 400
         assert payload["error"] == "invalid_query"
-        assert "messages/actions/blocks/assertions where" in str(payload["message"])
+        assert "messages/actions/blocks/assertions/runs" in str(payload["message"])
 
 
 class TestReaderViewProfiles:

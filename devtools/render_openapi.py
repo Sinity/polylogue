@@ -199,7 +199,7 @@ def _build_openapi_document() -> dict[str, Any]:
                     "summary": "Terminal query-unit rows",
                     "description": (
                         "Returns terminal row results for explicit "
-                        "``messages/actions/blocks/assertions/observed-events/context-snapshots where ...`` expressions. "
+                        "``messages/actions/blocks/assertions/runs/observed-events/context-snapshots where ...`` expressions. "
                         "This endpoint shares the ``QueryUnitEnvelope`` contract "
                         "with CLI JSON output, MCP ``query_units``, and "
                         "``Polylogue.query_units()``."

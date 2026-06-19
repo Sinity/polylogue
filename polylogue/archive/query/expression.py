@@ -41,7 +41,7 @@ and explicit Boolean session predicates:
     actions where action:file_edit AND path:polylogue/archive
     blocks where type:code AND text:timeout
 
-Unit-scoped ``messages/actions/blocks/assertions/observed-events/context-snapshots where ...`` predicates are executable
+Unit-scoped ``messages/actions/blocks/assertions/runs/observed-events/context-snapshots where ...`` predicates are executable
 in two shared paths: ``compile_expression`` keeps the compatibility session
 selector behavior by lowering them to correlated ``exists <unit>(...)``
 predicates, while terminal query-unit surfaces preserve the selected unit and
@@ -94,6 +94,7 @@ from polylogue.archive.query.metadata import (
     _CONTEXT_SNAPSHOT_STRUCTURAL_FIELDS,
     _MESSAGE_STRUCTURAL_FIELDS,
     _OBSERVED_EVENT_STRUCTURAL_FIELDS,
+    _RUN_STRUCTURAL_FIELDS,
     _SOURCE_WHERE_SOURCES,
     _STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS,
     COUNT_QUERY_FIELD_REGISTRY,
@@ -742,8 +743,11 @@ def _validate_predicate_context(predicate: QueryPredicate, *, unit: Literal["ses
         elif unit == "observed-event":
             supported = _OBSERVED_EVENT_STRUCTURAL_FIELDS
             effective_field = session_field or predicate.field
-        else:
+        elif unit == "context-snapshot":
             supported = _CONTEXT_SNAPSHOT_STRUCTURAL_FIELDS
+            effective_field = session_field or predicate.field
+        else:
+            supported = _RUN_STRUCTURAL_FIELDS
             effective_field = session_field or predicate.field
         if session_field is not None and unit != "session":
             supported = _BOOLEAN_SUPPORTED_FIELDS
@@ -784,6 +788,27 @@ def _validate_predicate_context(predicate: QueryPredicate, *, unit: Literal["ses
                 "object",
                 "object_ref",
                 "summary",
+                "agent",
+                "agent_ref",
+                "branch",
+                "context_snapshot",
+                "context_snapshot_ref",
+                "confidence",
+                "cwd",
+                "git_branch",
+                "harness",
+                "lineage",
+                "lineage_ref",
+                "native_parent_session_id",
+                "native_session_id",
+                "origin",
+                "parent",
+                "parent_run_ref",
+                "provider_origin",
+                "run",
+                "run_ref",
+                "transcript",
+                "transcript_ref",
             }
             and not predicate.values
         ):
@@ -1342,7 +1367,7 @@ def explain_expression(expression: str) -> QueryExpressionExplanation:
     if unit_source is not None:
         lowered = (
             SessionQuerySpec()
-            if unit_source.unit in {"observed-event", "context-snapshot"}
+            if unit_source.unit in {"run", "observed-event", "context-snapshot"}
             else SessionQuerySpec(
                 boolean_predicate=QueryExistsPredicate(unit=cast(Any, unit_source.unit), child=unit_source.predicate)
             )
@@ -1351,7 +1376,7 @@ def explain_expression(expression: str) -> QueryExpressionExplanation:
         execution_legs = _explain_unit_source_execution_legs(unit_source)
         plan_description = (f"terminal unit source: {unit_source.unit}",)
         compatibility_selector = None
-        if unit_source.unit not in {"observed-event", "context-snapshot"}:
+        if unit_source.unit not in {"run", "observed-event", "context-snapshot"}:
             compatibility_selector = f"exists {unit_source.unit}(...)"
             plan_description = (*plan_description, f"compatibility session selector: {compatibility_selector}")
         lowerer = "lark-query-unit-source-to-terminal-unit"

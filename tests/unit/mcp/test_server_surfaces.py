@@ -7,6 +7,7 @@ import json
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -47,7 +48,13 @@ def _write_archive_session(
     title: str = "Native session",
     text: str = "archive message",
     working_directories: list[str] | None = None,
+    blocks: list[dict[str, Any]] | None = None,
 ) -> str:
+    parsed_blocks = (
+        [ParsedContentBlock.model_validate(block) for block in blocks]
+        if blocks is not None
+        else [ParsedContentBlock(type=BlockType.TEXT, text=text)]
+    )
     return archive.write_parsed(
         ParsedSession(
             source_name=provider,
@@ -59,7 +66,7 @@ def _write_archive_session(
                     provider_message_id=f"{native_id}-m1",
                     role=Role.USER,
                     text=text,
-                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
+                    blocks=parsed_blocks,
                 )
             ],
         )
@@ -645,6 +652,62 @@ class TestArchiveGenericToolSurfaces:
 
         payload = json.loads(result)
         assert [item["session_id"] for item in payload["items"]] == [kept_id]
+
+    @pytest.mark.asyncio
+    async def test_query_units_tool_returns_run_rows_without_archive_operations(
+        self: object, mcp_server: MCPServerUnderTest, tmp_path: Path
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        with ArchiveStore(archive_root) as archive:
+            session_id = _write_archive_session(
+                archive,
+                native_id="tool-query-units-run",
+                title="Tool query units run",
+                text="subagent run terminal row",
+                working_directories=["/realm/project/polylogue"],
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_id": "task-use",
+                        "tool_name": "Task",
+                        "tool_input": {
+                            "subagent_type": "Explore",
+                            "taskId": "task-run",
+                            "child_session_id": "codex-session:tool-query-units-run-child",
+                            "prompt": "Map run query unit wiring.",
+                        },
+                    },
+                    {
+                        "type": "tool_result",
+                        "tool_id": "task-use",
+                        "text": "Subagent done: run query unit wired.\n3 passed in 0.12s",
+                    },
+                ],
+            )
+
+        with (
+            patch("polylogue.mcp.server._get_config") as mock_get_config,
+            patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
+        ):
+            mock_get_config.return_value = SimpleNamespace(
+                archive_root=archive_root,
+                db_path=archive_root / "index.db",
+            )
+            mock_get_polylogue.side_effect = AssertionError("query_units tool must not open archive operations")
+            result = await invoke_surface_async(
+                mcp_server._tool_manager._tools["query_units"].fn,
+                expression="runs where role:subagent AND status:completed AND agent:Explore",
+            )
+
+        payload = json.loads(result)
+        assert payload["mode"] == "query-unit"
+        assert payload["unit"] == "run"
+        [item] = payload["items"]
+        assert item["unit"] == "run"
+        assert item["session_id"] == session_id
+        assert item["role"] == "subagent"
+        assert item["status"] == "completed"
+        assert item["agent_ref"] == "agent:codex/Explore"
 
     @pytest.mark.asyncio
     async def test_query_units_tool_accepts_inline_session_scope(

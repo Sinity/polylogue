@@ -831,7 +831,15 @@ class SearchEnvelope(SurfacePayloadModel):
     diagnostics: QueryMissDiagnosticsPayload | None = None
 
 
-QueryUnitKind: TypeAlias = Literal["message", "action", "block", "assertion", "observed-event", "context-snapshot"]
+QueryUnitKind: TypeAlias = Literal[
+    "message",
+    "action",
+    "block",
+    "assertion",
+    "run",
+    "observed-event",
+    "context-snapshot",
+]
 """Terminal query source unit exposed by query-unit envelopes."""
 
 
@@ -1183,11 +1191,57 @@ class ContextSnapshotQueryRowPayload(SurfacePayloadModel):
         return tuple(normalize_public_ref_text(ref) for ref in value)
 
 
+class RunQueryRowPayload(SurfacePayloadModel):
+    """Shared terminal-query row for runtime-transform runs."""
+
+    unit: Literal["run"] = "run"
+    run_ref: str
+    session_id: str
+    origin: str
+    title: str | None = None
+    native_session_id: str | None = None
+    native_parent_session_id: str | None = None
+    parent_run_ref: str | None = None
+    agent_ref: str | None = None
+    lineage_refs: tuple[str, ...]
+    provider_origin: str
+    harness: str
+    role: str
+    cwd: str | None = None
+    git_branch: str | None = None
+    status: str
+    confidence: str
+    transcript_ref: str | None = None
+    evidence_refs: tuple[str, ...]
+    context_snapshot_ref: str | None = None
+
+    @field_validator("run_ref", "parent_run_ref", "agent_ref", "context_snapshot_ref")
+    @classmethod
+    def _validate_optional_run_object_refs(cls, value: str | None) -> str | None:
+        return normalize_object_ref_text(value) if value is not None else None
+
+    @field_validator("lineage_refs")
+    @classmethod
+    def _validate_lineage_refs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(normalize_object_ref_text(ref) for ref in value)
+
+    @field_validator("transcript_ref")
+    @classmethod
+    def _validate_optional_transcript_ref(cls, value: str | None) -> str | None:
+        return normalize_public_ref_text(value) if value is not None else None
+
+    @field_validator("evidence_refs")
+    @classmethod
+    def _validate_run_evidence_refs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(normalize_public_ref_text(ref) for ref in value)
+
+
 QueryUnitRowPayload: TypeAlias = (
     MessageQueryRowPayload
     | ActionQueryRowPayload
     | BlockQueryRowPayload
     | AssertionQueryRowPayload
+    | RunQueryRowPayload
     | ObservedEventQueryRowPayload
     | ContextSnapshotQueryRowPayload
 )
@@ -1831,6 +1885,7 @@ __all__ = [
     "QueryUnitEnvelope",
     "QueryUnitKind",
     "QueryUnitRowPayload",
+    "RunQueryRowPayload",
     "QueryMissDiagnosticsPayload",
     "QueryMissReasonPayload",
     "ContextSnapshotQueryRowPayload",

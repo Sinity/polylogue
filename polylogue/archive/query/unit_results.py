@@ -19,7 +19,7 @@ from polylogue.archive.query.spec import (
     split_csv,
 )
 from polylogue.core.refs import EvidenceRef, ObjectRef
-from polylogue.insights.run_projection import ContextSnapshot, ObservedEvent
+from polylogue.insights.run_projection import ContextSnapshot, ObservedEvent, ProjectedRun
 from polylogue.insights.transforms import compile_recovery_digest
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSummary, ArchiveStore
 from polylogue.surfaces.payloads import (
@@ -30,6 +30,7 @@ from polylogue.surfaces.payloads import (
     MessageQueryRowPayload,
     ObservedEventQueryRowPayload,
     QueryUnitEnvelope,
+    RunQueryRowPayload,
     build_query_unit_envelope,
 )
 
@@ -321,6 +322,116 @@ def _context_snapshot_matches(
     return False
 
 
+def _run_field_matches(
+    run: ProjectedRun,
+    summary: ArchiveSessionSummary,
+    predicate: QueryFieldPredicate,
+) -> bool:
+    field = predicate.field
+    if field.startswith("session."):
+        return _summary_field_matches(summary, predicate)
+    if field in {"run", "run_ref"}:
+        return _contains_value((_object_ref_text(run.run_ref),), predicate.values)
+    if field in {"parent", "parent_run_ref"}:
+        return _contains_value((_object_ref_text(run.parent_run_ref),), predicate.values)
+    if field in {"agent", "agent_ref"}:
+        return _contains_value((_object_ref_text(run.agent_ref),), predicate.values)
+    if field in {"lineage", "lineage_ref"}:
+        return _contains_value((_object_ref_text(ref) for ref in run.lineage_refs), predicate.values)
+    if field in {"context_snapshot", "context_snapshot_ref"}:
+        return _contains_value((_object_ref_text(run.context_snapshot_ref),), predicate.values)
+    if field in {"transcript", "transcript_ref"}:
+        return (
+            _contains_value((_evidence_ref_text(run.transcript_ref),), predicate.values)
+            if run.transcript_ref
+            else False
+        )
+    if field == "evidence":
+        return _contains_value((_evidence_ref_text(ref) for ref in run.evidence_refs), predicate.values)
+    if field == "native_session_id":
+        return _exact_or_contains(run.native_session_id, predicate.values)
+    if field == "native_parent_session_id":
+        return _exact_or_contains(run.native_parent_session_id, predicate.values)
+    if field in {"origin", "provider_origin"}:
+        return _exact_or_contains(run.provider_origin, predicate.values, exact=True)
+    if field == "harness":
+        return _exact_or_contains(run.harness, predicate.values, exact=True)
+    if field == "role":
+        return _exact_or_contains(run.role, predicate.values, exact=True)
+    if field == "status":
+        return _exact_or_contains(run.status, predicate.values, exact=True)
+    if field == "confidence":
+        return _exact_or_contains(run.confidence, predicate.values, exact=True)
+    if field == "cwd":
+        return _contains_value((run.cwd,), predicate.values)
+    if field in {"branch", "git_branch"}:
+        return _contains_value((run.git_branch,), predicate.values)
+    if field == "title":
+        return _contains_value((run.title,), predicate.values)
+    if field == "text":
+        return _contains_value(
+            (
+                _object_ref_text(run.run_ref),
+                _object_ref_text(run.parent_run_ref),
+                _object_ref_text(run.agent_ref),
+                *(_object_ref_text(ref) for ref in run.lineage_refs),
+                run.provider_origin,
+                run.harness,
+                run.role,
+                run.title,
+                run.cwd,
+                run.git_branch,
+                run.status,
+                run.confidence,
+                _evidence_ref_text(run.transcript_ref) if run.transcript_ref else None,
+                *(_evidence_ref_text(ref) for ref in run.evidence_refs),
+                _object_ref_text(run.context_snapshot_ref),
+            ),
+            predicate.values,
+        )
+    return False
+
+
+def _run_matches(
+    run: ProjectedRun,
+    summary: ArchiveSessionSummary,
+    predicate: QueryPredicate,
+) -> bool:
+    if isinstance(predicate, QueryFieldPredicate):
+        return _run_field_matches(run, summary, predicate)
+    if isinstance(predicate, QueryNotPredicate):
+        return not _run_matches(run, summary, predicate.child)
+    if isinstance(predicate, QueryBoolPredicate):
+        if predicate.op == "and":
+            return all(_run_matches(run, summary, child) for child in predicate.children)
+        return any(_run_matches(run, summary, child) for child in predicate.children)
+    return False
+
+
+def _run_row(summary: ArchiveSessionSummary, run: ProjectedRun) -> RunQueryRowPayload:
+    return RunQueryRowPayload(
+        run_ref=run.run_ref.format(),
+        session_id=str(summary.session_id),
+        origin=str(summary.origin),
+        title=summary.title,
+        native_session_id=run.native_session_id,
+        native_parent_session_id=run.native_parent_session_id,
+        parent_run_ref=_object_ref_text(run.parent_run_ref),
+        agent_ref=_object_ref_text(run.agent_ref),
+        lineage_refs=tuple(ref.format() for ref in run.lineage_refs),
+        provider_origin=run.provider_origin,
+        harness=run.harness,
+        role=run.role,
+        cwd=run.cwd,
+        git_branch=run.git_branch,
+        status=run.status,
+        confidence=run.confidence,
+        transcript_ref=_evidence_ref_text(run.transcript_ref) if run.transcript_ref else None,
+        evidence_refs=tuple(ref.format() for ref in run.evidence_refs),
+        context_snapshot_ref=_object_ref_text(run.context_snapshot_ref),
+    )
+
+
 def _context_snapshot_row(
     summary: ArchiveSessionSummary,
     snapshot: ContextSnapshot,
@@ -387,6 +498,32 @@ def _query_context_snapshots(
     return tuple(rows)
 
 
+def _query_runs(
+    archive: ArchiveStore,
+    source: QueryUnitSource,
+    *,
+    limit: int,
+    offset: int,
+    session_filters: Mapping[str, object] | None,
+) -> tuple[RunQueryRowPayload, ...]:
+    rows: list[RunQueryRowPayload] = []
+    target_count = limit + 1
+    skipped = 0
+    for summary in _iter_filtered_summaries(archive, session_filters):
+        session = _session_to_session(archive.read_session(str(summary.session_id)))
+        digest = compile_recovery_digest(session)
+        for run in digest.run_projection.runs:
+            if not _run_matches(run, summary, source.predicate):
+                continue
+            if skipped < offset:
+                skipped += 1
+                continue
+            rows.append(_run_row(summary, run))
+            if len(rows) >= target_count:
+                return tuple(rows)
+    return tuple(rows)
+
+
 def _query_observed_events(
     archive: ArchiveStore,
     source: QueryUnitSource,
@@ -440,6 +577,22 @@ def query_unit_rows(
             limit=limit,
             offset=offset,
             has_next=len(event_rows) > limit,
+        )
+    if source.unit == "run":
+        run_rows = _query_runs(
+            archive,
+            source,
+            limit=limit,
+            offset=offset,
+            session_filters=session_filters,
+        )
+        return build_query_unit_envelope(
+            run_rows[:limit],
+            unit=source.unit,
+            query=query,
+            limit=limit,
+            offset=offset,
+            has_next=len(run_rows) > limit,
         )
     if source.unit == "context-snapshot":
         snapshot_rows = _query_context_snapshots(

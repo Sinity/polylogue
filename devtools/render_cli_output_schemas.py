@@ -135,7 +135,7 @@ SCHEMAS: tuple[CliOutputSchema, ...] = (
         title="Query Unit Envelope",
         description=(
             "Terminal row envelope for explicit "
-            "`messages/actions/blocks/assertions/observed-events/context-snapshots where ...` "
+            "`messages/actions/blocks/assertions/runs/observed-events/context-snapshots where ...` "
             "query-unit expressions. "
             "Shared by CLI JSON output, Python API, MCP, and daemon HTTP."
         ),

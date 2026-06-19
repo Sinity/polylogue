@@ -590,12 +590,192 @@
       ],
       "title": "ObservedEventQueryRowPayload",
       "type": "object"
+    },
+    "RunQueryRowPayload": {
+      "additionalProperties": false,
+      "description": "Shared terminal-query row for runtime-transform runs.",
+      "properties": {
+        "agent_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Agent Ref"
+        },
+        "confidence": {
+          "title": "Confidence",
+          "type": "string"
+        },
+        "context_snapshot_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Context Snapshot Ref"
+        },
+        "cwd": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cwd"
+        },
+        "evidence_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "git_branch": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Git Branch"
+        },
+        "harness": {
+          "title": "Harness",
+          "type": "string"
+        },
+        "lineage_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Lineage Refs",
+          "type": "array"
+        },
+        "native_parent_session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Native Parent Session Id"
+        },
+        "native_session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Native Session Id"
+        },
+        "origin": {
+          "title": "Origin",
+          "type": "string"
+        },
+        "parent_run_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Run Ref"
+        },
+        "provider_origin": {
+          "title": "Provider Origin",
+          "type": "string"
+        },
+        "role": {
+          "title": "Role",
+          "type": "string"
+        },
+        "run_ref": {
+          "title": "Run Ref",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        },
+        "transcript_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Transcript Ref"
+        },
+        "unit": {
+          "const": "run",
+          "default": "run",
+          "title": "Unit",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_ref",
+        "session_id",
+        "origin",
+        "lineage_refs",
+        "provider_origin",
+        "harness",
+        "role",
+        "status",
+        "confidence",
+        "evidence_refs"
+      ],
+      "title": "RunQueryRowPayload",
+      "type": "object"
     }
   },
   "$id": "https://polylogue.dev/schemas/cli-output/query-unit-envelope.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "Terminal row envelope for explicit `messages/actions/blocks/assertions/observed-events/context-snapshots where ...` query-unit expressions. Shared by CLI JSON output, Python API, MCP, and daemon HTTP.\n\nGenerated from `polylogue.surfaces.payloads.QueryUnitEnvelope` by `devtools render cli-output-schemas`. Do not edit by hand.",
+  "description": "Terminal row envelope for explicit `messages/actions/blocks/assertions/runs/observed-events/context-snapshots where ...` query-unit expressions. Shared by CLI JSON output, Python API, MCP, and daemon HTTP.\n\nGenerated from `polylogue.surfaces.payloads.QueryUnitEnvelope` by `devtools render cli-output-schemas`. Do not edit by hand.",
   "properties": {
     "items": {
       "items": {
@@ -611,6 +791,9 @@
           },
           {
             "$ref": "#/$defs/AssertionQueryRowPayload"
+          },
+          {
+            "$ref": "#/$defs/RunQueryRowPayload"
           },
           {
             "$ref": "#/$defs/ObservedEventQueryRowPayload"
@@ -663,6 +846,7 @@
         "action",
         "block",
         "assertion",
+        "run",
         "observed-event",
         "context-snapshot"
       ],
