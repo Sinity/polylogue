@@ -1432,7 +1432,7 @@ class PolylogueArchiveMixin:
         source = parse_unit_source_expression(expression)
         if source is None:
             raise ExpressionCompileError(
-                "query_units requires an explicit messages/actions/blocks/assertions/observed-events/context-snapshots where expression",
+                "query_units requires an explicit messages/actions/blocks/assertions/runs/observed-events/context-snapshots where expression",
                 field=None,
             )
         session_filters = query_unit_session_filters(

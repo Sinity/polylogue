@@ -1240,7 +1240,7 @@ def _extract_tool_summaries(session: Session, messages: Sequence[Message]) -> It
                 continue
             if _is_subagent_tool(block):
                 continue
-            tool_id = _optional_text(block.get("id") or block.get("tool_id"))
+            tool_id = _optional_text(block.get("tool_id") or block.get("id"))
             result_block: dict[str, object] | None = None
             result_ref: TransformRawRef | None = None
             if tool_id and tool_id in result_by_tool_id:
@@ -1284,7 +1284,7 @@ def _extract_subagent_reports(session: Session, messages: Sequence[Message]) -> 
                 continue
             if not _is_subagent_tool(block):
                 continue
-            tool_id = _optional_text(block.get("id") or block.get("tool_id"))
+            tool_id = _optional_text(block.get("tool_id") or block.get("id"))
             result_block: dict[str, object] | None = None
             result_ref: TransformRawRef | None = None
             if tool_id and tool_id in result_by_tool_id:

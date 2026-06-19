@@ -89,7 +89,7 @@ paths:
   /api/query-units:
     get:
       summary: Terminal query-unit rows
-      description: Returns terminal row results for explicit ``messages/actions/blocks/assertions/observed-events/context-snapshots
+      description: Returns terminal row results for explicit ``messages/actions/blocks/assertions/runs/observed-events/context-snapshots
         where ...`` expressions. This endpoint shares the ``QueryUnitEnvelope`` contract with CLI JSON output, MCP ``query_units``,
         and ``Polylogue.query_units()``.
       operationId: queryUnits
@@ -1087,6 +1087,116 @@ components:
       - evidence_refs
       title: ObservedEventQueryRowPayload
       type: object
+    RunQueryRowPayload:
+      additionalProperties: false
+      description: Shared terminal-query row for runtime-transform runs.
+      properties:
+        unit:
+          const: run
+          default: run
+          title: Unit
+          type: string
+        run_ref:
+          title: Run Ref
+          type: string
+        session_id:
+          title: Session Id
+          type: string
+        origin:
+          title: Origin
+          type: string
+        title:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Title
+        native_session_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Native Session Id
+        native_parent_session_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Native Parent Session Id
+        parent_run_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Parent Run Ref
+        agent_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Agent Ref
+        lineage_refs:
+          items:
+            type: string
+          title: Lineage Refs
+          type: array
+        provider_origin:
+          title: Provider Origin
+          type: string
+        harness:
+          title: Harness
+          type: string
+        role:
+          title: Role
+          type: string
+        cwd:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Cwd
+        git_branch:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Git Branch
+        status:
+          title: Status
+          type: string
+        confidence:
+          title: Confidence
+          type: string
+        transcript_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Transcript Ref
+        evidence_refs:
+          items:
+            type: string
+          title: Evidence Refs
+          type: array
+        context_snapshot_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Context Snapshot Ref
+      required:
+      - run_ref
+      - session_id
+      - origin
+      - lineage_refs
+      - provider_origin
+      - harness
+      - role
+      - status
+      - confidence
+      - evidence_refs
+      title: RunQueryRowPayload
+      type: object
     QueryUnitEnvelope:
       additionalProperties: false
       description: Shared envelope for explicit terminal unit-source query results.
@@ -1102,6 +1212,7 @@ components:
           - action
           - block
           - assertion
+          - run
           - observed-event
           - context-snapshot
           title: Unit
@@ -1116,6 +1227,7 @@ components:
             - $ref: '#/components/schemas/ActionQueryRowPayload'
             - $ref: '#/components/schemas/BlockQueryRowPayload'
             - $ref: '#/components/schemas/AssertionQueryRowPayload'
+            - $ref: '#/components/schemas/RunQueryRowPayload'
             - $ref: '#/components/schemas/ObservedEventQueryRowPayload'
             - $ref: '#/components/schemas/ContextSnapshotQueryRowPayload'
           title: Items

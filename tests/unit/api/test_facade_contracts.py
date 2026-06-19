@@ -1456,6 +1456,64 @@ async def test_query_units_returns_context_snapshot_rows(tmp_path: Path) -> None
         await archive.close()
 
 
+async def test_query_units_returns_run_rows(tmp_path: Path) -> None:
+    """``query_units()`` exposes runtime run projection rows through the facade."""
+    from polylogue.surfaces.payloads import RunQueryRowPayload
+    from tests.infra.storage_records import SessionBuilder
+
+    archive = _archive(tmp_path)
+    try:
+        index_db = archive.config.archive_root / "index.db"
+        (
+            SessionBuilder(index_db, "facade-run-v1")
+            .provider("codex")
+            .git_repository_url("polylogue")
+            .git_branch("feature/query-runs")
+            .working_directories(["/realm/project/polylogue"])
+            .title("Facade run query")
+            .add_message(
+                "m-run",
+                role="assistant",
+                text="Subagent finished the facade run query wiring.",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "id": "tool-run",
+                        "name": "Task",
+                        "tool_input": {
+                            "subagent_type": "Explore",
+                            "taskId": "task-run",
+                            "child_session_id": "codex-session:facade-run-child",
+                            "prompt": "Map facade run query wiring.",
+                        },
+                    },
+                    {
+                        "type": "tool_result",
+                        "tool_id": "tool-run",
+                        "text": "Subagent done: facade run query wired.\n4 passed in 0.31s",
+                    },
+                ],
+            )
+            .save()
+        )
+
+        envelope = await archive.query_units(
+            "runs where session.repo:polylogue AND role:subagent AND status:completed AND agent:Explore"
+        )
+
+        assert envelope.unit == "run"
+        [item] = envelope.items
+        assert isinstance(item, RunQueryRowPayload)
+        assert item.session_id == "codex-session:ext-facade-run-v1"
+        assert item.role == "subagent"
+        assert item.status == "completed"
+        assert item.agent_ref == "agent:codex/Explore"
+        assert item.parent_run_ref == "run:codex-session:ext-facade-run-v1"
+        assert item.run_ref == "run:codex-session:facade-run-child"
+    finally:
+        await archive.close()
+
+
 async def test_query_units_rejects_session_expression(tmp_path: Path) -> None:
     """``query_units()`` is only for terminal source expressions."""
     from polylogue.archive.query.expression import ExpressionCompileError

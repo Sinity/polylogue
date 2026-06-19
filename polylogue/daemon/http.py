@@ -2292,7 +2292,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 HTTPStatus.BAD_REQUEST,
                 {
                     "error": "invalid_query",
-                    "message": "query-units requires a messages/actions/blocks/assertions where expression",
+                    "message": "query-units requires a messages/actions/blocks/assertions/runs/observed-events/context-snapshots where expression",
                 },
             )
             return

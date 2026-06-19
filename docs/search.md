@@ -4,7 +4,7 @@
 
 Polylogue uses a query-first grammar over archive units. Bare tokens are
 full-text terms, field clauses narrow the selected unit, explicit
-`sessions/messages/actions/blocks/assertions/observed-events/context-snapshots where ...`
+`sessions/messages/actions/blocks/assertions/runs/observed-events/context-snapshots where ...`
 forms opt into Boolean predicates,
 and trailing CLI verbs render or mutate the selected session set. The same
 query semantics — filters, retrieval lanes, ranking policy, and typed response

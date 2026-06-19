@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-QueryUnitName = Literal["message", "action", "block", "assertion", "observed-event", "context-snapshot"]
+QueryUnitName = Literal["message", "action", "block", "assertion", "run", "observed-event", "context-snapshot"]
 
 #: Recognized DSL field tokens and a short human description.
 #: ``spec_field`` values correspond to :class:`~polylogue.archive.query.spec.SessionQuerySpec`
@@ -134,6 +134,8 @@ _SOURCE_WHERE_SOURCES: tuple[tuple[str, QueryUnitName], ...] = (
     ("blocks", "block"),
     ("assertion", "assertion"),
     ("assertions", "assertion"),
+    ("run", "run"),
+    ("runs", "run"),
     ("observed-event", "observed-event"),
     ("observed-events", "observed-event"),
     ("context-snapshot", "context-snapshot"),
@@ -211,9 +213,38 @@ _CONTEXT_SNAPSHOT_STRUCTURAL_FIELDS = {
     "metadata",
     "text",
 }
+_RUN_STRUCTURAL_FIELDS = {
+    "agent",
+    "agent_ref",
+    "branch",
+    "context_snapshot",
+    "context_snapshot_ref",
+    "confidence",
+    "cwd",
+    "evidence",
+    "git_branch",
+    "harness",
+    "lineage",
+    "lineage_ref",
+    "native_parent_session_id",
+    "native_session_id",
+    "origin",
+    "parent",
+    "parent_run_ref",
+    "provider_origin",
+    "role",
+    "run",
+    "run_ref",
+    "status",
+    "text",
+    "title",
+    "transcript",
+    "transcript_ref",
+}
 _STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS.update(_ASSERTION_STRUCTURAL_FIELDS)
 _STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS.update(_OBSERVED_EVENT_STRUCTURAL_FIELDS)
 _STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS.update(_CONTEXT_SNAPSHOT_STRUCTURAL_FIELDS)
+_STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS.update(_RUN_STRUCTURAL_FIELDS)
 
 
 @dataclass(frozen=True)
@@ -325,6 +356,53 @@ _CONTEXT_SNAPSHOT_STRUCTURAL_FIELD_INFO: dict[str, StructuralQueryFieldInfo] = {
     "text": _field_info("text", "Context snapshot ref/run/segment/evidence/metadata substring.", "text:session_start"),
 }
 
+_RUN_STRUCTURAL_FIELD_INFO: dict[str, StructuralQueryFieldInfo] = {
+    "agent": _field_info("agent", "Run agent ObjectRef substring.", "agent:agent:codex"),
+    "agent_ref": _field_info("agent_ref", "Run agent ObjectRef substring.", "agent_ref:agent:codex"),
+    "branch": _field_info("branch", "Run git branch substring.", "branch:feature"),
+    "context_snapshot": _field_info(
+        "context_snapshot",
+        "Run context snapshot ObjectRef substring.",
+        "context_snapshot:context-snapshot:",
+    ),
+    "context_snapshot_ref": _field_info(
+        "context_snapshot_ref",
+        "Run context snapshot ObjectRef substring.",
+        "context_snapshot_ref:context-snapshot:",
+    ),
+    "confidence": _field_info("confidence", "Run confidence source, such as raw or inferred.", "confidence:raw"),
+    "cwd": _field_info("cwd", "Run working directory substring.", "cwd:/realm/project"),
+    "evidence": _field_info("evidence", "Run evidence ref substring.", "evidence:session:"),
+    "git_branch": _field_info("git_branch", "Run git branch substring.", "git_branch:feature"),
+    "harness": _field_info("harness", "Run harness/runtime family.", "harness:codex"),
+    "lineage": _field_info("lineage", "Run lineage ObjectRef substring.", "lineage:run:"),
+    "lineage_ref": _field_info("lineage_ref", "Run lineage ObjectRef substring.", "lineage_ref:run:"),
+    "native_parent_session_id": _field_info(
+        "native_parent_session_id",
+        "Provider-native parent session id substring.",
+        "native_parent_session_id:abc",
+    ),
+    "native_session_id": _field_info(
+        "native_session_id",
+        "Provider-native session id substring.",
+        "native_session_id:abc",
+    ),
+    "origin": _field_info("origin", "Run provider-origin token.", "origin:codex-session"),
+    "parent": _field_info("parent", "Parent run ObjectRef substring.", "parent:run:"),
+    "parent_run_ref": _field_info("parent_run_ref", "Parent run ObjectRef substring.", "parent_run_ref:run:"),
+    "provider_origin": _field_info("provider_origin", "Run provider-origin token.", "provider_origin:codex-session"),
+    "role": _field_info("role", "Run role, such as main or subagent.", "role:main"),
+    "run": _field_info("run", "Run ObjectRef substring.", "run:run:"),
+    "run_ref": _field_info("run_ref", "Run ObjectRef substring.", "run_ref:run:"),
+    "status": _field_info("status", "Run status token.", "status:completed"),
+    "text": _field_info("text", "Run title/ref/agent/lineage/evidence substring.", "text:review"),
+    "title": _field_info("title", "Run title substring.", "title:review"),
+    "transcript": _field_info("transcript", "Run transcript evidence ref substring.", "transcript:session:"),
+    "transcript_ref": _field_info(
+        "transcript_ref", "Run transcript evidence ref substring.", "transcript_ref:session:"
+    ),
+}
+
 _SESSION_SCOPED_STRUCTURAL_EXAMPLES: dict[str, str] = {
     "action": "session.action:file_edit",
     "cwd": "session.cwd:/realm/project",
@@ -381,6 +459,11 @@ def _context_snapshot_field_infos() -> tuple[StructuralQueryFieldInfo, ...]:
     return tuple(sorted((*infos, *_SCOPED_SESSION_STRUCTURAL_FIELD_INFO), key=lambda field: field.name))
 
 
+def _run_field_infos() -> tuple[StructuralQueryFieldInfo, ...]:
+    infos = [_RUN_STRUCTURAL_FIELD_INFO[name] for name in sorted(_RUN_STRUCTURAL_FIELDS)]
+    return tuple(sorted((*infos, *_SCOPED_SESSION_STRUCTURAL_FIELD_INFO), key=lambda field: field.name))
+
+
 STRUCTURAL_QUERY_UNIT_REGISTRY: dict[str, StructuralQueryUnitInfo] = {
     "action": StructuralQueryUnitInfo(
         description="Match sessions with at least one action row satisfying the child predicate.",
@@ -401,6 +484,11 @@ STRUCTURAL_QUERY_UNIT_REGISTRY: dict[str, StructuralQueryUnitInfo] = {
         description="Match sessions with at least one session-targeted assertion satisfying the child predicate.",
         fields=_assertion_field_infos(),
         example="exists assertion(kind:decision AND status:active AND text:review)",
+    ),
+    "run": StructuralQueryUnitInfo(
+        description="Return runtime-transform runs satisfying the child predicate.",
+        fields=_run_field_infos(),
+        example="runs where session.repo:polylogue AND role:main",
     ),
     "observed-event": StructuralQueryUnitInfo(
         description="Return runtime-transform observed events satisfying the child predicate.",
@@ -548,6 +636,7 @@ __all__ = [
     "_CONTEXT_SNAPSHOT_STRUCTURAL_FIELDS",
     "_MESSAGE_STRUCTURAL_FIELDS",
     "_OBSERVED_EVENT_STRUCTURAL_FIELDS",
+    "_RUN_STRUCTURAL_FIELDS",
     "_SOURCE_WHERE_SOURCES",
     "_STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS",
     "count_query_fields",

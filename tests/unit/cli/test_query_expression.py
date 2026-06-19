@@ -471,6 +471,27 @@ class TestBooleanQueryExpression:
         assert explanation.lowering_plan is not None
         assert "compatibility_selector" not in explanation.lowering_plan
 
+    def test_parse_run_source_expression_preserves_terminal_unit(self) -> None:
+        source = parse_unit_source_expression("runs where session.repo:polylogue AND role:subagent AND agent:Explore")
+
+        assert source is not None
+        assert source.unit == "run"
+        assert source.predicate == QueryBoolPredicate(
+            op="and",
+            children=(
+                QueryFieldPredicate(field="session.repo", values=("polylogue",)),
+                QueryFieldPredicate(field="role", values=("subagent",)),
+                QueryFieldPredicate(field="agent", values=("Explore",)),
+            ),
+        )
+        explanation = explain_expression("runs where session.repo:polylogue AND role:subagent AND agent:Explore")
+        assert explanation.lowerer == "lark-query-unit-source-to-terminal-unit"
+        assert explanation.selected_units == ("run",)
+        assert explanation.execution_legs == ("sql", "terminal-run-rows")
+        assert explanation.plan_description == ("terminal unit source: run",)
+        assert explanation.lowering_plan is not None
+        assert "compatibility_selector" not in explanation.lowering_plan
+
     def test_parse_context_snapshot_source_expression_preserves_terminal_unit(self) -> None:
         source = parse_unit_source_expression(
             "context-snapshots where session.repo:polylogue AND boundary:session_start AND text:run"
@@ -1313,6 +1334,105 @@ class TestBooleanQueryExpression:
         )
         assert row.object_refs == ("github-review:#2100",)
         assert row.evidence_refs == ("codex-session:ext-hit::codex-session:ext-hit:m-hit",)
+
+    def test_terminal_run_source_returns_runtime_rows(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.archive.query.unit_results import query_unit_rows
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from polylogue.surfaces.payloads import RunQueryRowPayload
+        from tests.infra.storage_records import SessionBuilder
+
+        archive_root = workspace_env["archive_root"]
+        index_db = archive_root / "index.db"
+        (
+            SessionBuilder(index_db, "hit")
+            .provider("codex")
+            .git_repository_url("polylogue")
+            .git_branch("feature/query-runs")
+            .working_directories(["/realm/project/polylogue"])
+            .title("run projection hit")
+            .add_message("m-user", role="user", text="Coordinate the query DSL branch.")
+            .add_message(
+                "m-subagent",
+                role="assistant",
+                text="Subagent finished the run-query audit.",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "id": "tool-run",
+                        "name": "Task",
+                        "tool_input": {
+                            "subagent_type": "Explore",
+                            "taskId": "task-run",
+                            "child_session_id": "codex-session:child-run",
+                            "prompt": "Map the remaining run query substrate.",
+                        },
+                    },
+                    {
+                        "type": "tool_result",
+                        "tool_id": "tool-run",
+                        "text": "Subagent done: run query substrate mapped.\n4 passed in 0.31s",
+                    },
+                ],
+            )
+            .save()
+        )
+        (
+            SessionBuilder(index_db, "wrong-repo")
+            .provider("codex")
+            .git_repository_url("sinex")
+            .title("run projection wrong repo")
+            .add_message(
+                "m-wrong",
+                role="assistant",
+                text="Subagent finished elsewhere.",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "id": "tool-wrong",
+                        "name": "Task",
+                        "tool_input": {
+                            "subagent_type": "Explore",
+                            "taskId": "task-wrong",
+                            "child_session_id": "codex-session:child-wrong",
+                            "prompt": "Map another repository.",
+                        },
+                    },
+                    {
+                        "type": "tool_result",
+                        "tool_id": "tool-wrong",
+                        "text": "Subagent done elsewhere.",
+                    },
+                ],
+            )
+            .save()
+        )
+
+        source = parse_unit_source_expression(
+            "runs where session.repo:polylogue AND role:subagent AND agent:Explore AND status:completed"
+        )
+        assert source is not None
+        with ArchiveStore.open_existing(archive_root) as archive:
+            envelope = query_unit_rows(
+                archive,
+                source,
+                query="runs where session.repo:polylogue AND role:subagent AND agent:Explore AND status:completed",
+                limit=10,
+            )
+
+        assert envelope.unit == "run"
+        assert len(envelope.items) == 1
+        row = envelope.items[0]
+        assert isinstance(row, RunQueryRowPayload)
+        assert row.session_id == "codex-session:ext-hit"
+        assert row.role == "subagent"
+        assert row.status == "completed"
+        assert row.harness == "codex"
+        assert row.agent_ref == "agent:codex/Explore"
+        assert row.parent_run_ref == "run:codex-session:ext-hit"
+        assert row.run_ref == "run:codex-session:child-run"
+        assert row.git_branch == "feature/query-runs"
+        assert row.cwd == "/realm/project/polylogue"
+        assert row.context_snapshot_ref == "context-snapshot:codex-session:child-run:subagent_start"
 
     def test_terminal_context_snapshot_source_returns_runtime_rows(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.archive.query.unit_results import query_unit_rows
