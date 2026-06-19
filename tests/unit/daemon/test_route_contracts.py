@@ -38,6 +38,15 @@ def test_stable_routes_have_explicit_auth_and_response_contracts() -> None:
         assert route.response_contract
 
 
+def test_stable_user_overlay_mutations_use_shared_envelope_contract() -> None:
+    """Browser write routes expose the common mutation result payload (#1847)."""
+
+    for route in stable_route_contracts():
+        if route.kind == "user_overlay" and route.method in {"POST", "DELETE"}:
+            assert route.auth_policy == "bearer_and_same_origin"
+            assert route.response_contract == "mutation envelope"
+
+
 def test_web_workbench_first_slice_routes_are_shell_supported_until_api_boundary_stabilizes() -> None:
     """#1847 owns public daemon API stability for the new workbench routes."""
 

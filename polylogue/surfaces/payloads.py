@@ -1696,7 +1696,7 @@ class ContextPreambleBlackboardNote(SurfacePayloadModel):
 
 
 class MutationResultPayload(SurfacePayloadModel):
-    """Shared result envelope for tag, metadata, and delete mutations.
+    """Shared result envelope for user-visible mutation surfaces.
 
     Carries idempotent status codes, context fields, and bulk-operation
     counts so that CLI, MCP, API, and daemon surfaces all expose the
@@ -1711,7 +1711,7 @@ class MutationResultPayload(SurfacePayloadModel):
     session_id: str | None = None
     detail: str | None = None
     """Machine-readable detail: ``already_present``, ``tag_not_present``,
-    ``key_not_found``, ``value_unchanged``, ``session_not_found``."""
+    ``updated``, ``key_not_found``, ``value_unchanged``, ``session_not_found``."""
 
     outcome: str | None = None
     """Tag idempotency outcome: ``added``, ``no_op``, ``removed``, or ``not_present``."""
@@ -1720,13 +1720,18 @@ class MutationResultPayload(SurfacePayloadModel):
     skipped_count: int | None = None
     tag: str | None = None
     key: str | None = None
+    target_type: str | None = None
+    target_id: str | None = None
+    message_id: str | None = None
+    mark_type: str | None = None
+    resource_type: str | None = None
+    resource_id: str | None = None
     session_count: int | None = None
     tag_count: int | None = None
     applied_count: int | None = None
     operation: str | None = None
-    """CLI bulk-mutation discriminator: ``add_tag``, ``set_meta``, ``mutate``, or
-    ``delete``. ``None`` for the single-session MCP/daemon surfaces, whose
-    operation is implied by the calling tool/endpoint."""
+    """Mutation discriminator such as ``add_tag``, ``set_meta``,
+    ``annotation.save``, ``saved_view.delete``, ``mutate``, or ``delete``."""
     session_ids: tuple[str, ...] | None = None
     """Session ids enumerated by a CLI bulk operation (e.g. the delete dry-run
     preview lists the sessions that *would* be deleted). ``None`` for

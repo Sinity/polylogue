@@ -573,12 +573,13 @@ class TestWebShellWorkspaceAssetContract:
         send_error.assert_not_called()
         status, payload = send_json.call_args.args
         assert status == HTTPStatus.CREATED
-        assert payload["workspace_id"] == "ws-toolbar"
-        assert payload["mode"] == "stack"
-        # The fields the toolbar reads off the response after save.
-        assert isinstance(payload["open_targets"], list)
-        assert isinstance(payload["layout"], dict)
-        assert isinstance(payload["active_target"], dict)
+        assert payload == {
+            "status": "ok",
+            "affected_count": 1,
+            "operation": "workspace.save",
+            "resource_type": "workspace",
+            "resource_id": "ws-toolbar",
+        }
 
     def test_save_recall_pack_endpoint_accepts_toolbar_payload(
         self,
@@ -604,7 +605,13 @@ class TestWebShellWorkspaceAssetContract:
         send_error.assert_not_called()
         status, payload = send_json.call_args.args
         assert status == HTTPStatus.CREATED
-        assert payload["pack_id"] == "pack-toolbar"
+        assert payload == {
+            "status": "ok",
+            "affected_count": 1,
+            "operation": "recall_pack.save",
+            "resource_type": "recall_pack",
+            "resource_id": "pack-toolbar",
+        }
 
     def test_save_view_endpoint_accepts_toolbar_payload(
         self,
@@ -618,5 +625,8 @@ class TestWebShellWorkspaceAssetContract:
         send_error.assert_not_called()
         status, payload = send_json.call_args.args
         assert status == HTTPStatus.CREATED
-        assert payload["name"] == "Toolbar view"
-        assert payload["query"] == {"limit": 20, "origin": "claude-code-session"}
+        assert payload["status"] == "ok"
+        assert payload["affected_count"] == 1
+        assert payload["operation"] == "saved_view.save"
+        assert payload["resource_type"] == "saved_view"
+        assert isinstance(payload["resource_id"], str)

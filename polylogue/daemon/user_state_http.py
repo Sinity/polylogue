@@ -9,6 +9,7 @@ from typing import Any, cast
 
 from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.core.user_state_targets import TARGET_SESSION, is_mark_type_supported, validate_target_kind
+from polylogue.surfaces.payloads import MutationResultPayload
 
 
 def _read_json_body(handler: Any) -> dict[str, object] | None:
@@ -92,6 +93,27 @@ def _default_saved_view_id(name: str, query_json: str) -> str:
 def _default_annotation_id(target_type: str, target_id: str, note_text: str) -> str:
     digest = hashlib.sha256(f"{target_type}\0{target_id}\0{note_text}".encode()).hexdigest()[:16]
     return f"annotation-{digest}"
+
+
+def _mutation_status(created_or_deleted: bool, *, missing_detail: str | None = None) -> tuple[str, str | None, int]:
+    if created_or_deleted:
+        return "ok", None, 1
+    if missing_detail is None:
+        return "unchanged", "already_present", 0
+    return "not_found", missing_detail, 0
+
+
+def _save_mutation_status(created: bool) -> tuple[str, str | None, int]:
+    if created:
+        return "ok", None, 1
+    return "ok", "updated", 1
+
+
+def _send_mutation_result(handler: Any, result: MutationResultPayload, *, created: bool = False) -> None:
+    handler._send_json(
+        HTTPStatus.CREATED if created else HTTPStatus.OK,
+        result.model_dump(mode="json", exclude_none=True),
+    )
 
 
 def dispatch_get(handler: Any, path: list[str], params: dict[str, list[str]]) -> bool:
@@ -200,7 +222,7 @@ def handle_create_mark(handler: Any) -> None:
         handler._send_error(HTTPStatus.BAD_REQUEST, "invalid_target_type")
         return
 
-    async def _create(poly: Any) -> dict[str, object]:
+    async def _create(poly: Any) -> MutationResultPayload:
         created = await poly.add_mark(
             session_id,
             mark_type,
@@ -208,17 +230,20 @@ def handle_create_mark(handler: Any) -> None:
             target_id=target_id,
             message_id=message_id,
         )
-        return {
-            "target_type": target_type,
-            "target_id": target_id or message_id or session_id,
-            "session_id": session_id,
-            "message_id": message_id,
-            "mark_type": mark_type,
-            "created": created,
-        }
+        return MutationResultPayload(
+            status="ok" if created else "unchanged",
+            detail=None if created else "already_present",
+            operation="mark.add",
+            affected_count=1 if created else 0,
+            target_type=target_type,
+            target_id=target_id or message_id or session_id,
+            session_id=session_id,
+            message_id=message_id,
+            mark_type=mark_type,
+        )
 
-    result = cast(dict[str, object], handler._sync_run(_create))
-    handler._send_json(HTTPStatus.CREATED if result["created"] else HTTPStatus.OK, result)
+    result = cast(MutationResultPayload, handler._sync_run(_create))
+    _send_mutation_result(handler, result, created=result.status == "ok")
 
 
 def handle_delete_mark(handler: Any, params: dict[str, list[str]]) -> None:
@@ -231,7 +256,7 @@ def handle_delete_mark(handler: Any, params: dict[str, list[str]]) -> None:
         handler._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
         return
 
-    async def _delete(poly: Any) -> dict[str, object]:
+    async def _delete(poly: Any) -> MutationResultPayload:
         deleted = await poly.remove_mark(
             session_id,
             mark_type,
@@ -239,16 +264,20 @@ def handle_delete_mark(handler: Any, params: dict[str, list[str]]) -> None:
             target_id=target_id,
             message_id=message_id,
         )
-        return {
-            "target_type": target_type or TARGET_SESSION,
-            "target_id": target_id or message_id or session_id,
-            "session_id": session_id,
-            "message_id": message_id,
-            "mark_type": mark_type,
-            "deleted": deleted,
-        }
+        return MutationResultPayload(
+            status="deleted" if deleted else "not_found",
+            detail=None if deleted else "mark_not_present",
+            operation="mark.delete",
+            affected_count=1 if deleted else 0,
+            target_type=target_type or TARGET_SESSION,
+            target_id=target_id or message_id or session_id,
+            session_id=session_id,
+            message_id=message_id,
+            mark_type=mark_type,
+        )
 
-    handler._send_json(HTTPStatus.OK, handler._sync_run(_delete))
+    result = cast(MutationResultPayload, handler._sync_run(_delete))
+    _send_mutation_result(handler, result)
 
 
 def handle_list_annotations(handler: Any, params: dict[str, list[str]]) -> None:
@@ -303,8 +332,9 @@ def handle_save_annotation(handler: Any) -> None:
     resolved_target_id = target_id or message_id or session_id
     annotation_id = str(body.get("annotation_id") or _default_annotation_id(target_type, resolved_target_id, note_text))
 
-    async def _save(poly: Any) -> dict[str, object]:
-        created = await poly.save_annotation(
+    async def _save(poly: Any) -> MutationResultPayload:
+        existing = await poly.get_annotation(annotation_id)
+        await poly.save_annotation(
             annotation_id,
             session_id,
             note_text,
@@ -312,23 +342,40 @@ def handle_save_annotation(handler: Any) -> None:
             target_id=target_id,
             message_id=message_id,
         )
-        saved = await poly.get_annotation(annotation_id)
-        if saved is None:
-            return {"annotation_id": annotation_id, "created": created}
-        result: dict[str, object] = dict(saved)
-        result["created"] = created
-        return result
+        created = existing is None
+        status, detail, affected_count = _save_mutation_status(created)
+        return MutationResultPayload(
+            status=status,
+            detail=detail,
+            operation="annotation.save",
+            affected_count=affected_count,
+            resource_type="annotation",
+            resource_id=annotation_id,
+            target_type=target_type,
+            target_id=resolved_target_id,
+            session_id=session_id,
+            message_id=message_id,
+        )
 
-    result = cast(dict[str, object], handler._sync_run(_save))
-    handler._send_json(HTTPStatus.CREATED if result["created"] else HTTPStatus.OK, result)
+    result = cast(MutationResultPayload, handler._sync_run(_save))
+    _send_mutation_result(handler, result, created=result.detail is None)
 
 
 def handle_delete_annotation(handler: Any, annotation_id: str) -> None:
-    async def _delete(poly: Any) -> dict[str, object]:
+    async def _delete(poly: Any) -> MutationResultPayload:
         deleted = await poly.delete_annotation(annotation_id)
-        return {"annotation_id": annotation_id, "deleted": deleted}
+        status, detail, affected_count = _mutation_status(deleted, missing_detail="annotation_not_found")
+        return MutationResultPayload(
+            status="deleted" if status == "ok" else status,
+            detail=detail,
+            operation="annotation.delete",
+            affected_count=affected_count,
+            resource_type="annotation",
+            resource_id=annotation_id,
+        )
 
-    handler._send_json(HTTPStatus.OK, handler._sync_run(_delete))
+    result = cast(MutationResultPayload, handler._sync_run(_delete))
+    _send_mutation_result(handler, result)
 
 
 def handle_list_saved_views(handler: Any) -> None:
@@ -365,25 +412,39 @@ def handle_save_view(handler: Any) -> None:
     query_json = json.dumps(query, sort_keys=True, separators=(",", ":"))
     view_id = str(body.get("view_id") or _default_saved_view_id(name, query_json))
 
-    async def _save(poly: Any) -> dict[str, object]:
-        created = await poly.save_view(view_id, name, query_json)
-        saved = await poly.get_view(view_id)
-        if saved is None:
-            return {"view_id": view_id, "created": created}
-        result = _saved_view_payload(saved)
-        result["created"] = created
-        return result
+    async def _save(poly: Any) -> MutationResultPayload:
+        existing = await poly.get_view(view_id)
+        await poly.save_view(view_id, name, query_json)
+        created = existing is None
+        status, detail, affected_count = _save_mutation_status(created)
+        return MutationResultPayload(
+            status=status,
+            detail=detail,
+            operation="saved_view.save",
+            affected_count=affected_count,
+            resource_type="saved_view",
+            resource_id=view_id,
+        )
 
-    result = cast(dict[str, object], handler._sync_run(_save))
-    handler._send_json(HTTPStatus.CREATED if result["created"] else HTTPStatus.OK, result)
+    result = cast(MutationResultPayload, handler._sync_run(_save))
+    _send_mutation_result(handler, result, created=result.detail is None)
 
 
 def handle_delete_saved_view(handler: Any, view_id: str) -> None:
-    async def _delete(poly: Any) -> dict[str, object]:
+    async def _delete(poly: Any) -> MutationResultPayload:
         deleted = await poly.delete_view(view_id)
-        return {"view_id": view_id, "deleted": deleted}
+        status, detail, affected_count = _mutation_status(deleted, missing_detail="saved_view_not_found")
+        return MutationResultPayload(
+            status="deleted" if status == "ok" else status,
+            detail=detail,
+            operation="saved_view.delete",
+            affected_count=affected_count,
+            resource_type="saved_view",
+            resource_id=view_id,
+        )
 
-    handler._send_json(HTTPStatus.OK, handler._sync_run(_delete))
+    result = cast(MutationResultPayload, handler._sync_run(_delete))
+    _send_mutation_result(handler, result)
 
 
 def handle_list_recall_packs(handler: Any) -> None:
@@ -422,25 +483,39 @@ def handle_save_recall_pack(handler: Any) -> None:
         return
     payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
-    async def _save(poly: Any) -> dict[str, object]:
-        created = await poly.create_recall_pack(pack_id, label, payload_json)
-        saved = await poly.get_recall_pack(pack_id)
-        if saved is None:
-            return {"pack_id": pack_id, "created": created}
-        result = _recall_pack_payload(saved)
-        result["created"] = created
-        return result
+    async def _save(poly: Any) -> MutationResultPayload:
+        existing = await poly.get_recall_pack(pack_id)
+        await poly.create_recall_pack(pack_id, label, payload_json)
+        created = existing is None
+        status, detail, affected_count = _save_mutation_status(created)
+        return MutationResultPayload(
+            status=status,
+            detail=detail,
+            operation="recall_pack.save",
+            affected_count=affected_count,
+            resource_type="recall_pack",
+            resource_id=pack_id,
+        )
 
-    result = cast(dict[str, object], handler._sync_run(_save))
-    handler._send_json(HTTPStatus.CREATED if result["created"] else HTTPStatus.OK, result)
+    result = cast(MutationResultPayload, handler._sync_run(_save))
+    _send_mutation_result(handler, result, created=result.detail is None)
 
 
 def handle_delete_recall_pack(handler: Any, pack_id: str) -> None:
-    async def _delete(poly: Any) -> dict[str, object]:
+    async def _delete(poly: Any) -> MutationResultPayload:
         deleted = await poly.delete_recall_pack(pack_id)
-        return {"pack_id": pack_id, "deleted": deleted}
+        status, detail, affected_count = _mutation_status(deleted, missing_detail="recall_pack_not_found")
+        return MutationResultPayload(
+            status="deleted" if status == "ok" else status,
+            detail=detail,
+            operation="recall_pack.delete",
+            affected_count=affected_count,
+            resource_type="recall_pack",
+            resource_id=pack_id,
+        )
 
-    handler._send_json(HTTPStatus.OK, handler._sync_run(_delete))
+    result = cast(MutationResultPayload, handler._sync_run(_delete))
+    _send_mutation_result(handler, result)
 
 
 def handle_list_workspaces(handler: Any) -> None:
@@ -485,8 +560,9 @@ def handle_save_workspace(handler: Any) -> None:
         handler._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
         return
 
-    async def _save(poly: Any) -> dict[str, object]:
-        created = await poly.save_workspace(
+    async def _save(poly: Any) -> MutationResultPayload:
+        existing = await poly.get_workspace(workspace_id)
+        await poly.save_workspace(
             workspace_id,
             name,
             mode,
@@ -494,20 +570,33 @@ def handle_save_workspace(handler: Any) -> None:
             json.dumps(layout, sort_keys=True, separators=(",", ":")),
             json.dumps(active_target, sort_keys=True, separators=(",", ":")),
         )
-        saved = await poly.get_workspace(workspace_id)
-        if saved is None:
-            return {"workspace_id": workspace_id, "created": created}
-        result = _workspace_payload(saved)
-        result["created"] = created
-        return result
+        created = existing is None
+        status, detail, affected_count = _save_mutation_status(created)
+        return MutationResultPayload(
+            status=status,
+            detail=detail,
+            operation="workspace.save",
+            affected_count=affected_count,
+            resource_type="workspace",
+            resource_id=workspace_id,
+        )
 
-    result = cast(dict[str, object], handler._sync_run(_save))
-    handler._send_json(HTTPStatus.CREATED if result["created"] else HTTPStatus.OK, result)
+    result = cast(MutationResultPayload, handler._sync_run(_save))
+    _send_mutation_result(handler, result, created=result.detail is None)
 
 
 def handle_delete_workspace(handler: Any, workspace_id: str) -> None:
-    async def _delete(poly: Any) -> dict[str, object]:
+    async def _delete(poly: Any) -> MutationResultPayload:
         deleted = await poly.delete_workspace(workspace_id)
-        return {"workspace_id": workspace_id, "deleted": deleted}
+        status, detail, affected_count = _mutation_status(deleted, missing_detail="workspace_not_found")
+        return MutationResultPayload(
+            status="deleted" if status == "ok" else status,
+            detail=detail,
+            operation="workspace.delete",
+            affected_count=affected_count,
+            resource_type="workspace",
+            resource_id=workspace_id,
+        )
 
-    handler._send_json(HTTPStatus.OK, handler._sync_run(_delete))
+    result = cast(MutationResultPayload, handler._sync_run(_delete))
+    _send_mutation_result(handler, result)
