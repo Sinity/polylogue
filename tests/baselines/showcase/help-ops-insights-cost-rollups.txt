@@ -1,4 +1,4 @@
-Usage: polylogue insights cost-rollups [OPTIONS]
+Usage: polylogue ops insights cost-rollups [OPTIONS]
 
   List origin/model cost rollups.
 

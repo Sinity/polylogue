@@ -1,4 +1,4 @@
-Usage: polylogue insights tool-usage [OPTIONS]
+Usage: polylogue ops insights tool-usage [OPTIONS]
 
   Per-tool, per-origin rollups over canonical actions with coverage map.
 

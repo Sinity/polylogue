@@ -1,4 +1,4 @@
-Usage: polylogue insights debt [OPTIONS]
+Usage: polylogue ops insights debt [OPTIONS]
 
   List archive debt and maintenance readiness insights.
 

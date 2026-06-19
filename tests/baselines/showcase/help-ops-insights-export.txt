@@ -1,4 +1,4 @@
-Usage: polylogue insights export [OPTIONS]
+Usage: polylogue ops insights export [OPTIONS]
 
   Export versioned archive-insight bundles.
 

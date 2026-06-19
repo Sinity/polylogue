@@ -1,7 +1,7 @@
-"""Cost command — subscription cycle outlook and quota forecasting (#1138).
+"""Operational cost command — subscription cycle outlook and quota forecasting (#1138).
 
-Hosts the ``polylogue cost`` group. The canonical subcommand is
-``cost outlook``, which renders the typed
+Hosts the ``polylogue ops cost`` group. The canonical subcommand is
+``ops cost outlook``, which renders the typed
 :class:`polylogue.cost.outlook.CycleOutlook` payload produced by the
 #1137 engine. JSON output is deterministic and the schema is pinned by
 contract tests. Plain output visibly labels subscription-quota math as

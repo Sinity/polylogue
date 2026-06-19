@@ -143,11 +143,9 @@ def _L(name: str) -> _LazyCommand:  # noqa: N802
 
 ROOT_COMMANDS: tuple[click.Command, ...] = (
     _L("config"),
-    _L("cost"),
     _L("import_command"),
     _L("init"),
     _L("resume"),
-    _L("insights"),
     _L("user_state"),
     _L("ops"),
 )
@@ -157,9 +155,11 @@ OPS_COMMANDS: tuple[click.Command, ...] = (
     _L("backup"),
     _L("check"),
     _L("completions"),
+    _L("cost"),
     _L("dashboard"),
     _L("diagnostics"),
     _L("embed"),
+    _L("insights"),
     _L("maintenance"),
     _L("paths"),
     _L("reset"),

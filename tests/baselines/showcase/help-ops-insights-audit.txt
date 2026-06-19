@@ -1,4 +1,4 @@
-Usage: polylogue insights audit [OPTIONS]
+Usage: polylogue ops insights audit [OPTIONS]
 
   Report per-product rigor profile across materialized insights (#1275).
 

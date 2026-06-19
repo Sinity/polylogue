@@ -1,4 +1,4 @@
-"""Tests for ``polylogue cost outlook`` (#1138)."""
+"""Tests for ``polylogue ops cost outlook`` (#1138)."""
 
 from __future__ import annotations
 
@@ -94,7 +94,9 @@ class TestCostOutlookJsonContract:
             poly.__aexit__ = AsyncMock(return_value=None)
             poly.cost_outlook = AsyncMock(return_value=_quota_outlook())
 
-            result = cli_runner.invoke(click_cli, ["cost", "outlook", "--plan", "claude-pro", "--format", "json"])
+            result = cli_runner.invoke(
+                click_cli, ["ops", "cost", "outlook", "--plan", "claude-pro", "--format", "json"]
+            )
 
         assert result.exit_code == 0, result.output
         payload = json.loads(result.output)
@@ -115,7 +117,7 @@ class TestCostOutlookJsonContract:
             poly.__aexit__ = AsyncMock(return_value=None)
             poly.cost_outlook = AsyncMock(side_effect=PlanLookupError("Unknown subscription plan 'mystery'."))
 
-            result = cli_runner.invoke(click_cli, ["cost", "outlook", "--plan", "mystery", "--format", "json"])
+            result = cli_runner.invoke(click_cli, ["ops", "cost", "outlook", "--plan", "mystery", "--format", "json"])
 
         assert result.exit_code != 0
         assert "mystery" in result.output
@@ -128,7 +130,7 @@ class TestCostOutlookJsonContract:
             poly.cost_outlook = AsyncMock(return_value=None)
 
             result = cli_runner.invoke(
-                click_cli, ["cost", "outlook", "--plan", "github-copilot-pro", "--format", "json"]
+                click_cli, ["ops", "cost", "outlook", "--plan", "github-copilot-pro", "--format", "json"]
             )
 
         assert result.exit_code == 0
@@ -150,7 +152,7 @@ class TestCostOutlookPlainContract:
 
             result = cli_runner.invoke(
                 click_cli,
-                ["--plain", "cost", "outlook", "--plan", "claude-pro", "--format", "plain"],
+                ["--plain", "ops", "cost", "outlook", "--plan", "claude-pro", "--format", "plain"],
             )
 
         assert result.exit_code == 0, result.output
@@ -173,7 +175,7 @@ class TestCostOutlookPlainContract:
 
             result = cli_runner.invoke(
                 click_cli,
-                ["--plain", "cost", "outlook", "--plan", "chatgpt-plus", "--format", "plain"],
+                ["--plain", "ops", "cost", "outlook", "--plan", "chatgpt-plus", "--format", "plain"],
             )
 
         assert result.exit_code == 0, result.output
@@ -189,7 +191,7 @@ class TestCostOutlookPlainContract:
 
             result = cli_runner.invoke(
                 click_cli,
-                ["--plain", "cost", "outlook", "--plan", "github-copilot-pro", "--format", "plain"],
+                ["--plain", "ops", "cost", "outlook", "--plan", "github-copilot-pro", "--format", "plain"],
             )
 
         assert result.exit_code == 0
@@ -214,6 +216,7 @@ class TestCostOutlookMethodChoice:
             result = cli_runner.invoke(
                 click_cli,
                 [
+                    "ops",
                     "cost",
                     "outlook",
                     "--plan",

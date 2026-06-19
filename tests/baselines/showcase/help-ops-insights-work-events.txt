@@ -1,4 +1,4 @@
-Usage: polylogue insights work-events [OPTIONS]
+Usage: polylogue ops insights work-events [OPTIONS]
 
   List durable work-event insights.
 

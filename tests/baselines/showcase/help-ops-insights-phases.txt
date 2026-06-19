@@ -1,9 +1,10 @@
-Usage: polylogue insights threads [OPTIONS]
+Usage: polylogue ops insights phases [OPTIONS]
 
-  List durable thread insights.
+  List durable session-phase insights.
 
 Options:
-  --query TEXT         FTS query against insight search text
+  --session-id TEXT    Only phases from one session
+  --kind TEXT          Only this session phase kind
   -l, --limit INTEGER  Maximum rows  [default: 50]
   --offset INTEGER     Start offset  [default: 0]
   -f, --format [json]  Output format

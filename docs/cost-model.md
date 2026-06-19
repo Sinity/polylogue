@@ -153,7 +153,7 @@ both the standalone `project_linear` primitive and the full
 | Surface | Entrypoint | Returns |
 | --- | --- | --- |
 | Python API | `Polylogue.cost_outlook(plan, *, now=None, method=...)` | `CycleOutlook | None` |
-| CLI | `polylogue cost outlook --plan <name> [--method ...] [-f json]` | Plain or JSON `CycleOutlook` payload |
+| CLI | `polylogue ops cost outlook --plan <name> [--method ...] [-f json]` | Plain or JSON `CycleOutlook` payload |
 | MCP | `cost_outlook(plan, method='linear')` tool | JSON `CycleOutlook` envelope |
 
 All three surfaces share the same typed `CycleOutlook` envelope. The CLI
@@ -214,7 +214,7 @@ candidates.
 * [Insights overview](insights.md) — cost cluster context within the
   broader insight pipeline.
 * [Data model](data-model.md) — typed payloads and storage shape.
-* [CLI reference](cli-reference.md) — `polylogue cost outlook` flags
+* [CLI reference](cli-reference.md) — `polylogue ops cost outlook` flags
   and JSON schema.
 * [MCP reference](mcp-reference.md) — `cost_outlook` tool contract.
 * [Configuration](configuration.md) — `[[cost.subscription.plans]]` in
