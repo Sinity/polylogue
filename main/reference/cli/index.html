@@ -848,24 +848,22 @@ Options:
   --help                          Show this message and exit.
 </code></pre>
 <h2>Tags</h2>
-<pre><code class="language-text">Usage: polylogue tags [OPTIONS] [SESSION_ID]
+<pre><code class="language-text">Usage: polylogue tags [OPTIONS]
 
-  List all tags with session counts, or add/remove tags.
+  List user tags with session counts.
 
   Examples:
       polylogue tags                         # List all tags
       polylogue tags -o claude-ai-export     # Tags for Claude web sessions only
       polylogue tags --format json           # Machine-readable output
       polylogue tags -n 10                   # Top 10 tags
-      polylogue tags conv:abc --add-tag tps  # Add a tag
-      polylogue tags conv:abc --rm-tag tps   # Remove a tag
+      polylogue find id:abc then mark --tag-add tps
+      polylogue find id:abc then mark --tag-remove tps
 
 Options:
   -o, --origin TEXT    Filter tags by origin
   -f, --format [json]  Output format
   -n, --count INTEGER  Show top N tags
-  --add-tag TEXT       Add a tag to the given session
-  --remove-tag TEXT    Remove a tag from the given session
   --help               Show this message and exit.
 </code></pre>
 <h2>User State</h2>
