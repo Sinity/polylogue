@@ -125,9 +125,9 @@ def _active_index_db_path() -> Path:
 
 def _heartbeat_counts(db: Path) -> tuple[int, int, str]:
     """Return session and message counts for the current archive."""
-    from polylogue.storage.sqlite.connection_profile import open_connection
+    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
-    conn = open_connection(db, timeout=5.0)
+    conn = open_readonly_connection(db, timeout=5.0)
     try:
         tables = {
             str(row[0])
@@ -342,7 +342,7 @@ async def _periodic_db_optimize() -> None:
     considers planner-stat maintenance; otherwise a large archive can pay
     broad read IO at the exact moment live catch-up already needs the disk.
     """
-    from polylogue.storage.sqlite.connection_profile import open_connection
+    from polylogue.storage.sqlite.connection_profile import open_daemon_connection
 
     while True:
         await asyncio.sleep(86_400)  # 24 hours; no startup optimize.
@@ -350,7 +350,7 @@ async def _periodic_db_optimize() -> None:
         if not db.exists():
             continue
         try:
-            conn = open_connection(db, timeout=30.0)
+            conn = open_daemon_connection(db, timeout=30.0)
             try:
                 conn.execute("PRAGMA optimize")
                 logger.info("daemon: DB optimize completed")

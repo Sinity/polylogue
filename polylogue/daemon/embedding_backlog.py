@@ -238,7 +238,9 @@ def _upsert_archive_embedding_catchup_run(
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
     ops_db.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(ops_db, timeout=30.0) as conn:
+    from polylogue.storage.sqlite.connection_profile import open_daemon_connection
+
+    with open_daemon_connection(ops_db, timeout=30.0) as conn:
         initialize_archive_tier(conn, ArchiveTier.OPS)
         return upsert_embedding_catchup_run(
             conn,

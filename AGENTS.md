@@ -1274,6 +1274,13 @@ SQLite WAL behavior for the archive database (see also
 
 - **Journal mode**: WAL on the write profile. Set once per database
   the first time a writer opens it; persists in the file header.
+- **Connection cache profiles**: high-throughput ingest writes use the
+  full write profile (`128 MiB` SQLite cache, `1 GiB` mmap allowance).
+  Long-running daemon/ops writes use the daemon write profile (`16 MiB`
+  cache, `64 MiB` mmap allowance) so small telemetry, cursor, heartbeat,
+  OTLP, and maintenance writes do not keep batch-sized SQLite page-cache
+  pressure charged to `polylogued.service`. Read-only daemon probes use
+  the read profile (`query_only=ON`) instead of opening write connections.
 - **Autocheckpoint threshold**: `WAL_AUTOCHECKPOINT_PAGES = 10000` =
   40 MiB. When the WAL crosses this, SQLite runs a PASSIVE checkpoint
   inline with the next commit.

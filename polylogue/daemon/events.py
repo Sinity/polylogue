@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from polylogue.paths import active_index_db_path
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.connection_profile import open_connection
+from polylogue.storage.sqlite.connection_profile import open_daemon_connection
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -40,7 +40,7 @@ def _ensure_events_db() -> sqlite3.Connection:
     path = _events_db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     initialize_archive_database(path, ArchiveTier.OPS)
-    conn = open_connection(path)
+    conn = open_daemon_connection(path)
     conn.executescript(_DAEMON_EVENTS_DDL)
     return conn
 

@@ -37,7 +37,6 @@ Design notes:
 from __future__ import annotations
 
 import json
-import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime, timezone
 from pathlib import Path
@@ -133,7 +132,9 @@ def store_telemetry(db_path: str, row: OtlpTelemetryRow) -> None:
     try:
         ops_db = _ops_db_path(db_path)
         initialize_archive_database(ops_db, ArchiveTier.OPS)
-        conn = sqlite3.connect(ops_db)
+        from polylogue.storage.sqlite.connection_profile import open_daemon_connection
+
+        conn = open_daemon_connection(ops_db)
         try:
             conn.execute(
                 "INSERT INTO otlp_telemetry (received_at_ms, signal_type, content_type, payload, resource_count, span_count, metric_count, log_record_count) "

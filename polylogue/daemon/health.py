@@ -437,8 +437,10 @@ def _active_bulk_ingest_attempt(
 def _archive_active_bulk_ingest_attempt(ops_db: Path | None, *, now_iso: str) -> tuple[str, str, str] | None:
     if ops_db is None or not ops_db.exists():
         return None
+    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
     try:
-        conn = sqlite3.connect(str(ops_db))
+        conn = open_readonly_connection(ops_db)
         try:
             has_table = bool(
                 conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='ingest_attempts'").fetchone()
@@ -1013,8 +1015,10 @@ def _archive_repeated_stage_failure_info(
 ) -> tuple[int, int, sqlite3.Row | tuple[object, ...] | None] | None:
     if not ops_db.exists():
         return None
+    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
     try:
-        conn = sqlite3.connect(str(ops_db))
+        conn = open_readonly_connection(ops_db)
         try:
             has_table = bool(
                 conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='ingest_attempts'").fetchone()
