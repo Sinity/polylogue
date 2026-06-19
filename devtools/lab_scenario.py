@@ -35,6 +35,7 @@ def run_tier_0() -> dict[str, str]:
 
     exercises = topological_order(get_tier_0_exercises())
     results: dict[str, str] = {}
+    failures: list[str] = []
     for exercise in exercises:
         result = run_exercise(
             exercise,
@@ -42,6 +43,11 @@ def run_tier_0() -> dict[str, str]:
             invoke_showcase_cli_fn=invoke_showcase_cli,
         )
         results[exercise.name] = result.output or ""
+        if not result.passed:
+            failures.append(f"{exercise.name}: exit {result.exit_code}: {result.error or 'failed'}")
+    if failures:
+        joined = "\n  - ".join(failures)
+        raise RuntimeError(f"tier-0 showcase exercises failed:\n  - {joined}")
     return results
 
 
@@ -104,7 +110,11 @@ def verify_showcase_baselines(*, update: bool) -> int:
             return 1
 
     print("Running tier 0 showcase exercises...")
-    current = run_tier_0()
+    try:
+        current = run_tier_0()
+    except RuntimeError as exc:
+        print(f"ERROR: {exc}")
+        return 1
     print(f"  Ran {len(current)} exercises")
 
     if update:

@@ -1,4 +1,4 @@
-Usage: polylogue dashboard [OPTIONS]
+Usage: polylogue ops dashboard [OPTIONS]
 
   Launch the dashboard TUI.
 

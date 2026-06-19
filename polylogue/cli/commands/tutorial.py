@@ -1,4 +1,4 @@
-"""Interactive first-run walkthrough — ``polylogue tutorial``.
+"""Interactive first-run walkthrough — ``polylogue ops tutorial``.
 
 The tutorial is an idempotent five-stage onboarding flow. Re-running picks
 up where the previous run left off: each stage probes the archive/config
@@ -150,7 +150,7 @@ STAGES: tuple[TutorialStage, ...] = (
         number=5,
         title="Open reader",
         probe=_stage_open_reader,
-        action_text="Run `polylogue dashboard` to open the local reader.",
+        action_text="Run `polylogue ops dashboard` to open the local reader.",
     ),
 )
 
@@ -186,7 +186,7 @@ def tutorial_command(env: AppEnv, non_interactive: bool) -> None:
     """
     console = env.ui.console
     total = len(STAGES)
-    console.print("\n[bold]polylogue tutorial[/bold]")
+    console.print("\n[bold]polylogue ops tutorial[/bold]")
     console.print("  Five stages will walk you through a working install.\n")
 
     for stage in STAGES:
@@ -208,7 +208,7 @@ def tutorial_command(env: AppEnv, non_interactive: bool) -> None:
                     prompt_suffix="",
                 )
             except (click.exceptions.Abort, EOFError, KeyboardInterrupt):
-                console.print("\n  [dim]Tutorial paused. Re-run `polylogue tutorial` to resume.[/dim]")
+                console.print("\n  [dim]Tutorial paused. Re-run `polylogue ops tutorial` to resume.[/dim]")
                 sys.exit(0)
     console.print("\n[green]Done.[/green] See `polylogue --help` for more.")
 

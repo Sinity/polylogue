@@ -4,7 +4,7 @@ const TUICockpit = () => {
   return (
     <div className="tui">
       <div className="tui__chrome">
-        <Mono className="t-title">polylogue dashboard · operator cockpit</Mono>
+        <Mono className="t-title">polylogue ops dashboard · operator cockpit</Mono>
         <Mono className="tui__crumb">F1 help · F2 panel · / search · : palette</Mono>
       </div>
       <div className="tui__grid">

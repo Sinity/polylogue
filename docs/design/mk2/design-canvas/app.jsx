@@ -39,7 +39,7 @@ const App = () => {
           <DCArtboard id="fuzzy"    label="polylogue select conversation · fuzzy"      width={1100} height={520}>
             <window.FuzzySelect />
           </DCArtboard>
-          <DCArtboard id="tui"      label="polylogue dashboard · operator cockpit"     width={1300} height={780}>
+          <DCArtboard id="tui"      label="polylogue ops dashboard · operator cockpit" width={1300} height={780}>
             <window.TUICockpit />
           </DCArtboard>
         </DCSection>

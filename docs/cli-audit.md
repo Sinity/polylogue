@@ -49,8 +49,8 @@ Registered in `polylogue/cli/click_command_registration.py`.
 | `init` | Configuration | **Keep** | Detect sources and write starter config. Onboarding. |
 | `auth` | Configuration | **Keep** | Authenticate external services (Drive OAuth). Clear intent. |
 | `completions` | Configuration | **Keep** | Shell completion setup. Standard CLI pattern. |
-| `dashboard` | Configuration | **Keep** | Open local dashboard. Could be `open --dashboard` but separate command is discoverable. |
-| `tutorial` | Configuration | **Keep** | Interactive first-run walkthrough. Onboarding. |
+| `ops dashboard` | Operations | **Keep under `ops`** | Launch the local operator dashboard/TUI. It is an operator affordance, not a query action. |
+| `ops tutorial` | Operations | **Keep under `ops`** | Interactive first-run walkthrough. Onboarding belongs with setup/operator flows, not the root product floor. |
 | `export` | Context | **Keep (expand)** | Export sessions. Currently flat; absorb `bulk-export` as `export bulk`. |
 | `context` | Context | **Keep (expand)** | Context Composer. Currently has `compose` subcommand only. Absorb `context-pack` as `context pack`. |
 | `context-pack` | Context | **Merge into `context`** | Build a context pack for agent analysis. Duplicate noun with `context`. Merge as `context pack`. |
@@ -360,9 +360,9 @@ These commands have no `--json` or `--format json` flag and do not emit
 machine-parseable output:
 
 - `completions` — emits shell scripts
-- `dashboard` — side effect (opens browser)
+- `ops dashboard` — side effect (opens dashboard/TUI)
 - `open` — side effect (opens browser)
-- `tutorial` — interactive
+- `ops tutorial` — interactive
 - `auth` — interactive, OAuth flow
 - `init` — interactive, writes config
 - `backup` — creates file, prints path

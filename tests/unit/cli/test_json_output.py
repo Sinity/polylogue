@@ -72,8 +72,8 @@ def _looks_like_json_output(text: str) -> bool:
 # Commands intentionally excluded:
 #   - delete, ops reset    → destructive
 #   - import               → requires source config, modifies archive
-#   - tutorial, auth, init → interactive or requires external service
-#   - dashboard, open      → side effect (opens browser)
+#   - ops tutorial, auth, init → interactive or requires external service
+#   - ops dashboard, open      → side effect (opens browser)
 #   - ops backup           → creates backup file; needs populated archive
 _COMMANDS: list[tuple[list[str], bool]] = [
     # ── Query verbs (root --json flows through to output_format) ──────
@@ -119,10 +119,10 @@ _EXCLUDED: list[str] = [
     "delete (destructive)",
     "ops reset (destructive)",
     "import (requires source config, modifies archive)",
-    "tutorial (interactive)",
+    "ops tutorial (interactive)",
     "ops auth (interactive, requires external service)",
     "init (interactive, writes config)",
-    "dashboard (side effect: opens browser)",
+    "ops dashboard (side effect: opens browser)",
     "open (side effect: opens browser)",
     "ops backup (creates backup file)",
     "recent (pre-existing bug: hardcoded sort=updated_at is invalid)",

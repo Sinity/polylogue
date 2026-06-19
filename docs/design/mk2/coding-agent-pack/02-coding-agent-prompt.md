@@ -11,7 +11,7 @@ git status --short
 rg -n "QueryFirstGroupBase|RootModeRequest|query_first|query verbs|messages|raw|browser-capture|polylogue watch|polylogue mcp|dashboard|products|insights|derived" polylogue devtools tests docs pyproject.toml
 polylogue --help || true
 polylogue ops completions --help || true
-polylogue dashboard --help || true
+polylogue ops dashboard --help || true
 polylogue ops doctor --help || true
 polylogue messages --help || true
 polylogue raw --help || true
