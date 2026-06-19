@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from typing import cast
 
 
 def test_query_completions_do_not_import_expression_parser() -> None:
@@ -27,3 +28,26 @@ print(json.dumps({
     payload = json.loads(result.stdout)
     assert "repo" in payload["values"]
     assert payload["expression_loaded"] is False
+
+
+def test_terminal_query_completion_payloads_are_lightweight() -> None:
+    from polylogue.archive.query.completions import query_completion_payload
+
+    source_payload = query_completion_payload("terminal-source", incomplete="observed")
+    source_candidates = [
+        cast(dict[str, object], candidate) for candidate in cast(list[object], source_payload["candidates"])
+    ]
+    source_values = [candidate["value"] for candidate in source_candidates]
+    assert "observed-events" in source_values
+    source_candidate = next(candidate for candidate in source_candidates if candidate["value"] == "observed-events")
+    assert source_candidate["insert"] == "observed-events where "
+    assert source_candidate["kind"] == "query-terminal-source"
+
+    field_payload = query_completion_payload("terminal-field", unit="context-snapshots", incomplete="bound")
+    field_candidates = [
+        cast(dict[str, object], candidate) for candidate in cast(list[object], field_payload["candidates"])
+    ]
+    assert [candidate["value"] for candidate in field_candidates] == ["boundary"]
+    field_candidate = field_candidates[0]
+    assert field_candidate["insert"] == "boundary:"
+    assert field_candidate["kind"] == "query-terminal-field"

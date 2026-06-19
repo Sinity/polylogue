@@ -237,6 +237,84 @@ def test_query_structural_field_completion_per_shell(
 
 
 @pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
+def test_query_terminal_source_completion_per_shell(
+    shell: str,
+    comp_cls: type[ShellComplete],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Root query completion suggests terminal row sources."""
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+    items = _run_completion_for_partial(shell, comp_cls, ["find"], "context")
+    values = {value for value, _ in items}
+    assert "context-snapshots where " in values
+
+
+@pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
+def test_query_terminal_field_completion_per_shell(
+    shell: str,
+    comp_cls: type[ShellComplete],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After ``<source> where``, completion suggests terminal-unit fields."""
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+    items = _run_completion_for_partial(shell, comp_cls, ["find", "observed-events", "where"], "d")
+    item_map = dict(items)
+    assert item_map == {"delivery_state:": item_map["delivery_state:"]}
+    assert "Observed-event delivery state" in (item_map["delivery_state:"] or "")
+
+
+@pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
+def test_query_terminal_field_completion_after_connector_per_shell(
+    shell: str,
+    comp_cls: type[ShellComplete],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Terminal-unit field completion keeps source context after connectors."""
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+    items = _run_completion_for_partial(
+        shell,
+        comp_cls,
+        ["find", "context-snapshots", "where", "boundary:session_start", "AND"],
+        "sess",
+    )
+    item_map = dict(items)
+    assert "session.repo:" in item_map
+    assert "Owning session scope" in (item_map["session.repo:"] or "")
+
+
+@pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
+def test_root_option_completion_per_shell(
+    shell: str,
+    comp_cls: type[ShellComplete],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Root option completion still belongs to Click outside query syntax."""
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+    items = _run_completion_for_partial(shell, comp_cls, [], "--")
+    assert "--help" in {value for value, _ in items}
+
+
+@pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
 def test_query_count_operator_completion_per_shell(
     shell: str,
     comp_cls: type[ShellComplete],

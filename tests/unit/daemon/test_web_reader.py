@@ -1229,7 +1229,8 @@ class TestReaderQueryCompletions:
             payload = _get_json(base_url, "/api/query-completions?kind=field&incomplete=d")
 
         assert isinstance(payload, dict)
-        envelope = payload["query_completions"]
+        payload_dict = cast(dict[str, object], payload)
+        envelope = payload_dict["query_completions"]
         assert isinstance(envelope, dict)
         assert envelope["kind"] == "field"
         candidates = envelope["candidates"]
@@ -1246,6 +1247,24 @@ class TestReaderQueryCompletions:
         assert status == 400
         assert payload["error"] == "invalid_query_completion"
         assert "--unit is required" in str(payload["message"])
+
+    def test_query_completions_endpoint_exposes_terminal_fields(self) -> None:
+        with _running_server_without_seed() as (_server, base_url):
+            payload = _get_json(
+                base_url,
+                "/api/query-completions?kind=terminal-field&unit=context-snapshots&incomplete=bound",
+            )
+
+        payload_dict = cast(dict[str, object], payload)
+        envelope = payload_dict["query_completions"]
+        assert isinstance(envelope, dict)
+        envelope_payload = cast(dict[str, object], envelope)
+        assert envelope_payload["kind"] == "terminal-field"
+        candidates = envelope_payload["candidates"]
+        assert isinstance(candidates, list)
+        candidate_payloads = [cast(dict[str, object], candidate) for candidate in cast(list[object], candidates)]
+        assert [candidate["value"] for candidate in candidate_payloads] == ["boundary"]
+        assert candidate_payloads[0]["insert"] == "boundary:"
 
 
 class TestReaderQueryUnits:

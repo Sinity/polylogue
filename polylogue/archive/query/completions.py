@@ -17,6 +17,10 @@ from polylogue.archive.query.metadata import (
     structural_query_field_info,
     structural_query_fields,
     structural_query_units,
+    terminal_query_field_info,
+    terminal_query_fields,
+    terminal_query_sources,
+    terminal_query_unit,
 )
 from polylogue.operations.action_contracts import ACTION_CONTRACTS, CliActionContract
 
@@ -27,6 +31,8 @@ QUERY_COMPLETION_KINDS: tuple[str, ...] = (
     "field",
     "structural-unit",
     "structural-field",
+    "terminal-source",
+    "terminal-field",
     "count-operator",
     "date-operator",
     "action",
@@ -192,6 +198,65 @@ def query_structural_field_candidates(unit: str, incomplete: str) -> list[QueryC
     return candidates
 
 
+def query_terminal_source_candidates(incomplete: str) -> list[QueryCompletionCandidate]:
+    """Return ``<source> where`` candidates for terminal row queries."""
+
+    current = incomplete.strip().lower()
+    candidates: list[QueryCompletionCandidate] = []
+    for source in terminal_query_sources():
+        if current and not source.startswith(current):
+            continue
+        unit = terminal_query_unit(source)
+        info = STRUCTURAL_QUERY_UNIT_REGISTRY.get(unit or "")
+        description = "Terminal query row source."
+        if info is not None:
+            description = info.description
+            if info.example:
+                description = f"{description} Example: {info.example}"
+        candidates.append(
+            QueryCompletionCandidate(
+                value=source,
+                insert=f"{source} where ",
+                display=f"{source} where",
+                kind="query-terminal-source",
+                group="query terminal sources",
+                description=description,
+                source="_SOURCE_WHERE_SOURCES",
+            )
+        )
+    return candidates
+
+
+def query_terminal_field_candidates(source: str, incomplete: str) -> list[QueryCompletionCandidate]:
+    """Return field candidates accepted after ``<source> where``."""
+
+    current = incomplete.strip().lstrip("-").lower()
+    if ":" in current:
+        return []
+    candidates: list[QueryCompletionCandidate] = []
+    for field_name in terminal_query_fields(source):
+        if current and not field_name.startswith(current):
+            continue
+        info = terminal_query_field_info(source, field_name)
+        description = f"Field accepted after {source} where."
+        if info is not None:
+            description = info.description
+            if info.example:
+                description = f"{description} Example: {info.example}"
+        candidates.append(
+            QueryCompletionCandidate(
+                value=field_name,
+                insert=f"{field_name}:",
+                display=f"{field_name}:",
+                kind="query-terminal-field",
+                group=f"{source} terminal fields",
+                description=description,
+                source="_SOURCE_WHERE_SOURCES/STRUCTURAL_QUERY_UNIT_REGISTRY",
+            )
+        )
+    return candidates
+
+
 def query_count_operator_candidates(field: str, incomplete: str) -> list[QueryCompletionCandidate]:
     """Return readable count operators accepted by the query grammar."""
 
@@ -302,6 +367,12 @@ def query_completion_candidates(
         if unit is None:
             raise QueryCompletionError("--unit is required for structural-field completion")
         return query_structural_field_candidates(unit, incomplete)
+    if kind == "terminal-source":
+        return query_terminal_source_candidates(incomplete)
+    if kind == "terminal-field":
+        if unit is None:
+            raise QueryCompletionError("--unit is required for terminal-field completion")
+        return query_terminal_field_candidates(unit, incomplete)
     if kind == "count-operator":
         if field is None:
             raise QueryCompletionError("--field is required for count-operator completion")
@@ -346,4 +417,6 @@ __all__ = [
     "query_field_candidates",
     "query_structural_field_candidates",
     "query_structural_unit_candidates",
+    "query_terminal_field_candidates",
+    "query_terminal_source_candidates",
 ]

@@ -25,11 +25,14 @@ from polylogue.archive.query.completions import (
     query_field_candidates,
     query_structural_field_candidates,
     query_structural_unit_candidates,
+    query_terminal_field_candidates,
+    query_terminal_source_candidates,
 )
 from polylogue.archive.query.fields import QUERY_FIELD_DESCRIPTORS, CompletionSource
 from polylogue.archive.query.metadata import (
     EXPRESSION_FIELD_REGISTRY,
     structural_query_units,
+    terminal_query_sources,
 )
 from polylogue.archive.query.spec import QUERY_ACTION_TYPES, QUERY_RETRIEVAL_LANES, QUERY_SEQUENCE_ACTION_TYPES
 from polylogue.paths import active_index_db_path
@@ -245,6 +248,63 @@ def _complete_structural_query_context(incomplete: str) -> list[CompletionItem] 
     ]
 
 
+def _terminal_completion_context(incomplete: str) -> tuple[str, str] | None:
+    stripped = incomplete.strip()
+    lower = stripped.lower()
+    sources = terminal_query_sources()
+    for source in sources:
+        prefix = f"{source} where "
+        if lower.startswith(prefix):
+            return source, stripped[len(prefix) :].rsplit(" ", 1)[-1]
+        if lower == f"{source} where":
+            return source, ""
+
+    words = _completion_words()
+    if not words:
+        return None
+    if words[0] == "find":
+        words = words[1:]
+    if not words:
+        return None
+    lowered_words = tuple(word.lower() for word in words)
+    for index, word in enumerate(lowered_words[:-1]):
+        if lowered_words[index + 1] == "where" and word in sources:
+            source = word
+            return source, stripped
+    return None
+
+
+def _complete_terminal_query_context(incomplete: str) -> list[CompletionItem] | None:
+    context = _terminal_completion_context(incomplete)
+    if context is None:
+        return None
+    source, prefix = context
+    return [
+        query_completion_candidate_to_click_item(candidate)
+        for candidate in query_terminal_field_candidates(source, prefix)
+    ]
+
+
+def complete_query_expression_context_fields(
+    ctx: click.Context,
+    param: click.Parameter | None,
+    incomplete: str,
+) -> list[CompletionItem] | None:
+    """Complete only when the cursor is already inside query syntax."""
+
+    if incomplete.startswith("--"):
+        return None
+    terminal_items = _complete_terminal_query_context(incomplete)
+    if terminal_items is not None:
+        return terminal_items
+    structural_items = _complete_structural_query_context(incomplete)
+    if structural_items is not None:
+        return structural_items
+    if ":" in incomplete:
+        return _complete_query_expression_values(ctx, param, incomplete)
+    return None
+
+
 def complete_query_expression_fields(
     ctx: click.Context,
     param: click.Parameter | None,
@@ -252,15 +312,15 @@ def complete_query_expression_fields(
 ) -> list[CompletionItem]:
     """Complete query DSL field tokens from the canonical grammar registry."""
 
-    if incomplete.startswith("--"):
-        return []
-    structural_items = _complete_structural_query_context(incomplete)
-    if structural_items is not None:
-        return structural_items
-    if ":" in incomplete:
-        return _complete_query_expression_values(ctx, param, incomplete)
+    context_items = complete_query_expression_context_fields(ctx, param, incomplete)
+    if context_items is not None:
+        return context_items
     del ctx, param
-    return [query_completion_candidate_to_click_item(candidate) for candidate in query_field_candidates(incomplete)]
+    candidates = [
+        *query_terminal_source_candidates(incomplete),
+        *query_field_candidates(incomplete),
+    ]
+    return [query_completion_candidate_to_click_item(candidate) for candidate in candidates]
 
 
 def complete_query_actions(
@@ -271,6 +331,8 @@ def complete_query_actions(
     """Complete root query actions from public action contracts."""
 
     del ctx, param
+    if _terminal_completion_context(incomplete) is not None or _structural_completion_context(incomplete) is not None:
+        return []
     return [query_completion_candidate_to_click_item(candidate) for candidate in query_action_candidates(incomplete)]
 
 
@@ -455,6 +517,7 @@ __all__ = [
     "complete_action_sequence_values",
     "complete_action_values",
     "complete_query_actions",
+    "complete_query_expression_context_fields",
     "complete_query_expression_fields",
     "complete_session_ids",
     "complete_cwd_prefix_values",
@@ -472,5 +535,7 @@ __all__ = [
     "query_completion_candidate_to_click_item",
     "query_structural_field_candidates",
     "query_structural_unit_candidates",
+    "query_terminal_field_candidates",
+    "query_terminal_source_candidates",
     "QueryCompletionCandidate",
 ]

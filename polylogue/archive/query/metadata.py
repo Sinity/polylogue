@@ -467,6 +467,40 @@ def structural_query_field_info(unit: str, field: str) -> StructuralQueryFieldIn
     return None
 
 
+def terminal_query_sources() -> tuple[str, ...]:
+    """Return source tokens accepted by the ``<source> where ...`` grammar."""
+
+    return tuple(sorted(source for source, _unit in _SOURCE_WHERE_SOURCES))
+
+
+def terminal_query_unit(source: str) -> QueryUnitName | None:
+    """Return the canonical query unit for a terminal source token."""
+
+    normalized = source.lower()
+    for source_name, unit in _SOURCE_WHERE_SOURCES:
+        if source_name == normalized:
+            return unit
+    return None
+
+
+def terminal_query_fields(source: str) -> tuple[str, ...]:
+    """Return field names accepted after ``<source> where``."""
+
+    unit = terminal_query_unit(source)
+    if unit is None:
+        return ()
+    return structural_query_fields(unit)
+
+
+def terminal_query_field_info(source: str, field: str) -> StructuralQueryFieldInfo | None:
+    """Return metadata for a field accepted after ``<source> where``."""
+
+    unit = terminal_query_unit(source)
+    if unit is None:
+        return None
+    return structural_query_field_info(unit, field)
+
+
 def count_query_fields() -> tuple[str, ...]:
     """Return count fields with readable comparison/range syntax."""
 
@@ -523,4 +557,8 @@ __all__ = [
     "structural_query_field_info",
     "structural_query_fields",
     "structural_query_units",
+    "terminal_query_field_info",
+    "terminal_query_fields",
+    "terminal_query_sources",
+    "terminal_query_unit",
 ]
