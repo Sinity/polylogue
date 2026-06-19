@@ -432,15 +432,20 @@ session source stage:</p>
 <pre><code class="language-bash">polylogue 'sessions where repo:polylogue AND origin:claude-code-session | messages where role:assistant'
 polylogue 'sessions where origin:(codex-session|claude-code-session) | actions where action:file_edit'
 polylogue 'sessions where repo:polylogue | messages where role:assistant | limit 10 | offset 20'
+polylogue 'sessions where repo:polylogue | messages where role:assistant | sort by time desc | limit 10'
 </code></pre>
 <p>The left stage is lowered into <code>session.&lt;field&gt;</code> predicates on the terminal
 unit query, so it uses the same row executor as direct <code>messages/actions/...</code>
 queries. For now the session stage accepts field/count/date predicates only;
 FTS, semantic, <code>exists</code>, lineage, and sequence stages are typed errors until
 they have dedicated unit-changing lowerers. Terminal pipeline stages currently
-support <code>limit N</code> and <code>offset N</code>; query-string limits narrow the surface limit
-instead of expanding caller/API caps, and query-string offsets are added to the
-caller offset.</p>
+support <code>sort by time [asc|desc]</code>, <code>limit N</code>, and <code>offset N</code> for SQL-backed
+terminal rows (<code>messages</code>, <code>actions</code>, <code>blocks</code>, <code>assertions</code>). Query-string
+limits narrow the surface limit instead of expanding caller/API caps, and
+query-string offsets are added to the caller offset. Runtime-transform terminal
+rows (<code>runs</code>, <code>observed-events</code>, <code>context-snapshots</code>) reject sort stages until
+they have streaming lowerers; they must not collect every projected row in
+memory merely to sort a page.</p>
 <p>Unsupported forms raise typed <code>ExpressionCompileError</code>s and must not broaden
 into looser full-text search. In particular, reserved unit prefixes such as
 <code>messages where</code> are errors when malformed; they are not treated as ordinary
