@@ -704,6 +704,13 @@ modifiers, and unpaired surrogates.</p>
 <ul>
 <li><strong>Journal mode</strong>: WAL on the write profile. Set once per database
 the first time a writer opens it; persists in the file header.</li>
+<li><strong>Connection cache profiles</strong>: high-throughput ingest writes use the
+full write profile (<code>128 MiB</code> SQLite cache, <code>1 GiB</code> mmap allowance).
+Long-running daemon/ops writes use the daemon write profile (<code>16 MiB</code>
+cache, <code>64 MiB</code> mmap allowance) so small telemetry, cursor, heartbeat,
+OTLP, and maintenance writes do not keep batch-sized SQLite page-cache
+pressure charged to <code>polylogued.service</code>. Read-only daemon probes use
+the read profile (<code>query_only=ON</code>) instead of opening write connections.</li>
 <li><strong>Autocheckpoint threshold</strong>: <code>WAL_AUTOCHECKPOINT_PAGES = 10000</code> =
 40 MiB. When the WAL crosses this, SQLite runs a PASSIVE checkpoint
 inline with the next commit.</li>
