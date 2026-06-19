@@ -465,6 +465,21 @@ class TestBooleanQueryExpression:
             ),
         )
 
+    def test_pipeline_limit_and_offset_stages_are_parsed(self) -> None:
+        source = parse_unit_source_expression(
+            "sessions where repo:polylogue | messages where role:assistant | limit 2 | offset 3"
+        )
+
+        assert source is not None
+        assert source.limit == 2
+        assert source.offset == 3
+
+    def test_pipeline_rejects_unknown_terminal_stage(self) -> None:
+        with pytest.raises(ExpressionCompileError, match="unsupported pipeline stage"):
+            parse_unit_source_expression(
+                "sessions where repo:polylogue | messages where role:assistant | group by role"
+            )
+
     def test_pipeline_rejects_unlowered_session_stage_predicates(self) -> None:
         with pytest.raises(ExpressionCompileError, match="FTS, semantic, exists, lineage, and sequence"):
             parse_unit_source_expression('sessions where ~"timeout" | messages where role:assistant')
@@ -982,6 +997,55 @@ class TestBooleanQueryExpression:
                 "the pipeline answer",
             )
         ]
+
+    def test_session_to_message_pipeline_limit_offset_executes_terminal_window(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        from polylogue.archive.query.unit_results import query_unit_rows
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "hit")
+            .provider("claude-code")
+            .git_repository_url("polylogue")
+            .title("pipeline window")
+            .add_message("m-1", role="assistant", text="first")
+            .add_message("m-2", role="assistant", text="second")
+            .add_message("m-3", role="assistant", text="third")
+            .save()
+        )
+
+        source = parse_unit_source_expression(
+            "sessions where repo:polylogue | messages where role:assistant | limit 1 | offset 1"
+        )
+        assert source is not None
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            envelope = query_unit_rows(archive, source, query="pipeline-window", limit=20)
+
+        assert envelope.limit == 1
+        assert envelope.offset == 0
+        assert envelope.next_offset == 1
+        assert len(envelope.items) == 1
+        row = envelope.items[0]
+        from polylogue.surfaces.payloads import MessageQueryRowPayload
+
+        assert isinstance(row, MessageQueryRowPayload)
+        assert row.message_id == "claude-code-session:ext-hit:m-2"
+        assert row.text == "second"
+
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            next_page = query_unit_rows(archive, source, query="pipeline-window", limit=20, offset=envelope.next_offset)
+
+        assert next_page.offset == 1
+        assert next_page.next_offset is None
+        assert len(next_page.items) == 1
+        next_row = next_page.items[0]
+        assert isinstance(next_row, MessageQueryRowPayload)
+        assert next_row.message_id == "claude-code-session:ext-hit:m-3"
+        assert next_row.text == "third"
 
     def test_exists_action_predicate_executes_against_archive(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
