@@ -26,6 +26,7 @@ from polylogue.mcp.payloads import (
     MCPArchiveStatsPayload,
     MCPAssertionClaimListPayload,
     MCPBlackboardNoteListPayload,
+    MCPContextImagePayload,
     MCPEmbeddingPreflightPayload,
     MCPEmbeddingStatusPayload,
     MCPRawArtifactPayload,
@@ -241,6 +242,45 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         "List sessions matching the supplied filters. Filter parameters mirror ``MCPSessionQueryRequest`` fields."
     )
     mcp.tool()(_list_sessions)
+
+    @mcp.tool()
+    async def compile_context(
+        seed_ref: str | None = None,
+        seed_query: str | None = None,
+        read_views: str = "recovery",
+        max_tokens: int | None = None,
+        include_assertions: bool = True,
+        include_candidates: bool = False,
+    ) -> str:
+        """Compile a bounded context image from query/ref seeds and read views."""
+
+        async def run() -> str:
+            from pydantic import ValidationError
+
+            from polylogue.context.compiler import ContextSpec
+
+            seed_refs = _split_archive_csv(seed_ref)
+            if seed_query is None and not seed_refs:
+                return hooks.error_json(
+                    "compile_context requires seed_ref or seed_query",
+                    code="invalid_request",
+                    tool="compile_context",
+                )
+            try:
+                spec = ContextSpec(
+                    seed_query=seed_query,
+                    seed_refs=seed_refs,
+                    read_views=_split_archive_csv(read_views) or ("recovery",),
+                    max_tokens=max_tokens,
+                    include_assertions=include_assertions,
+                    include_candidates=include_candidates,
+                )
+            except ValidationError as exc:
+                return hooks.error_json(str(exc), code="invalid_request", tool="compile_context")
+            image = await hooks.get_polylogue().compile_context(spec)
+            return hooks.json_payload(MCPContextImagePayload.model_validate(image), exclude_none=True)
+
+        return await hooks.async_safe_call("compile_context", run)
 
     @mcp.tool()
     async def get_session(

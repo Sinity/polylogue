@@ -6,7 +6,7 @@ import builtins
 import json
 import sqlite3
 import uuid
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Iterable, Sequence
 from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
@@ -61,7 +61,7 @@ if TYPE_CHECKING:
     from polylogue.archive.session.neighbor_candidates import SessionNeighborCandidate
     from polylogue.archive.stats import ArchiveStats as StorageArchiveStats
     from polylogue.config import Config
-    from polylogue.context.compiler import RecoveryContextCompilation
+    from polylogue.context.compiler import ContextImage, ContextSpec, RecoveryContextCompilation
     from polylogue.insights.audit import InsightRigorAuditQuery, InsightRigorAuditReport
     from polylogue.insights.export_bundles import InsightExportBundleRequest, InsightExportBundleResult
     from polylogue.insights.readiness import InsightReadinessQuery, InsightReadinessReport
@@ -164,6 +164,30 @@ def _provider_for_archive_origin(origin: str) -> Provider:
         return provider_from_origin(Origin(origin))
     except ValueError:
         return Provider.UNKNOWN
+
+
+def _dedupe_object_refs(refs: Iterable[ObjectRef]) -> tuple[ObjectRef, ...]:
+    deduped: list[ObjectRef] = []
+    seen: set[tuple[str, str]] = set()
+    for ref in refs:
+        key = (ref.kind, ref.object_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(ref)
+    return tuple(deduped)
+
+
+def _dedupe_evidence_refs(refs: Iterable[EvidenceRef]) -> tuple[EvidenceRef, ...]:
+    deduped: list[EvidenceRef] = []
+    seen: set[tuple[str, str | None, int | None]] = set()
+    for ref in refs:
+        key = (ref.session_id, ref.message_id, ref.block_index)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(ref)
+    return tuple(deduped)
 
 
 def _parse_archive_datetime(value: str | None) -> datetime | None:
@@ -1263,6 +1287,7 @@ class PolylogueArchiveMixin:
         digest: RecoveryDigest,
         *,
         report: RecoveryReportPreset | None = None,
+        include_assertions: bool = True,
     ) -> RecoveryContextCompilation:
         """Compile one recovery-context view without making callers branch on bundle shape."""
         from polylogue.context.compiler import compile_recovery_context
@@ -1270,7 +1295,12 @@ class PolylogueArchiveMixin:
 
         packet: RecoveryWorkPacket | None = None
         target_ref = f"session:{digest.session_id}"
-        if report == "work-packet":
+        claims: Sequence[ArchiveAssertionEnvelope]
+        if not include_assertions:
+            claims = ()
+            if report == "work-packet":
+                packet = await self._recovery_work_packet_from_digest(digest, claims=claims)
+        elif report == "work-packet":
             claims = await self.list_assertion_claims(target_ref=target_ref, limit=20)
             packet = await self._recovery_work_packet_from_digest(digest, claims=claims)
         else:
@@ -1397,6 +1427,121 @@ class PolylogueArchiveMixin:
                 )
             return RecoveryReadPayload.from_work_packet_json(packet)
         raise ValueError(f"unsupported recovery report: {report}")
+
+    async def compile_context(self, spec: ContextSpec) -> ContextImage:
+        """Compile a bounded context image from query/ref seeds and read views.
+
+        This is the executable API boundary for ``ContextSpec``. It deliberately
+        reuses existing recovery/read primitives and records unsupported or
+        missing inputs as omissions instead of creating a parallel memory store.
+        """
+        from polylogue.context.compiler import ContextImage, ContextOmission, ContextSegment
+
+        segments: list[ContextSegment] = []
+        omitted: list[ContextOmission] = []
+        requested_views = tuple(dict.fromkeys(spec.read_views or ("recovery",)))
+        session_ids: list[str] = []
+        seen_sessions: set[str] = set()
+
+        for seed_ref in spec.seed_refs:
+            if not seed_ref.startswith("session:"):
+                omitted.append(
+                    ContextOmission(
+                        ref=seed_ref,
+                        reason="unsupported",
+                        detail="compile_context currently accepts session: refs as direct seeds",
+                    )
+                )
+                continue
+            session_id = seed_ref.removeprefix("session:")
+            if session_id not in seen_sessions:
+                seen_sessions.add(session_id)
+                session_ids.append(session_id)
+
+        if spec.seed_query is not None:
+            result = await self.search(spec.seed_query, limit=1)
+            if not result.hits:
+                omitted.append(
+                    ContextOmission(
+                        query=spec.seed_query,
+                        reason="not_found",
+                        detail="seed query matched no sessions",
+                    )
+                )
+            else:
+                session_id = result.hits[0].session_id
+                if session_id not in seen_sessions:
+                    seen_sessions.add(session_id)
+                    session_ids.append(session_id)
+
+        token_budget = spec.max_tokens
+        token_total = 0
+        for session_id in session_ids:
+            digest = await self.recovery_digest(session_id)
+            if digest is None:
+                omitted.append(
+                    ContextOmission(
+                        ref=f"session:{session_id}",
+                        reason="not_found",
+                        detail="session seed did not resolve to a recovery digest",
+                    )
+                )
+                continue
+            for view in requested_views:
+                if view not in {"recovery", "work-packet"}:
+                    omitted.append(
+                        ContextOmission(
+                            ref=f"session:{session_id}",
+                            view=view,
+                            reason="unsupported",
+                            detail="compile_context currently supports recovery and work-packet views",
+                        )
+                    )
+                    continue
+                compilation = await self._compile_recovery_context_from_digest(
+                    digest,
+                    report="work-packet" if view == "work-packet" else None,
+                    include_assertions=spec.include_assertions,
+                )
+                if compilation.context_image is None:
+                    omitted.append(
+                        ContextOmission(
+                            ref=f"session:{session_id}",
+                            view=view,
+                            reason="not_found",
+                            detail="recovery compiler did not produce a context image",
+                        )
+                    )
+                    continue
+                segment = compilation.context_image.segments[0]
+                if token_budget is not None and token_total + segment.token_estimate > token_budget:
+                    omitted.append(
+                        ContextOmission(
+                            ref=f"session:{session_id}",
+                            view=view,
+                            reason="budget",
+                            detail="segment exceeded the requested context token budget",
+                        )
+                    )
+                    continue
+                token_total += segment.token_estimate
+                segments.append(segment)
+
+        object_refs = _dedupe_object_refs(ref for segment in segments for ref in segment.object_refs)
+        evidence_refs = _dedupe_evidence_refs(ref for segment in segments for ref in segment.evidence_refs)
+        assertion_refs = tuple(dict.fromkeys(ref for segment in segments for ref in segment.assertion_refs))
+        caveats = tuple(dict.fromkeys(caveat for segment in segments for caveat in segment.caveats))
+
+        return ContextImage(
+            spec=spec,
+            segments=tuple(segments),
+            object_refs=object_refs,
+            evidence_refs=evidence_refs,
+            assertion_refs=assertion_refs,
+            omitted=tuple(omitted),
+            caveats=caveats,
+            token_estimate=token_total,
+        )
 
     async def list_read_view_profiles(self) -> list[JSONDocument]:
         """List executable read-view profile metadata."""

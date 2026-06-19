@@ -17,6 +17,7 @@ EXPECTED_TOOL_NAMES = {
     "query_units",
     "resolve_ref",
     "list_sessions",
+    "compile_context",
     "build_context_pack",
     "blackboard_list",
     "blackboard_post",
@@ -205,6 +206,7 @@ def make_polylogue_mock(*, resolved_id: str | None = None) -> MagicMock:
     poly.list_assertion_claim_payloads = AsyncMock(return_value=[])
     poly.recovery_report = AsyncMock(return_value=None)
     poly.recovery_work_packet = AsyncMock(return_value=None)
+    poly.compile_context = AsyncMock(return_value=None)
     poly.explain_query_expression = AsyncMock(return_value={})
     poly.query_completions = AsyncMock(return_value={})
     poly.get_messages_paginated = AsyncMock(return_value=([], 0))

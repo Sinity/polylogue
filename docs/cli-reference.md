@@ -383,6 +383,7 @@ Usage: polylogue continue [OPTIONS]
 
   Examples:
       polylogue find id:abc then continue
+      polylogue find id:abc then continue --format json
       polylogue --latest continue --to clipboard
       polylogue find 'repo:polylogue near:id:abc' then continue --to file --out handoff.md
 
@@ -390,6 +391,8 @@ Options:
   --to [terminal|stdout|browser|clipboard|file]
                                   Output destination.  [default: terminal]
   --out PATH                      File path for --to file.
+  -f, --format [json]             Output format. JSON emits the shared
+                                  ContextImage payload.
   --help                          Show this message and exit.
 ```
 

@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Literal, cast
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 
 from polylogue.context.assertion_claims import context_claim_text
 from polylogue.core.refs import EvidenceRef, ObjectRef
@@ -20,8 +20,85 @@ from polylogue.insights.transforms import RecoveryDigest, RecoveryReportPreset, 
 from polylogue.surfaces.payloads import AssertionClaimPayload
 
 RecoveryContextKind = Literal["recovery_digest", "recovery_report", "work_packet"]
+ContextPurpose = Literal["continue", "review", "handoff", "debug", "export"]
+ContextSegmentKind = Literal["recovery", "read_view", "assertion", "caveat"]
+ContextOmissionReason = Literal["budget", "unsupported", "not_found", "policy", "redacted"]
 
 _SUPPORTED_REPORTS: frozenset[str] = frozenset({"continue", "blame", "work-packet"})
+
+
+class ContextSegment(ArchiveInsightModel):
+    """One bounded section of a compiled context image."""
+
+    segment_id: str
+    kind: ContextSegmentKind
+    title: str
+    markdown: str | None = None
+    payload_kind: str | None = None
+    object_refs: tuple[ObjectRef, ...] = ()
+    evidence_refs: tuple[EvidenceRef, ...] = ()
+    assertion_refs: tuple[str, ...] = ()
+    caveats: tuple[str, ...] = ()
+    token_estimate: int = 0
+    lossiness: str | None = None
+
+
+class ContextOmission(ArchiveInsightModel):
+    """A requested context input that was omitted deliberately."""
+
+    ref: str | None = None
+    query: str | None = None
+    view: str | None = None
+    reason: ContextOmissionReason
+    detail: str
+
+
+class ContextSpec(ArchiveInsightModel):
+    """Declarative request for a compiled context image.
+
+    The spec is pure input. It does not imply delivery, durable recording, or
+    automatic context injection.
+    """
+
+    purpose: ContextPurpose = "continue"
+    seed_query: str | None = None
+    seed_refs: tuple[str, ...] = ()
+    read_views: tuple[str, ...] = ("recovery",)
+    max_tokens: int | None = Field(default=None, ge=1)
+    include_assertions: bool = True
+    include_candidates: bool = False
+    redaction_policy: Literal["default", "raw-opt-in"] = "default"
+
+    @model_validator(mode="after")
+    def _requires_seed(self) -> ContextSpec:
+        if self.seed_query is None and not self.seed_refs:
+            raise ValueError("ContextSpec requires seed_query or seed_refs")
+        return self
+
+
+class ContextImage(ArchiveInsightModel):
+    """Compiled, storage-free context payload over archive refs and views."""
+
+    spec: ContextSpec
+    segments: tuple[ContextSegment, ...]
+    object_refs: tuple[ObjectRef, ...] = ()
+    evidence_refs: tuple[EvidenceRef, ...] = ()
+    assertion_refs: tuple[str, ...] = ()
+    omitted: tuple[ContextOmission, ...] = ()
+    caveats: tuple[str, ...] = ()
+    token_estimate: int = 0
+
+
+class ContextSnapshotRecord(ArchiveInsightModel):
+    """Evidence record for context that was actually delivered."""
+
+    snapshot_ref: str
+    run_ref: str | None = None
+    boundary: str
+    inheritance_mode: str = "explicit"
+    segment_refs: tuple[str, ...] = ()
+    evidence_refs: tuple[EvidenceRef, ...] = ()
+    metadata: dict[str, object] = Field(default_factory=dict)
 
 
 class RecoveryContextCompilation(ArchiveInsightModel):
@@ -45,6 +122,7 @@ class RecoveryContextCompilation(ArchiveInsightModel):
     object_refs: tuple[ObjectRef, ...] = ()
     caveats: tuple[str, ...] = ()
     assertion_claims: tuple[AssertionClaimPayload, ...] = ()
+    context_image: ContextImage | None = None
 
     @model_validator(mode="after")
     def _validate_requested_shape(self) -> RecoveryContextCompilation:
@@ -54,6 +132,8 @@ class RecoveryContextCompilation(ArchiveInsightModel):
             raise ValueError("work_packet compilation requires work_packet")
         if self.kind in {"recovery_report", "work_packet"} and not self.markdown:
             raise ValueError(f"{self.kind} compilation requires markdown")
+        if self.context_image is not None and self.context_image.segments == ():
+            raise ValueError("context_image requires at least one segment")
         return self
 
 
@@ -80,7 +160,7 @@ def compile_recovery_context(
     if report is None:
         if work_packet is not None:
             raise ValueError("work_packet may only be supplied when report='work-packet'")
-        return RecoveryContextCompilation(
+        compiled = RecoveryContextCompilation(
             kind="recovery_digest",
             session_id=digest.session_id,
             digest=digest,
@@ -90,13 +170,14 @@ def compile_recovery_context(
             caveats=_digest_caveats(digest),
             assertion_claims=claims,
         )
+        return _attach_context_image(compiled)
 
     if report not in _SUPPORTED_REPORTS:
         raise ValueError(f"unsupported recovery report preset: {report}")
     preset = cast(RecoveryReportPreset, report)
     if preset == "work-packet":
         packet = work_packet or digest.work_packet()
-        return RecoveryContextCompilation(
+        compiled = RecoveryContextCompilation(
             kind="work_packet",
             session_id=digest.session_id,
             report=preset,
@@ -108,10 +189,11 @@ def compile_recovery_context(
             caveats=_packet_caveats(packet),
             assertion_claims=claims,
         )
+        return _attach_context_image(compiled)
 
     if work_packet is not None:
         raise ValueError("work_packet may only be supplied when report='work-packet'")
-    return RecoveryContextCompilation(
+    compiled = RecoveryContextCompilation(
         kind="recovery_report",
         session_id=digest.session_id,
         report=preset,
@@ -122,6 +204,60 @@ def compile_recovery_context(
         caveats=_digest_caveats(digest),
         assertion_claims=claims,
     )
+    return _attach_context_image(compiled)
+
+
+def context_image_from_recovery(compilation: RecoveryContextCompilation) -> ContextImage:
+    """Promote a recovery compilation into the general context-image shape."""
+
+    segment = ContextSegment(
+        segment_id=f"recovery:{compilation.session_id}:{compilation.report or compilation.kind}",
+        kind="recovery",
+        title=_recovery_segment_title(compilation),
+        markdown=compilation.markdown,
+        payload_kind=compilation.kind,
+        object_refs=compilation.object_refs,
+        evidence_refs=compilation.evidence_refs,
+        assertion_refs=tuple(claim.assertion_id for claim in compilation.assertion_claims),
+        caveats=compilation.caveats,
+        token_estimate=_estimate_tokens(compilation.markdown),
+        lossiness="bounded_recovery_transform",
+    )
+    spec = ContextSpec(
+        purpose="handoff" if compilation.report == "work-packet" else "continue",
+        seed_refs=(f"session:{compilation.session_id}",),
+        read_views=("work-packet",) if compilation.report == "work-packet" else ("recovery",),
+        include_assertions=bool(compilation.assertion_claims),
+        include_candidates=False,
+    )
+    assertion_refs = tuple(claim.assertion_id for claim in compilation.assertion_claims)
+    return ContextImage(
+        spec=spec,
+        segments=(segment,),
+        object_refs=compilation.object_refs,
+        evidence_refs=compilation.evidence_refs,
+        assertion_refs=assertion_refs,
+        caveats=compilation.caveats,
+        token_estimate=segment.token_estimate,
+    )
+
+
+def _attach_context_image(compilation: RecoveryContextCompilation) -> RecoveryContextCompilation:
+    return compilation.model_copy(update={"context_image": context_image_from_recovery(compilation)})
+
+
+def _recovery_segment_title(compilation: RecoveryContextCompilation) -> str:
+    if compilation.report == "work-packet":
+        return "Recovery work packet"
+    if compilation.report is not None:
+        return f"Recovery {compilation.report} report"
+    return "Recovery digest"
+
+
+def _estimate_tokens(text: str | None) -> int:
+    if not text:
+        return 0
+    return max(1, len(text.split()))
 
 
 def _digest_evidence_refs(digest: RecoveryDigest) -> tuple[EvidenceRef, ...]:
@@ -162,7 +298,16 @@ def _append_assertion_claims_markdown(markdown: str, claims: Sequence[AssertionC
 
 
 __all__ = [
+    "ContextImage",
+    "ContextOmission",
+    "ContextOmissionReason",
+    "ContextPurpose",
+    "ContextSegment",
+    "ContextSegmentKind",
+    "ContextSnapshotRecord",
+    "ContextSpec",
     "RecoveryContextCompilation",
     "RecoveryContextKind",
     "compile_recovery_context",
+    "context_image_from_recovery",
 ]

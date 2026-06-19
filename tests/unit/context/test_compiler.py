@@ -6,7 +6,7 @@ from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.domain_models import Session
-from polylogue.context.compiler import compile_recovery_context
+from polylogue.context.compiler import ContextSpec, compile_recovery_context, context_image_from_recovery
 from polylogue.core.enums import Origin
 from polylogue.core.refs import EvidenceRef, ObjectRef
 from polylogue.insights.transforms import RecoveryWorkPacketEntry, compile_recovery_digest
@@ -70,6 +70,13 @@ def test_compiler_treats_digest_as_the_default_recovery_bundle() -> None:
         ObjectRef(kind="session", object_id="codex-session:compiler"),
         ObjectRef(kind="branch", object_id="feature/context-compiler"),
     )
+    assert compiled.context_image is not None
+    assert compiled.context_image.spec.seed_refs == ("session:codex-session:compiler",)
+    assert compiled.context_image.spec.read_views == ("recovery",)
+    assert compiled.context_image.segments[0].kind == "recovery"
+    assert compiled.context_image.segments[0].payload_kind == "recovery_digest"
+    assert compiled.context_image.segments[0].evidence_refs == compiled.evidence_refs
+    assert compiled.context_image.token_estimate > 0
 
 
 def test_compiler_renders_continue_report_without_work_packet_side_channel() -> None:
@@ -86,6 +93,9 @@ def test_compiler_renders_continue_report_without_work_packet_side_channel() -> 
     assert "Goal: unify continuation reports" in compiled.markdown
     assert "work_packet" not in compiled.kind
     assert "subagent_reports_missing" in compiled.caveats
+    assert compiled.context_image is not None
+    assert compiled.context_image.segments[0].title == "Recovery continue report"
+    assert compiled.context_image.segments[0].lossiness == "bounded_recovery_transform"
 
 
 def test_compiler_uses_supplied_work_packet_bundle_for_work_packet_report() -> None:
@@ -112,6 +122,11 @@ def test_compiler_uses_supplied_work_packet_bundle_for_work_packet_report() -> N
     assert compiled.object_refs == enriched_packet.target_refs
     assert "caveat" in compiled.caveats
     assert "subagents" in compiled.caveats
+    assert compiled.context_image is not None
+    assert compiled.context_image.spec.purpose == "handoff"
+    assert compiled.context_image.spec.read_views == ("work-packet",)
+    assert compiled.context_image.segments[0].payload_kind == "work_packet"
+    assert compiled.context_image.evidence_refs == enriched_packet.evidence_refs
 
 
 def test_compiler_rejects_parallel_packet_shape_for_non_packet_report() -> None:
@@ -122,3 +137,38 @@ def test_compiler_rejects_parallel_packet_shape_for_non_packet_report() -> None:
 
     with pytest.raises(ValueError, match="unsupported recovery report preset"):
         compile_recovery_context(digest, report="incident")
+
+
+def test_context_image_from_recovery_preserves_assertion_refs() -> None:
+    from polylogue.surfaces.payloads import AssertionClaimPayload
+
+    digest = compile_recovery_digest(_session())
+    claim = AssertionClaimPayload(
+        assertion_id="claim-1",
+        target_ref="session:codex-session:compiler",
+        kind="decision",
+        body_text="Keep context compilation evidence-backed.",
+        evidence_refs=("codex-session:compiler",),
+        status="active",
+        visibility="private",
+        context_policy={"inject": True},
+        created_at_ms=1,
+        updated_at_ms=1,
+    )
+    compiled = compile_recovery_context(digest, assertion_claims=(claim,))
+
+    image = context_image_from_recovery(compiled)
+
+    assert image.assertion_refs == ("claim-1",)
+    assert image.segments[0].assertion_refs == ("claim-1",)
+    assert image.segments[0].markdown is not None
+    assert "Assertion Claims" in image.segments[0].markdown
+
+
+def test_context_spec_requires_an_explicit_seed() -> None:
+    with pytest.raises(ValueError, match="requires seed_query or seed_refs"):
+        ContextSpec()
+
+    spec = ContextSpec(seed_query="sessions where repo:polylogue", max_tokens=1200)
+    assert spec.seed_query == "sessions where repo:polylogue"
+    assert spec.include_candidates is False
