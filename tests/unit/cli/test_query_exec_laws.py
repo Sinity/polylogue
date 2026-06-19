@@ -2439,18 +2439,18 @@ SEARCH_FILTER_CASES = [
     # Archive input validation raises click.UsageError → status 2 (Click's
     # usage-error convention), consistent across all archive filter validation.
     ("since_invalid", ["Python", "--since", "not-a-date"], 1, "date"),
-    ("limit_list", ["JavaScript", "--limit", "1", "list"], 0, None),
+    ("limit_read", ["JavaScript", "--limit", "1", "then", "read"], 0, None),
 ]
 
 SEARCH_FORMAT_CASES = [
-    ("json_list", ["Python", "list", "-f", "json"], "json_list"),
+    ("json_read", ["Python", "then", "read", "-f", "json"], "json_list"),
     ("json_single", ["JavaScript", "-f", "json", "--limit", "1"], "json_single"),
     (
         "json_unit_messages",
         ["-f", "json", "messages", "where", "role:assistant", "AND", "text:Python"],
         "json_unit_messages",
     ),
-    ("list_mode", ["async", "list"], "plain_list"),
+    ("read_mode", ["async", "then", "read"], "plain_list"),
     ("markdown", ["Rust", "-f", "markdown", "--limit", "1"], "markdown"),
 ]
 
@@ -2677,9 +2677,9 @@ class TestSearchEdgeCases:
         del search_workspace
 
         runner = CliRunner()
-        # Query mode with --list to ensure consistent output
-        result_lower = runner.invoke(cli, ["--plain", "python", "list", "-f", "json"])
-        result_upper = runner.invoke(cli, ["--plain", "PYTHON", "list", "-f", "json"])
+        # Query mode with read action to ensure consistent output.
+        result_lower = runner.invoke(cli, ["--plain", "find", "python", "then", "read", "-f", "json"])
+        result_upper = runner.invoke(cli, ["--plain", "find", "PYTHON", "then", "read", "-f", "json"])
 
         # Both should have same exit code
         assert result_lower.exit_code == result_upper.exit_code
@@ -2702,7 +2702,7 @@ class TestSearchEdgeCases:
 
         runner = CliRunner()
         # Query mode: multiple positional args = multiple query terms
-        result = runner.invoke(cli, ["--plain", "Python", "exception", "list", "-f", "json"])
+        result = runner.invoke(cli, ["--plain", "find", "Python", "exception", "then", "read", "-f", "json"])
         assert result.exit_code in (0, 2)
         if result.exit_code == 0:
             # #1618: envelope shape, not bare array.

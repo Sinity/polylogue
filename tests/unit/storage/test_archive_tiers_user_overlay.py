@@ -83,7 +83,7 @@ def test_archive_tiers_user_overlay_orphan_check_resolves_archive_targets(tmp_pa
         ("annotation-phase-missing", f"phase:{session_id}:phase:7", AssertionKind.ANNOTATION),
         ("annotation-thread-missing", f"thread:{session_id}:missing-thread", AssertionKind.ANNOTATION),
         ("annotation-work-event-missing", f"work_event:{session_id}:work_event:7", AssertionKind.ANNOTATION),
-        ("note-global-ok", "note-global-ok", AssertionKind.NOTE),
+        ("note-global-ok", "assertion:note-global-ok", AssertionKind.NOTE),
         ("note-session-ok", f"session:{session_id}", AssertionKind.NOTE),
         ("note-work-event-ok", f"work_event:{work_event.event_id}", AssertionKind.NOTE),
         ("note-work-event-missing", f"work_event:{session_id}:work_event:8", AssertionKind.NOTE),

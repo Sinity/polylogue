@@ -94,7 +94,7 @@ def test_read_all_registered_and_dispatches_via_root_cli() -> None:
         runner = CliRunner()
         result = runner.invoke(
             cli,
-            ["--plain", "--origin", "claude-code-session", "read", "--all", "--format", "ndjson"],
+            ["--plain", "--origin", "claude-code-session", "read", "--all", "--view", "messages", "--format", "ndjson"],
             catch_exceptions=False,
         )
 

@@ -388,17 +388,17 @@
     "archive_facade_routes": {
       "checked": true,
       "source": "static_facade_route_catalog",
-      "total_method_count": 110,
-      "archive_ready_method_count": 109,
+      "total_method_count": 113,
+      "archive_ready_method_count": 112,
       "unsupported_method_count": 0,
       "route_counts": {
-        "archive_routed": 95,
+        "archive_routed": 98,
         "archive_direct": 14,
         "not_archive_runtime": 1
       },
       "tier_counts": {
-        "user": 35,
-        "index": 71,
+        "user": 36,
+        "index": 73,
         "none": 1,
         "source": 3
       },
@@ -719,6 +719,11 @@
           "tier": "index",
           "detail": "reads archive debt projection from index.db"
         },
+        "list_assertion_claim_payloads": {
+          "route": "archive_routed",
+          "tier": "user",
+          "detail": "reads assertion claim payload DTOs through user.db"
+        },
         "list_assertion_claims": {
           "route": "archive_routed",
           "tier": "user",
@@ -844,6 +849,11 @@
           "tier": "user",
           "detail": "writes blackboard notes through user.db"
         },
+        "query_completions": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "returns query DSL completions from index.db metadata"
+        },
         "query_sessions": {
           "route": "archive_routed",
           "tier": "index",
@@ -873,6 +883,11 @@
           "route": "archive_routed",
           "tier": "index",
           "detail": "builds recovery digests from archive-routed session reads"
+        },
+        "recovery_read_payload": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "renders recovery read DTOs from archive-routed session reads"
         },
         "recovery_report": {
           "route": "archive_routed",
@@ -1016,8 +1031,8 @@
         "ops.db"
       ],
       "facade_tier_route_counts": {
-        "user": 35,
-        "index": 71,
+        "user": 36,
+        "index": 73,
         "none": 1,
         "source": 3
       },
