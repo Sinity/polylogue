@@ -2004,6 +2004,15 @@ class TestQueryNoResultsDiagnosticPath:
         assert "error" in body
         assert body.get("ok") is False
 
+    def test_session_list_rejects_terminal_only_unit_query(self, workspace_env: dict[str, Path]) -> None:
+        """Session-list queries must not lower runtime rows into broken EXISTS predicates."""
+        expression = quote("runs where role:subagent")
+        with _running_server(workspace_env) as (_, base_url):
+            status, body = _get_json_ex(base_url, f"/api/sessions?query={expression}")
+        assert status == 400
+        assert body.get("ok") is False
+        assert "terminal run rows" in str(body.get("detail") or body.get("message") or "")
+
     def test_list_with_no_match_returns_diagnostics(self, workspace_env: dict[str, Path]) -> None:
         """A list with a tag that doesn't exist returns items=[] with total=0."""
         with _running_server(workspace_env) as (_, base_url):
