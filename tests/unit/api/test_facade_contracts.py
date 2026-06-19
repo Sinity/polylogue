@@ -2653,7 +2653,8 @@ async def test_archive_tiers_api_threads_read_index_tier(tmp_path: Path) -> None
         assert thread.thread.total_messages == 3
         assert thread.thread.provider_breakdown == {Provider.CLAUDE_CODE.value: 2}
         assert thread.thread.member_evidence[1].parent_id == parent_id
-        assert thread.thread.member_evidence[1].role == "child"
+        assert thread.thread.member_evidence[1].role == "parent_continuation"
+        assert "parent_session_id" in thread.thread.member_evidence[1].support_signals
     finally:
         await archive.close()
 

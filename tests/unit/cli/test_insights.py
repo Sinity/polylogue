@@ -785,7 +785,7 @@ def test_insights_threads_json(cli_workspace: CliWorkspace) -> None:
     members = json_object_list(thread_payload["member_evidence"])
     assert [member["session_id"] for member in members] == [NID_ROOT, NID_CHILD]
     assert members[0]["role"] == "root"
-    assert members[1]["role"] == "child"
+    assert members[1]["role"] == "parent_continuation"
     assert members[1]["parent_id"] == NID_ROOT
 
 

@@ -60,6 +60,7 @@ from polylogue.insights.archive import (
 from polylogue.insights.archive_models import ThreadMemberEvidencePayload, ThreadPayload
 from polylogue.insights.archive_rollups import aggregate_cost_rollup_insights
 from polylogue.insights.audit import InsightRigorAuditQuery, InsightRigorAuditReport, _audit_one
+from polylogue.insights.confidence import ConfidenceBand
 from polylogue.insights.confidence import from_score as confidence_from_score
 from polylogue.insights.feedback import LearningCorrection, parse_correction_kind
 from polylogue.insights.readiness import (
@@ -694,7 +695,8 @@ class ArchiveStore:
             SELECT s.session_id, s.parent_session_id, s.origin, s.title,
                    s.message_count, s.word_count, s.tool_use_count,
                    s.created_at_ms, s.updated_at_ms, s.git_repository_url,
-                   s.git_branch, sp.cost_usd
+                   s.git_branch, sp.first_message_at, sp.last_message_at,
+                   sp.total_cost_usd AS profile_total_cost_usd
             FROM thread_sessions ts
             JOIN sessions s ON s.session_id = ts.session_id
             LEFT JOIN session_profiles sp ON sp.session_id = s.session_id
@@ -709,11 +711,33 @@ class ArchiveStore:
             provider = _provider_for_origin(str(session["origin"])).value
             provider_breakdown[provider] = provider_breakdown.get(provider, 0) + 1
         start_ms = min(
-            (int(session["created_at_ms"]) for session in session_rows if session["created_at_ms"] is not None),
+            (
+                timestamp_ms
+                for session in session_rows
+                if (
+                    timestamp_ms := _profile_or_session_timestamp_ms(
+                        session,
+                        profile_column="first_message_at",
+                        session_column="created_at_ms",
+                    )
+                )
+                is not None
+            ),
             default=None,
         )
         end_ms = max(
-            (int(session["updated_at_ms"]) for session in session_rows if session["updated_at_ms"] is not None),
+            (
+                timestamp_ms
+                for session in session_rows
+                if (
+                    timestamp_ms := _profile_or_session_timestamp_ms(
+                        session,
+                        profile_column="last_message_at",
+                        session_column="updated_at_ms",
+                    )
+                )
+                is not None
+            ),
             default=None,
         )
         dominant_repo = _dominant_repo(session_rows)
@@ -721,14 +745,17 @@ class ArchiveStore:
             ThreadMemberEvidencePayload(
                 session_id=str(session["session_id"]),
                 parent_id=str(session["parent_session_id"]) if session["parent_session_id"] else None,
-                role="root" if str(session["session_id"]) == str(row["thread_id"]) else "child",
+                role=_archive_thread_member_role(session, str(row["thread_id"])),
                 depth=_thread_member_depth(session_rows, str(session["session_id"])),
                 confidence=1.0,
-                support_signals=("archive_thread_sessions",),
-                evidence=(f"position={index}",),
+                support_signals=_archive_thread_member_support_signals(session),
+                evidence=_archive_thread_member_evidence(session, str(row["thread_id"]), index),
             )
             for index, session in enumerate(session_rows)
         )
+        lineage_signals: tuple[str, ...] = ("archive_threads", "archive_thread_sessions")
+        if any(session["parent_session_id"] is not None for session in session_rows):
+            lineage_signals = (*lineage_signals, "explicit_lineage")
         payload = ThreadPayload(
             start_time=_iso_from_ms(start_ms),
             end_time=_iso_from_ms(end_ms),
@@ -738,11 +765,12 @@ class ArchiveStore:
             depth=max((member.depth for member in member_evidence), default=0),
             branch_count=sum(1 for session in session_rows if session["parent_session_id"] is not None),
             total_messages=sum(int(session["message_count"] or 0) for session in session_rows),
-            total_cost_usd=sum(float(session["cost_usd"] or 0.0) for session in session_rows),
-            wall_duration_ms=(end_ms - start_ms) if start_ms is not None and end_ms is not None else 0,
+            total_cost_usd=sum(float(session["profile_total_cost_usd"] or 0.0) for session in session_rows),
+            wall_duration_ms=max(end_ms - start_ms, 0) if start_ms is not None and end_ms is not None else 0,
             provider_breakdown=provider_breakdown,
             confidence=1.0 if session_rows else 0.0,
-            support_signals=("archive_threads", "archive_thread_sessions"),
+            support_level=ConfidenceBand.STRONG if len(session_rows) > 1 else ConfidenceBand.MODERATE,
+            support_signals=lineage_signals,
             member_evidence=member_evidence,
         )
         materialization = _read_archive_materialization(self._conn, "thread", thread_id)
@@ -5357,10 +5385,16 @@ def _ensure_messages_fts_ready(conn: sqlite3.Connection) -> None:
         raise DatabaseError(f"Search index is incomplete. {repair_hint}")
 
 
-def _epoch_ms_from_iso(value: str | None) -> int | None:
-    if value is None:
+def _epoch_ms_from_iso(value: object) -> int | None:
+    if not isinstance(value, str) or not value.strip():
         return None
-    return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() * 1000)
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return int(parsed.timestamp() * 1000)
 
 
 # Insights whose provenance is tracked in the ``insight_materialization`` ledger
@@ -5932,6 +5966,39 @@ def _thread_member_depth(rows: list[sqlite3.Row], session_id: str) -> int:
         current = parents[current]
         depth += 1
     return depth
+
+
+def _archive_thread_member_role(row: sqlite3.Row, thread_id: str) -> str:
+    if str(row["session_id"]) == thread_id:
+        return "root"
+    if row["parent_session_id"] is not None:
+        return "parent_continuation"
+    return "member"
+
+
+def _archive_thread_member_support_signals(row: sqlite3.Row) -> tuple[str, ...]:
+    signals = ["archive_thread_sessions"]
+    if row["parent_session_id"] is not None:
+        signals.append("parent_session_id")
+    return tuple(signals)
+
+
+def _archive_thread_member_evidence(row: sqlite3.Row, thread_id: str, position: int) -> tuple[str, ...]:
+    evidence = [f"position={position}"]
+    if row["parent_session_id"] is not None:
+        evidence.append(f"parent_id={row['parent_session_id']}")
+        evidence.append(f"root_id={thread_id}")
+    return tuple(evidence)
+
+
+def _profile_or_session_timestamp_ms(row: sqlite3.Row, *, profile_column: str, session_column: str) -> int | None:
+    profile_timestamp = row[profile_column]
+    if isinstance(profile_timestamp, str) and profile_timestamp.strip():
+        parsed = _epoch_ms_from_iso(profile_timestamp)
+        if parsed is not None:
+            return parsed
+    session_timestamp = row[session_column]
+    return int(session_timestamp) if isinstance(session_timestamp, int) else None
 
 
 def _tag_provider_breakdown(
