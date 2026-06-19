@@ -1,0 +1,10 @@
+Usage: polylogue ops diagnostics space [OPTIONS]
+
+  Report SQLite archive file, page, table, and index space.
+
+Options:
+  --db PATH        Archive database path.
+  --limit INTEGER  Largest object rows to include.
+  --objects        Run the dbstat table/index object scan.
+  --json           Emit machine-readable JSON.
+  -h, --help       Show this message and exit.

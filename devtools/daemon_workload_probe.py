@@ -3,10 +3,10 @@
 The probe captures a stable, JSON-serializable snapshot of daemon-relevant
 state that can be diffed across convergence cycles.  Operators run::
 
-    devtools daemon-workload-probe --json > before.json
+    polylogue ops diagnostics workload --json > before.json
     # ...run convergence work...
-    devtools daemon-workload-probe --json > after.json
-    devtools daemon-workload-probe --compare before.json after.json
+    polylogue ops diagnostics workload --json > after.json
+    polylogue ops diagnostics workload --compare before.json after.json
 
 to produce structured before/after evidence (see issue #845).
 """

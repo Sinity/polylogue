@@ -400,18 +400,18 @@ generation recorded, the static `MIN_AGE_S` floor applies on its own.
 
 ## Daemon Convergence Evidence
 
-`devtools daemon-workload-probe` produces a stable, JSON-serializable
+`polylogue ops diagnostics workload` produces a stable, JSON-serializable
 snapshot of daemon-relevant state read directly from the archive SQLite
 database. The probe is read-only and does not talk to the running daemon.
 
 For #845-style before/after convergence evidence snapshots:
 
 ```bash
-devtools daemon-workload-probe --json > before.json
+polylogue ops diagnostics workload --json > before.json
 # ...run convergence work (e.g. polylogued runs, ingest, debt drain)...
-devtools daemon-workload-probe --json > after.json
-devtools daemon-workload-probe --compare before.json after.json
-devtools daemon-workload-probe --compare before.json after.json --json > diff.json
+polylogue ops diagnostics workload --json > after.json
+polylogue ops diagnostics workload --compare before.json after.json
+polylogue ops diagnostics workload --compare before.json after.json --json > diff.json
 ```
 
 The report has a stable top-level shape carrying its `report_version`,

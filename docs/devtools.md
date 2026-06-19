@@ -128,7 +128,6 @@ These are the commands worth remembering during normal repo work:
 | Command | Description |
 | --- | --- |
 | `devtools coverage-gate` | Run pytest with the repository coverage floor from pyproject.toml. |
-| `devtools daemon-workload-probe` | Inspect daemon ingest workload, convergence debt, and hot query plans. |
 | `devtools evidence-dashboard` | Render the pytest-first evidence dashboard or a changed-path trace. |
 | `devtools test` | Run a focused pytest selection through the managed harness. |
 | `devtools verify` | Run the local verification baseline before pushing or creating a PR. |
@@ -161,12 +160,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace failure-context` | Join testmon, git history, and fixtures for a pytest failure ID into a JSON envelope. |
 | `devtools workspace tasks` | Record and query local agent task execution history. |
 | `devtools workspace worktree-gc` | Safe worktree garbage collection — list and remove merged or abandoned git worktrees. |
-
-### Maintenance
-
-| Command | Description |
-| --- | --- |
-| `devtools archive-space-report` | Report SQLite archive file/page/object space by table and index. |
 
 <!-- END GENERATED: devtools-command-catalog -->
 

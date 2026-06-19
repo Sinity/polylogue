@@ -90,7 +90,7 @@ _BACKUP_PROFILES: tuple[dict[str, object], ...] = (
     },
     {
         "name": "diagnostics_bundle",
-        "include": ["ops.db", "backup-plan json", "daemon-workload-probe json", "logs", "readonly status outputs"],
+        "include": ["ops.db", "backup-plan json", "workload diagnostics json", "logs", "readonly status outputs"],
         "exclude": ["private raw blobs unless explicitly needed"],
         "use_case": "incident triage without over-sharing archive contents",
     },

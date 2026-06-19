@@ -304,7 +304,7 @@ The runbooks below assume:
 
 **Symptoms.** Search returns fewer hits than expected for known
 strings. `polylogue ops doctor` reports a `messages_fts` discrepancy.
-`devtools daemon-workload-probe`
+`polylogue ops diagnostics workload`
 shows non-empty `fts_trigger_state.missing` or `regressed` triggers.
 
 **Root cause.** FTS5 uses `content='messages'` content-rowid
@@ -319,7 +319,7 @@ index stale across daemon restarts.
 
 ```bash
 # 1. Confirm trigger state.
-devtools daemon-workload-probe --json | jq .fts_trigger_state
+polylogue ops diagnostics workload --json | jq .fts_trigger_state
 # Expect all_present=true. If `missing` is non-empty, continue.
 
 # 2. Preview the dangling FTS scope.
@@ -330,7 +330,7 @@ polylogue ops maintenance preview --scope derived | grep -A2 messages_fts
 polylogue ops maintenance run --target dangling_fts
 
 # 4. Verify.
-devtools daemon-workload-probe --json | jq .fts_trigger_state.all_present
+polylogue ops diagnostics workload --json | jq .fts_trigger_state.all_present
 # Expect: true.
 ```
 
@@ -340,7 +340,7 @@ backup, and open an issue with the probe output attached.
 
 ### Draining the convergence-debt queue
 
-**Symptoms.** `devtools daemon-workload-probe` reports a non-trivial
+**Symptoms.** `polylogue ops diagnostics workload` reports a non-trivial
 `convergence_debt` section. `polylogue analyze` shows derived
 materialization counts (`session_profile`, `actions`,
 `work_threads`) lagging behind `sessions`.
@@ -354,7 +354,7 @@ remaining backlog will not drain inside one cycle.
 
 ```bash
 # 1. Snapshot the workload before.
-devtools daemon-workload-probe --json > /tmp/before.json
+polylogue ops diagnostics workload --json > /tmp/before.json
 
 # 2. Preview to see which derived models are behind.
 polylogue ops maintenance preview --scope derived
@@ -369,8 +369,8 @@ polylogue ops maintenance run --operation-id "$op" \
   --target message_type_backfill
 
 # 4. Snapshot after and diff.
-devtools daemon-workload-probe --json > /tmp/after.json
-devtools daemon-workload-probe --compare /tmp/before.json /tmp/after.json
+polylogue ops diagnostics workload --json > /tmp/after.json
+polylogue ops diagnostics workload --compare /tmp/before.json /tmp/after.json
 ```
 
 Expect `convergence_debt.delta` to be negative across each stage.
@@ -440,7 +440,7 @@ the same artifact id.
 polylogue sources --output-format json | jq '.[] | select(.healthy==false)'
 
 # 2. Inspect raw-artifact failures from that source.
-devtools daemon-workload-probe --json \
+polylogue ops diagnostics workload --json \
   | jq '.recent_attempts[] | select(.source_paths[]? | contains("PATH"))'
 
 # 3. Pull the raw artifact directly to inspect it.
@@ -466,7 +466,7 @@ are not in the archive yet, maintenance has nothing to do.
 ### Recovering a corrupt blob store
 
 **Symptoms.** `polylogue ops doctor` reports unreadable blobs. Session
-exports fail with "blob not found". `devtools daemon-workload-probe`
+exports fail with "blob not found". `polylogue ops diagnostics workload`
 shows divergence between `blob_links` count and the count of files
 under `blob/`.
 
@@ -484,7 +484,7 @@ systemctl --user stop polylogued.service
 
 # 2. Snapshot the lease state to capture what GC believed was in
 #    flight at the time.
-devtools daemon-workload-probe --json | jq '{lease: .blob_lease_state, gc: .gc_state}'
+polylogue ops diagnostics workload --json | jq '{lease: .blob_lease_state, gc: .gc_state}'
 
 # 3. Identify the affected sessions.
 polylogue ops doctor --schemas --blob-integrity --output-format json \

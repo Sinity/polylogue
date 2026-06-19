@@ -1,0 +1,11 @@
+Usage: polylogue ops diagnostics workload [OPTIONS]
+
+  Inspect daemon ingest workload, convergence debt, and hot query plans.
+
+Options:
+  --db PATH               Archive SQLite database path.
+  --json                  Emit machine-readable JSON.
+  --limit INTEGER         Recent attempt limit.
+  --compare BEFORE AFTER  Compare two saved probe reports and report
+                          structured deltas.
+  -h, --help              Show this message and exit.

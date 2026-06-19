@@ -1,4 +1,4 @@
-Usage: polylogue diagnostics turns [OPTIONS] [SESSION_ID]
+Usage: polylogue ops diagnostics turns [OPTIONS] [SESSION_ID]
 
   Show per-turn cost and duration for one session.
 

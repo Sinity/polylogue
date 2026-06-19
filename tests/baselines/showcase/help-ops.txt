@@ -9,6 +9,7 @@ Commands:
   auth         Authenticate optional external services.
   backup       Create a timestamped durability-tier backup.
   completions  Emit shell completion setup for polylogue.
+  diagnostics  Run archive and session diagnostics.
   doctor       Run archive health checks and repairs.
   embed        Enable, preflight, and backfill the embedding pipeline.
   maintenance  Preview and run maintenance backfill operations.

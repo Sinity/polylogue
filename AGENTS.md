@@ -1428,18 +1428,18 @@ generation recorded, the static `MIN_AGE_S` floor applies on its own.
 
 ## Daemon Convergence Evidence
 
-`devtools daemon-workload-probe` produces a stable, JSON-serializable
+`polylogue ops diagnostics workload` produces a stable, JSON-serializable
 snapshot of daemon-relevant state read directly from the archive SQLite
 database. The probe is read-only and does not talk to the running daemon.
 
 For #845-style before/after convergence evidence snapshots:
 
 ```bash
-devtools daemon-workload-probe --json > before.json
+polylogue ops diagnostics workload --json > before.json
 # ...run convergence work (e.g. polylogued runs, ingest, debt drain)...
-devtools daemon-workload-probe --json > after.json
-devtools daemon-workload-probe --compare before.json after.json
-devtools daemon-workload-probe --compare before.json after.json --json > diff.json
+polylogue ops diagnostics workload --json > after.json
+polylogue ops diagnostics workload --compare before.json after.json
+polylogue ops diagnostics workload --compare before.json after.json --json > diff.json
 ```
 
 The report has a stable top-level shape carrying its `report_version`,
@@ -1674,7 +1674,6 @@ These are the commands worth remembering during normal repo work:
 | Command | Description |
 | --- | --- |
 | `devtools coverage-gate` | Run pytest with the repository coverage floor from pyproject.toml. |
-| `devtools daemon-workload-probe` | Inspect daemon ingest workload, convergence debt, and hot query plans. |
 | `devtools evidence-dashboard` | Render the pytest-first evidence dashboard or a changed-path trace. |
 | `devtools test` | Run a focused pytest selection through the managed harness. |
 | `devtools verify` | Run the local verification baseline before pushing or creating a PR. |
@@ -1707,12 +1706,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace failure-context` | Join testmon, git history, and fixtures for a pytest failure ID into a JSON envelope. |
 | `devtools workspace tasks` | Record and query local agent task execution history. |
 | `devtools workspace worktree-gc` | Safe worktree garbage collection — list and remove merged or abandoned git worktrees. |
-
-### Maintenance
-
-| Command | Description |
-| --- | --- |
-| `devtools archive-space-report` | Report SQLite archive file/page/object space by table and index. |
 
 <!-- END GENERATED: devtools-command-catalog -->
 
