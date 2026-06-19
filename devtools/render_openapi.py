@@ -33,7 +33,9 @@ from devtools.render_support import write_if_changed
 from polylogue.surfaces.payloads import (
     RANKING_POLICY_MIXED,
     RANKING_POLICY_VERSION,
+    AssertionClaimListPayload,
     QueryUnitEnvelope,
+    RecoveryReadPayload,
     SearchEnvelope,
     SessionListRowPayload,
     SessionReadViewEnvelope,
@@ -49,6 +51,8 @@ _PUBLISHED_MODELS: tuple[type[BaseModel], ...] = (
     SearchEnvelope,
     QueryUnitEnvelope,
     SessionReadViewEnvelope,
+    RecoveryReadPayload,
+    AssertionClaimListPayload,
     SessionSearchHitPayload,
     SessionListRowPayload,
 )
@@ -520,6 +524,122 @@ def _build_openapi_document() -> dict[str, Any]:
                         },
                         "400": {"description": "Unsupported view or format."},
                         "404": {"description": "Session not found."},
+                    },
+                }
+            },
+            "/api/sessions/{session_id}/recovery": {
+                "get": {
+                    "summary": "Read recovery digest or work-packet evidence",
+                    "description": (
+                        "Returns the stable ``RecoveryReadPayload`` for one session. "
+                        "The route exposes storage-free recovery digest and work-packet "
+                        "DTOs shared with the web workbench and Python API. ``continue`` "
+                        "and ``blame`` are not accepted here; use the read-view route or "
+                        "CLI/MCP report surfaces when those workflows are needed."
+                    ),
+                    "operationId": "readSessionRecovery",
+                    "parameters": [
+                        {
+                            "name": "session_id",
+                            "in": "path",
+                            "description": "Resolved Polylogue session id.",
+                            "required": True,
+                            "schema": {"type": "string"},
+                        },
+                        {
+                            "name": "report",
+                            "in": "query",
+                            "description": "Recovery report kind.",
+                            "required": False,
+                            "schema": {"type": "string", "enum": ["digest", "work-packet"], "default": "work-packet"},
+                        },
+                        {
+                            "name": "format",
+                            "in": "query",
+                            "description": "Response format. Digest is JSON-only; work-packet also supports markdown.",
+                            "required": False,
+                            "schema": {"type": "string", "enum": ["json", "markdown"], "default": "json"},
+                        },
+                    ],
+                    "responses": {
+                        "200": {
+                            "description": "Recovery digest/work-packet envelope.",
+                            "content": {
+                                "application/json": {"schema": {"$ref": "#/components/schemas/RecoveryReadPayload"}}
+                            },
+                        },
+                        "400": {"description": "Unsupported report or format."},
+                        "404": {"description": "Session not found."},
+                    },
+                }
+            },
+            "/api/assertions": {
+                "get": {
+                    "summary": "List assertion-backed overlay claims",
+                    "description": (
+                        "Returns assertion claims through the stable "
+                        "``AssertionClaimListPayload`` shared by the web workbench, "
+                        "Python API, and MCP assertion-read surface. Defaults to active "
+                        "and candidate claims; use ``status=all`` for an explicit full "
+                        "lifecycle read."
+                    ),
+                    "operationId": "listAssertionClaims",
+                    "parameters": [
+                        {
+                            "name": "target_ref",
+                            "in": "query",
+                            "description": "Optional target object ref, such as ``session:<id>``.",
+                            "required": False,
+                            "schema": {"type": "string"},
+                        },
+                        {
+                            "name": "scope_ref",
+                            "in": "query",
+                            "description": "Optional assertion scope object ref, such as ``repo:polylogue``.",
+                            "required": False,
+                            "schema": {"type": "string"},
+                        },
+                        {
+                            "name": "kind",
+                            "in": "query",
+                            "description": "Assertion kind filter. May be repeated or comma-separated.",
+                            "required": False,
+                            "schema": {"type": "string"},
+                        },
+                        {
+                            "name": "status",
+                            "in": "query",
+                            "description": (
+                                "Lifecycle status filter. Defaults to active,candidate; "
+                                "``all`` includes every persisted status."
+                            ),
+                            "required": False,
+                            "schema": {"type": "string"},
+                        },
+                        {
+                            "name": "context_inject",
+                            "in": "query",
+                            "description": "Restrict by assertion context_policy.inject.",
+                            "required": False,
+                            "schema": {"type": "boolean"},
+                        },
+                        {
+                            "name": "limit",
+                            "in": "query",
+                            "description": "Maximum claims returned.",
+                            "required": False,
+                            "schema": {"type": "integer", "minimum": 1, "default": 50},
+                        },
+                    ],
+                    "responses": {
+                        "200": {
+                            "description": "Assertion claim list envelope.",
+                            "content": {
+                                "application/json": {
+                                    "schema": {"$ref": "#/components/schemas/AssertionClaimListPayload"}
+                                }
+                            },
+                        }
                     },
                 }
             },

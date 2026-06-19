@@ -17,10 +17,10 @@ Backend:
 
 Route contracts:
 
-- `/api/sessions/:id/recovery` is `read_detail`, `shell_supported`, `bearer_if_configured`.
-- `/api/sessions/:id/read` is `read_detail`, `shell_supported`, `bearer_if_configured`.
-- `/api/assertions` is `user_overlay`, `shell_supported`, `bearer_if_configured`.
-- Both are real workbench routes, but not advertised as stable public API until #1847 promotes the daemon DTO boundary.
+- `/api/sessions/:id/recovery` is `read_detail`, `stable`, `bearer_if_configured`.
+- `/api/sessions/:id/read` is `read_detail`, `stable`, `bearer_if_configured`.
+- `/api/assertions` is `user_overlay`, `stable`, `bearer_if_configured`.
+- All three routes return shared DTO envelopes and are published in the generated OpenAPI surface.
 
 Shared DTOs:
 
@@ -39,7 +39,7 @@ Web shell:
 
 Explicit non-exposure:
 
-- `continue` and `blame` remain CLI/MCP recovery-report presets. They are not exposed through `/api/sessions/:id/recovery` in this slice because #1847 has not promoted a general report-preset HTTP API.
+- `continue` and `blame` remain CLI/MCP recovery-report presets. They are not exposed through `/api/sessions/:id/recovery`; the stable route is intentionally limited to the storage-free digest/work-packet DTOs.
 
 ## V0 page/component map
 
@@ -85,7 +85,7 @@ Browser capture/readiness:
 2. Overlay mutation envelopes for marks/annotations/saved views/recall/workspaces are implemented through `polylogue/daemon/user_state_http.py` and route through the shared mutation result envelope. Remaining work here is browser-flow polish, not another DTO family.
 3. Browser-capture readiness is satisfied by `GET /api/status`; add a dedicated adapter only if a future panel needs more than safe receiver state (`spool_ready`, `allowed_origins`, `auth_required`, component readiness).
 4. Bounded raw-preview contract promotion: this slice already prefers provenance `include_raw=1&bytes=` in the shell; #1847 can decide whether `/api/sessions/:id/raw` remains shell-supported only or becomes a narrower stable metadata route.
-5. Generated route/OpenAPI surface that includes stable routes and intentionally documented shell-supported workbench routes without implying public API stability.
+5. Remaining shell-supported workbench routes (`/api/sources`, cost, raw metadata, attachments, paste, stack/compare helpers) should either stay shell-only with explicit metadata or be promoted only after they have typed DTOs and OpenAPI coverage.
 
 ## Parallel PR slices
 
@@ -107,7 +107,8 @@ Landed tests:
 
 - route-contract lookup for `/api/assertions` and `/api/sessions/:id/recovery`.
 - route-contract lookup for `/api/sessions/:id/read`.
-- check that these routes stay `shell_supported`, not stable public API.
+- stable route-contract checks for `/api/assertions`, `/api/sessions/:id/recovery`, and `/api/sessions/:id/read`.
+- generated OpenAPI checks for `/api/assertions` and `/api/sessions/:id/recovery`.
 - recovery endpoint tests for digest JSON, work-packet JSON, work-packet markdown, invalid report/format pairs, and missing sessions.
 - read-view execution route tests for `messages`, `recovery`, `raw`, unsupported views, and unsupported formats.
 - assertion endpoint tests for default `active,candidate`, kind/context filters, `status=all`, and token-gated reads.
@@ -120,4 +121,4 @@ Landed tests:
 Still needed:
 
 - a full browser click-through smoke once the project has a stable Playwright/Vitest lane in this checkout.
-- generated OpenAPI/docs updates if #1847 decides shell-supported routes should be listed in generated API docs.
+- deeper browser click-through coverage for the stabilized routes once the visual lane can run deterministically in every checkout.
