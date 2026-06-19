@@ -621,6 +621,8 @@ def query_unit_rows(
             limit=fetch_limit,
             offset=offset,
             session_filters=session_filters,
+            sort=source.sort.field if source.sort is not None else None,
+            sort_direction=source.sort.direction if source.sort is not None else "asc",
         )
         return build_query_unit_envelope(
             tuple(MessageQueryRowPayload.from_row(row) for row in message_rows[:limit]),
@@ -636,6 +638,8 @@ def query_unit_rows(
             limit=fetch_limit,
             offset=offset,
             session_filters=session_filters,
+            sort=source.sort.field if source.sort is not None else None,
+            sort_direction=source.sort.direction if source.sort is not None else "asc",
         )
         return build_query_unit_envelope(
             tuple(ActionQueryRowPayload.from_row(row) for row in action_rows[:limit]),
@@ -651,6 +655,8 @@ def query_unit_rows(
             limit=fetch_limit,
             offset=offset,
             session_filters=session_filters,
+            sort=source.sort.field if source.sort is not None else None,
+            sort_direction=source.sort.direction if source.sort is not None else "asc",
         )
         return build_query_unit_envelope(
             tuple(AssertionQueryRowPayload.from_row(row) for row in assertion_rows[:limit]),
@@ -665,6 +671,8 @@ def query_unit_rows(
         limit=fetch_limit,
         offset=offset,
         session_filters=session_filters,
+        sort=source.sort.field if source.sort is not None else None,
+        sort_direction=source.sort.direction if source.sort is not None else "asc",
     )
     return build_query_unit_envelope(
         tuple(BlockQueryRowPayload.from_row(row) for row in block_rows[:limit]),
