@@ -10,11 +10,12 @@ from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal, NotRequired, TypeAlias, cast
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing_extensions import TypedDict
 
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.core.json import JSONDocument, JSONValue, require_json_document
+from polylogue.core.refs import normalize_object_ref_text, normalize_public_ref_text
 
 if TYPE_CHECKING:
     from collections.abc import Container
@@ -952,6 +953,21 @@ class AssertionQueryRowPayload(SurfacePayloadModel):
     created_at_ms: int
     updated_at_ms: int
 
+    @field_validator("target_ref")
+    @classmethod
+    def _validate_target_ref(cls, value: str) -> str:
+        return normalize_object_ref_text(value)
+
+    @field_validator("scope_ref", "author_ref")
+    @classmethod
+    def _validate_optional_object_ref(cls, value: str | None) -> str | None:
+        return normalize_object_ref_text(value) if value is not None else None
+
+    @field_validator("evidence_refs")
+    @classmethod
+    def _validate_evidence_refs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(normalize_public_ref_text(ref) for ref in value)
+
     @classmethod
     def from_row(cls, row: ArchiveAssertionQueryRow) -> AssertionQueryRowPayload:
         return cls(
@@ -995,6 +1011,21 @@ class AssertionClaimPayload(SurfacePayloadModel):
     supersedes: tuple[str, ...] = ()
     created_at_ms: int
     updated_at_ms: int
+
+    @field_validator("target_ref")
+    @classmethod
+    def _validate_claim_target_ref(cls, value: str) -> str:
+        return normalize_object_ref_text(value)
+
+    @field_validator("scope_ref", "author_ref")
+    @classmethod
+    def _validate_claim_optional_object_ref(cls, value: str | None) -> str | None:
+        return normalize_object_ref_text(value) if value is not None else None
+
+    @field_validator("evidence_refs")
+    @classmethod
+    def _validate_claim_public_refs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(normalize_public_ref_text(ref) for ref in value)
 
     @classmethod
     def from_envelope(cls, envelope: ArchiveAssertionEnvelope) -> AssertionClaimPayload:
@@ -1100,6 +1131,26 @@ class ObservedEventQueryRowPayload(SurfacePayloadModel):
     object_refs: tuple[str, ...]
     evidence_refs: tuple[str, ...]
 
+    @field_validator("event_ref")
+    @classmethod
+    def _validate_event_ref(cls, value: str) -> str:
+        return normalize_object_ref_text(value)
+
+    @field_validator("subject_ref")
+    @classmethod
+    def _validate_optional_subject_ref(cls, value: str | None) -> str | None:
+        return normalize_object_ref_text(value) if value is not None else None
+
+    @field_validator("object_refs")
+    @classmethod
+    def _validate_object_refs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(normalize_object_ref_text(ref) for ref in value)
+
+    @field_validator("evidence_refs")
+    @classmethod
+    def _validate_observed_event_evidence_refs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(normalize_public_ref_text(ref) for ref in value)
+
 
 class ContextSnapshotQueryRowPayload(SurfacePayloadModel):
     """Shared terminal-query row for runtime-transform context snapshots."""
@@ -1115,6 +1166,21 @@ class ContextSnapshotQueryRowPayload(SurfacePayloadModel):
     segment_refs: tuple[str, ...]
     evidence_refs: tuple[str, ...]
     metadata: dict[str, str]
+
+    @field_validator("snapshot_ref", "run_ref")
+    @classmethod
+    def _validate_context_object_ref(cls, value: str) -> str:
+        return normalize_object_ref_text(value)
+
+    @field_validator("segment_refs")
+    @classmethod
+    def _validate_segment_refs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(normalize_object_ref_text(ref) for ref in value)
+
+    @field_validator("evidence_refs")
+    @classmethod
+    def _validate_context_evidence_refs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(normalize_public_ref_text(ref) for ref in value)
 
 
 QueryUnitRowPayload: TypeAlias = (
