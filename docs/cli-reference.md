@@ -163,7 +163,6 @@ Commands:
   analyze
   config      Show configuration paths and resolved settings.
   continue    Compile a successor-agent continuation report.
-  cost        Summarize session cost telemetry.
   delete      Delete matched sessions.
   import      Import sessions from configured sources.
   init        Detect chat sources and write a starter polylogue.toml.
@@ -441,6 +440,7 @@ Commands:
   auth         Authenticate optional external services.
   backup       Create a timestamped durability-tier backup.
   completions  Emit shell completion setup for polylogue.
+  cost         Summarize session cost telemetry.
   dashboard    Open the local dashboard.
   diagnostics  Run archive and session diagnostics.
   doctor       Run archive health checks and repairs.

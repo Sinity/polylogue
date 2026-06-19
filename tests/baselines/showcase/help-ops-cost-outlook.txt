@@ -1,4 +1,4 @@
-Usage: polylogue cost outlook [OPTIONS]
+Usage: polylogue ops cost outlook [OPTIONS]
 
   Project the current billing cycle for a subscription plan.
 

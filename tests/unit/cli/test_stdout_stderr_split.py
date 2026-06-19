@@ -35,7 +35,6 @@ def _looks_like_json(text: str) -> bool:
 _ALL_COMMANDS: tuple[tuple[str, ...], ...] = (
     (),  # polylogue root
     ("config",),
-    ("cost",),
     ("count",),
     ("delete",),
     ("import",),
@@ -58,6 +57,7 @@ _ALL_COMMANDS: tuple[tuple[str, ...], ...] = (
     ("ops", "auth"),
     ("ops", "backup"),
     ("ops", "completions"),
+    ("ops", "cost"),
     ("ops", "dashboard"),
     ("ops", "diagnostics"),
     ("ops", "diagnostics", "pace"),

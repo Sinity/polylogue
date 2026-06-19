@@ -746,7 +746,6 @@ class TestCliMetadata:
             "init",
             "config",
             "continue",
-            "cost",
             "resume",
             "insights",
             "user-state",

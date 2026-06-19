@@ -207,7 +207,6 @@ class TestFrozenClockShowcaseReport:
 _PLAIN_COMMANDS: tuple[tuple[str, ...], ...] = (
     (),  # root
     ("config",),
-    ("cost",),
     ("count",),
     ("delete",),
     ("import",),
@@ -228,6 +227,7 @@ _PLAIN_COMMANDS: tuple[tuple[str, ...], ...] = (
     ("list",),
     ("ops",),
     ("ops", "auth"),
+    ("ops", "cost"),
     ("ops", "backup"),
     ("ops", "completions"),
     ("ops", "dashboard"),

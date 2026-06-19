@@ -348,8 +348,6 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-analyze` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | analyze help |
 | `exercise` | `help-config` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | config help |
 | `exercise` | `help-continue` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | continue help |
-| `exercise` | `help-cost` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | cost help |
-| `exercise` | `help-cost-outlook` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | cost outlook help |
 | `exercise` | `help-delete` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | delete help |
 | `exercise` | `help-import` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | import help |
 | `exercise` | `help-init` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | init help |
@@ -374,6 +372,8 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-ops-auth` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops auth help |
 | `exercise` | `help-ops-backup` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops backup help |
 | `exercise` | `help-ops-completions` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops completions help |
+| `exercise` | `help-ops-cost` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops cost help |
+| `exercise` | `help-ops-cost-outlook` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops cost outlook help |
 | `exercise` | `help-ops-dashboard` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops dashboard help |
 | `exercise` | `help-ops-diagnostics` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops diagnostics help |
 | `exercise` | `help-ops-diagnostics-pace` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops diagnostics pace help |
