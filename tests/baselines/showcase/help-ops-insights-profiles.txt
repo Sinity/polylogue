@@ -1,4 +1,4 @@
-Usage: polylogue insights profiles [OPTIONS]
+Usage: polylogue ops insights profiles [OPTIONS]
 
   List durable session-profile insights.
 

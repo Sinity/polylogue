@@ -3,7 +3,7 @@
 # Insights
 
 Polylogue derives structured read models from raw session data. These are
-materialized in the database and queried through the `polylogue insights`
+materialized in the database and queried through the `polylogue ops insights`
 subcommand group.
 
 ## Overview
@@ -27,7 +27,7 @@ All insight commands support `--limit`, `--offset`, `--format json`, and
 inherit root-level filters (`--provider`, `--since`, `--until`).
 
 The per-product evidence / inference / fallback semantics, plus the
-`polylogue insights audit` CLI, are documented in
+`polylogue ops insights audit` CLI, are documented in
 [insights-rigor-matrix.md](insights-rigor-matrix.md).
 
 ## Session Profiles
@@ -35,8 +35,8 @@ The per-product evidence / inference / fallback semantics, plus the
 Per-session derived aggregates. Materialized in the `session_profiles` table.
 
 ```bash
-polylogue insights profiles
-polylogue insights profiles --tier merged --sort first-message
+polylogue ops insights profiles
+polylogue ops insights profiles --tier merged --sort first-message
 polylogue --provider claude-code insights profiles --min-wallclock-seconds 300
 ```
 
@@ -146,9 +146,9 @@ as the session-level semantic contract. Use `workflow_shape` and
 session.
 
 ```bash
-polylogue insights work-events
-polylogue insights work-events --heuristic-label implementation
-polylogue insights work-events --session-id claude-ai:abc123
+polylogue ops insights work-events
+polylogue ops insights work-events --heuristic-label implementation
+polylogue ops insights work-events --session-id claude-ai:abc123
 ```
 
 Each event has: start/end time, duration, file paths, tools used, a short
@@ -161,8 +161,8 @@ surfaces, not in `session_work_events.heuristic_label`.
 Sessions are segmented into phases based on activity patterns.
 
 ```bash
-polylogue insights phases
-polylogue insights phases --kind implementation
+polylogue ops insights phases
+polylogue ops insights phases --kind implementation
 ```
 
 Phase kinds:
@@ -180,7 +180,7 @@ Multi-session groupings connected by repo, branch relationships, and work
 continuity.
 
 ```bash
-polylogue insights threads
+polylogue ops insights threads
 ```
 
 Fields: thread ID, dominant repo, session count, total messages, depth,
@@ -191,8 +191,8 @@ session IDs.
 Pre-aggregated rollups for calendar views.
 
 ```bash
-polylogue insights day-summaries
-polylogue insights week-summaries
+polylogue ops insights day-summaries
+polylogue ops insights week-summaries
 ```
 
 ## Provider Analytics
@@ -201,8 +201,8 @@ Per-provider message counts, tool use percentages, and thinking block
 percentages.
 
 ```bash
-polylogue insights analytics
-polylogue insights analytics --format json
+polylogue ops insights analytics
+polylogue ops insights analytics --format json
 ```
 
 ## Cost Tracking
@@ -213,9 +213,9 @@ Google models.
 ### Session Costs
 
 ```bash
-polylogue insights costs
-polylogue insights costs --model claude-opus-4-6
-polylogue insights costs --status exact
+polylogue ops insights costs
+polylogue ops insights costs --model claude-opus-4-6
+polylogue ops insights costs --status exact
 ```
 
 Cost statuses: `exact` (API-reported tokens), `priced` (inferred tokens),
@@ -224,8 +224,8 @@ Cost statuses: `exact` (API-reported tokens), `priced` (inferred tokens),
 ### Cost Rollups
 
 ```bash
-polylogue insights cost-rollups
-polylogue insights cost-rollups --model gpt-4o
+polylogue ops insights cost-rollups
+polylogue ops insights cost-rollups --model gpt-4o
 ```
 
 ### Pricing Catalog
@@ -244,8 +244,8 @@ models that support prompt caching), and cache-write tokens.
 ## Tags
 
 ```bash
-polylogue insights tags
-polylogue insights tags --query polylogue
+polylogue ops insights tags
+polylogue ops insights tags --query polylogue
 ```
 
 Shows tag names with session counts, explicit count (user-assigned), and
@@ -254,9 +254,9 @@ auto count (derived from session content).
 ## Archive Debt
 
 ```bash
-polylogue insights debt
-polylogue insights debt --category schema
-polylogue insights debt --only-actionable
+polylogue ops insights debt
+polylogue ops insights debt --category schema
+polylogue ops insights debt --only-actionable
 ```
 
 Tracks maintenance readiness: schema version gaps, rebuild debt, stale

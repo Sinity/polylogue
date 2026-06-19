@@ -1,4 +1,4 @@
-Usage: polylogue insights timeline [OPTIONS] SESSION_ID
+Usage: polylogue ops insights timeline [OPTIONS] SESSION_ID
 
   Render a per-session timeline with hook-vs-sort-key fidelity tags.
 

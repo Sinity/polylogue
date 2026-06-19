@@ -11,7 +11,7 @@ The source of truth for this matrix is
 `polylogue/insights/rigor.py:list_rigor_contracts()`. The audit runner
 that uses the matrix to roll up the live archive is
 `polylogue/insights/audit.py:build_insight_rigor_audit_report`, exposed
-as `polylogue insights audit` on the CLI, `insight_rigor_audit` on the
+as `polylogue ops insights audit` on the CLI, `insight_rigor_audit` on the
 MCP server, and `Polylogue.insight_rigor_audit()` on the async library
 API.
 
@@ -120,10 +120,10 @@ API.
 ## Audit CLI
 
 ```bash
-polylogue insights audit
-polylogue insights audit --format json
-polylogue insights audit --insight session_work_events
-polylogue insights audit --sample-limit 2000
+polylogue ops insights audit
+polylogue ops insights audit --format json
+polylogue ops insights audit --insight session_work_events
+polylogue ops insights audit --sample-limit 2000
 ```
 
 For each contracted product, the audit reports:

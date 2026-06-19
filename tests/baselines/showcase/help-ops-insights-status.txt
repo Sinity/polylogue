@@ -1,4 +1,4 @@
-Usage: polylogue insights status [OPTIONS]
+Usage: polylogue ops insights status [OPTIONS]
 
   Report insight materialization coverage and readiness.
 

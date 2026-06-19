@@ -1,4 +1,4 @@
-Usage: polylogue insights coverage [OPTIONS]
+Usage: polylogue ops insights coverage [OPTIONS]
 
   List archive coverage buckets by origin, day, or week.
 

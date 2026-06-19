@@ -1,4 +1,4 @@
-Usage: polylogue insights tags [OPTIONS]
+Usage: polylogue ops insights tags [OPTIONS]
 
   List durable session-tag rollup insights.
 

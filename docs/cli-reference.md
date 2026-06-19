@@ -166,7 +166,6 @@ Commands:
   delete      Delete matched sessions.
   import      Import sessions from configured sources.
   init        Detect chat sources and write a starter polylogue.toml.
-  insights    Rebuild and inspect derived session insights.
   mark
   ops         Run operational archive and daemon commands.
   read        Read matched sessions (route to view/destination).
@@ -396,7 +395,7 @@ Options:
 ## Insights
 
 ```text
-Usage: polylogue insights [OPTIONS] COMMAND [ARGS]...
+Usage: polylogue ops insights [OPTIONS] COMMAND [ARGS]...
 
   Inspect durable archive insights.
 
@@ -445,6 +444,7 @@ Commands:
   diagnostics  Run archive and session diagnostics.
   doctor       Run archive health checks and repairs.
   embed        Enable, preflight, and backfill the embedding pipeline.
+  insights     Rebuild and inspect derived session insights.
   maintenance  Preview and run maintenance backfill operations.
   paths        Print canonical archive paths and bind-mount detection.
   reset        Reset local archive state.

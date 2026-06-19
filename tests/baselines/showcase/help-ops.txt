@@ -14,6 +14,7 @@ Commands:
   diagnostics  Run archive and session diagnostics.
   doctor       Run archive health checks and repairs.
   embed        Enable, preflight, and backfill the embedding pipeline.
+  insights     Rebuild and inspect derived session insights.
   maintenance  Preview and run maintenance backfill operations.
   paths        Print canonical archive paths and bind-mount detection.
   reset        Reset local archive state.

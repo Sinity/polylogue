@@ -20,7 +20,7 @@ SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Delete Verb", ("delete",)),
     ("Mark Verb", ("mark",)),
     ("Continue Verb", ("continue",)),
-    ("Insights", ("insights",)),
+    ("Insights", ("ops", "insights")),
     ("Operations", ("ops",)),
     ("Doctor", ("ops", "doctor")),
     ("User State", ("user-state",)),

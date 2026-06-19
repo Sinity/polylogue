@@ -1,4 +1,4 @@
-Usage: polylogue insights costs [OPTIONS]
+Usage: polylogue ops insights costs [OPTIONS]
 
   List session-level cost estimates.
 
