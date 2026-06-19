@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from polylogue.archive.models import Session
+from polylogue.core.refs import ObjectRef
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.mcp import MCPServerUnderTest, invoke_surface_async, make_polylogue_mock
 
@@ -93,6 +94,7 @@ async def test_correlate_session_returns_result_shape(
     assert "issue_refs" in root
     assert "pr_refs" in root
     assert "file_paths" in root
+    assert "object_refs" in root
 
 
 @pytest.mark.asyncio
@@ -119,6 +121,10 @@ async def test_correlate_session_extracts_issue_refs(
     all_refs = issue_refs + pr_refs
     numbers = {r["number"] for r in all_refs}
     assert 1690 in numbers
+    assert "github-issue:#1690" in root["object_refs"]
+    assert "file:src/main.py" in root["object_refs"]
+    assert all(ObjectRef.parse(ref).format() == ref for ref in root["object_refs"])
+    assert issue_refs[0]["object_ref"] == "github-issue:#1690"
 
 
 @pytest.mark.asyncio

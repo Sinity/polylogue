@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, cast
 
+from polylogue.core.refs import ObjectRef
+
 # ── GitHub Issue / PR reference extraction (#1690 phase 3) ──────────────
 
 # Match full GitHub URLs: https://github.com/owner/repo/issues/123
@@ -486,6 +488,11 @@ def correlation_result_to_payload(
     result: SessionCorrelationResult,
 ) -> dict[str, object]:
     """Convert a SessionCorrelationResult to a JSON-serializable dict."""
+    commit_refs = [ObjectRef(kind="commit", object_id=commit.commit_sha).format() for commit in result.commits]
+    issue_object_refs = [_github_ref_object_ref(ref).format() for ref in result.issue_refs]
+    pr_object_refs = [_github_ref_object_ref(ref).format() for ref in result.pr_refs]
+    file_refs = [ObjectRef(kind="file", object_id=path).format() for path in result.file_paths]
+
     return {
         "session_id": result.session_id,
         "window_start": result.window_start,
@@ -495,6 +502,7 @@ def correlation_result_to_payload(
             {
                 "commit_sha": c.commit_sha,
                 "short_sha": c.commit_sha[:8],
+                "object_ref": ObjectRef(kind="commit", object_id=c.commit_sha).format(),
                 "detection_method": c.detection_method,
                 "confidence": c.confidence,
                 "file_overlap_count": c.file_overlap_count,
@@ -512,6 +520,7 @@ def correlation_result_to_payload(
                 else None,
                 "raw_match": r.raw_match,
                 "message_id": r.message_id,
+                "object_ref": _github_ref_object_ref(r).format(),
             }
             for r in result.issue_refs
         ],
@@ -526,11 +535,21 @@ def correlation_result_to_payload(
                 else None,
                 "raw_match": r.raw_match,
                 "message_id": r.message_id,
+                "object_ref": _github_ref_object_ref(r).format(),
             }
             for r in result.pr_refs
         ],
         "file_paths": result.file_paths,
+        "file_refs": file_refs,
+        "object_refs": [*commit_refs, *issue_object_refs, *pr_object_refs, *file_refs],
     }
+
+
+def _github_ref_object_ref(ref: GitHubRef) -> ObjectRef:
+    object_id = f"{ref.owner}/{ref.repo}#{ref.number}" if ref.owner and ref.repo else ref.raw_match
+    if ref.kind == "pr":
+        return ObjectRef(kind="github-pr", object_id=object_id)
+    return ObjectRef(kind="github-issue", object_id=object_id)
 
 
 __all__ = [

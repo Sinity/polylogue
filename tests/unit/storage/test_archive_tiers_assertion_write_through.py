@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -24,6 +27,7 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     read_archive_workspace_envelope,
     read_assertion_envelope,
     upsert_annotation,
+    upsert_assertion,
     upsert_blackboard_note,
     upsert_correction,
     upsert_mark,
@@ -267,6 +271,56 @@ def test_blackboard_note_assertion_metadata_is_preserved(tmp_path: Path) -> None
     assert env.evidence_refs == ["message:m1", "block:m1:2"]
     assert env.staleness == {"expires_after_days": 14}
     assert env.context_policy == {"inject": False}
+
+
+def test_assertion_write_boundary_normalizes_public_refs(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "user.db")
+
+    env = upsert_assertion(
+        conn,
+        assertion_id="assertion:ref-boundary",
+        target_ref="message:session-9:m1",
+        scope_ref="repo:polylogue",
+        key="boundary",
+        kind=AssertionKind.DECISION,
+        body_text="refs are typed at the write boundary",
+        author_ref="agent:codex",
+        author_kind="agent",
+        evidence_refs=("session-9::m1::0", "block:m1:0"),
+        now_ms=1_700_000_034_000,
+    )
+
+    assert env.target_ref == "message:session-9:m1"
+    assert env.scope_ref == "repo:polylogue"
+    assert env.author_ref == "agent:codex"
+    assert env.evidence_refs == ["session-9::m1::0", "block:m1:0"]
+
+
+@pytest.mark.parametrize(
+    ("field", "kwargs"),
+    [
+        ("target_ref", {"target_ref": "session-9"}),
+        ("scope_ref", {"scope_ref": "repo"}),
+        ("author_ref", {"author_ref": "fixture"}),
+        ("evidence_refs", {"evidence_refs": ("session-9::m1::-1",)}),
+    ],
+)
+def test_assertion_write_boundary_rejects_untyped_or_invalid_refs(
+    tmp_path: Path,
+    field: str,
+    kwargs: dict[str, Any],
+) -> None:
+    conn = _connect(tmp_path / "user.db")
+    payload: dict[str, Any] = {
+        "assertion_id": f"assertion:invalid-{field}",
+        "target_ref": "session:session-9",
+        "kind": AssertionKind.DECISION,
+        "author_ref": "user:local",
+    }
+    payload.update(kwargs)
+
+    with pytest.raises(ValueError):
+        upsert_assertion(conn, **payload)
 
 
 def test_user_overlay_reads_project_assertion_envelopes(tmp_path: Path) -> None:

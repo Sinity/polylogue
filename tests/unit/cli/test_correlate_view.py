@@ -16,8 +16,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from polylogue.core.refs import ObjectRef
 from polylogue.insights.correlation_view import run_correlation_view
-from polylogue.insights.session_commit import SessionCorrelationResult
+from polylogue.insights.session_commit import GitHubRef, SessionCommitEdge, SessionCorrelationResult
 
 
 def _session() -> SimpleNamespace:
@@ -36,10 +37,18 @@ def _result() -> SessionCorrelationResult:
         window_start="2026-04-22T10:00:00+00:00",
         window_end="2026-04-22T16:00:00+00:00",
         repo="https://github.com/Sinity/polylogue",
-        commits=[],
-        issue_refs=[],
-        pr_refs=[],
-        file_paths=[],
+        commits=[
+            SessionCommitEdge(
+                session_id="target",
+                commit_sha="abc123456789",
+                detection_method="file_overlap",
+                confidence=0.8,
+                file_overlap_count=2,
+            )
+        ],
+        issue_refs=[GitHubRef(owner="Sinity", repo="polylogue", number=1845, kind="issue", raw_match="#1845")],
+        pr_refs=[GitHubRef(owner="Sinity", repo="polylogue", number=2149, kind="pr", raw_match="#2149")],
+        file_paths=["polylogue/core/refs.py"],
     )
 
 
@@ -54,6 +63,13 @@ def test_run_correlation_view_json_emits_payload() -> None:
     printed = "".join(str(call.args[0]) for call in env.ui.console.print.call_args_list if call.args)
     payload = json.loads(printed)
     assert payload["session_id"] == "target"
+    assert payload["object_refs"] == [
+        "commit:abc123456789",
+        "github-issue:Sinity/polylogue#1845",
+        "github-pr:Sinity/polylogue#2149",
+        "file:polylogue/core/refs.py",
+    ]
+    assert all(ObjectRef.parse(ref).format() == ref for ref in payload["object_refs"])
 
 
 def test_run_correlation_view_missing_session_exits() -> None:
