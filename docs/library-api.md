@@ -292,6 +292,10 @@ async def main():
         # Parse files
         result = await archive.parse_file("chatgpt_export.json")
 
+        # Explain import decisions without writing archive rows
+        explain = await archive.explain_import("chatgpt_export.json", source_name="chatgpt")
+        print(explain.produced.sessions, explain.entries[0].provider)
+
         # Fluent filter (terminals are async)
         convs = await archive.filter().origin("claude-ai-export").contains("error").limit(10).list()
 
@@ -311,6 +315,7 @@ asyncio.run(main())
 | `search(query, limit, source, since)` | Search returning evidence snippets; text matches report message evidence and Drive/Gemini `provider_id` / `id` / `fileId` / `driveId` attachment-id matches report attachment evidence |
 | `parse_file(path, source_name)` | Parse a single export file |
 | `parse_sources(sources, download_assets)` | Parse from configured sources |
+| `explain_import(path, source_name, limit)` | Explain provider detection, artifact classification, parser mode, produced row counts, skips, and caveats without writing archive rows |
 | `rebuild_index()` | Rebuild FTS5 search index |
 | `stats()` | Archive statistics (returns `ArchiveStats`) |
 | `filter()` | Fluent filter builder (sync, reuses `SessionFilter`) |
