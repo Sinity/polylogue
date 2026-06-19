@@ -8,12 +8,12 @@ import functools
 import json
 import os
 from collections.abc import Callable, Mapping
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePath
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 from urllib.parse import parse_qs, urlparse
 
 from polylogue.core.loopback import is_loopback_host, is_loopback_origin
@@ -65,6 +65,170 @@ if TYPE_CHECKING:
     from polylogue.surfaces.payloads import FacetBucketsPayload, RecoveryReportFormat, RecoveryReportKind
 
 logger = get_logger(__name__)
+
+RouteMethod = Literal["GET", "POST", "DELETE"]
+
+
+@dataclass(frozen=True)
+class _StaticGetRoute:
+    pattern: str
+    segments: tuple[str, ...]
+    handler_name: str
+    passes_params: bool = False
+
+
+@dataclass(frozen=True)
+class _ParameterizedGetRoute:
+    pattern: str
+    prefix: tuple[str, ...]
+    suffix: tuple[str, ...]
+    handler_name: str
+    passes_params: bool = False
+
+
+@dataclass(frozen=True)
+class _StaticPostRoute:
+    pattern: str
+    segments: tuple[str, ...]
+    handler_name: str
+    passes_path: bool = False
+
+
+def _static_get_routes() -> tuple[_StaticGetRoute, ...]:
+    return (
+        _StaticGetRoute("/api/health/check", ("api", "health", "check"), "_handle_health_check"),
+        _StaticGetRoute("/api/health", ("api", "health"), "_handle_health"),
+        _StaticGetRoute("/api/status", ("api", "status"), "_handle_status", passes_params=True),
+        _StaticGetRoute("/api/events", ("api", "events"), "_handle_events", passes_params=True),
+        _StaticGetRoute("/api/sessions", ("api", "sessions"), "_handle_list_sessions", passes_params=True),
+        _StaticGetRoute("/api/facets", ("api", "facets"), "_handle_facets", passes_params=True),
+        _StaticGetRoute("/api/query-units", ("api", "query-units"), "_handle_query_units", passes_params=True),
+        _StaticGetRoute(
+            "/api/query-completions", ("api", "query-completions"), "_handle_query_completions", passes_params=True
+        ),
+        _StaticGetRoute("/api/read-view-profiles", ("api", "read-view-profiles"), "_handle_read_view_profiles"),
+        _StaticGetRoute("/api/assertions", ("api", "assertions"), "_handle_assertions", passes_params=True),
+        _StaticGetRoute("/api/paste-browser", ("api", "paste-browser"), "_handle_paste_browser", passes_params=True),
+        _StaticGetRoute("/api/attachments", ("api", "attachments"), "_handle_attachment_library", passes_params=True),
+        _StaticGetRoute("/api/stack", ("api", "stack"), "_handle_stack", passes_params=True),
+        _StaticGetRoute("/api/compare", ("api", "compare"), "_handle_compare", passes_params=True),
+        _StaticGetRoute("/api/sources", ("api", "sources"), "_handle_sources"),
+        _StaticGetRoute(
+            "/api/thread-continue-templates",
+            ("api", "thread-continue-templates"),
+            "_handle_get_thread_continue_templates",
+        ),
+        _StaticGetRoute(
+            "/api/maintenance/operations", ("api", "maintenance", "operations"), "_handle_maintenance_operations"
+        ),
+    )
+
+
+def _parameterized_get_routes() -> tuple[_ParameterizedGetRoute, ...]:
+    return (
+        _ParameterizedGetRoute("/api/sessions/:id", ("api", "sessions"), (), "_handle_get_session"),
+        _ParameterizedGetRoute(
+            "/api/sessions/:id/messages", ("api", "sessions"), ("messages",), "_handle_get_messages", passes_params=True
+        ),
+        _ParameterizedGetRoute(
+            "/api/sessions/:id/recovery",
+            ("api", "sessions"),
+            ("recovery",),
+            "_handle_get_session_recovery",
+            passes_params=True,
+        ),
+        _ParameterizedGetRoute(
+            "/api/sessions/:id/read", ("api", "sessions"), ("read",), "_handle_get_session_read", passes_params=True
+        ),
+        _ParameterizedGetRoute("/api/sessions/:id/raw", ("api", "sessions"), ("raw",), "_handle_get_session_raw"),
+        _ParameterizedGetRoute("/api/sessions/:id/cost", ("api", "sessions"), ("cost",), "_handle_get_session_cost"),
+        _ParameterizedGetRoute(
+            "/api/sessions/:id/provenance",
+            ("api", "sessions"),
+            ("provenance",),
+            "_handle_get_session_provenance",
+            passes_params=True,
+        ),
+        _ParameterizedGetRoute(
+            "/api/sessions/:id/topology",
+            ("api", "sessions"),
+            ("topology",),
+            "_handle_get_session_topology",
+            passes_params=True,
+        ),
+        _ParameterizedGetRoute(
+            "/api/sessions/:id/topology/parent-chain",
+            ("api", "sessions"),
+            ("topology", "parent-chain"),
+            "_handle_get_session_parent_chain",
+            passes_params=True,
+        ),
+        _ParameterizedGetRoute(
+            "/api/sessions/:id/similar",
+            ("api", "sessions"),
+            ("similar",),
+            "_handle_get_session_similar",
+            passes_params=True,
+        ),
+        _ParameterizedGetRoute(
+            "/api/sessions/:id/attachments",
+            ("api", "sessions"),
+            ("attachments",),
+            "_handle_get_session_attachments",
+        ),
+        _ParameterizedGetRoute(
+            "/api/insights/sessions/:id",
+            ("api", "insights", "sessions"),
+            (),
+            "_handle_get_session_insights",
+            passes_params=True,
+        ),
+        _ParameterizedGetRoute("/api/raw_artifacts/:id", ("api", "raw_artifacts"), (), "_handle_get_raw_artifact"),
+        _ParameterizedGetRoute(
+            "/api/maintenance/status/:id",
+            ("api", "maintenance", "status"),
+            (),
+            "_handle_maintenance_status",
+        ),
+    )
+
+
+def _observability_post_routes() -> tuple[_StaticPostRoute, ...]:
+    return (
+        _StaticPostRoute("/v1/traces", ("v1", "traces"), "_handle_otlp_post", passes_path=True),
+        _StaticPostRoute("/v1/metrics", ("v1", "metrics"), "_handle_otlp_post", passes_path=True),
+        _StaticPostRoute("/v1/logs", ("v1", "logs"), "_handle_otlp_post", passes_path=True),
+    )
+
+
+def _authenticated_post_routes() -> tuple[_StaticPostRoute, ...]:
+    return (
+        _StaticPostRoute("/api/reset", ("api", "reset"), "_handle_reset"),
+        _StaticPostRoute("/api/ingest", ("api", "ingest"), "_handle_ingest"),
+        _StaticPostRoute("/api/maintenance/plan", ("api", "maintenance", "plan"), "_handle_maintenance_plan"),
+        _StaticPostRoute("/api/maintenance/run", ("api", "maintenance", "run"), "_handle_maintenance_run"),
+    )
+
+
+def implemented_daemon_route_patterns() -> tuple[tuple[RouteMethod, str], ...]:
+    """Return route patterns implemented by daemon HTTP dispatch."""
+
+    routes: list[tuple[RouteMethod, str]] = [
+        ("GET", "/"),
+        ("GET", "/s/:session_id"),
+        ("GET", "/w/:mode"),
+        ("GET", "/p"),
+        ("GET", "/a"),
+        ("GET", "/healthz/live"),
+        ("GET", "/healthz/ready"),
+        ("GET", "/metrics"),
+    ]
+    routes.extend(("GET", route.pattern) for route in _static_get_routes())
+    routes.extend(("GET", route.pattern) for route in _parameterized_get_routes())
+    routes.extend(("POST", route.pattern) for route in _observability_post_routes())
+    routes.extend(("POST", route.pattern) for route in _authenticated_post_routes())
+    routes.extend(user_state_http.user_state_route_patterns())
+    return tuple(routes)
 
 
 def _json_bytes(payload: object) -> bytes:
@@ -850,74 +1014,37 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if not self._check_auth():
             return
 
-        if path == ["api", "health", "check"]:
-            self._handle_health_check()
-        elif path == ["api", "health"]:
-            self._handle_health()
-        elif path == ["api", "status"]:
-            self._handle_status(params)
-        elif path == ["api", "events"]:
-            self._handle_events(params)
-        elif path == ["api", "sessions"]:
-            self._handle_list_sessions(params)
-        elif path == ["api", "facets"]:
-            self._handle_facets(params)
-        elif path == ["api", "query-units"]:
-            self._handle_query_units(params)
-        elif path == ["api", "query-completions"]:
-            self._handle_query_completions(params)
-        elif path == ["api", "read-view-profiles"]:
-            self._handle_read_view_profiles()
-        elif path == ["api", "assertions"]:
-            self._handle_assertions(params)
-        elif path == ["api", "paste-browser"]:
-            self._handle_paste_browser(params)
-        elif path == ["api", "attachments"]:
-            self._handle_attachment_library(params)
-        elif path == ["api", "stack"]:
-            self._handle_stack(params)
-        elif path == ["api", "compare"]:
-            self._handle_compare(params)
-        elif workspace_routes.dispatch_get(self, path, params) or (
+        static_route = next((route for route in _static_get_routes() if tuple(path) == route.segments), None)
+        if static_route is not None:
+            handler = cast(Callable[..., None], getattr(self, static_route.handler_name))
+            if static_route.passes_params:
+                handler(params)
+            else:
+                handler()
+            return
+
+        if workspace_routes.dispatch_get(self, path, params) or (
             path[:2] == ["api", "user"] and user_state_http.dispatch_get(self, path[2:], params)
         ):
             return
-        elif path == ["api", "sources"]:
-            self._handle_sources()
-        elif len(path) == 3 and path[:2] == ["api", "sessions"] and path[2]:
-            self._handle_get_session(path[2])
-        elif len(path) == 4 and path[:2] == ["api", "sessions"] and path[3] == "messages":
-            self._handle_get_messages(path[2], params)
-        elif len(path) == 4 and path[:2] == ["api", "sessions"] and path[3] == "recovery":
-            self._handle_get_session_recovery(path[2], params)
-        elif len(path) == 4 and path[:2] == ["api", "sessions"] and path[3] == "read":
-            self._handle_get_session_read(path[2], params)
-        elif len(path) == 4 and path[:2] == ["api", "sessions"] and path[3] == "raw":
-            self._handle_get_session_raw(path[2])
-        elif len(path) == 4 and path[:2] == ["api", "sessions"] and path[3] == "cost":
-            self._handle_get_session_cost(path[2])
-        elif len(path) == 4 and path[:2] == ["api", "sessions"] and path[3] == "provenance":
-            self._handle_get_session_provenance(path[2], params)
-        elif len(path) == 4 and path[:2] == ["api", "sessions"] and path[3] == "topology":
-            self._handle_get_session_topology(path[2], params)
-        elif len(path) == 5 and path[:2] == ["api", "sessions"] and path[3] == "topology" and path[4] == "parent-chain":
-            self._handle_get_session_parent_chain(path[2], params)
-        elif path == ["api", "thread-continue-templates"]:
-            self._handle_get_thread_continue_templates()
-        elif len(path) == 4 and path[:3] == ["api", "insights", "sessions"]:
-            self._handle_get_session_insights(path[3], params)
-        elif len(path) == 4 and path[:2] == ["api", "sessions"] and path[3] == "similar":
-            self._handle_get_session_similar(path[2], params)
-        elif len(path) == 4 and path[:2] == ["api", "sessions"] and path[3] == "attachments":
-            self._handle_get_session_attachments(path[2])
-        elif len(path) == 4 and path[:3] == ["api", "raw_artifacts"]:
-            self._handle_get_raw_artifact(path[3])
-        elif path == ["api", "maintenance", "operations"]:
-            self._handle_maintenance_operations()
-        elif len(path) == 4 and path[:3] == ["api", "maintenance", "status"]:
-            self._handle_maintenance_status(path[3])
-        else:
-            self._send_error(HTTPStatus.NOT_FOUND, "not_found")
+
+        for route in _parameterized_get_routes():
+            expected_len = len(route.prefix) + 1 + len(route.suffix)
+            if (
+                len(path) == expected_len
+                and tuple(path[: len(route.prefix)]) == route.prefix
+                and path[len(route.prefix)]
+                and tuple(path[len(route.prefix) + 1 :]) == route.suffix
+            ):
+                handler = cast(Callable[..., None], getattr(self, route.handler_name))
+                identifier = path[len(route.prefix)]
+                if route.passes_params:
+                    handler(identifier, params)
+                else:
+                    handler(identifier)
+                return
+
+        self._send_error(HTTPStatus.NOT_FOUND, "not_found")
 
     # #1677: client disconnects (refresh, navigate, tab close) surface as
     # BrokenPipeError from wfile.write(). Stdlib lets that escape as a
@@ -969,7 +1096,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         # the daemon is bound non-loopback we still require the
         # configured auth token — OTLP exporters that DO carry
         # credentials are the only safe non-loopback case.
-        if path == ["v1", "traces"] or path == ["v1", "metrics"] or path == ["v1", "logs"]:
+        observability_route = next(
+            (route for route in _observability_post_routes() if tuple(path) == route.segments), None
+        )
+        if observability_route is not None:
             from polylogue.config import load_polylogue_config
 
             if not load_polylogue_config().observability_enabled:
@@ -977,7 +1107,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 return
             if not is_loopback_host(self._api_host) and not self._check_auth():
                 return
-            self._handle_otlp_post(path)
+            handler = cast(Callable[..., None], getattr(self, observability_route.handler_name))
+            if observability_route.passes_path:
+                handler(path)
+            else:
+                handler()
             return
 
         if not self._check_auth():
@@ -985,17 +1119,15 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if not self._check_cross_origin():
             return
 
-        if path == ["api", "reset"]:
-            self._handle_reset()
-            return
-        if path == ["api", "ingest"]:
-            self._handle_ingest()
-            return
-        if path == ["api", "maintenance", "plan"]:
-            self._handle_maintenance_plan()
-            return
-        if path == ["api", "maintenance", "run"]:
-            self._handle_maintenance_run()
+        authenticated_route = next(
+            (route for route in _authenticated_post_routes() if tuple(path) == route.segments), None
+        )
+        if authenticated_route is not None:
+            handler = cast(Callable[..., None], getattr(self, authenticated_route.handler_name))
+            if authenticated_route.passes_path:
+                handler(path)
+            else:
+                handler()
             return
         if path[:2] == ["api", "user"] and user_state_http.dispatch_post(self, path[2:]):
             return

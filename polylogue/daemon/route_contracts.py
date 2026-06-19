@@ -3,7 +3,8 @@
 This module is intentionally descriptive: dispatch still lives in
 ``polylogue.daemon.http``, but route classes, auth posture, and stability are
 owned here so docs, tests, OpenAPI generation, and future web-workbench code do
-not infer security semantics from a long if/elif chain.
+not infer security semantics from handler names. Tests compare this metadata
+against route patterns exposed by the live dispatcher tables.
 """
 
 from __future__ import annotations

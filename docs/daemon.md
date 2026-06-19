@@ -72,10 +72,11 @@ By default `polylogued run` enables every component (watch, browser capture, HTT
 The HTTP API server runs by default. Pass `--no-api` to disable it. The endpoints below are exposed under the configured `--api-host:--api-port`.
 
 Route contract metadata lives in `polylogue/daemon/route_contracts.py`.
-Dispatch still happens in `polylogue/daemon/http.py`, but tests and docs use
-the metadata module as the durable route-classification source so stable
-routes, shell-only helpers, operational probes, and mutation routes do not drift
-silently.
+Dispatch still happens in `polylogue/daemon/http.py`, but the dispatcher now
+exposes its implemented route patterns from the routing tables used at runtime.
+The route-contract tests compare the two surfaces, so stable routes,
+shell-supported helpers, operational probes, and mutation routes must stay
+classified with explicit auth and response posture.
 
 | Route class | Auth policy | Examples |
 |-------------|-------------|----------|
