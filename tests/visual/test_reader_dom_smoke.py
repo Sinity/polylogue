@@ -391,6 +391,10 @@ def test_reader_evidence_panel_endpoint_and_shell_smoke(reader_workspace: Reader
             dict[str, object],
             get_json(base_url, f"/api/assertions?target_ref=session%3A{READER_C1}&limit=10"),
         )
+        context = cast(
+            dict[str, object],
+            get_json(base_url, f"/api/sessions/{READER_C1}/read?view=context"),
+        )
         context_pack = cast(
             dict[str, object],
             get_json(base_url, f"/api/sessions/{READER_C1}/read?view=context-pack&max_messages=5"),
@@ -404,6 +408,7 @@ def test_reader_evidence_panel_endpoint_and_shell_smoke(reader_workspace: Reader
         "renderInspectorEvidence",
         "renderBrowserCaptureChip",
         "renderReadViewExecution",
+        "renderContextReadView",
         "renderContextPackReadView",
         "loadEvidencePanel",
         "/api/assertions?target_ref=",
@@ -421,11 +426,14 @@ def test_reader_evidence_panel_endpoint_and_shell_smoke(reader_workspace: Reader
     claim_items = cast(list[dict[str, object]], assertions["items"])
     assert [item["assertion_id"] for item in claim_items] == ["reader-evidence-decision"]
     assert claim_items[0]["target_ref"] == f"session:{READER_C1}"
+    assert context["view"] == "context"
+    context_payload = cast(dict[str, object], context["payload"])
+    assert context_payload["preamble_version"] == "1.0"
     assert context_pack["view"] == "context-pack"
-    context_payload = cast(dict[str, object], context_pack["payload"])
-    context_sessions = cast(list[dict[str, object]], context_payload["sessions"])
+    context_pack_payload = cast(dict[str, object], context_pack["payload"])
+    context_sessions = cast(list[dict[str, object]], context_pack_payload["sessions"])
     assert context_sessions[0]["session_id"] == READER_C1
-    context_provenance = cast(dict[str, object], context_payload["provenance"])
+    context_provenance = cast(dict[str, object], context_pack_payload["provenance"])
     assert context_provenance["redacted"] is True
 
     write_evidence_manifest(
@@ -438,7 +446,7 @@ def test_reader_evidence_panel_endpoint_and_shell_smoke(reader_workspace: Reader
             "recovery_report": recovery["report"],
             "work_packet_evidence_refs": len(cast(list[object], packet["evidence_refs"])),
             "assertion_count": assertions["total"],
-            "context_pack_sessions": context_payload["total_sessions"],
+            "context_pack_sessions": context_pack_payload["total_sessions"],
             "raw_artifacts_absent_from_recovery": True,
             "private_path_safe": True,
         },

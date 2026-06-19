@@ -1668,6 +1668,26 @@ class FacetsResponse(SurfacePayloadModel):
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
 
+class ContextPreambleAssertionGuidance(SurfacePayloadModel):
+    """Assertion guidance eligible for explicit context injection."""
+
+    kind: str
+    text: str | None = None
+    target_ref: str | None = None
+    scope_ref: str | None = None
+    evidence_refs: list[str] = Field(default_factory=list)
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class ContextPreambleGuidance(SurfacePayloadModel):
+    """Structured guidance carried by context preamble payloads."""
+
+    assertions: list[ContextPreambleAssertionGuidance] = Field(default_factory=list)
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
 class ContextPreamble(SurfacePayloadModel):
     """Typed delivery envelope for SessionStart context injection (#1696).
 
@@ -1685,7 +1705,7 @@ class ContextPreamble(SurfacePayloadModel):
     open_issues: list[ContextPreambleIssue] = Field(default_factory=list)
     project_state: ContextPreambleProjectState | None = None
     blackboard_notes: list[ContextPreambleBlackboardNote] = Field(default_factory=list)
-    guidance: str | None = None
+    guidance: str | ContextPreambleGuidance | None = None
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -1730,6 +1750,7 @@ class ContextPreambleIssue(SurfacePayloadModel):
 class ContextPreambleProjectState(SurfacePayloadModel):
     """Current project state for the context preamble."""
 
+    repo: str | None = None
     branch: str | None = None
     recent_commits: list[str] = Field(default_factory=list)
     active_worktrees: list[str] = Field(default_factory=list)

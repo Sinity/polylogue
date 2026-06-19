@@ -204,6 +204,7 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "list_annotations",
         "neighbor_candidates",
         "context_pack_payload",
+        "context_preamble_payload",
         "recovery_report",
         "find_resume_candidates",
         "export_insight_bundle",

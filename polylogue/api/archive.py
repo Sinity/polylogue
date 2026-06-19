@@ -1418,6 +1418,22 @@ class PolylogueArchiveMixin:
             seed_session_id=seed_session_id,
         )
 
+    async def context_preamble_payload(
+        self,
+        session_id: str,
+        *,
+        related_limit: int = 5,
+    ) -> Any:
+        """Build the shared typed context-preamble payload for one session."""
+        from polylogue.context.preamble import build_context_preamble_payload
+
+        return await build_context_preamble_payload(
+            self,
+            session_id=session_id,
+            related_limit=related_limit,
+            source_tool_calls={"context_preamble_payload": "polylogue-api"},
+        )
+
     async def explain_query_expression(self, expression: str) -> JSONDocument:
         """Explain query DSL parsing, AST metadata, and lowering details."""
         from polylogue.archive.query.expression import explain_expression

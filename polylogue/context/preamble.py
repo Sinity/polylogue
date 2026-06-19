@@ -6,93 +6,133 @@ import json
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from polylogue.surfaces.payloads import (
+    ContextPreamble,
+    ContextPreambleAssertionGuidance,
+    ContextPreambleGuidance,
+    ContextPreambleLineage,
+    ContextPreambleProjectState,
+    ContextPreambleSession,
+)
+
 if TYPE_CHECKING:
     from polylogue.cli.shared.types import AppEnv
+
+
+async def build_context_preamble_payload(
+    polylogue: object,
+    *,
+    session_id: str | None,
+    related_limit: int = 5,
+    repo_path: str | None = None,
+    cwd: str | None = None,
+    recent_files: tuple[str, ...] = (),
+    source_tool_calls: dict[str, str] | None = None,
+    require_session: bool = True,
+) -> ContextPreamble | None:
+    """Build the shared typed context preamble payload for one seed session.
+
+    CLI, MCP, API, and daemon read-view routes all use this builder so the
+    context view does not fork into separate browser/MCP/CLI payload shapes.
+    """
+
+    conv = await polylogue.get_session(session_id) if session_id else None  # type: ignore[attr-defined]
+    if conv is None and require_session:
+        return None
+
+    lineage: ContextPreambleLineage | None = None
+    if session_id:
+        try:
+            topology = await polylogue.get_session_topology(session_id)  # type: ignore[attr-defined]
+            if topology:
+                lineage = ContextPreambleLineage(
+                    logical_session_root=getattr(topology, "logical_session_id", None),
+                    parent_session_id=getattr(topology, "parent_session_id", None),
+                )
+        except Exception:
+            pass
+
+    related: list[ContextPreambleSession] = []
+    try:
+        repo = repo_path or (getattr(conv, "git_repository_url", None) if conv is not None else None) or "."
+        candidates = await polylogue.find_resume_candidates(  # type: ignore[attr-defined]
+            repo_path=str(repo),
+            cwd=cwd,
+            recent_files=recent_files,
+            limit=max(1, related_limit),
+        )
+        for c in candidates:
+            cid = getattr(c, "logical_session_id", None) or getattr(c, "session_id", "") or "?"
+            related.append(
+                ContextPreambleSession(
+                    session_id=str(cid),
+                    title=getattr(c, "title", None),
+                    date=getattr(c, "date", None),
+                    terminal_state=getattr(c, "terminal_state", None),
+                    summary=getattr(c, "summary", None),
+                    origin=getattr(c, "origin", None),
+                )
+            )
+    except Exception:
+        pass
+
+    project: ContextPreambleProjectState | None = None
+    git_repo = getattr(conv, "git_repository_url", None) if conv is not None else None
+    git_branch = getattr(conv, "git_branch", None) if conv is not None else None
+    if git_repo or git_branch:
+        project = ContextPreambleProjectState(
+            repo=str(git_repo) if git_repo else None,
+            branch=str(git_branch) if git_branch else None,
+        )
+
+    assertion_guidance: list[ContextPreambleAssertionGuidance] = []
+    if session_id:
+        try:
+            claims = await polylogue.list_assertion_claim_payloads(  # type: ignore[attr-defined]
+                target_ref=f"session:{session_id}",
+                statuses=("active",),
+                context_inject=True,
+                limit=20,
+            )
+            assertion_guidance = [
+                ContextPreambleAssertionGuidance(
+                    kind=claim.kind,
+                    text=claim.body_text,
+                    target_ref=claim.target_ref,
+                    scope_ref=claim.scope_ref,
+                    evidence_refs=list(claim.evidence_refs),
+                )
+                for claim in claims
+            ]
+        except Exception:
+            pass
+
+    guidance = ContextPreambleGuidance(assertions=assertion_guidance) if assertion_guidance else None
+    return ContextPreamble(
+        preamble_version="1.0",
+        injected_at=datetime.now(timezone.utc).isoformat(),
+        source_tool_calls=source_tool_calls or {},
+        session_lineage=lineage,
+        recent_related_sessions=related,
+        open_issues=[],
+        project_state=project,
+        guidance=guidance,
+    )
 
 
 def compose_context_preamble(env: AppEnv, *, session_id: str, related_limit: int = 5) -> str:
     """Compose a context preamble JSON document for a seed session (#1494)."""
     from polylogue.api.sync.bridge import run_coroutine_sync
 
-    conv = run_coroutine_sync(env.polylogue.get_session(session_id))
-    if conv is None:
+    preamble = run_coroutine_sync(
+        build_context_preamble_payload(
+            env.polylogue,
+            session_id=session_id,
+            related_limit=related_limit,
+            source_tool_calls={"compose_context_preamble": "polylogue-cli"},
+        )
+    )
+    if preamble is None:
         env.ui.error(f"Session not found: {session_id}")
         raise SystemExit(1)
-
-    lineage: dict[str, object] = {}
-    try:
-        topology = run_coroutine_sync(env.polylogue.get_session_topology(session_id))
-        if topology:
-            lineage = {
-                "logical_session_root": getattr(topology, "logical_session_id", None),
-                "parent_session_id": getattr(topology, "parent_session_id", None),
-            }
-    except Exception:
-        pass
-
-    related: list[dict[str, object]] = []
-    try:
-        repo: object = getattr(conv, "git_repository_url", None)
-        candidates = run_coroutine_sync(
-            env.polylogue.find_resume_candidates(
-                repo_path=str(repo) if repo else ".",
-                limit=related_limit,
-            )
-        )
-        for c in candidates:
-            related.append(
-                {
-                    "session_id": getattr(c, "logical_session_id", None) or getattr(c, "session_id", "?"),
-                    "title": getattr(c, "title", None),
-                    "terminal_state": getattr(c, "terminal_state", None),
-                }
-            )
-    except Exception:
-        pass
-
-    project: dict[str, object] = {}
-    git_repo = getattr(conv, "git_repository_url", None)
-    git_branch = getattr(conv, "git_branch", None)
-    if git_repo or git_branch:
-        project = {
-            "repo": str(git_repo) if git_repo else None,
-            "branch": str(git_branch) if git_branch else None,
-        }
-
-    assertion_guidance: list[dict[str, object]] = []
-    try:
-        claims = run_coroutine_sync(
-            env.polylogue.list_assertion_claim_payloads(
-                target_ref=f"session:{session_id}",
-                statuses=("active",),
-                context_inject=True,
-                limit=20,
-            )
-        )
-        assertion_guidance = [
-            {
-                "kind": claim.kind,
-                "text": claim.body_text,
-                "target_ref": claim.target_ref,
-                "scope_ref": claim.scope_ref,
-                "evidence_refs": list(claim.evidence_refs),
-            }
-            for claim in claims
-        ]
-    except Exception:
-        pass
-
-    guidance: dict[str, object] | None = None
-    if assertion_guidance:
-        guidance = {"assertions": assertion_guidance}
-
-    preamble: dict[str, object] = {
-        "preamble_version": "1.0",
-        "injected_at": datetime.now(timezone.utc).isoformat(),
-        "session_lineage": lineage or None,
-        "recent_related_sessions": related,
-        "open_issues": [],
-        "project_state": project or None,
-        "guidance": guidance,
-    }
-    return json.dumps(preamble, indent=2, default=str)
+    return json.dumps(preamble.model_dump(mode="json", exclude_none=True), indent=2, default=str)

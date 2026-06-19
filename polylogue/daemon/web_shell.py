@@ -769,8 +769,8 @@ function renderFacets() {
 function renderReadViewSelector(c) {
   if (!c) return '';
   var profiles = state.readViewProfiles || [];
-  var supported = {messages: true, recovery: true, raw: true, 'context-pack': true};
-  var labels = {messages: 'Messages', recovery: 'Recovery', raw: 'Raw', 'context-pack': 'Context Pack'};
+  var supported = {messages: true, recovery: true, raw: true, context: true, 'context-pack': true};
+  var labels = {messages: 'Messages', recovery: 'Recovery', raw: 'Raw', context: 'Context', 'context-pack': 'Context Pack'};
   if (!profiles.length) {
     var fallback = state.readViewProfileError || 'Read profiles loading';
     return '<div id="read-profile-selector" class="read-profile-selector muted">' + esc(fallback) + '</div>';
@@ -920,6 +920,7 @@ function renderReadViewExecution(c, viewId) {
   var payload = envelope.payload || {};
   if (viewId === 'recovery') return renderRecoveryReadView(payload);
   if (viewId === 'raw') return renderRawReadView(payload);
+  if (viewId === 'context') return renderContextReadView(payload);
   if (viewId === 'context-pack') return renderContextPackReadView(payload);
   return '<div class="main-empty"><h3>Unsupported read view</h3><p>' + esc(viewId) + '</p></div>';
 }
@@ -951,6 +952,34 @@ function renderRawReadView(payload) {
   });
   if (!artifacts.length) html += '<div class="inspector-empty">No raw artifact metadata surfaced for this session.</div>';
   html += '</div>';
+  return html;
+}
+
+function renderContextReadView(payload) {
+  var lineage = payload.session_lineage || {};
+  var related = payload.recent_related_sessions || [];
+  var project = payload.project_state || {};
+  var guidance = payload.guidance || {};
+  var assertions = guidance.assertions || [];
+  var html = '<div class="read-view-panel"><h3>Context preamble</h3>'
+    + '<p class="muted">Read through /api/sessions/:id/read using the shared ContextPreamble DTO.</p>'
+    + '<div class="inspector-field"><span class="label">root</span><span class="value">' + esc(lineage.logical_session_root || '-') + '</span></div>'
+    + '<div class="inspector-field"><span class="label">parent</span><span class="value">' + esc(lineage.parent_session_id || '-') + '</span></div>'
+    + '<div class="inspector-field"><span class="label">repo</span><span class="value">' + esc(project.repo || '-') + '</span></div>'
+    + '<div class="inspector-field"><span class="label">branch</span><span class="value">' + esc(project.branch || '-') + '</span></div>';
+  html += '<div class="inspector-section"><h4>Related sessions</h4>';
+  related.slice(0, 8).forEach(function(session) {
+    html += '<div class="annotation-item"><div class="meta">' + esc(session.terminal_state || session.origin || 'related') + '</div>'
+      + '<div class="note"><strong>' + esc(session.title || 'Untitled') + '</strong><br>' + esc(session.session_id || '') + '</div></div>';
+  });
+  if (!related.length) html += '<div class="inspector-empty">No related sessions surfaced for this seed.</div>';
+  html += '</div><div class="inspector-section"><h4>Guidance</h4>';
+  assertions.slice(0, 8).forEach(function(claim) {
+    html += '<div class="annotation-item"><div class="meta">' + esc(claim.kind || 'assertion') + ' / ' + esc(claim.scope_ref || '') + '</div>'
+      + '<div class="note">' + esc(claim.text || '') + '</div></div>';
+  });
+  if (!assertions.length) html += '<div class="inspector-empty">No injectable assertion guidance for this session.</div>';
+  html += '</div></div>';
   return html;
 }
 
