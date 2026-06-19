@@ -372,7 +372,7 @@ payloads — apply across the CLI, MCP, Python API, and daemon HTTP surfaces.</p
 <ul>
 <li><a href="#retrieval-lanes">Retrieval Lanes</a> — <code>dialogue</code>, <code>actions</code>, <code>hybrid</code>,
 <code>semantic</code>, and how <code>auto</code> elevates.</li>
-<li><a href="#terminal-unit-queries">Terminal Unit Queries</a> — <code>messages/actions/blocks/ assertions/observed-events/context-snapshots where ...</code> row results.</li>
+<li><a href="#terminal-unit-queries">Terminal Unit Queries</a> — <code>messages/actions/blocks/ assertions/runs/observed-events/context-snapshots where ...</code> row results.</li>
 <li><a href="#ranking-policy">Ranking Policy</a> — current <code>mixed-bm25-rrf-vector</code>
 policy and version contract.</li>
 <li><a href="#searchenvelope-contract">SearchEnvelope Contract</a> — the typed
@@ -387,7 +387,7 @@ counts with both views (<a href="https://github.com/Sinity/polylogue/issues/1269
 through the same typed AST and query planner:</p>
 <pre><code class="language-text">compact-query      ::= compact-clause*
 boolean-query      ::= [&quot;sessions&quot; &quot;where&quot;] predicate
-unit-query         ::= (&quot;messages&quot; | &quot;actions&quot; | &quot;blocks&quot; | &quot;assertions&quot; | &quot;observed-events&quot; | &quot;context-snapshots&quot;) &quot;where&quot; predicate
+unit-query         ::= (&quot;messages&quot; | &quot;actions&quot; | &quot;blocks&quot; | &quot;assertions&quot; | &quot;runs&quot; | &quot;observed-events&quot; | &quot;context-snapshots&quot;) &quot;where&quot; predicate
 
 compact-clause     ::= field-clause
                      | quoted-text | bare-text
@@ -406,7 +406,7 @@ predicate          ::= predicate &quot;OR&quot; predicate
                      | &quot;exists&quot; structural-unit &quot;(&quot; predicate &quot;)&quot;
                      | &quot;seq&quot; &quot;(&quot; sequence-step &quot;-&gt;&quot; sequence-step+ &quot;)&quot;
 
-structural-unit    ::= &quot;message&quot; | &quot;action&quot; | &quot;block&quot;
+structural-unit    ::= &quot;message&quot; | &quot;action&quot; | &quot;block&quot; | &quot;assertion&quot;
 </code></pre>
 <p>Compact queries select sessions:</p>
 <pre><code class="language-bash">polylogue repo:polylogue tag:active -&quot;stale plan&quot; &quot;query envelope&quot;
@@ -423,6 +423,7 @@ polylogue sessions where 'seq(action:file_edit -&gt; action:shell)'
 polylogue actions where 'session.repo:polylogue AND action:file_edit AND path:polylogue/archive'
 polylogue blocks where 'type:code AND text:sqlite'
 polylogue assertions where 'kind:decision AND status:active AND text:review'
+polylogue runs where 'role:subagent AND status:completed AND agent:Explore'
 polylogue observed-events where 'delivery_state:acted_on AND text:#2100'
 polylogue context-snapshots where 'boundary:session_start AND session.repo:polylogue'
 </code></pre>
@@ -555,10 +556,14 @@ one child row matching the nested predicate.</p>
 <td><code>block</code></td>
 <td><code>action</code>, <code>command</code>, <code>path</code>, <code>text</code>, <code>tool</code>, <code>type</code></td>
 </tr>
+<tr>
+<td><code>assertion</code></td>
+<td><code>author</code>, <code>author_kind</code>, <code>author_ref</code>, <code>body</code>, <code>context</code>, <code>evidence</code>, <code>key</code>, <code>kind</code>, <code>scope</code>, <code>scope_ref</code>, <code>status</code>, <code>target</code>, <code>target_ref</code>, <code>text</code>, <code>value</code>, <code>visibility</code></td>
+</tr>
 </tbody>
 </table>
-<p>All three structural units also accept <code>session.&lt;field&gt;</code> predicates for the
-owning session fields, such as <code>session.repo</code>, <code>session.origin</code>,
+<p>Structural units also accept <code>session.&lt;field&gt;</code> predicates for the owning
+session fields, such as <code>session.repo</code>, <code>session.origin</code>,
 <code>session.tag</code>, <code>session.title</code>, <code>session.date</code>, <code>session.since</code>, and
 <code>session.until</code>. Count and date session fields accept compact comparison
 prefixes such as <code>session.messages:&gt;=2</code>, <code>session.words:&lt;=500</code>, and
@@ -586,13 +591,14 @@ rows instead:</p>
 polylogue --format ndjson actions where session.repo:polylogue AND action:file_edit AND path:polylogue/archive
 polylogue --format yaml blocks where type:code AND text:sqlite
 polylogue --format json assertions where kind:decision AND status:active AND text:review
+polylogue --format json runs where role:subagent AND status:completed AND agent:Explore
 polylogue --format json observed-events where delivery_state:acted_on AND text:#2100
 polylogue --format json context-snapshots where boundary:session_start AND session.repo:polylogue
 </code></pre>
 <p>The row shape is the shared <code>QueryUnitEnvelope</code> used by CLI JSON/NDJSON/YAML,
 Python <code>Polylogue.query_units()</code>, MCP <code>query_units</code>, and daemon
 <code>GET /api/query-units?expression=...</code>. Plain and CSV CLI output are
-transport-specific renderings of the same message/action/block/assertion/
+transport-specific renderings of the same message/action/block/assertion/run/
 observed-event/context-snapshot row payloads.
 Those surfaces share the same session-scoping filters for the row source
 where applicable, such as origin, tag, repo, title, date bounds, message-type
@@ -603,13 +609,14 @@ by their owning session:</p>
 polylogue actions where session.repo:polylogue AND action:file_edit
 polylogue blocks where session.since:7d AND session.words:&lt;=500 AND type:code
 polylogue assertions where session.repo:polylogue AND kind:caveat
+polylogue runs where session.repo:polylogue AND role:subagent AND status:completed
 polylogue observed-events where session.origin:codex-session AND object_ref:github-review
 polylogue context-snapshots where session.messages:&gt;=2 AND session.date:&gt;=2026-01-02 AND boundary:subagent_start
 </code></pre>
-<p><code>observed-events</code> and <code>context-snapshots</code> are runtime-transform row sources.
-They return projected evidence from existing recovery/run-projection
+<p><code>runs</code>, <code>observed-events</code>, and <code>context-snapshots</code> are runtime-transform row
+sources. They return projected evidence from existing recovery/run-projection
 transforms, not durable SQL table rows, so they are terminal unit sources only;
-they do not act as <code>exists observed-event(...)</code> or
+they do not act as <code>exists run(...)</code>, <code>exists observed-event(...)</code>, or
 <code>exists context-snapshot(...)</code> session selectors.</p>
 <p>Session filters such as <code>--origin</code>, <code>--tag</code>, <code>--repo</code>, <code>--since</code>, and <code>--until</code>
 still narrow the owning sessions before rows are returned. Session-only actions
