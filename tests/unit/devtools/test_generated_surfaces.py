@@ -5,6 +5,13 @@ from pathlib import Path
 from devtools.generated_surfaces import GENERATED_SURFACES
 
 
+def _surface_inputs(name: str) -> set[str]:
+    for surface in GENERATED_SURFACES:
+        if surface.name == name:
+            return set(surface.inputs)
+    raise AssertionError(f"unknown generated surface: {name}")
+
+
 def test_generated_surfaces_use_public_devtools_commands() -> None:
     assert GENERATED_SURFACES
     for surface in GENERATED_SURFACES:
@@ -24,3 +31,25 @@ def test_generated_surface_cache_inputs_include_renderer_module() -> None:
     for surface in GENERATED_SURFACES:
         renderer_path = Path(*surface.main.__module__.split(".")).with_suffix(".py").as_posix()
         assert renderer_path in surface.inputs, surface.name
+
+
+def test_generated_surface_cache_inputs_include_contract_owners() -> None:
+    """Contract-owner edits must invalidate generated surfaces that publish them."""
+    assert {
+        "polylogue/archive/query/metadata.py",
+        "polylogue/archive/viewport/profiles.py",
+        "polylogue/operations/action_contracts.py",
+        "polylogue/surfaces/payloads.py",
+    }.issubset(_surface_inputs("cli-reference"))
+
+    assert {
+        "polylogue/archive/query/metadata.py",
+        "polylogue/surfaces/payloads.py",
+    }.issubset(_surface_inputs("cli-output-schemas"))
+
+    assert {
+        "polylogue/archive/query/metadata.py",
+        "polylogue/archive/viewport/profiles.py",
+        "polylogue/daemon/route_contracts.py",
+        "polylogue/surfaces/payloads.py",
+    }.issubset(_surface_inputs("openapi"))

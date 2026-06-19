@@ -56,6 +56,9 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
         main=render_cli_reference.main,
         inputs=(
             "polylogue/cli/",
+            "polylogue/archive/query/metadata.py",
+            "polylogue/archive/viewport/profiles.py",
+            "polylogue/operations/action_contracts.py",
             "polylogue/surfaces/payloads.py",
             "polylogue/sources/provider_completeness.py",
             "devtools/render_cli_reference.py",
@@ -70,7 +73,11 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
         description="Render JSON Schema artifacts for stable CLI output payloads (#1272).",
         command=control_plane_argv("render cli-output-schemas"),
         main=render_cli_output_schemas.main,
-        inputs=("polylogue/surfaces/payloads.py", "devtools/render_cli_output_schemas.py"),
+        inputs=(
+            "polylogue/archive/query/metadata.py",
+            "polylogue/surfaces/payloads.py",
+            "devtools/render_cli_output_schemas.py",
+        ),
     ),
     GeneratedSurface(
         name="openapi",
@@ -79,6 +86,9 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
         command=control_plane_argv("render openapi"),
         main=render_openapi.main,
         inputs=(
+            "polylogue/archive/query/metadata.py",
+            "polylogue/archive/viewport/profiles.py",
+            "polylogue/daemon/route_contracts.py",
             "polylogue/surfaces/payloads.py",
             "polylogue/sources/provider_completeness.py",
             "devtools/render_openapi.py",

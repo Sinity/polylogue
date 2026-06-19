@@ -1776,3 +1776,414 @@ components:
     version: '1'
     description: The ``ranking_policy`` and ``ranking_policy_version`` fields on ``SearchEnvelope`` declare the ordering semantics
       in use. Consumers should pin a known version and treat any change as a contract event.
+x-polylogue-route-contracts:
+- method: GET
+  pattern: /
+  kind: browser_shell
+  stability: shell_supported
+  auth_policy: unauthenticated_loopback
+  response_contract: text/html web shell
+  notes: HTML bootstrap only; shell JavaScript calls authenticated /api routes.
+- method: GET
+  pattern: /s/:session_id
+  kind: browser_shell
+  stability: shell_supported
+  auth_policy: unauthenticated_loopback
+  response_contract: text/html web shell
+  notes: Session deep-link bootstrap.
+- method: GET
+  pattern: /w/:mode
+  kind: browser_shell
+  stability: shell_supported
+  auth_policy: unauthenticated_loopback
+  response_contract: text/html web shell
+  notes: Workspace shell bootstrap for registered workspace modes.
+- method: GET
+  pattern: /p
+  kind: browser_shell
+  stability: shell_supported
+  auth_policy: unauthenticated_loopback
+  response_contract: text/html paste browser
+  notes: Standalone reader page; archive API calls remain authenticated.
+- method: GET
+  pattern: /a
+  kind: browser_shell
+  stability: shell_supported
+  auth_policy: unauthenticated_loopback
+  response_contract: text/html attachment library
+  notes: Standalone reader page; archive API calls remain authenticated.
+- method: GET
+  pattern: /healthz/live
+  kind: operational
+  stability: operational
+  auth_policy: unauthenticated_loopback
+  response_contract: health liveness JSON
+  notes: Unauthenticated for systemd/docker/kubernetes probes.
+- method: GET
+  pattern: /healthz/ready
+  kind: operational
+  stability: operational
+  auth_policy: unauthenticated_loopback
+  response_contract: health readiness JSON
+  notes: Unauthenticated for systemd/docker/kubernetes probes.
+- method: GET
+  pattern: /metrics
+  kind: operational
+  stability: operational
+  auth_policy: unauthenticated_loopback
+  response_contract: Prometheus text exposition
+  notes: Unauthenticated for Prometheus scrapers; no raw archive content.
+- method: POST
+  pattern: /v1/traces
+  kind: observability
+  stability: private
+  auth_policy: observability_flag_then_loopback_or_bearer
+  response_contract: OTLP protobuf response
+- method: POST
+  pattern: /v1/metrics
+  kind: observability
+  stability: private
+  auth_policy: observability_flag_then_loopback_or_bearer
+  response_contract: OTLP protobuf response
+- method: POST
+  pattern: /v1/logs
+  kind: observability
+  stability: private
+  auth_policy: observability_flag_then_loopback_or_bearer
+  response_contract: OTLP protobuf response
+- method: GET
+  pattern: /api/health/check
+  kind: operational
+  stability: stable
+  auth_policy: bearer_if_configured
+  response_contract: JSON
+- method: GET
+  pattern: /api/health
+  kind: operational
+  stability: stable
+  auth_policy: bearer_if_configured
+  response_contract: JSON
+- method: GET
+  pattern: /api/status
+  kind: operational
+  stability: stable
+  auth_policy: bearer_if_configured
+  response_contract: Daemon status JSON
+- method: GET
+  pattern: /api/events
+  kind: operational
+  stability: stable
+  auth_policy: bearer_if_configured
+  response_contract: SSE or JSON event poll
+- method: GET
+  pattern: /api/sessions
+  kind: read_query
+  stability: stable
+  auth_policy: bearer_if_configured
+  response_contract: SearchEnvelope
+- method: GET
+  pattern: /api/facets
+  kind: read_query
+  stability: stable
+  auth_policy: bearer_if_configured
+  response_contract: Facets envelope
+- method: GET
+  pattern: /api/query-units
+  kind: read_query
+  stability: stable
+  auth_policy: bearer_if_configured
+  response_contract: QueryUnitEnvelope
+- method: GET
+  pattern: /api/refs/resolve
+  kind: read_query
+  stability: stable
+  auth_policy: bearer_if_configured
+  response_contract: PublicRefResolutionPayload
+- method: GET
+  pattern: /api/query-completions
+  kind: read_query
+  stability: stable
+  auth_policy: bearer_if_configured
+  response_contract: query completion metadata
+- method: GET
+  pattern: /api/read-view-profiles
+  kind: read_query
+  stability: stable
+  auth_policy: bearer_if_configured
+  response_contract: read-view profile metadata
+- method: GET
+  pattern: /api/assertions
+  kind: user_overlay
+  stability: stable
+  auth_policy: bearer_if_configured
+  response_contract: AssertionClaimListPayload
+  notes: Read-only assertion-backed overlay claims shared by the web workbench and API clients.
+- method: GET
+  pattern: /api/sources
+  kind: read_detail
+  stability: shell_supported
+  auth_policy: bearer_if_configured
+  response_contract: source list JSON
+- method: GET
+  pattern: /api/sessions/:id
+  kind: read_detail
+  stability: stable
+  auth_policy: bearer_if_configured
+  response_contract: Session detail JSON
+- method: GET
+  pattern: /api/sessions/:id/messages
+  kind: read_detail
+  stability: stable
+  auth_policy: bearer_if_configured
+  response_contract: session messages JSON
+- method: GET
+  pattern: /api/sessions/:id/recovery
+  kind: read_detail
+  stability: stable
+  auth_policy: bearer_if_configured
+  response_contract: RecoveryReadPayload
+  notes: Consumes shared recovery digest/work-packet DTOs for the local workbench and API clients.
+- method: GET
+  pattern: /api/sessions/:id/read
+  kind: read_detail
+  stability: stable
+  auth_policy: bearer_if_configured
+  response_contract: SessionReadViewEnvelope
+  notes: Executes supported single-session read profiles over shared DTO/facade payload helpers.
+- method: GET
+  pattern: /api/sessions/:id/raw
+  kind: read_detail
+  stability: shell_supported
+  auth_policy: bearer_if_configured
+  response_contract: raw session payload JSON
+  notes: Raw preview is opt-in and authenticated.
+- method: GET
+  pattern: /api/sessions/:id/cost
+  kind: read_detail
+  stability: shell_supported
+  auth_policy: bearer_if_configured
+  response_contract: cost JSON
+- method: GET
+  pattern: /api/sessions/:id/provenance
+  kind: read_detail
+  stability: stable
+  auth_policy: bearer_if_configured
+  response_contract: provenance envelope
+  notes: Raw bytes require the include_raw query parameter.
+- method: GET
+  pattern: /api/sessions/:id/topology
+  kind: read_detail
+  stability: stable
+  auth_policy: bearer_if_configured
+  response_contract: topology envelope
+- method: GET
+  pattern: /api/sessions/:id/topology/parent-chain
+  kind: read_detail
+  stability: stable
+  auth_policy: bearer_if_configured
+  response_contract: parent-chain topology envelope
+- method: GET
+  pattern: /api/sessions/:id/similar
+  kind: read_detail
+  stability: stable
+  auth_policy: bearer_if_configured
+  response_contract: similar-session envelope
+- method: GET
+  pattern: /api/sessions/:id/attachments
+  kind: read_detail
+  stability: shell_supported
+  auth_policy: bearer_if_configured
+  response_contract: session attachment envelope
+- method: GET
+  pattern: /api/insights/sessions/:id
+  kind: read_detail
+  stability: stable
+  auth_policy: bearer_if_configured
+  response_contract: session insights envelope
+- method: GET
+  pattern: /api/raw_artifacts/:id
+  kind: read_detail
+  stability: shell_supported
+  auth_policy: bearer_if_configured
+  response_contract: raw artifact preview
+  notes: Authenticated raw preview helper for the local shell.
+- method: GET
+  pattern: /api/thread-continue-templates
+  kind: read_detail
+  stability: shell_supported
+  auth_policy: bearer_if_configured
+  response_contract: thread continuation templates
+- method: GET
+  pattern: /api/paste-browser
+  kind: read_query
+  stability: shell_supported
+  auth_policy: bearer_if_configured
+  response_contract: paste browser JSON
+- method: GET
+  pattern: /api/attachments
+  kind: read_query
+  stability: shell_supported
+  auth_policy: bearer_if_configured
+  response_contract: attachment library JSON
+- method: GET
+  pattern: /api/stack
+  kind: workspace
+  stability: shell_supported
+  auth_policy: bearer_if_configured
+  response_contract: stack workspace JSON
+- method: GET
+  pattern: /api/compare
+  kind: workspace
+  stability: shell_supported
+  auth_policy: bearer_if_configured
+  response_contract: compare workspace JSON
+- method: GET
+  pattern: /api/user/marks
+  kind: user_overlay
+  stability: stable
+  auth_policy: bearer_if_configured
+  response_contract: marks JSON
+- method: GET
+  pattern: /api/user/annotations
+  kind: user_overlay
+  stability: stable
+  auth_policy: bearer_if_configured
+  response_contract: annotations JSON
+- method: GET
+  pattern: /api/user/annotations/:id
+  kind: user_overlay
+  stability: stable
+  auth_policy: bearer_if_configured
+  response_contract: annotation JSON
+- method: GET
+  pattern: /api/user/saved-views
+  kind: user_overlay
+  stability: stable
+  auth_policy: bearer_if_configured
+  response_contract: saved views JSON
+- method: GET
+  pattern: /api/user/saved-views/:id
+  kind: user_overlay
+  stability: stable
+  auth_policy: bearer_if_configured
+  response_contract: saved view JSON
+- method: GET
+  pattern: /api/user/recall-packs
+  kind: user_overlay
+  stability: stable
+  auth_policy: bearer_if_configured
+  response_contract: recall packs JSON
+- method: GET
+  pattern: /api/user/recall-packs/:id
+  kind: user_overlay
+  stability: stable
+  auth_policy: bearer_if_configured
+  response_contract: recall pack JSON
+- method: GET
+  pattern: /api/user/workspaces
+  kind: user_overlay
+  stability: stable
+  auth_policy: bearer_if_configured
+  response_contract: workspaces JSON
+- method: GET
+  pattern: /api/user/workspaces/:id
+  kind: user_overlay
+  stability: stable
+  auth_policy: bearer_if_configured
+  response_contract: workspace JSON
+- method: GET
+  pattern: /api/maintenance/operations
+  kind: maintenance
+  stability: stable
+  auth_policy: bearer_if_configured
+  response_contract: maintenance operations JSON
+- method: GET
+  pattern: /api/maintenance/status/:id
+  kind: maintenance
+  stability: stable
+  auth_policy: bearer_if_configured
+  response_contract: maintenance operation status JSON
+- method: POST
+  pattern: /api/reset
+  kind: maintenance
+  stability: stable
+  auth_policy: bearer_and_same_origin
+  response_contract: reset result JSON
+- method: POST
+  pattern: /api/ingest
+  kind: maintenance
+  stability: stable
+  auth_policy: bearer_and_same_origin
+  response_contract: ingest result JSON
+- method: POST
+  pattern: /api/maintenance/plan
+  kind: maintenance
+  stability: stable
+  auth_policy: bearer_and_same_origin
+  response_contract: maintenance operation preview
+- method: POST
+  pattern: /api/maintenance/run
+  kind: maintenance
+  stability: stable
+  auth_policy: bearer_and_same_origin
+  response_contract: maintenance operation result
+- method: POST
+  pattern: /api/user/marks
+  kind: user_overlay
+  stability: stable
+  auth_policy: bearer_and_same_origin
+  response_contract: mutation envelope
+- method: POST
+  pattern: /api/user/annotations
+  kind: user_overlay
+  stability: stable
+  auth_policy: bearer_and_same_origin
+  response_contract: mutation envelope
+- method: POST
+  pattern: /api/user/saved-views
+  kind: user_overlay
+  stability: stable
+  auth_policy: bearer_and_same_origin
+  response_contract: mutation envelope
+- method: POST
+  pattern: /api/user/recall-packs
+  kind: user_overlay
+  stability: stable
+  auth_policy: bearer_and_same_origin
+  response_contract: mutation envelope
+- method: POST
+  pattern: /api/user/workspaces
+  kind: user_overlay
+  stability: stable
+  auth_policy: bearer_and_same_origin
+  response_contract: mutation envelope
+- method: DELETE
+  pattern: /api/user/marks
+  kind: user_overlay
+  stability: stable
+  auth_policy: bearer_and_same_origin
+  response_contract: mutation envelope
+- method: DELETE
+  pattern: /api/user/annotations/:id
+  kind: user_overlay
+  stability: stable
+  auth_policy: bearer_and_same_origin
+  response_contract: mutation envelope
+- method: DELETE
+  pattern: /api/user/saved-views/:id
+  kind: user_overlay
+  stability: stable
+  auth_policy: bearer_and_same_origin
+  response_contract: mutation envelope
+- method: DELETE
+  pattern: /api/user/recall-packs/:id
+  kind: user_overlay
+  stability: stable
+  auth_policy: bearer_and_same_origin
+  response_contract: mutation envelope
+- method: DELETE
+  pattern: /api/user/workspaces/:id
+  kind: user_overlay
+  stability: stable
+  auth_policy: bearer_and_same_origin
+  response_contract: mutation envelope

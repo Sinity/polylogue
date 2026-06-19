@@ -31,6 +31,7 @@ from pydantic import BaseModel
 from devtools.command_catalog import control_plane_command
 from devtools.render_support import write_if_changed
 from polylogue.archive.query.metadata import terminal_query_source_list
+from polylogue.daemon.route_contracts import ROUTE_CONTRACTS, RouteContract
 from polylogue.surfaces.payloads import (
     RANKING_POLICY_MIXED,
     RANKING_POLICY_VERSION,
@@ -57,6 +58,21 @@ _PUBLISHED_MODELS: tuple[type[BaseModel], ...] = (
     SessionSearchHitPayload,
     SessionListRowPayload,
 )
+
+
+def _route_contract_payload(contract: RouteContract) -> dict[str, str]:
+    """Return the OpenAPI vendor-extension shape for one daemon route contract."""
+    payload = {
+        "method": contract.method,
+        "pattern": contract.pattern,
+        "kind": contract.kind,
+        "stability": contract.stability,
+        "auth_policy": contract.auth_policy,
+        "response_contract": contract.response_contract,
+    }
+    if contract.notes:
+        payload["notes"] = contract.notes
+    return payload
 
 
 def _collect_component_schemas() -> dict[str, Any]:
@@ -658,6 +674,7 @@ def _build_openapi_document() -> dict[str, Any]:
                 ),
             },
         },
+        "x-polylogue-route-contracts": [_route_contract_payload(contract) for contract in ROUTE_CONTRACTS],
     }
 
 
