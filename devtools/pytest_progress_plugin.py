@@ -22,12 +22,24 @@ _EVENTS_ENV = "POLYLOGUE_PYTEST_EVENTS_PATH"
 _EVENTS_DIR_ENV = "POLYLOGUE_PYTEST_EVENTS_DIR"
 _SELECTION_ENV = "POLYLOGUE_PYTEST_SELECTION_PATH"
 _SUMMARY_ENV = "POLYLOGUE_PYTEST_SUMMARY_PATH"
-_DESELECTED_NODEIDS: list[str] = []
-_SELECTED_NODEIDS: list[str] = []
+_SELECTION_NODEID_LIMIT_ENV = "POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT"
+_DESELECTED_NODEIDS_SAMPLE: list[str] = []
+_DESELECTED_COUNT = 0
+_SELECTED_COUNT = 0
 _SLOWEST_REPORTS: list[dict[str, Any]] = []
 _COLLECTION_STARTED_AT: float | None = None
 _COLLECTION_DURATION_S: float | None = None
 _SLOW_REPORT_LIMIT = 20
+_DEFAULT_SELECTION_NODEID_LIMIT = 500
+
+
+def _selection_nodeid_limit() -> int:
+    raw = os.environ.get(_SELECTION_NODEID_LIMIT_ENV)
+    if raw is None:
+        return _DEFAULT_SELECTION_NODEID_LIMIT
+    with contextlib.suppress(ValueError):
+        return max(0, int(raw))
+    return _DEFAULT_SELECTION_NODEID_LIMIT
 
 
 def _write_event(payload: dict[str, Any]) -> None:
@@ -101,9 +113,10 @@ def _remember_report(payload: dict[str, Any]) -> None:
 def pytest_sessionstart(session: Any) -> None:
     """Reset per-session ledgers when tests invoke pytest in-process."""
     del session
-    global _COLLECTION_STARTED_AT, _COLLECTION_DURATION_S
-    _DESELECTED_NODEIDS.clear()
-    _SELECTED_NODEIDS.clear()
+    global _COLLECTION_STARTED_AT, _COLLECTION_DURATION_S, _DESELECTED_COUNT, _SELECTED_COUNT
+    _DESELECTED_NODEIDS_SAMPLE.clear()
+    _DESELECTED_COUNT = 0
+    _SELECTED_COUNT = 0
     _SLOWEST_REPORTS.clear()
     _COLLECTION_STARTED_AT = None
     _COLLECTION_DURATION_S = None
@@ -121,23 +134,32 @@ def pytest_collection(session: Any) -> None:
 @pytest.hookimpl
 def pytest_deselected(items: list[Any]) -> None:
     """Track deselected node IDs so the final selection artifact explains scope."""
-    _DESELECTED_NODEIDS.extend(str(getattr(item, "nodeid", item)) for item in items)
+    global _DESELECTED_COUNT
+    limit = _selection_nodeid_limit()
+    _DESELECTED_COUNT += len(items)
+    remaining = max(0, limit - len(_DESELECTED_NODEIDS_SAMPLE))
+    if remaining:
+        _DESELECTED_NODEIDS_SAMPLE.extend(str(getattr(item, "nodeid", item)) for item in items[:remaining])
 
 
 @pytest.hookimpl(trylast=True)
 def pytest_collection_modifyitems(session: Any, config: Any, items: list[Any]) -> None:
     """Write the final selected test set after pytest/testmon deselection."""
     del config
-    global _COLLECTION_DURATION_S
+    global _COLLECTION_DURATION_S, _SELECTED_COUNT
     if _COLLECTION_STARTED_AT is not None:
         _COLLECTION_DURATION_S = round(time.monotonic() - _COLLECTION_STARTED_AT, 4)
-    selected_nodeids = [str(getattr(item, "nodeid", item)) for item in items]
-    _SELECTED_NODEIDS[:] = selected_nodeids
+    _SELECTED_COUNT = len(items)
+    limit = _selection_nodeid_limit()
+    selected_nodeids = [str(getattr(item, "nodeid", item)) for item in items[:limit]]
     payload: dict[str, Any] = {
-        "selected_count": len(selected_nodeids),
-        "deselected_count": len(_DESELECTED_NODEIDS),
+        "selected_count": _SELECTED_COUNT,
+        "deselected_count": _DESELECTED_COUNT,
         "selected_nodeids": selected_nodeids,
-        "deselected_nodeids": list(_DESELECTED_NODEIDS),
+        "selected_nodeids_omitted": max(0, _SELECTED_COUNT - len(selected_nodeids)),
+        "deselected_nodeids": list(_DESELECTED_NODEIDS_SAMPLE),
+        "deselected_nodeids_omitted": max(0, _DESELECTED_COUNT - len(_DESELECTED_NODEIDS_SAMPLE)),
+        "nodeid_sample_limit": limit,
     }
     if _COLLECTION_DURATION_S is not None:
         payload["collection_duration_s"] = _COLLECTION_DURATION_S
@@ -145,8 +167,8 @@ def pytest_collection_modifyitems(session: Any, config: Any, items: list[Any]) -
     _write_event(
         {
             "event": "collection_finished",
-            "selected_count": len(selected_nodeids),
-            "deselected_count": len(_DESELECTED_NODEIDS),
+            "selected_count": _SELECTED_COUNT,
+            "deselected_count": _DESELECTED_COUNT,
             **({"duration_s": _COLLECTION_DURATION_S} if _COLLECTION_DURATION_S is not None else {}),
         }
     )
@@ -202,8 +224,8 @@ def pytest_sessionfinish(session: Any, exitstatus: int) -> None:
     del session
     payload: dict[str, Any] = {
         "exitstatus": int(exitstatus),
-        "selected_count": len(_SELECTED_NODEIDS),
-        "deselected_count": len(_DESELECTED_NODEIDS),
+        "selected_count": _SELECTED_COUNT,
+        "deselected_count": _DESELECTED_COUNT,
         "slowest_reports": list(_SLOWEST_REPORTS),
     }
     if _COLLECTION_DURATION_S is not None:

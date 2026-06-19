@@ -463,13 +463,15 @@ guidance instead of silently running the whole suite.
 
 Plain focused `pytest` runs are single-process by default so small inner-loop
 checks do not spawn a worker pool. `devtools verify` keeps pytest-testmon as
-the affected-test selector and runs selected tests single-process (`-n 0` by
-default, override with `POLYLOGUE_PYTEST_WORKERS`). Because the default gate
-also applies marker filters for scale tiers, it passes `--testmon-forceselect`
-so pytest-testmon still selects affected tests instead of letting pytest marker
-selection expand the run. Full diagnostic and seed runs use the same worker
-override and default to `-n 4` so database-heavy workers do not multiply
-memory and I/O pressure by default.
+the affected-test selector and runs the selected default lane with a bounded
+worker pool (`-n 4` by default, override with `POLYLOGUE_PYTEST_WORKERS`) so
+a stale or genuinely broad affected set cannot spend the full timeout in one
+multi-GiB Python process. Because the default gate also applies marker filters
+for scale tiers, it passes `--testmon-forceselect` so pytest-testmon still
+selects affected tests instead of letting pytest marker selection expand the
+run. Full diagnostic and seed runs use the same worker override and also
+default to `-n 4` so database-heavy workers do not multiply memory and I/O
+pressure beyond the explicit broad-run lane.
 
 Pytest temp databases default to `/realm/tmp/polylogue-pytest` so interrupted
 full or xdist runs do not leave multi-GiB `/dev/shm` directories resident in
@@ -522,6 +524,11 @@ process group if the step exceeds `POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S` (default
 (default 2 seconds). Set these timeout variables to `0` only for an explicit
 diagnostic run where an unusually long full-suite pass is expected and
 supervised.
+
+Selection artifacts preserve exact selected/deselected counts but sample node
+IDs by default (`POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT`, default 500) so
+broad collection does not retain or write unbounded node-id lists in controller
+or worker processes.
 
 `devtools workspace tasks recent` shows the run id, diagnosis, and peak pytest
 RSS when the current run metadata is available. `devtools workspace tasks stats

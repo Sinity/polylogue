@@ -388,17 +388,17 @@
     "archive_facade_routes": {
       "checked": true,
       "source": "static_facade_route_catalog",
-      "total_method_count": 115,
-      "archive_ready_method_count": 114,
+      "total_method_count": 117,
+      "archive_ready_method_count": 116,
       "unsupported_method_count": 0,
       "route_counts": {
-        "archive_routed": 100,
+        "archive_routed": 102,
         "archive_direct": 14,
         "not_archive_runtime": 1
       },
       "tier_counts": {
         "user": 36,
-        "index": 75,
+        "index": 77,
         "none": 1,
         "source": 3
       },
@@ -839,6 +839,11 @@
           "tier": "user",
           "detail": "reads workspaces through user.db"
         },
+        "neighbor_candidate_payloads": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "builds neighbor DTOs from index.db"
+        },
         "neighbor_candidates": {
           "route": "archive_routed",
           "tier": "index",
@@ -954,6 +959,11 @@
           "tier": "index",
           "detail": "projects FTS/hybrid search hits from index.db"
         },
+        "session_correlation_payload": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "builds git/GitHub correlation DTOs from index.db sessions"
+        },
         "set_metadata": {
           "route": "archive_routed",
           "tier": "user",
@@ -1042,7 +1052,7 @@
       ],
       "facade_tier_route_counts": {
         "user": 36,
-        "index": 75,
+        "index": 77,
         "none": 1,
         "source": 3
       },

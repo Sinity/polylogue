@@ -192,6 +192,7 @@ DEFAULT_PYTEST_HEARTBEAT_S = 30.0
 DEFAULT_PYTEST_TIMEOUT_S = 45 * 60.0
 DEFAULT_PYTEST_STALL_TIMEOUT_S = 10 * 60.0
 DEFAULT_PYTEST_RESOURCE_INTERVAL_S = 2.0
+DEFAULT_TESTMON_WORKERS = "4"
 
 
 def _load_history() -> list[dict[str, Any]]:
@@ -719,12 +720,17 @@ def _run(
     artifacts = run.start_step(label=label, cmd=cmd) if run is not None else None
     env = _subprocess_env()
     pytest_tmpfs = False
+    basetemp_cleanup: Path | None = None
     if is_pytest:
         pytest_tmpfs = _enable_tmpfs_for_broad_pytest(label, env)
         if run is not None and artifacts is not None:
             env = env_for_pytest_step(env, run=run, artifacts=artifacts)
         result = _run_pytest_with_heartbeat(cmd, cwd=cwd, env=env, t0=t0, run=run, artifacts=artifacts)
-        cleanup_managed_pytest_basetemp(root=ROOT, run_id=env.get("POLYLOGUE_PYTEST_RUN_ID", ""), env=env)
+        basetemp_cleanup = cleanup_managed_pytest_basetemp(
+            root=ROOT,
+            run_id=env.get("POLYLOGUE_PYTEST_RUN_ID", ""),
+            env=env,
+        )
         if artifacts is not None:
             merge_worker_events(artifacts.events_dir, artifacts.events_merged_path)
             with contextlib.suppress(FileNotFoundError):
@@ -751,6 +757,7 @@ def _run(
         metadata["output_path"] = str(PYTEST_OUTPUT_PATH)
         metadata["resources_path"] = str(CURRENT_RESOURCES_PATH)
         metadata["postmortem_path"] = str(CURRENT_POSTMORTEM_PATH)
+        metadata["basetemp_cleanup"] = str(basetemp_cleanup) if basetemp_cleanup is not None else None
         junit_paths = [
             str(path) for path in _pytest_artifact_paths(cmd) if path.suffix == ".xml" or path.name.endswith(".xml")
         ]
@@ -803,23 +810,31 @@ def _run(
                 metadata["slowest_report_count"] = len(slowest_reports)
         resource_summary: dict[str, Any] = {}
         if artifacts is not None and artifacts.resources_path.exists():
-            resource_rows = [
-                json.loads(line)
-                for line in artifacts.resources_path.read_text(encoding="utf-8").splitlines()
-                if line.strip()
-            ]
-            if resource_rows:
-                peak_rss = max(int(row.get("tree_rss_kb") or 0) for row in resource_rows)
-                peak_pss_values = [
-                    int(row["tree_pss_kb"]) for row in resource_rows if row.get("tree_pss_kb") is not None
-                ]
+            sample_count = 0
+            peak_rss = 0
+            peak_pss: int | None = None
+            peak_process_count = 0
+            with artifacts.resources_path.open(encoding="utf-8") as resource_handle:
+                for line in resource_handle:
+                    if not line.strip():
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    sample_count += 1
+                    peak_rss = max(peak_rss, int(row.get("tree_rss_kb") or 0))
+                    if row.get("tree_pss_kb") is not None:
+                        peak_pss = max(peak_pss or 0, int(row["tree_pss_kb"]))
+                    peak_process_count = max(peak_process_count, int(row.get("process_count") or 0))
+            if sample_count:
                 resource_summary = {
-                    "resource_sample_count": len(resource_rows),
+                    "resource_sample_count": sample_count,
                     "peak_tree_rss_kb": peak_rss,
                     "peak_tree_rss_mb": round(peak_rss / 1024, 1),
-                    "peak_tree_pss_kb": max(peak_pss_values) if peak_pss_values else None,
-                    "peak_tree_pss_mb": round(max(peak_pss_values) / 1024, 1) if peak_pss_values else None,
-                    "peak_process_count": max(int(row.get("process_count") or 0) for row in resource_rows),
+                    "peak_tree_pss_kb": peak_pss,
+                    "peak_tree_pss_mb": round(peak_pss / 1024, 1) if peak_pss is not None else None,
+                    "peak_process_count": peak_process_count,
                 }
                 metadata.update(resource_summary)
         diagnosis = classify_pytest_result(
@@ -981,7 +996,7 @@ def build_verify_steps(
             isolated_cmd.extend(["-m", f"({base_marker}) and (load_sensitive or tui)", "-p", "no:randomly", "-n", "0"])
             steps.append(("pytest load-sensitive (isolated)", isolated_cmd))
         else:
-            default_workers = "4" if broad_testmon else "0"
+            default_workers = DEFAULT_TESTMON_WORKERS
             pytest_cmd.extend(["-m", base_marker, "--testmon", *_pytest_worker_args(default=default_workers)])
             pytest_cmd.append("--testmon-forceselect")
             label = "pytest testmon (broad)" if broad_testmon else "pytest testmon"

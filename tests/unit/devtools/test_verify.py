@@ -78,7 +78,7 @@ def test_default_verify_uses_pytest_testmon() -> None:
     assert "--testmon-noselect" not in command
     assert "--testmon-forceselect" in command
     assert "-n" in command
-    assert command[command.index("-n") + 1] == "0"
+    assert command[command.index("-n") + 1] == "4"
 
 
 def test_broad_default_verify_uses_parallel_testmon() -> None:
@@ -447,6 +447,22 @@ def test_run_records_pytest_count_metadata_from_terminal_fallback() -> None:
     assert metadata["output_path"] == str(PYTEST_OUTPUT_PATH)
     assert metadata["pytest_workers"] == "unset"
     assert metadata["pytest_selection"] == "full"
+
+
+def test_run_records_managed_basetemp_cleanup_metadata(tmp_path: Path) -> None:
+    completed = subprocess.CompletedProcess(args=["pytest"], returncode=0, stdout="1 passed in 0.1s\n", stderr="")
+    cleaned = tmp_path / "pytest-polylogue-run-1"
+
+    with (
+        patch("devtools.verify._run_pytest_with_heartbeat", return_value=completed),
+        patch("devtools.verify._read_pytest_report", return_value=None),
+        patch("devtools.verify.cleanup_managed_pytest_basetemp", return_value=cleaned) as cleanup,
+    ):
+        rc, _elapsed, metadata = _run("pytest testmon", ["pytest", "--testmon", "-n", "4"])
+
+    assert rc == 0
+    cleanup.assert_called_once()
+    assert metadata["basetemp_cleanup"] == str(cleaned)
 
 
 def test_run_forces_subprocesses_to_current_checkout(monkeypatch: pytest.MonkeyPatch) -> None:
