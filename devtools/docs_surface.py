@@ -29,6 +29,11 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
     DocsEntry("Library API", "docs/library-api.md", "Async archive API, filters, and query patterns."),
     DocsEntry("Data Model", "docs/data-model.md", "Archive entities, storage shape, and metadata rules."),
     DocsEntry(
+        "Provider, Origin, and Source Identity",
+        "docs/provider-origin-identity.md",
+        "Vocabulary map for provider-wire family, public origin, material source, capture mode, parser binding, and refs.",
+    ),
+    DocsEntry(
         "Archive Backup",
         "docs/archive-backup.md",
         "Archive-tier backup profiles, restore boundaries, and blob-GC safety rules.",
@@ -103,6 +108,7 @@ README_DOC_TITLES: tuple[str, ...] = (
     "Library API",
     "MCP Integration",
     "Configuration",
+    "Provider, Origin, and Source Identity",
     "Archive Backup",
     "Developer Tools",
     "Providers",
