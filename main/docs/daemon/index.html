@@ -535,6 +535,9 @@ silently.</p>
 </tr>
 </tbody>
 </table>
+<p>User overlay mutation routes return the shared mutation result envelope
+(<code>status</code>, <code>operation</code>, <code>affected_count</code>, and resource/target identity fields).
+Detailed overlay resources are read through the corresponding <code>GET /api/user/...</code> endpoints.</p>
 <h3>GET /api/health</h3>
 <p>Health check with database statistics.</p>
 <pre><code class="language-json">{&quot;ok&quot;: true, &quot;db_size_bytes&quot;: 52428800, &quot;wal_size_bytes&quot;: 4096, &quot;disk_free_bytes&quot;: 107374182400, &quot;quick_check&quot;: &quot;pass&quot;}
