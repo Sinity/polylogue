@@ -24,8 +24,10 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
+from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -35,9 +37,11 @@ import pytest
 
 import polylogue.sources.live.watcher as live_watcher
 from polylogue.sources.live.batch import LiveBatchProcessor
-from polylogue.sources.live.batch_support import _AppendResult, _FullIngestResult
+from polylogue.sources.live.batch_support import _AppendResult, _DeferredAppend, _FullIngestResult
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.watcher import LiveWatcher, WatchSource
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.io_counter import ReadCounter, read_counter
 
 # ---------------------------------------------------------------------------
@@ -81,6 +85,34 @@ def _append_jsonl(path: Path, records: list[dict[str, object]]) -> int:
     with path.open("ab") as handle:
         handle.write(payload)
     return len(payload)
+
+
+def _seed_source_raw_prefix(archive_root: Path, *, path: Path, raw_bytes: bytes) -> str:
+    """Seed an archived raw row for the exact prefix stored before a restart."""
+    source_db = archive_root / "source.db"
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    raw_id = sha256(raw_bytes).hexdigest()
+    with sqlite3.connect(source_db) as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index,
+                blob_hash, blob_size, acquired_at_ms
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                raw_id,
+                "claude-code-session",
+                path.stem,
+                str(path),
+                0,
+                bytes.fromhex(raw_id),
+                len(raw_bytes),
+                1_770_000_000_000,
+            ),
+        )
+    return raw_id
 
 
 @contextmanager
@@ -300,6 +332,58 @@ class TestMtimeDriftCatchUp:
         assert counter.calls_by_site.get("fingerprint_file", 0) == 0, (
             f"mtime-drift catch-up rehashed the file: {counter.summary()}"
         )
+
+
+class TestRestartedCursorReconcile:
+    """A missing cursor for a grown archived JSONL should resume from the archive prefix.
+
+    This pins the daemon-memory failure mode observed on the live archive: a
+    large active JSONL had an archived raw row, grew while the daemon cursor was
+    absent/stale, and startup catch-up fell back to a full parse of the entire
+    file. Reconciliation should instead restore the cursor at the archived
+    prefix and leave only the appended tail for the append path.
+    """
+
+    def test_missing_cursor_reconciles_archived_prefix_for_append(self, tmp_path: Path) -> None:
+        root = tmp_path / "projects"
+        root.mkdir()
+        db_path = tmp_path / "index.db"
+        cursor = CursorStore(db_path)
+        polylogue = SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path), config=None)
+        path = root / "session-abc.jsonl"
+        prefix_records = [_claude_code_record(session_id="abc", uuid=f"m-{i}") for i in range(3)]
+        _write_jsonl(path, prefix_records)
+        prefix_bytes = path.read_bytes()
+        raw_id = _seed_source_raw_prefix(tmp_path, path=path, raw_bytes=prefix_bytes)
+        appended_bytes = _append_jsonl(
+            path,
+            [_claude_code_record(session_id="abc", uuid="m-appended", text="new tail")],
+        )
+        sources = (WatchSource(name="claude-code", root=root),)
+        watcher = LiveWatcher(cast(Any, polylogue), sources, cursor=cursor, debounce_s=0.0)
+
+        needs_work = watcher._needs_work_from_state(path, stat=path.stat(), cursor=None)
+
+        assert needs_work is True
+        restored = cursor.get_record(path)
+        assert restored is not None
+        assert restored.byte_offset == len(prefix_bytes)
+        assert restored.byte_size == len(prefix_bytes)
+        assert restored.content_fingerprint == raw_id
+
+        proc = LiveBatchProcessor(
+            cast(Any, polylogue),
+            sources,
+            cursor=cursor,
+            parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+        )
+        with patch.object(proc, "_existing_provider_session_id", return_value="abc"):
+            append_plan = proc._append_plan(path, cursor=restored)
+
+        assert append_plan is not None
+        assert not isinstance(append_plan, _DeferredAppend)
+        assert append_plan.start_offset == len(prefix_bytes)
+        assert append_plan.bytes_read == appended_bytes
 
 
 # ---------------------------------------------------------------------------

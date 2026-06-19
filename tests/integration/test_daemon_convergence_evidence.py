@@ -172,7 +172,7 @@ def test_daemon_convergence_evidence_full_archive_state(
         pass
 
     # ── BEFORE snapshot ──────────────────────────────────────────────
-    before = probe(db_path)
+    before = probe(db_path, exact_table_counts=True)
     assert before["ok"] is True, before.get("error")
     assert before["report_version"] == REPORT_VERSION
 
@@ -214,7 +214,7 @@ def test_daemon_convergence_evidence_full_archive_state(
     )
 
     # ── AFTER snapshot ──────────────────────────────────────────────
-    after = probe(db_path)
+    after = probe(db_path, exact_table_counts=True)
     assert after["ok"] is True, after.get("error")
     assert after["report_version"] == REPORT_VERSION
 

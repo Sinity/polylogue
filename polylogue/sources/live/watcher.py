@@ -423,12 +423,16 @@ class LiveWatcher:
     def _needs_work_from_state(self, path: Path, *, stat: os.stat_result, cursor: CursorRecord | None) -> bool:
         size = stat.st_size
         if cursor is None:
-            return not self._reconcile_archived_cursor(path, stat=stat)
+            if not self._reconcile_archived_cursor(path, stat=stat):
+                return True
+            cursor = self._cursor.get_record(path)
+            return cursor is not None and size > cursor.byte_offset
         if cursor.excluded:
             return False
         if cursor.failure_count > 0:
             if self._reconcile_archived_cursor(path, stat=stat):
-                return False
+                cursor = self._cursor.get_record(path)
+                return cursor is not None and size > cursor.byte_offset
             return _retry_due(cursor.next_retry_at)
         parser_matches = cursor.parser_fingerprint == _PARSER_FINGERPRINT
         if not parser_matches:
@@ -461,9 +465,10 @@ class LiveWatcher:
         A daemon interruption can leave the archive source tier populated but
         the live cursor absent. Without this repair, startup catch-up replays
         the whole source file through the archive writer again. The archive row
-        is enough to prove the file was already stored only when the exact
-        path and byte size match the current source file; tail hashing then
-        preserves the usual cheap drift check for future scans.
+        proves the stored prefix for the exact source path; if the live file
+        has grown since that row was written, the cursor is restored to the
+        archived prefix so catch-up can take the append path instead of
+        parsing the whole active JSONL again.
         """
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
         source_db = archive_root / "source.db"
@@ -487,7 +492,9 @@ class LiveWatcher:
         if row is None:
             return False
         blob_hash, blob_size = row
-        if int(blob_size or 0) != int(stat.st_size):
+        archived_size = int(blob_size or 0)
+        current_size = int(stat.st_size)
+        if archived_size <= 0 or archived_size > current_size:
             return False
         if isinstance(blob_hash, bytes):
             content_fingerprint = blob_hash.hex()
@@ -496,14 +503,18 @@ class LiveWatcher:
         else:
             return False
         try:
-            tail_hash, last_complete_newline, _bytes_read = tail_hash_and_last_complete_newline_from_path(
-                path, stat.st_size
-            )
+            if archived_size == current_size:
+                tail_hash, last_complete_newline, _bytes_read = tail_hash_and_last_complete_newline_from_path(
+                    path, current_size
+                )
+            else:
+                tail_hash, _bytes_read = tail_hash_from_path(path, archived_size)
+                last_complete_newline = archived_size
         except FileNotFoundError:
             return False
         self._cursor.set(
             path,
-            stat.st_size,
+            archived_size,
             byte_offset=last_complete_newline,
             last_complete_newline=last_complete_newline,
             parser_fingerprint=_PARSER_FINGERPRINT,

@@ -1451,16 +1451,20 @@ The report has a stable top-level shape carrying its `report_version`,
   parse/convergence timings, and source-path bundles.
 - `convergence_stage_timings` — min/max/sum/mean parse/convergence/read-
   amplification stats over completed attempts.
-- `boundary_table_counts` — row counts for the daemon-relevant tables
+- `boundary_table_counts` — cheap planner-estimated counts for the
+  daemon-relevant tables by default
   (`raw_sessions`, `sessions`, `messages`, `blocks`,
   `artifact_observations`, `messages_fts_docsize`, `actions`,
   `message_embeddings`, `session_profile`,
   `live_ingest_attempt`, `live_convergence_debt`, `pending_blob_refs`).
-  Missing tables surface as `-1` rather than crashing the probe.
+  Missing tables surface as `-1` and tables without SQLite planner
+  statistics surface as `-2` rather than crashing the probe. Pass
+  `--exact-table-counts` when a before/after evidence run needs exact
+  arithmetic and the archive can afford the scans.
 - `archive_tiers` — archive inventory for `source.db`,
   `index.db`, `embeddings.db`, `user.db`, and `ops.db`: file presence,
   durability/backup policy, `PRAGMA user_version`, missing backup-required
-  tiers, and cheap table counts per tier. It does not run SQLite
+  tiers, and cheap planner-estimated table counts per tier. It does not run SQLite
   `PRAGMA quick_check` by default because that is a full-file integrity scan
   on large archives; pass `--integrity-check` when the workload snapshot should
   include that expensive evidence. It also avoids exact generated-text

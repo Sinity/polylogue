@@ -28,7 +28,8 @@ from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 # Bumped when the JSON shape gains new top-level keys or changes a field type.
 # The compare path uses this to refuse incompatible inputs loudly.
-REPORT_VERSION = 10  # v10 renames archive readiness payloads to archive terms.
+REPORT_VERSION = 11  # v11 makes large-table diagnostic counts estimated by default.
+UNKNOWN_TABLE_COUNT = -2
 
 _EXPECTED_FTS_TRIGGERS: tuple[str, ...] = ("messages_fts_ai", "messages_fts_ad", "messages_fts_au")
 
@@ -157,6 +158,29 @@ def _scalar_int(conn: sqlite3.Connection, sql: str, params: tuple[object, ...] =
     except sqlite3.Error:
         return 0
     return int(row[0] or 0) if row is not None else 0
+
+
+def _table_count(conn: sqlite3.Connection, table: str, *, exact: bool) -> int:
+    """Return an exact or cheap estimated table count."""
+
+    if not _table_exists(conn, table):
+        return -1
+    if exact:
+        return _scalar_int(conn, f"SELECT COUNT(*) FROM {table}")
+    with suppress(sqlite3.Error, ValueError, IndexError):
+        row = conn.execute(
+            """
+            SELECT stat
+            FROM sqlite_stat1
+            WHERE tbl = ?
+            ORDER BY idx IS NOT NULL, idx
+            LIMIT 1
+            """,
+            (table,),
+        ).fetchone()
+        if row is not None and row[0] is not None:
+            return max(0, int(str(row[0]).split()[0]))
+    return UNKNOWN_TABLE_COUNT
 
 
 def _presence_count(conn: sqlite3.Connection, table: str) -> int:
@@ -807,23 +831,17 @@ def _boundary_table_counts(
     *,
     ops_db: Path | None = None,
     source_db: Path | None = None,
+    exact: bool = False,
 ) -> dict[str, int]:
     counts: dict[str, int] = {}
     for table in _BOUNDARY_TABLES:
-        if _table_exists(conn, table):
-            counts[table] = _scalar_int(conn, f"SELECT COUNT(*) FROM {table}")
-        else:
-            counts[table] = -1
+        counts[table] = _table_count(conn, table, exact=exact)
     if source_db is not None and source_db.exists():
         try:
             source_conn = open_readonly_connection(source_db)
             try:
                 for table in ("raw_sessions",):
-                    counts[table] = (
-                        _scalar_int(source_conn, f"SELECT COUNT(*) FROM {table}")
-                        if _table_exists(source_conn, table)
-                        else -1
-                    )
+                    counts[table] = _table_count(source_conn, table, exact=exact)
             finally:
                 source_conn.close()
         except sqlite3.Error:
@@ -833,10 +851,7 @@ def _boundary_table_counts(
             ops_conn = open_readonly_connection(ops_db)
             try:
                 for table in _OPS_BOUNDARY_TABLES:
-                    if _table_exists(ops_conn, table):
-                        counts[table] = _scalar_int(ops_conn, f"SELECT COUNT(*) FROM {table}")
-                    else:
-                        counts[table] = -1
+                    counts[table] = _table_count(ops_conn, table, exact=exact)
             finally:
                 ops_conn.close()
         except sqlite3.Error:
@@ -851,6 +866,7 @@ def _archive_tier_state(
     observed_db: Path | None = None,
     integrity_check: bool = False,
     exact_derived_counts: bool = False,
+    exact_table_counts: bool = False,
 ) -> dict[str, Any]:
     """Report the archive database files around an archive root."""
 
@@ -869,7 +885,12 @@ def _archive_tier_state(
 
     for tier, spec in ARCHIVE_TIER_SPECS.items():
         path = root / spec.filename
-        tier_payload = _archive_single_tier_state(path, tier, integrity_check=integrity_check)
+        tier_payload = _archive_single_tier_state(
+            path,
+            tier,
+            integrity_check=integrity_check,
+            exact_table_counts=exact_table_counts,
+        )
         tier_payload.update(
             {
                 "tier": tier.value,
@@ -908,6 +929,7 @@ def _archive_tier_state(
         "present_count": present_count,
         "expected_count": len(ARCHIVE_TIER_SPECS),
         "observed_tier": observed_tier,
+        "table_count_mode": "exact" if exact_table_counts else "estimated",
         "schema_mismatches": schema_mismatches,
         "missing_backup_required": missing_backup_required,
         "layout_readiness": layout_readiness,
@@ -977,7 +999,13 @@ def _archive_layout_readiness(
     }
 
 
-def _archive_single_tier_state(path: Path, tier: ArchiveTier, *, integrity_check: bool = False) -> dict[str, Any]:
+def _archive_single_tier_state(
+    path: Path,
+    tier: ArchiveTier,
+    *,
+    integrity_check: bool = False,
+    exact_table_counts: bool = False,
+) -> dict[str, Any]:
     if not path.exists():
         return {
             "path": str(path),
@@ -1006,7 +1034,7 @@ def _archive_single_tier_state(path: Path, tier: ArchiveTier, *, integrity_check
                 integrity_row = conn.execute("PRAGMA quick_check").fetchone()
                 payload["integrity"] = str(integrity_row[0]) if integrity_row is not None else "unknown"
             payload["table_counts"] = {
-                table: _scalar_int(conn, f"SELECT COUNT(*) FROM {table}") if _table_exists(conn, table) else -1
+                table: _table_count(conn, table, exact=exact_table_counts)
                 for table in _ARCHIVE_OBSERVABILITY_TABLES[tier]
             }
         finally:
@@ -1866,7 +1894,12 @@ def _archive_query_plans(root: Path) -> dict[str, Any]:
 
 
 def probe(
-    db: Path, *, limit: int = 5, integrity_check: bool = False, exact_derived_counts: bool = False
+    db: Path,
+    *,
+    limit: int = 5,
+    integrity_check: bool = False,
+    exact_derived_counts: bool = False,
+    exact_table_counts: bool = False,
 ) -> dict[str, Any]:
     ops_db = db.with_name("ops.db")
     index_db = db.with_name("index.db")
@@ -1899,12 +1932,19 @@ def probe(
             "recent_attempts": recent_attempts,
             "storage_route_counts": _storage_route_counts(conn, ops_db=ops_db),
             "convergence_stage_timings": _convergence_stage_timings(recent_attempts, conn),
-            "boundary_table_counts": _boundary_table_counts(conn, ops_db=ops_db, source_db=db.with_name("source.db")),
+            "boundary_table_count_mode": "exact" if exact_table_counts else "estimated",
+            "boundary_table_counts": _boundary_table_counts(
+                conn,
+                ops_db=ops_db,
+                source_db=db.with_name("source.db"),
+                exact=exact_table_counts,
+            ),
             "archive_tiers": _archive_tier_state(
                 db,
                 observed_db=observed_db,
                 integrity_check=integrity_check,
                 exact_derived_counts=exact_derived_counts,
+                exact_table_counts=exact_table_counts,
             ),
             "topology_quarantine_state": _topology_quarantine_state(conn),
             "blob_lease_state": _tier_state_or_current(conn, db.with_name("source.db"), _blob_lease_state),
@@ -2442,6 +2482,11 @@ def _parser() -> argparse.ArgumentParser:
         help="Run exact derived-readiness reconciliation counts (can scan large archive tables)",
     )
     parser.add_argument(
+        "--exact-table-counts",
+        action="store_true",
+        help="Run exact boundary/archive table counts instead of cheap planner estimates",
+    )
+    parser.add_argument(
         "--compare",
         nargs=2,
         metavar=("BEFORE", "AFTER"),
@@ -2474,6 +2519,7 @@ def main(argv: list[str] | None = None) -> int:
         limit=max(1, args.limit),
         integrity_check=args.integrity_check,
         exact_derived_counts=args.exact_derived_counts,
+        exact_table_counts=args.exact_table_counts,
     )
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
@@ -2493,7 +2539,12 @@ def main(argv: list[str] | None = None) -> int:
     if table_counts:
         print("  boundary table counts:")
         for table, count in table_counts.items():
-            shown = "missing" if count < 0 else str(count)
+            if count == -1:
+                shown = "missing"
+            elif count == UNKNOWN_TABLE_COUNT:
+                shown = "unknown"
+            else:
+                shown = str(count)
             print(f"    {table}: {shown}")
     archive_tiers = payload.get("archive_tiers") or {}
     if archive_tiers.get("present"):
