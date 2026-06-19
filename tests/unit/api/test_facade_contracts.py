@@ -787,6 +787,25 @@ async def test_explain_query_expression_exposes_terminal_unit_payload(tmp_path: 
         await archive.close()
 
 
+async def test_explain_query_expression_exposes_runtime_transform_unit_payload(tmp_path: Path) -> None:
+    """Runtime-transform unit-source explain output names its projection leg."""
+    archive = _archive(tmp_path)
+    try:
+        payload = await archive.explain_query_expression(
+            "context-snapshots where session.repo:polylogue AND boundary:session_start"
+        )
+
+        assert payload["lowerer"] == "lark-query-unit-source-to-terminal-unit"
+        assert payload["selected_units"] == ["context-snapshot"]
+        assert payload["execution_legs"] == ["runtime-transform", "sql", "terminal-context-snapshot-rows"]
+        assert payload["plan_description"] == ["terminal unit source: context-snapshot"]
+        lowering_plan = cast(dict[str, object], payload["lowering_plan"])
+        assert "compatibility_selector" not in lowering_plan
+        assert payload["predicate"]
+    finally:
+        await archive.close()
+
+
 async def test_query_completions_exposes_shared_completion_payload(tmp_path: Path) -> None:
     """``query_completions`` exposes registry-backed query metadata."""
     archive = _archive(tmp_path)

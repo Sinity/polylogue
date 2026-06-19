@@ -272,6 +272,29 @@ def test_root_query_explain_json_outputs_terminal_unit_payload(cli_runner: CliRu
     assert payload["predicate"]["kind"] == "and"
 
 
+def test_root_query_explain_json_marks_runtime_transform_unit_payload(cli_runner: CliRunner) -> None:
+    result = cli_runner.invoke(
+        click_cli,
+        [
+            "--plain",
+            "--format",
+            "json",
+            "find",
+            "runs where session.repo:polylogue AND status:completed",
+            "--explain",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["lowerer"] == "lark-query-unit-source-to-terminal-unit"
+    assert payload["selected_units"] == ["run"]
+    assert payload["execution_legs"] == ["runtime-transform", "sql", "terminal-run-rows"]
+    assert payload["plan_description"] == ["terminal unit source: run"]
+    assert "compatibility_selector" not in payload["lowering_plan"]
+    assert payload["ast"]["unit_source"]["unit"] == "run"
+
+
 def test_root_query_explain_plain_outputs_plan(cli_runner: CliRunner) -> None:
     result = cli_runner.invoke(click_cli, ["--plain", "find", 'repo:polylogue "json envelope"', "--explain"])
 
