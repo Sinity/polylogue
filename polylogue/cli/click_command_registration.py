@@ -104,7 +104,6 @@ _SHORT_HELP: dict[str, str] = {
     "resume": "Resume from recent session context.",
     "schema": "Inspect and audit provider schemas.",
     "status": "Show daemon and archive status.",
-    "tags": "Manage session tags.",
     "tutorial": "Interactive first-run walk-through.",
     "user_state": "Manage durable reader user state.",
 }
@@ -149,7 +148,6 @@ ROOT_COMMANDS: tuple[click.Command, ...] = (
     _L("init"),
     _L("resume"),
     _L("insights"),
-    _L("tags"),
     _L("user_state"),
     _L("ops"),
 )

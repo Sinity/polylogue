@@ -412,7 +412,6 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-resume` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | resume help |
 | `exercise` | `help-resume-candidates` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | resume candidates help |
 | `exercise` | `help-select` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | select help |
-| `exercise` | `help-tags` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | tags help |
 | `exercise` | `help-user-state` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | user-state help |
 | `exercise` | `help-user-state-annotations` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | user-state annotations help |
 | `exercise` | `help-user-state-annotations-delete` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | user-state annotations delete help |
@@ -437,6 +436,7 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-user-state-saved-views-delete` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | user-state saved-views delete help |
 | `exercise` | `help-user-state-saved-views-list` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | user-state saved-views list help |
 | `exercise` | `help-user-state-saved-views-save` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | user-state saved-views save help |
+| `exercise` | `help-user-state-tags` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | user-state tags help |
 | `exercise` | `help-user-state-workspaces` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | user-state workspaces help |
 | `exercise` | `help-user-state-workspaces-delete` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | user-state workspaces delete help |
 | `exercise` | `help-user-state-workspaces-list` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | user-state workspaces list help |
@@ -450,7 +450,7 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `json-insights-threads` | `thread-query-loop` | `thread_rows`<br>`thread_fts`<br>`thread_results` | `cli.json-contract`<br>`query-threads` | — | `generated`<br>`json-contract`<br>`insights`<br>`threads` | insights threads JSON contract |
 | `exercise` | `json-insights-work-events` | `session-work-event-query-loop` | `session_work_event_rows`<br>`session_work_event_fts`<br>`session_work_event_results` | `cli.json-contract`<br>`query-session-work-events` | — | `generated`<br>`json-contract`<br>`insights`<br>`work-events` | insights work-events JSON contract |
 | `exercise` | `json-schema-list` | `schema-list-query-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios`<br>`schema_list_results` | `cli.json-contract`<br>`query-schema-catalog` | — | `generated`<br>`json-contract` | schema list JSON contract |
-| `exercise` | `json-tags` | — | — | `cli.json-contract` | — | `generated`<br>`json-contract` | tags JSON contract |
+| `exercise` | `json-tags` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.json-contract`<br>`query-sessions` | — | `generated`<br>`json-contract` | tags JSON contract |
 | `exercise` | `query-count` | — | — | — | — | — | Count sessions |
 | `exercise` | `query-dialogue-only` | — | — | — | — | — | Latest with dialogue only |
 | `exercise` | `query-filter-provider` | — | — | — | — | — | Filter by provider |

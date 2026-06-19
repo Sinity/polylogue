@@ -289,7 +289,15 @@ def _operational_json_contract_scenarios() -> tuple[Exercise, ...]:
 JSON_CONTRACT_SCENARIOS: tuple[Exercise, ...] = (
     *_operational_json_contract_scenarios(),
     _json_contract_scenario(
-        "json-tags", "tags JSON contract", "tags", "--format", "json", needs_data=False, tier=0, env="any"
+        "json-tags",
+        "tags JSON contract",
+        "user-state",
+        "tags",
+        "--format",
+        "json",
+        needs_data=False,
+        tier=0,
+        env="any",
     ),
     _json_contract_scenario(
         "json-schema-list",

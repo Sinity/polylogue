@@ -1,0 +1,17 @@
+Usage: polylogue user-state tags [OPTIONS]
+
+  List user tags with session counts.
+
+  Examples:
+      polylogue user-state tags                         # List all tags
+      polylogue user-state tags -o claude-ai-export     # Tags for Claude web sessions only
+      polylogue user-state tags --format json           # Machine-readable output
+      polylogue user-state tags -n 10                   # Top 10 tags
+      polylogue find id:abc then mark --tag-add tps
+      polylogue find id:abc then mark --tag-remove tps
+
+Options:
+  -o, --origin TEXT    Filter tags by origin
+  -f, --format [json]  Output format
+  -n, --count INTEGER  Show top N tags
+  -h, --help           Show this message and exit.

@@ -251,8 +251,8 @@ _PLAIN_COMMANDS: tuple[tuple[str, ...], ...] = (
     ("read",),
     ("resume",),
     ("stats",),
-    ("tags",),
     ("user-state",),
+    ("user-state", "tags"),
 )
 _PLAIN_CMD_IDS = [" ".join(args) if args else "root" for args in _PLAIN_COMMANDS]
 
@@ -288,9 +288,9 @@ class TestJsonOutputValidity:
         assert "status" in parsed
 
     def test_tags_json_is_valid(self: object, cli_workspace: dict[str, Path]) -> None:
-        """polylogue tags --format json produces parseable JSON."""
+        """polylogue user-state tags --format json produces parseable JSON."""
         runner = CliRunner()
-        result = runner.invoke(cli, ["--plain", "tags", "--format", "json"], catch_exceptions=False)
+        result = runner.invoke(cli, ["--plain", "user-state", "tags", "--format", "json"], catch_exceptions=False)
         assert result.exit_code == 0
         parsed = _extract_json(result.output)
         assert isinstance(parsed, dict)
@@ -310,7 +310,7 @@ class TestJsonEnvelopeParametrized:
         "cmd_args,result_key",
         [
             (["ops", "doctor", "--format", "json"], None),
-            (["tags", "--format", "json"], "tags"),
+            (["user-state", "tags", "--format", "json"], "tags"),
         ],
         ids=["ops-doctor", "tags"],
     )
@@ -337,7 +337,7 @@ class TestJsonEnvelopeParametrized:
         "cmd_args",
         [
             ["ops", "doctor", "--format", "json"],
-            ["tags", "--format", "json"],
+            ["user-state", "tags", "--format", "json"],
         ],
         ids=["ops-doctor", "tags"],
     )
@@ -356,7 +356,7 @@ class TestJsonEnvelopeParametrized:
         "cmd_args",
         [
             ["ops", "doctor", "--format", "json"],
-            ["tags", "--format", "json"],
+            ["user-state", "tags", "--format", "json"],
         ],
         ids=["ops-doctor", "tags"],
     )
@@ -378,7 +378,7 @@ class TestJsonEnvelopeParametrized:
     @pytest.mark.parametrize(
         "cmd_args,expected_error",
         [
-            (["tags", "--format", "yaml"], "Invalid value for '--format'"),
+            (["user-state", "tags", "--format", "yaml"], "Invalid value for '--format'"),
         ],
         ids=["tags-yaml-rejected"],
     )
@@ -438,14 +438,14 @@ class TestJsonDeterminism:
         assert parsed[0] == parsed[1]
 
     def test_tags_json_deterministic(self: object, cli_workspace: dict[str, Path]) -> None:
-        """Two tags --format json runs produce identical output."""
+        """Two user-state tags --format json runs produce identical output."""
         runner = CliRunner()
         outputs: list[str] = []
 
         for _ in range(2):
             result = runner.invoke(
                 cli,
-                ["--plain", "tags", "--format", "json"],
+                ["--plain", "user-state", "tags", "--format", "json"],
                 catch_exceptions=False,
             )
             assert result.exit_code == 0
