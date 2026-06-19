@@ -177,6 +177,65 @@ class ImportExplainPayload(SurfacePayloadModel):
     caveats: tuple[str, ...] = ()
 
 
+ProviderCompletenessStatus = Literal["complete", "partial", "missing", "proposed"]
+CompletenessItemStatus = Literal["complete", "partial", "missing", "not_applicable"]
+
+
+class ProviderCompletenessItemPayload(SurfacePayloadModel):
+    """Evidence-backed status for one provider-package capability."""
+
+    status: CompletenessItemStatus
+    owner_path: str | None = None
+    evidence: tuple[str, ...] = ()
+    caveats: tuple[str, ...] = ()
+
+
+class ProviderPackageCompletenessRowPayload(SurfacePayloadModel):
+    """Completeness row for one origin/capture-mode package."""
+
+    package_ref: str
+    origin: str
+    capture_mode: str
+    provider_wire: str | None = None
+    maturity: Literal["accepted", "proposed"] = "accepted"
+    detector: ProviderCompletenessItemPayload
+    raw_model: ProviderCompletenessItemPayload
+    parser: ProviderCompletenessItemPayload
+    normalizer: ProviderCompletenessItemPayload
+    fixtures: ProviderCompletenessItemPayload
+    schema_package: ProviderCompletenessItemPayload
+    query_units: ProviderCompletenessItemPayload
+    read_views: ProviderCompletenessItemPayload
+    import_explain: ProviderCompletenessItemPayload
+    privacy_caveats: ProviderCompletenessItemPayload
+    generated_docs: ProviderCompletenessItemPayload
+    debt_rows: ProviderCompletenessItemPayload
+    status: ProviderCompletenessStatus
+    blockers: tuple[str, ...] = ()
+    evidence_refs: tuple[str, ...] = ()
+
+
+class ProviderPackageCompletenessTotalsPayload(SurfacePayloadModel):
+    """Aggregate counts for provider-package completeness rows."""
+
+    total: int = 0
+    complete: int = 0
+    partial: int = 0
+    missing: int = 0
+    proposed: int = 0
+    accepted_blocked: int = 0
+
+
+class ProviderPackageCompletenessPayload(SurfacePayloadModel):
+    """Finite readiness report for provider/importer package modes."""
+
+    mode: Literal["provider-package-completeness"] = "provider-package-completeness"
+    generated_at: str
+    rows: tuple[ProviderPackageCompletenessRowPayload, ...]
+    totals: ProviderPackageCompletenessTotalsPayload
+    caveats: tuple[str, ...] = ()
+
+
 def normalize_role(role: object) -> str:
     if not role:
         return "unknown"
@@ -1966,6 +2025,12 @@ __all__ = [
     "ImportExplainPayload",
     "ImportProducedRowsPayload",
     "ImportSkippedRowPayload",
+    "CompletenessItemStatus",
+    "ProviderCompletenessItemPayload",
+    "ProviderCompletenessStatus",
+    "ProviderPackageCompletenessPayload",
+    "ProviderPackageCompletenessRowPayload",
+    "ProviderPackageCompletenessTotalsPayload",
     "MachineErrorPayload",
     "MachineErrorEnvelope",
     "MachineSuccessEnvelope",

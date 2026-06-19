@@ -57,9 +57,11 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
         inputs=(
             "polylogue/cli/",
             "polylogue/surfaces/payloads.py",
+            "polylogue/sources/provider_completeness.py",
             "devtools/render_cli_reference.py",
             "devtools/action_contract_report.py",
             "devtools/render_cli_output_schemas.py",
+            "devtools/provider_completeness.py",
         ),
     ),
     GeneratedSurface(
@@ -76,7 +78,11 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
         description="Render docs/openapi/search.yaml from typed daemon query payload models.",
         command=control_plane_argv("render openapi"),
         main=render_openapi.main,
-        inputs=("polylogue/surfaces/payloads.py", "devtools/render_openapi.py"),
+        inputs=(
+            "polylogue/surfaces/payloads.py",
+            "polylogue/sources/provider_completeness.py",
+            "devtools/render_openapi.py",
+        ),
     ),
     GeneratedSurface(
         name="devtools-reference",
@@ -84,7 +90,12 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
         description="Render the generated command catalog inside docs/devtools.md.",
         command=control_plane_argv("render devtools-reference"),
         main=render_devtools_reference.main,
-        inputs=("devtools/command_catalog.py", "devtools/render_devtools_reference.py"),
+        inputs=(
+            "devtools/command_catalog.py",
+            "devtools/provider_completeness.py",
+            "polylogue/sources/provider_completeness.py",
+            "devtools/render_devtools_reference.py",
+        ),
     ),
     GeneratedSurface(
         name="quality-reference",
@@ -100,7 +111,13 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
         description="Render docs/README.md and the generated docs table in README.md.",
         command=control_plane_argv("render docs-surface"),
         main=render_docs_surface.main,
-        inputs=("devtools/render_docs_surface.py", "docs/", "README.md"),
+        inputs=(
+            "devtools/render_docs_surface.py",
+            "devtools/docs_surface.py",
+            "polylogue/sources/provider_completeness.py",
+            "docs/",
+            "README.md",
+        ),
     ),
     GeneratedSurface(
         name="topology-status",

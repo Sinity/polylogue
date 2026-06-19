@@ -25,6 +25,7 @@ from devtools.command_catalog import (
 GROUP_HELP: dict[str, str] = {
     "bench": "Run benchmark, mutation, SLO, and resource-budget commands.",
     "lab": "Run verification-lab evidence, schema, probe, and policy commands.",
+    "provider": "Inspect provider/importer package readiness.",
     "render": "Render and check generated repository surfaces.",
     "release": "Build, smoke, and validate release/distribution readiness.",
     "verify": "Run the local verification baseline or focused checks. Use --inner-help for baseline flags.",
