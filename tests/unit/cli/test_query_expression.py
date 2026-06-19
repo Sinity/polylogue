@@ -487,7 +487,7 @@ class TestBooleanQueryExpression:
         explanation = explain_expression("runs where session.repo:polylogue AND role:subagent AND agent:Explore")
         assert explanation.lowerer == "lark-query-unit-source-to-terminal-unit"
         assert explanation.selected_units == ("run",)
-        assert explanation.execution_legs == ("sql", "terminal-run-rows")
+        assert explanation.execution_legs == ("runtime-transform", "sql", "terminal-run-rows")
         assert explanation.plan_description == ("terminal unit source: run",)
         assert explanation.lowering_plan is not None
         assert "compatibility_selector" not in explanation.lowering_plan

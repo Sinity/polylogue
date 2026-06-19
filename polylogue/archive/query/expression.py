@@ -1300,7 +1300,11 @@ def _explain_execution_legs(spec: SessionQuerySpec) -> tuple[str, ...]:
 
 
 def _explain_unit_source_execution_legs(source: QueryUnitSource) -> tuple[str, ...]:
-    legs = {"sql", f"terminal-{source.unit}-rows", *_predicate_execution_legs(source.predicate)}
+    legs = {f"terminal-{source.unit}-rows", *_predicate_execution_legs(source.predicate)}
+    if source.unit in {"run", "observed-event", "context-snapshot"}:
+        legs.add("runtime-transform")
+    else:
+        legs.add("sql")
     return tuple(sorted(legs))
 
 
