@@ -2628,7 +2628,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         view = (self._get_param(params, "view", "messages") or "messages").strip().lower()
         output_format = (self._get_param(params, "format", "json") or "json").strip().lower()
-        if view not in {"messages", "recovery", "raw", "context", "context-pack"}:
+        if view not in {"messages", "recovery", "raw", "context", "context-pack", "neighbors", "correlation"}:
             self._send_error(HTTPStatus.BAD_REQUEST, "unsupported_read_view")
             return
         if output_format != "json" and not (view == "recovery" and output_format == "markdown"):
@@ -2694,6 +2694,41 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     redact_paths=not self._get_bool(params, "no_redact"),
                 )
                 return context_payload.model_dump(mode="json", exclude_none=True)
+
+            payload = self._sync_run(_get)
+        elif view == "neighbors":
+            if output_format != "json":
+                self._send_error(HTTPStatus.BAD_REQUEST, "invalid_format")
+                return
+
+            async def _get(poly: Polylogue) -> object:
+                return {
+                    "neighbors": await poly.neighbor_candidate_payloads(
+                        session_id=conv_id,
+                        limit=max(1, self._get_int(params, "limit", 10)),
+                        window_hours=max(1, self._get_int(params, "window_hours", 24)),
+                    )
+                }
+
+            payload = self._sync_run(_get)
+        elif view == "correlation":
+            if output_format != "json":
+                self._send_error(HTTPStatus.BAD_REQUEST, "invalid_format")
+                return
+
+            confidence = 0.3
+            raw_confidence = self._get_param(params, "confidence_threshold")
+            if raw_confidence is not None:
+                with contextlib.suppress(ValueError, TypeError):
+                    confidence = float(raw_confidence)
+
+            async def _get(poly: Polylogue) -> object | None:
+                return await poly.session_correlation_payload(
+                    conv_id,
+                    repo_path=self._get_param(params, "repo_path"),
+                    since_hours=max(1, self._get_int(params, "since_hours", 2)),
+                    confidence_threshold=max(0.0, min(confidence, 1.0)),
+                )
 
             payload = self._sync_run(_get)
         else:
