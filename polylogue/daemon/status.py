@@ -1939,7 +1939,8 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
                     lines.append(f"  {source.get('name')}: {source.get('root')} ({state})")
     browser_capture = payload.get("browser_capture")
     if isinstance(browser_capture, dict):
-        lines.append(f"Browser capture spool: {browser_capture.get('spool_path')}")
+        spool_state = "ready" if browser_capture.get("spool_ready") else "unavailable"
+        lines.append(f"Browser capture spool: {spool_state}")
         origins = browser_capture.get("allowed_origins", [])
         origin_text = ", ".join(str(item) for item in origins) if isinstance(origins, list) else str(origins)
         lines.append(f"Browser capture origins: {origin_text}")

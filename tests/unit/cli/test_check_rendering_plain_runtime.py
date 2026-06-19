@@ -179,7 +179,7 @@ def test_build_report_lines_renders_all_sections_and_breakdowns() -> None:
                     {"name": "claude-code", "root": "/tmp/claude", "exists": False},
                 ],
             },
-            "browser_capture": {"spool_path": "/tmp/captures"},
+            "browser_capture": {"spool_ready": True},
         },
     )
 
@@ -200,7 +200,7 @@ def test_build_report_lines_renders_all_sections_and_breakdowns() -> None:
     assert "Daemon Components:" in rendered
     assert "Live sources: 1/2 available" in rendered
     assert "codex: /tmp/codex (available)" in rendered
-    assert "Browser capture spool: /tmp/captures" in rendered
+    assert "Browser capture spool: ready" in rendered
 
 
 def test_emit_maintenance_output_handles_preview_empty_selection_and_vacuum_modes() -> None:

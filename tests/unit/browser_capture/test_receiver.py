@@ -21,6 +21,7 @@ from polylogue.browser_capture.models import (
 )
 from polylogue.browser_capture.receiver import (
     capture_artifact_path,
+    capture_artifact_ref,
     existing_capture_state,
     write_capture_envelope,
 )
@@ -102,10 +103,13 @@ def test_capture_artifact_path_is_deterministic(tmp_path: Path) -> None:
 
     first = capture_artifact_path(envelope, tmp_path)
     second = capture_artifact_path(envelope, tmp_path)
+    artifact_ref = capture_artifact_ref(envelope, tmp_path)
 
     assert first == second
     assert first.parent.name == "chatgpt"
     assert "with-spaces" in first.name
+    assert artifact_ref == first.relative_to(tmp_path).as_posix()
+    assert Path(artifact_ref).is_absolute() is False
 
 
 def test_write_capture_envelope_replaces_same_artifact(tmp_path: Path) -> None:
@@ -129,6 +133,8 @@ def test_existing_capture_state_reports_written_artifact(tmp_path: Path) -> None
 
     assert typed.captured is True
     assert typed.provider == "chatgpt"
+    assert typed.artifact_ref == capture_artifact_ref(envelope, tmp_path)
+    assert Path(typed.artifact_ref).is_absolute() is False
 
 
 def test_browser_capture_status_daemon_cli_json(cli_workspace: dict[str, Path]) -> None:
@@ -141,8 +147,10 @@ def test_browser_capture_status_daemon_cli_json(cli_workspace: dict[str, Path]) 
     typed = BrowserCaptureReceiverStatusPayload.model_validate(payload)
     assert payload["ok"] is True
     assert typed.receiver == "polylogue-browser-capture"
+    assert typed.spool_ready is True
     assert typed.auth_required is False
     assert typed.allowed_origins == ["chrome-extension://*"]
+    assert "spool_path" not in payload
 
 
 def test_browser_capture_route_contracts_cover_receiver_boundary() -> None:
@@ -186,7 +194,9 @@ def test_receiver_accepts_extension_capture_and_reports_typed_dto(tmp_path: Path
     assert body.source == "browser-extension"
     assert body.schema_version == 1
     assert body.capture_id == "chatgpt:conv-123"
-    assert Path(body.artifact_path).exists()
+    assert body.artifact_ref == capture_artifact_ref(BrowserCaptureEnvelope.model_validate(_payload()), tmp_path)
+    assert Path(body.artifact_ref).is_absolute() is False
+    assert (tmp_path / body.artifact_ref).exists()
 
 
 @pytest.mark.parametrize(
@@ -262,3 +272,4 @@ def test_receiver_allows_extra_web_origin_only_with_token(tmp_path: Path) -> Non
 
     assert response.status == HTTPStatus.ACCEPTED
     assert body.ok is True
+    assert Path(body.artifact_ref).is_absolute() is False

@@ -174,6 +174,8 @@ class TestReceiverAcceptsValidPayload:
         assert result.provider_session_id == "conv-123"
         assert result.bytes_written > 0
         assert result.path.exists()
+        assert result.artifact_ref == result.path.relative_to(tmp_path).as_posix()
+        assert Path(result.artifact_ref).is_absolute() is False
         assert result.replaced is False
 
     def test_write_capture_envelope_is_idempotent(self, tmp_path: Path) -> None:
@@ -181,6 +183,7 @@ class TestReceiverAcceptsValidPayload:
         first = write_capture_envelope(envelope, spool_path=tmp_path)
         second = write_capture_envelope(envelope, spool_path=tmp_path)
         assert first.path == second.path
+        assert first.artifact_ref == second.artifact_ref
         assert first.replaced is False
         assert second.replaced is True
 

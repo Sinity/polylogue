@@ -26,7 +26,7 @@ def status_command(spool_path: Path | None, output_format: str | None) -> None:
         click.echo(dumps(payload))
         return
     click.echo("Browser capture receiver")
-    click.echo(f"Spool: {payload['spool_path']}")
+    click.echo(f"Spool: {'ready' if payload.get('spool_ready') else 'unavailable'}")
     origins = payload.get("allowed_origins", [])
     origin_text = ", ".join(str(item) for item in origins) if isinstance(origins, list) else str(origins)
     click.echo(f"Allowed origins: {origin_text}")

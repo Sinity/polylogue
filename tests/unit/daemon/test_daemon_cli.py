@@ -68,7 +68,8 @@ def test_polylogued_status_json_reports_daemon_components(
     assert payload["daemon"] == "polylogued"
     assert live["source_count"] == 2
     assert live["existing_source_count"] == 1
-    assert browser_capture["spool_path"] == str(tmp_path / "captures")
+    assert browser_capture["spool_ready"] is True
+    assert "spool_path" not in browser_capture
 
 
 def test_polylogued_status_plain_reports_daemon_components(tmp_path: Path) -> None:
@@ -81,7 +82,7 @@ def test_polylogued_status_plain_reports_daemon_components(tmp_path: Path) -> No
     assert "Polylogue daemon" in result.output
     assert "Live sources: 1/1 available" in result.output
     assert f"exists: {tmp_path} (available)" in result.output
-    assert "Browser capture spool:" in result.output
+    assert "Browser capture spool: ready" in result.output
 
 
 def test_polylogued_status_json_reports_archive_storage(tmp_path: Path) -> None:

@@ -180,7 +180,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                 capture_id=envelope.capture_id or f"{result.provider}:{result.provider_session_id}",
                 provider=result.provider,
                 provider_session_id=result.provider_session_id,
-                artifact_path=str(result.path),
+                artifact_ref=result.artifact_ref,
                 bytes_written=result.bytes_written,
                 replaced=result.replaced,
             ).model_dump(mode="json"),

@@ -13,6 +13,7 @@ from polylogue.browser_capture.receiver import (
     BrowserCaptureReceiverConfig,
     BrowserCaptureWriteResult,
     capture_artifact_path,
+    capture_artifact_ref,
     receiver_status_payload,
     write_capture_envelope,
 )
@@ -27,6 +28,7 @@ __all__ = [
     "BrowserCaptureSession",
     "BrowserCaptureTurn",
     "BrowserCaptureWriteResult",
+    "capture_artifact_ref",
     "capture_artifact_path",
     "receiver_status_payload",
     "write_capture_envelope",
