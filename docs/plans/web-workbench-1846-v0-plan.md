@@ -12,11 +12,13 @@ Backend:
 
 - `GET /api/sessions/:id/recovery?report=digest&format=json`
 - `GET /api/sessions/:id/recovery?report=work-packet&format=json|markdown`
+- `GET /api/sessions/:id/read?view=messages|recovery|raw&format=json`
 - `GET /api/assertions?target_ref=&scope_ref=&kind=&status=&context_inject=&limit=`
 
 Route contracts:
 
 - `/api/sessions/:id/recovery` is `read_detail`, `shell_supported`, `bearer_if_configured`.
+- `/api/sessions/:id/read` is `read_detail`, `shell_supported`, `bearer_if_configured`.
 - `/api/assertions` is `user_overlay`, `shell_supported`, `bearer_if_configured`.
 - Both are real workbench routes, but not advertised as stable public API until #1847 promotes the daemon DTO boundary.
 
@@ -31,6 +33,7 @@ Web shell:
 - Adds an `Evidence` inspector tab.
 - Fetches `RecoveryWorkPacket` and assertion claims for the selected session.
 - Loads `GET /api/read-view-profiles` and renders a small profile selector from shared read-view metadata.
+- Executes supported single-session profiles through `GET /api/sessions/:id/read`.
 - Keeps raw data behind an explicit opt-in drawer: metadata loads first from provenance; bounded preview requires a separate click.
 
 Explicit non-exposure:
@@ -59,6 +62,7 @@ Search and query:
 Reader:
 
 - read-view profile payloads from `GET /api/read-view-profiles`.
+- read-view execution envelopes from `GET /api/sessions/:id/read`.
 - session detail payload from `GET /api/sessions/:id`.
 - session message payloads from `GET /api/sessions/:id/messages`.
 - provenance/raw payloads from `/provenance` and `/raw`, still explicit opt-in.
@@ -72,13 +76,13 @@ Evidence:
 
 Browser capture/readiness:
 
-- Browser capture remains a separate #1824/#1847 capability boundary. The workbench may display capture readiness later, but must not call receiver write routes as generic archive mutations.
+- Browser capture remains a separate #1824/#1847 capability boundary. The workbench displays read-only readiness from `/api/status.browser_capture` and `component_readiness.browser_capture`; it does not call receiver write routes as generic archive mutations.
 
 ## Remaining backend endpoints
 
-1. Shared read-view execution route: either `GET /api/sessions/:id/read?view=&format=` or an explicit route map for every profile. Current slice only displays profiles and maps supported ones to existing routes.
+1. Shared read-view execution route now covers the supported single-session profiles (`messages`, `recovery`, `raw`). Broader profiles (`context`, `context-pack`, `neighbors`, `correlation`) still need dedicated execution semantics before the selector enables them.
 2. Typed overlay mutation envelopes for marks/annotations/saved views/recall/workspaces. Existing routes work, but #1847 should decide stability and shared mutation DTO guarantees.
-3. Browser-capture read-only readiness adapter if `GET /api/status` is not enough for the workbench panel.
+3. Browser-capture readiness is satisfied by `GET /api/status`; add a dedicated adapter only if a future panel needs more than safe receiver state (`spool_ready`, `allowed_origins`, `auth_required`, component readiness).
 4. Bounded raw-preview contract promotion: this slice already prefers provenance `include_raw=1&bytes=` in the shell; #1847 can decide whether `/api/sessions/:id/raw` remains shell-supported only or becomes a narrower stable metadata route.
 5. Generated route/OpenAPI surface that includes stable routes and intentionally documented shell-supported workbench routes without implying public API stability.
 
@@ -88,11 +92,11 @@ PR-1846-B, landed by this slice: recovery/work-packet HTTP, assertion-read HTTP,
 
 PR-1846-C: promote one overlay mutation path to shared mutation/error envelopes and keep same-origin/bearer tests strict.
 
-PR-1846-D: execute read profiles over HTTP instead of only displaying profile metadata.
+PR-1846-D, partially landed after the first evidence slice: execute supported single-session read profiles over HTTP instead of only displaying profile metadata.
 
 PR-1846-E, partially landed by this slice: raw drawer hardening via provenance metadata, no automatic raw fetch, bounded preview button, and explicit privacy posture in the UI.
 
-PR-1846-F: browser-capture/readiness panel consuming #1824/#1847 DTOs without merging receiver auth with archive auth.
+PR-1846-F, landed after the first evidence slice: browser-capture/readiness panel consumes #1824/#1847 status DTOs without merging receiver auth with archive auth.
 
 PR-1846-G, partly landed by this slice: fixture-backed DOM smoke covers shell hooks plus recovery/assertion endpoint payloads. A full browser click-through remains useful once the visual lane is stable in every checkout.
 
@@ -101,13 +105,16 @@ PR-1846-G, partly landed by this slice: fixture-backed DOM smoke covers shell ho
 Landed tests:
 
 - route-contract lookup for `/api/assertions` and `/api/sessions/:id/recovery`.
+- route-contract lookup for `/api/sessions/:id/read`.
 - check that these routes stay `shell_supported`, not stable public API.
 - recovery endpoint tests for digest JSON, work-packet JSON, work-packet markdown, invalid report/format pairs, and missing sessions.
+- read-view execution route tests for `messages`, `recovery`, `raw`, unsupported views, and unsupported formats.
 - assertion endpoint tests for default `active,candidate`, kind/context filters, `status=all`, and token-gated reads.
 - shell smoke checks for `Evidence`, `read-view`, recovery/assertion endpoint hooks, and explicit raw opt-in copy.
 - visual/DOM smoke checks for the evidence tab hooks plus recovery/assertion endpoint payloads over the reader fixture.
 - raw drawer smoke checks that the shell uses provenance and only fetches bounded preview after an explicit button.
 - no-local-path leak checks for the new reader JSON routes.
+- browser-capture readiness chip wiring over `/api/status.browser_capture`, including safe-field checks that the web workbench never receives a receiver spool path.
 
 Still needed:
 

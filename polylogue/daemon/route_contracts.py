@@ -194,6 +194,15 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
     ),
     RouteContract(
         "GET",
+        "/api/sessions/:id/read",
+        "read_detail",
+        "shell_supported",
+        "bearer_if_configured",
+        "session read-view execution envelope",
+        "Executes supported single-session read profiles over existing messages/recovery/raw handlers for the local workbench.",
+    ),
+    RouteContract(
+        "GET",
         "/api/sessions/:id/raw",
         "read_detail",
         "shell_supported",

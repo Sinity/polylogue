@@ -256,6 +256,7 @@ __ATTACHMENT_CSS__
     <span class="chip" id="status-semantic" title="Semantic readiness">semantic: --</span>
     <span class="chip" id="status-insights" title="Session insight freshness" style="display:none">insights: --</span>
     <span class="chip" id="status-ingest" style="display:none">live</span>
+    <span class="chip" id="status-browser-capture" title="Browser capture readiness" style="display:none">capture: --</span>
     <span class="chip" id="status-live" title="Realtime channel">live: --</span>
   </div>
   <div id="sidebar">
@@ -364,9 +365,11 @@ var state = {
   evidencePanels: {},
   // Shared read-view profile inventory (#1846/#1838). Loaded from
   // /api/read-view-profiles so the shell does not grow a second profile
-  // registry. selectedReadView controls which existing route/inspector affordance
-  // is foregrounded; unsupported profiles remain disabled until HTTP execution exists.
+  // registry. selectedReadView controls the main reader pane. Supported
+  // single-session profiles execute through /api/sessions/{id}/read; unsupported
+  // profiles remain disabled until HTTP execution exists.
   readViewProfiles: [], selectedReadView: 'messages', readViewProfileError: '',
+  readViewPayloads: {}, readViewErrors: {},
   // Per-session similarity panel cache (#1123). Keyed by
   // session_id; populated on demand when the Similar inspector
   // tab is opened. ``undefined`` means "not loaded yet"; the envelope
@@ -537,6 +540,7 @@ async function loadStatus() {
     renderSemanticChip(readiness.embeddings || null);
     renderInsightChip(readiness.session_profiles || null, s.insight_freshness || {});
     renderIngestChip(readiness.daemon_ingest || null, s.live || {});
+    renderBrowserCaptureChip(readiness.browser_capture || null, s.browser_capture || {});
   } catch(e) {}
 }
 
@@ -631,6 +635,33 @@ function renderIngestChip(component, live) {
     el.textContent = 'live: ' + live.existing_source_count + ' srcs';
     setChipQuality(el, 'canonical');
   } else { el.style.display = 'none'; }
+}
+
+function renderBrowserCaptureChip(component, capture) {
+  var el = document.getElementById('status-browser-capture');
+  if (!el) return;
+  if (!component && !capture) { el.style.display = 'none'; return; }
+  el.style.display = '';
+  var state = component ? (component.state || 'unknown') : 'unknown';
+  var active = state === 'ready';
+  var spoolReady = !!(capture && capture.spool_ready);
+  var authRequired = !!(capture && capture.auth_required);
+  var origins = (capture && capture.allowed_origins) || [];
+  if (active && spoolReady) {
+    el.textContent = 'capture: ready';
+    setChipQuality(el, 'canonical');
+  } else if (spoolReady) {
+    el.textContent = 'capture: off';
+    setChipQuality(el, 'unavailable');
+  } else {
+    el.textContent = 'capture: unavailable';
+    setChipQuality(el, 'unavailable');
+  }
+  var originText = origins.length ? origins.join(', ') : 'no origins';
+  el.title = 'Browser capture: ' + (active ? 'running' : 'not running')
+    + '; spool ' + (spoolReady ? 'ready' : 'unavailable')
+    + '; auth ' + (authRequired ? 'required' : 'not required')
+    + '; origins ' + originText;
 }
 
 function renderSidebarState(kind, msg) {
@@ -774,6 +805,25 @@ function applyReadViewSelection(viewId) {
   renderInspector();
 }
 
+function readViewCacheKey(id, viewId) {
+  return id + '::' + (viewId || 'messages');
+}
+
+async function loadReadViewExecution(id, viewId) {
+  if (!id || !viewId || viewId === 'messages') return;
+  var key = readViewCacheKey(id, viewId);
+  try {
+    var payload = await fetchJSON('/api/sessions/' + encodeURIComponent(id) + '/read?view=' + encodeURIComponent(viewId) + '&format=json');
+    state.readViewPayloads[key] = payload;
+    delete state.readViewErrors[key];
+  } catch(e) {
+    state.readViewErrors[key] = String(e);
+  }
+  if (state.selected && state.selected.id === id && state.selectedReadView === viewId) {
+    renderMain();
+  }
+}
+
 function renderMain() {
   renderWorkspaceToolbar();
   if (state.mode === 'stack') { renderStackWorkspace(); return; }
@@ -842,6 +892,10 @@ function renderMain() {
   headerEl.innerHTML = headerHtml;
 
   var readViewSelector = renderReadViewSelector(c);
+  if (state.selectedReadView && state.selectedReadView !== 'messages') {
+    msgEl.innerHTML = readViewSelector + renderReadViewExecution(c, state.selectedReadView);
+    return;
+  }
   if (!c.messages) {
     msgEl.innerHTML = readViewSelector + '<div class="main-empty"><h3>Loading messages...</h3></div>';
     return;
@@ -851,6 +905,52 @@ function renderMain() {
     return;
   }
   msgEl.innerHTML = readViewSelector + messageBlocksHtml(c.messages);
+}
+
+function renderReadViewExecution(c, viewId) {
+  var key = readViewCacheKey(c.id, viewId);
+  if (state.readViewErrors[key]) {
+    return '<div class="main-empty"><h3>Read view unavailable</h3><p>' + esc(state.readViewErrors[key]) + '</p></div>';
+  }
+  var envelope = state.readViewPayloads[key];
+  if (envelope === undefined) {
+    loadReadViewExecution(c.id, viewId);
+    return '<div class="main-empty"><h3>Loading ' + esc(viewId) + '...</h3></div>';
+  }
+  var payload = envelope.payload || {};
+  if (viewId === 'recovery') return renderRecoveryReadView(payload);
+  if (viewId === 'raw') return renderRawReadView(payload);
+  return '<div class="main-empty"><h3>Unsupported read view</h3><p>' + esc(viewId) + '</p></div>';
+}
+
+function renderRecoveryReadView(payload) {
+  var packet = payload.work_packet || {};
+  var entries = packet.entries || [];
+  var html = '<div class="read-view-panel"><h3>Recovery work packet</h3>'
+    + '<p class="muted">Read through /api/sessions/:id/read using the shared recovery DTO.</p>'
+    + '<div class="inspector-field"><span class="label">entries</span><span class="value">' + esc(String(entries.length)) + '</span></div>'
+    + '<div class="inspector-field"><span class="label">evidence refs</span><span class="value">' + esc(String((packet.evidence_refs || []).length)) + '</span></div>';
+  entries.slice(0, 10).forEach(function(entry) {
+    html += '<div class="annotation-item"><div class="meta">' + esc(entry.section || 'entry') + ' / ' + esc(entry.support || 'support') + '</div>'
+      + '<div class="note"><strong>' + esc(entry.label || 'entry') + '</strong><br>' + esc(entry.text || '') + '</div></div>';
+  });
+  if (!entries.length) html += '<div class="inspector-empty">No recovery entries surfaced for this session.</div>';
+  html += '</div>';
+  return html;
+}
+
+function renderRawReadView(payload) {
+  var artifacts = payload.raw_artifacts || [];
+  var html = '<div class="read-view-panel"><h3>Raw evidence</h3>'
+    + '<p class="muted">Raw bytes stay behind explicit artifact preview; this view lists sanitized artifact metadata.</p>'
+    + '<div class="inspector-field"><span class="label">artifacts</span><span class="value">' + esc(String(payload.raw_artifacts_total || artifacts.length || 0)) + '</span></div>';
+  artifacts.slice(0, 12).forEach(function(artifact) {
+    html += '<div class="annotation-item"><div class="meta">' + esc(artifact.artifact_kind || artifact.provider || 'artifact') + '</div>'
+      + '<div class="note">' + esc(artifact.raw_id || artifact.artifact_id || 'raw artifact') + '</div></div>';
+  });
+  if (!artifacts.length) html += '<div class="inspector-empty">No raw artifact metadata surfaced for this session.</div>';
+  html += '</div>';
+  return html;
 }
 
 function messageBlocksHtml(messages) {

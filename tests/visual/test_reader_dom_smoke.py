@@ -37,6 +37,7 @@ def test_reader_search_shell_dom_evidence(reader_workspace: ReaderWorkspace, tmp
         "app",
         "status-strip",
         "status-dot",
+        "status-browser-capture",
         "sidebar",
         "search",
         "facet-bar",
@@ -388,9 +389,12 @@ def test_reader_evidence_panel_endpoint_and_shell_smoke(reader_workspace: Reader
     for phrase in (
         'data-tab="evidence"',
         "renderInspectorEvidence",
+        "renderBrowserCaptureChip",
+        "renderReadViewExecution",
         "loadEvidencePanel",
         "/api/assertions?target_ref=",
         "/recovery?report=work-packet&format=json",
+        "/read?view=",
     ):
         assert phrase in shell, f"missing evidence shell hook {phrase!r}"
 
