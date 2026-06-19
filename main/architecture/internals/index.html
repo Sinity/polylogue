@@ -869,16 +869,20 @@ rows plus <code>stale_cursor_writes</code> and overlapping running source paths.
 parse/convergence timings, and source-path bundles.</li>
 <li><code>convergence_stage_timings</code> — min/max/sum/mean parse/convergence/read-
 amplification stats over completed attempts.</li>
-<li><code>boundary_table_counts</code> — row counts for the daemon-relevant tables
+<li><code>boundary_table_counts</code> — cheap planner-estimated counts for the
+daemon-relevant tables by default
 (<code>raw_sessions</code>, <code>sessions</code>, <code>messages</code>, <code>blocks</code>,
 <code>artifact_observations</code>, <code>messages_fts_docsize</code>, <code>actions</code>,
 <code>message_embeddings</code>, <code>session_profile</code>,
 <code>live_ingest_attempt</code>, <code>live_convergence_debt</code>, <code>pending_blob_refs</code>).
-Missing tables surface as <code>-1</code> rather than crashing the probe.</li>
+Missing tables surface as <code>-1</code> and tables without SQLite planner
+statistics surface as <code>-2</code> rather than crashing the probe. Pass
+<code>--exact-table-counts</code> when a before/after evidence run needs exact
+arithmetic and the archive can afford the scans.</li>
 <li><code>archive_tiers</code> — archive inventory for <code>source.db</code>,
 <code>index.db</code>, <code>embeddings.db</code>, <code>user.db</code>, and <code>ops.db</code>: file presence,
 durability/backup policy, <code>PRAGMA user_version</code>, missing backup-required
-tiers, and cheap table counts per tier. It does not run SQLite
+tiers, and cheap planner-estimated table counts per tier. It does not run SQLite
 <code>PRAGMA quick_check</code> by default because that is a full-file integrity scan
 on large archives; pass <code>--integrity-check</code> when the workload snapshot should
 include that expensive evidence. It also avoids exact generated-text
