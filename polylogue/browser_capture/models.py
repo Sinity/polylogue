@@ -153,7 +153,7 @@ class BrowserCaptureReceiverStatusPayload(BaseModel):
     ok: Literal[True] = True
     receiver: Literal["polylogue-browser-capture"] = BROWSER_CAPTURE_RECEIVER
     schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
-    spool_path: str
+    spool_ready: bool
     allowed_origins: list[str]
     allow_remote: bool
     auth_required: bool
@@ -167,7 +167,7 @@ class BrowserCaptureArchiveStatePayload(BaseModel):
     provider: str
     provider_session_id: str
     captured: bool
-    artifact_path: str
+    artifact_ref: str
     capture_id: str | None = None
     updated_at: str | None = None
     artifact_readable: bool | None = None
@@ -183,7 +183,7 @@ class BrowserCaptureAcceptedPayload(BaseModel):
     capture_id: str
     provider: str
     provider_session_id: str
-    artifact_path: str
+    artifact_ref: str
     bytes_written: int
     replaced: bool
 

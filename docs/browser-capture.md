@@ -26,7 +26,9 @@ the same component status in archive health output with `polylogue ops doctor
 Accepted captures are typed browser-capture envelopes and are written
 atomically under the configured capture spool at `<provider>/...json`.
 The filename is deterministic from provider and provider session id, so repeated
-observation of the same web session replaces the same source artifact.
+observation of the same web session replaces the same source artifact. Receiver
+responses expose this artifact as an `artifact_ref` relative to the spool root;
+absolute filesystem paths stay inside the receiver process.
 
 The extension lives in `browser-extension/` and can be loaded unpacked in
 Chrome. It includes ChatGPT and Claude.ai DOM adapters, a popup control panel,
@@ -72,12 +74,11 @@ of dropping content silently.
 Fixed in this slice: default web origins no longer cross the local receiver
 boundary unauthenticated; receiver routes have a small executable contract;
 valid and malformed receiver payloads are tested at the HTTP boundary; accepted
-and error DTOs carry receiver/schema/source identity.
+and error DTOs carry receiver/schema/source identity; accepted and archive-state
+DTOs use bounded artifact refs instead of local filesystem paths.
 
 Still outside this slice: browser-capture artifacts still enter the archive as
 provider sessions (`chatgpt`, `claude-ai`) rather than a distinct acquisition
 source family; the daemon web API exposes status/read surfaces but not a full
 web workbench flow; extension-id pinning is still operator policy rather than a
-default because unpacked extension ids are local-install specific; accepted and
-archive-state DTOs still expose the local artifact path to the trusted extension
-context.
+default because unpacked extension ids are local-install specific.

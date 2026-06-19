@@ -256,7 +256,7 @@ def test_check_daemon_json_uses_shared_daemon_status(cli_runner: CliRunner) -> N
         "ok": True,
         "daemon": "polylogued",
         "live": {"source_count": 1, "existing_source_count": 1, "sources": []},
-        "browser_capture": {"spool_path": "/tmp/captures"},
+        "browser_capture": {"spool_ready": True},
     }
 
     with patch("polylogue.cli.shared.check_workflow.daemon_status_payload", return_value=daemon_report):
@@ -267,7 +267,8 @@ def test_check_daemon_json_uses_shared_daemon_status(cli_runner: CliRunner) -> N
     daemon = json_object_field(payload, "daemon", context="check payload")
     assert daemon.get("daemon") == "polylogued"
     browser_capture = json_object_field(daemon, "browser_capture", context="daemon")
-    assert browser_capture.get("spool_path") == "/tmp/captures"
+    assert browser_capture.get("spool_ready") is True
+    assert "spool_path" not in browser_capture
 
 
 def test_check_daemon_plain_renders_component_status(cli_runner: CliRunner) -> None:
@@ -279,7 +280,7 @@ def test_check_daemon_plain_renders_component_status(cli_runner: CliRunner) -> N
             "existing_source_count": 1,
             "sources": [{"name": "codex", "root": "/tmp/codex", "exists": True}],
         },
-        "browser_capture": {"spool_path": "/tmp/captures"},
+        "browser_capture": {"spool_ready": True},
     }
 
     with patch("polylogue.cli.shared.check_workflow.daemon_status_payload", return_value=daemon_report):
@@ -289,7 +290,7 @@ def test_check_daemon_plain_renders_component_status(cli_runner: CliRunner) -> N
     assert "Daemon Components:" in result.output
     assert "Live sources: 1/1 available" in result.output
     assert "codex: /tmp/codex (available)" in result.output
-    assert "Browser capture spool: /tmp/captures" in result.output
+    assert "Browser capture spool: ready" in result.output
 
 
 def test_check_plain_preview_summarizes_changes_not_issues(

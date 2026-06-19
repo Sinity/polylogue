@@ -45,7 +45,7 @@ BROWSER_CAPTURE_ROUTE_CONTRACTS: tuple[BrowserCaptureRouteContract, ...] = (
         "bearer_if_configured",
         "provider + provider_session_id query parameters",
         "BrowserCaptureArchiveStatePayload",
-        "Reports whether a captured provider session is already spooled or archived.",
+        "Reports whether a provider session is spooled, using a receiver-local artifact ref.",
     ),
     BrowserCaptureRouteContract(
         "POST",
@@ -54,7 +54,7 @@ BROWSER_CAPTURE_ROUTE_CONTRACTS: tuple[BrowserCaptureRouteContract, ...] = (
         "bearer_if_web_origin",
         "BrowserCaptureEnvelope",
         "BrowserCaptureAcceptedPayload | BrowserCaptureErrorPayload",
-        "Extension-origin requests are accepted by default; extra web origins require bearer auth.",
+        "Accepts captures and returns a receiver-local artifact ref; extra web origins require bearer auth.",
     ),
 )
 

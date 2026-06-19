@@ -57,6 +57,7 @@ class BrowserCaptureWriteResult:
     provider: str
     provider_session_id: str
     path: Path
+    artifact_ref: str
     bytes_written: int
     replaced: bool
 
@@ -79,6 +80,12 @@ def capture_artifact_path(envelope: BrowserCaptureEnvelope, spool_path: Path | N
     return root / provider / f"{session}-{suffix}.json"
 
 
+def capture_artifact_ref(envelope: BrowserCaptureEnvelope, spool_path: Path | None = None) -> str:
+    """Return the bounded receiver-facing artifact reference for an envelope."""
+    root = spool_path if spool_path is not None else BrowserCaptureReceiverConfig.default().spool_path
+    return capture_artifact_path(envelope, root).relative_to(root).as_posix()
+
+
 def write_capture_envelope(
     envelope: BrowserCaptureEnvelope,
     *,
@@ -99,6 +106,7 @@ def write_capture_envelope(
         provider=envelope.provider.value,
         provider_session_id=envelope.provider_session_id,
         path=target,
+        artifact_ref=capture_artifact_ref(envelope, spool_path),
         bytes_written=target.stat().st_size,
         replaced=replaced,
     )
@@ -107,7 +115,7 @@ def write_capture_envelope(
 def receiver_status_payload(config: BrowserCaptureReceiverConfig) -> dict[str, object]:
     """Return JSON status for extension health checks."""
     return BrowserCaptureReceiverStatusPayload(
-        spool_path=str(config.spool_path),
+        spool_ready=True,
         allowed_origins=sorted(config.allowed_origins),
         allow_remote=config.allow_remote,
         auth_required=config.auth_token is not None,
@@ -154,7 +162,7 @@ def existing_capture_state(
         provider=envelope.provider.value,
         provider_session_id=envelope.provider_session_id,
         captured=path.exists(),
-        artifact_path=str(path),
+        artifact_ref=capture_artifact_ref(envelope, spool_path),
         capture_id=capture_id,
         updated_at=updated_at,
         artifact_readable=artifact_readable,
@@ -164,6 +172,7 @@ def existing_capture_state(
 __all__ = [
     "BrowserCaptureReceiverConfig",
     "BrowserCaptureWriteResult",
+    "capture_artifact_ref",
     "_is_extension_origin_pattern",
     "capture_artifact_path",
     "existing_capture_state",
