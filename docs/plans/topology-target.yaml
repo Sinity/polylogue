@@ -294,7 +294,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/expression.py
-    loc: 2103
+    loc: 2151
     target: polylogue/archive/query/expression.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -399,7 +399,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/unit_results.py
-    loc: 679
+    loc: 687
     target: polylogue/archive/query/unit_results.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -2520,7 +2520,7 @@ files:
     target: polylogue/sources/emitter.py
     owner: stable
   - path: polylogue/sources/import_explain.py
-    loc: 339
+    loc: 368
     target: polylogue/sources/import_explain.py
     owner: stable
   - path: polylogue/sources/import_preflight.py
@@ -2675,6 +2675,10 @@ files:
   - path: polylogue/sources/parsers/local_agent.py
     loc: 317
     target: polylogue/sources/parsers/local_agent.py
+    owner: stable
+  - path: polylogue/sources/provider_completeness.py
+    loc: 319
+    target: polylogue/sources/provider_completeness.py
     owner: stable
   - path: polylogue/sources/providers/chatgpt.py
     loc: 14
@@ -3214,7 +3218,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/__init__.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive.py
-    loc: 5971
+    loc: 6009
     target: polylogue/storage/sqlite/archive_tiers/archive.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive_init.py
@@ -3524,7 +3528,7 @@ files:
     target: polylogue/surfaces/__init__.py
     owner: stable
   - path: polylogue/surfaces/payloads.py
-    loc: 2020
+    loc: 2085
     target: polylogue/surfaces/payloads.py
     owner: stable
   - path: polylogue/types.py

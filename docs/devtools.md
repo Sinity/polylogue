@@ -161,6 +161,12 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace tasks` | Record and query local agent task execution history. |
 | `devtools workspace worktree-gc` | Safe worktree garbage collection — list and remove merged or abandoned git worktrees. |
 
+### Maintenance
+
+| Command | Description |
+| --- | --- |
+| `devtools provider completeness` | Report provider/importer package completeness by origin and capture mode. |
+
 <!-- END GENERATED: devtools-command-catalog -->
 
 ## Validation and Evidence

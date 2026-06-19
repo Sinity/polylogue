@@ -1134,5 +1134,5 @@ def test_status_command_accepts_json_alias_flag(tmp_path: Path) -> None:
     result = run_cli(["--plain", "ops", "status", "--json"], env=env)
     assert result.exit_code == 0, result.output
     assert "No such option" not in result.output
-    parsed = json.loads(result.output)
+    parsed = json.loads(result.stdout)
     assert isinstance(parsed, dict)

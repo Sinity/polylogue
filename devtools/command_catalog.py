@@ -190,6 +190,22 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "provider completeness",
+        "maintenance",
+        "Report provider/importer package completeness by origin and capture mode.",
+        "devtools.provider_completeness",
+        use_when=(
+            "Inspect detector, parser, fixture, schema, docs, ImportExplain, and caveat coverage "
+            "before claiming a provider/importer mode is product-ready."
+        ),
+        examples=(
+            "devtools provider completeness",
+            "devtools provider completeness --json",
+            "devtools provider completeness --origin codex-session --json",
+            "devtools provider completeness --check",
+        ),
+    ),
+    CommandSpec(
         "test",
         "verification",
         "Run a focused pytest selection through the managed harness.",

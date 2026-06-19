@@ -34,6 +34,11 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "Vocabulary map for provider-wire family, public origin, material source, capture mode, parser binding, and refs.",
     ),
     DocsEntry(
+        "Provider Package Completeness",
+        "docs/provider-completeness.md",
+        "Readiness report for provider/importer package modes by origin and capture mode.",
+    ),
+    DocsEntry(
         "Archive Backup",
         "docs/archive-backup.md",
         "Archive-tier backup profiles, restore boundaries, and blob-GC safety rules.",
@@ -109,6 +114,7 @@ README_DOC_TITLES: tuple[str, ...] = (
     "MCP Integration",
     "Configuration",
     "Provider, Origin, and Source Identity",
+    "Provider Package Completeness",
     "Archive Backup",
     "Developer Tools",
     "Providers",

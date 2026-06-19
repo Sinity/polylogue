@@ -385,12 +385,20 @@ def _clear_polylogue_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
 
     _clear_connection_cache()
 
-    # Clear search cache (LRU cache) to prevent cross-test pollution
+    # Clear search runtime state to prevent monkeypatched package-level search
+    # adapters and cached results from leaking across tests.
     import sys
 
-    search_module = sys.modules.get("polylogue.storage.search")
-    if search_module is not None and hasattr(search_module, "_search_messages_cached"):
-        search_module._search_messages_cached.cache_clear()
+    from polylogue.storage.sqlite.connection import open_read_connection
+
+    for module_name in ("polylogue.storage.search", "polylogue.storage.search.runtime"):
+        search_module = sys.modules.get(module_name)
+        search_module_any: Any = search_module
+        cache = getattr(search_module_any, "search_messages_cached", None) if search_module is not None else None
+        if cache is not None:
+            cache.cache_clear()
+        if module_name.endswith(".runtime") and search_module is not None:
+            search_module_any.open_read_connection = open_read_connection
 
     # Clear schema-validator cache so monkeypatched registry/schema tests
     # cannot leak compiled validators into later integration runs.
