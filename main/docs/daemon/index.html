@@ -490,10 +490,11 @@ stays running until interrupted.</p>
 <h2>HTTP API Endpoints</h2>
 <p>The HTTP API server runs by default. Pass <code>--no-api</code> to disable it. The endpoints below are exposed under the configured <code>--api-host:--api-port</code>.</p>
 <p>Route contract metadata lives in <code>polylogue/daemon/route_contracts.py</code>.
-Dispatch still happens in <code>polylogue/daemon/http.py</code>, but tests and docs use
-the metadata module as the durable route-classification source so stable
-routes, shell-only helpers, operational probes, and mutation routes do not drift
-silently.</p>
+Dispatch still happens in <code>polylogue/daemon/http.py</code>, but the dispatcher now
+exposes its implemented route patterns from the routing tables used at runtime.
+The route-contract tests compare the two surfaces, so stable routes,
+shell-supported helpers, operational probes, and mutation routes must stay
+classified with explicit auth and response posture.</p>
 <table>
 <thead>
 <tr>
