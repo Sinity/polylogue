@@ -150,6 +150,9 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
     RouteContract("GET", "/api/facets", "read_query", "stable", "bearer_if_configured", "Facets envelope"),
     RouteContract("GET", "/api/query-units", "read_query", "stable", "bearer_if_configured", "QueryUnitEnvelope"),
     RouteContract(
+        "GET", "/api/refs/resolve", "read_query", "stable", "bearer_if_configured", "PublicRefResolutionPayload"
+    ),
+    RouteContract(
         "GET",
         "/api/query-completions",
         "read_query",

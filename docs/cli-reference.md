@@ -210,7 +210,7 @@ Options:
 ## Read Verb
 
 ```text
-Usage: polylogue read [OPTIONS]
+Usage: polylogue read [OPTIONS] [REF]
 
   Read matched sessions.
 
@@ -233,6 +233,7 @@ Usage: polylogue read [OPTIONS]
       polylogue --latest read --view neighbors --format json
       polylogue find id:abc then read --view correlation --since-hours 4
       polylogue --latest read --view correlation --otlp --format json
+      polylogue read session:abc123 --format json
 
   Deferred views (not yet implemented; note in PR body):
       timeline, tools, files, metadata, continuation

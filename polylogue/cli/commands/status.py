@@ -269,6 +269,7 @@ _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
     "query_sessions": ("archive_routed", "index", "queries summaries from index.db"),
     "rebuild_index": ("archive_routed", "index", "rebuilds messages_fts from index.db"),
     "rebuild_insights": ("archive_routed", "index", "rebuilds insight tables"),
+    "resolve_ref": ("archive_routed", "index", "resolves public refs through bounded archive read payloads"),
     "record_correction": ("archive_routed", "user", "writes corrections through user.db"),
     "context_pack_payload": ("archive_routed", "index", "builds context-pack DTOs from archive-routed reads"),
     "context_preamble_payload": ("archive_routed", "index", "builds context preamble DTOs from archive-routed reads"),

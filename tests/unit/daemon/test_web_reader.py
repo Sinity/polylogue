@@ -604,6 +604,18 @@ class TestReaderSessionState:
         assert message["actions"]["annotate"]["enabled"] is True
         assert message["actions"]["annotate"]["state"] == "enabled"
 
+    def test_ref_resolve_route_returns_shared_payload(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            payload = _get_json(base_url, f"/api/refs/resolve?ref={quote('session:claude-code-session:c1')}")
+
+        result = cast(dict[str, object], payload)
+        assert result["mode"] == "ref-resolution"
+        assert result["resolved"] is True
+        assert result["normalized_ref"] == "session:claude-code-session:c1"
+        assert result["payload_kind"] == "session-summary"
+        resolved_payload = cast(dict[str, object], result["payload"])
+        assert resolved_payload["id"] == "claude-code-session:c1"
+
     def test_session_messages_apply_content_projection_flags(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.archive.message.roles import Role
         from polylogue.core.enums import BlockType, Provider

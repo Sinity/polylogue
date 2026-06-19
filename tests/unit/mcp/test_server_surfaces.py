@@ -21,7 +21,7 @@ from polylogue.insights.transforms import RecoveryWorkPacket, RecoveryWorkPacket
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionEnvelope
-from polylogue.surfaces.payloads import AssertionClaimPayload
+from polylogue.surfaces.payloads import AssertionClaimPayload, PublicRefResolutionPayload
 from polylogue.types import SessionId
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.mcp import (
@@ -1036,6 +1036,33 @@ class TestArchiveGenericToolSurfaces:
             context_inject=True,
             limit=5,
         )
+
+    @pytest.mark.asyncio
+    async def test_resolve_ref_reads_shared_facade_payload(self: object, mcp_server: MCPServerUnderTest) -> None:
+        mock_poly = make_polylogue_mock()
+        mock_poly.resolve_ref = AsyncMock(
+            return_value=PublicRefResolutionPayload(
+                ref="session:session-1",
+                normalized_ref="session:session-1",
+                kind="session",
+                resolved=True,
+                payload_kind="session-summary",
+                payload={"id": "session-1"},
+            )
+        )
+
+        with patch("polylogue.mcp.server._get_polylogue", return_value=mock_poly):
+            result = await invoke_surface_async(
+                mcp_server._tool_manager._tools["resolve_ref"].fn,
+                ref="session:session-1",
+            )
+
+        payload = json.loads(result)
+        assert payload["mode"] == "ref-resolution"
+        assert payload["resolved"] is True
+        assert payload["payload_kind"] == "session-summary"
+        assert payload["payload"]["id"] == "session-1"
+        mock_poly.resolve_ref.assert_awaited_once_with("session:session-1")
 
 
 class TestPromptSurfaces:

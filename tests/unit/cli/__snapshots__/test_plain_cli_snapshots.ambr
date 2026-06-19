@@ -388,17 +388,17 @@
     "archive_facade_routes": {
       "checked": true,
       "source": "static_facade_route_catalog",
-      "total_method_count": 117,
-      "archive_ready_method_count": 116,
+      "total_method_count": 118,
+      "archive_ready_method_count": 117,
       "unsupported_method_count": 0,
       "route_counts": {
-        "archive_routed": 102,
+        "archive_routed": 103,
         "archive_direct": 14,
         "not_archive_runtime": 1
       },
       "tier_counts": {
         "user": 36,
-        "index": 77,
+        "index": 78,
         "none": 1,
         "source": 3
       },
@@ -924,6 +924,11 @@
           "tier": "user",
           "detail": "writes user tags through user.db"
         },
+        "resolve_ref": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "resolves public refs through bounded archive read payloads"
+        },
         "resume_brief": {
           "route": "archive_routed",
           "tier": "index",
@@ -1052,7 +1057,7 @@
       ],
       "facade_tier_route_counts": {
         "user": 36,
-        "index": 77,
+        "index": 78,
         "none": 1,
         "source": 3
       },

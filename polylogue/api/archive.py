@@ -25,6 +25,7 @@ from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.session.domain_models import Session, SessionSummary
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.json import JSONDocument
+from polylogue.core.refs import EvidenceRef, ObjectRef, parse_public_ref
 from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.core.user_state_targets import TARGET_MESSAGE, TARGET_SESSION
 from polylogue.errors import PolylogueError
@@ -86,6 +87,7 @@ if TYPE_CHECKING:
         DeleteSessionResult,
         FacetsResponse,
         MetadataMutationResult,
+        PublicRefResolutionPayload,
         QueryUnitEnvelope,
         RecoveryReadPayload,
         RecoveryReportFormat,
@@ -117,6 +119,26 @@ def _archive_message_type(value: str | None) -> str | None:
 
 def _archive_action_terms(field: str, values: Sequence[str]) -> tuple[str, ...]:
     return normalize_action_terms(field, tuple(values))
+
+
+def _resolution_action(label: str, command: str | None = None, href: str | None = None) -> Any:
+    from polylogue.surfaces.payloads import RefResolutionActionPayload
+
+    return RefResolutionActionPayload(label=label, command=command, href=href)
+
+
+def _unresolved_ref_payload(
+    ref: str, message: str, *, normalized_ref: str | None = None, kind: str | None = None
+) -> Any:
+    from polylogue.surfaces.payloads import PublicRefResolutionPayload
+
+    return PublicRefResolutionPayload(
+        ref=ref,
+        normalized_ref=normalized_ref,
+        kind=kind,
+        resolved=False,
+        caveats=(message,),
+    )
 
 
 def _archive_action_sequence(values: Sequence[str]) -> tuple[str, ...]:
@@ -1521,6 +1543,396 @@ class PolylogueArchiveMixin:
             return query_unit_rows(
                 archive, source, query=expression, limit=limit, offset=offset, session_filters=session_filters
             )
+
+    async def resolve_ref(self, ref: str) -> PublicRefResolutionPayload:
+        """Resolve one public object/evidence ref into a bounded read payload."""
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from polylogue.surfaces.payloads import PublicRefResolutionPayload
+
+        try:
+            parsed = parse_public_ref(ref)
+        except ValueError as exc:
+            return cast(PublicRefResolutionPayload, _unresolved_ref_payload(ref, str(exc)))
+
+        if isinstance(parsed, EvidenceRef):
+            evidence_ref: EvidenceRef | None = parsed
+            object_ref = parsed.to_object_ref()
+        else:
+            evidence_ref = None
+            object_ref = parsed
+        normalized_ref = parsed.format()
+        archive_root = _active_archive_root(self.config)
+        with ArchiveStore.open_existing(archive_root) as archive:
+            if object_ref.kind == "session":
+                return self._resolve_session_object_ref(archive, ref, normalized_ref, object_ref, evidence_ref)
+            if object_ref.kind == "message":
+                return self._resolve_message_object_ref(archive, ref, normalized_ref, object_ref, evidence_ref)
+            if object_ref.kind == "block":
+                return self._resolve_block_object_ref(archive, ref, normalized_ref, object_ref, evidence_ref)
+            if object_ref.kind == "assertion":
+                return self._resolve_assertion_object_ref(archive_root, ref, normalized_ref, object_ref)
+            if object_ref.kind in {"run", "observed-event", "context-snapshot"}:
+                return self._resolve_runtime_object_ref(archive, ref, normalized_ref, object_ref)
+        return cast(
+            PublicRefResolutionPayload,
+            _unresolved_ref_payload(
+                ref,
+                f"unsupported public ref kind for resolution: {object_ref.kind}",
+                normalized_ref=normalized_ref,
+                kind=object_ref.kind,
+            ),
+        )
+
+    def _resolve_session_object_ref(
+        self,
+        archive: Any,
+        ref: str,
+        normalized_ref: str,
+        object_ref: ObjectRef,
+        evidence_ref: EvidenceRef | None,
+    ) -> PublicRefResolutionPayload:
+        from polylogue.surfaces.payloads import PublicRefResolutionPayload, SessionSummaryPayload, model_json_document
+
+        try:
+            session_id = archive.resolve_session_id(object_ref.object_id)
+        except KeyError:
+            return cast(
+                PublicRefResolutionPayload,
+                _unresolved_ref_payload(ref, "session not found", normalized_ref=normalized_ref, kind="session"),
+            )
+        summaries = archive.list_summaries(session_id=session_id, limit=1)
+        if not summaries:
+            return cast(
+                PublicRefResolutionPayload,
+                _unresolved_ref_payload(ref, "session not found", normalized_ref=normalized_ref, kind="session"),
+            )
+        summary_payload = SessionSummaryPayload.from_summary(_archive_summary_to_domain(summaries[0]))
+        return PublicRefResolutionPayload(
+            ref=ref,
+            normalized_ref=normalized_ref,
+            kind="session",
+            resolved=True,
+            payload_kind="session-summary",
+            payload=model_json_document(summary_payload),
+            title=summary_payload.title,
+            summary=f"{summary_payload.message_count} messages",
+            object_refs=(f"session:{session_id}",),
+            evidence_refs=() if evidence_ref is None else (evidence_ref.format(),),
+            actions=(_resolution_action("read", f"polylogue find id:{session_id} then read --format json"),),
+        )
+
+    def _resolve_message_object_ref(
+        self,
+        archive: Any,
+        ref: str,
+        normalized_ref: str,
+        object_ref: ObjectRef,
+        evidence_ref: EvidenceRef | None,
+    ) -> PublicRefResolutionPayload:
+        from polylogue.surfaces.payloads import PublicRefResolutionPayload, SessionMessagePayload, model_json_document
+
+        row = archive._conn.execute(
+            """
+            SELECT m.session_id, m.message_id
+            FROM messages m
+            WHERE m.message_id = ?
+               OR ('message:' || m.session_id || ':' || m.message_id) = ?
+            LIMIT 1
+            """,
+            (object_ref.object_id, normalized_ref),
+        ).fetchone()
+        if row is None:
+            return cast(
+                PublicRefResolutionPayload,
+                _unresolved_ref_payload(ref, "message not found", normalized_ref=normalized_ref, kind="message"),
+            )
+        session_id = str(row["session_id"])
+        message_id = str(row["message_id"])
+        session = _archive_session_to_session(archive.read_session(session_id))
+        message = next((item for item in session.messages if str(item.id) == message_id), None)
+        if message is None:
+            return cast(
+                PublicRefResolutionPayload,
+                _unresolved_ref_payload(ref, "message not found", normalized_ref=normalized_ref, kind="message"),
+            )
+        payload = SessionMessagePayload.from_message(message, session_id=session_id)
+        return PublicRefResolutionPayload(
+            ref=ref,
+            normalized_ref=normalized_ref,
+            kind="message",
+            resolved=True,
+            payload_kind="message",
+            payload=model_json_document(payload),
+            title=session.display_title,
+            summary=(message.text or "")[:240],
+            object_refs=(f"session:{session_id}", f"message:{message_id}"),
+            evidence_refs=() if evidence_ref is None else (evidence_ref.format(),),
+            actions=(_resolution_action("read session", f"polylogue find id:{session_id} then read --view messages"),),
+        )
+
+    def _resolve_block_object_ref(
+        self,
+        archive: Any,
+        ref: str,
+        normalized_ref: str,
+        object_ref: ObjectRef,
+        evidence_ref: EvidenceRef | None,
+    ) -> PublicRefResolutionPayload:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveBlockQueryRow
+        from polylogue.surfaces.payloads import BlockQueryRowPayload, PublicRefResolutionPayload, model_json_document
+
+        block_index: int | None = None
+        if object_ref.qualifiers:
+            try:
+                block_index = int(object_ref.qualifiers[0])
+            except ValueError:
+                return cast(
+                    PublicRefResolutionPayload,
+                    _unresolved_ref_payload(
+                        ref,
+                        "block ref qualifier must be an integer",
+                        normalized_ref=normalized_ref,
+                        kind="block",
+                    ),
+                )
+        row = archive._conn.execute(
+            """
+            SELECT b.block_id, b.message_id, b.session_id, s.origin, s.title,
+                   b.block_type, b.position, b.text, b.tool_name, b.semantic_type,
+                   b.tool_command, b.tool_path
+            FROM blocks b
+            JOIN sessions s ON s.session_id = b.session_id
+            WHERE b.block_id = ?
+               OR (b.message_id = ? AND (? IS NOT NULL AND b.position = ?))
+               OR ('block:' || b.block_id) = ?
+            LIMIT 1
+            """,
+            (object_ref.object_id, object_ref.object_id, block_index, block_index, normalized_ref),
+        ).fetchone()
+        if row is None:
+            return cast(
+                PublicRefResolutionPayload,
+                _unresolved_ref_payload(ref, "block not found", normalized_ref=normalized_ref, kind="block"),
+            )
+        payload = BlockQueryRowPayload.from_row(
+            ArchiveBlockQueryRow(
+                block_id=str(row["block_id"]),
+                message_id=str(row["message_id"]),
+                session_id=str(row["session_id"]),
+                origin=str(row["origin"]),
+                title=str(row["title"]) if row["title"] is not None else None,
+                block_type=str(row["block_type"]),
+                position=int(row["position"]),
+                text=str(row["text"]) if row["text"] is not None else None,
+                tool_name=str(row["tool_name"]) if row["tool_name"] is not None else None,
+                semantic_type=str(row["semantic_type"]) if row["semantic_type"] is not None else None,
+                tool_command=str(row["tool_command"]) if row["tool_command"] is not None else None,
+                tool_path=str(row["tool_path"]) if row["tool_path"] is not None else None,
+            )
+        )
+        return PublicRefResolutionPayload(
+            ref=ref,
+            normalized_ref=normalized_ref,
+            kind="block",
+            resolved=True,
+            payload_kind="block",
+            payload=model_json_document(payload),
+            title=payload.title,
+            summary=(payload.text or payload.tool_command or payload.tool_name or "")[:240],
+            object_refs=(f"session:{payload.session_id}", f"message:{payload.message_id}", f"block:{payload.block_id}"),
+            evidence_refs=() if evidence_ref is None else (evidence_ref.format(),),
+            actions=(
+                _resolution_action("read message", f"polylogue find id:{payload.session_id} then read --view messages"),
+            ),
+        )
+
+    def _resolve_assertion_object_ref(
+        self,
+        archive_root: Path,
+        ref: str,
+        normalized_ref: str,
+        object_ref: ObjectRef,
+    ) -> PublicRefResolutionPayload:
+        from polylogue.storage.sqlite.archive_tiers.user_write import read_assertion_envelope
+        from polylogue.surfaces.payloads import AssertionClaimPayload, PublicRefResolutionPayload, model_json_document
+
+        user_db = archive_root / "user.db"
+        if not user_db.exists():
+            return cast(
+                PublicRefResolutionPayload,
+                _unresolved_ref_payload(ref, "assertion not found", normalized_ref=normalized_ref, kind="assertion"),
+            )
+        with sqlite3.connect(user_db) as conn:
+            conn.row_factory = sqlite3.Row
+            envelope = read_assertion_envelope(conn, object_ref.object_id)
+        if envelope is None:
+            return cast(
+                PublicRefResolutionPayload,
+                _unresolved_ref_payload(ref, "assertion not found", normalized_ref=normalized_ref, kind="assertion"),
+            )
+        payload = AssertionClaimPayload.from_envelope(envelope)
+        return PublicRefResolutionPayload(
+            ref=ref,
+            normalized_ref=normalized_ref,
+            kind="assertion",
+            resolved=True,
+            payload_kind="assertion-claim",
+            payload=model_json_document(payload),
+            title=payload.key or payload.kind,
+            summary=payload.body_text,
+            object_refs=(normalized_ref, payload.target_ref),
+            evidence_refs=payload.evidence_refs,
+            actions=(_resolution_action("list assertion target", f"polylogue find {payload.target_ref} then read"),),
+        )
+
+    def _resolve_runtime_object_ref(
+        self,
+        archive: Any,
+        ref: str,
+        normalized_ref: str,
+        object_ref: ObjectRef,
+    ) -> PublicRefResolutionPayload:
+        from polylogue.surfaces.payloads import PublicRefResolutionPayload
+
+        summary_offset = 0
+        while True:
+            summaries = archive.list_summaries(limit=200, offset=summary_offset)
+            if not summaries:
+                break
+            summary_offset += len(summaries)
+            for summary in summaries:
+                resolved = self._resolve_runtime_object_ref_for_summary(
+                    archive, ref, normalized_ref, object_ref, summary
+                )
+                if resolved is not None:
+                    return resolved
+            if len(summaries) < 200:
+                break
+        return cast(
+            PublicRefResolutionPayload,
+            _unresolved_ref_payload(
+                ref, f"{object_ref.kind} not found", normalized_ref=normalized_ref, kind=object_ref.kind
+            ),
+        )
+
+    def _resolve_runtime_object_ref_for_summary(
+        self,
+        archive: Any,
+        ref: str,
+        normalized_ref: str,
+        object_ref: ObjectRef,
+        summary: Any,
+    ) -> PublicRefResolutionPayload | None:
+        from polylogue.insights.transforms import compile_recovery_digest
+        from polylogue.surfaces.payloads import (
+            ContextSnapshotQueryRowPayload,
+            ObservedEventQueryRowPayload,
+            PublicRefResolutionPayload,
+            RunQueryRowPayload,
+            model_json_document,
+        )
+
+        session = _archive_session_to_session(archive.read_session(str(summary.session_id)))
+        digest = compile_recovery_digest(session)
+        if object_ref.kind == "run":
+            for run in digest.run_projection.runs:
+                if run.run_ref.format() != normalized_ref:
+                    continue
+                run_payload = RunQueryRowPayload(
+                    run_ref=run.run_ref.format(),
+                    session_id=str(summary.session_id),
+                    origin=str(summary.origin),
+                    title=summary.title,
+                    native_session_id=run.native_session_id,
+                    native_parent_session_id=run.native_parent_session_id,
+                    parent_run_ref=run.parent_run_ref.format() if run.parent_run_ref else None,
+                    agent_ref=run.agent_ref.format() if run.agent_ref else None,
+                    lineage_refs=tuple(lineage.format() for lineage in run.lineage_refs),
+                    provider_origin=run.provider_origin,
+                    harness=run.harness,
+                    role=run.role,
+                    cwd=run.cwd,
+                    git_branch=run.git_branch,
+                    status=run.status,
+                    confidence=run.confidence,
+                    transcript_ref=run.transcript_ref.format() if run.transcript_ref else None,
+                    evidence_refs=tuple(evidence.format() for evidence in run.evidence_refs),
+                    context_snapshot_ref=run.context_snapshot_ref.format() if run.context_snapshot_ref else None,
+                )
+                return PublicRefResolutionPayload(
+                    ref=ref,
+                    normalized_ref=normalized_ref,
+                    kind="run",
+                    resolved=True,
+                    payload_kind="run",
+                    payload=model_json_document(run_payload),
+                    title=summary.title,
+                    summary=f"{run_payload.role} {run_payload.status}",
+                    object_refs=(f"session:{summary.session_id}", normalized_ref),
+                    evidence_refs=run_payload.evidence_refs,
+                )
+        if object_ref.kind == "observed-event":
+            for event in digest.run_projection.events:
+                if event.event_ref.format() != normalized_ref:
+                    continue
+                event_payload = ObservedEventQueryRowPayload(
+                    event_ref=event.event_ref.format(),
+                    session_id=str(summary.session_id),
+                    origin=str(summary.origin),
+                    title=summary.title,
+                    kind=event.kind,
+                    summary=event.summary,
+                    delivery_state=event.delivery_state,
+                    subject_ref=event.subject_ref.format() if event.subject_ref else None,
+                    object_refs=tuple(item.format() for item in event.object_refs),
+                    evidence_refs=tuple(item.format() for item in event.evidence_refs),
+                )
+                return PublicRefResolutionPayload(
+                    ref=ref,
+                    normalized_ref=normalized_ref,
+                    kind="observed-event",
+                    resolved=True,
+                    payload_kind="observed-event",
+                    payload=model_json_document(event_payload),
+                    title=summary.title,
+                    summary=event_payload.summary,
+                    object_refs=(f"session:{summary.session_id}", normalized_ref, *event_payload.object_refs),
+                    evidence_refs=event_payload.evidence_refs,
+                )
+        if object_ref.kind == "context-snapshot":
+            for snapshot in digest.run_projection.context_snapshots:
+                if snapshot.snapshot_ref.format() != normalized_ref:
+                    continue
+                snapshot_payload = ContextSnapshotQueryRowPayload(
+                    snapshot_ref=snapshot.snapshot_ref.format(),
+                    session_id=str(summary.session_id),
+                    origin=str(summary.origin),
+                    title=summary.title,
+                    run_ref=snapshot.run_ref.format(),
+                    boundary=snapshot.boundary,
+                    inheritance_mode=snapshot.inheritance_mode,
+                    segment_refs=tuple(item.format() for item in snapshot.segment_refs),
+                    evidence_refs=tuple(item.format() for item in snapshot.evidence_refs),
+                    metadata=dict(snapshot.metadata),
+                )
+                return PublicRefResolutionPayload(
+                    ref=ref,
+                    normalized_ref=normalized_ref,
+                    kind="context-snapshot",
+                    resolved=True,
+                    payload_kind="context-snapshot",
+                    payload=model_json_document(snapshot_payload),
+                    title=summary.title,
+                    summary=f"{snapshot_payload.boundary} ({snapshot_payload.inheritance_mode})",
+                    object_refs=(
+                        f"session:{summary.session_id}",
+                        normalized_ref,
+                        snapshot_payload.run_ref,
+                        *snapshot_payload.segment_refs,
+                    ),
+                    evidence_refs=snapshot_payload.evidence_refs,
+                )
+        return None
 
     async def query_completions(
         self,
