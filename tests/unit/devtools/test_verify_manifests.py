@@ -139,7 +139,7 @@ def test_coverage_reference_manifest_accepts_existing_commands_and_paths(tmp_pat
         """items:
   example:
     location: tests/test_example.py (unit coverage)
-    verified_by: devtools verify-manifests
+    verified_by: devtools verify manifests
     tests:
       - tests/test_example.py
 """,
@@ -451,7 +451,7 @@ def test_test_quality_ci_gate_accepts_real_workflow(tmp_path: Path) -> None:
 
     errors = verify_manifests.check_test_quality_ci_claims(
         plans,
-        inventory=_stub_inventory("uv run devtools coverage-gate"),
+        inventory=_stub_inventory("uv run devtools verify coverage"),
     )
     assert errors == []
 

@@ -23,7 +23,7 @@ dimensions:
     last_verified: "2026-04-26"
     notes: >
       Coverage floor at 90% in pyproject.toml. Enforced by
-      devtools coverage-gate and CI.
+      devtools verify coverage and CI.
 
   flakiness:
     description: Flaky test identification and tracking
@@ -168,4 +168,4 @@ coverage_gaps:
     declared_at: "2026-05-02"
     review_after: "2026-08-01"
     issue: 590
-    next_evidence: devtools coverage-gate
+    next_evidence: devtools verify coverage

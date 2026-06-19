@@ -557,7 +557,7 @@ def _command_present_in_workflows(command: str, inventory: WorkflowInventory) ->
     """Return True if ``command`` (or its leading token) appears in any ``run:``.
 
     Substring match is sufficient — manifests declare canonical CLI commands
-    such as ``devtools coverage-gate`` or ``uv build --wheel .`` and workflows
+    such as ``devtools verify coverage`` or ``uv build --wheel .`` and workflows
     invoke them either directly or via ``uv run`` wrappers. We strip the
     optional ``uv run`` prefix so the substring still resolves.
     """
@@ -693,7 +693,7 @@ def check_test_quality_ci_claims(
         if tool:
             candidates.append(tool)
         if tool in {"pytest-cov", "coverage"}:
-            candidates.append("devtools coverage-gate")
+            candidates.append("devtools verify coverage")
         if not any(_command_present_in_workflows(candidate, wf) for candidate in candidates):
             errors.append(f"{label} ci_gate=true but no workflow run step invokes any of {candidates!r}")
     return errors

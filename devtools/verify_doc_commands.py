@@ -296,7 +296,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             for e in errors:
                 print(f"[BLOCK] {e}")
         else:
-            print(f"verify-doc-commands: {files_checked} doc files scanned, no stale commands")
+            print(f"verify doc-commands: {files_checked} doc files scanned, no stale commands")
         print()
         print(f"blocking={blocking}")
     return 1 if blocking else 0

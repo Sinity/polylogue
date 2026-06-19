@@ -30,7 +30,7 @@ devtools verify --quick
 devtools verify --lab
 devtools release build-package
 devtools render pages
-devtools verify-doc-commands
+devtools verify doc-commands
 ```
 
 Add focused commands for changed release surfaces:
@@ -86,7 +86,7 @@ Satisfied:
   gone.
 - #1818 machine-output concrete violations are closed.
 - #1841 README cockpit is landed and command examples are checked by
-  `verify-doc-commands`.
+  `verify doc-commands`.
 - #1878 benchmark convergence flake is closed.
 - #1880 has recovery digest registry, extraction, CLI read view, Python API
   facade, GitHub/check event extraction slices, and source-aligned query DSL

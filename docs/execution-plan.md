@@ -66,7 +66,7 @@ or current reference docs.
 Use focused checks while editing and a broad gate at publication boundaries.
 
 - Docs-only cleanup: `devtools render docs-surface --check`, `devtools render
-  all --check`, and `devtools verify-doc-commands` when command examples move.
+  all --check`, and `devtools verify doc-commands` when command examples move.
 - Devtools command moves: focused `tests/unit/devtools` selections, `devtools
   render devtools-reference --check`, then `devtools verify --quick`.
 - Query/route/workbench changes: focused behavior tests for the touched surface,

@@ -6,7 +6,7 @@ covering every file.
 Role: **codebase navigator**. The projection declares where each file lives
 and where it should live under planned placement rules. It is not a behavior
 evidence — it does not encode source/provider semantics, correctness contracts,
-or import-boundary enforcement. Those concerns belong to tests, verify-layering,
+or import-boundary enforcement. Those concerns belong to tests, verify layering,
 and verification-lab scenarios.
 
 Output is a first-cut projection. Cells where the rule is uncertain are
@@ -14,7 +14,7 @@ marked ``target: TBD`` with a reason. The intended workflow is:
 
     1. Run this script to produce the initial YAML.
     2. Review TBD rows and fill them in.
-    3. Use the YAML as input to ``devtools verify-topology``.
+    3. Use the YAML as input to ``devtools verify topology``.
 
 """
 

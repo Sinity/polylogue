@@ -8,8 +8,8 @@ Enforces the substrate-vs-surface import boundary: substrate packages
 not placement hygiene.
 
 Usage:
-  devtools verify-layering
-  devtools verify-layering --json
+  devtools verify layering
+  devtools verify layering --json
 """
 
 from __future__ import annotations

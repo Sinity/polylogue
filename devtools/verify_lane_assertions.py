@@ -22,7 +22,7 @@ def _load_assertion_specs() -> list[tuple[str, AssertionSpec]]:
     repo_root = _get_root()
     coverage_path = repo_root / "docs" / "plans" / "scenario-coverage.yaml"
     if not coverage_path.exists():
-        print(f"verify-lane-assertions: missing {coverage_path}", file=sys.stderr)
+        print(f"verify lane-assertions: missing {coverage_path}", file=sys.stderr)
         return []
 
     with open(coverage_path, encoding="utf-8") as fh:
@@ -61,10 +61,10 @@ def main(argv: list[str] | None = None) -> int:
             violations.append(f"  {name}: {warnings[0]}")
 
     if violations:
-        print(f"verify-lane-assertions: {len(violations)} vacuous SEMANTIC_OUTPUT lane(s):", file=sys.stderr)
+        print(f"verify lane-assertions: {len(violations)} vacuous SEMANTIC_OUTPUT lane(s):", file=sys.stderr)
         for v in violations:
             print(v, file=sys.stderr)
         return 1
 
-    print(f"verify-lane-assertions: ok ({len(specs)} lanes, 0 vacuous)", file=sys.stderr)
+    print(f"verify lane-assertions: ok ({len(specs)} lanes, 0 vacuous)", file=sys.stderr)
     return 0

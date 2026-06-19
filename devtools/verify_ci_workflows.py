@@ -321,7 +321,7 @@ def main(argv: list[str] | None = None) -> int:
             for e in all_errors:
                 print(f"[BLOCK] {e}")
         else:
-            print(f"verify-ci-workflows: {files_checked} workflow files checked, no errors")
+            print(f"verify ci-workflows: {files_checked} workflow files checked, no errors")
         for w in all_warnings:
             print(f"[warn] {w}")
         print()

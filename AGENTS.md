@@ -1107,7 +1107,7 @@ Run `devtools render all` to update the generated catalog in
 `docs/devtools.md`.
 
 **Adding any new module/file under `polylogue/`**: regenerate the topology
-projection or `verify-topology` and `render all --check` will fail on the new
+projection or `verify topology` and `render all --check` will fail on the new
 path. Run `devtools render topology-projection && devtools render topology-status`
 and commit the updated `docs/plans/topology-target.yaml` and
 `docs/topology-status.md` alongside the code.
@@ -1673,20 +1673,20 @@ These are the commands worth remembering during normal repo work:
 
 | Command | Description |
 | --- | --- |
-| `devtools coverage-gate` | Run pytest with the repository coverage floor from pyproject.toml. |
-| `devtools evidence-dashboard` | Render the pytest-first evidence dashboard or a changed-path trace. |
 | `devtools test` | Run a focused pytest selection through the managed harness. |
 | `devtools verify` | Run the local verification baseline before pushing or creating a PR. |
-| `devtools verify-ci-workflows` | Verify CI workflow files reference locally-known devtools commands and existing paths. |
-| `devtools verify-closure-matrix` | Verify docs/plans/test-closure-matrix.yaml stays grounded in the realized tree. |
-| `devtools verify-doc-commands` | Verify README/docs command examples resolve to live polylogue, polylogued, and devtools commands. |
-| `devtools verify-lane-assertions` | Verify scenario lanes classified as SEMANTIC_OUTPUT carry semantic assertions. |
-| `devtools verify-layering` | Check inter-package imports against declared layering rules from docs/plans/layering.yaml. |
-| `devtools verify-manifests` | Verify internal consistency across all docs/plans/*.yaml manifest files. |
-| `devtools verify-test-clock-hygiene` | Verify test files use the frozen_clock fixture instead of reading the host wall clock (#1300). |
-| `devtools verify-test-coverage-contracts` | Verify every production module >150 AST lines has a matching test file or exemption. |
-| `devtools verify-test-infra-currency` | Verify tests/infra/ helpers reference only tables that exist in the current SCHEMA_VERSION. |
-| `devtools verify-topology` | Verify the realized polylogue tree against the topology projection. |
+| `devtools verify ci-workflows` | Verify CI workflow files reference locally-known devtools commands and existing paths. |
+| `devtools verify closure-matrix` | Verify docs/plans/test-closure-matrix.yaml stays grounded in the realized tree. |
+| `devtools verify coverage` | Run pytest with the repository coverage floor from pyproject.toml. |
+| `devtools verify doc-commands` | Verify README/docs command examples resolve to live polylogue, polylogued, and devtools commands. |
+| `devtools verify evidence` | Render the pytest-first evidence dashboard or a changed-path trace. |
+| `devtools verify lane-assertions` | Verify scenario lanes classified as SEMANTIC_OUTPUT carry semantic assertions. |
+| `devtools verify layering` | Check inter-package imports against declared layering rules from docs/plans/layering.yaml. |
+| `devtools verify manifests` | Verify internal consistency across all docs/plans/*.yaml manifest files. |
+| `devtools verify test-clock-hygiene` | Verify test files use the frozen_clock fixture instead of reading the host wall clock (#1300). |
+| `devtools verify test-coverage-contracts` | Verify every production module >150 AST lines has a matching test file or exemption. |
+| `devtools verify test-infra-currency` | Verify tests/infra/ helpers reference only tables that exist in the current SCHEMA_VERSION. |
+| `devtools verify topology` | Verify the realized polylogue tree against the topology projection. |
 
 ### Benchmarking
 
