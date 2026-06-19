@@ -1,0 +1,348 @@
+{
+  "$defs": {
+    "ImportDetectorEvidencePayload": {
+      "additionalProperties": false,
+      "description": "One bounded detector/classifier observation for an import explain row.",
+      "properties": {
+        "check": {
+          "title": "Check",
+          "type": "string"
+        },
+        "matched": {
+          "title": "Matched",
+          "type": "boolean"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        }
+      },
+      "required": [
+        "check",
+        "matched"
+      ],
+      "title": "ImportDetectorEvidencePayload",
+      "type": "object"
+    },
+    "ImportExplainEntryPayload": {
+      "additionalProperties": false,
+      "description": "Explanation for one raw artifact or archive entry inspected by import explain.",
+      "properties": {
+        "artifact_kind": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Artifact Kind"
+        },
+        "caveats": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Caveats",
+          "type": "array"
+        },
+        "detected_origin": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detected Origin"
+        },
+        "detected_provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detected Provider"
+        },
+        "detector": {
+          "title": "Detector",
+          "type": "string"
+        },
+        "detector_evidence": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ImportDetectorEvidencePayload"
+          },
+          "title": "Detector Evidence",
+          "type": "array"
+        },
+        "normalization_warnings": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Normalization Warnings",
+          "type": "array"
+        },
+        "parser": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parser"
+        },
+        "parser_mode": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parser Mode"
+        },
+        "parser_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parser Version"
+        },
+        "produced": {
+          "$ref": "#/$defs/ImportProducedRowsPayload"
+        },
+        "provider_hint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider Hint"
+        },
+        "raw_evidence_refs": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Raw Evidence Refs",
+          "type": "array"
+        },
+        "raw_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Raw Ref"
+        },
+        "schema_resolution": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Schema Resolution"
+        },
+        "skipped": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ImportSkippedRowPayload"
+          },
+          "title": "Skipped",
+          "type": "array"
+        },
+        "source_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Path"
+        }
+      },
+      "required": [
+        "detector"
+      ],
+      "title": "ImportExplainEntryPayload",
+      "type": "object"
+    },
+    "ImportProducedRowsPayload": {
+      "additionalProperties": false,
+      "description": "Counts of archive rows that parsing a raw artifact would produce.",
+      "properties": {
+        "actions": {
+          "default": 0,
+          "title": "Actions",
+          "type": "integer"
+        },
+        "blocks": {
+          "default": 0,
+          "title": "Blocks",
+          "type": "integer"
+        },
+        "messages": {
+          "default": 0,
+          "title": "Messages",
+          "type": "integer"
+        },
+        "raw_records": {
+          "default": 0,
+          "title": "Raw Records",
+          "type": "integer"
+        },
+        "session_refs": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Session Refs",
+          "type": "array"
+        },
+        "sessions": {
+          "default": 0,
+          "title": "Sessions",
+          "type": "integer"
+        }
+      },
+      "title": "ImportProducedRowsPayload",
+      "type": "object"
+    },
+    "ImportSkippedRowPayload": {
+      "additionalProperties": false,
+      "description": "Bounded explanation for an artifact or payload skipped during import explain.",
+      "properties": {
+        "raw_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Raw Ref"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "source_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Path"
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "title": "ImportSkippedRowPayload",
+      "type": "object"
+    }
+  },
+  "$id": "https://polylogue.dev/schemas/cli-output/import-explain.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Finite explanation for `polylogue import PATH --explain --format json`: detector/parser decisions, artifact taxonomy, produced-row counts, skips, caveats, and redacted source refs.\n\nGenerated from `polylogue.surfaces.payloads.ImportExplainPayload` by `devtools render cli-output-schemas`. Do not edit by hand.",
+  "properties": {
+    "caveats": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Caveats",
+      "type": "array"
+    },
+    "entries": {
+      "items": {
+        "$ref": "#/$defs/ImportExplainEntryPayload"
+      },
+      "title": "Entries",
+      "type": "array"
+    },
+    "mode": {
+      "const": "import-explain",
+      "default": "import-explain",
+      "title": "Mode",
+      "type": "string"
+    },
+    "produced": {
+      "$ref": "#/$defs/ImportProducedRowsPayload"
+    },
+    "skipped": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ImportSkippedRowPayload"
+      },
+      "title": "Skipped",
+      "type": "array"
+    },
+    "source_path": {
+      "title": "Source Path",
+      "type": "string"
+    }
+  },
+  "required": [
+    "source_path",
+    "entries",
+    "produced"
+  ],
+  "title": "Import Explain Payload",
+  "type": "object",
+  "x-polylogue-cli-surfaces": [
+    "polylogue import PATH --explain --format json",
+    "polylogue import PATH --explain --format ndjson (entries)"
+  ],
+  "x-polylogue-source-model": "ImportExplainPayload"
+}

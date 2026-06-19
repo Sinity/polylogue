@@ -36,6 +36,8 @@ from polylogue.cli.shared.helpers import fail
 from polylogue.cli.shared.types import AppEnv
 from polylogue.operations.import_contracts import ImportOperation
 from polylogue.paths import archive_root
+from polylogue.sources.import_explain import explain_import_path
+from polylogue.surfaces.payloads import model_json_document
 
 _DEFAULT_DAEMON_URL = "http://127.0.0.1:8766"
 
@@ -138,12 +140,28 @@ def _daemon_http_error_message(exc: HTTPError, *, daemon_url: str, staged: Path)
     show_default=True,
     help="Daemon API URL.",
 )
+@click.option(
+    "--explain",
+    is_flag=True,
+    help="Explain detector/parser decisions without scheduling daemon import.",
+)
+@click.option(
+    "--format",
+    "-f",
+    "output_format",
+    type=click.Choice(["json", "ndjson"]),
+    default="json",
+    show_default=True,
+    help="Machine-readable output format for --explain.",
+)
 @click.pass_obj
 def import_command(
     env: AppEnv,
     path: Path | None,
     demo: bool,
     daemon_url: str,
+    explain: bool,
+    output_format: str,
 ) -> None:
     """Schedule a file or directory for import by the running daemon.
 
@@ -154,6 +172,19 @@ def import_command(
     actionable error. It never reports success without observable
     processing.
     """
+    if explain:
+        if demo:
+            fail("import", "--explain requires a source PATH; --demo materializes and schedules generated fixtures.")
+        if path is None:
+            fail("import", "Provide a source PATH to explain.")
+        payload = explain_import_path(path)
+        if output_format == "ndjson":
+            for entry in payload.entries:
+                click.echo(json.dumps(model_json_document(entry, exclude_none=True), sort_keys=True))
+            return
+        click.echo(payload.to_json(exclude_none=True))
+        return
+
     if demo:
         if path is not None:
             fail("import", "Use either PATH or --demo, not both.")

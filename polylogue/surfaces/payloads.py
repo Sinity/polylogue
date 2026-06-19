@@ -117,6 +117,66 @@ class MachineSuccessPayload(SurfacePayloadModel):
         }
 
 
+class ImportDetectorEvidencePayload(SurfacePayloadModel):
+    """One bounded detector/classifier observation for an import explain row."""
+
+    check: str
+    matched: bool
+    reason: str | None = None
+
+
+class ImportProducedRowsPayload(SurfacePayloadModel):
+    """Counts of archive rows that parsing a raw artifact would produce."""
+
+    sessions: int = 0
+    messages: int = 0
+    blocks: int = 0
+    actions: int = 0
+    raw_records: int = 0
+    session_refs: tuple[str, ...] = ()
+
+
+class ImportSkippedRowPayload(SurfacePayloadModel):
+    """Bounded explanation for an artifact or payload skipped during import explain."""
+
+    reason: str
+    source_path: str | None = None
+    raw_ref: str | None = None
+
+
+class ImportExplainEntryPayload(SurfacePayloadModel):
+    """Explanation for one raw artifact or archive entry inspected by import explain."""
+
+    raw_ref: str | None = None
+    source_path: str | None = None
+    artifact_kind: str | None = None
+    provider_hint: str | None = None
+    detected_origin: str | None = None
+    detected_provider: str | None = None
+    detector: str
+    detector_evidence: tuple[ImportDetectorEvidencePayload, ...] = ()
+    parser: str | None = None
+    parser_version: str | None = None
+    parser_mode: str | None = None
+    schema_resolution: str | None = None
+    produced: ImportProducedRowsPayload = Field(default_factory=ImportProducedRowsPayload)
+    skipped: tuple[ImportSkippedRowPayload, ...] = ()
+    caveats: tuple[str, ...] = ()
+    raw_evidence_refs: tuple[str, ...] = ()
+    normalization_warnings: tuple[str, ...] = ()
+
+
+class ImportExplainPayload(SurfacePayloadModel):
+    """Finite machine-readable explanation for `polylogue import --explain`."""
+
+    mode: Literal["import-explain"] = "import-explain"
+    source_path: str
+    entries: tuple[ImportExplainEntryPayload, ...]
+    produced: ImportProducedRowsPayload
+    skipped: tuple[ImportSkippedRowPayload, ...] = ()
+    caveats: tuple[str, ...] = ()
+
+
 def normalize_role(role: object) -> str:
     if not role:
         return "unknown"
@@ -1901,6 +1961,11 @@ __all__ = [
     "FacetBucketsPayload",
     "FacetTimeRange",
     "FacetsResponse",
+    "ImportDetectorEvidencePayload",
+    "ImportExplainEntryPayload",
+    "ImportExplainPayload",
+    "ImportProducedRowsPayload",
+    "ImportSkippedRowPayload",
     "MachineErrorPayload",
     "MachineErrorEnvelope",
     "MachineSuccessEnvelope",
