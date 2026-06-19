@@ -86,6 +86,14 @@ class _ParameterizedGetRoute:
     passes_params: bool = False
 
 
+@dataclass(frozen=True)
+class _StaticPostRoute:
+    pattern: str
+    segments: tuple[str, ...]
+    handler_name: str
+    passes_path: bool = False
+
+
 def _static_get_routes() -> tuple[_StaticGetRoute, ...]:
     return (
         _StaticGetRoute("/api/health/check", ("api", "health", "check"), "_handle_health_check"),
@@ -185,6 +193,23 @@ def _parameterized_get_routes() -> tuple[_ParameterizedGetRoute, ...]:
     )
 
 
+def _observability_post_routes() -> tuple[_StaticPostRoute, ...]:
+    return (
+        _StaticPostRoute("/v1/traces", ("v1", "traces"), "_handle_otlp_post", passes_path=True),
+        _StaticPostRoute("/v1/metrics", ("v1", "metrics"), "_handle_otlp_post", passes_path=True),
+        _StaticPostRoute("/v1/logs", ("v1", "logs"), "_handle_otlp_post", passes_path=True),
+    )
+
+
+def _authenticated_post_routes() -> tuple[_StaticPostRoute, ...]:
+    return (
+        _StaticPostRoute("/api/reset", ("api", "reset"), "_handle_reset"),
+        _StaticPostRoute("/api/ingest", ("api", "ingest"), "_handle_ingest"),
+        _StaticPostRoute("/api/maintenance/plan", ("api", "maintenance", "plan"), "_handle_maintenance_plan"),
+        _StaticPostRoute("/api/maintenance/run", ("api", "maintenance", "run"), "_handle_maintenance_run"),
+    )
+
+
 def implemented_daemon_route_patterns() -> tuple[tuple[RouteMethod, str], ...]:
     """Return route patterns implemented by daemon HTTP dispatch."""
 
@@ -197,16 +222,11 @@ def implemented_daemon_route_patterns() -> tuple[tuple[RouteMethod, str], ...]:
         ("GET", "/healthz/live"),
         ("GET", "/healthz/ready"),
         ("GET", "/metrics"),
-        ("POST", "/v1/traces"),
-        ("POST", "/v1/metrics"),
-        ("POST", "/v1/logs"),
-        ("POST", "/api/reset"),
-        ("POST", "/api/ingest"),
-        ("POST", "/api/maintenance/plan"),
-        ("POST", "/api/maintenance/run"),
     ]
     routes.extend(("GET", route.pattern) for route in _static_get_routes())
     routes.extend(("GET", route.pattern) for route in _parameterized_get_routes())
+    routes.extend(("POST", route.pattern) for route in _observability_post_routes())
+    routes.extend(("POST", route.pattern) for route in _authenticated_post_routes())
     routes.extend(user_state_http.user_state_route_patterns())
     return tuple(routes)
 
@@ -1076,7 +1096,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         # the daemon is bound non-loopback we still require the
         # configured auth token — OTLP exporters that DO carry
         # credentials are the only safe non-loopback case.
-        if path == ["v1", "traces"] or path == ["v1", "metrics"] or path == ["v1", "logs"]:
+        observability_route = next(
+            (route for route in _observability_post_routes() if tuple(path) == route.segments), None
+        )
+        if observability_route is not None:
             from polylogue.config import load_polylogue_config
 
             if not load_polylogue_config().observability_enabled:
@@ -1084,7 +1107,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 return
             if not is_loopback_host(self._api_host) and not self._check_auth():
                 return
-            self._handle_otlp_post(path)
+            handler = cast(Callable[..., None], getattr(self, observability_route.handler_name))
+            if observability_route.passes_path:
+                handler(path)
+            else:
+                handler()
             return
 
         if not self._check_auth():
@@ -1092,17 +1119,15 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if not self._check_cross_origin():
             return
 
-        if path == ["api", "reset"]:
-            self._handle_reset()
-            return
-        if path == ["api", "ingest"]:
-            self._handle_ingest()
-            return
-        if path == ["api", "maintenance", "plan"]:
-            self._handle_maintenance_plan()
-            return
-        if path == ["api", "maintenance", "run"]:
-            self._handle_maintenance_run()
+        authenticated_route = next(
+            (route for route in _authenticated_post_routes() if tuple(path) == route.segments), None
+        )
+        if authenticated_route is not None:
+            handler = cast(Callable[..., None], getattr(self, authenticated_route.handler_name))
+            if authenticated_route.passes_path:
+                handler(path)
+            else:
+                handler()
             return
         if path[:2] == ["api", "user"] and user_state_http.dispatch_post(self, path[2:]):
             return

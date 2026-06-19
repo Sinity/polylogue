@@ -17,6 +17,12 @@ from tests.unit.daemon.test_daemon_http_security import (
 )
 
 
+def _implemented_route_set() -> set[tuple[str, str]]:
+    routes = implemented_daemon_route_patterns()
+    assert len(routes) == len(set(routes))
+    return set(routes)
+
+
 def test_route_contract_patterns_are_unique_per_method() -> None:
     """One method/pattern pair has exactly one contract owner."""
 
@@ -28,7 +34,7 @@ def test_implemented_daemon_routes_have_contract_metadata() -> None:
     """Every implemented daemon route must declare kind, auth, and payload posture."""
 
     declared = {(route.method, route.pattern) for route in ROUTE_CONTRACTS}
-    implemented = set(implemented_daemon_route_patterns())
+    implemented = _implemented_route_set()
     assert implemented - declared == set()
 
 
@@ -36,7 +42,7 @@ def test_route_contract_metadata_targets_live_daemon_routes() -> None:
     """Route contracts should describe actual dispatcher routes, not stale docs."""
 
     declared = {(route.method, route.pattern) for route in ROUTE_CONTRACTS}
-    implemented = set(implemented_daemon_route_patterns())
+    implemented = _implemented_route_set()
     assert declared - implemented == set()
 
 
