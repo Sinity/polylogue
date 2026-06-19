@@ -104,41 +104,30 @@ def register_context_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         """
 
         async def run() -> str:
-            from datetime import datetime, timezone
-
-            from polylogue.surfaces.payloads import (
-                ContextPreamble,
-                ContextPreambleProjectState,
-                ContextPreambleSession,
-            )
+            from polylogue.context.preamble import build_context_preamble_payload
+            from polylogue.surfaces.payloads import ContextPreamble, ContextPreambleProjectState
 
             poly = hooks.get_polylogue()
+            preamble = await build_context_preamble_payload(
+                poly,
+                session_id="",
+                related_limit=hooks.clamp_limit(limit),
+                repo_path=repo_path,
+                cwd=cwd,
+                recent_files=recent_files,
+                source_tool_calls={"compose_context_preamble": "polylogue-mcp"},
+                require_session=False,
+            )
 
-            # Recent related sessions from resume candidates.
-            recent: list[ContextPreambleSession] = []
-            try:
-                candidates = await poly.find_resume_candidates(
-                    repo_path=repo_path or ".",
-                    cwd=cwd,
-                    recent_files=recent_files,
-                    limit=hooks.clamp_limit(limit),
+            # ``compose_context_preamble`` for SessionStart may run before a
+            # seed session exists. Keep the project/recent-session behavior
+            # useful by returning an empty payload enriched with git state.
+            if preamble is None:
+                preamble = ContextPreamble(
+                    preamble_version="1.0",
+                    source_tool_calls={"compose_context_preamble": "polylogue-mcp"},
                 )
-                for c in candidates:
-                    cid: str = getattr(c, "logical_session_id", None) or getattr(c, "session_id", "") or "?"
-                    recent.append(
-                        ContextPreambleSession(
-                            session_id=cid,
-                            title=getattr(c, "title", None),
-                            date=getattr(c, "date", None),
-                            terminal_state=getattr(c, "terminal_state", None),
-                            summary=getattr(c, "summary", None),
-                            origin=getattr(c, "origin", None),
-                        )
-                    )
-            except Exception:
-                pass
 
-            # Project state from git.
             project: ContextPreambleProjectState | None = None
             try:
                 import subprocess
@@ -168,13 +157,10 @@ def register_context_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             except Exception:
                 pass
 
-            preamble = ContextPreamble(
-                preamble_version="1.0",
-                injected_at=datetime.now(timezone.utc).isoformat(),
-                source_tool_calls={"compose_context_preamble": "polylogue-mcp"},
-                recent_related_sessions=recent,
-                project_state=project,
-            )
+            if project is not None:
+                payload = preamble.model_dump(mode="json", exclude_none=True)
+                payload["project_state"] = project.model_dump(mode="json", exclude_none=True)
+                preamble = ContextPreamble.model_validate(payload)
             return hooks.json_payload(preamble, exclude_none=True)
 
         return await hooks.async_safe_call("compose_context_preamble", run)

@@ -388,17 +388,17 @@
     "archive_facade_routes": {
       "checked": true,
       "source": "static_facade_route_catalog",
-      "total_method_count": 114,
-      "archive_ready_method_count": 113,
+      "total_method_count": 115,
+      "archive_ready_method_count": 114,
       "unsupported_method_count": 0,
       "route_counts": {
-        "archive_routed": 99,
+        "archive_routed": 100,
         "archive_direct": 14,
         "not_archive_runtime": 1
       },
       "tier_counts": {
         "user": 36,
-        "index": 74,
+        "index": 75,
         "none": 1,
         "source": 3
       },
@@ -458,6 +458,11 @@
           "route": "archive_routed",
           "tier": "index",
           "detail": "builds context-pack DTOs from archive-routed reads"
+        },
+        "context_preamble_payload": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "builds context preamble DTOs from archive-routed reads"
         },
         "cost_outlook": {
           "route": "archive_routed",
@@ -1037,7 +1042,7 @@
       ],
       "facade_tier_route_counts": {
         "user": 36,
-        "index": 74,
+        "index": 75,
         "none": 1,
         "source": 3
       },

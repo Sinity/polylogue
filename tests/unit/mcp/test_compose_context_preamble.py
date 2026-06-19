@@ -409,6 +409,35 @@ class TestContextPreambleModel:
         data = json.loads(preamble.model_dump_json(exclude_none=True))
         assert data["guidance"] == "Focus on #1721 test coverage gaps."
 
+    def test_preamble_with_structured_guidance_and_repo_state(self) -> None:
+        """ContextPreamble carries structured assertion guidance across surfaces."""
+        from polylogue.surfaces.payloads import (
+            ContextPreamble,
+            ContextPreambleAssertionGuidance,
+            ContextPreambleGuidance,
+            ContextPreambleProjectState,
+        )
+
+        preamble = ContextPreamble(
+            preamble_version="1.0",
+            project_state=ContextPreambleProjectState(repo="https://github.com/Sinity/polylogue", branch="master"),
+            guidance=ContextPreambleGuidance(
+                assertions=[
+                    ContextPreambleAssertionGuidance(
+                        kind="decision",
+                        text="Use the shared context-preamble builder.",
+                        target_ref="session:target",
+                        scope_ref="repo:polylogue",
+                        evidence_refs=["target::m1"],
+                    )
+                ]
+            ),
+        )
+
+        data = json.loads(preamble.model_dump_json(exclude_none=True))
+        assert data["project_state"]["repo"] == "https://github.com/Sinity/polylogue"
+        assert data["guidance"]["assertions"][0]["kind"] == "decision"
+
     def test_preamble_default_construction(self) -> None:
         """Default ContextPreamble has sensible empty values."""
         from polylogue.surfaces.payloads import ContextPreamble

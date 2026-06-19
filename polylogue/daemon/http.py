@@ -2628,7 +2628,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         view = (self._get_param(params, "view", "messages") or "messages").strip().lower()
         output_format = (self._get_param(params, "format", "json") or "json").strip().lower()
-        if view not in {"messages", "recovery", "raw", "context-pack"}:
+        if view not in {"messages", "recovery", "raw", "context", "context-pack"}:
             self._send_error(HTTPStatus.BAD_REQUEST, "unsupported_read_view")
             return
         if output_format != "json" and not (view == "recovery" and output_format == "markdown"):
@@ -2661,6 +2661,21 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 return await self._do_get_session_recovery(poly, conv_id, report, output_format)
 
             payload = self._sync_run(_get)
+        elif view == "context":
+            if output_format != "json":
+                self._send_error(HTTPStatus.BAD_REQUEST, "invalid_format")
+                return
+
+            async def _get_context(poly: Polylogue) -> dict[str, object] | None:
+                context_payload = await poly.context_preamble_payload(
+                    conv_id,
+                    related_limit=self._get_int(params, "related_limit", 5),
+                )
+                if context_payload is None:
+                    return None
+                return dict(context_payload.model_dump(mode="json", exclude_none=True))
+
+            payload = self._sync_run(_get_context)
         elif view == "context-pack":
             if output_format != "json":
                 self._send_error(HTTPStatus.BAD_REQUEST, "invalid_format")

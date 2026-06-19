@@ -1497,7 +1497,7 @@ class TestReaderViewProfiles:
         assert profiles["recovery"]["successor_handoff"] is True
         assert "markdown" in profiles["recovery"]["formats"]
 
-    def test_read_view_execution_route_returns_messages_recovery_raw_and_context_pack(
+    def test_read_view_execution_route_returns_messages_recovery_raw_context_and_context_pack(
         self,
         workspace_env: dict[str, Path],
     ) -> None:
@@ -1511,6 +1511,7 @@ class TestReaderViewProfiles:
                 _get_json(base_url, f"/api/sessions/{C1}/read?view=recovery&report=work-packet"),
             )
             raw = cast(dict[str, object], _get_json(base_url, f"/api/sessions/{C1}/read?view=raw"))
+            context = cast(dict[str, object], _get_json(base_url, f"/api/sessions/{C1}/read?view=context"))
             context_pack = cast(
                 dict[str, object],
                 _get_json(base_url, f"/api/sessions/{C1}/read?view=context-pack&max_messages=5"),
@@ -1525,6 +1526,9 @@ class TestReaderViewProfiles:
         assert raw["view"] == "raw"
         raw_payload = cast(dict[str, object], raw["payload"])
         assert raw_payload["id"] == C1
+        assert context["view"] == "context"
+        context_payload = cast(dict[str, object], context["payload"])
+        assert context_payload["preamble_version"] == "1.0"
         assert context_pack["view"] == "context-pack"
         context_payload = cast(dict[str, object], context_pack["payload"])
         assert context_payload["total_sessions"] == 1
@@ -1535,7 +1539,7 @@ class TestReaderViewProfiles:
 
     def test_read_view_execution_rejects_unknown_view_or_format(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env) as (_, base_url):
-            view_status, view_payload = _get_json_ex(base_url, f"/api/sessions/{C1}/read?view=context")
+            view_status, view_payload = _get_json_ex(base_url, f"/api/sessions/{C1}/read?view=neighbors")
             format_status, format_payload = _get_json_ex(base_url, f"/api/sessions/{C1}/read?view=messages&format=html")
 
         assert view_status == 400
