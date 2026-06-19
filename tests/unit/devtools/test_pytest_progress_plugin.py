@@ -12,14 +12,16 @@ from devtools import pytest_progress_plugin
 
 @pytest.fixture(autouse=True)
 def _restore_plugin_state() -> Iterator[None]:
-    selected_nodeids = list(pytest_progress_plugin._SELECTED_NODEIDS)
-    deselected_nodeids = list(pytest_progress_plugin._DESELECTED_NODEIDS)
+    selected_count = pytest_progress_plugin._SELECTED_COUNT
+    deselected_count = pytest_progress_plugin._DESELECTED_COUNT
+    deselected_nodeids = list(pytest_progress_plugin._DESELECTED_NODEIDS_SAMPLE)
     slowest_reports = list(pytest_progress_plugin._SLOWEST_REPORTS)
     collection_started_at = pytest_progress_plugin._COLLECTION_STARTED_AT
     collection_duration_s = pytest_progress_plugin._COLLECTION_DURATION_S
     yield
-    pytest_progress_plugin._SELECTED_NODEIDS[:] = selected_nodeids
-    pytest_progress_plugin._DESELECTED_NODEIDS[:] = deselected_nodeids
+    pytest_progress_plugin._SELECTED_COUNT = selected_count
+    pytest_progress_plugin._DESELECTED_COUNT = deselected_count
+    pytest_progress_plugin._DESELECTED_NODEIDS_SAMPLE[:] = deselected_nodeids
     pytest_progress_plugin._SLOWEST_REPORTS[:] = slowest_reports
     pytest_progress_plugin._COLLECTION_STARTED_AT = collection_started_at
     pytest_progress_plugin._COLLECTION_DURATION_S = collection_duration_s
@@ -120,7 +122,7 @@ def test_progress_plugin_records_final_selected_nodes(
     selection_path = tmp_path / "selection.json"
     monkeypatch.setenv("POLYLOGUE_PYTEST_EVENTS_PATH", str(events_path))
     monkeypatch.setenv("POLYLOGUE_PYTEST_SELECTION_PATH", str(selection_path))
-    pytest_progress_plugin._DESELECTED_NODEIDS.clear()
+    pytest_progress_plugin.pytest_sessionstart(object())
 
     pytest_progress_plugin.pytest_deselected([_Item("tests/a.py::test_skip")])
     pytest_progress_plugin.pytest_collection_modifyitems(
@@ -134,9 +136,47 @@ def test_progress_plugin_records_final_selected_nodes(
     assert selection["deselected_count"] == 1
     assert selection["selected_nodeids"] == ["tests/a.py::test_keep"]
     assert selection["deselected_nodeids"] == ["tests/a.py::test_skip"]
+    assert selection["selected_nodeids_omitted"] == 0
+    assert selection["deselected_nodeids_omitted"] == 0
     events = [json.loads(line) for line in events_path.read_text().splitlines()]
     assert events[-1]["event"] == "collection_finished"
     assert events[-1]["selected_count"] == 1
+
+
+def test_progress_plugin_bounds_selection_nodeid_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selection_path = tmp_path / "selection.json"
+    monkeypatch.setenv("POLYLOGUE_PYTEST_SELECTION_PATH", str(selection_path))
+    monkeypatch.setenv("POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT", "2")
+    pytest_progress_plugin.pytest_sessionstart(object())
+
+    pytest_progress_plugin.pytest_deselected(
+        [
+            _Item("tests/a.py::test_skip_1"),
+            _Item("tests/a.py::test_skip_2"),
+            _Item("tests/a.py::test_skip_3"),
+        ]
+    )
+    pytest_progress_plugin.pytest_collection_modifyitems(
+        _Session(["unused"]),
+        object(),
+        [
+            _Item("tests/a.py::test_keep_1"),
+            _Item("tests/a.py::test_keep_2"),
+            _Item("tests/a.py::test_keep_3"),
+        ],
+    )
+
+    selection = json.loads(selection_path.read_text())
+    assert selection["selected_count"] == 3
+    assert selection["deselected_count"] == 3
+    assert selection["selected_nodeids"] == ["tests/a.py::test_keep_1", "tests/a.py::test_keep_2"]
+    assert selection["deselected_nodeids"] == ["tests/a.py::test_skip_1", "tests/a.py::test_skip_2"]
+    assert selection["selected_nodeids_omitted"] == 1
+    assert selection["deselected_nodeids_omitted"] == 1
+    assert selection["nodeid_sample_limit"] == 2
 
 
 def test_progress_plugin_records_collection_duration_and_summary(
