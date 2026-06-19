@@ -474,6 +474,19 @@ class TestBooleanQueryExpression:
         assert source.limit == 2
         assert source.offset == 3
 
+    def test_terminal_source_pipeline_limit_offset_and_sort_are_parsed(self) -> None:
+        source = parse_unit_source_expression("messages where role:assistant | sort by time desc | limit 2 | offset 3")
+
+        assert source is not None
+        assert source.unit == "message"
+        assert source.session_predicate is None
+        assert source.limit == 2
+        assert source.offset == 3
+        assert source.sort is not None
+        assert source.sort.field == "time"
+        assert source.sort.direction == "desc"
+        assert source.predicate == QueryFieldPredicate(field="role", values=("assistant",))
+
     def test_pipeline_sort_stage_is_parsed(self) -> None:
         source = parse_unit_source_expression(
             "sessions where repo:polylogue | messages where role:assistant | sort by time desc"
@@ -499,6 +512,13 @@ class TestBooleanQueryExpression:
     def test_pipeline_rejects_unlowered_session_stage_predicates(self) -> None:
         with pytest.raises(ExpressionCompileError, match="FTS, semantic, exists, lineage, and sequence"):
             parse_unit_source_expression('sessions where ~"timeout" | messages where role:assistant')
+
+    def test_compile_expression_rejects_terminal_pipelines_as_session_selector(self) -> None:
+        with pytest.raises(ExpressionCompileError, match="pipeline unit queries return terminal rows"):
+            compile_expression("messages where role:assistant | limit 10")
+
+        with pytest.raises(ExpressionCompileError, match="pipeline unit queries return terminal rows"):
+            compile_expression("sessions where repo:polylogue | messages where role:assistant")
 
     def test_assertion_source_where_lowers_to_structural_exists(self) -> None:
         ast = parse_expression_ast("assertions where kind:decision AND text:review")
@@ -1062,6 +1082,40 @@ class TestBooleanQueryExpression:
         assert isinstance(next_row, MessageQueryRowPayload)
         assert next_row.message_id == "claude-code-session:ext-hit:m-3"
         assert next_row.text == "third"
+
+    def test_terminal_source_pipeline_sort_desc_executes_before_limit(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        from polylogue.archive.query.unit_results import query_unit_rows
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "hit")
+            .provider("claude-code")
+            .git_repository_url("polylogue")
+            .title("direct pipeline sorted")
+            .add_message("m-old", role="assistant", text="old", timestamp="2026-01-01T00:00:00+00:00")
+            .add_message("m-new", role="assistant", text="new", timestamp="2026-01-02T00:00:00+00:00")
+            .save()
+        )
+
+        source = parse_unit_source_expression("messages where role:assistant | sort by time desc | limit 1")
+        assert source is not None
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            envelope = query_unit_rows(archive, source, query="direct-pipeline-sort", limit=20)
+
+        assert envelope.limit == 1
+        assert envelope.next_offset == 1
+        assert len(envelope.items) == 1
+        row = envelope.items[0]
+        from polylogue.surfaces.payloads import MessageQueryRowPayload
+
+        assert isinstance(row, MessageQueryRowPayload)
+        assert row.message_id == "claude-code-session:ext-hit:m-new"
+        assert row.text == "new"
 
     def test_session_to_message_pipeline_sort_desc_executes_before_limit(
         self,

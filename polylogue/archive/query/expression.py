@@ -1198,31 +1198,66 @@ def _apply_pipeline_stage(source: QueryUnitSource, stage: str) -> QueryUnitSourc
     )
 
 
+def _parse_plain_unit_source_expression(expression: str) -> QueryUnitSource | None:
+    lower = expression.lower()
+    source_match: tuple[str, QueryUnitName, str] | None = None
+    for source, unit in terminal_query_source_pairs():
+        marker = f"{source} where"
+        if lower == marker:
+            source_match = (marker, unit, "")
+            break
+        if lower.startswith(marker) and lower[len(marker)].isspace():
+            source_match = (marker, unit, expression[len(marker) :].strip())
+            break
+    if source_match is None:
+        return None
+    _marker, unit, inner = source_match
+    if not inner:
+        raise ExpressionCompileError(f"{unit}s where requires a predicate", field=None)
+    transformed = _transform_boolean_predicate(inner)
+    _validate_predicate_context(transformed, unit=unit)
+    return QueryUnitSource(unit=unit, predicate=transformed)
+
+
 def _parse_pipeline_unit_source(expression: str) -> QueryUnitSource | None:
     stages = _split_pipeline_stages(expression)
     if not stages:
         return None
     if len(stages) < 2:
         return None
-    session_stage, terminal_stage, *tail_stages = stages
-    session_predicate = _session_source_predicate(session_stage)
-    terminal_source = parse_unit_source_expression(terminal_stage)
-    if terminal_source is None:
-        raise ExpressionCompileError(
-            "pipeline terminal stage must be an executable `<unit>s where ...` query",
-            field=None,
+
+    first_stage, second_stage, *remaining_stages = stages
+    first_lower = first_stage.lower()
+    if first_lower.startswith("sessions where"):
+        session_predicate = _session_source_predicate(first_stage)
+        terminal_source = _parse_plain_unit_source_expression(second_stage)
+        if terminal_source is None:
+            raise ExpressionCompileError(
+                "pipeline terminal stage must be an executable `<unit>s where ...` query",
+                field=None,
+            )
+        scoped_session_predicate = _scope_session_predicate(session_predicate)
+        combined = QueryBoolPredicate("and", (scoped_session_predicate, terminal_source.predicate))
+        _validate_predicate_context(combined, unit=terminal_source.unit)
+        source = QueryUnitSource(
+            unit=terminal_source.unit,
+            predicate=combined,
+            session_predicate=session_predicate,
+            limit=terminal_source.limit,
+            offset=terminal_source.offset,
+            sort=terminal_source.sort,
         )
-    scoped_session_predicate = _scope_session_predicate(session_predicate)
-    combined = QueryBoolPredicate("and", (scoped_session_predicate, terminal_source.predicate))
-    _validate_predicate_context(combined, unit=terminal_source.unit)
-    source = QueryUnitSource(
-        unit=terminal_source.unit,
-        predicate=combined,
-        session_predicate=session_predicate,
-        limit=terminal_source.limit,
-        offset=terminal_source.offset,
-        sort=terminal_source.sort,
-    )
+        tail_stages = tuple(remaining_stages)
+    else:
+        direct_source = _parse_plain_unit_source_expression(first_stage)
+        if direct_source is None:
+            raise ExpressionCompileError(
+                "pipeline queries must start with `sessions where ...` or an executable `<unit>s where ...` query",
+                field=None,
+            )
+        source = direct_source
+        tail_stages = (second_stage, *remaining_stages)
+
     for stage in tail_stages:
         source = _apply_pipeline_stage(source, stage)
     return source
@@ -1240,24 +1275,7 @@ def parse_unit_source_expression(expression: str) -> QueryUnitSource | None:
     pipeline_source = _parse_pipeline_unit_source(stripped)
     if pipeline_source is not None:
         return pipeline_source
-    lower = stripped.lower()
-    source_match: tuple[str, QueryUnitName, str] | None = None
-    for source, unit in terminal_query_source_pairs():
-        marker = f"{source} where"
-        if lower == marker:
-            source_match = (marker, unit, "")
-            break
-        if lower.startswith(marker) and lower[len(marker)].isspace():
-            source_match = (marker, unit, stripped[len(marker) :].strip())
-            break
-    if source_match is None:
-        return None
-    _marker, unit, inner = source_match
-    if not inner:
-        raise ExpressionCompileError(f"{unit}s where requires a predicate", field=None)
-    transformed = _transform_boolean_predicate(inner)
-    _validate_predicate_context(transformed, unit=unit)
-    return QueryUnitSource(unit=unit, predicate=transformed)
+    return _parse_plain_unit_source_expression(stripped)
 
 
 def _terminal_only_unit_source_error(unit: QueryUnitName) -> ExpressionCompileError:
@@ -1274,6 +1292,16 @@ def _parse_source_where_predicate(expression: str) -> QueryExistsPredicate | Non
     source = parse_unit_source_expression(expression)
     if source is None:
         return None
+    if (
+        source.session_predicate is not None
+        or source.limit is not None
+        or source.offset is not None
+        or source.sort is not None
+    ):
+        raise ExpressionCompileError(
+            "pipeline unit queries return terminal rows; use query_units / /api/query-units or a CLI terminal-unit query",
+            field=None,
+        )
     if source.unit in {"run", "observed-event", "context-snapshot"}:
         raise _terminal_only_unit_source_error(source.unit)
     return QueryExistsPredicate(unit=cast(Any, source.unit), child=source.predicate)
