@@ -1424,6 +1424,54 @@ class TestReaderQueryUnits:
         assert items[0]["status"] == "completed"
         assert items[0]["agent_ref"] == "agent:codex/Explore"
 
+    def test_query_units_endpoint_returns_observed_event_rows(self, workspace_env: dict[str, Path]) -> None:
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "daemon-event")
+            .provider("codex")
+            .git_repository_url("polylogue")
+            .title("Daemon observed event query")
+            .add_message("m-event", role="user", text="Daemon observed event seed")
+            .save()
+        )
+
+        expression = quote("observed-events where session.repo:polylogue AND kind:session_started")
+        with _running_server(workspace_env) as (_, base_url):
+            payload = cast(dict[str, object], _get_json(base_url, f"/api/query-units?expression={expression}"))
+
+        assert payload["unit"] == "observed-event"
+        items = cast(list[dict[str, object]], payload["items"])
+        assert len(items) == 1
+        assert items[0]["unit"] == "observed-event"
+        assert items[0]["session_id"] == "codex-session:ext-daemon-event"
+        assert items[0]["kind"] == "session_started"
+
+    def test_query_units_endpoint_returns_context_snapshot_rows(self, workspace_env: dict[str, Path]) -> None:
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "daemon-context")
+            .provider("codex")
+            .git_repository_url("polylogue")
+            .title("Daemon context query")
+            .add_message("m-context", role="user", text="Daemon context snapshot seed")
+            .save()
+        )
+
+        expression = quote("context-snapshots where session.repo:polylogue AND boundary:session_start AND text:context")
+        with _running_server(workspace_env) as (_, base_url):
+            payload = cast(dict[str, object], _get_json(base_url, f"/api/query-units?expression={expression}"))
+
+        assert payload["unit"] == "context-snapshot"
+        items = cast(list[dict[str, object]], payload["items"])
+        assert len(items) == 1
+        assert items[0]["unit"] == "context-snapshot"
+        assert items[0]["session_id"] == "codex-session:ext-daemon-context"
+        assert items[0]["boundary"] == "session_start"
+
     def test_query_units_endpoint_rejects_session_expression(self, workspace_env: dict[str, Path]) -> None:
         expression = quote("repo:polylogue")
         with _running_server(workspace_env) as (_, base_url):
@@ -1431,7 +1479,7 @@ class TestReaderQueryUnits:
 
         assert status == 400
         assert payload["error"] == "invalid_query"
-        assert "messages/actions/blocks/assertions/runs" in str(payload["message"])
+        assert "messages/actions/blocks/assertions/runs/observed-events/context-snapshots" in str(payload["message"])
 
 
 class TestReaderViewProfiles:
