@@ -388,17 +388,17 @@
     "archive_facade_routes": {
       "checked": true,
       "source": "static_facade_route_catalog",
-      "total_method_count": 118,
-      "archive_ready_method_count": 117,
+      "total_method_count": 119,
+      "archive_ready_method_count": 118,
       "unsupported_method_count": 0,
       "route_counts": {
-        "archive_routed": 103,
+        "archive_routed": 104,
         "archive_direct": 14,
         "not_archive_runtime": 1
       },
       "tier_counts": {
         "user": 36,
-        "index": 78,
+        "index": 79,
         "none": 1,
         "source": 3
       },
@@ -453,6 +453,11 @@
           "route": "not_archive_runtime",
           "tier": "none",
           "detail": "resource lifecycle method"
+        },
+        "compile_context": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "compiles bounded context images from archive reads"
         },
         "context_pack_payload": {
           "route": "archive_routed",
@@ -1057,7 +1062,7 @@
       ],
       "facade_tier_route_counts": {
         "user": 36,
-        "index": 78,
+        "index": 79,
         "none": 1,
         "source": 3
       },

@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar
 from pydantic import RootModel
 from typing_extensions import TypedDict
 
+from polylogue.context.compiler import ContextImage
 from polylogue.core.json import JSONDocument
 from polylogue.core.user_state_targets import TARGET_SESSION
 from polylogue.mcp.context_pack import (
@@ -88,6 +89,7 @@ if TYPE_CHECKING:
 MCPAssertionClaimPayload = AssertionClaimPayload
 MCPAssertionClaimListPayload = AssertionClaimListPayload
 MCPPublicRefResolutionPayload = PublicRefResolutionPayload
+MCPContextImagePayload = ContextImage
 
 TRoot = TypeVar("TRoot")
 
@@ -915,6 +917,7 @@ __all__ = [
     "MCPContextPackDateRange",
     "MCPContextPackMessage",
     "MCPContextPackPayload",
+    "MCPContextImagePayload",
     "MCPContextPackProject",
     "MCPContextPackProvenance",
     "MCPContextPackQueryContext",

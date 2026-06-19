@@ -205,6 +205,7 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "neighbor_candidates",
         "context_pack_payload",
         "context_preamble_payload",
+        "compile_context",
         "recovery_report",
         "find_resume_candidates",
         "export_insight_bundle",
@@ -904,6 +905,126 @@ async def test_recovery_report_renders_seeded_session_presets(tmp_path: Path) ->
         assert "## Evidence" in work_packet_report
         assert await archive.recovery_report("nonexistent", "continue") is None
         assert await archive.recovery_work_packet("nonexistent") is None
+    finally:
+        await archive.close()
+
+
+async def test_compile_context_builds_recovery_segments_from_refs_and_query(tmp_path: Path) -> None:
+    """``compile_context`` executes ContextSpec over existing recovery views."""
+    from polylogue.context.compiler import ContextSpec
+
+    archive = _archive(tmp_path)
+    await _seed_two_sessions(archive.config.db_path)
+
+    try:
+        image = await archive.compile_context(
+            ContextSpec(
+                seed_refs=("session:claude-ai-export:conv-alpha", "assertion:claim-1"),
+                seed_query="beta body",
+                read_views=("recovery", "work-packet", "messages"),
+                max_tokens=20_000,
+            )
+        )
+
+        assert image.spec.seed_query == "beta body"
+        assert [segment.payload_kind for segment in image.segments] == [
+            "recovery_digest",
+            "work_packet",
+            "recovery_digest",
+            "work_packet",
+        ]
+        assert {ref.object_id for ref in image.object_refs if ref.kind == "session"} == {
+            "claude-ai-export:conv-alpha",
+            "chatgpt-export:conv-beta",
+        }
+        assert {ref.session_id for ref in image.evidence_refs} == {
+            "claude-ai-export:conv-alpha",
+            "chatgpt-export:conv-beta",
+        }
+        assert image.token_estimate > 0
+        unsupported = [item for item in image.omitted if item.reason == "unsupported"]
+        assert len(unsupported) == 3
+        assert unsupported[0].ref == "assertion:claim-1"
+        assert {item.view for item in unsupported[1:]} == {"messages"}
+    finally:
+        await archive.close()
+
+
+async def test_compile_context_honors_assertion_opt_out(tmp_path: Path) -> None:
+    """``ContextSpec(include_assertions=False)`` suppresses injectable claims."""
+    from polylogue.context.compiler import ContextSpec
+    from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
+
+    archive = _archive(tmp_path)
+    await _seed_two_sessions(archive.config.db_path)
+    with sqlite3.connect(archive.config.archive_root / "user.db") as conn:
+        upsert_assertion(
+            conn,
+            assertion_id="context-opt-out-decision",
+            target_ref="session:claude-ai-export:conv-alpha",
+            kind=AssertionKind.DECISION,
+            body_text="This assertion must not enter opted-out context images.",
+            author_ref="user:test",
+            author_kind="user",
+            evidence_refs=["claude-ai-export:conv-alpha"],
+            status="active",
+            visibility="private",
+            context_policy={"inject": True},
+            now_ms=1_700_000_000_000,
+        )
+
+    try:
+        included = await archive.compile_context(
+            ContextSpec(seed_refs=("session:claude-ai-export:conv-alpha",), include_assertions=True)
+        )
+        omitted = await archive.compile_context(
+            ContextSpec(seed_refs=("session:claude-ai-export:conv-alpha",), include_assertions=False)
+        )
+
+        assert included.assertion_refs == ("context-opt-out-decision",)
+        included_markdown = included.segments[0].markdown
+        omitted_markdown = omitted.segments[0].markdown
+        assert included_markdown is not None
+        assert omitted_markdown is not None
+        assert "This assertion must not enter opted-out context images." in included_markdown
+        assert omitted.assertion_refs == ()
+        assert omitted.segments[0].assertion_refs == ()
+        assert "This assertion must not enter opted-out context images." not in omitted_markdown
+    finally:
+        await archive.close()
+
+
+async def test_compile_context_records_missing_and_budget_omissions(tmp_path: Path) -> None:
+    """``compile_context`` fails closed when seeds or budget do not resolve."""
+    from polylogue.context.compiler import ContextSpec
+
+    archive = _archive(tmp_path)
+    await _seed_two_sessions(archive.config.db_path)
+
+    try:
+        image = await archive.compile_context(
+            ContextSpec(
+                seed_refs=("session:missing",),
+                seed_query="no such query",
+                max_tokens=1,
+            )
+        )
+
+        assert image.segments == ()
+        assert image.token_estimate == 0
+        assert {(item.ref, item.query, item.reason) for item in image.omitted} == {
+            ("session:missing", None, "not_found"),
+            (None, "no such query", "not_found"),
+        }
+
+        budgeted = await archive.compile_context(
+            ContextSpec(
+                seed_refs=("session:claude-ai-export:conv-alpha",),
+                max_tokens=1,
+            )
+        )
+        assert budgeted.segments == ()
+        assert [(item.view, item.reason) for item in budgeted.omitted] == [("recovery", "budget")]
     finally:
         await archive.close()
 

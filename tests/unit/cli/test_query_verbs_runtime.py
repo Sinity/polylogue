@@ -14,6 +14,7 @@ from polylogue.cli import query_verbs, read_view_handlers
 from polylogue.cli.read_view_handlers import ReadViewInvocation
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
+from polylogue.context.compiler import ContextImage, ContextSegment, ContextSpec
 from polylogue.surfaces.payloads import PublicRefResolutionPayload
 
 
@@ -523,7 +524,7 @@ def test_continue_verb_renders_recovery_continue_report() -> None:
         patch("polylogue.cli.query_verbs._resolve_target_session_id", return_value="codex-session:abc123"),
         patch("polylogue.cli.query_verbs.run_read_view") as run_read_view,
     ):
-        wrapped(child, "clipboard", None)
+        wrapped(child, "clipboard", None, None)
 
     invocation = run_read_view.call_args.args[2]
     assert invocation == ReadViewInvocation(
@@ -534,6 +535,50 @@ def test_continue_verb_renders_recovery_continue_report() -> None:
         out_path=None,
         recovery_report="continue",
     )
+
+
+def test_continue_verb_json_emits_context_image(capsys: pytest.CaptureFixture[str]) -> None:
+    """``continue --format json`` exposes the shared ContextImage payload."""
+    _, child = _context_pair(query_terms=("id:codex-session:abc123",))
+    spec = ContextSpec(
+        purpose="continue",
+        seed_refs=("session:codex-session:abc123",),
+        read_views=("recovery",),
+    )
+    image = ContextImage(
+        spec=spec,
+        segments=(
+            ContextSegment(
+                segment_id="recovery:codex-session:abc123",
+                kind="recovery",
+                title="Recovery",
+                markdown="Continue from here.",
+                token_estimate=3,
+            ),
+        ),
+        token_estimate=3,
+    )
+    seen: dict[str, ContextSpec] = {}
+
+    async def compile_context(spec: ContextSpec) -> ContextImage:
+        seen["spec"] = spec
+        return image
+
+    child.obj = SimpleNamespace(polylogue=SimpleNamespace(compile_context=compile_context))
+    wrapped = getattr(query_verbs.continue_verb.callback, "__wrapped__", None)
+    assert callable(wrapped)
+
+    with patch("polylogue.cli.query_verbs._resolve_target_session_id", return_value="codex-session:abc123"):
+        wrapped(child, "terminal", None, "json")
+
+    emitted = json.loads(capsys.readouterr().out)
+    assert emitted["spec"]["purpose"] == "continue"
+    assert emitted["spec"]["seed_refs"] == ["session:codex-session:abc123"]
+    assert emitted["segments"][0]["markdown"] == "Continue from here."
+    spec = seen["spec"]
+    assert spec.purpose == "continue"
+    assert spec.seed_refs == ("session:codex-session:abc123",)
+    assert spec.read_views == ("recovery",)
 
 
 def test_resolve_target_session_id_uses_query_terms(workspace_env: dict[str, Path]) -> None:

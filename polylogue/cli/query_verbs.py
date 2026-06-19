@@ -445,13 +445,22 @@ def read_verb(
     help="Output destination.",
 )
 @click.option("--out", "out_path", type=click.Path(), default=None, help="File path for --to file.")
+@click.option(
+    "--format",
+    "-f",
+    "output_format",
+    type=click.Choice(["json"]),
+    default=None,
+    help="Output format. JSON emits the shared ContextImage payload.",
+)
 @click.pass_context
-def continue_verb(ctx: click.Context, destination: str, out_path: str | None) -> None:
+def continue_verb(ctx: click.Context, destination: str, out_path: str | None, output_format: str | None) -> None:
     """Compile a successor-agent continuation report for one matched session.
 
     \b
     Examples:
         polylogue find id:abc then continue
+        polylogue find id:abc then continue --format json
         polylogue --latest continue --to clipboard
         polylogue find 'repo:polylogue near:id:abc' then continue --to file --out handoff.md
     """
@@ -460,6 +469,31 @@ def continue_verb(ctx: click.Context, destination: str, out_path: str | None) ->
     session_id = _resolve_target_session_id(request)
     if session_id is None:
         raise click.UsageError("continue requires one matched session (use --id, --latest, or a narrowing query).")
+    if output_format == "json":
+        if destination not in ("terminal", "stdout", "file"):
+            raise click.UsageError("continue --format json supports terminal, stdout, or file destinations only.")
+        if destination == "file" and not out_path:
+            raise click.UsageError("continue --format json --to file requires --out.")
+        from pathlib import Path
+
+        from polylogue.context.compiler import ContextSpec
+
+        image = run_coroutine_sync(
+            env.polylogue.compile_context(
+                ContextSpec(
+                    purpose="continue",
+                    seed_refs=(f"session:{session_id}",),
+                    read_views=("recovery",),
+                )
+            )
+        )
+        rendered = serialize_surface_payload(image, exclude_none=True)
+        if destination == "file":
+            assert out_path is not None
+            Path(out_path).write_text(rendered + "\n", encoding="utf-8")
+        else:
+            click.echo(rendered)
+        return
     run_read_view(
         env,
         request,

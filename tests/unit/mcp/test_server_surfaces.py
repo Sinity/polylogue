@@ -985,6 +985,47 @@ class TestArchiveGenericToolSurfaces:
         mock_poly.recovery_work_packet.assert_awaited_once_with("missing")
 
     @pytest.mark.asyncio
+    async def test_compile_context_reads_shared_context_image(self: object, mcp_server: MCPServerUnderTest) -> None:
+        from polylogue.context.compiler import ContextImage, ContextSegment, ContextSpec
+
+        image = ContextImage(
+            spec=ContextSpec(seed_refs=("session:session-1",), read_views=("recovery", "work-packet")),
+            segments=(
+                ContextSegment(
+                    segment_id="recovery:session-1:recovery_digest",
+                    kind="recovery",
+                    title="Recovery digest",
+                    markdown="Resume with explicit evidence.",
+                    payload_kind="recovery_digest",
+                    evidence_refs=(EvidenceRef(session_id="session-1"),),
+                    token_estimate=4,
+                ),
+            ),
+            evidence_refs=(EvidenceRef(session_id="session-1"),),
+            token_estimate=4,
+        )
+        mock_poly = make_polylogue_mock()
+        mock_poly.compile_context.return_value = image
+
+        with patch("polylogue.mcp.server._get_polylogue", return_value=mock_poly):
+            result = await invoke_surface_async(
+                mcp_server._tool_manager._tools["compile_context"].fn,
+                seed_ref="session:session-1",
+                read_views="recovery,work-packet",
+                max_tokens=1000,
+            )
+
+        payload = json.loads(result)
+        assert payload["spec"]["seed_refs"] == ["session:session-1"]
+        assert payload["spec"]["read_views"] == ["recovery", "work-packet"]
+        assert payload["segments"][0]["payload_kind"] == "recovery_digest"
+        assert payload["evidence_refs"][0]["session_id"] == "session-1"
+        called_spec = mock_poly.compile_context.await_args.args[0]
+        assert called_spec.seed_refs == ("session:session-1",)
+        assert called_spec.read_views == ("recovery", "work-packet")
+        assert called_spec.max_tokens == 1000
+
+    @pytest.mark.asyncio
     async def test_list_assertion_claims_reads_shared_facade_claims(
         self: object, mcp_server: MCPServerUnderTest
     ) -> None:
