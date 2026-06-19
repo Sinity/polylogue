@@ -86,6 +86,7 @@ if TYPE_CHECKING:
         BulkTagMutationResult,
         DeleteSessionResult,
         FacetsResponse,
+        ImportExplainPayload,
         MetadataMutationResult,
         PublicRefResolutionPayload,
         QueryUnitEnvelope,
@@ -1240,6 +1241,18 @@ class PolylogueArchiveMixin:
             if content_projection is None or not content_projection.filters_content():
                 return session
             return session.with_content_projection(content_projection)
+
+    async def explain_import(
+        self,
+        path: str | Path,
+        *,
+        source_name: str = "unknown",
+        limit: int = 100,
+    ) -> ImportExplainPayload:
+        """Explain detector/parser decisions for a local import path without writing archive rows."""
+        from polylogue.sources.import_explain import explain_import_path
+
+        return explain_import_path(Path(path), source_name=source_name, limit=limit)
 
     async def recovery_digest(self, session_id: str) -> RecoveryDigest | None:
         """Compile one resolved session and its child links into a recovery digest."""

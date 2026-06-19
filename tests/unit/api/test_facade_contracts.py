@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import shutil
 import sqlite3
 from collections.abc import Iterable
 from pathlib import Path
@@ -227,6 +228,7 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "list_blackboard_notes",
         "post_blackboard_note",
         # Shared web/MCP payload DTO helpers covered by daemon/MCP surface tests.
+        "explain_import",
         "list_assertion_claim_payloads",
         "neighbor_candidate_payloads",
         "recovery_read_payload",
@@ -804,6 +806,46 @@ async def test_explain_query_expression_exposes_runtime_transform_unit_payload(t
         lowering_plan = cast(dict[str, object], payload["lowering_plan"])
         assert "compatibility_selector" not in lowering_plan
         assert payload["predicate"]
+    finally:
+        await archive.close()
+
+
+async def test_explain_import_exposes_shared_import_payload(tmp_path: Path) -> None:
+    """``explain_import`` exposes the same bounded payload as ``polylogue import --explain``."""
+    source = Path("tests/data/codex_event_stream/text_only_stream.jsonl")
+    target = tmp_path / "session.jsonl"
+    shutil.copy2(source, target)
+
+    archive = _archive(tmp_path)
+    try:
+        payload = await archive.explain_import(target, source_name="codex")
+
+        assert payload.mode == "import-explain"
+        assert payload.produced.sessions == 1
+        assert payload.produced.messages >= 1
+        assert payload.entries[0].detected_provider == "codex"
+        assert payload.entries[0].detected_origin == "codex-session"
+        assert payload.entries[0].parser_mode == "grouped_records"
+        assert payload.entries[0].produced.session_refs
+    finally:
+        await archive.close()
+
+
+async def test_explain_import_reports_bounded_decode_failure(tmp_path: Path) -> None:
+    """``explain_import`` reports malformed local input without exposing raw bytes."""
+    target = tmp_path / "broken.json"
+    target.write_text("{not json", encoding="utf-8")
+
+    archive = _archive(tmp_path)
+    try:
+        payload = await archive.explain_import(target)
+
+        assert payload.produced.sessions == 0
+        assert payload.skipped
+        assert payload.skipped[0].reason.startswith("decode failure:")
+        rendered = payload.to_json(exclude_none=True)
+        assert "{not json" not in rendered
+        assert "raw_bytes" not in rendered
     finally:
         await archive.close()
 
