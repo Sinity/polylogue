@@ -86,7 +86,15 @@ class _DefaultCommandGroup(click.Group):
         context_settings: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(name=name, help=help, context_settings=context_settings)
+        self.no_args_is_help = False
+        default_command.hidden = True
         self.default_command = default_command
+        self.add_command(default_command, "_default")
+
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        if not args:
+            args = ["_default"]
+        return super().parse_args(ctx, args)
 
     def resolve_command(
         self,
