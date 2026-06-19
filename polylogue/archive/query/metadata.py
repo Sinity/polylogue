@@ -7,6 +7,21 @@ from typing import Literal
 
 QueryUnitName = Literal["message", "action", "block", "assertion", "run", "observed-event", "context-snapshot"]
 
+
+@dataclass(frozen=True)
+class QueryUnitDescriptor:
+    """Executable query-unit metadata shared by parser, completions, and surfaces."""
+
+    unit: QueryUnitName
+    singular_source: str
+    plural_source: str
+    terminal_supported: bool = True
+
+    @property
+    def source_aliases(self) -> tuple[str, str]:
+        return (self.singular_source, self.plural_source)
+
+
 #: Recognized DSL field tokens and a short human description.
 #: ``spec_field`` values correspond to :class:`~polylogue.archive.query.spec.SessionQuerySpec`
 #: attribute names or the special tokens ``"min_messages"``, ``"max_messages"`` etc.
@@ -125,21 +140,20 @@ EXPRESSION_FIELD_REGISTRY: dict[str, dict[str, str]] = {
     },
 }
 
-_SOURCE_WHERE_SOURCES: tuple[tuple[str, QueryUnitName], ...] = (
-    ("message", "message"),
-    ("messages", "message"),
-    ("action", "action"),
-    ("actions", "action"),
-    ("block", "block"),
-    ("blocks", "block"),
-    ("assertion", "assertion"),
-    ("assertions", "assertion"),
-    ("run", "run"),
-    ("runs", "run"),
-    ("observed-event", "observed-event"),
-    ("observed-events", "observed-event"),
-    ("context-snapshot", "context-snapshot"),
-    ("context-snapshots", "context-snapshot"),
+QUERY_UNIT_DESCRIPTORS: tuple[QueryUnitDescriptor, ...] = (
+    QueryUnitDescriptor("message", "message", "messages"),
+    QueryUnitDescriptor("action", "action", "actions"),
+    QueryUnitDescriptor("block", "block", "blocks"),
+    QueryUnitDescriptor("assertion", "assertion", "assertions"),
+    QueryUnitDescriptor("run", "run", "runs"),
+    QueryUnitDescriptor("observed-event", "observed-event", "observed-events"),
+    QueryUnitDescriptor("context-snapshot", "context-snapshot", "context-snapshots"),
+)
+_QUERY_UNIT_BY_UNIT: dict[QueryUnitName, QueryUnitDescriptor] = {
+    descriptor.unit: descriptor for descriptor in QUERY_UNIT_DESCRIPTORS
+}
+_SOURCE_WHERE_SOURCES: tuple[tuple[str, QueryUnitName], ...] = tuple(
+    (source, descriptor.unit) for descriptor in QUERY_UNIT_DESCRIPTORS for source in descriptor.source_aliases
 )
 _BOOLEAN_SUPPORTED_FIELDS = {
     "repo",
@@ -558,7 +572,13 @@ def structural_query_field_info(unit: str, field: str) -> StructuralQueryFieldIn
 def terminal_query_sources() -> tuple[str, ...]:
     """Return source tokens accepted by the ``<source> where ...`` grammar."""
 
-    return tuple(sorted(source for source, _unit in _SOURCE_WHERE_SOURCES))
+    return tuple(sorted(source for source, _unit in terminal_query_source_pairs()))
+
+
+def terminal_query_source_pairs() -> tuple[tuple[str, QueryUnitName], ...]:
+    """Return accepted ``<source> where`` aliases and their canonical units."""
+
+    return _SOURCE_WHERE_SOURCES
 
 
 def terminal_query_unit(source: str) -> QueryUnitName | None:
@@ -569,6 +589,27 @@ def terminal_query_unit(source: str) -> QueryUnitName | None:
         if source_name == normalized:
             return unit
     return None
+
+
+def query_unit_descriptor(unit_or_source: str) -> QueryUnitDescriptor | None:
+    """Return the descriptor for a canonical unit or accepted source alias."""
+
+    normalized = unit_or_source.lower()
+    for descriptor in QUERY_UNIT_DESCRIPTORS:
+        if descriptor.unit == normalized or normalized in descriptor.source_aliases:
+            return descriptor
+    return None
+
+
+def terminal_query_source_list(*, plural: bool = True, separator: str = "/") -> str:
+    """Return a user-facing terminal query-unit source list."""
+
+    labels = [
+        descriptor.plural_source if plural else descriptor.singular_source
+        for descriptor in QUERY_UNIT_DESCRIPTORS
+        if descriptor.terminal_supported
+    ]
+    return separator.join(labels)
 
 
 def terminal_query_fields(source: str) -> tuple[str, ...]:
@@ -625,6 +666,8 @@ __all__ = [
     "DATE_QUERY_FIELD_REGISTRY",
     "DateQueryFieldInfo",
     "EXPRESSION_FIELD_REGISTRY",
+    "QUERY_UNIT_DESCRIPTORS",
+    "QueryUnitDescriptor",
     "QueryUnitName",
     "STRUCTURAL_QUERY_UNIT_REGISTRY",
     "StructuralQueryFieldInfo",
@@ -646,8 +689,11 @@ __all__ = [
     "structural_query_field_info",
     "structural_query_fields",
     "structural_query_units",
+    "query_unit_descriptor",
     "terminal_query_field_info",
     "terminal_query_fields",
+    "terminal_query_source_list",
+    "terminal_query_source_pairs",
     "terminal_query_sources",
     "terminal_query_unit",
 ]

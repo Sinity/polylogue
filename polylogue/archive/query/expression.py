@@ -95,7 +95,6 @@ from polylogue.archive.query.metadata import (
     _MESSAGE_STRUCTURAL_FIELDS,
     _OBSERVED_EVENT_STRUCTURAL_FIELDS,
     _RUN_STRUCTURAL_FIELDS,
-    _SOURCE_WHERE_SOURCES,
     _STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS,
     COUNT_QUERY_FIELD_REGISTRY,
     DATE_QUERY_FIELD_REGISTRY,
@@ -109,8 +108,11 @@ from polylogue.archive.query.metadata import (
     count_query_operators,
     date_query_fields,
     date_query_operators,
+    query_unit_descriptor,
     structural_query_fields,
     structural_query_units,
+    terminal_query_source_pairs,
+    terminal_query_unit,
 )
 from polylogue.archive.query.predicate import (
     QueryBoolPredicate,
@@ -996,7 +998,7 @@ def _is_boolean_expression(expression: str) -> bool:
         or lower.startswith("lineage:")
     ):
         return True
-    for source, _unit in _SOURCE_WHERE_SOURCES:
+    for source, _unit in terminal_query_source_pairs():
         marker = f"{source} where"
         if lower == marker or (lower.startswith(marker) and lower[len(marker)].isspace()):
             return True
@@ -1014,19 +1016,9 @@ def _is_boolean_expression(expression: str) -> bool:
 
 
 def _source_where_unit(source: str) -> QueryUnitName:
-    normalized = source.strip().lower()
-    if normalized in {"message", "messages"}:
-        return "message"
-    if normalized in {"action", "actions"}:
-        return "action"
-    if normalized in {"block", "blocks"}:
-        return "block"
-    if normalized in {"assertion", "assertions"}:
-        return "assertion"
-    if normalized in {"observed-event", "observed-events"}:
-        return "observed-event"
-    if normalized in {"context-snapshot", "context-snapshots"}:
-        return "context-snapshot"
+    unit = terminal_query_unit(source.strip().lower())
+    if unit is not None:
+        return unit
     raise ExpressionCompileError(f"unsupported query source {source!r}", field=None)
 
 
@@ -1250,7 +1242,7 @@ def parse_unit_source_expression(expression: str) -> QueryUnitSource | None:
         return pipeline_source
     lower = stripped.lower()
     source_match: tuple[str, QueryUnitName, str] | None = None
-    for source, unit in _SOURCE_WHERE_SOURCES:
+    for source, unit in terminal_query_source_pairs():
         marker = f"{source} where"
         if lower == marker:
             source_match = (marker, unit, "")
@@ -1269,9 +1261,8 @@ def parse_unit_source_expression(expression: str) -> QueryUnitSource | None:
 
 
 def _terminal_only_unit_source_error(unit: QueryUnitName) -> ExpressionCompileError:
-    source = f"{unit}s" if unit != "context-snapshot" else "context-snapshots"
-    if unit == "observed-event":
-        source = "observed-events"
+    descriptor = query_unit_descriptor(unit)
+    source = descriptor.plural_source if descriptor is not None else f"{unit}s"
     return ExpressionCompileError(
         f"{source} where expressions return terminal {unit} rows; "
         "use query_units / /api/query-units or a CLI terminal-unit query instead of a session selector",

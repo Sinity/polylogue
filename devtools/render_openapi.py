@@ -30,6 +30,7 @@ from pydantic import BaseModel
 
 from devtools.command_catalog import control_plane_command
 from devtools.render_support import write_if_changed
+from polylogue.archive.query.metadata import terminal_query_source_list
 from polylogue.surfaces.payloads import (
     RANKING_POLICY_MIXED,
     RANKING_POLICY_VERSION,
@@ -205,7 +206,7 @@ def _build_openapi_document() -> dict[str, Any]:
                     "summary": "Terminal query-unit rows",
                     "description": (
                         "Returns terminal row results for explicit "
-                        "``messages/actions/blocks/assertions/runs/observed-events/context-snapshots where ...`` expressions. "
+                        f"``{terminal_query_source_list()} where ...`` expressions. "
                         "This endpoint shares the ``QueryUnitEnvelope`` contract "
                         "with CLI JSON output, MCP ``query_units``, and "
                         "``Polylogue.query_units()``."

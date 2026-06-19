@@ -23,6 +23,7 @@ from pydantic import BaseModel
 
 from devtools.command_catalog import control_plane_command
 from devtools.render_support import write_if_changed
+from polylogue.archive.query.metadata import terminal_query_source_list
 from polylogue.surfaces.payloads import (
     ImportExplainPayload,
     MachineErrorPayload,
@@ -136,7 +137,7 @@ SCHEMAS: tuple[CliOutputSchema, ...] = (
         title="Query Unit Envelope",
         description=(
             "Terminal row envelope for explicit "
-            "`messages/actions/blocks/assertions/runs/observed-events/context-snapshots where ...` "
+            f"`{terminal_query_source_list()} where ...` "
             "query-unit expressions. "
             "Shared by CLI JSON output, Python API, MCP, and daemon HTTP."
         ),
