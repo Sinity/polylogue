@@ -1019,6 +1019,54 @@ def test_daemon_cli_heartbeat_counts_archive(tmp_path: Path) -> None:
     assert daemon_cli._heartbeat_counts(archive_root / "index.db") == (1, 1, "sessions")
 
 
+def test_daemon_cli_heartbeat_counts_uses_read_only_probe(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    class FakeCursor:
+        def __init__(self, row: tuple[object, ...] | None = None, rows: list[tuple[object, ...]] | None = None) -> None:
+            self._row = row
+            self._rows = rows if rows is not None else ([] if row is None else [row])
+
+        def fetchone(self) -> tuple[object, ...] | None:
+            return self._row
+
+        def fetchall(self) -> list[tuple[object, ...]]:
+            return self._rows
+
+    class ReadOnlyConnection:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def execute(self, sql: str) -> FakeCursor:
+            normalized = " ".join(sql.split())
+            assert not normalized.upper().startswith(("INSERT", "UPDATE", "DELETE", "CREATE", "PRAGMA JOURNAL_MODE"))
+            if "FROM sqlite_master" in normalized:
+                return FakeCursor(rows=[("sessions",), ("messages",)])
+            if normalized == "SELECT COUNT(*) FROM sessions":
+                return FakeCursor((7,))
+            if normalized == "SELECT COUNT(*) FROM messages":
+                return FakeCursor((42,))
+            raise AssertionError(f"unexpected heartbeat query: {normalized}")
+
+        def close(self) -> None:
+            self.closed = True
+
+    conn = ReadOnlyConnection()
+
+    def open_readonly(path: Path, *, timeout: float) -> ReadOnlyConnection:
+        assert path == tmp_path / "index.db"
+        assert timeout == 5.0
+        return conn
+
+    monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_readonly_connection", open_readonly)
+
+    assert daemon_cli._heartbeat_counts(tmp_path / "index.db") == (7, 42, "sessions")
+    assert conn.closed is True
+
+
 def test_ensure_fts_startup_readiness_handles_archive(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

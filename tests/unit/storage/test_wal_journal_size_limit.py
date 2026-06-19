@@ -24,10 +24,14 @@ from pathlib import Path
 import pytest
 
 from polylogue.storage.sqlite.connection_profile import (
+    DAEMON_WRITE_CACHE_SIZE_KIB,
+    DAEMON_WRITE_CONNECTION_PROFILE,
+    DAEMON_WRITE_MMAP_SIZE_BYTES,
     READ_CONNECTION_PROFILE,
     WAL_JOURNAL_SIZE_LIMIT_BYTES,
     WRITE_CONNECTION_PROFILE,
     open_connection,
+    open_daemon_connection,
     open_readonly_connection,
 )
 
@@ -55,6 +59,15 @@ def test_read_profile_includes_query_only_pragma() -> None:
     assert "PRAGMA query_only = ON" in statements, (
         f"#1614: read profile must signal read-only intent; statements were {statements}"
     )
+
+
+def test_daemon_write_profile_uses_bounded_cache_and_mmap() -> None:
+    """Daemon maintenance writes should not inherit the batch-ingest cache."""
+    assert DAEMON_WRITE_CONNECTION_PROFILE.cache_size_kib == DAEMON_WRITE_CACHE_SIZE_KIB
+    assert DAEMON_WRITE_CONNECTION_PROFILE.mmap_size_bytes == DAEMON_WRITE_MMAP_SIZE_BYTES
+    assert DAEMON_WRITE_CONNECTION_PROFILE.cache_size_kib < WRITE_CONNECTION_PROFILE.cache_size_kib
+    assert DAEMON_WRITE_CONNECTION_PROFILE.mmap_size_bytes < WRITE_CONNECTION_PROFILE.mmap_size_bytes
+    assert DAEMON_WRITE_CONNECTION_PROFILE.journal_size_limit_bytes == WAL_JOURNAL_SIZE_LIMIT_BYTES
 
 
 # ---------------------------------------------------------------------------
@@ -92,6 +105,17 @@ def test_open_readonly_connection_applies_query_only(tmp_path: Path) -> None:
         # Any DML attempt must be rejected at parse time.
         with pytest.raises(sqlite3.OperationalError):
             conn.execute("INSERT INTO t (id) VALUES (1)")
+    finally:
+        conn.close()
+
+
+def test_open_daemon_connection_applies_bounded_cache_and_mmap(tmp_path: Path) -> None:
+    db_path = tmp_path / "ops.db"
+    conn = open_daemon_connection(db_path)
+    try:
+        assert _pragma_int(conn, "cache_size") == -DAEMON_WRITE_CACHE_SIZE_KIB
+        assert _pragma_int(conn, "mmap_size") == DAEMON_WRITE_MMAP_SIZE_BYTES
+        assert _pragma_int(conn, "journal_size_limit") == WAL_JOURNAL_SIZE_LIMIT_BYTES
     finally:
         conn.close()
 

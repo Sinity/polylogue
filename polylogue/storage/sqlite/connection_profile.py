@@ -3,6 +3,8 @@
 Factories
 ---------
 ``open_connection(path)`` returns a read-write connection with write pragmas applied.
+``open_daemon_connection(path)`` returns a read-write connection with a smaller
+daemon/ops cache profile.
 ``open_readonly_connection(path)`` returns a uri=ro connection with read pragmas applied.
 ``connection_context(path)`` is a context manager for a single-use read-write connection.
 
@@ -71,8 +73,10 @@ class SQLiteConnectionProfile:
 DB_TIMEOUT = 30
 READ_DB_TIMEOUT = 1
 WRITE_CACHE_SIZE_KIB = 131072  # 128 MiB
+DAEMON_WRITE_CACHE_SIZE_KIB = 16384  # 16 MiB
 READ_CACHE_SIZE_KIB = 32768  # 32 MiB
 WRITE_MMAP_SIZE_BYTES = 1073741824  # 1 GiB
+DAEMON_WRITE_MMAP_SIZE_BYTES = 67108864  # 64 MiB
 READ_MMAP_SIZE_BYTES = 134217728  # 128 MiB
 WAL_AUTOCHECKPOINT_PAGES = 10000
 # #1614: soft cap on the WAL file. After any checkpoint that frees
@@ -98,6 +102,19 @@ WRITE_CONNECTION_PROFILE = SQLiteConnectionProfile(
     journal_size_limit_bytes=WAL_JOURNAL_SIZE_LIMIT_BYTES,
 )
 
+DAEMON_WRITE_CONNECTION_PROFILE = SQLiteConnectionProfile(
+    role="write",
+    timeout_seconds=DB_TIMEOUT,
+    busy_timeout_ms=DB_TIMEOUT * 1000,
+    cache_size_kib=DAEMON_WRITE_CACHE_SIZE_KIB,
+    mmap_size_bytes=DAEMON_WRITE_MMAP_SIZE_BYTES,
+    foreign_keys=True,
+    journal_mode="WAL",
+    synchronous="NORMAL",
+    wal_autocheckpoint_pages=WAL_AUTOCHECKPOINT_PAGES,
+    journal_size_limit_bytes=WAL_JOURNAL_SIZE_LIMIT_BYTES,
+)
+
 READ_CONNECTION_PROFILE = SQLiteConnectionProfile(
     role="read",
     timeout_seconds=READ_DB_TIMEOUT,
@@ -112,6 +129,7 @@ READ_CONNECTION_PROFILE = SQLiteConnectionProfile(
     query_only=True,
 )
 
+DAEMON_WRITE_CONNECTION_PRAGMA_STATEMENTS = DAEMON_WRITE_CONNECTION_PROFILE.pragma_statements
 WRITE_CONNECTION_PRAGMA_STATEMENTS = WRITE_CONNECTION_PROFILE.pragma_statements
 READ_CONNECTION_PRAGMA_STATEMENTS = READ_CONNECTION_PROFILE.pragma_statements
 
@@ -184,6 +202,25 @@ def open_connection(path: str | Path, *, timeout: float = DB_TIMEOUT) -> sqlite3
     return conn
 
 
+def open_daemon_connection(path: str | Path, *, timeout: float = DB_TIMEOUT) -> sqlite3.Connection:
+    """Open a read-write SQLite connection for daemon maintenance/ops writes.
+
+    Long-running daemon loops write small status, cursor, telemetry, and
+    maintenance rows. They should not inherit the full batch-ingest cache and
+    mmap profile, because systemd charges their SQLite page cache to the
+    service cgroup for the lifetime of the process.
+    """
+    conn = sqlite3.connect(str(path), timeout=timeout)
+    try:
+        for stmt in DAEMON_WRITE_CONNECTION_PRAGMA_STATEMENTS:
+            conn.execute(stmt)
+        _attach_sibling_tiers(conn)
+    except BaseException:
+        conn.close()
+        raise
+    return conn
+
+
 def open_readonly_connection(path: str | Path, *, timeout: float = READ_DB_TIMEOUT) -> sqlite3.Connection:
     """Open a read-only SQLite connection with canonical read pragmas applied.
 
@@ -216,6 +253,10 @@ def connection_context(path: str | Path, *, timeout: float = DB_TIMEOUT) -> Iter
 
 __all__ = [
     "DB_TIMEOUT",
+    "DAEMON_WRITE_CACHE_SIZE_KIB",
+    "DAEMON_WRITE_CONNECTION_PRAGMA_STATEMENTS",
+    "DAEMON_WRITE_CONNECTION_PROFILE",
+    "DAEMON_WRITE_MMAP_SIZE_BYTES",
     "READ_CACHE_SIZE_KIB",
     "READ_CONNECTION_PRAGMA_STATEMENTS",
     "READ_CONNECTION_PROFILE",
@@ -228,6 +269,7 @@ __all__ = [
     "WRITE_CONNECTION_PROFILE",
     "WRITE_MMAP_SIZE_BYTES",
     "connection_context",
+    "open_daemon_connection",
     "open_connection",
     "open_readonly_connection",
 ]
