@@ -1,6 +1,6 @@
 """Orchestrate the GitHub Pages documentation build.
 
-Reads pages.toml, calls feeder render commands, assembles output
+Reads docs/site/pages.toml, calls feeder render commands, assembles output
 through Jinja2 templates, runs Pagefind, writes .cache/site/.
 
 Usage:
@@ -21,6 +21,10 @@ from pathlib import Path
 from devtools import repo_root as _get_root
 
 ROOT = _get_root()
+
+
+def _default_config_path() -> Path:
+    return ROOT / "docs" / "site" / "pages.toml"
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -104,7 +108,7 @@ def _hash_directory(dir_path: Path) -> str:
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
 
-    config_path = ROOT / "pages.toml"
+    config_path = _default_config_path()
     if not config_path.exists():
         print(f"Error: {config_path} not found", file=sys.stderr)
         return 1

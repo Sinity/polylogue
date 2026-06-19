@@ -22,7 +22,7 @@ on:
       - "v[0-9]+.[0-9]+.[0-9]+"
   pull_request:
     paths:
-      - Containerfile
+      - packaging/Containerfile
       - .dockerignore
       - .github/workflows/container.yml
       - pyproject.toml
@@ -104,7 +104,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          file: ./Containerfile
+          file: ./packaging/Containerfile
           target: ${{ matrix.target }}
           platforms: ${{ steps.decide.outputs.platforms }}
           push: ${{ steps.decide.outputs.push }}

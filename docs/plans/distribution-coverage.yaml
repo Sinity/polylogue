@@ -87,9 +87,9 @@ artifacts:
 
   oci_container:
     description: OCI image with polylogue / polylogued / polylogue-mcp on PATH
-    build_system: Containerfile (multi-stage, uv wheel build + slim runtime)
-    config_location: Containerfile
-    build_command: docker buildx build -f Containerfile .
+    build_system: packaging/Containerfile (multi-stage, uv wheel build + slim runtime)
+    config_location: packaging/Containerfile
+    build_command: docker buildx build -f packaging/Containerfile .
     install_command: podman pull ghcr.io/sinity/polylogue:latest
     ci_build: false
     ci_test: false
@@ -98,10 +98,8 @@ artifacts:
       wheel into python:3.13-slim-bookworm under a non-root user with
       tini as PID 1. Volumes /data (XDG_DATA_HOME) and /config
       (XDG_CONFIG_HOME) are declared. Build + push to GHCR runs from
-      release.yml::publish-container on `vX.Y.Z` tag push. Pre-tag CI
-      does not build the image to keep ci.yml fast; the
-      release verify-distribution gate exercises the same wheel that
-      the Containerfile installs.
+      .github/workflows/container.yml on master and `vX.Y.Z` tag pushes;
+      pull requests touching the container surface run an amd64 smoke build.
 
   browser_extension:
     description: Manifest V3 browser extension (Chrome .zip + Firefox .xpi)
@@ -194,15 +192,6 @@ coverage_gaps:
     declared_at: "2026-05-02"
     review_after: "2026-08-01"
     issue: 593
-    next_evidence: devtools release verify-distribution
-  - id: distribution.container-ci-build
-    artifact: oci_container
-    gap: Containerfile is built+pushed only on tag (release.yml). No pre-tag CI build means image-only regressions surface at release time.
-    owner: distribution
-    severity: minor
-    declared_at: "2026-05-17"
-    review_after: "2026-08-01"
-    issue: 953
     next_evidence: devtools release verify-distribution
   - id: distribution.browser-extension-store
     artifact: browser_extension
