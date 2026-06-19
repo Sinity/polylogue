@@ -16,9 +16,10 @@ assertions that would freeze aesthetic iteration.
 
 This page documents the harness so workbench and reader changes have a stable
 reference for what the lane covers and how to run it. Historical visual design
-inputs live at [`docs/design/mk3/`](design/mk3/); the earlier MK2
-visual-evidence handoff remains at
-[`docs/design/mk2/coding-agent-pack/07-verification-and-visual-evidence.md`](design/mk2/coding-agent-pack/07-verification-and-visual-evidence.md).
+inputs live at [`docs/design/mk3/`](design/mk3/). Current UI work should cite
+the owning issue/PR verification section and the tracked visual tests under
+`tests/visual/`; old coding-agent handoff packs are not accepted as
+verification authority.
 
 ## Running the lane
 
