@@ -11,9 +11,17 @@ already present in the project. The Lark grammar in
 clauses and explicit Boolean predicates are entry shapes in that grammar, not
 separate floor/ceiling languages.
 
-## Current limitation
+## Current state
 
-The current implemented query substrate already handles compact session filters, grouped Boolean predicates, message/action/block `exists` predicates, ordered action sequences, FTS predicates, lineage predicates, and a semantic seed plus residual filter. Remaining scope is broader unit coverage and pipeline execution: runs/events/assertions, aggregation, unit-changing traversal, terminal read/analyze/bundle stages, and shared completion/query-builder metadata.
+The current implemented query substrate already handles compact session filters,
+grouped Boolean predicates, message/action/block/assertion `exists`
+predicates, ordered action sequences, FTS predicates, lineage predicates, a
+semantic seed plus residual filter, and terminal row-producing
+`messages/actions/blocks/assertions/runs/observed-events/context-snapshots
+where ...` queries. Runtime-transform terminal rows for runs, observed events,
+and context snapshots lower through the recovery/run projection rather than a
+SQL table, so unsupported scoped session fields must fail closed instead of
+broadening results.
 
 ## Design decision
 
@@ -24,9 +32,11 @@ Predicate nodes: And, Or, Not, Leaf, Fts, Semantic, Structural, Sequence, Lineag
 Pipeline stages: source or filter, traverse, transform, aggregate, sort/limit,
 and terminal action or view.
 
-Implemented units: session, message, action, block, lineage.
+Implemented units: session, message, action, block, assertion, run, observed
+event, context snapshot, lineage.
 
-Target units still needing real lowerers: run, observed event, assertion, context snapshot, bundle/work packet, external work refs, phase, thread, span.
+Target units still needing real lowerers: bundle/work packet, external work
+refs, phase, thread, span.
 
 ## Surface ladder
 
@@ -43,7 +53,8 @@ micro-slices. Each phase should land useful executable queries and tests.
    path.
 2. Extend explain output to show terminal unit sources, unsupported
    unit/pipeline stages, and the concrete lowerer/execution legs selected.
-3. Add run/event/assertion/context units only with real lowerers and fixtures.
+3. Keep runtime-transform unit execution covered across CLI, Python API, MCP,
+   daemon, docs, generated schemas, and completions as new fields are added.
 4. Add traversal stages that change the active unit and lower to SQL/recursive
    CTEs or existing read models.
 5. Add aggregation/sort/limit stages over supported units.

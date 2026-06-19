@@ -710,6 +710,80 @@ class TestArchiveGenericToolSurfaces:
         assert item["agent_ref"] == "agent:codex/Explore"
 
     @pytest.mark.asyncio
+    async def test_query_units_tool_returns_observed_event_rows_without_archive_operations(
+        self: object, mcp_server: MCPServerUnderTest, tmp_path: Path
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        with ArchiveStore(archive_root) as archive:
+            session_id = _write_archive_session(
+                archive,
+                native_id="tool-query-units-event",
+                title="Tool query units event",
+                text="observed event terminal row",
+                working_directories=["/realm/project/polylogue"],
+            )
+
+        with (
+            patch("polylogue.mcp.server._get_config") as mock_get_config,
+            patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
+        ):
+            mock_get_config.return_value = SimpleNamespace(
+                archive_root=archive_root,
+                db_path=archive_root / "index.db",
+            )
+            mock_get_polylogue.side_effect = AssertionError("query_units tool must not open archive operations")
+            result = await invoke_surface_async(
+                mcp_server._tool_manager._tools["query_units"].fn,
+                expression="observed-events where session.repo:polylogue AND kind:session_started",
+            )
+
+        payload = json.loads(result)
+        assert payload["mode"] == "query-unit"
+        assert payload["unit"] == "observed-event"
+        [item] = payload["items"]
+        assert item["unit"] == "observed-event"
+        assert item["session_id"] == session_id
+        assert item["kind"] == "session_started"
+        assert item["subject_ref"] == f"session:{session_id}"
+
+    @pytest.mark.asyncio
+    async def test_query_units_tool_returns_context_snapshot_rows_without_archive_operations(
+        self: object, mcp_server: MCPServerUnderTest, tmp_path: Path
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        with ArchiveStore(archive_root) as archive:
+            session_id = _write_archive_session(
+                archive,
+                native_id="tool-query-units-context",
+                title="Tool query units context",
+                text="review injection context for PR #2100",
+                working_directories=["/realm/project/polylogue"],
+            )
+
+        with (
+            patch("polylogue.mcp.server._get_config") as mock_get_config,
+            patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
+        ):
+            mock_get_config.return_value = SimpleNamespace(
+                archive_root=archive_root,
+                db_path=archive_root / "index.db",
+            )
+            mock_get_polylogue.side_effect = AssertionError("query_units tool must not open archive operations")
+            result = await invoke_surface_async(
+                mcp_server._tool_manager._tools["query_units"].fn,
+                expression="context-snapshots where session.repo:polylogue AND boundary:session_start AND text:context",
+            )
+
+        payload = json.loads(result)
+        assert payload["mode"] == "query-unit"
+        assert payload["unit"] == "context-snapshot"
+        [item] = payload["items"]
+        assert item["unit"] == "context-snapshot"
+        assert item["session_id"] == session_id
+        assert item["boundary"] == "session_start"
+        assert item["evidence_refs"] == [session_id]
+
+    @pytest.mark.asyncio
     async def test_query_units_tool_accepts_inline_session_scope(
         self: object, mcp_server: MCPServerUnderTest, tmp_path: Path
     ) -> None:
