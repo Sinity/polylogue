@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import cast
+from urllib.request import Request, urlopen
 
 from polylogue.surfaces.payloads import reader_anchor
 from tests.visual.conftest import (
@@ -20,6 +21,14 @@ from tests.visual.conftest import (
     seed_reader_assertion_claims,
     write_evidence_manifest,
 )
+
+
+def _send_json(base_url: str, method: str, path: str, payload: dict[str, object] | None = None) -> tuple[int, object]:
+    body = json.dumps(payload or {}).encode("utf-8") if payload is not None else None
+    headers = {"Content-Type": "application/json"} if payload is not None else {}
+    req = Request(f"{base_url}{path}", data=body, headers=headers, method=method)
+    with urlopen(req, timeout=10) as resp:
+        return resp.status, json.loads(resp.read())
 
 
 def test_reader_search_shell_dom_evidence(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:
@@ -382,6 +391,10 @@ def test_reader_evidence_panel_endpoint_and_shell_smoke(reader_workspace: Reader
             dict[str, object],
             get_json(base_url, f"/api/assertions?target_ref=session%3A{READER_C1}&limit=10"),
         )
+        context_pack = cast(
+            dict[str, object],
+            get_json(base_url, f"/api/sessions/{READER_C1}/read?view=context-pack&max_messages=5"),
+        )
 
     assert status == 200
     assert "text/html" in content_type
@@ -391,6 +404,7 @@ def test_reader_evidence_panel_endpoint_and_shell_smoke(reader_workspace: Reader
         "renderInspectorEvidence",
         "renderBrowserCaptureChip",
         "renderReadViewExecution",
+        "renderContextPackReadView",
         "loadEvidencePanel",
         "/api/assertions?target_ref=",
         "/recovery?report=work-packet&format=json",
@@ -407,6 +421,12 @@ def test_reader_evidence_panel_endpoint_and_shell_smoke(reader_workspace: Reader
     claim_items = cast(list[dict[str, object]], assertions["items"])
     assert [item["assertion_id"] for item in claim_items] == ["reader-evidence-decision"]
     assert claim_items[0]["target_ref"] == f"session:{READER_C1}"
+    assert context_pack["view"] == "context-pack"
+    context_payload = cast(dict[str, object], context_pack["payload"])
+    context_sessions = cast(list[dict[str, object]], context_payload["sessions"])
+    assert context_sessions[0]["session_id"] == READER_C1
+    context_provenance = cast(dict[str, object], context_payload["provenance"])
+    assert context_provenance["redacted"] is True
 
     write_evidence_manifest(
         tmp_path / "reader-evidence-panel-dom-evidence.json",
@@ -418,7 +438,75 @@ def test_reader_evidence_panel_endpoint_and_shell_smoke(reader_workspace: Reader
             "recovery_report": recovery["report"],
             "work_packet_evidence_refs": len(cast(list[object], packet["evidence_refs"])),
             "assertion_count": assertions["total"],
+            "context_pack_sessions": context_payload["total_sessions"],
             "raw_artifacts_absent_from_recovery": True,
+            "private_path_safe": True,
+        },
+    )
+
+
+def test_reader_overlay_mutation_flow_evidence(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:
+    """Reader overlay actions use route-backed mutation envelopes (#1846)."""
+
+    with running_reader_server(reader_workspace) as (_, base_url):
+        status, content_type, shell = get_text(base_url, f"/s/{READER_C1}")
+        mark_status, mark = _send_json(
+            base_url,
+            "POST",
+            "/api/user/marks",
+            {"session_id": READER_C1, "mark_type": "archive"},
+        )
+        annotation_status, annotation = _send_json(
+            base_url,
+            "POST",
+            "/api/user/annotations",
+            {
+                "annotation_id": "reader-visual-flow-note",
+                "session_id": READER_C1,
+                "target_type": "message",
+                "message_id": READER_C1_M1,
+                "note_text": "Visual smoke overlay note",
+            },
+        )
+        marks = cast(dict[str, object], get_json(base_url, f"/api/user/marks?session_id={READER_C1}"))
+        annotations = cast(dict[str, object], get_json(base_url, f"/api/user/annotations?session_id={READER_C1}"))
+
+    assert status == 200
+    assert "text/html" in content_type
+    assert_no_private_paths(shell, context="reader overlay mutation shell")
+    for phrase in ("toggleMark", "saveAnnotation", "/api/user/marks", "/api/user/annotations"):
+        assert phrase in shell, f"missing overlay shell hook {phrase!r}"
+
+    mark_payload = cast(dict[str, object], mark)
+    annotation_payload = cast(dict[str, object], annotation)
+    assert mark_status == 201
+    assert mark_payload["operation"] == "mark.add"
+    assert mark_payload["affected_count"] == 1
+    assert mark_payload["target_id"] == READER_C1
+    assert annotation_status == 201
+    assert annotation_payload["operation"] == "annotation.save"
+    assert annotation_payload["affected_count"] == 1
+    assert annotation_payload["target_type"] == "message"
+    assert annotation_payload["target_id"] == READER_C1_M1
+
+    mark_types = {str(item["mark_type"]) for item in cast(list[dict[str, object]], marks["items"])}
+    assert "archive" in mark_types
+    annotation_ids = {str(item["annotation_id"]) for item in cast(list[dict[str, object]], annotations["items"])}
+    assert "reader-visual-flow-note" in annotation_ids
+
+    write_evidence_manifest(
+        tmp_path / "reader-overlay-mutation-flow-evidence.json",
+        artifact_id="polylogue.local_reader.overlay_mutations",
+        route=f"/s/{READER_C1}",
+        fixture_id="reader-visual-synthetic-v1",
+        checks={
+            "shell_status": status,
+            "mark_status": mark_status,
+            "annotation_status": annotation_status,
+            "mark_operation": mark_payload["operation"],
+            "annotation_operation": annotation_payload["operation"],
+            "archive_mark_visible": "archive" in mark_types,
+            "message_annotation_visible": "reader-visual-flow-note" in annotation_ids,
             "private_path_safe": True,
         },
     )
