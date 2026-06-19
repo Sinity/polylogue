@@ -56,14 +56,14 @@ _AUDITED_SITES: Final[dict[tuple[str, int], str]] = {
     # ``table_name`` is a closed insight table name; ``any_terms`` is built
     # immediately above from closed ``(column, path)`` fallback specs; ``clause``
     # values are bound.
-    ("polylogue/storage/sqlite/archive_tiers/archive.py", 2611): (
+    ("polylogue/storage/sqlite/archive_tiers/archive.py", 2639): (
         "readiness fallback reason counts: closed insight-table + _INSIGHT_FALLBACK_PAYLOAD column/path; values bound"
     ),
     # #1743 readiness fallback reason breakdown:
     #   rows = self._conn.execute(f"... FROM {table_name} ... json_each(... '{path}') ...{clause}")
     # ``table_name``/``column``/``path`` are closed fallback specs; ``clause``
     # values are bound.
-    ("polylogue/storage/sqlite/archive_tiers/archive.py", 2620): (
+    ("polylogue/storage/sqlite/archive_tiers/archive.py", 2648): (
         "readiness fallback reason breakdown: closed insight-table + fallback payload column/path; values bound"
     ),
     # Terminal unit row readers:
@@ -73,16 +73,16 @@ _AUDITED_SITES: Final[dict[tuple[str, int], str]] = {
     # comes from the shared session filter lowerer; pagination values are bound.
     # ``order_by`` is a closed literal fragment selected from the parsed
     # pipeline sort stage and bounded ASC/DESC tokens.
-    ("polylogue/storage/sqlite/archive_tiers/archive.py", 3286): (
+    ("polylogue/storage/sqlite/archive_tiers/archive.py", 3314): (
         "message query rows: structural predicate/session filter/order fragments from lowerers; values bound"
     ),
-    ("polylogue/storage/sqlite/archive_tiers/archive.py", 3357): (
+    ("polylogue/storage/sqlite/archive_tiers/archive.py", 3385): (
         "action query rows: structural predicate/session filter/order fragments from lowerers; values bound"
     ),
-    ("polylogue/storage/sqlite/archive_tiers/archive.py", 3424): (
+    ("polylogue/storage/sqlite/archive_tiers/archive.py", 3452): (
         "block query rows: structural predicate/session filter/order fragments from lowerers; values bound"
     ),
-    ("polylogue/storage/sqlite/archive_tiers/archive.py", 3496): (
+    ("polylogue/storage/sqlite/archive_tiers/archive.py", 3524): (
         "assertion query rows: structural predicate/session filter/order fragments from lowerers; values bound"
     ),
     # Assertion readers:

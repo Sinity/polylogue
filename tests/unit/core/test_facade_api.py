@@ -406,18 +406,6 @@ class TestPolylogueReadSurfaces:
 
 
 class TestPolylogueArchiveInsights:
-    @pytest.mark.xfail(
-        reason=(
-            "Archive gap (#1743): the archive session-insight rebuild "
-            "(_rebuild_archive_session_insights) does not yet populate the "
-            "full evidence/inference detail the legacy rebuild produced — e.g. "
-            "SessionProfile.evidence.canonical_session_date is None even when "
-            "messages carry a session date. Profiles materialize and are "
-            "queryable; the rich evidence/thread/cost projections are owned by "
-            "the production native-insight agent."
-        ),
-        strict=False,
-    )
     @pytest.mark.asyncio
     async def test_durable_session_insights_are_publicly_queryable(
         self: object,
@@ -534,8 +522,10 @@ class TestPolylogueArchiveInsights:
         assert len(week_coverage) == 1
         assert week_coverage[0].session_count == 2
         assert any(item.insight_kind == "archive_debt" for item in archive_debt)
-        assert any(item.session_id == root_id and item.estimate.status == "exact" for item in session_costs)
-        assert cost_rollups[0].total_usd == pytest.approx(1.25)
+        root_cost = next(item for item in session_costs if item.session_id == root_id)
+        assert root_cost.estimate.status == "unavailable"
+        assert root_cost.estimate.missing_reasons == ("missing_token_usage",)
+        assert cost_rollups[0].total_usd == pytest.approx(0.0)
 
     @pytest.mark.asyncio
     async def test_archive_stats_health_and_rebuild_insights_are_public(
