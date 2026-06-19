@@ -80,6 +80,48 @@ def test_nested_render_command_dispatches_to_catalog_entry(monkeypatch: pytest.M
     assert captured == [["--check"]]
 
 
+def test_default_command_group_dispatches_bare_verify(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[list[str] | None] = []
+
+    def fake_main(argv: list[str] | None) -> int:
+        captured.append(argv)
+        return 0
+
+    fake_module = ModuleType("_polylogue_devtools_test_verify_fake")
+    fake_module.__dict__["main"] = fake_main
+    monkeypatch.setitem(__import__("sys").modules, fake_module.__name__, fake_module)
+
+    monkeypatch.setitem(
+        COMMANDS,
+        "verify",
+        CommandSpec("verify", "verification", "fake verify", fake_module.__name__),
+    )
+
+    assert devtools_main.main(["verify"]) == 0
+    assert captured == [[]]
+
+
+def test_default_command_group_forwards_verify_flags(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[list[str] | None] = []
+
+    def fake_main(argv: list[str] | None) -> int:
+        captured.append(argv)
+        return 0
+
+    fake_module = ModuleType("_polylogue_devtools_test_verify_flag_fake")
+    fake_module.__dict__["main"] = fake_main
+    monkeypatch.setitem(__import__("sys").modules, fake_module.__name__, fake_module)
+
+    monkeypatch.setitem(
+        COMMANDS,
+        "verify",
+        CommandSpec("verify", "verification", "fake verify", fake_module.__name__),
+    )
+
+    assert devtools_main.main(["verify", "--quick"]) == 0
+    assert captured == [["--quick"]]
+
+
 def test_nested_workspace_command_dispatches_to_catalog_entry(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: list[list[str] | None] = []
 
