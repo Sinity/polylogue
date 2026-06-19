@@ -51,3 +51,23 @@ def test_terminal_query_completion_payloads_are_lightweight() -> None:
     field_candidate = field_candidates[0]
     assert field_candidate["insert"] == "boundary:"
     assert field_candidate["kind"] == "query-terminal-field"
+
+
+def test_query_unit_descriptors_own_terminal_aliases() -> None:
+    from polylogue.archive.query.metadata import (
+        query_unit_descriptor,
+        terminal_query_source_list,
+        terminal_query_source_pairs,
+        terminal_query_unit,
+    )
+
+    observed_descriptor = query_unit_descriptor("observed-events")
+    context_descriptor = query_unit_descriptor("context-snapshot")
+    assert observed_descriptor is not None
+    assert context_descriptor is not None
+    assert terminal_query_unit("messages") == "message"
+    assert terminal_query_unit("context-snapshots") == "context-snapshot"
+    assert observed_descriptor.plural_source == "observed-events"
+    assert context_descriptor.source_aliases == ("context-snapshot", "context-snapshots")
+    assert terminal_query_source_list() == "messages/actions/blocks/assertions/runs/observed-events/context-snapshots"
+    assert ("assertions", "assertion") in terminal_query_source_pairs()

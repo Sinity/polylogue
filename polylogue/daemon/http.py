@@ -2412,6 +2412,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         """``GET /api/query-units`` returns terminal query-unit rows."""
 
         from polylogue.archive.query.expression import ExpressionCompileError, parse_unit_source_expression
+        from polylogue.archive.query.metadata import terminal_query_source_list
         from polylogue.archive.query.spec import clamp_query_limit
         from polylogue.archive.query.unit_results import query_unit_rows, query_unit_session_filters
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -2427,7 +2428,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 HTTPStatus.BAD_REQUEST,
                 {
                     "error": "invalid_query",
-                    "message": "query-units requires a messages/actions/blocks/assertions/runs/observed-events/context-snapshots where expression",
+                    "message": (f"query-units requires a {terminal_query_source_list()} where expression"),
                 },
             )
             return
