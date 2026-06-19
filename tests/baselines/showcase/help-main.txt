@@ -150,14 +150,12 @@ Options:
 
 Commands:
   analyze
-  config      Show configuration paths and resolved settings.
-  continue    Compile a successor-agent continuation report.
-  delete      Delete matched sessions.
-  import      Import sessions from configured sources.
-  init        Detect chat sources and write a starter polylogue.toml.
+  config    Show configuration paths and resolved settings.
+  continue  Compile a successor-agent continuation report.
+  delete    Delete matched sessions.
+  import    Import sessions from configured sources.
+  init      Detect chat sources and write a starter polylogue.toml.
   mark
-  ops         Run operational archive and daemon commands.
-  read        Read matched sessions (route to view/destination).
-  resume      Resume from recent session context.
+  ops       Run operational archive and daemon commands.
+  read      Read matched sessions (route to view/destination).
   select
-  user-state  Manage durable reader user state.

@@ -1,7 +1,6 @@
-Usage: polylogue user-state annotations save [OPTIONS] ANNOTATION_ID
-                                             SESSION_ID NOTE_TEXT
+Usage: polylogue ops state marks add [OPTIONS] SESSION_ID {star|pin|archive}
 
-  Create or update a durable annotation.
+  Add a durable mark.
 
 Options:
   --target-type [session|message|work_event|thread|block|attachment|paste_span]

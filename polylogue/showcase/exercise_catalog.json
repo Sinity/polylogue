@@ -28,13 +28,14 @@
       "vhs_capture": true
     },
     {
-      "name": "help-user-state-tags",
+      "name": "help-ops-state-tags",
       "group": "structural",
-      "description": "User-state tags subcommand help",
+      "description": "Ops state tags subcommand help",
       "execution": {
         "kind": "polylogue",
         "argv": [
-          "user-state",
+          "ops",
+          "state",
           "tags",
           "--help"
         ]
@@ -576,7 +577,8 @@
       "execution": {
         "kind": "polylogue",
         "argv": [
-          "user-state",
+          "ops",
+          "state",
           "tags"
         ]
       },
@@ -768,7 +770,10 @@
       },
       "needs_data": true,
       "assertions": [
-        {"path": "embedding_readiness", "op": "exists"}
+        {
+          "path": "embedding_readiness",
+          "op": "exists"
+        }
       ]
     },
     {
@@ -778,7 +783,8 @@
       "execution": {
         "kind": "polylogue",
         "argv": [
-          "user-state",
+          "ops",
+          "state",
           "tags",
           "--format",
           "json"

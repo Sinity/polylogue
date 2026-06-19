@@ -1,4 +1,4 @@
-"""Tests for the polylogue user-state blackboard CLI commands."""
+"""Tests for the polylogue ops state blackboard CLI commands."""
 
 from __future__ import annotations
 
@@ -61,7 +61,7 @@ def _insert_note(workspace: dict[str, Path], **kwargs: object) -> str:
 
 
 class TestBlackboardPost:
-    """Tests for `polylogue user-state blackboard post`."""
+    """Tests for `polylogue ops state blackboard post`."""
 
     def test_post_creates_note(self, cli_runner: CliRunner, workspace_env: dict[str, Path]) -> None:
         """Posting a valid note creates it in archive user.db."""
@@ -70,7 +70,8 @@ class TestBlackboardPost:
         result = cli_runner.invoke(
             cli,
             [
-                "user-state",
+                "ops",
+                "state",
                 "blackboard",
                 "post",
                 "--kind",
@@ -99,7 +100,8 @@ class TestBlackboardPost:
         result = cli_runner.invoke(
             cli,
             [
-                "user-state",
+                "ops",
+                "state",
                 "blackboard",
                 "post",
                 "--kind",
@@ -126,7 +128,8 @@ class TestBlackboardPost:
         result = cli_runner.invoke(
             cli,
             [
-                "user-state",
+                "ops",
+                "state",
                 "blackboard",
                 "post",
                 "--kind",
@@ -169,7 +172,8 @@ class TestBlackboardPost:
         result = cli_runner.invoke(
             cli,
             [
-                "user-state",
+                "ops",
+                "state",
                 "blackboard",
                 "post",
                 "--kind",
@@ -188,7 +192,7 @@ class TestBlackboardPost:
         _seed_db(workspace_env)
 
         result = cli_runner.invoke(
-            cli, ["user-state", "blackboard", "post", "--kind", "finding", "--content", "Missing title."]
+            cli, ["ops", "state", "blackboard", "post", "--kind", "finding", "--content", "Missing title."]
         )
 
         assert result.exit_code != 0
@@ -199,7 +203,7 @@ class TestBlackboardPost:
         _seed_db(workspace_env)
 
         result = cli_runner.invoke(
-            cli, ["user-state", "blackboard", "post", "--kind", "finding", "--title", "Missing Content"]
+            cli, ["ops", "state", "blackboard", "post", "--kind", "finding", "--title", "Missing Content"]
         )
 
         assert result.exit_code != 0
@@ -210,7 +214,7 @@ class TestBlackboardPost:
         _seed_db(workspace_env)
 
         result = cli_runner.invoke(
-            cli, ["user-state", "blackboard", "post", "--title", "No Kind", "--content", "Missing kind."]
+            cli, ["ops", "state", "blackboard", "post", "--title", "No Kind", "--content", "Missing kind."]
         )
 
         assert result.exit_code != 0
@@ -222,7 +226,8 @@ class TestBlackboardPost:
         result = cli_runner.invoke(
             cli,
             [
-                "user-state",
+                "ops",
+                "state",
                 "blackboard",
                 "post",
                 "--kind",
@@ -253,7 +258,8 @@ class TestBlackboardPost:
         result = cli_runner.invoke(
             cli,
             [
-                "user-state",
+                "ops",
+                "state",
                 "blackboard",
                 "post",
                 "--kind",
@@ -281,7 +287,8 @@ class TestBlackboardPost:
             result = cli_runner.invoke(
                 cli,
                 [
-                    "user-state",
+                    "ops",
+                    "state",
                     "blackboard",
                     "post",
                     "--kind",
@@ -296,14 +303,14 @@ class TestBlackboardPost:
 
 
 class TestBlackboardList:
-    """Tests for `polylogue user-state blackboard list`."""
+    """Tests for `polylogue ops state blackboard list`."""
 
     def test_list_returns_notes(self, cli_runner: CliRunner, workspace_env: dict[str, Path]) -> None:
         """Listing when notes exist shows them."""
         _insert_note(workspace_env, note_id="n1", kind="finding", title="First", content="Content 1")
         _insert_note(workspace_env, note_id="n2", kind="blocker", title="Second", content="Content 2")
 
-        result = cli_runner.invoke(cli, ["user-state", "blackboard", "list"])
+        result = cli_runner.invoke(cli, ["ops", "state", "blackboard", "list"])
 
         assert result.exit_code == 0, f"list failed: {result.output}"
         assert "First" in result.output
@@ -315,7 +322,7 @@ class TestBlackboardList:
         """Listing when no notes exist shows a dim message."""
         _seed_db(workspace_env)
 
-        result = cli_runner.invoke(cli, ["user-state", "blackboard", "list"])
+        result = cli_runner.invoke(cli, ["ops", "state", "blackboard", "list"])
 
         assert result.exit_code == 0, f"list failed: {result.output}"
         assert "no matching notes" in result.output.lower() or "no blackboard notes yet" in result.output.lower()
@@ -325,7 +332,7 @@ class TestBlackboardList:
         _insert_note(workspace_env, note_id="n1", kind="finding", title="Finding Note", content="C1")
         _insert_note(workspace_env, note_id="n2", kind="blocker", title="Blocker Note", content="C2")
 
-        result = cli_runner.invoke(cli, ["user-state", "blackboard", "list", "--kind", "finding"])
+        result = cli_runner.invoke(cli, ["ops", "state", "blackboard", "list", "--kind", "finding"])
 
         assert result.exit_code == 0
         assert "Finding Note" in result.output
@@ -336,7 +343,7 @@ class TestBlackboardList:
         _insert_note(workspace_env, note_id="n1", kind="blocker", title="Open Blocker", content="C1")
         _insert_note(workspace_env, note_id="n2", kind="finding", title="Finding", content="C2")
 
-        result = cli_runner.invoke(cli, ["user-state", "blackboard", "list", "--unresolved"])
+        result = cli_runner.invoke(cli, ["ops", "state", "blackboard", "list", "--unresolved"])
 
         assert result.exit_code == 0
         assert "Open Blocker" in result.output
@@ -345,7 +352,7 @@ class TestBlackboardList:
     def test_list_no_database(self, cli_runner: CliRunner, workspace_env: dict[str, Path]) -> None:
         """Listing when no user database exists reports an empty blackboard."""
 
-        result = cli_runner.invoke(cli, ["user-state", "blackboard", "list"])
+        result = cli_runner.invoke(cli, ["ops", "state", "blackboard", "list"])
 
         assert result.exit_code == 0
         assert "no blackboard notes yet" in result.output.lower()
@@ -372,7 +379,7 @@ class TestBlackboardList:
             )
             conn.commit()
 
-        result = cli_runner.invoke(cli, ["user-state", "blackboard", "list"])
+        result = cli_runner.invoke(cli, ["ops", "state", "blackboard", "list"])
 
         assert result.exit_code == 0, f"list failed: {result.output}"
         assert "Outside List" not in result.output

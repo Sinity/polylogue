@@ -1,6 +1,6 @@
-Usage: polylogue user-state workspaces list [OPTIONS]
+Usage: polylogue ops state saved-views list [OPTIONS]
 
-  List reader workspaces.
+  List saved views.
 
 Options:
   -f, --format [json]

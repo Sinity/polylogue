@@ -1,5 +1,5 @@
-Usage: polylogue user-state marks remove [OPTIONS] SESSION_ID
-                                         {star|pin|archive}
+Usage: polylogue ops state marks remove [OPTIONS] SESSION_ID
+                                        {star|pin|archive}
 
   Remove a durable mark.
 

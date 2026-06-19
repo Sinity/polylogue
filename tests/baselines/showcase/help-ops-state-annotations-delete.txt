@@ -1,4 +1,4 @@
-Usage: polylogue user-state annotations delete [OPTIONS] ANNOTATION_ID
+Usage: polylogue ops state annotations delete [OPTIONS] ANNOTATION_ID
 
   Delete a durable annotation.
 

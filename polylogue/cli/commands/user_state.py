@@ -1,4 +1,4 @@
-"""Durable reader user-state commands."""
+"""Durable reader state maintenance commands."""
 
 from __future__ import annotations
 
@@ -73,17 +73,17 @@ def _default_saved_view_id(name: str, query_json: str) -> str:
     return f"saved-view-{digest[:16]}"
 
 
-@click.group("user-state")
-def user_state_command() -> None:
-    """Manage durable reader user state."""
+@click.group("state")
+def state_command() -> None:
+    """Manage durable reader state."""
 
 
-user_state_command.add_command(blackboard_command)
-user_state_command.add_command(feedback_command)
-user_state_command.add_command(tags_command)
+state_command.add_command(blackboard_command)
+state_command.add_command(feedback_command)
+state_command.add_command(tags_command)
 
 
-@user_state_command.group("marks")
+@state_command.group("marks")
 def marks_group() -> None:
     """Manage session and message marks."""
 
@@ -197,7 +197,7 @@ def remove_mark_command(
     )
 
 
-@user_state_command.group("annotations")
+@state_command.group("annotations")
 def annotations_group() -> None:
     """Manage session and message annotations."""
 
@@ -289,7 +289,7 @@ def delete_annotation_command(env: AppEnv, annotation_id: str, output_format: st
     )
 
 
-@user_state_command.group("saved-views")
+@state_command.group("saved-views")
 def saved_views_group() -> None:
     """Manage saved query views."""
 
@@ -348,7 +348,7 @@ def delete_saved_view_command(env: AppEnv, view_id: str, output_format: str | No
     )
 
 
-@user_state_command.group("recall-packs")
+@state_command.group("recall-packs")
 def recall_packs_group() -> None:
     """Manage recall packs with explicit target evidence."""
 
@@ -424,7 +424,7 @@ def delete_recall_pack_command(env: AppEnv, pack_id: str, output_format: str | N
     )
 
 
-@user_state_command.group("workspaces")
+@state_command.group("workspaces")
 def workspaces_group() -> None:
     """Manage durable reader workspaces."""
 
@@ -503,4 +503,4 @@ def delete_workspace_command(env: AppEnv, workspace_id: str, output_format: str 
     )
 
 
-__all__ = ["user_state_command"]
+__all__ = ["state_command"]

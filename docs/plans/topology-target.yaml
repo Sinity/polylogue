@@ -768,10 +768,6 @@ files:
     loc: 335
     target: polylogue/cli/commands/reset.py
     owner: stable
-  - path: polylogue/cli/commands/resume.py
-    loc: 111
-    target: polylogue/cli/commands/resume.py
-    owner: stable
   - path: polylogue/cli/commands/schema.py
     loc: 130
     target: polylogue/cli/commands/schema.py

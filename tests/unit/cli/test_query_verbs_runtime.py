@@ -524,7 +524,7 @@ def test_continue_verb_renders_recovery_continue_report() -> None:
         patch("polylogue.cli.query_verbs._resolve_target_session_id", return_value="codex-session:abc123"),
         patch("polylogue.cli.query_verbs.run_read_view") as run_read_view,
     ):
-        wrapped(child, "clipboard", None, None)
+        wrapped(child, "clipboard", None, False, None, None, (), 10, None)
 
     invocation = run_read_view.call_args.args[2]
     assert invocation == ReadViewInvocation(
@@ -569,7 +569,7 @@ def test_continue_verb_json_emits_context_image(capsys: pytest.CaptureFixture[st
     assert callable(wrapped)
 
     with patch("polylogue.cli.query_verbs._resolve_target_session_id", return_value="codex-session:abc123"):
-        wrapped(child, "terminal", None, "json")
+        wrapped(child, "terminal", None, False, None, None, (), 10, "json")
 
     emitted = json.loads(capsys.readouterr().out)
     assert emitted["spec"]["purpose"] == "continue"
@@ -579,6 +579,50 @@ def test_continue_verb_json_emits_context_image(capsys: pytest.CaptureFixture[st
     assert spec.purpose == "continue"
     assert spec.seed_refs == ("session:codex-session:abc123",)
     assert spec.read_views == ("recovery",)
+
+
+def test_continue_candidates_ranks_context_without_session_resolution() -> None:
+    """``continue --candidates`` moves candidate ranking onto the continuation action."""
+    _, child = _context_pair(params={"output_format": "json"}, query_terms=())
+    child.obj.polylogue = SimpleNamespace()
+    wrapped = getattr(query_verbs.continue_verb.callback, "__wrapped__", None)
+    assert callable(wrapped)
+
+    with (
+        patch("polylogue.cli.query_verbs._emit_continue_candidates") as emit_candidates,
+        patch("polylogue.cli.query_verbs._resolve_target_session_id") as resolve_target,
+    ):
+        wrapped(
+            child,
+            "terminal",
+            None,
+            True,
+            "/workspace/polylogue",
+            "/workspace/polylogue",
+            ("polylogue/cli/query_verbs.py",),
+            3,
+            "json",
+        )
+
+    resolve_target.assert_not_called()
+    emit_candidates.assert_called_once_with(
+        child.obj,
+        query_verbs._parent_request(child),
+        repo_path="/workspace/polylogue",
+        cwd="/workspace/polylogue",
+        recent_files=("polylogue/cli/query_verbs.py",),
+        limit=3,
+        output_format="json",
+    )
+
+
+def test_continue_candidate_options_require_candidate_mode() -> None:
+    _, child = _context_pair(query_terms=("id:codex-session:abc123",))
+    wrapped = getattr(query_verbs.continue_verb.callback, "__wrapped__", None)
+    assert callable(wrapped)
+
+    with pytest.raises(click.UsageError, match="only valid with continue --candidates"):
+        wrapped(child, "terminal", None, False, "/workspace/polylogue", None, (), 10, None)
 
 
 def test_resolve_target_session_id_uses_query_terms(workspace_env: dict[str, Path]) -> None:

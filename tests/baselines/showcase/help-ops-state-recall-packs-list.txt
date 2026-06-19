@@ -1,6 +1,6 @@
-Usage: polylogue user-state saved-views list [OPTIONS]
+Usage: polylogue ops state recall-packs list [OPTIONS]
 
-  List saved views.
+  List recall packs.
 
 Options:
   -f, --format [json]
