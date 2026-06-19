@@ -725,7 +725,6 @@ class TestCliMetadata:
             "continue",
             "cost",
             "resume",
-            "resume-candidates",
             "insights",
             "tags",
             "user-state",

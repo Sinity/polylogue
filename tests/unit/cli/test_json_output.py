@@ -85,7 +85,7 @@ _COMMANDS: list[tuple[list[str], bool]] = [
     (["ops", "doctor"], False),
     (["config"], False),  # TOML output with root --json (not JSON, but pipeable)
     (["resume"], True),
-    (["resume-candidates"], True),
+    (["resume", "candidates"], True),
     (["tags"], False),
     # ── Insights subcommands ─────────────────────────────────────────
     (["insights", "status"], False),

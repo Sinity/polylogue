@@ -102,7 +102,6 @@ _SHORT_HELP: dict[str, str] = {
     "paths": "Print canonical archive paths and bind-mount detection.",
     "reset": "Reset local archive state.",
     "resume": "Resume from recent session context.",
-    "resume_candidates": "Rank resume candidates for the current context.",
     "schema": "Inspect and audit provider schemas.",
     "status": "Show daemon and archive status.",
     "tags": "Manage session tags.",
@@ -122,13 +121,13 @@ _GROUP_ATTRS: dict[str, str] = {
     "insights": "insights_command",
     "maintenance": "maintenance_group",
     "ops": "ops_command",
+    "resume": "resume_command",
     "schema": "schema_command",
     "user_state": "user_state_command",
 }
 
 _COMMAND_ATTRS: dict[str, str] = {
     "import_command": "import_command",
-    "resume_candidates": "resume_candidates_command",
 }
 
 
@@ -149,7 +148,6 @@ ROOT_COMMANDS: tuple[click.Command, ...] = (
     _L("import_command"),
     _L("init"),
     _L("resume"),
-    _L("resume_candidates"),
     _L("insights"),
     _L("tags"),
     _L("user_state"),

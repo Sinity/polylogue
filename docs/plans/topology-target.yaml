@@ -689,7 +689,7 @@ files:
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
-    loc: 188
+    loc: 186
     target: polylogue/cli/click_command_registration.py
     owner: stable
   - path: polylogue/cli/click_option_groups.py
@@ -769,12 +769,8 @@ files:
     target: polylogue/cli/commands/reset.py
     owner: stable
   - path: polylogue/cli/commands/resume.py
-    loc: 52
+    loc: 111
     target: polylogue/cli/commands/resume.py
-    owner: stable
-  - path: polylogue/cli/commands/resume_candidates.py
-    loc: 57
-    target: polylogue/cli/commands/resume_candidates.py
     owner: stable
   - path: polylogue/cli/commands/schema.py
     loc: 130
