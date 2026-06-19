@@ -1187,6 +1187,14 @@ class ArchiveStore:
                         (session_id, normalized_tag),
                     ).fetchone()
                     if existing is not None:
+                        upsert_session_tag(
+                            user_conn,
+                            session_id=session_id,
+                            tag=tag,
+                            tag_source="user",
+                            method="cli",
+                            evidence={"source": "archive_query"},
+                        )
                         continue
                     upsert_session_tag(
                         user_conn,

@@ -209,6 +209,43 @@ def test_archive_tiers_remove_user_tags_tolerates_legacy_user_db_without_asserti
     assert remaining == 0
 
 
+def test_archive_tiers_duplicate_user_tag_add_backfills_missing_assertion(tmp_path: Path) -> None:
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="codex-tag-backfill",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="backfill taggable")],
+            )
+        ],
+    )
+    root = tmp_path / "archive"
+
+    with ArchiveStore(root) as facade:
+        session_id = facade.write_parsed(session)
+        assert facade.add_user_tags((session_id,), ("review",)) == 1
+
+    with sqlite3.connect(root / "user.db") as conn:
+        conn.execute(
+            "DELETE FROM assertions WHERE assertion_id = ?",
+            (assertion_id_for_session_tag(session_id, "review", "user"),),
+        )
+        conn.commit()
+
+    with ArchiveStore(root) as facade:
+        assert facade.add_user_tags((session_id,), ("review",)) == 0
+
+    with sqlite3.connect(root / "user.db") as conn:
+        assertion = read_assertion_envelope(
+            conn,
+            assertion_id_for_session_tag(session_id, "review", "user"),
+        )
+    assert assertion is not None
+    assert assertion.status == "active"
+
+
 def test_archive_tiers_archive_facade_deletes_archive_sessions_but_keeps_user_tags(tmp_path: Path) -> None:
     session = ParsedSession(
         source_name=Provider.CODEX,
