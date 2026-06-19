@@ -45,8 +45,10 @@ from polylogue.surfaces.payloads import (
     QueryErrorPayload,
     QueryMissDiagnosticsPayload,
     ReaderActionAvailabilityPayload,
+    SessionReadViewEnvelope,
     TargetRefPayload,
     _build_flags_from_session,
+    model_json_document,
     reader_anchor,
     reader_message_actions,
     reader_session_actions,
@@ -2741,15 +2743,13 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if payload is None:
             self._send_error(HTTPStatus.NOT_FOUND, "not_found")
             return
-        self._send_json(
-            HTTPStatus.OK,
-            {
-                "session_id": conv_id,
-                "view": view,
-                "format": output_format,
-                "payload": payload,
-            },
+        envelope = SessionReadViewEnvelope(
+            session_id=conv_id,
+            view=view,
+            format=output_format,
+            payload=payload,
         )
+        self._send_json(HTTPStatus.OK, model_json_document(envelope, exclude_none=True))
 
     # ------------------------------------------------------------------
     # Handlers: per-session embedding similarity (#1123)

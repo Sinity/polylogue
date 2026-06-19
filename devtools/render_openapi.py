@@ -36,6 +36,7 @@ from polylogue.surfaces.payloads import (
     QueryUnitEnvelope,
     SearchEnvelope,
     SessionListRowPayload,
+    SessionReadViewEnvelope,
     SessionSearchHitPayload,
 )
 
@@ -47,6 +48,7 @@ POLYLOGUE_API_VERSION = "1"
 _PUBLISHED_MODELS: tuple[type[BaseModel], ...] = (
     SearchEnvelope,
     QueryUnitEnvelope,
+    SessionReadViewEnvelope,
     SessionSearchHitPayload,
     SessionListRowPayload,
 )
@@ -417,6 +419,107 @@ def _build_openapi_document() -> dict[str, Any]:
                         "400": {
                             "description": "Malformed query or non-terminal session expression.",
                         },
+                    },
+                }
+            },
+            "/api/sessions/{session_id}/read": {
+                "get": {
+                    "summary": "Execute a session read-view",
+                    "description": (
+                        "Executes one supported single-session read profile and returns the "
+                        "stable ``SessionReadViewEnvelope``. Supported profiles currently "
+                        "include ``messages``, ``recovery``, ``raw``, ``context``, "
+                        "``context-pack``, ``neighbors``, and ``correlation``. The envelope "
+                        "shape is stable; individual ``payload`` content is the shared DTO "
+                        "for the selected read profile."
+                    ),
+                    "operationId": "readSessionView",
+                    "parameters": [
+                        {
+                            "name": "session_id",
+                            "in": "path",
+                            "description": "Resolved Polylogue session id.",
+                            "required": True,
+                            "schema": {"type": "string"},
+                        },
+                        {
+                            "name": "view",
+                            "in": "query",
+                            "description": "Read-view id from /api/read-view-profiles.",
+                            "required": False,
+                            "schema": {
+                                "type": "string",
+                                "enum": [
+                                    "messages",
+                                    "recovery",
+                                    "raw",
+                                    "context",
+                                    "context-pack",
+                                    "neighbors",
+                                    "correlation",
+                                ],
+                                "default": "messages",
+                            },
+                        },
+                        {
+                            "name": "format",
+                            "in": "query",
+                            "description": "Output format. JSON for all views; recovery work packets also support markdown.",
+                            "required": False,
+                            "schema": {"type": "string", "enum": ["json", "markdown"], "default": "json"},
+                        },
+                        {
+                            "name": "limit",
+                            "in": "query",
+                            "description": "Messages/neighbor page size where applicable.",
+                            "required": False,
+                            "schema": {"type": "integer", "minimum": 1},
+                        },
+                        {
+                            "name": "offset",
+                            "in": "query",
+                            "description": "Message offset for the messages view.",
+                            "required": False,
+                            "schema": {"type": "integer", "minimum": 0},
+                        },
+                        {
+                            "name": "report",
+                            "in": "query",
+                            "description": "Recovery report kind for the recovery view.",
+                            "required": False,
+                            "schema": {"type": "string", "enum": ["digest", "work-packet"], "default": "work-packet"},
+                        },
+                        {
+                            "name": "max_messages",
+                            "in": "query",
+                            "description": "Maximum messages per session for context-pack.",
+                            "required": False,
+                            "schema": {"type": "integer", "minimum": 1},
+                        },
+                        {
+                            "name": "window_hours",
+                            "in": "query",
+                            "description": "Neighbor discovery window in hours.",
+                            "required": False,
+                            "schema": {"type": "integer", "minimum": 1, "default": 24},
+                        },
+                        {
+                            "name": "since_hours",
+                            "in": "query",
+                            "description": "Correlation scan window on each side of the session.",
+                            "required": False,
+                            "schema": {"type": "integer", "minimum": 1, "default": 2},
+                        },
+                    ],
+                    "responses": {
+                        "200": {
+                            "description": "Executed read-view envelope.",
+                            "content": {
+                                "application/json": {"schema": {"$ref": "#/components/schemas/SessionReadViewEnvelope"}}
+                            },
+                        },
+                        "400": {"description": "Unsupported view or format."},
+                        "404": {"description": "Session not found."},
                     },
                 }
             },

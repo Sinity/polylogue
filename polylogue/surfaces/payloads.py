@@ -1124,6 +1124,15 @@ class RecoveryReadPayload(SurfacePayloadModel):
         return cls(session_id=str(session_id), report="work-packet", format="markdown", markdown=markdown)
 
 
+class SessionReadViewEnvelope(SurfacePayloadModel):
+    """Stable daemon envelope for one executed session read-view."""
+
+    session_id: str
+    view: str
+    format: str
+    payload: Any = Field(description="Profile-specific JSON payload for the selected read view.")
+
+
 class ObservedEventQueryRowPayload(SurfacePayloadModel):
     """Shared terminal-query row for runtime-transform observed events."""
 
@@ -1887,6 +1896,7 @@ __all__ = [
     "SessionNeighborReasonPayload",
     "SessionSearchHitPayload",
     "SessionSearchMatchPayload",
+    "SessionReadViewEnvelope",
     "SessionSummaryPayload",
     "FacetBucketsPayload",
     "FacetTimeRange",
