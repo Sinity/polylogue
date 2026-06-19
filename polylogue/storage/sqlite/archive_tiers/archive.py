@@ -1224,7 +1224,7 @@ class ArchiveStore:
                             (session_id, normalized_tag),
                         )
                         deleted = max(int(cursor.rowcount), 0)
-                        if deleted:
+                        if deleted and _table_exists(user_conn, "assertions"):
                             mark_assertion_status(
                                 user_conn,
                                 assertion_id_for_session_tag(session_id, normalized_tag, "user"),

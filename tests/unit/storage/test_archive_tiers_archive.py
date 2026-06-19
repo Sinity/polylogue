@@ -179,6 +179,36 @@ def test_archive_tiers_archive_facade_adds_user_tags(tmp_path: Path) -> None:
     assert [summary.session_id for summary in summaries] == [session_id]
 
 
+def test_archive_tiers_remove_user_tags_tolerates_legacy_user_db_without_assertions(tmp_path: Path) -> None:
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="codex-tag-legacy",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="legacy taggable")],
+            )
+        ],
+    )
+    root = tmp_path / "archive"
+
+    with ArchiveStore(root) as facade:
+        session_id = facade.write_parsed(session)
+        assert facade.add_user_tags((session_id,), ("legacy",)) == 1
+
+    with sqlite3.connect(root / "user.db") as conn:
+        conn.execute("DROP TABLE assertions")
+        conn.commit()
+
+    with ArchiveStore(root) as facade:
+        assert facade.remove_user_tags((session_id,), ("legacy",)) == 1
+
+    with sqlite3.connect(root / "user.db") as conn:
+        remaining = conn.execute("SELECT COUNT(*) FROM session_tags").fetchone()[0]
+    assert remaining == 0
+
+
 def test_archive_tiers_archive_facade_deletes_archive_sessions_but_keeps_user_tags(tmp_path: Path) -> None:
     session = ParsedSession(
         source_name=Provider.CODEX,
