@@ -24,6 +24,7 @@ from pydantic import BaseModel
 from devtools.command_catalog import control_plane_command
 from devtools.render_support import write_if_changed
 from polylogue.surfaces.payloads import (
+    ImportExplainPayload,
     MachineErrorPayload,
     MachineSuccessPayload,
     MutationResultPayload,
@@ -150,6 +151,20 @@ SCHEMAS: tuple[CliOutputSchema, ...] = (
             "Polylogue.query_units(...)",
             "MCP query_units",
             "GET /api/query-units?expression=...",
+        ),
+    ),
+    CliOutputSchema(
+        name="import-explain",
+        title="Import Explain Payload",
+        description=(
+            "Finite explanation for `polylogue import PATH --explain --format json`: "
+            "detector/parser decisions, artifact taxonomy, produced-row counts, "
+            "skips, caveats, and redacted source refs."
+        ),
+        model=ImportExplainPayload,
+        surfaces=(
+            "polylogue import PATH --explain --format json",
+            "polylogue import PATH --explain --format ndjson (entries)",
         ),
     ),
     CliOutputSchema(
