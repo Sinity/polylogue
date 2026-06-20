@@ -24,12 +24,9 @@ from polylogue.core.refs import EvidenceRef, ObjectRef
 from polylogue.insights.run_projection import ContextSnapshot, ObservedEvent, ProjectedRun
 from polylogue.insights.transforms import compile_recovery_digest
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSummary, ArchiveStore
+from polylogue.surfaces import payloads as surface_payloads
 from polylogue.surfaces.payloads import (
-    ActionQueryRowPayload,
-    AssertionQueryRowPayload,
-    BlockQueryRowPayload,
     ContextSnapshotQueryRowPayload,
-    MessageQueryRowPayload,
     ObservedEventQueryRowPayload,
     QueryUnitAggregateRowPayload,
     QueryUnitResultEnvelope,
@@ -69,12 +66,25 @@ class _RuntimeQuery(Protocol):
     ) -> Sequence[Any]: ...
 
 
-_ROW_PAYLOAD_MODELS: dict[str, _RowPayloadModel] = {
-    "ActionQueryRowPayload": ActionQueryRowPayload,
-    "AssertionQueryRowPayload": AssertionQueryRowPayload,
-    "BlockQueryRowPayload": BlockQueryRowPayload,
-    "MessageQueryRowPayload": MessageQueryRowPayload,
-}
+def _row_payload_model(descriptor: QueryUnitDescriptor) -> _RowPayloadModel | None:
+    """Resolve the descriptor-owned row payload model."""
+
+    model = getattr(surface_payloads, descriptor.payload_model, None)
+    if model is None or not hasattr(model, "from_row"):
+        return None
+    return cast(_RowPayloadModel, model)
+
+
+def _runtime_query(descriptor: QueryUnitDescriptor) -> _RuntimeQuery | None:
+    """Resolve the descriptor-owned runtime-transform executor."""
+
+    method_name = descriptor.runtime_query_method
+    if method_name is None:
+        return None
+    query_fn = globals().get(method_name)
+    if query_fn is None:
+        return None
+    return cast(_RuntimeQuery, query_fn)
 
 
 def _bool_param(value: object) -> bool:
@@ -619,16 +629,10 @@ def _query_observed_events(
     return tuple(rows)
 
 
-_RUNTIME_TRANSFORM_QUERIES: dict[str, _RuntimeQuery] = {
-    "context-snapshot": _query_context_snapshots,
-    "observed-event": _query_observed_events,
-    "run": _query_runs,
-}
-
-
 def _build_runtime_transform_envelope(
     archive: ArchiveStore,
     source: QueryUnitSource,
+    descriptor: QueryUnitDescriptor,
     *,
     query: str,
     limit: int,
@@ -638,7 +642,7 @@ def _build_runtime_transform_envelope(
 ) -> QueryUnitResultEnvelope:
     if source.aggregate is not None:
         raise ValueError(f"Query unit {source.unit!r} aggregate execution requires a SQL lowerer")
-    query_fn = _RUNTIME_TRANSFORM_QUERIES.get(source.unit)
+    query_fn = _runtime_query(descriptor)
     if query_fn is None:
         raise ValueError(f"Query unit {source.unit!r} is not wired to a runtime-transform executor")
     rows = query_fn(
@@ -692,7 +696,7 @@ def _build_sql_envelope(
     sort = source.sort.field if source.sort is not None else None
     sort_direction = source.sort.direction if source.sort is not None else "asc"
     method_name = descriptor.sql_query_method
-    payload_model = _ROW_PAYLOAD_MODELS.get(descriptor.payload_model)
+    payload_model = _row_payload_model(descriptor)
     if method_name is None or payload_model is None:
         raise ValueError(f"Query unit {source.unit!r} is not wired to a SQL executor")
     query_method = cast(Any, getattr(archive, method_name))
@@ -742,6 +746,7 @@ def query_unit_rows(
         return _build_runtime_transform_envelope(
             archive,
             source,
+            descriptor,
             query=query,
             limit=limit,
             offset=offset,
