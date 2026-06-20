@@ -65,6 +65,7 @@ _KNOWN_MINIMAL: dict[str, dict[str, object]] = {
     "threads": {"limit": 1},
     "archive_coverage": {"limit": 1},
     "archive_debt": {"limit": 1},
+    "explain_import": {"raw_ref": "raw:discovery-nonexistent", "limit": 1},
     "cost_rollups": {"limit": 1},
     "tool_usage": {"limit": 1},
     "tool_call_latency_distribution": {"limit": 1},
