@@ -1485,13 +1485,15 @@ class TestReaderQueryUnits:
         assert items[0]["boundary"] == "session_start"
 
     def test_query_units_endpoint_rejects_session_expression(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.archive.query.metadata import terminal_query_source_list
+
         expression = quote("repo:polylogue")
         with _running_server(workspace_env) as (_, base_url):
             status, payload = _get_json_ex(base_url, f"/api/query-units?expression={expression}")
 
         assert status == 400
         assert payload["error"] == "invalid_query"
-        assert "messages/actions/blocks/assertions/runs/observed-events/context-snapshots" in str(payload["message"])
+        assert terminal_query_source_list() in str(payload["message"])
 
 
 class TestReaderViewProfiles:

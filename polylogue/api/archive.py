@@ -1742,13 +1742,14 @@ class PolylogueArchiveMixin:
     ) -> QueryUnitEnvelope:
         """Execute a terminal unit-source query."""
         from polylogue.archive.query.expression import ExpressionCompileError, parse_unit_source_expression
+        from polylogue.archive.query.metadata import terminal_query_source_list
         from polylogue.archive.query.unit_results import query_unit_rows, query_unit_session_filters
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         source = parse_unit_source_expression(expression)
         if source is None:
             raise ExpressionCompileError(
-                "query_units requires an explicit messages/actions/blocks/assertions/runs/observed-events/context-snapshots where expression",
+                f"query_units requires an explicit {terminal_query_source_list()} where expression",
                 field=None,
             )
         session_filters = query_unit_session_filters(
