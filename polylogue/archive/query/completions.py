@@ -59,6 +59,7 @@ class QueryCompletionCandidate:
     stale: bool = False
     danger: bool = False
     score: float = 1.0
+    payload_model: str | None = None
     unsupported_reason: str | None = None
     preview_command: str | None = None
 
@@ -78,6 +79,7 @@ class QueryCompletionCandidate:
             "source": self.source,
             "stale": self.stale,
             "danger": self.danger,
+            "payload_model": self.payload_model,
             "unsupported_reason": self.unsupported_reason,
             "preview_command": self.preview_command,
         }
@@ -167,6 +169,7 @@ def query_structural_unit_candidates(incomplete: str) -> list[QueryCompletionCan
                 group="query structural units",
                 description=description,
                 source="QUERY_UNIT_DESCRIPTORS",
+                payload_model=descriptor.payload_model if descriptor is not None else None,
             )
         )
     return candidates
@@ -178,6 +181,7 @@ def query_structural_field_candidates(unit: str, incomplete: str) -> list[QueryC
     current = incomplete.strip().lstrip("-").lower()
     if ":" in current:
         return []
+    descriptor = query_unit_descriptor(unit)
     candidates: list[QueryCompletionCandidate] = []
     for field_name in structural_query_fields(unit):
         if current and not field_name.startswith(current):
@@ -197,6 +201,7 @@ def query_structural_field_candidates(unit: str, incomplete: str) -> list[QueryC
                 group=f"{unit} structural fields",
                 description=description,
                 source="QUERY_UNIT_DESCRIPTORS",
+                payload_model=descriptor.payload_model if descriptor is not None else None,
             )
         )
     return candidates
@@ -226,6 +231,7 @@ def query_terminal_source_candidates(incomplete: str) -> list[QueryCompletionCan
                 group="query terminal sources",
                 description=description,
                 source="QUERY_UNIT_DESCRIPTORS",
+                payload_model=descriptor.payload_model if descriptor is not None else None,
             )
         )
     return candidates
@@ -237,6 +243,7 @@ def query_terminal_field_candidates(source: str, incomplete: str) -> list[QueryC
     current = incomplete.strip().lstrip("-").lower()
     if ":" in current:
         return []
+    descriptor = query_unit_descriptor(source)
     candidates: list[QueryCompletionCandidate] = []
     for field_name in terminal_query_fields(source):
         if current and not field_name.startswith(current):
@@ -256,6 +263,7 @@ def query_terminal_field_candidates(source: str, incomplete: str) -> list[QueryC
                 group=f"{source} terminal fields",
                 description=description,
                 source="QUERY_UNIT_DESCRIPTORS",
+                payload_model=descriptor.payload_model if descriptor is not None else None,
             )
         )
     return candidates
