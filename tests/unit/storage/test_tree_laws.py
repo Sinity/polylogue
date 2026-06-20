@@ -39,6 +39,7 @@ from tests.infra.strategies.storage import (
 # keep that single-graph assumption true under archive semantics, every spec in a
 # generated graph is pinned to one provider before seeding.
 _GRAPH_PROVIDER = "claude-ai"
+_ARCHIVE_GRAPH_EXAMPLES = 8
 
 
 def _uniform_provider(specs: tuple[SessionSpec, ...]) -> tuple[SessionSpec, ...]:
@@ -85,7 +86,9 @@ async def _root_of(plg: Polylogue, session_id: str) -> Session:
 
 
 @given(session_graph_strategy(min_sessions=2, max_sessions=6))
-@settings(max_examples=20, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
+@settings(
+    max_examples=_ARCHIVE_GRAPH_EXAMPLES, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture]
+)
 async def test_get_root_returns_node_without_parent(tmp_path: Path, specs: tuple[SessionSpec, ...]) -> None:
     """The resolved root of each node is itself parentless."""
     archive_root = tmp_path / f"tree-{uuid.uuid4().hex}"
@@ -101,7 +104,9 @@ async def test_get_root_returns_node_without_parent(tmp_path: Path, specs: tuple
 
 
 @given(session_graph_strategy(min_sessions=2, max_sessions=6))
-@settings(max_examples=20, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
+@settings(
+    max_examples=_ARCHIVE_GRAPH_EXAMPLES, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture]
+)
 async def test_get_root_matches_expected(tmp_path: Path, specs: tuple[SessionSpec, ...]) -> None:
     """The resolved root for each node matches the strategy's expected root."""
     archive_root = tmp_path / f"tree-{uuid.uuid4().hex}"
@@ -120,7 +125,9 @@ async def test_get_root_matches_expected(tmp_path: Path, specs: tuple[SessionSpe
 
 
 @given(session_graph_strategy(min_sessions=2, max_sessions=6))
-@settings(max_examples=20, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
+@settings(
+    max_examples=_ARCHIVE_GRAPH_EXAMPLES, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture]
+)
 async def test_tree_ids_match_expected(tmp_path: Path, specs: tuple[SessionSpec, ...]) -> None:
     """The full tree reachable from each node matches expected_tree_ids."""
     archive_root = tmp_path / f"tree-{uuid.uuid4().hex}"
@@ -143,7 +150,9 @@ def _expected_indices(specs: tuple[SessionSpec, ...], index: int) -> set[int]:
 
 
 @given(session_graph_strategy(min_sessions=2, max_sessions=6))
-@settings(max_examples=20, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
+@settings(
+    max_examples=_ARCHIVE_GRAPH_EXAMPLES, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture]
+)
 async def test_sorted_ids_match_expected(tmp_path: Path, specs: tuple[SessionSpec, ...]) -> None:
     """list_sessions returns sessions in expected sort order."""
     archive_root = tmp_path / f"tree-{uuid.uuid4().hex}"

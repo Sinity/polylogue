@@ -308,6 +308,52 @@ def _class_distributions(tasks: list[TaskRecord]) -> dict[str, dict[str, float]]
     }
 
 
+def _phase_duration(value: object) -> float:
+    if not isinstance(value, dict):
+        return 0.0
+    duration = value.get("duration")
+    return float(duration) if isinstance(duration, (int, float)) else 0.0
+
+
+def _latest_pytest_slow_tests(limit: int) -> list[dict[str, Any]]:
+    if limit <= 0:
+        return []
+    report_path = _get_root() / ".cache" / "verify" / "last-pytest.json"
+    try:
+        payload = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    tests = payload.get("tests")
+    if not isinstance(tests, list):
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for item in tests:
+        if not isinstance(item, dict):
+            continue
+        nodeid = item.get("nodeid")
+        if not isinstance(nodeid, str):
+            continue
+        setup_s = _phase_duration(item.get("setup"))
+        call_s = _phase_duration(item.get("call"))
+        teardown_s = _phase_duration(item.get("teardown"))
+        total_s = setup_s + call_s + teardown_s
+        if total_s <= 0:
+            continue
+        rows.append(
+            {
+                "nodeid": nodeid,
+                "total_s": round(total_s, 4),
+                "setup_s": round(setup_s, 4),
+                "call_s": round(call_s, 4),
+                "teardown_s": round(teardown_s, 4),
+                "outcome": item.get("outcome"),
+            }
+        )
+    rows.sort(key=lambda row: float(row["total_s"]), reverse=True)
+    return rows[:limit]
+
+
 def _cmd_stats(args: argparse.Namespace) -> int:
     tasks = _read_tasks()
     if not tasks:
@@ -357,6 +403,9 @@ def _cmd_stats(args: argparse.Namespace) -> int:
             "peak_rss_mb_max": max(peaks),
             "peak_rss_mb_p95": _percentile(peaks, 95),
         }
+    slow_tests = _latest_pytest_slow_tests(args.slow_tests)
+    if slow_tests:
+        stats["slow_tests"] = slow_tests
 
     slowest: list[TaskRecord] = []
     if args.slowest and args.slowest > 0:
@@ -394,6 +443,16 @@ def _cmd_stats(args: argparse.Namespace) -> int:
             f"peak_rss_max={res['peak_rss_mb_max']:.1f}MiB "
             f"peak_rss_p95={res['peak_rss_mb_p95']:.1f}MiB"
         )
+    if slow_tests:
+        print(f"slow tests from latest pytest report ({len(slow_tests)}):")
+        for test in slow_tests:
+            print(
+                f"  {test['total_s']:.2f}s "
+                f"setup={test['setup_s']:.2f}s "
+                f"call={test['call_s']:.2f}s "
+                f"teardown={test['teardown_s']:.2f}s "
+                f"{test['nodeid']}"
+            )
     if slowest:
         print(f"slowest {len(slowest)}:")
         for task in slowest:
@@ -589,6 +648,13 @@ def main(argv: list[str] | None = None) -> int:
         "--resources",
         action="store_true",
         help="Add pytest resource distributions when verify/test records carry them.",
+    )
+    stats_parser.add_argument(
+        "--slow-tests",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Include the N slowest tests from .cache/verify/last-pytest.json.",
     )
 
     replay_parser = subparsers.add_parser("replay", help="Re-run the Nth most recent task (default 1).")
