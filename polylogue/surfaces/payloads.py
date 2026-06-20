@@ -1566,6 +1566,26 @@ class QueryUnitEnvelope(SurfacePayloadModel):
     unit: QueryUnitKind
     query: str
     items: tuple[QueryUnitRowPayload, ...]
+    pipeline_stages: tuple[dict[str, object], ...] = Field(
+        default=(),
+        json_schema_extra={
+            "items": {
+                "additionalProperties": True,
+                "properties": {
+                    "kind": {
+                        "enum": ["session_scope", "sort", "limit", "offset"],
+                        "type": "string",
+                    },
+                    "predicate": {"type": "object"},
+                    "sort": {"type": "object"},
+                    "value": {"type": "integer"},
+                },
+                "required": ["kind"],
+                "type": "object",
+            }
+        },
+    )
+    """Ordered terminal pipeline stages that shaped this page, if any."""
     total: int
     """Number of terminal rows returned in this page."""
     limit: int
@@ -1644,6 +1664,7 @@ def build_query_unit_envelope(
     limit: int,
     offset: int,
     has_next: bool,
+    pipeline_stages: Sequence[Mapping[str, object]] = (),
 ) -> QueryUnitEnvelope:
     """Construct the canonical terminal query-unit response envelope."""
 
@@ -1652,6 +1673,7 @@ def build_query_unit_envelope(
         unit=unit,
         query=query,
         items=items_tuple,
+        pipeline_stages=tuple(dict(stage) for stage in pipeline_stages),
         total=len(items_tuple),
         limit=limit,
         offset=offset,
