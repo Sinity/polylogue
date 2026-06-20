@@ -4765,7 +4765,7 @@ def _field_predicate_clause(
         column = numeric_info.unit_columns.get("session")
         if column is None:
             raise ValueError(f"unsupported Boolean query field: {field}")
-        return _numeric_predicate_clause(f"{table_alias}.{column}", predicate, nullable=True)
+        return _numeric_predicate_clause(f"{table_alias}.{column}", predicate)
     else:
         raise ValueError(f"unsupported Boolean query field: {field}")
     where, params = _session_filter_clause(table_alias, tags_relation=tags_relation, prefix="WHERE", **kwargs)
@@ -4805,18 +4805,15 @@ def _count_predicate_clause(column: str, predicate: QueryFieldPredicate) -> tupl
 def _numeric_predicate_clause(
     column: str,
     predicate: QueryFieldPredicate,
-    *,
-    nullable: bool = False,
 ) -> tuple[str, list[object]]:
     if not predicate.values:
         return "", []
     value = int(predicate.values[-1])
-    expression = f"{column} IS NOT NULL AND {column}" if nullable else column
     if predicate.op == ">=":
-        return f"{expression} >= ?", [value]
+        return f"{column} >= ?", [value]
     if predicate.op == "<=":
-        return f"{expression} <= ?", [value]
-    return f"{expression} = ?", [value]
+        return f"{column} <= ?", [value]
+    return f"{column} = ?", [value]
 
 
 def _time_predicate_clause(expression: str, predicate: QueryFieldPredicate) -> tuple[str, list[object]]:
@@ -4876,11 +4873,7 @@ def _message_field_predicate_clause(message_alias: str, predicate: QueryFieldPre
         column = numeric_info.unit_columns.get("message")
         if column is None:
             raise ValueError(f"unsupported message predicate field: {field}")
-        return _numeric_predicate_clause(
-            f"{message_alias}.{column}",
-            predicate,
-            nullable=column == "duration_ms",
-        )
+        return _numeric_predicate_clause(f"{message_alias}.{column}", predicate)
     if field == "time":
         return _time_predicate_clause(_query_unit_time_expression("message", message_alias), predicate)
     if field in {"text", "command", "path", "output", "tool", "action"}:

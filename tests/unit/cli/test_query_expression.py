@@ -1225,6 +1225,13 @@ class TestBooleanQueryExpression:
             .add_message("m-miss", role="assistant", text="too short")
             .save()
         )
+        (
+            SessionBuilder(index_db, "duration-null")
+            .provider("chatgpt")
+            .title("duration null")
+            .add_message("m-null", role="assistant", text="unknown duration")
+            .save()
+        )
         with sqlite3.connect(index_db) as conn:
             conn.execute(
                 "UPDATE sessions SET reported_duration_ms = ? WHERE session_id = ?",
@@ -1242,6 +1249,13 @@ class TestBooleanQueryExpression:
             rows = archive.list_summaries(limit=100, boolean_predicate=spec.boolean_predicate)
 
         assert [row.session_id for row in rows] == ["chatgpt-export:ext-duration-hit"]
+
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            spec = compile_expression("sessions where NOT duration_ms >= 60000")
+            assert spec.boolean_predicate is not None
+            rows = archive.list_summaries(limit=100, boolean_predicate=spec.boolean_predicate)
+
+        assert [row.session_id for row in rows] == ["chatgpt-export:ext-duration-miss"]
 
     def test_message_numeric_comparisons_execute_against_archive(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.archive.query.unit_results import query_unit_rows
