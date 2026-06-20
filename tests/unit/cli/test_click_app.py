@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -270,6 +271,33 @@ def test_root_query_explain_json_outputs_terminal_unit_payload(cli_runner: CliRu
     assert payload["ast"]["unit_source"]["unit"] == "message"
     assert payload["lowering_plan"]["compatibility_selector"] == "exists message(...)"
     assert payload["predicate"]["kind"] == "and"
+
+
+def test_root_query_explain_json_outputs_terminal_pipeline_stages(cli_runner: CliRunner) -> None:
+    result = cli_runner.invoke(
+        click_cli,
+        [
+            "--plain",
+            "--format",
+            "json",
+            "find",
+            "messages where role:assistant | sort by time desc | limit 2 | offset 3",
+            "--explain",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = cast(dict[str, Any], json.loads(result.output))
+    ast_payload = cast(dict[str, Any], payload["ast"])
+    unit_source = cast(dict[str, Any], ast_payload["unit_source"])
+    expected_stages = [
+        {"kind": "sort", "sort": {"field": "time", "direction": "desc"}},
+        {"kind": "limit", "value": 2},
+        {"kind": "offset", "value": 3},
+    ]
+    assert unit_source["pipeline_stages"] == expected_stages
+    lowering_plan = cast(dict[str, Any], payload["lowering_plan"])
+    assert lowering_plan["pipeline_stages"] == expected_stages
 
 
 def test_root_query_explain_json_marks_runtime_transform_unit_payload(cli_runner: CliRunner) -> None:

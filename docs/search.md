@@ -34,6 +34,8 @@ through the same typed AST and query planner:
 compact-query      ::= compact-clause*
 boolean-query      ::= ["sessions" "where"] predicate
 unit-query         ::= ("messages" | "actions" | "blocks" | "assertions" | "runs" | "observed-events" | "context-snapshots") "where" predicate
+pipeline-query     ::= unit-query ("|" pipeline-stage)+
+                     | "sessions" "where" predicate "|" unit-query ("|" pipeline-stage)*
 
 compact-clause     ::= field-clause
                      | quoted-text | bare-text
@@ -53,6 +55,9 @@ predicate          ::= predicate "OR" predicate
                      | "seq" "(" sequence-step "->" sequence-step+ ")"
 
 structural-unit    ::= "message" | "action" | "block" | "assertion"
+pipeline-stage     ::= "sort" "by" "time" ["asc" | "desc"]
+                     | "limit" integer
+                     | "offset" integer
 ```
 
 Compact queries select sessions:
@@ -107,6 +112,13 @@ of expanding caller/API caps, and query-string offsets are added to the caller
 offset. Runtime-transform terminal rows (`runs`, `observed-events`,
 `context-snapshots`) reject sort stages until they have streaming lowerers;
 they must not collect every projected row in memory merely to sort a page.
+
+`--explain --format json` reports terminal pipelines as a `unit_source` AST with
+ordered `pipeline_stages`. Session-scoped pipelines include a `session_scope`
+stage carrying the original session predicate, followed by any terminal
+`sort`/`limit`/`offset` stages. Consumers should use that stage list rather than
+inferring pipeline behavior from incidental `limit`, `offset`, or `sort`
+fields.
 
 Unsupported forms raise typed `ExpressionCompileError`s and must not broaden
 into looser full-text search. In particular, reserved unit prefixes such as

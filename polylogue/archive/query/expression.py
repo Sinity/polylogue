@@ -247,6 +247,32 @@ class QueryUnitSort:
     direction: Literal["asc", "desc"] = "asc"
 
 
+QueryUnitPipelineStageKind = Literal["session_scope", "sort", "limit", "offset"]
+
+
+@dataclass(frozen=True)
+class QueryUnitPipelineStage:
+    """Typed terminal query pipeline stage for explain and future lowerers."""
+
+    kind: QueryUnitPipelineStageKind
+    predicate: QueryPredicate | None = None
+    sort: QueryUnitSort | None = None
+    value: int | None = None
+
+    def to_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {"kind": self.kind}
+        if self.predicate is not None:
+            payload["predicate"] = self.predicate.to_payload()
+        if self.sort is not None:
+            payload["sort"] = {
+                "field": self.sort.field,
+                "direction": self.sort.direction,
+            }
+        if self.value is not None:
+            payload["value"] = self.value
+        return payload
+
+
 @dataclass(frozen=True)
 class QueryUnitSource:
     """Explicit unit-changing source parsed from ``<unit>s where ...``."""
@@ -257,6 +283,7 @@ class QueryUnitSource:
     limit: int | None = None
     offset: int | None = None
     sort: QueryUnitSort | None = None
+    pipeline_stages: tuple[QueryUnitPipelineStage, ...] = ()
 
 
 ExplainClauseKind = Literal["field", "count", "count_range", "date", "date_range", "text", "json"]
@@ -1182,15 +1209,36 @@ def _apply_pipeline_stage(source: QueryUnitSource, stage: str) -> QueryUnitSourc
                 "runtime-transform units need a streaming lowerer first",
                 field="sort",
             )
-        return replace(source, sort=sort)
+        return replace(
+            source,
+            sort=sort,
+            pipeline_stages=(
+                *source.pipeline_stages,
+                QueryUnitPipelineStage(kind="sort", sort=sort),
+            ),
+        )
     limit = _parse_non_negative_int_stage(stage, "limit")
     if limit is not None:
         if limit == 0:
             raise ExpressionCompileError("pipeline `limit` stage must be greater than zero", field="limit")
-        return replace(source, limit=limit)
+        return replace(
+            source,
+            limit=limit,
+            pipeline_stages=(
+                *source.pipeline_stages,
+                QueryUnitPipelineStage(kind="limit", value=limit),
+            ),
+        )
     offset = _parse_non_negative_int_stage(stage, "offset")
     if offset is not None:
-        return replace(source, offset=offset)
+        return replace(
+            source,
+            offset=offset,
+            pipeline_stages=(
+                *source.pipeline_stages,
+                QueryUnitPipelineStage(kind="offset", value=offset),
+            ),
+        )
     raise ExpressionCompileError(
         f"unsupported pipeline stage {stage!r}; supported terminal stages are "
         "`sort by time [asc|desc]`, `limit N`, and `offset N`",
@@ -1246,6 +1294,10 @@ def _parse_pipeline_unit_source(expression: str) -> QueryUnitSource | None:
             limit=terminal_source.limit,
             offset=terminal_source.offset,
             sort=terminal_source.sort,
+            pipeline_stages=(
+                QueryUnitPipelineStage(kind="session_scope", predicate=session_predicate),
+                *terminal_source.pipeline_stages,
+            ),
         )
         tail_stages = tuple(remaining_stages)
     else:
@@ -1547,6 +1599,8 @@ def _ast_payload(
                 "field": unit_source.sort.field,
                 "direction": unit_source.sort.direction,
             }
+        if unit_source.pipeline_stages:
+            unit_payload["pipeline_stages"] = [stage.to_payload() for stage in unit_source.pipeline_stages]
         payload["unit_source"] = unit_payload
     return payload
 
@@ -1558,6 +1612,7 @@ def _lowering_plan_payload(
     execution_legs: tuple[str, ...],
     plan_description: tuple[str, ...],
     compatibility_selector: str | None = None,
+    pipeline_stages: tuple[QueryUnitPipelineStage, ...] = (),
 ) -> dict[str, object]:
     payload: dict[str, object] = {
         "lowerer": lowerer,
@@ -1567,6 +1622,8 @@ def _lowering_plan_payload(
     }
     if compatibility_selector is not None:
         payload["compatibility_selector"] = compatibility_selector
+    if pipeline_stages:
+        payload["pipeline_stages"] = [stage.to_payload() for stage in pipeline_stages]
     return payload
 
 
@@ -1634,6 +1691,7 @@ def explain_expression(expression: str) -> QueryExpressionExplanation:
                 execution_legs=execution_legs,
                 plan_description=plan_description,
                 compatibility_selector=compatibility_selector,
+                pipeline_stages=unit_source.pipeline_stages,
             ),
         )
     ast = parse_expression_ast(stripped)
@@ -2165,6 +2223,7 @@ __all__ = [
     "QueryExpressionExplainClause",
     "QueryExpressionExplanation",
     "QueryExpressionAST",
+    "QueryUnitPipelineStage",
     "QueryUnitSort",
     "QueryUnitSource",
     "_HAS_BOOL_MAP",
