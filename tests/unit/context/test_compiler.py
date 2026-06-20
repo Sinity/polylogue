@@ -180,17 +180,29 @@ def test_context_snapshot_record_is_explicit_delivery_boundary() -> None:
         boundary="handoff",
         run_ref="run:local-review",
     )
+    record_again = context_snapshot_record_from_image(
+        compiled.context_image,
+        boundary="handoff",
+        run_ref="run:local-review",
+    )
+    different_boundary = context_snapshot_record_from_image(
+        compiled.context_image,
+        boundary="review",
+        run_ref="run:local-review",
+    )
 
     assert record.snapshot_ref.startswith("context-snapshot:")
+    assert record.snapshot_ref == record_again.snapshot_ref
+    assert record.snapshot_ref != different_boundary.snapshot_ref
     assert record.run_ref == "run:local-review"
     assert record.boundary == "handoff"
     assert record.inheritance_mode == "explicit"
     assert record.segment_refs == (compiled.context_image.segments[0].segment_id,)
     assert record.evidence_refs == compiled.context_image.evidence_refs
     assert record.metadata["purpose"] == "handoff"
-    assert record.metadata["read_views"] == ("work-packet",)
-    assert record.metadata["token_estimate"] == compiled.context_image.token_estimate
-    assert record.metadata["include_candidates"] is False
+    assert record.metadata["read_views"] == '["work-packet"]'
+    assert record.metadata["token_estimate"] == str(compiled.context_image.token_estimate)
+    assert record.metadata["include_candidates"] == "false"
 
 
 def test_context_snapshot_record_requires_delivery_boundary() -> None:
@@ -200,6 +212,8 @@ def test_context_snapshot_record_requires_delivery_boundary() -> None:
 
     with pytest.raises(ValueError, match="delivery boundary"):
         context_snapshot_record_from_image(compiled.context_image, boundary="")
+    with pytest.raises(ValueError, match="delivery boundary"):
+        context_snapshot_record_from_image(compiled.context_image, boundary="   ")
 
 
 def test_context_spec_requires_an_explicit_seed() -> None:

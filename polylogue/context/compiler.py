@@ -100,7 +100,7 @@ class ContextSnapshotRecord(ArchiveInsightModel):
     inheritance_mode: str = "explicit"
     segment_refs: tuple[str, ...] = ()
     evidence_refs: tuple[EvidenceRef, ...] = ()
-    metadata: dict[str, object] = Field(default_factory=dict)
+    metadata: dict[str, str] = Field(default_factory=dict)
 
 
 class RecoveryContextCompilation(ArchiveInsightModel):
@@ -257,20 +257,20 @@ def context_snapshot_record_from_image(
     boundary, then persist or emit the returned record through the surface that
     actually performed the handoff.
     """
-    if not boundary:
+    if not boundary.strip():
         raise ValueError("ContextSnapshotRecord requires a delivery boundary")
     segment_refs = tuple(segment.segment_id for segment in image.segments)
-    metadata: dict[str, object] = {
-        "purpose": image.spec.purpose,
-        "read_views": image.spec.read_views,
-        "max_tokens": image.spec.max_tokens,
-        "token_estimate": image.token_estimate,
-        "include_assertions": image.spec.include_assertions,
-        "include_candidates": image.spec.include_candidates,
-        "redaction_policy": image.spec.redaction_policy,
-        "omitted_count": len(image.omitted),
-        "assertion_refs": image.assertion_refs,
-        "caveats": image.caveats,
+    metadata: dict[str, str] = {
+        "purpose": _metadata_value_to_text(image.spec.purpose),
+        "read_views": _metadata_value_to_text(image.spec.read_views),
+        "max_tokens": _metadata_value_to_text(image.spec.max_tokens),
+        "token_estimate": _metadata_value_to_text(image.token_estimate),
+        "include_assertions": _metadata_value_to_text(image.spec.include_assertions),
+        "include_candidates": _metadata_value_to_text(image.spec.include_candidates),
+        "redaction_policy": _metadata_value_to_text(image.spec.redaction_policy),
+        "omitted_count": _metadata_value_to_text(len(image.omitted)),
+        "assertion_refs": _metadata_value_to_text(image.assertion_refs),
+        "caveats": _metadata_value_to_text(image.caveats),
     }
     fingerprint_payload = {
         "boundary": boundary,
@@ -290,6 +290,12 @@ def context_snapshot_record_from_image(
         evidence_refs=image.evidence_refs,
         metadata=metadata,
     )
+
+
+def _metadata_value_to_text(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
 def _attach_context_image(compilation: RecoveryContextCompilation) -> RecoveryContextCompilation:
