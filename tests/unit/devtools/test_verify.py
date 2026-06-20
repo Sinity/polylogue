@@ -63,7 +63,6 @@ def test_quick_verify_omits_pytest() -> None:
         "verify manifests",
         "verify ci-workflows",
         "verify doc-commands",
-        "verify lane-assertions",
         "verify test-infra-currency",
         "verify test-clock-hygiene",
     ]
