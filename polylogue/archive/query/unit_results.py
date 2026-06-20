@@ -250,7 +250,11 @@ def _summary_timestamp_matches(summary: ArchiveSessionSummary, field: str, predi
 
 
 def _summary_field_matches(summary: ArchiveSessionSummary, predicate: QueryFieldPredicate) -> bool:
-    field = predicate.field.removeprefix("session.")
+    field = (
+        predicate.field_ref.name
+        if predicate.field_ref is not None and predicate.field_ref.scope == "session"
+        else predicate.field.removeprefix("session.")
+    )
     values = predicate.values
     if field == "id":
         return _exact_or_contains(str(summary.session_id), values)
@@ -299,7 +303,9 @@ def _observed_event_field_matches(
     summary: ArchiveSessionSummary,
     predicate: QueryFieldPredicate,
 ) -> bool:
-    field = predicate.field
+    field = predicate.field_ref.name if predicate.field_ref is not None else predicate.field
+    if predicate.field_ref is not None and predicate.field_ref.scope == "session":
+        return _summary_field_matches(summary, predicate)
     if field.startswith("session."):
         return _summary_field_matches(summary, predicate)
     if field == "kind":
@@ -367,7 +373,9 @@ def _context_snapshot_field_matches(
     summary: ArchiveSessionSummary,
     predicate: QueryFieldPredicate,
 ) -> bool:
-    field = predicate.field
+    field = predicate.field_ref.name if predicate.field_ref is not None else predicate.field
+    if predicate.field_ref is not None and predicate.field_ref.scope == "session":
+        return _summary_field_matches(summary, predicate)
     if field.startswith("session."):
         return _summary_field_matches(summary, predicate)
     if field == "boundary":
@@ -419,7 +427,9 @@ def _run_field_matches(
     summary: ArchiveSessionSummary,
     predicate: QueryFieldPredicate,
 ) -> bool:
-    field = predicate.field
+    field = predicate.field_ref.name if predicate.field_ref is not None else predicate.field
+    if predicate.field_ref is not None and predicate.field_ref.scope == "session":
+        return _summary_field_matches(summary, predicate)
     if field.startswith("session."):
         return _summary_field_matches(summary, predicate)
     if field in {"run", "run_ref"}:

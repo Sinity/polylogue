@@ -3,10 +3,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from typing import Literal, TypeAlias
 
 QueryBoolOp: TypeAlias = Literal["and", "or"]
 QueryCompareOp: TypeAlias = Literal["=", ">=", "<="]
+QueryFieldScope: TypeAlias = Literal["session", "unit"]
+
+
+@dataclass(frozen=True)
+class QueryFieldRef:
+    """Validated field identity carried by executable field predicates."""
+
+    scope: QueryFieldScope
+    name: str
+    source_name: str
+    unit: str | None = None
 
 
 @dataclass(frozen=True)
@@ -16,6 +28,17 @@ class QueryFieldPredicate:
     field: str
     values: tuple[str, ...] = ()
     op: QueryCompareOp = "="
+    field_ref: QueryFieldRef | None = dataclass_field(default=None, compare=False, repr=False)
+
+    def with_field_ref(self, field_ref: QueryFieldRef) -> QueryFieldPredicate:
+        """Return this predicate annotated with validated field identity."""
+
+        return QueryFieldPredicate(
+            field=self.field,
+            values=self.values,
+            op=self.op,
+            field_ref=field_ref,
+        )
 
     def to_payload(self) -> dict[str, object]:
         return {"kind": "field", "field": self.field, "op": self.op, "values": list(self.values)}
@@ -143,7 +166,9 @@ __all__ = [
     "QueryBoolPredicate",
     "QueryCompareOp",
     "QueryExistsPredicate",
+    "QueryFieldRef",
     "QueryFieldPredicate",
+    "QueryFieldScope",
     "QueryLineagePredicate",
     "QueryNotPredicate",
     "QueryPredicate",
