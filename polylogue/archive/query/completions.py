@@ -9,11 +9,11 @@ from polylogue.archive.query.metadata import (
     COUNT_QUERY_FIELD_REGISTRY,
     DATE_QUERY_FIELD_REGISTRY,
     EXPRESSION_FIELD_REGISTRY,
-    STRUCTURAL_QUERY_UNIT_REGISTRY,
     count_query_fields,
     count_query_operators,
     date_query_fields,
     date_query_operators,
+    query_unit_descriptor,
     structural_query_field_info,
     structural_query_fields,
     structural_query_units,
@@ -150,10 +150,14 @@ def query_structural_unit_candidates(incomplete: str) -> list[QueryCompletionCan
     for unit in structural_query_units():
         if current and not unit.startswith(current):
             continue
-        info = STRUCTURAL_QUERY_UNIT_REGISTRY[unit]
-        description = info.description
-        if info.example:
-            description = f"{description} Example: {info.example}" if description else f"Example: {info.example}"
+        descriptor = query_unit_descriptor(unit)
+        description = "Structural query unit."
+        if descriptor is not None:
+            description = descriptor.description
+            if descriptor.example:
+                description = (
+                    f"{description} Example: {descriptor.example}" if description else f"Example: {descriptor.example}"
+                )
         candidates.append(
             QueryCompletionCandidate(
                 value=unit,
@@ -207,12 +211,12 @@ def query_terminal_source_candidates(incomplete: str) -> list[QueryCompletionCan
         if current and not source.startswith(current):
             continue
         unit = terminal_query_unit(source)
-        info = STRUCTURAL_QUERY_UNIT_REGISTRY.get(unit or "")
+        descriptor = query_unit_descriptor(unit or "")
         description = "Terminal query row source."
-        if info is not None:
-            description = info.description
-            if info.example:
-                description = f"{description} Example: {info.example}"
+        if descriptor is not None:
+            description = descriptor.description
+            if descriptor.example:
+                description = f"{description} Example: {descriptor.example}"
         candidates.append(
             QueryCompletionCandidate(
                 value=source,
