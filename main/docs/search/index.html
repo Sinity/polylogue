@@ -566,15 +566,20 @@ polylogue 'tool:bash AND NOT tag:stale'
 polylogue 'words between 100 and 500'
 polylogue 'date between 2026-06-01 and 2026-06-17'
 </code></pre>
-<p>Explicit Boolean queries can also compare the role-split session aggregate
-columns already maintained by the archive:</p>
+<p>Explicit Boolean queries can also compare the session aggregate columns already
+maintained by the archive:</p>
 <pre><code class="language-bash">polylogue 'sessions where user_messages &gt;= 2 AND assistant_words between 500 and 2000'
 polylogue 'sessions where system_messages = 0 AND tool_messages = 0'
+polylogue 'sessions where tool_use_messages &gt;= 1 AND paste_messages = 0'
 </code></pre>
-<p>Supported role-split count fields are <code>user_messages</code>,
-<code>assistant_messages</code>, <code>system_messages</code>, <code>tool_messages</code>, <code>user_words</code>, and
-<code>assistant_words</code>. These fields are SQL-backed session predicates; use them in
-<code>sessions where ...</code> Boolean queries.</p>
+<p>Supported aggregate count fields are <code>messages</code>, <code>words</code>, <code>user_messages</code>,
+<code>assistant_messages</code>, <code>system_messages</code>, <code>tool_messages</code>, <code>user_words</code>,
+<code>assistant_words</code>, <code>tool_use_messages</code>, <code>thinking_messages</code>, and
+<code>paste_messages</code>. The <code>tool_use_messages</code>, <code>thinking_messages</code>, and
+<code>paste_messages</code> fields count messages carrying those signals, not raw block
+rows. These fields are SQL-backed session predicates; use them in
+<code>sessions where ...</code> Boolean queries or as <code>session.&lt;field&gt;</code> predicates inside
+terminal unit queries.</p>
 <p>Compact count syntax is equivalent where available:</p>
 <pre><code class="language-bash">polylogue messages:&gt;=5 words:&lt;=500
 </code></pre>
