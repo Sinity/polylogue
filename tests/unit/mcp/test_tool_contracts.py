@@ -57,6 +57,7 @@ from polylogue.mcp.archive_support import (
     archive_search_payload,
     archive_session_list_payload,
 )
+from polylogue.mcp.server_tools import _MCP_READ_TOOL_SPECS
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.surfaces.payloads import TagMutationResult
@@ -796,6 +797,12 @@ class TestGetSessionTool:
 
 
 class TestReadViewProfilesTool:
+    def test_read_tools_use_registered_specs(self, mcp_server: MCPServerUnderTest) -> None:
+        for name, spec in _MCP_READ_TOOL_SPECS.items():
+            tool = mcp_server._tool_manager._tools[name]
+            assert tool.fn.__name__ == spec.name
+            assert tool.fn.__doc__ == spec.description
+
     def test_list_read_view_profiles_uses_facade_contract(self, mcp_server: MCPServerUnderTest) -> None:
         profiles = read_view_profile_payloads()
         with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
