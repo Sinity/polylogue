@@ -52,14 +52,21 @@ CONTRACT_LANES: dict[str, LaneEntry] = {
         category="contract",
         execution=pytest_execution("-q", "-n", "0", "-m", "query_routing"),
     ),
-    "showcase-baselines": LaneEntry(
-        name="showcase-baselines",
-        description="Registry-derived tier-0 CLI help/source showcase baselines",
-        timeout_s=180,
+    "demo-visual": LaneEntry(
+        name="demo-visual",
+        description="Deterministic demo seed/verify commands plus reader visual DOM evidence",
+        timeout_s=300,
         category="contract",
-        execution=devtools_execution("lab scenario", "verify-baselines"),
-        operation_targets=("cli.help",),
-        tags=("contract", "showcase", "help"),
+        execution=pytest_execution(
+            "-q",
+            "-n",
+            "0",
+            "tests/unit/cli/test_demo_command.py",
+            "tests/unit/demo/test_demo_seed_verify.py",
+            "tests/visual",
+        ),
+        operation_targets=("cli.help", "seed-demo-archive", "verify-demo-archive", "reader-visual-dom"),
+        tags=("contract", "demo", "visual"),
     ),
     "pipeline-probe-chatgpt": LaneEntry(
         name="pipeline-probe-chatgpt",
@@ -647,7 +654,7 @@ COMPOSITE_LANES: dict[str, LaneEntry] = {
         execution=composite_execution(
             "machine-contract",
             "query-routing",
-            "showcase-baselines",
+            "demo-visual",
             "semantic-stack",
             "tui",
             "chaos",

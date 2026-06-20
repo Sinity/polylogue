@@ -33,7 +33,7 @@ polylogue find "pytest" then analyze --facets
 
 # Repository verification-lab scenarios
 devtools lab scenario run archive-smoke --tier 0
-devtools lab scenario verify-baselines
+devtools test tests/unit/cli/test_demo_command.py tests/unit/demo/test_demo_seed_verify.py tests/visual
 ```
 
 `polylogue import --demo` is a daemon scheduling command, not an in-process

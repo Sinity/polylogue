@@ -522,7 +522,7 @@ Drift check:
 
 ```bash
 devtools render all --check
-devtools lab scenario verify-baselines
+devtools test tests/unit/cli/test_demo_command.py tests/unit/demo/test_demo_seed_verify.py tests/visual
 ```
 
 ## Local State

@@ -190,9 +190,12 @@ class TestCommandConstruction:
         assert "tests/infra/test_storage_records.py" in cmd
         assert "tests/infra/test_archive_scenarios.py" in cmd
 
-    def test_showcase_baselines_lane_uses_lab_scenario_baseline_action(self) -> None:
-        cmd = build_lane_command(LANES["showcase-baselines"])
-        assert cmd[:4] == ["devtools", "lab", "scenario", "verify-baselines"]
+    def test_demo_visual_lane_uses_demo_and_visual_pytest_targets(self) -> None:
+        cmd = build_lane_command(LANES["demo-visual"])
+        assert cmd[0] == "pytest"
+        assert "tests/unit/cli/test_demo_command.py" in cmd
+        assert "tests/unit/demo/test_demo_seed_verify.py" in cmd
+        assert "tests/visual" in cmd
 
     def test_pipeline_probe_chatgpt_lane_uses_probe_budgets(self) -> None:
         cmd = build_lane_command(LANES["pipeline-probe-chatgpt"])
@@ -537,7 +540,7 @@ class TestLaneAssertions:
         assert exit_code == 0
         assert "machine-contract" in captured.out
         assert "query-routing" in captured.out
-        assert "showcase-baselines" in captured.out
+        assert "demo-visual" in captured.out
         assert "semantic-stack" in captured.out
 
     def test_archive_intelligence_dry_run_includes_new_lanes(self, capsys: pytest.CaptureFixture[str]) -> None:

@@ -45,7 +45,7 @@ jobs:
     # the ~18 min wait on every PR was not worth it. It still runs post-merge on
     # master (regression net) and on demand via workflow_dispatch, but no longer
     # gates PRs. PRs keep the fast signal — lint, typecheck (mypy --strict), nix,
-    # showcase-verify, distribution — plus the local pre-push
+    # demo-visual-verify, distribution — plus the local pre-push
     # `devtools verify --quick` hook. Re-enable PR gating by deleting this `if:`.
     if: github.event_name != 'pull_request'
     timeout-minutes: 90
@@ -85,7 +85,7 @@ jobs:
       - run: uv sync --extra dev --frozen
       - run: uv run mypy polylogue/
 
-  showcase-verify:
+  demo-visual-verify:
     timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
@@ -94,7 +94,7 @@ jobs:
         with:
           python-version: "3.13"
       - run: uv sync --extra dev --frozen
-      - run: uv run devtools lab scenario verify-baselines
+      - run: uv run pytest -q tests/unit/cli/test_demo_command.py tests/unit/demo/test_demo_seed_verify.py tests/visual
         env:
           POLYLOGUE_FORCE_PLAIN: "1"
 

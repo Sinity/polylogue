@@ -43,7 +43,17 @@ FOCUSED_COMMANDS: tuple[GateCommand, ...] = (
         False,
         "user assertion/KV surface changed",
     ),
-    GateCommand(("devtools", "lab scenario", "verify-baselines"), False, "showcase/demo baselines changed"),
+    GateCommand(
+        (
+            "devtools",
+            "test",
+            "tests/unit/cli/test_demo_command.py",
+            "tests/unit/demo/test_demo_seed_verify.py",
+            "tests/visual",
+        ),
+        False,
+        "demo or reader visual surfaces changed",
+    ),
     GateCommand(("nix", "flake", "check"), False, "packaging, Nix, or dependency metadata changed"),
 )
 
