@@ -166,6 +166,72 @@ def test_stats_resources_reports_peak_distribution(
     assert payload["resources"]["peak_rss_mb_max"] == 100.0
 
 
+def test_stats_slow_tests_reads_latest_pytest_report(
+    isolated_task_history_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    verify_cache = tmp_path / ".cache" / "verify"
+    verify_cache.mkdir(parents=True)
+    (verify_cache / "last-pytest.json").write_text(
+        json.dumps(
+            {
+                "tests": [
+                    {
+                        "nodeid": "tests/test_fast.py::test_fast",
+                        "outcome": "passed",
+                        "setup": {"duration": 0.1},
+                        "call": {"duration": 0.2},
+                        "teardown": {"duration": 0.1},
+                    },
+                    {
+                        "nodeid": "tests/test_slow.py::test_slow",
+                        "outcome": "passed",
+                        "setup": {"duration": 1.0},
+                        "call": {"duration": 2.0},
+                        "teardown": {"duration": 0.5},
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    (verify_cache / "last-pytest-isolated.json").write_text(
+        json.dumps(
+            {
+                "tests": [
+                    {
+                        "nodeid": "tests/test_isolated.py::test_isolated",
+                        "outcome": "passed",
+                        "setup": {"duration": 0.5},
+                        "call": {"duration": 4.0},
+                        "teardown": {"duration": 0.25},
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("devtools.task_history._get_root", lambda: tmp_path)
+    task_history.record_invocation(command="verify", args=[], duration_ms=100.0, exit_code=0)
+
+    assert task_history.main(["stats", "--slow-tests", "1", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["slow_tests"] == [
+        {
+            "call_s": 4.0,
+            "nodeid": "tests/test_isolated.py::test_isolated",
+            "outcome": "passed",
+            "report": "last-pytest-isolated.json",
+            "setup_s": 0.5,
+            "teardown_s": 0.25,
+            "total_s": 4.75,
+        }
+    ]
+
+
 # ---------------------------------------------------------------------------
 # budget
 # ---------------------------------------------------------------------------
