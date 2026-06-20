@@ -1555,6 +1555,69 @@ class QueryUnitEnvelope(SurfacePayloadModel):
     next_offset: int | None = None
 
 
+class OtelSpanPayload(SurfacePayloadModel):
+    """OTel-like span projection over Polylogue archive evidence.
+
+    This is intentionally an export shape, not archive identity. Span and trace
+    ids are stable projection ids; Polylogue refs stay in attributes and links
+    so consumers can navigate back to canonical archive evidence.
+    """
+
+    trace_id: str
+    span_id: str
+    parent_span_id: str | None = None
+    name: str
+    kind: str = "INTERNAL"
+    attributes: dict[str, object] = Field(default_factory=dict)
+    links: tuple[str, ...] = ()
+    events: tuple[dict[str, object], ...] = ()
+
+    @field_validator("links")
+    @classmethod
+    def _validate_otel_span_links(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(normalize_public_ref_text(ref) for ref in value)
+
+
+class OtelLogRecordPayload(SurfacePayloadModel):
+    """OTel-like log/event projection over non-span archive evidence."""
+
+    trace_id: str
+    observed_at: str | None = None
+    body: str
+    attributes: dict[str, object] = Field(default_factory=dict)
+    links: tuple[str, ...] = ()
+
+    @field_validator("links")
+    @classmethod
+    def _validate_otel_log_links(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(normalize_public_ref_text(ref) for ref in value)
+
+
+class OtelProjectionPayload(SurfacePayloadModel):
+    """Bounded outbound OTel-style projection for one Polylogue evidence set."""
+
+    mode: Literal["otel-projection"] = "otel-projection"
+    source_ref: str
+    format: Literal["otlp-json"] = "otlp-json"
+    trace_count: int
+    span_count: int
+    log_count: int
+    spans: tuple[OtelSpanPayload, ...] = ()
+    logs: tuple[OtelLogRecordPayload, ...] = ()
+    refs: tuple[str, ...] = ()
+    caveats: tuple[str, ...] = ()
+
+    @field_validator("source_ref")
+    @classmethod
+    def _validate_otel_source_ref(cls, value: str) -> str:
+        return normalize_public_ref_text(value)
+
+    @field_validator("refs")
+    @classmethod
+    def _validate_otel_refs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(normalize_public_ref_text(ref) for ref in value)
+
+
 def build_query_unit_envelope(
     items: Sequence[QueryUnitRowPayload],
     *,
@@ -2226,6 +2289,9 @@ __all__ = [
     "QueryMissReasonPayload",
     "ContextSnapshotQueryRowPayload",
     "ObservedEventQueryRowPayload",
+    "OtelLogRecordPayload",
+    "OtelProjectionPayload",
+    "OtelSpanPayload",
     "RecoveryReadPayload",
     "RecoveryReportFormat",
     "RecoveryReportKind",

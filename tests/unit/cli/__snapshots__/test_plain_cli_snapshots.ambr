@@ -388,17 +388,17 @@
     "archive_facade_routes": {
       "checked": true,
       "source": "static_facade_route_catalog",
-      "total_method_count": 123,
-      "archive_ready_method_count": 122,
+      "total_method_count": 124,
+      "archive_ready_method_count": 123,
       "unsupported_method_count": 0,
       "route_counts": {
-        "archive_routed": 108,
+        "archive_routed": 109,
         "archive_direct": 14,
         "not_archive_runtime": 1
       },
       "tier_counts": {
         "user": 38,
-        "index": 80,
+        "index": 81,
         "none": 1,
         "source": 4
       },
@@ -548,6 +548,11 @@
           "route": "archive_routed",
           "tier": "index",
           "detail": "exports from insight tables when active"
+        },
+        "export_otel": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "projects bounded archive evidence into OTel-style payloads"
         },
         "facets": {
           "route": "archive_routed",
@@ -1082,7 +1087,7 @@
       ],
       "facade_tier_route_counts": {
         "user": 38,
-        "index": 80,
+        "index": 81,
         "none": 1,
         "source": 4
       },

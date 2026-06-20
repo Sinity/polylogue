@@ -195,6 +195,7 @@ _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
     "diagnose_query_miss": ("archive_direct", "index", "explains an empty index query result from index.db probes"),
     "explain_import": ("archive_routed", "source", "explains source detection and import parsing without writing rows"),
     "export_insight_bundle": ("archive_routed", "index", "exports from insight tables when active"),
+    "export_otel": ("archive_routed", "index", "projects bounded archive evidence into OTel-style payloads"),
     "facets": ("archive_routed", "index", "computes scoped/global facets from index.db"),
     "find_resume_candidates": ("archive_routed", "index", "uses archive-routed resume operations"),
     "find_stuck_session_latency_profile_insights": ("archive_routed", "index", "reads latency profiles from index.db"),
