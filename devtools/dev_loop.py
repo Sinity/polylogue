@@ -327,7 +327,7 @@ def build_dev_loop_status(
                 f"POLYLOGUE_BROWSER_CAPTURE_PORT={browser_capture_port} "
                 f"POLYLOGUE_DEV_LOOP_RUN_ID={run_id} "
                 f"POLYLOGUE_DEV_LOOP_LOG_DIR={run_log_dir} "
-                f"polylogued run 2>&1 | tee {daemon_log}"
+                f"polylogued run --api-port {api_port} --port {browser_capture_port} 2>&1 | tee {daemon_log}"
             ),
             "open_web_shell": f"http://127.0.0.1:{api_port}/",
             "receiver_status": f"curl -sf http://127.0.0.1:{browser_capture_port}/v1/status",

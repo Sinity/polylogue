@@ -110,6 +110,7 @@ def test_build_dev_loop_status_uses_branch_local_paths_and_warnings(
     assert payload["artifacts"]["daemon_log"].endswith(
         ".cache/dev-loop/feature-dev-loop-abc1234-api9999-capture9998/polylogued.log"
     )
+    assert "polylogued run --api-port 9999 --port 9998" in payload["commands"]["run_daemon"]
     assert "polylogue ops status" in payload["commands"]["capture_cli_status"]
     assert payload["commands"]["capture_cli_status"].endswith("terminal/polylogue-ops-status.typescript")
     assert payload["commands"]["capture_tui_placeholder"].endswith(
