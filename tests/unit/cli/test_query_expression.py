@@ -87,11 +87,12 @@ class TestLexer:
         )
 
     def test_parse_expression_ast_exposes_readable_count_clauses(self) -> None:
-        ast = parse_expression_ast("messages >= 10 words between 100 and 500")
+        ast = parse_expression_ast("messages >= 10 words between 100 and 500 tool_use_messages:>=1")
 
         assert ast.clauses == (
             _CountToken(field="messages", op=">=", number=10),
             _CountRangeToken(field="words", min_number=100, max_number=500),
+            _CountToken(field="tool_use_messages", op=">=", number=1),
         )
 
     def test_bare_words(self) -> None:
@@ -363,26 +364,27 @@ class TestBooleanQueryExpression:
         )
 
     def test_boolean_ast_exposes_readable_count_comparisons(self) -> None:
-        ast = parse_expression_ast("messages >= 5 AND words <= 2000")
+        ast = parse_expression_ast("messages >= 5 AND tool_use_messages >= 1 AND paste_messages = 0")
 
         assert ast.clauses == ()
         assert ast.boolean_predicate == QueryBoolPredicate(
             op="and",
             children=(
                 QueryFieldPredicate(field="messages", values=("5",), op=">="),
-                QueryFieldPredicate(field="words", values=("2000",), op="<="),
+                QueryFieldPredicate(field="tool_use_messages", values=("1",), op=">="),
+                QueryFieldPredicate(field="paste_messages", values=("0",), op="="),
             ),
         )
 
     def test_boolean_ast_exposes_readable_count_range(self) -> None:
-        ast = parse_expression_ast("sessions where messages between 5 and 20")
+        ast = parse_expression_ast("sessions where thinking_messages between 1 and 3")
 
         assert ast.clauses == ()
         assert ast.boolean_predicate == QueryBoolPredicate(
             op="and",
             children=(
-                QueryFieldPredicate(field="messages", values=("5",), op=">="),
-                QueryFieldPredicate(field="messages", values=("20",), op="<="),
+                QueryFieldPredicate(field="thinking_messages", values=("1",), op=">="),
+                QueryFieldPredicate(field="thinking_messages", values=("3",), op="<="),
             ),
         )
 
@@ -1138,6 +1140,52 @@ class TestBooleanQueryExpression:
         )
 
         spec = compile_expression("exists message(time >= 2026-01-02T00:00:00+00:00)")
+        assert spec.boolean_predicate is not None
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            rows = archive.list_summaries(limit=100, boolean_predicate=spec.boolean_predicate)
+
+        assert [row.session_id for row in rows] == ["chatgpt-export:ext-hit"]
+
+    def test_session_aggregate_comparisons_execute_against_archive(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "hit")
+            .provider("chatgpt")
+            .title("aggregate count hit")
+            .add_message(
+                "m-tool",
+                role="assistant",
+                text="used tool",
+                blocks=[{"type": "tool_use", "tool_name": "bash", "text": "pytest"}],
+            )
+            .add_message(
+                "m-thinking",
+                role="assistant",
+                text="reasoning",
+                blocks=[{"type": "thinking", "text": "plan"}],
+            )
+            .save()
+        )
+        (
+            SessionBuilder(index_db, "miss-paste")
+            .provider("chatgpt")
+            .title("aggregate count miss paste")
+            .add_message(
+                "m-tool",
+                role="assistant",
+                text="used tool",
+                blocks=[{"type": "tool_use", "tool_name": "bash", "text": "pytest"}],
+            )
+            .add_message("m-paste", role="user", text="pasted", has_paste=1)
+            .save()
+        )
+
+        spec = compile_expression(
+            "sessions where tool_use_messages >= 1 AND thinking_messages >= 1 AND paste_messages = 0"
+        )
         assert spec.boolean_predicate is not None
         with ArchiveStore.open_existing(index_db.parent) as archive:
             rows = archive.list_summaries(limit=100, boolean_predicate=spec.boolean_predicate)
@@ -2354,7 +2402,15 @@ class TestBooleanQueryExpression:
             .updated_at("2026-01-03T00:00:00+00:00")
             .title("summary comparison hit")
             .add_message("m-hit-1", role="user", text="one two")
-            .add_message("m-hit-2", role="assistant", text="three four")
+            .add_message(
+                "m-hit-2",
+                role="assistant",
+                text="three four",
+                blocks=[
+                    {"type": "tool_use", "tool_name": "bash", "text": "pytest"},
+                    {"type": "thinking", "text": "plan"},
+                ],
+            )
             .save()
         )
         (
@@ -2363,13 +2419,16 @@ class TestBooleanQueryExpression:
             .created_at("2026-01-01T00:00:00+00:00")
             .updated_at("2026-01-01T00:00:00+00:00")
             .title("summary comparison control")
-            .add_message("m-control", role="user", text="one two three four five")
+            .add_message("m-control", role="user", text="one two three four five", has_paste=1)
             .save()
         )
 
         source = parse_unit_source_expression(
             "context-snapshots where session.messages:>=2 "
             "AND session.words:<=4 "
+            "AND session.tool_use_messages:>=1 "
+            "AND session.thinking_messages:>=1 "
+            "AND session.paste_messages:=0 "
             "AND session.date:>=2026-01-02 "
             "AND boundary:session_start"
         )
@@ -2381,6 +2440,9 @@ class TestBooleanQueryExpression:
                 query=(
                     "context-snapshots where session.messages:>=2 "
                     "AND session.words:<=4 "
+                    "AND session.tool_use_messages:>=1 "
+                    "AND session.thinking_messages:>=1 "
+                    "AND session.paste_messages:=0 "
                     "AND session.date:>=2026-01-02 "
                     "AND boundary:session_start"
                 ),
@@ -2923,12 +2985,14 @@ class TestLowererFieldMapping:
         assert spec.min_words == 100
         assert spec.max_words == 500
 
-    def test_role_count_comparison_requires_boolean_query(self) -> None:
+    def test_aggregate_count_comparison_requires_boolean_query(self) -> None:
         with pytest.raises(ExpressionCompileError, match="supported only inside `sessions where`"):
-            compile_expression("user_messages >= 2")
+            compile_expression("tool_use_messages >= 2")
 
-    def test_boolean_ast_exposes_role_count_comparisons(self) -> None:
-        ast = parse_expression_ast("sessions where user_messages >= 2 AND assistant_words between 5 and 20")
+    def test_boolean_ast_exposes_aggregate_count_comparisons(self) -> None:
+        ast = parse_expression_ast(
+            "sessions where user_messages >= 2 AND assistant_words between 5 and 20 AND tool_use_messages >= 1"
+        )
 
         assert ast.boolean_predicate == QueryBoolPredicate(
             "and",
@@ -2936,6 +3000,7 @@ class TestLowererFieldMapping:
                 QueryFieldPredicate(field="user_messages", values=("2",), op=">="),
                 QueryFieldPredicate(field="assistant_words", values=("5",), op=">="),
                 QueryFieldPredicate(field="assistant_words", values=("20",), op="<="),
+                QueryFieldPredicate(field="tool_use_messages", values=("1",), op=">="),
             ),
         )
 
@@ -3044,11 +3109,11 @@ class TestRejection:
         with pytest.raises(ExpressionCompileError, match="comparison operator"):
             compile_expression("messages:10")
 
-    @pytest.mark.parametrize("expr", ["messages:>=10x", "words:<=5m"])
+    @pytest.mark.parametrize("expr", ["messages:>=10x", "words:<=5m", "tool_use_messages:>=1x"])
     def test_malformed_count_clause_raises_instead_of_broadening(self, expr: str) -> None:
         with pytest.raises(ExpressionCompileError, match="comparison operator") as exc_info:
             compile_expression(expr)
-        assert exc_info.value.field in {"messages", "words"}
+        assert exc_info.value.field in {"messages", "words", "tool_use_messages"}
 
 
 # ---------------------------------------------------------------------------
@@ -3278,6 +3343,21 @@ class TestFieldRegistry:
             "sessions where tool_messages = 0",
             "boolean_predicate",
             QueryFieldPredicate(field="tool_messages", values=("0",), op="="),
+        ),
+        "tool_use_messages": (
+            "sessions where tool_use_messages >= 1",
+            "boolean_predicate",
+            QueryFieldPredicate(field="tool_use_messages", values=("1",), op=">="),
+        ),
+        "thinking_messages": (
+            "sessions where thinking_messages >= 1",
+            "boolean_predicate",
+            QueryFieldPredicate(field="thinking_messages", values=("1",), op=">="),
+        ),
+        "paste_messages": (
+            "sessions where paste_messages = 0",
+            "boolean_predicate",
+            QueryFieldPredicate(field="paste_messages", values=("0",), op="="),
         ),
         "user_words": (
             "sessions where user_words >= 100",

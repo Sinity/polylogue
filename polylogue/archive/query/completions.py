@@ -99,9 +99,9 @@ def query_field_candidates(incomplete: str) -> list[QueryCompletionCandidate]:
         if current and not field_name.startswith(current):
             continue
         count_info = COUNT_QUERY_FIELD_REGISTRY.get(field_name)
-        # The compact grammar keeps messages:/words: for compatibility.
-        # Role-split count fields are Boolean-only and complete with an
-        # operator-ready space, e.g. "user_messages >= 2".
+        # Top-level compatibility lowering exists only for messages/words.
+        # Other aggregate count fields complete with an operator-ready space,
+        # e.g. "tool_use_messages >= 1".
         insert = (
             f"{field_name} " if count_info is not None and field_name not in {"messages", "words"} else f"{field_name}:"
         )

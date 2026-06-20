@@ -8,7 +8,7 @@ from typing import Any, Literal, Protocol, cast
 
 from polylogue.archive.query.archive_execution import _session_to_session
 from polylogue.archive.query.expression import QueryUnitSource
-from polylogue.archive.query.metadata import QueryUnitDescriptor, query_unit_descriptor
+from polylogue.archive.query.metadata import COUNT_QUERY_FIELD_REGISTRY, QueryUnitDescriptor, query_unit_descriptor
 from polylogue.archive.query.predicate import QueryBoolPredicate, QueryFieldPredicate, QueryNotPredicate, QueryPredicate
 from polylogue.archive.query.spec import (
     normalize_action_sequence,
@@ -264,10 +264,9 @@ def _summary_field_matches(summary: ArchiveSessionSummary, predicate: QueryField
         # file paths are not in that projection, so fail closed instead of
         # treating path as cwd and broadening/missing results unpredictably.
         return False
-    if field == "messages":
-        return _numeric_field_matches(summary.message_count, predicate)
-    if field == "words":
-        return _numeric_field_matches(summary.word_count, predicate)
+    count_info = COUNT_QUERY_FIELD_REGISTRY.get(field)
+    if count_info is not None:
+        return _numeric_field_matches(int(getattr(summary, count_info.session_column, 0) or 0), predicate)
     if field == "date":
         return _summary_timestamp_matches(summary, field, predicate)
     if field == "since":
