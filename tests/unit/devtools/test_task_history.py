@@ -197,6 +197,22 @@ def test_stats_slow_tests_reads_latest_pytest_report(
         ),
         encoding="utf-8",
     )
+    (verify_cache / "last-pytest-isolated.json").write_text(
+        json.dumps(
+            {
+                "tests": [
+                    {
+                        "nodeid": "tests/test_isolated.py::test_isolated",
+                        "outcome": "passed",
+                        "setup": {"duration": 0.5},
+                        "call": {"duration": 4.0},
+                        "teardown": {"duration": 0.25},
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
     monkeypatch.setattr("devtools.task_history._get_root", lambda: tmp_path)
     task_history.record_invocation(command="verify", args=[], duration_ms=100.0, exit_code=0)
 
@@ -205,12 +221,13 @@ def test_stats_slow_tests_reads_latest_pytest_report(
 
     assert payload["slow_tests"] == [
         {
-            "call_s": 2.0,
-            "nodeid": "tests/test_slow.py::test_slow",
+            "call_s": 4.0,
+            "nodeid": "tests/test_isolated.py::test_isolated",
             "outcome": "passed",
-            "setup_s": 1.0,
-            "teardown_s": 0.5,
-            "total_s": 3.5,
+            "report": "last-pytest-isolated.json",
+            "setup_s": 0.5,
+            "teardown_s": 0.25,
+            "total_s": 4.75,
         }
     ]
 

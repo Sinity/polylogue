@@ -315,10 +315,7 @@ def _phase_duration(value: object) -> float:
     return float(duration) if isinstance(duration, (int, float)) else 0.0
 
 
-def _latest_pytest_slow_tests(limit: int) -> list[dict[str, Any]]:
-    if limit <= 0:
-        return []
-    report_path = _get_root() / ".cache" / "verify" / "last-pytest.json"
+def _slow_test_rows_from_report(report_path: Path) -> list[dict[str, Any]]:
     try:
         payload = json.loads(report_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -348,8 +345,19 @@ def _latest_pytest_slow_tests(limit: int) -> list[dict[str, Any]]:
                 "call_s": round(call_s, 4),
                 "teardown_s": round(teardown_s, 4),
                 "outcome": item.get("outcome"),
+                "report": report_path.name,
             }
         )
+    return rows
+
+
+def _latest_pytest_slow_tests(limit: int) -> list[dict[str, Any]]:
+    if limit <= 0:
+        return []
+    rows: list[dict[str, Any]] = []
+    verify_dir = _get_root() / ".cache" / "verify"
+    for name in ("last-pytest.json", "last-pytest-isolated.json"):
+        rows.extend(_slow_test_rows_from_report(verify_dir / name))
     rows.sort(key=lambda row: float(row["total_s"]), reverse=True)
     return rows[:limit]
 
@@ -451,6 +459,7 @@ def _cmd_stats(args: argparse.Namespace) -> int:
                 f"setup={test['setup_s']:.2f}s "
                 f"call={test['call_s']:.2f}s "
                 f"teardown={test['teardown_s']:.2f}s "
+                f"report={test['report']} "
                 f"{test['nodeid']}"
             )
     if slowest:
@@ -654,7 +663,7 @@ def main(argv: list[str] | None = None) -> int:
         type=int,
         default=0,
         metavar="N",
-        help="Include the N slowest tests from .cache/verify/last-pytest.json.",
+        help="Include the N slowest tests from the latest pytest JSON reports.",
     )
 
     replay_parser = subparsers.add_parser("replay", help="Re-run the Nth most recent task (default 1).")
