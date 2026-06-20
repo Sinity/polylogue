@@ -56,6 +56,9 @@ def test_terminal_query_completion_payloads_are_lightweight() -> None:
 def test_query_unit_descriptors_own_terminal_aliases() -> None:
     from polylogue.archive.query.metadata import (
         query_unit_descriptor,
+        structural_query_fields,
+        structural_query_units,
+        terminal_query_fields,
         terminal_query_source_list,
         terminal_query_source_pairs,
         terminal_query_unit,
@@ -63,11 +66,20 @@ def test_query_unit_descriptors_own_terminal_aliases() -> None:
 
     observed_descriptor = query_unit_descriptor("observed-events")
     context_descriptor = query_unit_descriptor("context-snapshot")
+    message_descriptor = query_unit_descriptor("messages")
     assert observed_descriptor is not None
     assert context_descriptor is not None
+    assert message_descriptor is not None
     assert terminal_query_unit("messages") == "message"
     assert terminal_query_unit("context-snapshots") == "context-snapshot"
     assert observed_descriptor.plural_source == "observed-events"
+    assert observed_descriptor.exists_supported is False
+    assert observed_descriptor.lowerer_kind == "runtime_transform"
+    assert message_descriptor.exists_supported is True
+    assert message_descriptor.lowerer_kind == "sql"
     assert context_descriptor.source_aliases == ("context-snapshot", "context-snapshots")
     assert terminal_query_source_list() == "messages/actions/blocks/assertions/runs/observed-events/context-snapshots"
     assert ("assertions", "assertion") in terminal_query_source_pairs()
+    assert structural_query_units() == ("action", "assertion", "block", "message")
+    assert structural_query_fields("context-snapshot") == ()
+    assert "boundary" in terminal_query_fields("context-snapshots")

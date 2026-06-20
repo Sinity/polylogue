@@ -167,7 +167,7 @@ def test_query_structural_unit_candidates_come_from_expression_registry() -> Non
     block_candidate = candidates[0]
     assert block_candidate.insert == "block("
     assert block_candidate.kind == "query-structural-unit"
-    assert block_candidate.source == "STRUCTURAL_QUERY_UNIT_REGISTRY"
+    assert block_candidate.source == "QUERY_UNIT_DESCRIPTORS"
     assert block_candidate.description.startswith("Match sessions with at least one parsed message block")
 
 
@@ -179,7 +179,7 @@ def test_query_structural_field_candidates_come_from_expression_registry() -> No
     type_candidate = next(candidate for candidate in candidates if candidate.value == "type")
     assert type_candidate.insert == "type:"
     assert type_candidate.kind == "query-structural-field"
-    assert type_candidate.source == "STRUCTURAL_QUERY_UNIT_REGISTRY"
+    assert type_candidate.source == "QUERY_UNIT_DESCRIPTORS"
     assert "Unit-specific type token" in type_candidate.description
     assert "type:code" in type_candidate.description
 
