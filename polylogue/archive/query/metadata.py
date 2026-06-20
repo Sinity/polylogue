@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 QueryUnitName = Literal["message", "action", "block", "assertion", "run", "observed-event", "context-snapshot"]
+QueryUnitLowererKind = Literal["sql", "runtime_transform"]
 
 
 @dataclass(frozen=True)
@@ -16,6 +17,11 @@ class QueryUnitDescriptor:
     singular_source: str
     plural_source: str
     terminal_supported: bool = True
+    exists_supported: bool = False
+    lowerer_kind: QueryUnitLowererKind = "sql"
+    fields: tuple[StructuralQueryFieldInfo, ...] = ()
+    description: str = ""
+    example: str = ""
 
     @property
     def source_aliases(self) -> tuple[str, str]:
@@ -140,21 +146,6 @@ EXPRESSION_FIELD_REGISTRY: dict[str, dict[str, str]] = {
     },
 }
 
-QUERY_UNIT_DESCRIPTORS: tuple[QueryUnitDescriptor, ...] = (
-    QueryUnitDescriptor("message", "message", "messages"),
-    QueryUnitDescriptor("action", "action", "actions"),
-    QueryUnitDescriptor("block", "block", "blocks"),
-    QueryUnitDescriptor("assertion", "assertion", "assertions"),
-    QueryUnitDescriptor("run", "run", "runs"),
-    QueryUnitDescriptor("observed-event", "observed-event", "observed-events"),
-    QueryUnitDescriptor("context-snapshot", "context-snapshot", "context-snapshots"),
-)
-_QUERY_UNIT_BY_UNIT: dict[QueryUnitName, QueryUnitDescriptor] = {
-    descriptor.unit: descriptor for descriptor in QUERY_UNIT_DESCRIPTORS
-}
-_SOURCE_WHERE_SOURCES: tuple[tuple[str, QueryUnitName], ...] = tuple(
-    (source, descriptor.unit) for descriptor in QUERY_UNIT_DESCRIPTORS for source in descriptor.source_aliases
-)
 _BOOLEAN_SUPPORTED_FIELDS = {
     "repo",
     "origin",
@@ -516,6 +507,89 @@ STRUCTURAL_QUERY_UNIT_REGISTRY: dict[str, StructuralQueryUnitInfo] = {
     ),
 }
 
+
+def _unit_info(unit: QueryUnitName) -> StructuralQueryUnitInfo:
+    return STRUCTURAL_QUERY_UNIT_REGISTRY[unit]
+
+
+QUERY_UNIT_DESCRIPTORS: tuple[QueryUnitDescriptor, ...] = (
+    QueryUnitDescriptor(
+        "message",
+        "message",
+        "messages",
+        exists_supported=True,
+        fields=_unit_info("message").fields,
+        description=_unit_info("message").description,
+        example=_unit_info("message").example,
+    ),
+    QueryUnitDescriptor(
+        "action",
+        "action",
+        "actions",
+        exists_supported=True,
+        fields=_unit_info("action").fields,
+        description=_unit_info("action").description,
+        example=_unit_info("action").example,
+    ),
+    QueryUnitDescriptor(
+        "block",
+        "block",
+        "blocks",
+        exists_supported=True,
+        fields=_unit_info("block").fields,
+        description=_unit_info("block").description,
+        example=_unit_info("block").example,
+    ),
+    QueryUnitDescriptor(
+        "assertion",
+        "assertion",
+        "assertions",
+        exists_supported=True,
+        fields=_unit_info("assertion").fields,
+        description=_unit_info("assertion").description,
+        example=_unit_info("assertion").example,
+    ),
+    QueryUnitDescriptor(
+        "run",
+        "run",
+        "runs",
+        exists_supported=False,
+        lowerer_kind="runtime_transform",
+        fields=_unit_info("run").fields,
+        description=_unit_info("run").description,
+        example=_unit_info("run").example,
+    ),
+    QueryUnitDescriptor(
+        "observed-event",
+        "observed-event",
+        "observed-events",
+        exists_supported=False,
+        lowerer_kind="runtime_transform",
+        fields=_unit_info("observed-event").fields,
+        description=_unit_info("observed-event").description,
+        example=_unit_info("observed-event").example,
+    ),
+    QueryUnitDescriptor(
+        "context-snapshot",
+        "context-snapshot",
+        "context-snapshots",
+        exists_supported=False,
+        lowerer_kind="runtime_transform",
+        fields=_unit_info("context-snapshot").fields,
+        description=_unit_info("context-snapshot").description,
+        example=_unit_info("context-snapshot").example,
+    ),
+)
+_QUERY_UNIT_BY_UNIT: dict[QueryUnitName, QueryUnitDescriptor] = {
+    descriptor.unit: descriptor for descriptor in QUERY_UNIT_DESCRIPTORS
+}
+_SOURCE_WHERE_SOURCES: tuple[tuple[str, QueryUnitName], ...] = tuple(
+    (source, descriptor.unit)
+    for descriptor in QUERY_UNIT_DESCRIPTORS
+    if descriptor.terminal_supported
+    for source in descriptor.source_aliases
+)
+
 COUNT_QUERY_FIELD_REGISTRY: dict[str, CountQueryFieldInfo] = {
     "messages": CountQueryFieldInfo(
         description="Message-count predicate over normalized session messages.",
@@ -544,26 +618,26 @@ DATE_QUERY_FIELD_REGISTRY: dict[str, DateQueryFieldInfo] = {
 def structural_query_units() -> tuple[str, ...]:
     """Return the structural units accepted by the query grammar."""
 
-    return tuple(sorted(STRUCTURAL_QUERY_UNIT_REGISTRY))
+    return tuple(sorted(descriptor.unit for descriptor in QUERY_UNIT_DESCRIPTORS if descriptor.exists_supported))
 
 
 def structural_query_fields(unit: str) -> tuple[str, ...]:
     """Return structural field names accepted inside ``exists <unit>(...)``."""
 
-    info = STRUCTURAL_QUERY_UNIT_REGISTRY.get(unit.lower())
-    if info is None:
+    descriptor = query_unit_descriptor(unit)
+    if descriptor is None or not descriptor.exists_supported:
         return ()
-    return tuple(field.name for field in info.fields)
+    return tuple(field.name for field in descriptor.fields)
 
 
 def structural_query_field_info(unit: str, field: str) -> StructuralQueryFieldInfo | None:
     """Return metadata for a structural field accepted by *unit*."""
 
-    info = STRUCTURAL_QUERY_UNIT_REGISTRY.get(unit.lower())
-    if info is None:
+    descriptor = query_unit_descriptor(unit)
+    if descriptor is None or not descriptor.exists_supported:
         return None
     normalized = field.lower()
-    for field_info in info.fields:
+    for field_info in descriptor.fields:
         if field_info.name == normalized:
             return field_info
     return None
@@ -615,19 +689,23 @@ def terminal_query_source_list(*, plural: bool = True, separator: str = "/") -> 
 def terminal_query_fields(source: str) -> tuple[str, ...]:
     """Return field names accepted after ``<source> where``."""
 
-    unit = terminal_query_unit(source)
-    if unit is None:
+    descriptor = query_unit_descriptor(source)
+    if descriptor is None or not descriptor.terminal_supported:
         return ()
-    return structural_query_fields(unit)
+    return tuple(field.name for field in descriptor.fields)
 
 
 def terminal_query_field_info(source: str, field: str) -> StructuralQueryFieldInfo | None:
     """Return metadata for a field accepted after ``<source> where``."""
 
-    unit = terminal_query_unit(source)
-    if unit is None:
+    descriptor = query_unit_descriptor(source)
+    if descriptor is None or not descriptor.terminal_supported:
         return None
-    return structural_query_field_info(unit, field)
+    normalized = field.lower()
+    for field_info in descriptor.fields:
+        if field_info.name == normalized:
+            return field_info
+    return None
 
 
 def count_query_fields() -> tuple[str, ...]:
@@ -668,6 +746,7 @@ __all__ = [
     "EXPRESSION_FIELD_REGISTRY",
     "QUERY_UNIT_DESCRIPTORS",
     "QueryUnitDescriptor",
+    "QueryUnitLowererKind",
     "QueryUnitName",
     "STRUCTURAL_QUERY_UNIT_REGISTRY",
     "StructuralQueryFieldInfo",

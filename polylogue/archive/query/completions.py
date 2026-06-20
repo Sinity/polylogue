@@ -162,7 +162,7 @@ def query_structural_unit_candidates(incomplete: str) -> list[QueryCompletionCan
                 kind="query-structural-unit",
                 group="query structural units",
                 description=description,
-                source="STRUCTURAL_QUERY_UNIT_REGISTRY",
+                source="QUERY_UNIT_DESCRIPTORS",
             )
         )
     return candidates
@@ -192,7 +192,7 @@ def query_structural_field_candidates(unit: str, incomplete: str) -> list[QueryC
                 kind="query-structural-field",
                 group=f"{unit} structural fields",
                 description=description,
-                source="STRUCTURAL_QUERY_UNIT_REGISTRY",
+                source="QUERY_UNIT_DESCRIPTORS",
             )
         )
     return candidates
