@@ -410,6 +410,9 @@ predicate          ::= predicate &quot;OR&quot; predicate
 
 structural-unit    ::= &quot;message&quot; | &quot;action&quot; | &quot;block&quot; | &quot;assertion&quot;
 pipeline-stage     ::= &quot;sort&quot; &quot;by&quot; &quot;time&quot; [&quot;asc&quot; | &quot;desc&quot;]
+                     | &quot;group&quot; &quot;by&quot; field
+                     | &quot;count&quot;
+                     | &quot;sort&quot; &quot;by&quot; (&quot;count&quot; | &quot;key&quot;) [&quot;asc&quot; | &quot;desc&quot;]
                      | &quot;limit&quot; integer
                      | &quot;offset&quot; integer
 </code></pre>
@@ -447,11 +450,12 @@ executor as direct <code>messages/actions/...</code> pipelines. For now the sess
 accepts field/count/date predicates only; FTS, semantic, <code>exists</code>, lineage, and
 sequence stages are typed errors until they have dedicated unit-changing
 lowerers. Terminal pipeline stages currently support <code>sort by time [asc|desc]</code>,
-<code>limit N</code>, and <code>offset N</code> for SQL-backed terminal rows (<code>messages</code>, <code>actions</code>,
-<code>blocks</code>, <code>assertions</code>). Query-string limits narrow the surface limit instead
-of expanding caller/API caps, and query-string offsets are added to the caller
-offset. Runtime-transform terminal rows (<code>runs</code>, <code>observed-events</code>,
-<code>context-snapshots</code>) reject sort stages until they have streaming lowerers;
+<code>group by FIELD | count</code>, aggregate <code>sort by count|key [asc|desc]</code>, <code>limit N</code>,
+and <code>offset N</code> for SQL-backed terminal rows (<code>messages</code>, <code>actions</code>, <code>blocks</code>,
+<code>assertions</code>). Query-string limits narrow the surface limit instead of expanding
+caller/API caps, and query-string offsets are added to the caller offset.
+Runtime-transform terminal rows (<code>runs</code>, <code>observed-events</code>, <code>context-snapshots</code>)
+reject sort/aggregate stages until they have streaming or aggregate lowerers;
 they must not collect every projected row in memory merely to sort a page.</p>
 <p><code>--explain --format json</code> reports terminal pipelines as a <code>unit_source</code> AST with
 ordered <code>pipeline_stages</code>. Session-scoped pipelines include a <code>session_scope</code>
@@ -637,6 +641,9 @@ Aggregate pipelines over SQL-backed terminal rows use the sibling
 <code>QueryUnitAggregateEnvelope</code> and currently support <code>group by FIELD | count</code>
 over closed unit fields such as message role, action tool/action, block type,
 assertion kind/status, and owning-session origin/repo.
+Aggregate rows can be ordered with <code>sort by count [asc|desc]</code> or
+<code>sort by key [asc|desc]</code> before <code>limit</code>/<code>offset</code>; the default order is count
+descending, then key.
 Those surfaces share the same session-scoping filters for the row source
 where applicable, such as origin, tag, repo, title, date bounds, message-type
 and tool/paste/thinking feature filters.</p>
