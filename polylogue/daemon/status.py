@@ -1856,6 +1856,7 @@ def daemon_status_payload(
         sources=sources,
         browser_capture_spool_path=browser_capture_spool_path,
     )
+    archive_debt = _archive_debt_status_summary()
 
     return json_document(
         {
@@ -1873,6 +1874,7 @@ def daemon_status_payload(
             "blob_dir_size_bytes": status.blob_dir_size_bytes,
             "disk_free_bytes": status.disk_free_bytes,
             "archive_storage": status.archive_storage.model_dump(),
+            "archive_debt": archive_debt,
             "quick_check_result": "unknown",
             "quick_check_age_s": None,
             "watcher_roots": [str(s.root) for s in watch_sources],
@@ -1905,6 +1907,27 @@ def daemon_status_payload(
             "raw_failure_samples": [s.model_dump() for s in status.raw_failure_samples],
         }
     )
+
+
+def _archive_debt_status_summary() -> dict[str, object]:
+    """Return a bounded status link to the unified archive-debt surface."""
+    try:
+        from polylogue.operations.archive_debt import archive_debt_list
+
+        payload = archive_debt_list(archive_root=archive_root(), limit=5, exact_fts=False)
+    except Exception:
+        return {
+            "endpoint": "/api/archive-debt",
+            "available": False,
+            "rows": [],
+            "totals": {},
+        }
+    return {
+        "endpoint": "/api/archive-debt",
+        "available": True,
+        "rows": [row.model_dump(mode="json", exclude_none=True) for row in payload.rows],
+        "totals": payload.totals.model_dump(mode="json"),
+    }
 
 
 def format_daemon_status_lines(payload: JSONDocument) -> list[str]:

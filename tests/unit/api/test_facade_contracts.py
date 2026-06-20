@@ -233,6 +233,7 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "post_blackboard_note",
         # Shared web/MCP payload DTO helpers covered by daemon/MCP surface tests.
         "explain_import",
+        "archive_debt",
         "list_assertion_claim_payloads",
         "judge_assertion_candidate",
         "neighbor_candidate_payloads",
@@ -545,6 +546,21 @@ async def test_health_check_returns_readiness_report(tmp_path: Path) -> None:
     try:
         result = await archive.health_check()
         assert isinstance(result, ReadinessReport)
+    finally:
+        await archive.close()
+
+
+async def test_archive_debt_returns_shared_payload_on_empty_archive(tmp_path: Path) -> None:
+    """``archive_debt()`` exposes the shared operational debt payload."""
+    from polylogue.surfaces.payloads import ArchiveDebtListPayload
+
+    archive = _archive(tmp_path)
+    try:
+        result = await archive.archive_debt(kinds=("archive-tier",), limit=1)
+        assert isinstance(result, ArchiveDebtListPayload)
+        assert result.mode == "archive-debt-list"
+        assert result.totals.total == 1
+        assert result.rows[0].kind == "archive-tier"
     finally:
         await archive.close()
 

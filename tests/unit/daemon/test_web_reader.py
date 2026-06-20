@@ -268,6 +268,37 @@ def _seed_assertion_claims(workspace: dict[str, Path]) -> None:
         conn.commit()
 
 
+def _seed_many_assertion_candidates(workspace: dict[str, Path], count: int) -> None:
+    """Seed enough candidate assertions to make archive-debt pagination observable."""
+
+    import sqlite3
+
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
+
+    user_db = workspace["archive_root"] / "user.db"
+    initialize_archive_database(user_db, ArchiveTier.USER)
+    with sqlite3.connect(user_db) as conn:
+        for idx in range(count):
+            upsert_assertion(
+                conn,
+                assertion_id=f"claim-archive-debt-candidate-{idx:03d}",
+                target_ref=f"session:{C1}",
+                scope_ref="repo:polylogue",
+                kind=AssertionKind.CAVEAT,
+                body_text=f"Candidate debt row {idx}",
+                author_ref="agent:debt-test",
+                author_kind="agent",
+                evidence_refs=[f"message:{M_C1}"],
+                status="candidate",
+                visibility="private",
+                context_policy={"inject": False},
+                now_ms=1_700_000_010_000 + idx,
+            )
+        conn.commit()
+
+
 def _seed_archive_test_archive(workspace: dict[str, Path]) -> str:
     from polylogue.archive.message.roles import Role
     from polylogue.core.enums import BlockType, Provider
@@ -1665,6 +1696,42 @@ class TestReaderRecoveryEndpoint:
 
 
 class TestReaderAssertionEndpoint:
+    def test_archive_debt_endpoint_returns_shared_payload(self, workspace_env: dict[str, Path]) -> None:
+        _seed_assertion_claims(workspace_env)
+        with _running_server(workspace_env) as (_, base_url):
+            payload = cast(
+                dict[str, object],
+                _get_json(base_url, "/api/archive-debt?kind=assertion-candidate&only_actionable=1&limit=5"),
+            )
+
+        assert payload["mode"] == "archive-debt-list"
+        totals = cast(dict[str, object], payload["totals"])
+        assert totals["total"] == 1
+        rows = cast(list[dict[str, object]], payload["rows"])
+        assert rows[0]["kind"] == "assertion-candidate"
+        assert rows[0]["status"] == "actionable"
+
+    def test_archive_debt_endpoint_defaults_to_bounded_page(self, workspace_env: dict[str, Path]) -> None:
+        _seed_many_assertion_candidates(workspace_env, 55)
+        with _running_server(workspace_env) as (_, base_url):
+            payload = cast(
+                dict[str, object],
+                _get_json(base_url, "/api/archive-debt?kind=assertion-candidate&only_actionable=1"),
+            )
+
+        totals = cast(dict[str, object], payload["totals"])
+        rows = cast(list[dict[str, object]], payload["rows"])
+        assert totals["total"] == 50
+        assert len(rows) == 50
+
+    def test_archive_debt_endpoint_reports_missing_index_tier(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env, seeded=False) as (_, base_url):
+            (workspace_env["archive_root"] / "index.db").unlink()
+            payload = cast(dict[str, object], _get_json(base_url, "/api/archive-debt?kind=archive-tier&limit=10"))
+
+        rows = cast(list[dict[str, object]], payload["rows"])
+        assert any(row["kind"] == "archive-tier" and row["subject_ref"] == "archive-tier:index" for row in rows)
+
     def test_assertions_endpoint_reads_shared_assertion_claims(self, workspace_env: dict[str, Path]) -> None:
         _seed_assertion_claims(workspace_env)
         target_ref = quote(f"session:{C1}", safe="")

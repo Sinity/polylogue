@@ -115,8 +115,9 @@ class TestLaneParsing:
 
         assert lane.path_targets == ("archive-debt-query-loop",)
         assert lane.artifact_targets == (
-            "session_insight_readiness",
             "archive_readiness",
+            "embedding_status_results",
+            "message_fts",
             "archive_debt_results",
         )
         assert lane.operation_targets == ("query-archive-debt",)

@@ -1894,6 +1894,13 @@ x-polylogue-route-contracts:
   auth_policy: bearer_if_configured
   response_contract: QueryUnitEnvelope
 - method: GET
+  pattern: /api/archive-debt
+  kind: operational
+  stability: stable
+  auth_policy: bearer_if_configured
+  response_contract: ArchiveDebtListPayload
+  notes: Unified archive debt rows shared by CLI, Python API, MCP, and daemon clients.
+- method: GET
   pattern: /api/refs/resolve
   kind: read_query
   stability: stable

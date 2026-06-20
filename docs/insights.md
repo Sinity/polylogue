@@ -21,7 +21,7 @@ subcommand group.
 | Provider Analytics | `insights analytics` | Per-provider message, tool, and thinking stats |
 | Session Costs | `insights costs` | Per-session cost estimates with model identification |
 | Cost Rollups | `insights cost-rollups` | Provider/model-level cost aggregation |
-| Archive Debt | `insights debt` | Maintenance readiness and known debt |
+| Archive Debt | `ops debt list` | Unified archive/operator debt across tiers, assertions, convergence, embedding, and FTS readiness |
 
 All insight commands support `--limit`, `--offset`, `--format json`, and
 inherit root-level filters (`--provider`, `--since`, `--until`).
@@ -254,10 +254,17 @@ auto count (derived from session content).
 ## Archive Debt
 
 ```bash
-polylogue ops insights debt
-polylogue ops insights debt --category schema
-polylogue ops insights debt --only-actionable
+polylogue ops debt list
+polylogue ops debt list --kind embedding --only-actionable
+polylogue ops debt list --format json
 ```
 
-Tracks maintenance readiness: schema version gaps, rebuild debt, stale
-indexes, and unprocessed raw records.
+`polylogue ops debt list` is the canonical debt surface. It returns the shared
+`ArchiveDebtListPayload` used by CLI JSON, the Python API, MCP, and the daemon
+`/api/archive-debt` route. Rows carry refs, severity, status, caveats, and
+operator actions when a direct action exists.
+
+The older registry-backed archive-debt insight remains an implementation detail
+for insight/read-model readiness. User-facing archive debt should route through
+the unified `ops debt` surface so operators do not have to compare multiple debt
+vocabularies.

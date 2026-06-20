@@ -82,6 +82,7 @@ if TYPE_CHECKING:
     from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionEnvelope
     from polylogue.storage.sqlite.archive_tiers.write import ArchiveSessionEnvelope
     from polylogue.surfaces.payloads import (
+        ArchiveDebtListPayload,
         AssertionClaimPayload,
         AssertionJudgmentResultPayload,
         BulkTagMutationResult,
@@ -2880,6 +2881,25 @@ class PolylogueArchiveMixin:
 
         with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
             return archive.insight_readiness_report(query)
+
+    async def archive_debt(
+        self,
+        *,
+        kinds: Iterable[str] | None = None,
+        only_actionable: bool = False,
+        limit: int | None = None,
+        exact_fts: bool = False,
+    ) -> ArchiveDebtListPayload:
+        """Return the unified archive debt payload used by CLI, MCP, and daemon surfaces."""
+        from polylogue.operations.archive_debt import archive_debt_list
+
+        return archive_debt_list(
+            archive_root=_active_archive_root(self.config),
+            kinds=kinds,
+            only_actionable=only_actionable,
+            limit=limit,
+            exact_fts=exact_fts,
+        )
 
     async def insight_rigor_audit(
         self,

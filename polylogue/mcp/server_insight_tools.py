@@ -85,6 +85,8 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
     # Register generic list tools from the registry
     for pt in INSIGHT_REGISTRY.values():
+        if pt.name == "archive_debt":
+            continue
         if pt.query_model is not None and pt.operations_method_name:
             _register_list_tool(mcp, hooks, pt)
 

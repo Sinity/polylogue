@@ -145,6 +145,57 @@ def test_daemon_status_payload_and_plain_output_include_failed_files(tmp_path: P
     assert f"  {failed}" in lines
 
 
+def test_daemon_status_payload_links_unified_archive_debt(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from polylogue.surfaces.payloads import (
+        ArchiveDebtListPayload,
+        ArchiveDebtRowPayload,
+        ArchiveDebtTotalsPayload,
+    )
+
+    payload = ArchiveDebtListPayload(
+        generated_at="2026-06-20T00:00:00+00:00",
+        archive_root=str(tmp_path),
+        rows=(
+            ArchiveDebtRowPayload(
+                debt_ref="debt:embedding:catchup:backlog",
+                kind="embedding",
+                stage="catchup",
+                subject_ref="embedding:pending",
+                severity="warning",
+                status="actionable",
+                owner="daemon",
+                summary="3 session(s) pending embedding catch-up",
+            ),
+        ),
+        totals=ArchiveDebtTotalsPayload(total=1, warning=1, actionable=1),
+    )
+
+    monkeypatch.setattr("polylogue.daemon.status.archive_root", lambda: tmp_path)
+    monkeypatch.setattr("polylogue.operations.archive_debt.archive_debt_list", lambda **_kwargs: payload)
+
+    with (
+        patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
+        patch("polylogue.daemon.status._blob_size_info", return_value=0),
+        patch("polylogue.daemon.status._fts_readiness_info", return_value={}),
+        patch("polylogue.daemon.status._insight_freshness_info", return_value={}),
+    ):
+        status_payload = daemon_status_payload(sources=())
+
+    archive_debt = cast(dict[str, object], status_payload["archive_debt"])
+    assert archive_debt["endpoint"] == "/api/archive-debt"
+    assert archive_debt["available"] is True
+    assert archive_debt["totals"] == {
+        "total": 1,
+        "critical": 0,
+        "warning": 1,
+        "info": 0,
+        "actionable": 1,
+        "blocked": 0,
+    }
+    rows = cast(list[dict[str, object]], archive_debt["rows"])
+    assert rows[0]["debt_ref"] == "debt:embedding:catchup:backlog"
+
+
 def test_daemon_status_payload_maps_component_readiness(tmp_path: Path) -> None:
     db = tmp_path / "index.db"
     db.touch()

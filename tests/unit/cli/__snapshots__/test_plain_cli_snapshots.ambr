@@ -388,17 +388,17 @@
     "archive_facade_routes": {
       "checked": true,
       "source": "static_facade_route_catalog",
-      "total_method_count": 122,
-      "archive_ready_method_count": 121,
+      "total_method_count": 123,
+      "archive_ready_method_count": 122,
       "unsupported_method_count": 0,
       "route_counts": {
-        "archive_routed": 107,
+        "archive_routed": 108,
         "archive_direct": 14,
         "not_archive_runtime": 1
       },
       "tier_counts": {
         "user": 38,
-        "index": 79,
+        "index": 80,
         "none": 1,
         "source": 4
       },
@@ -418,6 +418,11 @@
           "route": "archive_direct",
           "tier": "index",
           "detail": "current archive helper"
+        },
+        "archive_debt": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "reads unified archive debt rows from archive readiness surfaces"
         },
         "archive_get_session": {
           "route": "archive_direct",
@@ -1077,7 +1082,7 @@
       ],
       "facade_tier_route_counts": {
         "user": 38,
-        "index": 79,
+        "index": 80,
         "none": 1,
         "source": 4
       },
