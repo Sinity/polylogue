@@ -178,7 +178,7 @@ def _make_command(spec: CommandSpec) -> click.Command:
     )
     # Subcommands that use argparse internally need unknown options forwarded
     # as-is rather than rejected by Click's option parser.  This allows
-    # modules like devtools/xtask.py with their own sub-subcommands and
+    # modules like devtools/task_history.py with their own sub-subcommands and
     # --flags to work transparently.
     cmd.allow_extra_args = True
     cmd.ignore_unknown_options = True
@@ -270,15 +270,15 @@ def main(argv: list[str] | None = None) -> int:
     """Entry point for programmatic use of the Click-based devtools CLI.
 
     Converts argv to Click invocation and returns the exit code.  Every
-    invocation appends a JSONL record to ``.agent/xtask/tasks.jsonl`` so
+    invocation appends a JSONL record to ``.agent/task-history/tasks.jsonl`` so
     agent task history is self-populating (see ``devtools workspace tasks``).  Set
-    ``POLYLOGUE_XTASK_DISABLE=1`` to opt out (also suppressed during a
+    ``POLYLOGUE_TASK_HISTORY_DISABLE=1`` to opt out (also suppressed during a
     ``devtools workspace tasks replay`` to avoid double-logging the outer wrapper).
     """
     import os
     import time
 
-    from devtools import xtask as xtask_mod
+    from devtools import task_history as task_history_mod
 
     args_list = list(argv or [])
     if not args_list or args_list[0].startswith("-"):
@@ -294,7 +294,7 @@ def main(argv: list[str] | None = None) -> int:
             inner_args = args_list[len(path) :]
             break
 
-    if xtask_mod.auto_log_disabled():
+    if task_history_mod.auto_log_disabled():
         return _dispatch(args_list)
 
     started = time.perf_counter()
@@ -304,7 +304,7 @@ def main(argv: list[str] | None = None) -> int:
         return exit_code
     finally:
         duration_ms = (time.perf_counter() - started) * 1000.0
-        xtask_mod.record_invocation(
+        task_history_mod.record_invocation(
             command=command_name,
             args=inner_args,
             duration_ms=duration_ms,

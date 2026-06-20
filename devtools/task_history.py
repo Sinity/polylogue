@@ -1,7 +1,7 @@
 """Agent-visible task execution history.
 
 Maintains an append-only JSONL log of task executions under
-``.agent/xtask/tasks.jsonl`` for use by agents and operators.
+``.agent/task-history/tasks.jsonl`` for use by agents and operators.
 
 Subcommands:
 
@@ -28,7 +28,7 @@ from devtools import repo_root as _get_root
 from devtools.verify_runs import CURRENT_RUN_PATH
 from polylogue.core.json import JSONDocument
 
-XTaskDict = JSONDocument
+TaskRecord = JSONDocument
 
 
 # ---------------------------------------------------------------------------
@@ -36,16 +36,16 @@ XTaskDict = JSONDocument
 # ---------------------------------------------------------------------------
 
 
-def xtask_file_path() -> Path:
-    """Return the active xtask JSONL path.
+def task_history_file_path() -> Path:
+    """Return the active task-history JSONL path.
 
-    Honors ``POLYLOGUE_XTASK_FILE`` (used by tests and one-off overrides);
-    otherwise defaults to ``<repo_root>/.agent/xtask/tasks.jsonl``.
+    Honors ``POLYLOGUE_TASK_HISTORY_FILE`` (used by tests and one-off overrides);
+    otherwise defaults to ``<repo_root>/.agent/task-history/tasks.jsonl``.
     """
-    override = os.environ.get("POLYLOGUE_XTASK_FILE")
+    override = os.environ.get("POLYLOGUE_TASK_HISTORY_FILE")
     if override:
         return Path(override)
-    return _get_root() / ".agent" / "xtask" / "tasks.jsonl"
+    return _get_root() / ".agent" / "task-history" / "tasks.jsonl"
 
 
 def _ensure_file(path: Path) -> None:
@@ -54,10 +54,10 @@ def _ensure_file(path: Path) -> None:
         path.write_text("", encoding="utf-8")
 
 
-def _read_tasks(path: Path | None = None) -> list[XTaskDict]:
-    target = path or xtask_file_path()
+def _read_tasks(path: Path | None = None) -> list[TaskRecord]:
+    target = path or task_history_file_path()
     _ensure_file(target)
-    tasks: list[XTaskDict] = []
+    tasks: list[TaskRecord] = []
     for line in target.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line:
@@ -69,8 +69,8 @@ def _read_tasks(path: Path | None = None) -> list[XTaskDict]:
     return tasks
 
 
-def _append_task(task: XTaskDict, path: Path | None = None) -> None:
-    target = path or xtask_file_path()
+def _append_task(task: TaskRecord, path: Path | None = None) -> None:
+    target = path or task_history_file_path()
     _ensure_file(target)
     with target.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(task, sort_keys=True) + "\n")
@@ -180,7 +180,7 @@ def record_invocation(
     """Append a single invocation record; never raise.
 
     Intended for the ``devtools`` harness wrapper. Failures are swallowed
-    so a broken xtask path does not prevent commands from returning.
+    so a broken task history path does not prevent commands from returning.
     """
     try:
         task: dict[str, Any] = {
@@ -201,7 +201,7 @@ def record_invocation(
 
 def auto_log_disabled() -> bool:
     """Return True when auto-logging is suppressed via env."""
-    return os.environ.get("POLYLOGUE_XTASK_DISABLE", "") not in ("", "0", "false", "False")
+    return os.environ.get("POLYLOGUE_TASK_HISTORY_DISABLE", "") not in ("", "0", "false", "False")
 
 
 # ---------------------------------------------------------------------------
@@ -288,7 +288,7 @@ def _percentile(values: list[float], pct: float) -> float:
     return float(ordered[lo] + (ordered[hi] - ordered[lo]) * frac)
 
 
-def _class_distributions(tasks: list[XTaskDict]) -> dict[str, dict[str, float]]:
+def _class_distributions(tasks: list[TaskRecord]) -> dict[str, dict[str, float]]:
     buckets: dict[str, list[float]] = {}
     for task in tasks:
         dur = task.get("duration_ms")
@@ -358,7 +358,7 @@ def _cmd_stats(args: argparse.Namespace) -> int:
             "peak_rss_mb_p95": _percentile(peaks, 95),
         }
 
-    slowest: list[XTaskDict] = []
+    slowest: list[TaskRecord] = []
     if args.slowest and args.slowest > 0:
         timed = [t for t in tasks if t.get("duration_ms") is not None]
         timed.sort(key=lambda t: float(t.get("duration_ms", 0)), reverse=True)  # type: ignore[arg-type]
@@ -532,7 +532,7 @@ def _cmd_prune(args: argparse.Namespace) -> int:
             print(f"nothing to prune (have {before}, keep {args.keep})")
         return 0
     keep_tasks = tasks[-args.keep :] if args.keep > 0 else []
-    path = xtask_file_path()
+    path = task_history_file_path()
     _ensure_file(path)
     # Atomic-ish rewrite: write to a sibling temp file then replace.
     tmp = path.with_suffix(path.suffix + ".tmp")

@@ -645,7 +645,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "workspace tasks",
         "workspace",
         "Record and query local agent task execution history.",
-        "devtools.xtask",
+        "devtools.task_history",
         use_when="Log, view recent, or summarize agent task execution history during development sessions.",
         examples=(
             "devtools workspace tasks log --command 'devtools render all' --duration-ms 3200 --exit-code 0",
