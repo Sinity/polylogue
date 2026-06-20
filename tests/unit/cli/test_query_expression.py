@@ -20,13 +20,14 @@ Covers:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
 from polylogue.archive.query.expression import (
     EXPRESSION_FIELD_REGISTRY,
     ExpressionCompileError,
+    QueryUnitSource,
     _CountRangeToken,
     _CountToken,
     _DateComparisonToken,
@@ -1082,6 +1083,18 @@ class TestBooleanQueryExpression:
         assert isinstance(next_row, MessageQueryRowPayload)
         assert next_row.message_id == "claude-code-session:ext-hit:m-3"
         assert next_row.text == "third"
+
+    def test_unknown_terminal_unit_does_not_fall_through_to_block_rows(self) -> None:
+        from polylogue.archive.query.unit_results import query_unit_rows
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+        source = QueryUnitSource(
+            unit=cast(Any, "bundle"),
+            predicate=QueryFieldPredicate(field="text", values=("needle",)),
+        )
+
+        with pytest.raises(ValueError, match="Unsupported terminal query unit: bundle"):
+            query_unit_rows(cast(ArchiveStore, object()), source, query="bundles where text:needle", limit=10)
 
     def test_terminal_source_pipeline_sort_desc_executes_before_limit(
         self,

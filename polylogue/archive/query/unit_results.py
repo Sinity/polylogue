@@ -7,6 +7,7 @@ from typing import Any, cast
 
 from polylogue.archive.query.archive_execution import _session_to_session
 from polylogue.archive.query.expression import QueryUnitSource
+from polylogue.archive.query.metadata import query_unit_descriptor
 from polylogue.archive.query.predicate import QueryBoolPredicate, QueryFieldPredicate, QueryNotPredicate, QueryPredicate
 from polylogue.archive.query.spec import (
     normalize_action_sequence,
@@ -550,23 +551,16 @@ def _query_observed_events(
     return tuple(rows)
 
 
-def query_unit_rows(
+def _build_runtime_transform_envelope(
     archive: ArchiveStore,
     source: QueryUnitSource,
     *,
     query: str,
     limit: int,
-    offset: int = 0,
-    session_filters: Mapping[str, object] | None = None,
+    offset: int,
+    caller_offset: int,
+    session_filters: Mapping[str, object] | None,
 ) -> QueryUnitEnvelope:
-    """Execute an explicit unit-source query."""
-
-    caller_offset = offset
-    if source.limit is not None:
-        limit = min(limit, source.limit)
-    if source.offset is not None:
-        offset += source.offset
-    fetch_limit = limit + 1
     if source.unit == "observed-event":
         event_rows = _query_observed_events(
             archive,
@@ -615,14 +609,30 @@ def query_unit_rows(
             offset=caller_offset,
             has_next=len(snapshot_rows) > limit,
         )
+    raise ValueError(f"Query unit {source.unit!r} is not wired to a runtime-transform executor")
+
+
+def _build_sql_envelope(
+    archive: ArchiveStore,
+    source: QueryUnitSource,
+    *,
+    query: str,
+    limit: int,
+    offset: int,
+    caller_offset: int,
+    fetch_limit: int,
+    session_filters: Mapping[str, object] | None,
+) -> QueryUnitEnvelope:
+    sort = source.sort.field if source.sort is not None else None
+    sort_direction = source.sort.direction if source.sort is not None else "asc"
     if source.unit == "message":
         message_rows = archive.query_messages(
             source.predicate,
             limit=fetch_limit,
             offset=offset,
             session_filters=session_filters,
-            sort=source.sort.field if source.sort is not None else None,
-            sort_direction=source.sort.direction if source.sort is not None else "asc",
+            sort=sort,
+            sort_direction=sort_direction,
         )
         return build_query_unit_envelope(
             tuple(MessageQueryRowPayload.from_row(row) for row in message_rows[:limit]),
@@ -638,8 +648,8 @@ def query_unit_rows(
             limit=fetch_limit,
             offset=offset,
             session_filters=session_filters,
-            sort=source.sort.field if source.sort is not None else None,
-            sort_direction=source.sort.direction if source.sort is not None else "asc",
+            sort=sort,
+            sort_direction=sort_direction,
         )
         return build_query_unit_envelope(
             tuple(ActionQueryRowPayload.from_row(row) for row in action_rows[:limit]),
@@ -655,8 +665,8 @@ def query_unit_rows(
             limit=fetch_limit,
             offset=offset,
             session_filters=session_filters,
-            sort=source.sort.field if source.sort is not None else None,
-            sort_direction=source.sort.direction if source.sort is not None else "asc",
+            sort=sort,
+            sort_direction=sort_direction,
         )
         return build_query_unit_envelope(
             tuple(AssertionQueryRowPayload.from_row(row) for row in assertion_rows[:limit]),
@@ -666,21 +676,65 @@ def query_unit_rows(
             offset=caller_offset,
             has_next=len(assertion_rows) > limit,
         )
-    block_rows = archive.query_blocks(
-        source.predicate,
-        limit=fetch_limit,
-        offset=offset,
-        session_filters=session_filters,
-        sort=source.sort.field if source.sort is not None else None,
-        sort_direction=source.sort.direction if source.sort is not None else "asc",
-    )
-    return build_query_unit_envelope(
-        tuple(BlockQueryRowPayload.from_row(row) for row in block_rows[:limit]),
-        unit=source.unit,
+    if source.unit == "block":
+        block_rows = archive.query_blocks(
+            source.predicate,
+            limit=fetch_limit,
+            offset=offset,
+            session_filters=session_filters,
+            sort=sort,
+            sort_direction=sort_direction,
+        )
+        return build_query_unit_envelope(
+            tuple(BlockQueryRowPayload.from_row(row) for row in block_rows[:limit]),
+            unit=source.unit,
+            query=query,
+            limit=limit,
+            offset=caller_offset,
+            has_next=len(block_rows) > limit,
+        )
+    raise ValueError(f"Query unit {source.unit!r} is not wired to a SQL executor")
+
+
+def query_unit_rows(
+    archive: ArchiveStore,
+    source: QueryUnitSource,
+    *,
+    query: str,
+    limit: int,
+    offset: int = 0,
+    session_filters: Mapping[str, object] | None = None,
+) -> QueryUnitEnvelope:
+    """Execute an explicit unit-source query."""
+
+    caller_offset = offset
+    if source.limit is not None:
+        limit = min(limit, source.limit)
+    if source.offset is not None:
+        offset += source.offset
+    fetch_limit = limit + 1
+    descriptor = query_unit_descriptor(source.unit)
+    if descriptor is None or not descriptor.terminal_supported:
+        raise ValueError(f"Unsupported terminal query unit: {source.unit}")
+    if descriptor.lowerer_kind == "runtime_transform":
+        return _build_runtime_transform_envelope(
+            archive,
+            source,
+            query=query,
+            limit=limit,
+            offset=offset,
+            caller_offset=caller_offset,
+            session_filters=session_filters,
+        )
+    return _build_sql_envelope(
+        archive,
+        source,
         query=query,
         limit=limit,
-        offset=caller_offset,
-        has_next=len(block_rows) > limit,
+        offset=offset,
+        caller_offset=caller_offset,
+        fetch_limit=fetch_limit,
+        session_filters=session_filters,
     )
 
 
