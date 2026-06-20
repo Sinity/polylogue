@@ -270,10 +270,14 @@ def build_dev_loop_status(
     run_log_dir = logs / run_id
     daemon_log = run_log_dir / "polylogued.log"
     browser_artifact_dir = run_log_dir / "browser"
+    terminal_artifact_dir = run_log_dir / "terminal"
+    tui_artifact_dir = run_log_dir / "tui"
     preflight_json = run_log_dir / "preflight.json"
     if prepare:
         archive.mkdir(parents=True, exist_ok=True)
         browser_artifact_dir.mkdir(parents=True, exist_ok=True)
+        terminal_artifact_dir.mkdir(parents=True, exist_ok=True)
+        tui_artifact_dir.mkdir(parents=True, exist_ok=True)
     warnings: list[str] = []
     if service.get("active"):
         warnings.append(
@@ -296,6 +300,8 @@ def build_dev_loop_status(
         "artifacts": {
             "daemon_log": str(daemon_log),
             "browser_dir": str(browser_artifact_dir),
+            "terminal_dir": str(terminal_artifact_dir),
+            "tui_dir": str(tui_artifact_dir),
             "preflight_json": str(preflight_json),
         },
         "system_service": service,
@@ -325,6 +331,15 @@ def build_dev_loop_status(
             ),
             "open_web_shell": f"http://127.0.0.1:{api_port}/",
             "receiver_status": f"curl -sf http://127.0.0.1:{browser_capture_port}/v1/status",
+            "capture_cli_status": (
+                "script -q -c "
+                f"'env POLYLOGUE_ARCHIVE_ROOT={archive} polylogue ops status' "
+                f"{terminal_artifact_dir / 'polylogue-ops-status.typescript'}"
+            ),
+            "capture_tui_placeholder": (
+                "Record branch-local TUI/terminal runs into "
+                f"{tui_artifact_dir}; use the local terminal-control surface or VHS when visual playback is needed"
+            ),
         },
         "warnings": warnings,
     }

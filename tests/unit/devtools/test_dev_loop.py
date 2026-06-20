@@ -104,9 +104,16 @@ def test_build_dev_loop_status_uses_branch_local_paths_and_warnings(
     assert payload["run_log_dir"] == str(repo / ".cache" / "dev-loop" / "feature-dev-loop-abc1234-api9999-capture9998")
     assert Path(str(payload["run_log_dir"])).is_dir()
     assert Path(str(payload["artifacts"]["browser_dir"])).is_dir()
+    assert Path(str(payload["artifacts"]["terminal_dir"])).is_dir()
+    assert Path(str(payload["artifacts"]["tui_dir"])).is_dir()
     assert Path(str(payload["artifacts"]["preflight_json"])).is_file()
     assert payload["artifacts"]["daemon_log"].endswith(
         ".cache/dev-loop/feature-dev-loop-abc1234-api9999-capture9998/polylogued.log"
+    )
+    assert "polylogue ops status" in payload["commands"]["capture_cli_status"]
+    assert payload["commands"]["capture_cli_status"].endswith("terminal/polylogue-ops-status.typescript")
+    assert payload["commands"]["capture_tui_placeholder"].endswith(
+        "tui; use the local terminal-control surface or VHS when visual playback is needed"
     )
     assert payload["suggested_env"]["POLYLOGUE_ARCHIVE_ROOT"] == str(repo / ".local" / "dev-archive")
     assert payload["suggested_env"]["POLYLOGUE_DEV_LOOP_RUN_ID"] == payload["run_id"]

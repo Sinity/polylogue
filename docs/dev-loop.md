@@ -22,7 +22,8 @@ It reports:
 - whether the user `polylogued.service` is active;
 - listeners on the daemon API port and browser-capture receiver port;
 - the branch-local archive root, run log directory, daemon log, browser
-  artifact directory, and preflight JSON path to use;
+  artifact directory, terminal/TUI artifact directories, and preflight JSON
+  path to use;
 - a concrete `polylogued run` command with branch-local environment variables.
 
 The default branch-local paths are:
@@ -93,13 +94,36 @@ loop should make these facts obvious before an agent starts debugging:
 - where daemon logs are written;
 - whether the deployed service is still active.
 
+## CLI and TUI Capture
+
+Human-facing CLI/TUI behavior should be debuggable as rendered, not only as
+JSON payloads. The preflight reserves run-local directories for those artifacts:
+
+```text
+.cache/dev-loop/<run-id>/terminal/
+.cache/dev-loop/<run-id>/tui/
+```
+
+The `commands.capture_cli_status` entry shows a concrete terminal transcript
+capture for `polylogue ops status` against the branch-local archive. Use the
+same pattern for other CLI commands whose layout, colors, wrapping, or progress
+behavior matters.
+
+For TUI or full-screen terminal work, record into the run-local `tui/`
+directory using the local terminal-control surface, `script`, or VHS-style
+recording when visual playback is needed. Polylogue only provides the
+branch-local environment and artifact locations; visual inspection and terminal
+control remain local agent/operator capabilities.
+
 ## Browser-Capture Extension Development
 
 Load `browser-extension/` unpacked into a development Chrome profile and point
-the extension at the receiver URL printed by the preflight. For ordinary local
-development, use an empty agent-private profile. For authenticated ChatGPT or
-Claude.ai adapter work, an operator-approved copy of the real browser profile
-may be used on this workstation only.
+the extension at the receiver URL printed by the preflight. Polylogue does not
+provide or verify the browser-control substrate itself; local agents/operators
+use their existing browser tooling to open the branch-local web shell, inspect
+DOM/network state, and load the unpacked extension. For authenticated ChatGPT
+or Claude.ai adapter work, an operator-approved copy of the real browser
+profile may be used on this workstation only.
 
 Copied-profile rules:
 
