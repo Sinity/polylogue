@@ -76,13 +76,6 @@ _ROW_PAYLOAD_MODELS: dict[str, _RowPayloadModel] = {
     "MessageQueryRowPayload": MessageQueryRowPayload,
 }
 
-_SQL_QUERY_METHODS: dict[str, str] = {
-    "action": "query_actions",
-    "assertion": "query_assertions",
-    "block": "query_blocks",
-    "message": "query_messages",
-}
-
 
 def _bool_param(value: object) -> bool:
     if isinstance(value, bool):
@@ -698,7 +691,7 @@ def _build_sql_envelope(
         )
     sort = source.sort.field if source.sort is not None else None
     sort_direction = source.sort.direction if source.sort is not None else "asc"
-    method_name = _SQL_QUERY_METHODS.get(source.unit)
+    method_name = descriptor.sql_query_method
     payload_model = _ROW_PAYLOAD_MODELS.get(descriptor.payload_model)
     if method_name is None or payload_model is None:
         raise ValueError(f"Query unit {source.unit!r} is not wired to a SQL executor")
