@@ -266,6 +266,7 @@ def _archive_list_summaries_for_spec(
     if offset is not None:
         query_kwargs["offset"] = offset
     if query_text is not None:
+        query_kwargs.pop("sample", None)
         return [archive.read_summary(hit.session_id) for hit in archive.search_summaries(query_text, **query_kwargs)]
     return cast(list[ArchiveSessionSummary], archive.list_summaries(**query_kwargs))
 
@@ -279,6 +280,7 @@ def _archive_search_hits_for_spec(
     offset: int,
 ) -> list[Any]:
     query_kwargs = _archive_query_kwargs(spec, default_limit=None)
+    query_kwargs.pop("sample", None)
     query_kwargs["limit"] = limit
     query_kwargs["offset"] = offset
     return cast(list[Any], archive.search_summaries(query_text, **query_kwargs))

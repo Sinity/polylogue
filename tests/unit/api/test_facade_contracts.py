@@ -1559,6 +1559,34 @@ async def test_search_envelope_paginates_filter_only_boolean_predicates(tmp_path
         await archive.close()
 
 
+async def test_query_sessions_sampled_text_query_uses_search_kwargs(tmp_path: Path) -> None:
+    """Sampled specs with text queries do not leak list-only kwargs into FTS search."""
+    archive = _archive(tmp_path)
+    try:
+        with ArchiveStore(archive.config.archive_root) as archive_db:
+            archive_db.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="sampled-text-query",
+                    title="Sampled Text Query",
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id="u1",
+                            role=Role.USER,
+                            text="sampled needle",
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="sampled needle")],
+                        )
+                    ],
+                )
+            )
+
+        rows = await archive.query_sessions(query="sampled needle", sample=1, limit=5)
+
+        assert [row["id"] for row in rows] == ["codex-session:sampled-text-query"]
+    finally:
+        await archive.close()
+
+
 async def test_query_units_returns_typed_envelope_on_empty_archive(tmp_path: Path) -> None:
     """``query_units()`` returns a typed terminal-unit envelope even with no rows."""
     from polylogue.surfaces.payloads import QueryUnitEnvelope
