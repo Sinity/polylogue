@@ -832,6 +832,38 @@
       "title": "Offset",
       "type": "integer"
     },
+    "pipeline_stages": {
+      "default": [],
+      "items": {
+        "additionalProperties": true,
+        "properties": {
+          "kind": {
+            "enum": [
+              "session_scope",
+              "sort",
+              "limit",
+              "offset"
+            ],
+            "type": "string"
+          },
+          "predicate": {
+            "type": "object"
+          },
+          "sort": {
+            "type": "object"
+          },
+          "value": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "type": "object"
+      },
+      "title": "Pipeline Stages",
+      "type": "array"
+    },
     "query": {
       "title": "Query",
       "type": "string"

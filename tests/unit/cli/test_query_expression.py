@@ -19,10 +19,12 @@ Covers:
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from click.testing import CliRunner
 
 from polylogue.archive.query.expression import (
     EXPRESSION_FIELD_REGISTRY,
@@ -1128,6 +1130,14 @@ class TestBooleanQueryExpression:
         assert envelope.limit == 1
         assert envelope.offset == 0
         assert envelope.next_offset == 1
+        assert envelope.pipeline_stages == (
+            {
+                "kind": "session_scope",
+                "predicate": {"field": "repo", "kind": "field", "op": "=", "values": ["polylogue"]},
+            },
+            {"kind": "limit", "value": 1},
+            {"kind": "offset", "value": 1},
+        )
         assert len(envelope.items) == 1
         row = envelope.items[0]
         from polylogue.surfaces.payloads import MessageQueryRowPayload
@@ -1146,6 +1156,47 @@ class TestBooleanQueryExpression:
         assert isinstance(next_row, MessageQueryRowPayload)
         assert next_row.message_id == "claude-code-session:ext-hit:m-3"
         assert next_row.text == "third"
+
+    def test_cli_json_reports_terminal_pipeline_stages(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        from polylogue.cli import cli
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "hit")
+            .provider("claude-code")
+            .git_repository_url("polylogue")
+            .title("pipeline cli")
+            .add_message("m-1", role="assistant", text="first")
+            .add_message("m-2", role="assistant", text="second")
+            .save()
+        )
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "--plain",
+                "--format",
+                "json",
+                "find",
+                "sessions where repo:polylogue | messages where role:assistant | limit 1 | offset 1",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["pipeline_stages"] == [
+            {
+                "kind": "session_scope",
+                "predicate": {"field": "repo", "kind": "field", "op": "=", "values": ["polylogue"]},
+            },
+            {"kind": "limit", "value": 1},
+            {"kind": "offset", "value": 1},
+        ]
+        assert [item["text"] for item in payload["items"]] == ["second"]
 
     def test_unknown_terminal_unit_does_not_fall_through_to_block_rows(self) -> None:
         from polylogue.archive.query.unit_results import query_unit_rows

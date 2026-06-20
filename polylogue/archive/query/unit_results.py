@@ -658,6 +658,7 @@ def _build_runtime_transform_envelope(
         limit=limit,
         offset=caller_offset,
         has_next=len(rows) > limit,
+        pipeline_stages=tuple(stage.to_payload() for stage in source.pipeline_stages),
     )
 
 
@@ -698,6 +699,7 @@ def _build_sql_envelope(
         limit=limit,
         offset=caller_offset,
         has_next=len(rows) > limit,
+        pipeline_stages=tuple(stage.to_payload() for stage in source.pipeline_stages),
     )
 
 

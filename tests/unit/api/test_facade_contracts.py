@@ -1495,6 +1495,51 @@ async def test_query_units_applies_session_scope_filters(tmp_path: Path) -> None
         await archive.close()
 
 
+async def test_query_units_reports_pipeline_stages(tmp_path: Path) -> None:
+    """``query_units()`` exposes the terminal pipeline that shaped returned rows."""
+    archive = _archive(tmp_path)
+    try:
+        with ArchiveStore(archive.config.archive_root) as archive_db:
+            archive_db.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="unit-pipeline-codex",
+                    title="Unit pipeline Codex",
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id="m1",
+                            role=Role.ASSISTANT,
+                            text="first terminal pipeline row",
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="first terminal pipeline row")],
+                        ),
+                        ParsedMessage(
+                            provider_message_id="m2",
+                            role=Role.ASSISTANT,
+                            text="second terminal pipeline row",
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="second terminal pipeline row")],
+                        ),
+                    ],
+                )
+            )
+
+        envelope = await archive.query_units(
+            "sessions where origin:codex-session | messages where role:assistant | limit 1 | offset 1"
+        )
+
+        assert envelope.pipeline_stages == (
+            {
+                "kind": "session_scope",
+                "predicate": {"field": "origin", "kind": "field", "op": "=", "values": ["codex-session"]},
+            },
+            {"kind": "limit", "value": 1},
+            {"kind": "offset", "value": 1},
+        )
+        assert envelope.limit == 1
+        assert [cast(Any, item).message_id for item in envelope.items] == ["codex-session:unit-pipeline-codex:m2"]
+    finally:
+        await archive.close()
+
+
 async def test_query_units_accepts_inline_session_scope(tmp_path: Path) -> None:
     """``query_units()`` accepts owning-session scope inside the shared DSL."""
     archive = _archive(tmp_path)
