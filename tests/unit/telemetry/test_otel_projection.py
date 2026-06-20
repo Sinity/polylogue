@@ -121,3 +121,57 @@ def test_message_text_is_omitted_unless_requested() -> None:
     explicit = project_query_unit_rows_to_otel("session:codex-session:root", (row,), include_message_text=True)
     assert explicit.logs[0].body == "private message text"
     assert explicit.logs[0].attributes["polylogue.message.text_included"] is True
+
+
+def test_absolute_tool_paths_and_embedded_command_paths_are_redacted() -> None:
+    rows = (
+        ActionQueryRowPayload(
+            session_id="codex-session:root",
+            message_id="m-tmp",
+            origin="codex-session",
+            title="OTel projection",
+            tool_use_block_id="tool-tmp",
+            tool_name="Bash",
+            semantic_type="shell",
+            tool_command="cat /home/alice/secret.txt",
+            tool_path="/tmp/secret.txt",
+            output_text=None,
+        ),
+        ActionQueryRowPayload(
+            session_id="codex-session:root",
+            message_id="m-workspace",
+            origin="codex-session",
+            title="OTel projection",
+            tool_use_block_id="tool-workspace",
+            tool_name="Bash",
+            semantic_type="shell",
+            tool_command="pytest /workspace/polylogue/tests",
+            tool_path="/workspace/polylogue/file.py",
+            output_text=None,
+        ),
+        ActionQueryRowPayload(
+            session_id="codex-session:root",
+            message_id="m-mnt",
+            origin="codex-session",
+            title="OTel projection",
+            tool_use_block_id="tool-mnt",
+            tool_name="Read",
+            semantic_type="file_read",
+            tool_path="/mnt/data/export.json",
+            output_text=None,
+        ),
+    )
+
+    payload = project_query_unit_rows_to_otel("session:codex-session:root", rows)
+    rendered = payload.to_json()
+
+    assert "/home/alice/secret.txt" not in rendered
+    assert "/tmp/secret.txt" not in rendered
+    assert "/workspace/polylogue" not in rendered
+    assert "/mnt/data/export.json" not in rendered
+    for span in payload.spans:
+        assert span.attributes.get("polylogue.action.tool_path.redacted") is True
+        assert "polylogue.action.tool_path" not in span.attributes
+        if span.attributes["polylogue.action.tool_use_block_id"] != "tool-mnt":
+            assert span.attributes.get("polylogue.action.tool_command.redacted") is True
+            assert "polylogue.action.tool_command" not in span.attributes

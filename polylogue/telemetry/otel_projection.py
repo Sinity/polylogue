@@ -7,8 +7,10 @@ maps those rows into a bounded observability-shaped payload for external tools.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from hashlib import sha256
+from pathlib import PurePosixPath
 
 from polylogue.core.json import require_json_document
 from polylogue.core.refs import normalize_public_ref_text
@@ -24,7 +26,7 @@ from polylogue.surfaces.payloads import (
     RunQueryRowPayload,
 )
 
-_LOCAL_PATH_PREFIXES = ("/home/", "/Users/", "/realm/", "/var/", "/etc/")
+_ABSOLUTE_POSIX_PATH_TOKEN = re.compile(r"(?<!\S)/(?:[^ \t\r\n'\"`]+)")
 
 
 def project_query_unit_rows_to_otel(
@@ -128,9 +130,12 @@ def _action_span(trace_id: str, row: ActionQueryRowPayload) -> OtelSpanPayload:
     _set_optional(attributes, "polylogue.action.tool_result_block_id", row.tool_result_block_id)
     _set_optional(attributes, "polylogue.action.tool_name", row.tool_name)
     _set_optional(attributes, "polylogue.action.semantic_type", row.semantic_type)
-    _set_optional(attributes, "polylogue.action.tool_command", row.tool_command)
+    if _contains_absolute_path(row.tool_command):
+        attributes["polylogue.action.tool_command.redacted"] = True
+    else:
+        _set_optional(attributes, "polylogue.action.tool_command", row.tool_command)
     _set_optional(attributes, "polylogue.action.output_length", len(row.output_text) if row.output_text else None)
-    if row.tool_path and _is_local_path(row.tool_path):
+    if row.tool_path and _is_absolute_path(row.tool_path):
         attributes["polylogue.action.tool_path.redacted"] = True
     elif row.tool_path:
         attributes["polylogue.action.tool_path"] = row.tool_path
@@ -220,7 +225,15 @@ def _set_optional(attributes: dict[str, object], key: str, value: object | None)
 
 
 def _is_local_path(value: str | None) -> bool:
-    return bool(value and value.startswith(_LOCAL_PATH_PREFIXES))
+    return _is_absolute_path(value)
+
+
+def _is_absolute_path(value: str | None) -> bool:
+    return bool(value and PurePosixPath(value).is_absolute())
+
+
+def _contains_absolute_path(value: str | None) -> bool:
+    return bool(value and _ABSOLUTE_POSIX_PATH_TOKEN.search(value))
 
 
 __all__ = ["project_query_unit_rows_to_otel"]
