@@ -767,6 +767,47 @@ def test_read_view_rejects_format_outside_selected_profile() -> None:
         )
 
 
+def test_read_view_rejects_explicit_options_for_other_views() -> None:
+    env = SimpleNamespace(polylogue=SimpleNamespace())
+
+    with pytest.raises(click.UsageError, match="read --view recovery does not use --message-role"):
+        read_view_handlers.run_read_view(
+            cast(AppEnv, env),
+            RootModeRequest.from_params({}),
+            ReadViewInvocation(
+                view="recovery",
+                session_id="s1",
+                output_format=None,
+                destination="terminal",
+                out_path=None,
+                explicit_options=frozenset({"message_role"}),
+            ),
+        )
+
+
+def test_read_view_accepts_explicit_options_owned_by_selected_view() -> None:
+    read_view_handlers.READ_VIEW_HANDLERS["recovery"].validate(
+        ReadViewInvocation(
+            view="recovery",
+            session_id="s1",
+            output_format=None,
+            destination="terminal",
+            out_path=None,
+            recovery=read_view_handlers.ReadViewRecoveryOptions(report="continue"),
+            explicit_options=frozenset({"recovery_report"}),
+        ),
+        RootModeRequest.from_params({}),
+    )
+
+
+def test_explicit_read_view_options_reports_command_line_values_only() -> None:
+    ctx = click.Context(query_verbs.read_verb)
+    ctx.set_parameter_source("message_role", click.core.ParameterSource.COMMANDLINE)
+    ctx.set_parameter_source("related_limit", click.core.ParameterSource.DEFAULT)
+
+    assert query_verbs._explicit_read_view_options(ctx) == frozenset({"message_role"})
+
+
 def test_resolve_target_session_id_uses_explicit_conv_id() -> None:
     request = RootModeRequest.from_params({"conv_id": "claude-code:abc123"})
     assert query_verbs._resolve_target_session_id(request) == "claude-code:abc123"

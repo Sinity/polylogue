@@ -76,6 +76,48 @@ _READ_VIEW_HELP = "What to render (" + ", ".join(_READ_VIEWS) + ")."
 _READ_DESTINATIONS = ("terminal", "stdout", "browser", "clipboard", "file")
 _READ_FORMATS = tuple(sorted({fmt for profile in READ_VIEW_PROFILES for fmt in profile.formats}))
 _RECOVERY_REPORT_PRESETS = ("continue", "blame", "work-packet")
+_READ_VIEW_SPECIFIC_OPTION_NAMES = frozenset(
+    {
+        "confidence_threshold",
+        "github_api",
+        "limit",
+        "max_messages",
+        "max_sessions",
+        "message_role",
+        "message_type",
+        "no_code_blocks",
+        "no_file_reads",
+        "no_redact",
+        "no_tool_calls",
+        "no_tool_outputs",
+        "offset",
+        "otlp",
+        "pack_origin",
+        "pack_query",
+        "project_path",
+        "project_repo",
+        "prose_only",
+        "recovery_report",
+        "related_limit",
+        "repo_path",
+        "since",
+        "since_hours",
+        "until",
+        "window_hours",
+    }
+)
+
+
+def _explicit_read_view_options(ctx: click.Context) -> frozenset[str]:
+    """Return view-specific read options supplied on the command line."""
+
+    return frozenset(
+        name
+        for name in _READ_VIEW_SPECIFIC_OPTION_NAMES
+        if (source := ctx.get_parameter_source(name)) is not None and source.name == "COMMANDLINE"
+    )
+
+
 _CONTINUE_CANDIDATE_DEFAULT_LIMIT = 10
 
 
@@ -436,6 +478,7 @@ def read_verb(
     if view == "recovery" and effective_format is None:
         root_format = request.params.get("output_format")
         effective_format = root_format if isinstance(root_format, str) else None
+    explicit_options = _explicit_read_view_options(ctx)
     if destination == "browser":
         run_read_view(
             env,
@@ -446,6 +489,7 @@ def read_verb(
                 output_format=effective_format,
                 destination=destination,
                 out_path=out_path,
+                explicit_options=explicit_options,
             ),
         )
         return
@@ -491,6 +535,7 @@ def read_verb(
                 github_api=github_api,
                 otlp=otlp,
             ),
+            explicit_options=explicit_options,
         ),
     )
 
