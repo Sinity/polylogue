@@ -163,6 +163,15 @@ class ArchiveSessionSummary:
     message_count: int
     word_count: int
     tags: tuple[str, ...]
+    tool_use_count: int = 0
+    thinking_count: int = 0
+    paste_count: int = 0
+    user_message_count: int = 0
+    assistant_message_count: int = 0
+    system_message_count: int = 0
+    tool_message_count: int = 0
+    user_word_count: int = 0
+    assistant_word_count: int = 0
     working_directories: tuple[str, ...] = ()
     git_branch: str | None = None
     git_repository_url: str | None = None
@@ -1184,7 +1193,10 @@ class ArchiveStore:
         row = self._conn.execute(
             f"""
             SELECT s.session_id, s.native_id, s.origin, s.title, s.created_at_ms, s.updated_at_ms,
-                   s.message_count, s.word_count, s.git_branch, s.git_repository_url,
+                   s.message_count, s.word_count, s.tool_use_count, s.thinking_count, s.paste_count,
+                   s.user_message_count, s.assistant_message_count, s.system_message_count,
+                   s.tool_message_count, s.user_word_count, s.assistant_word_count,
+                   s.git_branch, s.git_repository_url,
                    COALESCE(
                        (
                            SELECT json_group_array(swd.path)
@@ -2974,7 +2986,10 @@ class ArchiveStore:
         rows = self._conn.execute(
             f"""
             SELECT s.session_id, s.native_id, s.origin, s.title, s.created_at_ms, s.updated_at_ms,
-                   s.message_count, s.word_count, s.git_branch, s.git_repository_url,
+                   s.message_count, s.word_count, s.tool_use_count, s.thinking_count, s.paste_count,
+                   s.user_message_count, s.assistant_message_count, s.system_message_count,
+                   s.tool_message_count, s.user_word_count, s.assistant_word_count,
+                   s.git_branch, s.git_repository_url,
                    COALESCE(
                        (
                            SELECT json_group_array(swd.path)
@@ -3894,6 +3909,13 @@ class ArchiveStore:
 def _summary_from_row(row: sqlite3.Row) -> ArchiveSessionSummary:
     import json
 
+    def row_int(key: str) -> int:
+        try:
+            value = row[key]
+        except IndexError:
+            return 0
+        return int(value or 0)
+
     raw_tags = json.loads(str(row["tags_json"] or "[]"))
     tags = tuple(str(tag) for tag in raw_tags if tag is not None)
     raw_working_dirs = json.loads(str(row["working_directories_json"] or "[]"))
@@ -3910,6 +3932,15 @@ def _summary_from_row(row: sqlite3.Row) -> ArchiveSessionSummary:
         message_count=int(row["message_count"] or 0),
         word_count=int(row["word_count"] or 0),
         tags=tags,
+        tool_use_count=row_int("tool_use_count"),
+        thinking_count=row_int("thinking_count"),
+        paste_count=row_int("paste_count"),
+        user_message_count=row_int("user_message_count"),
+        assistant_message_count=row_int("assistant_message_count"),
+        system_message_count=row_int("system_message_count"),
+        tool_message_count=row_int("tool_message_count"),
+        user_word_count=row_int("user_word_count"),
+        assistant_word_count=row_int("assistant_word_count"),
         working_directories=working_directories,
         git_branch=str(row["git_branch"]) if row["git_branch"] is not None else None,
         git_repository_url=str(row["git_repository_url"]) if row["git_repository_url"] is not None else None,

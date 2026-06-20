@@ -143,6 +143,15 @@ from polylogue.archive.query.spec import (
 from polylogue.core.enums import Origin
 from polylogue.errors import PolylogueError
 
+
+def _count_field_regex() -> str:
+    """Return a regex alternation for count fields from the metadata registry."""
+
+    return "|".join(re.escape(field) for field in sorted(COUNT_QUERY_FIELD_REGISTRY, key=len, reverse=True))
+
+
+_COUNT_FIELD_REGEX = _count_field_regex()
+
 # ---------------------------------------------------------------------------
 # Error
 # ---------------------------------------------------------------------------
@@ -187,9 +196,9 @@ class _FieldToken:
 
 @dataclass(frozen=True)
 class _CountToken:
-    """``messages:>=10`` or ``words:<=50``."""
+    """Readable count comparison such as ``messages:>=10``."""
 
-    field: str  # "messages" or "words"
+    field: str
     op: Literal[">=", "<=", "="]
     number: int
 
@@ -382,7 +391,7 @@ class QueryExpressionExplanation:
 # Parser
 # ---------------------------------------------------------------------------
 
-_QUERY_GRAMMAR = r"""
+_QUERY_GRAMMAR = rf"""
     compact_query: compact_clause*
 
     ?compact_clause: COUNT_CLAUSE       -> count_clause
@@ -432,7 +441,7 @@ _QUERY_GRAMMAR = r"""
     AND: /and/i
     NOT: /not/i
     BETWEEN.6: /between/i
-    COUNT_FIELD.6: /(messages|words|user_messages|assistant_messages|system_messages|tool_messages|user_words|assistant_words)/i
+    COUNT_FIELD.6: /({_COUNT_FIELD_REGEX})/i
     DATE_FIELD.6: /date/i
     TIME_FIELD.6: /time/i
     DATE_COMP_OP: ">=" | "<=" | "=" | ">" | "<"
@@ -442,8 +451,8 @@ _QUERY_GRAMMAR = r"""
     SEMANTIC_BARE_TEXT.6: /(?:semantic|near:text):[^\s"()]+/i
     FTS_QUOTED_TEXT.6: /~"(\\.|[^"\\])*"/
     FTS_BARE_TEXT.5: /~[^\s"()]+/
-    COUNT_CLAUSE.8: /(messages|words|user_messages|assistant_messages|system_messages|tool_messages|user_words|assistant_words):(>=|<=|=)\d+(?!\S)/
-    FIELD_CLAUSE.4: /-?[a-zA-Z_][a-zA-Z0-9_.]*:(?:"(\\.|[^"\\])*"|\([^)]*\)|[^\s"()\[\]{}]+)/
+    COUNT_CLAUSE.8: /({_COUNT_FIELD_REGEX}):(>=|<=|=)\d+(?!\S)/
+    FIELD_CLAUSE.4: /-?[a-zA-Z_][a-zA-Z0-9_.]*:(?:"(\\.|[^"\\])*"|\([^)]*\)|[^\s"()\[\]{{}}]+)/
     NEG_QUOTED_TEXT.3: /-"(\\.|[^"\\])*"/
     QUOTED_TEXT.2: /"(\\.|[^"\\])*"/
     NEG_BARE_TEXT.1: /-[^\s"]+/
@@ -463,7 +472,8 @@ _QUERY_PARSER = Lark(
 )
 
 _COUNT_CLAUSE_RE = re.compile(
-    r"^(messages|words|user_messages|assistant_messages|system_messages|tool_messages|user_words|assistant_words):(>=|<=|=)(\d+)$"
+    rf"^({_COUNT_FIELD_REGEX}):(>=|<=|=)(\d+)$",
+    re.IGNORECASE,
 )
 _FIELD_CLAUSE_RE = re.compile(
     r"""
@@ -508,7 +518,7 @@ def _parse_error_message(expression: str, exc: UnexpectedInput) -> str:
     structural_words = re.search(r"\bexists\s+message\(.*\bwords:", expression, re.IGNORECASE)
     if structural_words is not None:
         return "field 'words' requires a numeric value"
-    malformed_count = re.search(r"\b(messages|words):", expression, re.IGNORECASE)
+    malformed_count = re.search(rf"\b({_COUNT_FIELD_REGEX}):", expression, re.IGNORECASE)
     if malformed_count is not None:
         field = malformed_count.group(1).lower()
         return f"use comparison operator for {field!r}: e.g. {field}:>=10"
@@ -523,7 +533,7 @@ def _parse_error_field(expression: str) -> str | None:
     structural_words = re.search(r"\bexists\s+message\(.*\bwords:", expression, re.IGNORECASE)
     if structural_words is not None:
         return "words"
-    malformed_count = re.search(r"\b(messages|words):", expression, re.IGNORECASE)
+    malformed_count = re.search(rf"\b({_COUNT_FIELD_REGEX}):", expression, re.IGNORECASE)
     if malformed_count is not None:
         return malformed_count.group(1).lower()
     return None
@@ -701,7 +711,7 @@ def _field_token_to_predicate(token: _FieldToken) -> QueryPredicate:
         values = tuple(value.strip().lower() for value in values if value.strip())
     elif validation_field in {"since", "until"} and values:
         values = (_parse_relative_date(values[-1]),)
-    elif validation_field in {"messages", "words"}:
+    elif validation_field in COUNT_QUERY_FIELD_REGISTRY:
         if not values:
             raise ExpressionCompileError(f"field {field_name!r} requires a numeric value", field=field_name)
         match = re.fullmatch(r"(>=|<=|=)?(\d+)", values[-1].strip())
@@ -1099,7 +1109,7 @@ def _is_boolean_expression(expression: str) -> bool:
         return True
     if re.search(r"\b(?:semantic|near:text):", expression, re.IGNORECASE):
         return True
-    if re.search(r"\b(?:messages|words)\b\s*(?:>=|<=|=|>|<|between\b)", expression, re.IGNORECASE):
+    if re.search(rf"\b(?:{_COUNT_FIELD_REGEX})\b\s*(?:>=|<=|=|>|<|between\b)", expression, re.IGNORECASE):
         count_range_masked = re.sub(r"\bbetween\s+\d+\s+and\s+\d+\b", "between_range", expression, flags=re.IGNORECASE)
         return bool(re.search(r"\b(?:and|or|not)\b", count_range_masked, re.IGNORECASE))
     if re.search(r"\bdate\b\s*(?:>=|<=|>|<|between\b)", expression, re.IGNORECASE):
@@ -2168,7 +2178,7 @@ class _SpecAccumulator:
                         field="lane",
                     ) from exc
 
-        elif fname in ("messages", "words"):
+        elif fname in COUNT_QUERY_FIELD_REGISTRY:
             # Already handled via _CountToken; field:value form without op is an error
             raise ExpressionCompileError(
                 f"use comparison operator for {fname!r}: e.g. {fname}:>=10",
