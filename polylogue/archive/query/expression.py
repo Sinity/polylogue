@@ -41,7 +41,7 @@ and explicit Boolean session predicates:
     actions where action:file_edit AND path:polylogue/archive
     blocks where type:code AND text:timeout
     messages where time >= 2026-01-01T00:00:00+00:00
-    sessions where repo:polylogue | messages where role:assistant | group by role | count
+    sessions where repo:polylogue | messages where role:assistant | group by role | count | sort by count desc
 
 Unit-scoped ``messages/actions/blocks/assertions/runs/observed-events/context-snapshots where ...`` predicates are executable
 in two shared paths: ``compile_expression`` keeps the compatibility session
@@ -49,7 +49,8 @@ selector behavior by lowering them to correlated ``exists <unit>(...)``
 predicates, while terminal query-unit surfaces preserve the selected unit and
 return raw message/action/block/assertion/observed-event/context-snapshot rows from the same predicate semantics.
 SQL-backed terminal units also support exact ``group by FIELD | count``
-aggregate pipelines for the closed aggregate fields declared in this module.
+aggregate pipelines for the closed aggregate fields declared in this module,
+plus aggregate ``sort by count|key [asc|desc]`` before ``limit``/``offset``.
 They also support ``time >= VALUE``, ``time <= VALUE``, and
 ``time between A and B`` predicates over the same row timestamp used by
 ``sort by time``.
@@ -250,7 +251,7 @@ class QueryExpressionAST:
 class QueryUnitSort:
     """Terminal query-unit sort stage."""
 
-    field: Literal["time"]
+    field: Literal["time", "count", "key"]
     direction: Literal["asc", "desc"] = "asc"
 
 
@@ -1243,17 +1244,20 @@ def _parse_sort_stage(stage: str) -> QueryUnitSort | None:
     parts = lower.removeprefix("sort by ").split()
     if not parts:
         raise ExpressionCompileError("pipeline `sort by` stage requires a field", field="sort")
-    if parts[0] != "time":
+    if parts[0] not in {"time", "count", "key"}:
         raise ExpressionCompileError(
-            "pipeline `sort by` currently supports only `time` for terminal rows",
+            "pipeline `sort by` supports `time` for rows and `count` or `key` for aggregate rows",
             field="sort",
         )
     if len(parts) == 1:
-        return QueryUnitSort(field="time")
+        return QueryUnitSort(field=cast(Literal["time", "count", "key"], parts[0]))
     if len(parts) == 2 and parts[1] in {"asc", "desc"}:
-        return QueryUnitSort(field="time", direction=cast(Literal["asc", "desc"], parts[1]))
+        return QueryUnitSort(
+            field=cast(Literal["time", "count", "key"], parts[0]),
+            direction=cast(Literal["asc", "desc"], parts[1]),
+        )
     raise ExpressionCompileError(
-        "pipeline `sort by time` accepts an optional `asc` or `desc` direction",
+        "pipeline `sort by` accepts an optional `asc` or `desc` direction",
         field="sort",
     )
 
@@ -1293,14 +1297,33 @@ def _validate_aggregate_group_field(unit: QueryUnitName, field: str) -> None:
 def _apply_pipeline_stage(source: QueryUnitSource, stage: str) -> QueryUnitSource:
     sort = _parse_sort_stage(stage)
     if sort is not None:
-        if source.aggregate is not None:
-            raise ExpressionCompileError("pipeline `sort by` must appear before aggregate stages", field="sort")
-        if source.group_by is not None:
-            raise ExpressionCompileError("pipeline `sort by` must appear before `group by`", field="sort")
+        if sort.field == "time":
+            if source.aggregate is not None:
+                raise ExpressionCompileError(
+                    "pipeline `sort by time` must appear before aggregate stages", field="sort"
+                )
+            if source.group_by is not None:
+                raise ExpressionCompileError("pipeline `sort by time` must appear before `group by`", field="sort")
+            if source.unit not in {"message", "action", "block", "assertion"}:
+                raise ExpressionCompileError(
+                    "pipeline `sort by time` currently supports message/action/block/assertion rows; "
+                    "runtime-transform units need a streaming lowerer first",
+                    field="sort",
+                )
+        elif source.aggregate != "count":
+            raise ExpressionCompileError(
+                "pipeline `sort by count` and `sort by key` require an aggregate `count` stage",
+                field="sort",
+            )
+        elif source.limit is not None or source.offset is not None:
+            raise ExpressionCompileError(
+                "pipeline aggregate `sort by` must appear before `limit` and `offset`",
+                field="sort",
+            )
         if source.unit not in {"message", "action", "block", "assertion"}:
             raise ExpressionCompileError(
-                "pipeline `sort by time` currently supports message/action/block/assertion rows; "
-                "runtime-transform units need a streaming lowerer first",
+                "pipeline aggregate sorting currently supports message/action/block/assertion rows; "
+                "runtime-transform units need an aggregate lowerer first",
                 field="sort",
             )
         return replace(
@@ -1315,6 +1338,8 @@ def _apply_pipeline_stage(source: QueryUnitSource, stage: str) -> QueryUnitSourc
     if group_by is not None:
         if source.aggregate is not None:
             raise ExpressionCompileError("pipeline `group by` must appear before `count`", field="group")
+        if source.sort is not None:
+            raise ExpressionCompileError("pipeline `sort by time` cannot feed aggregate stages", field="group")
         if source.limit is not None or source.offset is not None:
             raise ExpressionCompileError("pipeline `group by` must appear before `limit` and `offset`", field="group")
         if source.unit not in {"message", "action", "block", "assertion"}:
@@ -1373,7 +1398,7 @@ def _apply_pipeline_stage(source: QueryUnitSource, stage: str) -> QueryUnitSourc
         )
     raise ExpressionCompileError(
         f"unsupported pipeline stage {stage!r}; supported terminal stages are "
-        "`sort by time [asc|desc]`, `group by FIELD`, `count`, `limit N`, and `offset N`",
+        "`sort by time|count|key [asc|desc]`, `group by FIELD`, `count`, `limit N`, and `offset N`",
         field=None,
     )
 

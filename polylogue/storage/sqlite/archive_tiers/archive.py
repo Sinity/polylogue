@@ -269,6 +269,18 @@ def _query_unit_order_direction(direction: Literal["asc", "desc"]) -> Literal["A
     return "DESC" if direction == "desc" else "ASC"
 
 
+def _query_unit_aggregate_order(
+    sort: Literal["count", "key"] | None,
+    direction: Literal["asc", "desc"],
+) -> str:
+    """Return a closed SQL order clause for terminal aggregate rows."""
+
+    sql_direction = _query_unit_order_direction(direction)
+    if sort == "key":
+        return f"group_key {sql_direction}, count DESC"
+    return f"count {sql_direction}, group_key"
+
+
 def _query_unit_group_expression(unit: str, row_alias: str, group_by: str | None) -> str:
     """Return the SQL expression for a supported terminal aggregate group."""
 
@@ -3415,6 +3427,8 @@ class ArchiveStore:
         predicate: QueryPredicate,
         *,
         group_by: str | None = None,
+        sort: Literal["count", "key"] | None = None,
+        sort_direction: Literal["asc", "desc"] = "desc",
         limit: int = 50,
         offset: int = 0,
         session_filters: Mapping[str, object] | None = None,
@@ -3449,6 +3463,7 @@ class ArchiveStore:
             "block": "blocks b JOIN sessions s ON s.session_id = b.session_id",
             "assertion": "user_tier.assertions a LEFT JOIN sessions s ON a.target_ref = 'session:' || s.session_id",
         }[unit]
+        order_clause = _query_unit_aggregate_order(sort, sort_direction)
         rows = self._conn.execute(
             f"""
             SELECT {group_expr} AS group_key, COUNT(*) AS count
@@ -3456,7 +3471,7 @@ class ArchiveStore:
             WHERE {where_clause}
             {session_clause}
             GROUP BY group_key
-            ORDER BY count DESC, group_key
+            ORDER BY {order_clause}
             LIMIT ? OFFSET ?
             """,
             [*params, *session_params, normalized_limit, normalized_offset],

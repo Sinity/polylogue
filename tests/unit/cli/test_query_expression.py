@@ -595,12 +595,15 @@ class TestBooleanQueryExpression:
 
     def test_pipeline_group_by_count_stages_are_parsed(self) -> None:
         source = parse_unit_source_expression(
-            "sessions where repo:polylogue | messages where role:assistant | group by role | count"
+            "sessions where repo:polylogue | messages where role:assistant | group by role | count | sort by count asc"
         )
 
         assert source is not None
         assert source.group_by == "role"
         assert source.aggregate == "count"
+        assert source.sort is not None
+        assert source.sort.field == "count"
+        assert source.sort.direction == "asc"
         assert [stage.to_payload() for stage in source.pipeline_stages] == [
             {
                 "kind": "session_scope",
@@ -608,6 +611,7 @@ class TestBooleanQueryExpression:
             },
             {"kind": "group", "field": "role"},
             {"kind": "count", "metric": "count"},
+            {"kind": "sort", "sort": {"field": "count", "direction": "asc"}},
         ]
 
     def test_pipeline_rejects_unknown_terminal_stage(self) -> None:
@@ -625,6 +629,20 @@ class TestBooleanQueryExpression:
             parse_unit_source_expression(
                 "sessions where repo:polylogue | context-snapshots where boundary:session_start | count"
             )
+
+    def test_pipeline_rejects_aggregate_sort_before_count(self) -> None:
+        with pytest.raises(ExpressionCompileError, match="require an aggregate `count` stage"):
+            parse_unit_source_expression("messages where role:assistant | group by role | sort by count desc")
+
+    def test_pipeline_rejects_aggregate_sort_after_limit(self) -> None:
+        with pytest.raises(ExpressionCompileError, match="must appear before `limit` and `offset`"):
+            parse_unit_source_expression(
+                "messages where role:assistant | group by role | count | limit 5 | sort by count"
+            )
+
+    def test_pipeline_rejects_row_sort_before_aggregate(self) -> None:
+        with pytest.raises(ExpressionCompileError, match="cannot feed aggregate stages"):
+            parse_unit_source_expression("messages where role:assistant | sort by time asc | group by role | count")
 
     def test_pipeline_rejects_unlowered_session_stage_predicates(self) -> None:
         with pytest.raises(ExpressionCompileError, match="FTS, semantic, exists, lineage, and sequence"):
@@ -1348,6 +1366,48 @@ class TestBooleanQueryExpression:
             ("role", "assistant", 2),
             ("role", "user", 1),
         ]
+
+    def test_terminal_aggregate_sort_count_asc_executes_before_limit(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        from polylogue.archive.query.unit_results import query_unit_rows
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from polylogue.surfaces.payloads import QueryUnitAggregateEnvelope
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "hit")
+            .provider("claude-code")
+            .git_repository_url("polylogue")
+            .title("aggregate sort")
+            .add_message("m-user", role="user", text="aggregate sort")
+            .add_message("m-system", role="system", text="aggregate sort")
+            .add_message("m-assistant-1", role="assistant", text="aggregate sort")
+            .add_message("m-assistant-2", role="assistant", text="aggregate sort")
+            .save()
+        )
+
+        source = parse_unit_source_expression(
+            "messages where text:aggregate | group by role | count | sort by count asc | limit 2"
+        )
+        assert source is not None
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            envelope = query_unit_rows(archive, source, query="pipeline-aggregate-sort", limit=20)
+
+        assert isinstance(envelope, QueryUnitAggregateEnvelope)
+        assert envelope.pipeline_stages == (
+            {"kind": "group", "field": "role"},
+            {"kind": "count", "metric": "count"},
+            {"kind": "sort", "sort": {"field": "count", "direction": "asc"}},
+            {"kind": "limit", "value": 2},
+        )
+        assert [(row.group_key, row.count) for row in envelope.items] == [
+            ("system", 1),
+            ("user", 1),
+        ]
+        assert envelope.next_offset == 2
 
     def test_cli_json_reports_terminal_aggregate_counts(
         self,
