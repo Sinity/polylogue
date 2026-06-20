@@ -5,20 +5,19 @@ enough to guide implementation. Architecture-level contracts still live in
 `docs/architecture*.md`; this area is for the user-facing reader, workbench,
 and surface behavior those contracts need to support.
 
-## Design Packs
+## Design Inputs
 
-| Pack | Status | Purpose |
+| Input | Status | Purpose |
 |------|--------|---------|
-| [Archive workbench pack](archive-workbench/README.md) | Historical source material | Standalone design and issue-pack material. Mine for product detail only after checking the current issue set and code. |
 | [MK3 design pack](mk3/README.md) | Historical source material | Archive workbench direction for the daemon web reader, multi-chat workspace, topology, paste and attachment rendering, user state, realtime, degraded states, and implementation slices. |
 
 ## How To Use These Docs
 
-Use the design packs as reference material, not as dispatch truth. The current
+Use the MK3 pack as reference material, not as dispatch truth. The current
 implementation order lives in [`docs/execution-plan.md`](../execution-plan.md)
-and the open GitHub issues. If a design-pack detail still matters, fold it into
-the owning issue or current docs before implementing it.
+and the open GitHub issues. If a design detail still matters, fold it into the
+owning issue or current docs before implementing it.
 
-The bundled boards and screenshots are useful for visual vocabulary and fixture
-ideas, but they do not override the live query, route, assertion, and workbench
-contracts in the codebase.
+The bundled MK3 boards and screenshots are useful for visual vocabulary and
+fixture ideas, but they do not override the live query, route, assertion, and
+workbench contracts in the codebase.
