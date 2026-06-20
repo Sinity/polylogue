@@ -20,6 +20,7 @@ from typing_extensions import TypedDict
 from polylogue.archive.message.roles import MessageRoleFilter, Role, normalize_message_roles
 from polylogue.archive.message.types import validate_message_type_filter
 from polylogue.archive.query.expression import QueryUnitSource, parse_unit_source_expression
+from polylogue.archive.query.metadata import query_unit_descriptor
 from polylogue.archive.query.spec import (
     QuerySpecError,
     normalize_action_sequence,
@@ -66,6 +67,7 @@ from polylogue.surfaces.payloads import (
 _PageRow = TypeVar("_PageRow", ArchiveSessionSummary, ArchiveSessionSearchHit)
 
 _UNSUPPORTED_PARAM_MESSAGES: dict[str, str] = {}
+_QueryUnitTextLine = Callable[[dict[str, object]], str]
 
 
 class _ArchiveFilterKwargs(TypedDict):
@@ -1544,22 +1546,7 @@ def _emit_unit_source_rows(
     )
     envelope = envelope_model.model_dump(mode="json")
     items = [item.model_dump(mode="json") for item in envelope_model.items]
-    if source.unit == "message":
-        text_line = _message_query_line
-    elif source.unit == "action":
-        text_line = _action_query_line
-    elif source.unit == "block":
-        text_line = _block_query_line
-    elif source.unit == "assertion":
-        text_line = _assertion_query_line
-    elif source.unit == "run":
-        text_line = _run_query_line
-    elif source.unit == "observed-event":
-        text_line = _observed_event_query_line
-    elif source.unit == "context-snapshot":
-        text_line = _context_snapshot_query_line
-    else:
-        raise click.UsageError(f"Unsupported query unit: {source.unit}")
+    text_line = _query_unit_text_line(source.unit)
 
     if not items:
         _emit_unit_no_results(envelope, unit=source.unit, output_format=output_format)
@@ -1628,6 +1615,28 @@ def _observed_event_query_line(item: dict[str, object]) -> str:
 def _context_snapshot_query_line(item: dict[str, object]) -> str:
     detail = item.get("metadata") or item.get("segment_refs") or item.get("evidence_refs") or ""
     return f"{item['snapshot_ref']} [{item['boundary']}/{item['inheritance_mode']}] {_snippet(detail)}"
+
+
+_QUERY_UNIT_TEXT_LINES: dict[str, _QueryUnitTextLine] = {
+    "message": _message_query_line,
+    "action": _action_query_line,
+    "block": _block_query_line,
+    "assertion": _assertion_query_line,
+    "run": _run_query_line,
+    "observed-event": _observed_event_query_line,
+    "context-snapshot": _context_snapshot_query_line,
+}
+
+
+def _query_unit_text_line(unit: str) -> _QueryUnitTextLine:
+    descriptor = query_unit_descriptor(unit)
+    renderer = descriptor.cli_plain_renderer if descriptor else None
+    if renderer is None:
+        raise click.UsageError(f"Unsupported query unit: {unit}")
+    try:
+        return _QUERY_UNIT_TEXT_LINES[renderer]
+    except KeyError as exc:
+        raise click.UsageError(f"Unsupported query unit renderer: {renderer}") from exc
 
 
 def _project_payload(payload: dict[str, object], fields: str | None) -> dict[str, object]:

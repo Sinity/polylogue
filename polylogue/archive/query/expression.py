@@ -1288,6 +1288,11 @@ def _terminal_only_unit_source_error(unit: QueryUnitName) -> ExpressionCompileEr
     )
 
 
+def _query_unit_uses_runtime_transform(unit: QueryUnitName) -> bool:
+    descriptor = query_unit_descriptor(unit)
+    return descriptor is not None and descriptor.lowerer_kind == "runtime_transform"
+
+
 def _parse_source_where_predicate(expression: str) -> QueryExistsPredicate | None:
     source = parse_unit_source_expression(expression)
     if source is None:
@@ -1302,7 +1307,7 @@ def _parse_source_where_predicate(expression: str) -> QueryExistsPredicate | Non
             "pipeline unit queries return terminal rows; use query_units / /api/query-units or a CLI terminal-unit query",
             field=None,
         )
-    if source.unit in {"run", "observed-event", "context-snapshot"}:
+    if _query_unit_uses_runtime_transform(source.unit):
         raise _terminal_only_unit_source_error(source.unit)
     return QueryExistsPredicate(unit=cast(Any, source.unit), child=source.predicate)
 
@@ -1507,7 +1512,7 @@ def _explain_execution_legs(spec: SessionQuerySpec) -> tuple[str, ...]:
 
 def _explain_unit_source_execution_legs(source: QueryUnitSource) -> tuple[str, ...]:
     legs = {f"terminal-{source.unit}-rows", *_predicate_execution_legs(source.predicate)}
-    if source.unit in {"run", "observed-event", "context-snapshot"}:
+    if _query_unit_uses_runtime_transform(source.unit):
         legs.add("runtime-transform")
     else:
         legs.add("sql")
@@ -1600,7 +1605,7 @@ def explain_expression(expression: str) -> QueryExpressionExplanation:
     if unit_source is not None:
         lowered = (
             SessionQuerySpec()
-            if unit_source.unit in {"run", "observed-event", "context-snapshot"}
+            if _query_unit_uses_runtime_transform(unit_source.unit)
             else SessionQuerySpec(
                 boolean_predicate=QueryExistsPredicate(unit=cast(Any, unit_source.unit), child=unit_source.predicate)
             )
@@ -1609,7 +1614,7 @@ def explain_expression(expression: str) -> QueryExpressionExplanation:
         execution_legs = _explain_unit_source_execution_legs(unit_source)
         plan_description = (f"terminal unit source: {unit_source.unit}",)
         compatibility_selector = None
-        if unit_source.unit not in {"run", "observed-event", "context-snapshot"}:
+        if not _query_unit_uses_runtime_transform(unit_source.unit):
             compatibility_selector = f"exists {unit_source.unit}(...)"
             plan_description = (*plan_description, f"compatibility session selector: {compatibility_selector}")
         lowerer = "lark-query-unit-source-to-terminal-unit"
