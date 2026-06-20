@@ -9,10 +9,13 @@ from polylogue.archive.query.metadata import (
     COUNT_QUERY_FIELD_REGISTRY,
     DATE_QUERY_FIELD_REGISTRY,
     EXPRESSION_FIELD_REGISTRY,
+    NUMERIC_QUERY_FIELD_REGISTRY,
     count_query_fields,
     count_query_operators,
     date_query_fields,
     date_query_operators,
+    numeric_query_fields,
+    numeric_query_operators,
     query_unit_descriptor,
     structural_query_field_info,
     structural_query_fields,
@@ -36,6 +39,7 @@ QUERY_COMPLETION_KINDS: tuple[str, ...] = (
     "terminal-field",
     "pipeline-stage",
     "count-operator",
+    "numeric-operator",
     "date-operator",
     "action",
 )
@@ -99,11 +103,14 @@ def query_field_candidates(incomplete: str) -> list[QueryCompletionCandidate]:
         if current and not field_name.startswith(current):
             continue
         count_info = COUNT_QUERY_FIELD_REGISTRY.get(field_name)
+        numeric_info = NUMERIC_QUERY_FIELD_REGISTRY.get(field_name)
         # Top-level compatibility lowering exists only for messages/words.
-        # Other aggregate count fields complete with an operator-ready space,
-        # e.g. "tool_use_messages >= 1".
+        # Other numeric fields complete with an operator-ready space, e.g.
+        # "tool_use_messages >= 1" or "duration_ms >= 60000".
         insert = (
-            f"{field_name} " if count_info is not None and field_name not in {"messages", "words"} else f"{field_name}:"
+            f"{field_name} "
+            if (count_info is not None or numeric_info is not None) and field_name not in {"messages", "words"}
+            else f"{field_name}:"
         )
         description = info.get("description", "")
         example = info.get("example")
@@ -118,6 +125,14 @@ def query_field_candidates(incomplete: str) -> list[QueryCompletionCandidate]:
                 else f"Readable operators: {operators}. Example: {count_info.example}"
             )
             source = "EXPRESSION_FIELD_REGISTRY/COUNT_QUERY_FIELD_REGISTRY"
+        if numeric_info is not None:
+            operators = ", ".join((*numeric_info.operators, numeric_info.range_keyword))
+            description = (
+                f"{description} Readable operators: {operators}. Example: {numeric_info.example}"
+                if description
+                else f"Readable operators: {operators}. Example: {numeric_info.example}"
+            )
+            source = "EXPRESSION_FIELD_REGISTRY/NUMERIC_QUERY_FIELD_REGISTRY"
         candidates.append(
             QueryCompletionCandidate(
                 value=field_name,
@@ -354,6 +369,33 @@ def query_date_operator_candidates(field: str, incomplete: str) -> list[QueryCom
     return candidates
 
 
+def query_numeric_operator_candidates(field: str, incomplete: str) -> list[QueryCompletionCandidate]:
+    """Return readable operators accepted by non-count numeric query fields."""
+
+    field_name = field.lower()
+    if field_name not in numeric_query_fields():
+        return []
+    current = incomplete.strip().lower()
+    info = NUMERIC_QUERY_FIELD_REGISTRY[field_name]
+    candidates: list[QueryCompletionCandidate] = []
+    for operator in numeric_query_operators(field_name):
+        if current and not operator.startswith(current):
+            continue
+        insert = f"{operator} " if operator == info.range_keyword else operator
+        candidates.append(
+            QueryCompletionCandidate(
+                value=operator,
+                insert=insert,
+                display=insert,
+                kind="query-numeric-operator",
+                group=f"{field_name} numeric operators",
+                description=f"{info.description} Example: {info.example}",
+                source="NUMERIC_QUERY_FIELD_REGISTRY",
+            )
+        )
+    return candidates
+
+
 def _action_description(contract: CliActionContract) -> str:
     pieces = [
         f"effect={contract.effect}",
@@ -428,6 +470,10 @@ def query_completion_candidates(
         if field is None:
             raise QueryCompletionError("--field is required for date-operator completion")
         return query_date_operator_candidates(field, incomplete)
+    if kind == "numeric-operator":
+        if field is None:
+            raise QueryCompletionError("--field is required for numeric-operator completion")
+        return query_numeric_operator_candidates(field, incomplete)
     if kind == "action":
         return query_action_candidates(incomplete)
     raise QueryCompletionError(f"unsupported completion kind: {kind}")
@@ -462,6 +508,7 @@ __all__ = [
     "query_count_operator_candidates",
     "query_date_operator_candidates",
     "query_field_candidates",
+    "query_numeric_operator_candidates",
     "query_pipeline_stage_candidates",
     "query_structural_field_candidates",
     "query_structural_unit_candidates",

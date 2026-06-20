@@ -157,6 +157,12 @@ def test_query_field_candidates_include_readable_operator_fields() -> None:
     assert user_messages_candidate.source == "EXPRESSION_FIELD_REGISTRY/COUNT_QUERY_FIELD_REGISTRY"
     assert "sessions where user_messages >= 2" in user_messages_candidate.description
 
+    duration_candidates = shell_completion_values.query_field_candidates("dur")
+    duration_candidate = next(candidate for candidate in duration_candidates if candidate.value == "duration_ms")
+    assert duration_candidate.insert == "duration_ms "
+    assert duration_candidate.source == "EXPRESSION_FIELD_REGISTRY/NUMERIC_QUERY_FIELD_REGISTRY"
+    assert "duration_ms >= 60000" in duration_candidate.description
+
 
 def test_query_field_candidates_disappear_with_registry_entry(monkeypatch: pytest.MonkeyPatch) -> None:
     from polylogue.archive.query.expression import EXPRESSION_FIELD_REGISTRY
@@ -217,6 +223,17 @@ def test_query_count_operator_candidates_come_from_expression_registry() -> None
     assert between_candidate.kind == "query-count-operator"
     assert between_candidate.source == "COUNT_QUERY_FIELD_REGISTRY"
     assert "messages between 5 and 20" in between_candidate.description
+
+
+def test_query_numeric_operator_candidates_come_from_expression_registry() -> None:
+    candidates = shell_completion_values.query_numeric_operator_candidates("duration_ms", "b")
+
+    assert [candidate.value for candidate in candidates] == ["between"]
+    between_candidate = candidates[0]
+    assert between_candidate.insert == "between "
+    assert between_candidate.kind == "query-numeric-operator"
+    assert between_candidate.source == "NUMERIC_QUERY_FIELD_REGISTRY"
+    assert "duration_ms >= 60000" in between_candidate.description
 
 
 def test_query_pipeline_stage_candidates_come_from_unit_descriptors() -> None:

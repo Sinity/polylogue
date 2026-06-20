@@ -388,6 +388,18 @@ class TestBooleanQueryExpression:
             ),
         )
 
+    def test_boolean_ast_exposes_readable_numeric_comparisons(self) -> None:
+        ast = parse_expression_ast("sessions where duration_ms >= 60000 AND duration_ms < 120000")
+
+        assert ast.clauses == ()
+        assert ast.boolean_predicate == QueryBoolPredicate(
+            op="and",
+            children=(
+                QueryFieldPredicate(field="duration_ms", values=("60000",), op=">="),
+                QueryFieldPredicate(field="duration_ms", values=("119999",), op="<="),
+            ),
+        )
+
     def test_parse_expression_ast_exposes_readable_date_clauses(self) -> None:
         ast = parse_expression_ast("date >= 2026-01-01 date between 2026-01-01 and 2026-02-01")
 
@@ -1191,6 +1203,107 @@ class TestBooleanQueryExpression:
             rows = archive.list_summaries(limit=100, boolean_predicate=spec.boolean_predicate)
 
         assert [row.session_id for row in rows] == ["chatgpt-export:ext-hit"]
+
+    def test_session_duration_comparison_executes_against_archive(self, workspace_env: dict[str, Path]) -> None:
+        import sqlite3
+
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "duration-hit")
+            .provider("chatgpt")
+            .title("duration hit")
+            .add_message("m-hit", role="assistant", text="long enough")
+            .save()
+        )
+        (
+            SessionBuilder(index_db, "duration-miss")
+            .provider("chatgpt")
+            .title("duration miss")
+            .add_message("m-miss", role="assistant", text="too short")
+            .save()
+        )
+        (
+            SessionBuilder(index_db, "duration-null")
+            .provider("chatgpt")
+            .title("duration null")
+            .add_message("m-null", role="assistant", text="unknown duration")
+            .save()
+        )
+        with sqlite3.connect(index_db) as conn:
+            conn.execute(
+                "UPDATE sessions SET reported_duration_ms = ? WHERE session_id = ?",
+                (90_000, "chatgpt-export:ext-duration-hit"),
+            )
+            conn.execute(
+                "UPDATE sessions SET reported_duration_ms = ? WHERE session_id = ?",
+                (5_000, "chatgpt-export:ext-duration-miss"),
+            )
+            conn.commit()
+
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            spec = compile_expression("sessions where duration_ms >= 60000")
+            assert spec.boolean_predicate is not None
+            rows = archive.list_summaries(limit=100, boolean_predicate=spec.boolean_predicate)
+
+        assert [row.session_id for row in rows] == ["chatgpt-export:ext-duration-hit"]
+
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            spec = compile_expression("sessions where NOT duration_ms >= 60000")
+            assert spec.boolean_predicate is not None
+            rows = archive.list_summaries(limit=100, boolean_predicate=spec.boolean_predicate)
+
+        assert [row.session_id for row in rows] == ["chatgpt-export:ext-duration-miss"]
+
+    def test_message_numeric_comparisons_execute_against_archive(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.archive.query.unit_results import query_unit_rows
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "message-numeric")
+            .provider("chatgpt")
+            .title("message numeric")
+            .add_message(
+                "m-hit",
+                role="assistant",
+                text="token heavy",
+                input_tokens=1200,
+                output_tokens=400,
+                cache_read_tokens=300,
+                cache_write_tokens=20,
+                duration_ms=2500,
+            )
+            .add_message(
+                "m-miss",
+                role="assistant",
+                text="token light",
+                input_tokens=100,
+                output_tokens=50,
+                cache_read_tokens=0,
+                cache_write_tokens=0,
+                duration_ms=100,
+            )
+            .save()
+        )
+
+        source = parse_unit_source_expression(
+            "messages where input_tokens >= 1000 AND output_tokens >= 300 "
+            "AND cache_read_tokens >= 100 AND duration_ms between 2000 and 3000"
+        )
+        assert source is not None
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            envelope = query_unit_rows(archive, source, query="message numeric", limit=20)
+
+        from polylogue.surfaces.payloads import MessageQueryRowPayload
+
+        assert len(envelope.items) == 1
+        row = envelope.items[0]
+        assert isinstance(row, MessageQueryRowPayload)
+        assert row.message_id == "chatgpt-export:ext-message-numeric:m-hit"
 
     def test_session_scoped_message_predicate_executes_against_archive(
         self,
@@ -2388,6 +2501,8 @@ class TestBooleanQueryExpression:
 
     def test_context_snapshot_session_summary_comparisons(self, workspace_env: dict[str, Path]) -> None:
         """Runtime-transform rows honor scoped session count/date predicates."""
+        import sqlite3
+
         from polylogue.archive.query.unit_results import query_unit_rows
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
         from polylogue.surfaces.payloads import ContextSnapshotQueryRowPayload
@@ -2422,6 +2537,16 @@ class TestBooleanQueryExpression:
             .add_message("m-control", role="user", text="one two three four five", has_paste=1)
             .save()
         )
+        with sqlite3.connect(index_db) as conn:
+            conn.execute(
+                "UPDATE sessions SET reported_duration_ms = ? WHERE session_id = ?",
+                (90_000, "codex-session:ext-summary-hit"),
+            )
+            conn.execute(
+                "UPDATE sessions SET reported_duration_ms = ? WHERE session_id = ?",
+                (5_000, "codex-session:ext-summary-control"),
+            )
+            conn.commit()
 
         source = parse_unit_source_expression(
             "context-snapshots where session.messages:>=2 "
@@ -2429,6 +2554,7 @@ class TestBooleanQueryExpression:
             "AND session.tool_use_messages:>=1 "
             "AND session.thinking_messages:>=1 "
             "AND session.paste_messages:=0 "
+            "AND session.duration_ms:>=60000 "
             "AND session.date:>=2026-01-02 "
             "AND boundary:session_start"
         )
@@ -2443,6 +2569,7 @@ class TestBooleanQueryExpression:
                     "AND session.tool_use_messages:>=1 "
                     "AND session.thinking_messages:>=1 "
                     "AND session.paste_messages:=0 "
+                    "AND session.duration_ms:>=60000 "
                     "AND session.date:>=2026-01-02 "
                     "AND boundary:session_start"
                 ),
@@ -3358,6 +3485,11 @@ class TestFieldRegistry:
             "sessions where paste_messages = 0",
             "boolean_predicate",
             QueryFieldPredicate(field="paste_messages", values=("0",), op="="),
+        ),
+        "duration_ms": (
+            "sessions where duration_ms >= 60000",
+            "boolean_predicate",
+            QueryFieldPredicate(field="duration_ms", values=("60000",), op=">="),
         ),
         "user_words": (
             "sessions where user_words >= 100",

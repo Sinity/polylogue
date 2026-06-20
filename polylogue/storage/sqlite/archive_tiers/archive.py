@@ -11,7 +11,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any, Literal, TypedDict, cast
 
-from polylogue.archive.query.metadata import COUNT_QUERY_FIELD_REGISTRY
+from polylogue.archive.query.metadata import COUNT_QUERY_FIELD_REGISTRY, NUMERIC_QUERY_FIELD_REGISTRY
 from polylogue.archive.query.path_prefix import escaped_sql_path_prefix_patterns
 from polylogue.archive.query.predicate import (
     QueryBoolPredicate,
@@ -163,6 +163,7 @@ class ArchiveSessionSummary:
     message_count: int
     word_count: int
     tags: tuple[str, ...]
+    reported_duration_ms: int | None = None
     tool_use_count: int = 0
     thinking_count: int = 0
     paste_count: int = 0
@@ -1193,7 +1194,8 @@ class ArchiveStore:
         row = self._conn.execute(
             f"""
             SELECT s.session_id, s.native_id, s.origin, s.title, s.created_at_ms, s.updated_at_ms,
-                   s.message_count, s.word_count, s.tool_use_count, s.thinking_count, s.paste_count,
+                   s.message_count, s.word_count, s.reported_duration_ms,
+                   s.tool_use_count, s.thinking_count, s.paste_count,
                    s.user_message_count, s.assistant_message_count, s.system_message_count,
                    s.tool_message_count, s.user_word_count, s.assistant_word_count,
                    s.git_branch, s.git_repository_url,
@@ -2986,7 +2988,8 @@ class ArchiveStore:
         rows = self._conn.execute(
             f"""
             SELECT s.session_id, s.native_id, s.origin, s.title, s.created_at_ms, s.updated_at_ms,
-                   s.message_count, s.word_count, s.tool_use_count, s.thinking_count, s.paste_count,
+                   s.message_count, s.word_count, s.reported_duration_ms,
+                   s.tool_use_count, s.thinking_count, s.paste_count,
                    s.user_message_count, s.assistant_message_count, s.system_message_count,
                    s.tool_message_count, s.user_word_count, s.assistant_word_count,
                    s.git_branch, s.git_repository_url,
@@ -3932,6 +3935,7 @@ def _summary_from_row(row: sqlite3.Row) -> ArchiveSessionSummary:
         message_count=int(row["message_count"] or 0),
         word_count=int(row["word_count"] or 0),
         tags=tags,
+        reported_duration_ms=(int(row["reported_duration_ms"]) if row["reported_duration_ms"] is not None else None),
         tool_use_count=row_int("tool_use_count"),
         thinking_count=row_int("thinking_count"),
         paste_count=row_int("paste_count"),
@@ -4757,6 +4761,11 @@ def _field_predicate_clause(
             kwargs["until_ms"] = _date_ms(values[-1], field="until")
     elif count_info := COUNT_QUERY_FIELD_REGISTRY.get(field):
         return _count_predicate_clause(f"{table_alias}.{count_info.session_column}", predicate)
+    elif numeric_info := NUMERIC_QUERY_FIELD_REGISTRY.get(field):
+        column = numeric_info.unit_columns.get("session")
+        if column is None:
+            raise ValueError(f"unsupported Boolean query field: {field}")
+        return _numeric_predicate_clause(f"{table_alias}.{column}", predicate)
     else:
         raise ValueError(f"unsupported Boolean query field: {field}")
     where, params = _session_filter_clause(table_alias, tags_relation=tags_relation, prefix="WHERE", **kwargs)
@@ -4783,6 +4792,20 @@ def _in_or_equals_clause(column: str, values: tuple[str, ...], *, lower: bool = 
 
 
 def _count_predicate_clause(column: str, predicate: QueryFieldPredicate) -> tuple[str, list[object]]:
+    if not predicate.values:
+        return "", []
+    value = int(predicate.values[-1])
+    if predicate.op == ">=":
+        return f"{column} >= ?", [value]
+    if predicate.op == "<=":
+        return f"{column} <= ?", [value]
+    return f"{column} = ?", [value]
+
+
+def _numeric_predicate_clause(
+    column: str,
+    predicate: QueryFieldPredicate,
+) -> tuple[str, list[object]]:
     if not predicate.values:
         return "", []
     value = int(predicate.values[-1])
@@ -4846,6 +4869,11 @@ def _message_field_predicate_clause(message_alias: str, predicate: QueryFieldPre
         return _in_or_equals_clause(f"{message_alias}.message_type", predicate.values, lower=True)
     if field == "words":
         return _count_predicate_clause(f"{message_alias}.word_count", predicate)
+    if numeric_info := NUMERIC_QUERY_FIELD_REGISTRY.get(field):
+        column = numeric_info.unit_columns.get("message")
+        if column is None:
+            raise ValueError(f"unsupported message predicate field: {field}")
+        return _numeric_predicate_clause(f"{message_alias}.{column}", predicate)
     if field == "time":
         return _time_predicate_clause(_query_unit_time_expression("message", message_alias), predicate)
     if field in {"text", "command", "path", "output", "tool", "action"}:

@@ -61,6 +61,17 @@ class QueryFirstGroup(QueryFirstGroupBase):
                 query_completion_candidate_to_click_item(candidate)
                 for candidate in query_date_operator_candidates(date_field, incomplete)
             ]
+        numeric_field = _numeric_operator_completion_field()
+        if numeric_field is not None:
+            from polylogue.cli.shell_completion_values import (
+                query_completion_candidate_to_click_item,
+                query_numeric_operator_candidates,
+            )
+
+            return [
+                query_completion_candidate_to_click_item(candidate)
+                for candidate in query_numeric_operator_candidates(numeric_field, incomplete)
+            ]
         if _is_after_then_completion():
             from polylogue.cli.shell_completion_values import complete_query_actions
 
@@ -108,6 +119,25 @@ def _date_operator_completion_field() -> str | None:
         return None
     previous = words[-2].lower()
     if previous != "date":
+        return None
+    if len(words) >= 3 and words[-3].lower() == "between":
+        return None
+    return previous
+
+
+def _numeric_operator_completion_field() -> str | None:
+    from polylogue.archive.query.metadata import numeric_query_fields
+
+    numeric_fields = set(numeric_query_fields())
+    words = _completion_words()
+    raw_words = os.environ.get("COMP_WORDS", "")
+    if raw_words.endswith(" ") and words:
+        previous = words[-1].lower()
+        return previous if previous in numeric_fields else None
+    if len(words) < 2:
+        return None
+    previous = words[-2].lower()
+    if previous not in numeric_fields:
         return None
     if len(words) >= 3 and words[-3].lower() == "between":
         return None

@@ -136,6 +136,7 @@ class MessageRecord(BaseModel):
     output_tokens: int = 0
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
+    duration_ms: int | None = None
     model_name: str | None = None
     message_type: MessageType = MessageType.MESSAGE
     paste_boundary_state: str | None = None
