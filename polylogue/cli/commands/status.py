@@ -176,6 +176,7 @@ _ARCHIVE_TIER_ENUM: dict[str, ArchiveTier] = {tier.value: tier for tier in Archi
 _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
     "add_mark": ("archive_routed", "user", "writes user marks through user.db"),
     "add_tag": ("archive_routed", "user", "writes user tags through user.db"),
+    "archive_debt": ("archive_routed", "index", "reads unified archive debt rows from archive readiness surfaces"),
     "bulk_get_messages": ("archive_routed", "index", "reads messages from index.db"),
     "bulk_tag_sessions": ("archive_routed", "user", "writes user tags through user.db"),
     "clear_corrections": ("archive_routed", "user", "clears user corrections through user.db"),

@@ -105,6 +105,7 @@ def _static_get_routes() -> tuple[_StaticGetRoute, ...]:
         _StaticGetRoute("/api/sessions", ("api", "sessions"), "_handle_list_sessions", passes_params=True),
         _StaticGetRoute("/api/facets", ("api", "facets"), "_handle_facets", passes_params=True),
         _StaticGetRoute("/api/query-units", ("api", "query-units"), "_handle_query_units", passes_params=True),
+        _StaticGetRoute("/api/archive-debt", ("api", "archive-debt"), "_handle_archive_debt", passes_params=True),
         _StaticGetRoute("/api/refs/resolve", ("api", "refs", "resolve"), "_handle_ref_resolve", passes_params=True),
         _StaticGetRoute(
             "/api/query-completions", ("api", "query-completions"), "_handle_query_completions", passes_params=True
@@ -2475,6 +2476,30 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             )
 
         self._send_json(HTTPStatus.OK, payload.model_dump(mode="json"))
+
+    @daemon_safe_handler
+    def _handle_archive_debt(self, params: dict[str, list[str]]) -> None:
+        """``GET /api/archive-debt`` exposes the shared archive debt payload."""
+
+        from polylogue import Polylogue
+        from polylogue.api.sync.bridge import run_coroutine_sync
+
+        archive_root = _web_reader_archive_root()
+        if archive_root is None:
+            self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "archive_unavailable")
+            return
+        kinds = _csv_values(params, "kind")
+        limit_param = self._get_param(params, "limit")
+        limit = self._get_int(params, "limit", 50) if limit_param is not None else None
+        payload = run_coroutine_sync(
+            Polylogue(archive_root=archive_root, db_path=archive_root / "index.db").archive_debt(
+                kinds=kinds or None,
+                only_actionable=self._get_bool(params, "only_actionable"),
+                limit=limit,
+                exact_fts=self._get_bool(params, "exact_fts"),
+            )
+        )
+        self._send_json(HTTPStatus.OK, payload.model_dump(mode="json", exclude_none=True))
 
     @daemon_safe_handler
     def _handle_ref_resolve(self, params: dict[str, list[str]]) -> None:

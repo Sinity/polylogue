@@ -30,7 +30,6 @@ from polylogue.core.enums import BlockType, Origin, Provider
 from polylogue.core.outcomes import OutcomeCheck, OutcomeStatus
 from polylogue.insights.archive import (
     ArchiveCoverageInsight,
-    ArchiveDebtInsight,
     ArchiveEnrichmentProvenance,
     ArchiveInferenceProvenance,
     ArchiveInsightProvenance,
@@ -1038,15 +1037,6 @@ class TestInsightTools:
             confidence=1.0,
             provenance=_provenance(),
         )
-        debt = ArchiveDebtInsight(
-            debt_name="session_insights",
-            category="insights",
-            maintenance_target="session_insights",
-            destructive=False,
-            issue_count=1,
-            healthy=False,
-            detail="1 pending session-insight row",
-        )
         with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
             mock_poly = make_polylogue_mock()
             mock_poly.list_session_profile_insights = AsyncMock(return_value=[profile])
@@ -1057,7 +1047,6 @@ class TestInsightTools:
             mock_poly.list_archive_coverage_insights = AsyncMock(return_value=[coverage])
             mock_poly.list_session_cost_insights = AsyncMock(return_value=[session_cost])
             mock_poly.list_cost_rollup_insights = AsyncMock(return_value=[cost_rollup])
-            mock_poly.list_archive_debt_insights = AsyncMock(return_value=[debt])
             mock_get_polylogue.return_value = mock_poly
 
             profiles_raw = await invoke_surface_async(
@@ -1107,12 +1096,6 @@ class TestInsightTools:
                 model="claude-sonnet-4-5",
                 limit=5,
             )
-            debt_raw = await invoke_surface_async(
-                mcp_server._tool_manager._tools["archive_debt"].fn,
-                category="insights",
-                only_actionable=True,
-                limit=5,
-            )
 
         profiles_payload = json.loads(profiles_raw)
         events_payload = json.loads(events_raw)
@@ -1122,7 +1105,6 @@ class TestInsightTools:
         coverage_payload = json.loads(coverage_raw)
         costs_payload = json.loads(costs_raw)
         cost_rollups_payload = json.loads(cost_rollups_raw)
-        debt_payload = json.loads(debt_raw)
 
         assert profiles_payload["total"] == 1
         assert profiles_payload["items"][0]["insight_kind"] == "session_profile"
@@ -1143,14 +1125,10 @@ class TestInsightTools:
         assert cost_rollups_payload["items"][0]["insight_kind"] == "cost_rollup"
         assert cost_rollups_payload["items"][0]["origin"] == "claude-code-session"
         assert cost_rollups_payload["items"][0]["total_usd"] == 1.25
-        assert debt_payload["items"][0]["insight_kind"] == "archive_debt"
         assert mock_poly.list_session_profile_insights.await_args.args[0].provider == "claude-code"
         assert mock_poly.list_session_tag_rollup_insights.await_args.args[0].provider == "claude-code"
         assert mock_poly.list_archive_coverage_insights.await_args.args[0].group_by == "provider"
         assert mock_poly.list_archive_coverage_insights.await_args.args[0].provider == "claude-code"
-        debt_query = mock_poly.list_archive_debt_insights.await_args.args[0]
-        assert debt_query.category == "insights"
-        assert debt_query.only_actionable is True
 
 
 class TestStatsTool:

@@ -21,7 +21,12 @@ from polylogue.insights.transforms import RecoveryWorkPacket, RecoveryWorkPacket
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionEnvelope
-from polylogue.surfaces.payloads import AssertionClaimPayload, PublicRefResolutionPayload
+from polylogue.surfaces.payloads import (
+    ArchiveDebtListPayload,
+    ArchiveDebtTotalsPayload,
+    AssertionClaimPayload,
+    PublicRefResolutionPayload,
+)
 from polylogue.types import SessionId
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.mcp import (
@@ -946,6 +951,34 @@ class TestArchiveGenericToolSurfaces:
         assert payload["report"] == "continue"
         assert payload["content"] == "# Continue: Recovery target"
         mock_poly.recovery_report.assert_awaited_once_with("session-1", "continue")
+
+    @pytest.mark.asyncio
+    async def test_archive_debt_tool_reads_shared_facade_payload(self: object, mcp_server: MCPServerUnderTest) -> None:
+        mock_poly = make_polylogue_mock()
+        mock_poly.archive_debt.return_value = ArchiveDebtListPayload(
+            generated_at="2026-06-20T00:00:00+00:00",
+            archive_root="/tmp/polylogue-test",
+            rows=(),
+            totals=ArchiveDebtTotalsPayload(),
+        )
+
+        with patch("polylogue.mcp.server._get_polylogue", return_value=mock_poly):
+            result = await invoke_surface_async(
+                mcp_server._tool_manager._tools["archive_debt"].fn,
+                kind="embedding,fts",
+                only_actionable=True,
+                limit=3,
+            )
+
+        payload = json.loads(result)
+        assert payload["mode"] == "archive-debt-list"
+        assert payload["rows"] == []
+        mock_poly.archive_debt.assert_awaited_once_with(
+            kinds=("embedding", "fts"),
+            only_actionable=True,
+            limit=3,
+            exact_fts=False,
+        )
 
     @pytest.mark.asyncio
     async def test_get_recovery_report_reports_missing_session(self: object, mcp_server: MCPServerUnderTest) -> None:

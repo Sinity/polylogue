@@ -153,7 +153,7 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     "archive_coverage": ("envelope", frozenset({"items", "total"})),
     "threads": ("envelope", frozenset({"items", "total"})),
     "tool_usage": ("envelope", frozenset({"items", "total"})),
-    "archive_debt": ("envelope", frozenset({"items", "total"})),
+    "archive_debt": "typed_envelope",
 }
 
 
@@ -218,11 +218,17 @@ def _build_typed_envelope_classes() -> dict[str, type[BaseModel]]:
         MCPSessionTopologyPayload,
         MCPSessionTreePayload,
     )
-    from polylogue.surfaces.payloads import PublicRefResolutionPayload, QueryUnitEnvelope, SearchEnvelope
+    from polylogue.surfaces.payloads import (
+        ArchiveDebtListPayload,
+        PublicRefResolutionPayload,
+        QueryUnitEnvelope,
+        SearchEnvelope,
+    )
 
     return {
         "search": SearchEnvelope,
         "query_units": QueryUnitEnvelope,
+        "archive_debt": ArchiveDebtListPayload,
         "resolve_ref": PublicRefResolutionPayload,
         "list_sessions": MCPPaginatedQueryResultPayload,
         "neighbor_candidates": MCPNeighborCandidatesPayload,

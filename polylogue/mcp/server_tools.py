@@ -858,6 +858,27 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         return hooks.safe_call("readiness_check", run)
 
     @mcp.tool()
+    async def archive_debt(
+        kind: str | None = None,
+        only_actionable: bool = False,
+        limit: MCPToolLimit = 50,
+        exact_fts: bool = False,
+    ) -> str:
+        """Return the unified archive debt list used by CLI and daemon surfaces."""
+
+        async def run() -> str:
+            kinds = _split_archive_csv(kind)
+            payload = await hooks.get_polylogue().archive_debt(
+                kinds=kinds or None,
+                only_actionable=only_actionable,
+                limit=hooks.clamp_limit(limit),
+                exact_fts=exact_fts,
+            )
+            return hooks.json_payload(payload, exclude_none=True)
+
+        return await hooks.async_safe_call("archive_debt", run)
+
+    @mcp.tool()
     async def list_read_view_profiles() -> str:
         """List executable read-view profile metadata for agents."""
 

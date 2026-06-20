@@ -1665,6 +1665,21 @@ class TestReaderRecoveryEndpoint:
 
 
 class TestReaderAssertionEndpoint:
+    def test_archive_debt_endpoint_returns_shared_payload(self, workspace_env: dict[str, Path]) -> None:
+        _seed_assertion_claims(workspace_env)
+        with _running_server(workspace_env) as (_, base_url):
+            payload = cast(
+                dict[str, object],
+                _get_json(base_url, "/api/archive-debt?kind=assertion-candidate&only_actionable=1&limit=5"),
+            )
+
+        assert payload["mode"] == "archive-debt-list"
+        totals = cast(dict[str, object], payload["totals"])
+        assert totals["total"] == 1
+        rows = cast(list[dict[str, object]], payload["rows"])
+        assert rows[0]["kind"] == "assertion-candidate"
+        assert rows[0]["status"] == "actionable"
+
     def test_assertions_endpoint_reads_shared_assertion_claims(self, workspace_env: dict[str, Path]) -> None:
         _seed_assertion_claims(workspace_env)
         target_ref = quote(f"session:{C1}", safe="")

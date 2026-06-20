@@ -227,6 +227,16 @@ def make_polylogue_mock(*, resolved_id: str | None = None) -> MagicMock:
     poly.list_session_cost_insights = AsyncMock(return_value=[])
     poly.list_cost_rollup_insights = AsyncMock(return_value=[])
     poly.list_archive_debt_insights = AsyncMock(return_value=[])
+    from polylogue.surfaces.payloads import ArchiveDebtListPayload, ArchiveDebtTotalsPayload
+
+    poly.archive_debt = AsyncMock(
+        return_value=ArchiveDebtListPayload(
+            generated_at="2026-06-20T00:00:00+00:00",
+            archive_root="/tmp/polylogue-test",
+            rows=(),
+            totals=ArchiveDebtTotalsPayload(),
+        )
+    )
     poly.cost_outlook = AsyncMock(return_value=None)
     # Typed mutation entrypoints (#862).
     from polylogue.surfaces.payloads import (
