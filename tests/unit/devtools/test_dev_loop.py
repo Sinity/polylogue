@@ -101,6 +101,8 @@ def test_build_dev_loop_status_uses_branch_local_paths_and_warnings(
     assert Path(str(payload["dev_archive_root"])).is_dir()
     assert Path(str(payload["log_dir"])).is_dir()
     assert payload["run_log_dir"] == str(repo / ".cache" / "dev-loop" / "feature-dev-loop-abc1234-api9999-capture9998")
+    assert Path(str(payload["run_log_dir"])).is_dir()
+    assert Path(str(payload["artifacts"]["browser_dir"])).is_dir()
     assert payload["artifacts"]["daemon_log"].endswith(
         ".cache/dev-loop/feature-dev-loop-abc1234-api9999-capture9998/polylogued.log"
     )

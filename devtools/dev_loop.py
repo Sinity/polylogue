@@ -164,9 +164,6 @@ def build_dev_loop_status(
     root = repo_root or _repo_root()
     archive = archive_root or root / ".local" / "dev-archive"
     logs = log_dir or root / ".cache" / "dev-loop"
-    if prepare:
-        archive.mkdir(parents=True, exist_ok=True)
-        logs.mkdir(parents=True, exist_ok=True)
 
     service = system_service_status()
     api = port_status(api_port)
@@ -182,6 +179,9 @@ def build_dev_loop_status(
     run_log_dir = logs / run_id
     daemon_log = run_log_dir / "polylogued.log"
     browser_artifact_dir = run_log_dir / "browser"
+    if prepare:
+        archive.mkdir(parents=True, exist_ok=True)
+        browser_artifact_dir.mkdir(parents=True, exist_ok=True)
     warnings: list[str] = []
     if service.get("active"):
         warnings.append(
