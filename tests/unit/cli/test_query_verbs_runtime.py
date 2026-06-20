@@ -800,6 +800,28 @@ def test_read_view_accepts_explicit_options_owned_by_selected_view() -> None:
     )
 
 
+def test_read_view_registry_builds_typed_view_options() -> None:
+    options = read_view_handlers.read_view_options_for_view(
+        "context-pack",
+        {
+            "project_path": "/workspace/polylogue",
+            "project_repo": "github.com/Sinity/polylogue",
+            "pack_query": "route contracts",
+            "max_sessions": 3,
+            "max_messages": 8,
+            "no_redact": True,
+        },
+    )
+
+    assert isinstance(options, read_view_handlers.ReadViewContextPackOptions)
+    assert options.project_path == "/workspace/polylogue"
+    assert options.project_repo == "github.com/Sinity/polylogue"
+    assert options.query == "route contracts"
+    assert options.max_sessions == 3
+    assert options.max_messages == 8
+    assert options.no_redact is True
+
+
 def test_explicit_read_view_options_reports_command_line_values_only() -> None:
     ctx = click.Context(query_verbs.read_verb)
     ctx.set_parameter_source("message_role", click.core.ParameterSource.COMMANDLINE)

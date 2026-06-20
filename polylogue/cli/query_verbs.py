@@ -24,15 +24,9 @@ from polylogue.archive.viewport import (
 )
 from polylogue.cli.click_option_groups import _LazyChoice
 from polylogue.cli.read_view_handlers import (
-    ReadViewContextOptions,
-    ReadViewContextPackOptions,
-    ReadViewCorrelationOptions,
     ReadViewInvocation,
-    ReadViewMessageOptions,
-    ReadViewNeighborOptions,
-    ReadViewOptions,
-    ReadViewRecoveryOptions,
     read_view_option_names,
+    read_view_options_for_view,
     run_bulk_export_view,
     run_read_view,
 )
@@ -90,8 +84,7 @@ def _explicit_read_view_options(ctx: click.Context) -> frozenset[str]:
     )
 
 
-def _read_view_options_for_view(
-    view: str,
+def _read_view_option_values(
     *,
     limit: int | None,
     offset: int,
@@ -119,46 +112,37 @@ def _read_view_options_for_view(
     confidence_threshold: float,
     github_api: bool,
     otlp: bool,
-) -> ReadViewOptions | None:
-    if view in {"messages", "raw"}:
-        return ReadViewMessageOptions(
-            limit=limit,
-            offset=offset,
-            role=message_role,
-            message_type=message_type,
-            no_code_blocks=no_code_blocks,
-            no_tool_calls=no_tool_calls,
-            no_tool_outputs=no_tool_outputs,
-            no_file_reads=no_file_reads,
-            prose_only=prose_only,
-        )
-    if view == "context":
-        return ReadViewContextOptions(related_limit=related_limit)
-    if view == "context-pack":
-        return ReadViewContextPackOptions(
-            project_path=project_path,
-            project_repo=project_repo,
-            since=since,
-            until=until,
-            origin=pack_origin,
-            query=pack_query,
-            max_sessions=max_sessions,
-            max_messages=max_messages,
-            no_redact=no_redact,
-        )
-    if view == "recovery":
-        return ReadViewRecoveryOptions(report=recovery_report)
-    if view == "neighbors":
-        return ReadViewNeighborOptions(limit=limit, window_hours=window_hours)
-    if view == "correlation":
-        return ReadViewCorrelationOptions(
-            repo_path=repo_path,
-            since_hours=since_hours,
-            confidence_threshold=confidence_threshold,
-            github_api=github_api,
-            otlp=otlp,
-        )
-    return None
+) -> dict[str, object]:
+    """Collect raw Click option values for read-view handler builders."""
+
+    return {
+        "limit": limit,
+        "offset": offset,
+        "message_role": message_role,
+        "message_type": message_type,
+        "no_code_blocks": no_code_blocks,
+        "no_tool_calls": no_tool_calls,
+        "no_tool_outputs": no_tool_outputs,
+        "no_file_reads": no_file_reads,
+        "prose_only": prose_only,
+        "related_limit": related_limit,
+        "project_path": project_path,
+        "project_repo": project_repo,
+        "since": since,
+        "until": until,
+        "pack_origin": pack_origin,
+        "pack_query": pack_query,
+        "max_sessions": max_sessions,
+        "max_messages": max_messages,
+        "no_redact": no_redact,
+        "recovery_report": recovery_report,
+        "window_hours": window_hours,
+        "repo_path": repo_path,
+        "since_hours": since_hours,
+        "confidence_threshold": confidence_threshold,
+        "github_api": github_api,
+        "otlp": otlp,
+    }
 
 
 _CONTINUE_CANDIDATE_DEFAULT_LIMIT = 10
@@ -546,34 +530,36 @@ def read_verb(
             output_format=effective_format,
             destination=destination,
             out_path=out_path,
-            options=_read_view_options_for_view(
+            options=read_view_options_for_view(
                 view,
-                limit=limit,
-                offset=offset,
-                message_role=message_role,
-                message_type=message_type,
-                no_code_blocks=no_code_blocks,
-                no_tool_calls=no_tool_calls,
-                no_tool_outputs=no_tool_outputs,
-                no_file_reads=no_file_reads,
-                prose_only=prose_only,
-                related_limit=related_limit,
-                project_path=project_path,
-                project_repo=project_repo,
-                since=since,
-                until=until,
-                pack_origin=pack_origin,
-                pack_query=pack_query,
-                max_sessions=max_sessions,
-                max_messages=max_messages,
-                no_redact=no_redact,
-                recovery_report=recovery_report,
-                window_hours=window_hours,
-                repo_path=repo_path,
-                since_hours=since_hours,
-                confidence_threshold=confidence_threshold,
-                github_api=github_api,
-                otlp=otlp,
+                _read_view_option_values(
+                    limit=limit,
+                    offset=offset,
+                    message_role=message_role,
+                    message_type=message_type,
+                    no_code_blocks=no_code_blocks,
+                    no_tool_calls=no_tool_calls,
+                    no_tool_outputs=no_tool_outputs,
+                    no_file_reads=no_file_reads,
+                    prose_only=prose_only,
+                    related_limit=related_limit,
+                    project_path=project_path,
+                    project_repo=project_repo,
+                    since=since,
+                    until=until,
+                    pack_origin=pack_origin,
+                    pack_query=pack_query,
+                    max_sessions=max_sessions,
+                    max_messages=max_messages,
+                    no_redact=no_redact,
+                    recovery_report=recovery_report,
+                    window_hours=window_hours,
+                    repo_path=repo_path,
+                    since_hours=since_hours,
+                    confidence_threshold=confidence_threshold,
+                    github_api=github_api,
+                    otlp=otlp,
+                ),
             ),
             explicit_options=explicit_options,
         ),
@@ -700,7 +686,7 @@ def continue_verb(
             output_format=effective_format,
             destination=destination,
             out_path=out_path,
-            options=ReadViewRecoveryOptions(report="continue"),
+            options=read_view_options_for_view("recovery", {"recovery_report": "continue"}),
         ),
     )
 

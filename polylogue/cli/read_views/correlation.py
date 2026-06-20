@@ -4,9 +4,25 @@ from __future__ import annotations
 
 from typing import cast
 
-from polylogue.cli.read_views.base import ReadViewCorrelationOptions, ReadViewInvocation
+from polylogue.cli.read_views.base import ReadViewCorrelationOptions, ReadViewInvocation, ReadViewOptionValues
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
+
+CORRELATION_READ_VIEW_OPTION_NAMES = frozenset(
+    {"confidence_threshold", "github_api", "otlp", "repo_path", "since_hours"}
+)
+
+
+def build_correlation_options(values: ReadViewOptionValues) -> ReadViewCorrelationOptions:
+    """Build options owned by the correlation read view."""
+
+    return ReadViewCorrelationOptions(
+        repo_path=cast(str | None, values.get("repo_path")),
+        since_hours=cast(int, values.get("since_hours", 2)),
+        confidence_threshold=cast(float, values.get("confidence_threshold", 0.3)),
+        github_api=cast(bool, values.get("github_api", True)),
+        otlp=cast(bool, values.get("otlp", False)),
+    )
 
 
 def run_read_correlation(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
@@ -29,4 +45,4 @@ def run_read_correlation(env: AppEnv, request: RootModeRequest, invocation: Read
     )
 
 
-__all__ = ["run_read_correlation"]
+__all__ = ["CORRELATION_READ_VIEW_OPTION_NAMES", "build_correlation_options", "run_read_correlation"]
