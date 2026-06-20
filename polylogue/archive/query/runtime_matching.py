@@ -4,6 +4,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from polylogue.archive.query.predicate import (
+    QueryBoolPredicate,
+    QueryFieldPredicate,
+    QueryNotPredicate,
+    QueryPredicate,
+)
+
 if TYPE_CHECKING:
     from polylogue.archive.actions.actions import Action
     from polylogue.archive.models import Session
@@ -74,6 +81,66 @@ def matches_action_sequence(plan: SessionQueryPlan, session: Session) -> bool:
     return False
 
 
+def matches_action_predicate_sequence(steps: tuple[QueryPredicate, ...], session: Session) -> bool:
+    if not steps:
+        return True
+    actions = _actions_for(session)
+    if not actions:
+        return False
+
+    index = 0
+    target_count = len(steps)
+    for action in actions:
+        if not _matches_action_predicate(steps[index], action):
+            continue
+        index += 1
+        if index >= target_count:
+            return True
+    return False
+
+
+def _matches_action_predicate(predicate: QueryPredicate, action: Action) -> bool:
+    if isinstance(predicate, QueryFieldPredicate):
+        return _matches_action_field(predicate, action)
+    if isinstance(predicate, QueryNotPredicate):
+        return not _matches_action_predicate(predicate.child, action)
+    if isinstance(predicate, QueryBoolPredicate):
+        if predicate.op == "or":
+            return any(_matches_action_predicate(child, action) for child in predicate.children)
+        return all(_matches_action_predicate(child, action) for child in predicate.children)
+    return False
+
+
+def _matches_action_field(predicate: QueryFieldPredicate, action: Action) -> bool:
+    values = tuple(value.strip().lower() for value in predicate.values if value.strip())
+    if not values:
+        return False
+    if predicate.field in {"action", "type"}:
+        return _matches_exact_values(action.kind.value, values)
+    if predicate.field == "tool":
+        return _matches_exact_values(action.normalized_tool_name, values)
+    if predicate.field == "command":
+        return _matches_text(action.command, values)
+    if predicate.field == "path":
+        normalized_paths = tuple(path.lower().replace("\\", "/") for path in action.affected_paths)
+        return all(any(value.replace("\\", "/") in path for path in normalized_paths) for value in values)
+    if predicate.field == "output":
+        return _matches_text(action.output_text, values)
+    if predicate.field == "text":
+        return _matches_text(action.search_text, values)
+    return False
+
+
+def _matches_exact_values(value: str | None, expected: tuple[str, ...]) -> bool:
+    normalized = (value or "").strip().lower()
+    return normalized in expected
+
+
+def _matches_text(value: str | None, expected: tuple[str, ...]) -> bool:
+    normalized = (value or "").lower().replace("\\", "/")
+    return all(term.replace("\\", "/") in normalized for term in expected)
+
+
 def matches_action_text_terms(plan: SessionQueryPlan, session: Session) -> bool:
     if not plan.action_text_terms:
         return True
@@ -84,6 +151,7 @@ def matches_action_text_terms(plan: SessionQueryPlan, session: Session) -> bool:
 
 
 __all__ = [
+    "matches_action_predicate_sequence",
     "matches_action_sequence",
     "matches_action_terms",
     "matches_action_text_terms",
