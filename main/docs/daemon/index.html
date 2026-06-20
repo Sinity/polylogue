@@ -556,7 +556,8 @@ FTS readiness, and insight freshness.</p>
 <p>Return terminal rows for explicit query-unit expressions. Query params:
 <code>expression</code>, <code>limit</code>, <code>offset</code>. <code>expression</code> must be a
 <code>messages/actions/blocks/assertions/runs/observed-events/context-snapshots where ...</code> query and returns the shared
-<code>QueryUnitEnvelope</code>.</p>
+<code>QueryUnitEnvelope</code> row envelope or, for SQL-backed
+<code>group by FIELD | count</code> pipelines, <code>QueryUnitAggregateEnvelope</code>.</p>
 <h3>GET /api/sessions/:id/read</h3>
 <p>Execute a supported single-session read profile and return the shared
 <code>SessionReadViewEnvelope</code>. Query params include <code>view</code>, <code>format</code>, and
