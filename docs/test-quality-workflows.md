@@ -29,7 +29,7 @@ Current registry snapshot:
 - covered runtime artifacts: `47`
 - covered runtime operations: `27`
 - covered maintenance targets: `3`
-- covered declared operation targets: `45`
+- covered declared operation targets: `48`
 - uncovered runtime paths: —
 - uncovered runtime artifacts: —
 - uncovered runtime operations: `mutate-add-tag`, `mutate-bulk-tag-sessions`, `mutate-delete-metadata`, `mutate-delete-session`, `mutate-remove-tag`, `mutate-set-metadata`
