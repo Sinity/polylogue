@@ -92,7 +92,7 @@ if TYPE_CHECKING:
         MetadataMutationResult,
         OtelProjectionPayload,
         PublicRefResolutionPayload,
-        QueryUnitEnvelope,
+        QueryUnitResultEnvelope,
         RecoveryReadPayload,
         RecoveryReportFormat,
         RecoveryReportKind,
@@ -1741,7 +1741,7 @@ class PolylogueArchiveMixin:
         min_words: int | None = None,
         max_words: int | None = None,
         message_type: str | None = None,
-    ) -> QueryUnitEnvelope:
+    ) -> QueryUnitResultEnvelope:
         """Execute a terminal unit-source query."""
         from polylogue.archive.query.unit_results import query_unit_envelope, query_unit_request
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore

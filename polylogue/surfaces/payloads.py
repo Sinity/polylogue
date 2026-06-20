@@ -28,6 +28,7 @@ if TYPE_CHECKING:
         ArchiveAssertionQueryRow,
         ArchiveBlockQueryRow,
         ArchiveMessageQueryRow,
+        ArchiveQueryUnitAggregateRow,
     )
     from polylogue.storage.sqlite.archive_tiers.user_write import (
         ArchiveAssertionEnvelope,
@@ -1559,6 +1560,44 @@ QueryUnitRowPayload: TypeAlias = (
 """Union of terminal row payloads returned by explicit unit-source queries."""
 
 
+_QUERY_UNIT_PIPELINE_STAGE_SCHEMA: Any = {
+    "items": {
+        "additionalProperties": True,
+        "properties": {
+            "kind": {
+                "enum": ["session_scope", "sort", "limit", "offset", "group", "count"],
+                "type": "string",
+            },
+            "predicate": {"type": "object"},
+            "sort": {"type": "object"},
+            "value": {"type": "integer"},
+            "field": {"type": "string"},
+            "metric": {"enum": ["count"], "type": "string"},
+        },
+        "required": ["kind"],
+        "type": "object",
+    }
+}
+
+
+class QueryUnitAggregateRowPayload(SurfacePayloadModel):
+    """Grouped aggregate row over a terminal query-unit result set."""
+
+    unit: QueryUnitKind
+    group_by: str | None = None
+    group_key: str | None = None
+    count: int
+
+    @classmethod
+    def from_row(cls, row: ArchiveQueryUnitAggregateRow) -> QueryUnitAggregateRowPayload:
+        return cls(
+            unit=cast(QueryUnitKind, row.unit),
+            group_by=row.group_by,
+            group_key=row.group_key,
+            count=row.count,
+        )
+
+
 class QueryUnitEnvelope(SurfacePayloadModel):
     """Shared envelope for explicit terminal unit-source query results."""
 
@@ -1568,22 +1607,7 @@ class QueryUnitEnvelope(SurfacePayloadModel):
     items: tuple[QueryUnitRowPayload, ...]
     pipeline_stages: tuple[dict[str, object], ...] = Field(
         default=(),
-        json_schema_extra={
-            "items": {
-                "additionalProperties": True,
-                "properties": {
-                    "kind": {
-                        "enum": ["session_scope", "sort", "limit", "offset"],
-                        "type": "string",
-                    },
-                    "predicate": {"type": "object"},
-                    "sort": {"type": "object"},
-                    "value": {"type": "integer"},
-                },
-                "required": ["kind"],
-                "type": "object",
-            }
-        },
+        json_schema_extra=_QUERY_UNIT_PIPELINE_STAGE_SCHEMA,
     )
     """Ordered terminal pipeline stages that shaped this page, if any."""
     total: int
@@ -1591,6 +1615,28 @@ class QueryUnitEnvelope(SurfacePayloadModel):
     limit: int
     offset: int
     next_offset: int | None = None
+
+
+class QueryUnitAggregateEnvelope(SurfacePayloadModel):
+    """Shared envelope for terminal query-unit aggregate results."""
+
+    mode: Literal["query-unit-aggregate"] = "query-unit-aggregate"
+    unit: QueryUnitKind
+    query: str
+    items: tuple[QueryUnitAggregateRowPayload, ...]
+    pipeline_stages: tuple[dict[str, object], ...] = Field(
+        default=(),
+        json_schema_extra=_QUERY_UNIT_PIPELINE_STAGE_SCHEMA,
+    )
+    """Ordered terminal pipeline stages that shaped this aggregate page."""
+    total: int
+    """Number of aggregate rows returned in this page."""
+    limit: int
+    offset: int
+    next_offset: int | None = None
+
+
+QueryUnitResultEnvelope: TypeAlias = QueryUnitEnvelope | QueryUnitAggregateEnvelope
 
 
 class OtelSpanPayload(SurfacePayloadModel):
@@ -1670,6 +1716,31 @@ def build_query_unit_envelope(
 
     items_tuple = tuple(items)
     return QueryUnitEnvelope(
+        unit=unit,
+        query=query,
+        items=items_tuple,
+        pipeline_stages=tuple(dict(stage) for stage in pipeline_stages),
+        total=len(items_tuple),
+        limit=limit,
+        offset=offset,
+        next_offset=offset + limit if has_next else None,
+    )
+
+
+def build_query_unit_aggregate_envelope(
+    items: Sequence[QueryUnitAggregateRowPayload],
+    *,
+    unit: QueryUnitKind,
+    query: str,
+    limit: int,
+    offset: int,
+    has_next: bool,
+    pipeline_stages: Sequence[Mapping[str, object]] = (),
+) -> QueryUnitAggregateEnvelope:
+    """Construct the canonical terminal aggregate response envelope."""
+
+    items_tuple = tuple(items)
+    return QueryUnitAggregateEnvelope(
         unit=unit,
         query=query,
         items=items_tuple,
@@ -2321,8 +2392,11 @@ __all__ = [
     "DeleteSessionResult",
     "MutationResultPayload",
     "QueryErrorPayload",
+    "QueryUnitAggregateEnvelope",
+    "QueryUnitAggregateRowPayload",
     "QueryUnitEnvelope",
     "QueryUnitKind",
+    "QueryUnitResultEnvelope",
     "QueryUnitRowPayload",
     "RunQueryRowPayload",
     "QueryMissDiagnosticsPayload",
@@ -2354,6 +2428,7 @@ __all__ = [
     "apply_search_cursor",
     "build_search_cursor",
     "build_search_envelope",
+    "build_query_unit_aggregate_envelope",
     "build_query_unit_envelope",
     "decode_search_cursor",
     "model_json_document",

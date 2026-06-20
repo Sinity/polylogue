@@ -1546,7 +1546,9 @@ def _emit_unit_source_rows(
     )
     envelope = envelope_model.model_dump(mode="json")
     items = [item.model_dump(mode="json") for item in envelope_model.items]
-    text_line = _query_unit_text_line(source.unit)
+    text_line = (
+        _aggregate_query_line if envelope_model.mode == "query-unit-aggregate" else _query_unit_text_line(source.unit)
+    )
 
     if not items:
         _emit_unit_no_results(envelope, unit=source.unit, output_format=output_format)
@@ -1599,6 +1601,12 @@ def _block_query_line(item: dict[str, object]) -> str:
 def _assertion_query_line(item: dict[str, object]) -> str:
     detail = item.get("body_text") or item.get("key") or item.get("value") or item.get("target_ref") or ""
     return f"{item['assertion_id']} [{item['kind']}/{item['status']}] {_snippet(detail)}"
+
+
+def _aggregate_query_line(item: dict[str, object]) -> str:
+    group_by = item.get("group_by") or "all"
+    group_key = item.get("group_key") or "all"
+    return f"{group_by}={group_key} count={item['count']}"
 
 
 def _run_query_line(item: dict[str, object]) -> str:

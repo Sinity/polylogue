@@ -122,7 +122,8 @@ Get messages for a session. Query params: `limit`, `offset`.
 Return terminal rows for explicit query-unit expressions. Query params:
 `expression`, `limit`, `offset`. `expression` must be a
 `messages/actions/blocks/assertions/runs/observed-events/context-snapshots where ...` query and returns the shared
-`QueryUnitEnvelope`.
+`QueryUnitEnvelope` row envelope or, for SQL-backed
+`group by FIELD | count` pipelines, `QueryUnitAggregateEnvelope`.
 
 ### GET /api/sessions/:id/read
 

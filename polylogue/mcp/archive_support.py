@@ -32,7 +32,7 @@ if TYPE_CHECKING:
         ArchiveStore,
     )
     from polylogue.storage.sqlite.archive_tiers.write import ArchiveBlockRow, ArchiveMessageRow, ArchiveSessionEnvelope
-    from polylogue.surfaces.payloads import QueryUnitEnvelope, SearchEnvelope, SessionSearchHitPayload
+    from polylogue.surfaces.payloads import QueryUnitResultEnvelope, SearchEnvelope, SessionSearchHitPayload
 
 
 def _real_path(value: object) -> Path | None:
@@ -398,7 +398,7 @@ def archive_query_unit_payload(
     offset: int,
     session_filters: Mapping[str, object] | None = None,
     **filter_params: object,
-) -> QueryUnitEnvelope:
+) -> QueryUnitResultEnvelope:
     """Build the shared terminal query-unit envelope from an archive."""
     from polylogue.archive.query.unit_results import query_unit_envelope, query_unit_request
 

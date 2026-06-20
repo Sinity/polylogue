@@ -31,6 +31,7 @@ from polylogue.surfaces.payloads import (
     MachineSuccessPayload,
     MutationResultPayload,
     QueryErrorPayload,
+    QueryUnitAggregateEnvelope,
     QueryUnitEnvelope,
     SearchEnvelope,
     SessionListRowPayload,
@@ -150,6 +151,22 @@ SCHEMAS: tuple[CliOutputSchema, ...] = (
             "polylogue --format json assertions where ...",
             "polylogue --format json observed-events where ...",
             "polylogue --format json context-snapshots where ...",
+            "Polylogue.query_units(...)",
+            "MCP query_units",
+            "GET /api/query-units?expression=...",
+        ),
+    ),
+    CliOutputSchema(
+        name="query-unit-aggregate-envelope",
+        title="Query Unit Aggregate Envelope",
+        description=(
+            "Grouped count envelope for explicit terminal query-unit aggregate "
+            "pipelines such as `messages where text:timeout | group by role | count`. "
+            "Shared by CLI JSON output, Python API, MCP, and daemon HTTP."
+        ),
+        model=QueryUnitAggregateEnvelope,
+        surfaces=(
+            "polylogue --format json messages where ... | group by role | count",
             "Polylogue.query_units(...)",
             "MCP query_units",
             "GET /api/query-units?expression=...",

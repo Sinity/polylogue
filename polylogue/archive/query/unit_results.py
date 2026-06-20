@@ -31,8 +31,10 @@ from polylogue.surfaces.payloads import (
     ContextSnapshotQueryRowPayload,
     MessageQueryRowPayload,
     ObservedEventQueryRowPayload,
-    QueryUnitEnvelope,
+    QueryUnitAggregateRowPayload,
+    QueryUnitResultEnvelope,
     RunQueryRowPayload,
+    build_query_unit_aggregate_envelope,
     build_query_unit_envelope,
 )
 
@@ -640,7 +642,9 @@ def _build_runtime_transform_envelope(
     offset: int,
     caller_offset: int,
     session_filters: Mapping[str, object] | None,
-) -> QueryUnitEnvelope:
+) -> QueryUnitResultEnvelope:
+    if source.aggregate is not None:
+        raise ValueError(f"Query unit {source.unit!r} aggregate execution requires a SQL lowerer")
     query_fn = _RUNTIME_TRANSFORM_QUERIES.get(source.unit)
     if query_fn is None:
         raise ValueError(f"Query unit {source.unit!r} is not wired to a runtime-transform executor")
@@ -673,7 +677,25 @@ def _build_sql_envelope(
     caller_offset: int,
     fetch_limit: int,
     session_filters: Mapping[str, object] | None,
-) -> QueryUnitEnvelope:
+) -> QueryUnitResultEnvelope:
+    if source.aggregate == "count":
+        aggregate_rows = archive.query_unit_counts(
+            source.unit,
+            source.predicate,
+            group_by=source.group_by,
+            limit=fetch_limit,
+            offset=offset,
+            session_filters=session_filters,
+        )
+        return build_query_unit_aggregate_envelope(
+            tuple(QueryUnitAggregateRowPayload.from_row(row) for row in aggregate_rows[:limit]),
+            unit=source.unit,
+            query=query,
+            limit=limit,
+            offset=caller_offset,
+            has_next=len(aggregate_rows) > limit,
+            pipeline_stages=tuple(stage.to_payload() for stage in source.pipeline_stages),
+        )
     sort = source.sort.field if source.sort is not None else None
     sort_direction = source.sort.direction if source.sort is not None else "asc"
     method_name = _SQL_QUERY_METHODS.get(source.unit)
@@ -711,7 +733,7 @@ def query_unit_rows(
     limit: int,
     offset: int = 0,
     session_filters: Mapping[str, object] | None = None,
-) -> QueryUnitEnvelope:
+) -> QueryUnitResultEnvelope:
     """Execute an explicit unit-source query."""
 
     caller_offset = offset
@@ -746,7 +768,7 @@ def query_unit_rows(
     )
 
 
-def query_unit_envelope(archive: ArchiveStore, request: QueryUnitRequest) -> QueryUnitEnvelope:
+def query_unit_envelope(archive: ArchiveStore, request: QueryUnitRequest) -> QueryUnitResultEnvelope:
     """Execute a compiled terminal query-unit request."""
 
     return query_unit_rows(

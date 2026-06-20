@@ -1540,6 +1540,52 @@ async def test_query_units_reports_pipeline_stages(tmp_path: Path) -> None:
         await archive.close()
 
 
+async def test_query_units_returns_aggregate_envelope(tmp_path: Path) -> None:
+    """``query_units()`` returns grouped aggregate counts for terminal pipelines."""
+    from polylogue.surfaces.payloads import QueryUnitAggregateEnvelope
+
+    archive = _archive(tmp_path)
+    try:
+        with ArchiveStore(archive.config.archive_root) as archive_db:
+            archive_db.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="unit-aggregate-codex",
+                    title="Unit aggregate Codex",
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id="m-user",
+                            role=Role.USER,
+                            text="aggregate facade",
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="aggregate facade")],
+                        ),
+                        ParsedMessage(
+                            provider_message_id="m-assistant-1",
+                            role=Role.ASSISTANT,
+                            text="aggregate facade one",
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="aggregate facade one")],
+                        ),
+                        ParsedMessage(
+                            provider_message_id="m-assistant-2",
+                            role=Role.ASSISTANT,
+                            text="aggregate facade two",
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="aggregate facade two")],
+                        ),
+                    ],
+                )
+            )
+
+        envelope = await archive.query_units(
+            "sessions where origin:codex-session | messages where text:aggregate | group by role | count"
+        )
+
+        assert isinstance(envelope, QueryUnitAggregateEnvelope)
+        assert envelope.mode == "query-unit-aggregate"
+        assert [(row.group_key, row.count) for row in envelope.items] == [("assistant", 2), ("user", 1)]
+    finally:
+        await archive.close()
+
+
 async def test_query_units_accepts_inline_session_scope(tmp_path: Path) -> None:
     """``query_units()`` accepts owning-session scope inside the shared DSL."""
     archive = _archive(tmp_path)

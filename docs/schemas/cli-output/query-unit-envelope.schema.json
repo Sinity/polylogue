@@ -837,12 +837,23 @@
       "items": {
         "additionalProperties": true,
         "properties": {
+          "field": {
+            "type": "string"
+          },
           "kind": {
             "enum": [
               "session_scope",
               "sort",
               "limit",
-              "offset"
+              "offset",
+              "group",
+              "count"
+            ],
+            "type": "string"
+          },
+          "metric": {
+            "enum": [
+              "count"
             ],
             "type": "string"
           },

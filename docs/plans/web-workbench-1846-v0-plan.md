@@ -58,7 +58,7 @@ Search and query:
 - `SearchEnvelope` from `GET /api/sessions`.
 - `FacetsResponse` / `FacetBucketsPayload` from `GET /api/facets`.
 - query completion metadata from `GET /api/query-completions`.
-- `QueryUnitEnvelope` from `GET /api/query-units`.
+- `QueryUnitEnvelope` / `QueryUnitAggregateEnvelope` from `GET /api/query-units`.
 
 Reader:
 
