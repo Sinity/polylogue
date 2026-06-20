@@ -36,23 +36,59 @@ def test_generated_surface_cache_inputs_include_renderer_module() -> None:
 def test_generated_surface_cache_inputs_include_contract_owners() -> None:
     """Contract-owner edits must invalidate generated surfaces that publish them."""
     assert {
+        "polylogue/cli/click_command_registration.py",
+        "polylogue/cli/command_inventory.py",
+        "polylogue/cli/query_group.py",
         "polylogue/archive/query/",
+        "polylogue/archive/query/metadata.py",
+        "polylogue/archive/query/fields.py",
+        "polylogue/archive/query/unit_results.py",
         "polylogue/archive/viewport/",
+        "polylogue/archive/viewport/profiles.py",
         "polylogue/operations/action_contracts.py",
         "polylogue/surfaces/payloads.py",
     }.issubset(_surface_inputs("cli-reference"))
 
     assert {
         "polylogue/archive/query/",
+        "polylogue/archive/query/metadata.py",
+        "polylogue/archive/query/unit_results.py",
+        "polylogue/context/compiler.py",
+        "polylogue/insights/transforms.py",
         "polylogue/surfaces/payloads.py",
     }.issubset(_surface_inputs("cli-output-schemas"))
 
     assert {
         "polylogue/archive/query/",
+        "polylogue/archive/query/metadata.py",
+        "polylogue/archive/query/unit_results.py",
         "polylogue/archive/viewport/",
+        "polylogue/archive/viewport/profiles.py",
+        "polylogue/browser_capture/models.py",
+        "polylogue/browser_capture/route_contracts.py",
         "polylogue/daemon/",
+        "polylogue/daemon/http.py",
+        "polylogue/daemon/route_contracts.py",
+        "polylogue/context/compiler.py",
+        "polylogue/insights/transforms.py",
         "polylogue/surfaces/payloads.py",
     }.issubset(_surface_inputs("openapi"))
+
+    assert {
+        "polylogue/cli/click_command_registration.py",
+        "polylogue/operations/action_contracts.py",
+        "polylogue/archive/query/metadata.py",
+        "polylogue/archive/viewport/profiles.py",
+        "polylogue/daemon/route_contracts.py",
+        "polylogue/sources/provider_completeness.py",
+    }.issubset(_surface_inputs("docs-surface"))
+
+    assert {
+        "polylogue/daemon/route_contracts.py",
+        "polylogue/archive/query/metadata.py",
+        "polylogue/archive/viewport/profiles.py",
+        "polylogue/surfaces/payloads.py",
+    }.issubset(_surface_inputs("pages"))
 
     assert {
         "devtools/benchmark_catalog.py",
