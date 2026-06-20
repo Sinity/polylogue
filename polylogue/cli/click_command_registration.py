@@ -92,6 +92,7 @@ _SHORT_HELP: dict[str, str] = {
     "config": "Show configuration paths and resolved settings.",
     "cost": "Summarize session cost telemetry.",
     "dashboard": "Open the local dashboard.",
+    "demo": "Seed and verify the deterministic demo archive.",
     "debt": "List archive work that needs operator attention.",
     "diagnostics": "Run archive and session diagnostics.",
     "embed": "Enable, preflight, and backfill the embedding pipeline.",
@@ -117,6 +118,7 @@ _COMMAND_NAMES: dict[str, str] = {
 _GROUP_ATTRS: dict[str, str] = {
     "cost": "cost_command",
     "debt": "debt_command",
+    "demo": "demo_command",
     "diagnostics": "diagnostics_group",
     "embed": "embed_command",
     "insights": "insights_command",
@@ -144,6 +146,7 @@ def _L(name: str) -> _LazyCommand:  # noqa: N802
 
 ROOT_COMMANDS: tuple[click.Command, ...] = (
     _L("config"),
+    _L("demo"),
     _L("import_command"),
     _L("init"),
     _L("ops"),

@@ -309,7 +309,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/metadata.py
-    loc: 699
+    loc: 778
     target: polylogue/archive/query/metadata.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -689,7 +689,7 @@ files:
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
-    loc: 185
+    loc: 188
     target: polylogue/cli/click_command_registration.py
     owner: stable
   - path: polylogue/cli/click_option_groups.py
@@ -736,6 +736,10 @@ files:
     loc: 80
     target: polylogue/cli/commands/debt.py
     owner: stable
+  - path: polylogue/cli/commands/demo.py
+    loc: 129
+    target: polylogue/cli/commands/demo.py
+    owner: stable
   - path: polylogue/cli/commands/diagnostics.py
     loc: 256
     target: polylogue/cli/commands/diagnostics.py
@@ -745,7 +749,7 @@ files:
     target: polylogue/cli/commands/embed.py
     owner: stable
   - path: polylogue/cli/commands/import_command.py
-    loc: 243
+    loc: 238
     target: polylogue/cli/commands/import_command.py
     owner: stable
   - path: polylogue/cli/commands/init.py
@@ -777,7 +781,7 @@ files:
     target: polylogue/cli/commands/schema.py
     owner: stable
   - path: polylogue/cli/commands/status.py
-    loc: 1347
+    loc: 1350
     target: polylogue/cli/commands/status.py
     owner: stable
   - path: polylogue/cli/commands/status_diagnostics.py
@@ -1402,6 +1406,26 @@ files:
   - path: polylogue/daemon/workspace_routes.py
     loc: 136
     target: polylogue/daemon/workspace_routes.py
+    owner: stable
+  - path: polylogue/demo/__init__.py
+    loc: 17
+    target: polylogue/demo/__init__.py
+    owner: stable
+  - path: polylogue/demo/models.py
+    loc: 59
+    target: polylogue/demo/models.py
+    owner: stable
+  - path: polylogue/demo/script.py
+    loc: 27
+    target: polylogue/demo/script.py
+    owner: stable
+  - path: polylogue/demo/seed.py
+    loc: 82
+    target: polylogue/demo/seed.py
+    owner: stable
+  - path: polylogue/demo/verify.py
+    loc: 109
+    target: polylogue/demo/verify.py
     owner: stable
   - path: polylogue/errors.py
     loc: 97
@@ -3322,7 +3346,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/user.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/user_audit.py
-    loc: 183
+    loc: 184
     target: polylogue/storage/sqlite/archive_tiers/user_audit.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/user_overlay.py
