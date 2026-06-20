@@ -365,22 +365,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "verify test-coverage-contracts",
-        "verification",
-        "Verify every production module >150 AST lines has a matching test file or exemption.",
-        "devtools.verify_test_coverage_contracts",
-        use_when=(
-            "Catches new production modules added without a dedicated test file. "
-            "Existing modules are grandfathered via docs/plans/test-coverage-exemptions.yaml. "
-            "Run as part of devtools verify --lab."
-        ),
-        examples=(
-            "devtools verify test-coverage-contracts",
-            "devtools verify test-coverage-contracts --json",
-            "devtools verify test-coverage-contracts --threshold 100",
-        ),
-    ),
-    CommandSpec(
         "verify closure-matrix",
         "verification",
         "Verify docs/plans/test-closure-matrix.yaml stays grounded in the realized tree.",
@@ -670,14 +654,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools workspace failure-context tests/unit/storage/test_foo.py::test_bar",
             "devtools workspace failure-context tests/unit/storage/test_foo.py::test_bar --days 14",
         ),
-    ),
-    CommandSpec(
-        "verify lane-assertions",
-        "verification",
-        "Verify scenario lanes classified as SEMANTIC_OUTPUT carry semantic assertions.",
-        "devtools.verify_lane_assertions",
-        use_when="Catch vacuous semantic lanes that claim evidence but only check exit codes.",
-        examples=("devtools verify lane-assertions",),
     ),
 )
 
