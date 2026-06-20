@@ -388,19 +388,19 @@
     "archive_facade_routes": {
       "checked": true,
       "source": "static_facade_route_catalog",
-      "total_method_count": 119,
-      "archive_ready_method_count": 118,
+      "total_method_count": 122,
+      "archive_ready_method_count": 121,
       "unsupported_method_count": 0,
       "route_counts": {
-        "archive_routed": 104,
+        "archive_routed": 107,
         "archive_direct": 14,
         "not_archive_runtime": 1
       },
       "tier_counts": {
-        "user": 36,
+        "user": 38,
         "index": 79,
         "none": 1,
-        "source": 3
+        "source": 4
       },
       "unsupported_methods": [],
       "routes": {
@@ -528,6 +528,11 @@
           "route": "archive_direct",
           "tier": "index",
           "detail": "explains an empty index query result from index.db probes"
+        },
+        "explain_import": {
+          "route": "archive_routed",
+          "tier": "source",
+          "detail": "explains source detection and import parsing without writing rows"
         },
         "explain_query_expression": {
           "route": "archive_routed",
@@ -719,6 +724,11 @@
           "tier": "index",
           "detail": "reads insight rigor from index.db"
         },
+        "judge_assertion_candidate": {
+          "route": "archive_routed",
+          "tier": "user",
+          "detail": "writes candidate assertion judgments through user.db"
+        },
         "list_annotations": {
           "route": "archive_routed",
           "tier": "user",
@@ -733,6 +743,11 @@
           "route": "archive_routed",
           "tier": "index",
           "detail": "reads archive debt projection from index.db"
+        },
+        "list_assertion_candidates": {
+          "route": "archive_routed",
+          "tier": "user",
+          "detail": "reads candidate assertion claims through user.db"
         },
         "list_assertion_claim_payloads": {
           "route": "archive_routed",
@@ -1061,10 +1076,10 @@
         "ops.db"
       ],
       "facade_tier_route_counts": {
-        "user": 36,
+        "user": 38,
         "index": 79,
         "none": 1,
-        "source": 3
+        "source": 4
       },
       "cli_tier_route_counts": {
         "user": 3,
@@ -1431,6 +1446,17 @@
                 "name": "handoffs",
                 "storage": "assertions",
                 "assertion_kind": "handoff",
+                "table": "assertions",
+                "total_count": 0,
+                "active_count": 0,
+                "deleted_count": 0,
+                "candidate_count": 0,
+                "rationale": "assertion lifecycle claim"
+              },
+              {
+                "name": "judgments",
+                "storage": "assertions",
+                "assertion_kind": "judgment",
                 "table": "assertions",
                 "total_count": 0,
                 "active_count": 0,

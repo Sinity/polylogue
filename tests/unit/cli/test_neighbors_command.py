@@ -16,7 +16,8 @@ import pytest
 
 from polylogue.archive.models import SessionSummary
 from polylogue.archive.session.neighbor_candidates import NeighborReason, SessionNeighborCandidate
-from polylogue.cli.read_view_handlers import ReadViewInvocation, _run_read_neighbors
+from polylogue.cli.read_view_handlers import ReadViewInvocation, ReadViewNeighborOptions
+from polylogue.cli.read_views.neighbors import run_read_neighbors
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.core.enums import Origin
 from polylogue.types import SessionId
@@ -50,17 +51,16 @@ def test_read_view_neighbors_emits_json_payload(capsys: pytest.CaptureFixture[st
     env.polylogue.neighbor_candidates = AsyncMock(return_value=[_candidate()])
     request = RootModeRequest.from_params({"origin": "codex-session"})
 
-    _run_read_neighbors(
+    run_read_neighbors(
         env,
         request,
         ReadViewInvocation(
             view="neighbors",
             session_id="target",
-            limit=10,
-            window_hours=24,
             output_format="json",
             destination="stdout",
             out_path=None,
+            neighbors=ReadViewNeighborOptions(limit=10, window_hours=24),
         ),
     )
 
@@ -82,17 +82,16 @@ def test_read_view_neighbors_plain_renders_reasons(capsys: pytest.CaptureFixture
     env.polylogue.neighbor_candidates = AsyncMock(return_value=[_candidate()])
     request = RootModeRequest.from_params({})
 
-    _run_read_neighbors(
+    run_read_neighbors(
         env,
         request,
         ReadViewInvocation(
             view="neighbors",
             session_id="target",
-            limit=10,
-            window_hours=24,
             output_format=None,
             destination="stdout",
             out_path=None,
+            neighbors=ReadViewNeighborOptions(limit=10, window_hours=24),
         ),
     )
 
@@ -111,17 +110,16 @@ def test_read_view_neighbors_surfaces_discovery_error(capsys: pytest.CaptureFixt
     request = RootModeRequest.from_params({})
 
     with pytest.raises(SystemExit):
-        _run_read_neighbors(
+        run_read_neighbors(
             env,
             request,
             ReadViewInvocation(
                 view="neighbors",
                 session_id="target",
-                limit=10,
-                window_hours=24,
                 output_format=None,
                 destination="stdout",
                 out_path=None,
+                neighbors=ReadViewNeighborOptions(limit=10, window_hours=24),
             ),
         )
 
@@ -133,17 +131,16 @@ def test_read_view_neighbors_empty_renders_message(capsys: pytest.CaptureFixture
     env.polylogue.neighbor_candidates = AsyncMock(return_value=[])
     request = RootModeRequest.from_params({})
 
-    _run_read_neighbors(
+    run_read_neighbors(
         env,
         request,
         ReadViewInvocation(
             view="neighbors",
             session_id="target",
-            limit=10,
-            window_hours=24,
             output_format=None,
             destination="stdout",
             out_path=None,
+            neighbors=ReadViewNeighborOptions(limit=10, window_hours=24),
         ),
     )
 
@@ -155,17 +152,16 @@ def test_read_view_neighbors_requires_a_seed(capsys: pytest.CaptureFixture[str])
     request = RootModeRequest.from_params({})
 
     with pytest.raises(SystemExit):
-        _run_read_neighbors(
+        run_read_neighbors(
             env,
             request,
             ReadViewInvocation(
                 view="neighbors",
                 session_id=None,
-                limit=10,
-                window_hours=24,
                 output_format=None,
                 destination="stdout",
                 out_path=None,
+                neighbors=ReadViewNeighborOptions(limit=10, window_hours=24),
             ),
         )
 

@@ -23,7 +23,17 @@ from polylogue.archive.viewport import (
     read_view_profile_payloads,
 )
 from polylogue.cli.click_option_groups import _LazyChoice
-from polylogue.cli.read_view_handlers import ReadViewInvocation, run_bulk_export_view, run_read_view
+from polylogue.cli.read_view_handlers import (
+    ReadViewContextOptions,
+    ReadViewContextPackOptions,
+    ReadViewCorrelationOptions,
+    ReadViewInvocation,
+    ReadViewMessageOptions,
+    ReadViewNeighborOptions,
+    ReadViewRecoveryOptions,
+    run_bulk_export_view,
+    run_read_view,
+)
 from polylogue.cli.shared.types import AppEnv
 from polylogue.cli.verb_names import VERB_NAMES
 from polylogue.surfaces.payloads import serialize_surface_payload
@@ -449,32 +459,38 @@ def read_verb(
             output_format=effective_format,
             destination=destination,
             out_path=out_path,
-            limit=limit,
-            offset=offset,
-            message_role=message_role,
-            message_type=message_type,
-            no_code_blocks=no_code_blocks,
-            no_tool_calls=no_tool_calls,
-            no_tool_outputs=no_tool_outputs,
-            no_file_reads=no_file_reads,
-            prose_only=prose_only,
-            window_hours=window_hours,
-            repo_path=repo_path,
-            since_hours=since_hours,
-            confidence_threshold=confidence_threshold,
-            github_api=github_api,
-            otlp=otlp,
-            related_limit=related_limit,
-            recovery_report=recovery_report,
-            project_path=project_path,
-            project_repo=project_repo,
-            since=since,
-            until=until,
-            pack_origin=pack_origin,
-            pack_query=pack_query,
-            max_sessions=max_sessions,
-            max_messages=max_messages,
-            no_redact=no_redact,
+            messages=ReadViewMessageOptions(
+                limit=limit,
+                offset=offset,
+                role=message_role,
+                message_type=message_type,
+                no_code_blocks=no_code_blocks,
+                no_tool_calls=no_tool_calls,
+                no_tool_outputs=no_tool_outputs,
+                no_file_reads=no_file_reads,
+                prose_only=prose_only,
+            ),
+            context=ReadViewContextOptions(related_limit=related_limit),
+            context_pack=ReadViewContextPackOptions(
+                project_path=project_path,
+                project_repo=project_repo,
+                since=since,
+                until=until,
+                origin=pack_origin,
+                query=pack_query,
+                max_sessions=max_sessions,
+                max_messages=max_messages,
+                no_redact=no_redact,
+            ),
+            recovery=ReadViewRecoveryOptions(report=recovery_report),
+            neighbors=ReadViewNeighborOptions(limit=limit, window_hours=window_hours),
+            correlation=ReadViewCorrelationOptions(
+                repo_path=repo_path,
+                since_hours=since_hours,
+                confidence_threshold=confidence_threshold,
+                github_api=github_api,
+                otlp=otlp,
+            ),
         ),
     )
 
@@ -599,7 +615,7 @@ def continue_verb(
             output_format=effective_format,
             destination=destination,
             out_path=out_path,
-            recovery_report="continue",
+            recovery=ReadViewRecoveryOptions(report="continue"),
         ),
     )
 
