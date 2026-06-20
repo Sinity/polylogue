@@ -5532,7 +5532,7 @@ def _action_sequence_steps_clause(table_alias: str, steps: tuple[QueryPredicate,
               ON {block_alias}.block_id = {action_alias}.tool_use_block_id
             """.strip()
         )
-        step_clause, step_params = _structural_predicate_clause("action", action_alias, step, session_alias=table_alias)
+        step_clause, step_params = _structural_predicate_clause("action", action_alias, step)
         if step_clause:
             predicates.append(f"({step_clause})")
             params.extend(step_params)

@@ -882,6 +882,18 @@ class TestBooleanQueryExpression:
 
         assert ast.boolean_predicate == QuerySequencePredicate(action_terms=("file_edit", "shell", "file_edit"))
 
+    def test_sequence_predicate_derives_action_terms_from_steps_when_both_are_supplied(self) -> None:
+        predicate = QuerySequencePredicate(
+            steps=(
+                QueryFieldPredicate(field="action", values=("file_edit",)),
+                QueryFieldPredicate(field="action", values=("shell",)),
+            ),
+            action_terms=("conflicting",),
+        )
+
+        assert predicate.action_terms == ("file_edit", "shell")
+        assert predicate.to_payload()["actions"] == ["file_edit", "shell"]
+
     def test_sequence_ast_exposes_step_predicates(self) -> None:
         ast = parse_expression_ast("seq(action:file_edit -> action:shell AND output:failed -> action:file_edit)")
 

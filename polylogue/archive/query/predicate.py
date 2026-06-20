@@ -61,14 +61,14 @@ class QuerySequencePredicate:
     action_terms: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        if not self.steps and self.action_terms:
+        if self.steps:
+            object.__setattr__(self, "action_terms", _simple_sequence_action_terms(self.steps))
+        elif self.action_terms:
             object.__setattr__(
                 self,
                 "steps",
                 tuple(QueryFieldPredicate(field="action", values=(term,), op="=") for term in self.action_terms),
             )
-        elif self.steps and not self.action_terms:
-            object.__setattr__(self, "action_terms", _simple_sequence_action_terms(self.steps))
 
     def to_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {
