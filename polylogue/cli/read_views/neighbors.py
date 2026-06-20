@@ -5,9 +5,25 @@ from __future__ import annotations
 from typing import cast
 
 from polylogue.archive.session.neighbor_candidates import SessionNeighborCandidate
-from polylogue.cli.read_views.base import ReadViewInvocation, ReadViewNeighborOptions, deliver_content
+from polylogue.cli.read_views.base import (
+    ReadViewInvocation,
+    ReadViewNeighborOptions,
+    ReadViewOptionValues,
+    deliver_content,
+)
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
+
+NEIGHBOR_READ_VIEW_OPTION_NAMES = frozenset({"limit", "window_hours"})
+
+
+def build_neighbor_options(values: ReadViewOptionValues) -> ReadViewNeighborOptions:
+    """Build options owned by the neighbor-discovery read view."""
+
+    return ReadViewNeighborOptions(
+        limit=cast(int | None, values.get("limit")),
+        window_hours=cast(int, values.get("window_hours", 24)),
+    )
 
 
 def _neighbor_score_label(score: float) -> str:
@@ -87,4 +103,4 @@ def run_read_neighbors(env: AppEnv, request: RootModeRequest, invocation: ReadVi
     )
 
 
-__all__ = ["run_read_neighbors"]
+__all__ = ["NEIGHBOR_READ_VIEW_OPTION_NAMES", "build_neighbor_options", "run_read_neighbors"]

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -91,6 +91,8 @@ ReadViewOptions = (
     | ReadViewNeighborOptions
     | ReadViewCorrelationOptions
 )
+ReadViewOptionValues = Mapping[str, object]
+ReadViewOptionBuilder = Callable[[ReadViewOptionValues], ReadViewOptions | None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +120,7 @@ class ReadViewHandler:
     handler: ReadViewHandlerFunc
     default_format: str | None = None
     accepted_options: frozenset[ReadViewOptionName] = frozenset()
+    option_builder: ReadViewOptionBuilder | None = None
 
     def validate(self, invocation: ReadViewInvocation, request: RootModeRequest) -> None:
         """Validate cross-view selection rules before executing the handler."""
@@ -144,6 +147,13 @@ class ReadViewHandler:
         if unsupported_options:
             options = ", ".join(f"--{option.replace('_', '-')}" for option in unsupported_options)
             raise click.UsageError(f"read --view {self.view_id} does not use {options}.")
+
+    def build_options(self, values: ReadViewOptionValues) -> ReadViewOptions | None:
+        """Build typed view options from raw Click option values."""
+
+        if self.option_builder is None:
+            return None
+        return self.option_builder(values)
 
 
 def deliver_content(env: AppEnv, content: str, *, destination: str, out_path: str | None) -> None:
@@ -180,7 +190,9 @@ __all__ = [
     "ReadViewOptionName",
     "ReadViewMessageOptions",
     "ReadViewNeighborOptions",
+    "ReadViewOptionBuilder",
     "ReadViewOptions",
+    "ReadViewOptionValues",
     "ReadViewRecoveryOptions",
     "ReadViewSessionPolicy",
     "deliver_content",

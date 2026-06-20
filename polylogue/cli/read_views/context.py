@@ -8,10 +8,48 @@ from polylogue.cli.read_views.base import (
     ReadViewContextOptions,
     ReadViewContextPackOptions,
     ReadViewInvocation,
+    ReadViewOptionValues,
     deliver_content,
 )
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
+
+CONTEXT_READ_VIEW_OPTION_NAMES = frozenset({"related_limit"})
+CONTEXT_PACK_READ_VIEW_OPTION_NAMES = frozenset(
+    {
+        "max_messages",
+        "max_sessions",
+        "no_redact",
+        "pack_origin",
+        "pack_query",
+        "project_path",
+        "project_repo",
+        "since",
+        "until",
+    }
+)
+
+
+def build_context_options(values: ReadViewOptionValues) -> ReadViewContextOptions:
+    """Build options owned by the context preamble read view."""
+
+    return ReadViewContextOptions(related_limit=cast(int, values.get("related_limit", 5)))
+
+
+def build_context_pack_options(values: ReadViewOptionValues) -> ReadViewContextPackOptions:
+    """Build options owned by the context-pack read view."""
+
+    return ReadViewContextPackOptions(
+        project_path=cast(str | None, values.get("project_path")),
+        project_repo=cast(str | None, values.get("project_repo")),
+        since=cast(str | None, values.get("since")),
+        until=cast(str | None, values.get("until")),
+        origin=cast(str | None, values.get("pack_origin")),
+        query=cast(str | None, values.get("pack_query")),
+        max_sessions=cast(int, values.get("max_sessions", 5)),
+        max_messages=cast(int, values.get("max_messages", 20)),
+        no_redact=cast(bool, values.get("no_redact", False)),
+    )
 
 
 def run_read_context(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
@@ -51,4 +89,11 @@ def run_read_context_pack(env: AppEnv, request: RootModeRequest, invocation: Rea
     )
 
 
-__all__ = ["run_read_context", "run_read_context_pack"]
+__all__ = [
+    "CONTEXT_PACK_READ_VIEW_OPTION_NAMES",
+    "CONTEXT_READ_VIEW_OPTION_NAMES",
+    "build_context_options",
+    "build_context_pack_options",
+    "run_read_context",
+    "run_read_context_pack",
+]

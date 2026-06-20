@@ -19,11 +19,31 @@ from polylogue.cli.read_views.base import (
     ReadViewRecoveryOptions,
 )
 from polylogue.cli.read_views.bulk import run_bulk_export_view
-from polylogue.cli.read_views.context import run_read_context, run_read_context_pack
-from polylogue.cli.read_views.correlation import run_read_correlation
-from polylogue.cli.read_views.messages import run_read_messages, run_read_raw
-from polylogue.cli.read_views.neighbors import run_read_neighbors
-from polylogue.cli.read_views.recovery import run_read_recovery
+from polylogue.cli.read_views.context import (
+    CONTEXT_PACK_READ_VIEW_OPTION_NAMES,
+    CONTEXT_READ_VIEW_OPTION_NAMES,
+    build_context_options,
+    build_context_pack_options,
+    run_read_context,
+    run_read_context_pack,
+)
+from polylogue.cli.read_views.correlation import (
+    CORRELATION_READ_VIEW_OPTION_NAMES,
+    build_correlation_options,
+    run_read_correlation,
+)
+from polylogue.cli.read_views.messages import (
+    MESSAGE_READ_VIEW_OPTION_NAMES,
+    build_message_options,
+    run_read_messages,
+    run_read_raw,
+)
+from polylogue.cli.read_views.neighbors import (
+    NEIGHBOR_READ_VIEW_OPTION_NAMES,
+    build_neighbor_options,
+    run_read_neighbors,
+)
+from polylogue.cli.read_views.recovery import RECOVERY_READ_VIEW_OPTION_NAMES, build_recovery_options, run_read_recovery
 from polylogue.cli.read_views.standard import run_read_summary_or_transcript
 from polylogue.cli.shared.types import AppEnv
 
@@ -31,68 +51,64 @@ if TYPE_CHECKING:
     from polylogue.cli.root_request import RootModeRequest
 
 
-_MESSAGE_OPTIONS = frozenset(
-    {
-        "limit",
-        "message_role",
-        "message_type",
-        "no_code_blocks",
-        "no_file_reads",
-        "no_tool_calls",
-        "no_tool_outputs",
-        "offset",
-        "prose_only",
-    }
-)
-_CONTEXT_PACK_OPTIONS = frozenset(
-    {
-        "max_messages",
-        "max_sessions",
-        "no_redact",
-        "pack_origin",
-        "pack_query",
-        "project_path",
-        "project_repo",
-        "since",
-        "until",
-    }
-)
-_CORRELATION_OPTIONS = frozenset({"confidence_threshold", "github_api", "otlp", "repo_path", "since_hours"})
-
-
 READ_VIEW_HANDLERS: dict[str, ReadViewHandler] = {
     "summary": ReadViewHandler("summary", "optional", run_read_summary_or_transcript, default_format="markdown"),
     "transcript": ReadViewHandler("transcript", "optional", run_read_summary_or_transcript, default_format="markdown"),
     "messages": ReadViewHandler(
-        "messages", "required", run_read_messages, default_format="text", accepted_options=_MESSAGE_OPTIONS
+        "messages",
+        "required",
+        run_read_messages,
+        default_format="text",
+        accepted_options=MESSAGE_READ_VIEW_OPTION_NAMES,
+        option_builder=build_message_options,
     ),
-    "raw": ReadViewHandler("raw", "required", run_read_raw, default_format="json", accepted_options=_MESSAGE_OPTIONS),
+    "raw": ReadViewHandler(
+        "raw",
+        "required",
+        run_read_raw,
+        default_format="json",
+        accepted_options=MESSAGE_READ_VIEW_OPTION_NAMES,
+        option_builder=build_message_options,
+    ),
     "context": ReadViewHandler(
-        "context", "required", run_read_context, default_format="json", accepted_options=frozenset({"related_limit"})
+        "context",
+        "required",
+        run_read_context,
+        default_format="json",
+        accepted_options=CONTEXT_READ_VIEW_OPTION_NAMES,
+        option_builder=build_context_options,
     ),
     "context-pack": ReadViewHandler(
         "context-pack",
         "none",
         run_read_context_pack,
         default_format="markdown",
-        accepted_options=_CONTEXT_PACK_OPTIONS,
+        accepted_options=CONTEXT_PACK_READ_VIEW_OPTION_NAMES,
+        option_builder=build_context_pack_options,
     ),
     "recovery": ReadViewHandler(
         "recovery",
         "required",
         run_read_recovery,
         default_format="markdown",
-        accepted_options=frozenset({"recovery_report"}),
+        accepted_options=RECOVERY_READ_VIEW_OPTION_NAMES,
+        option_builder=build_recovery_options,
     ),
     "neighbors": ReadViewHandler(
         "neighbors",
         "query_or_session",
         run_read_neighbors,
         default_format="text",
-        accepted_options=frozenset({"limit", "window_hours"}),
+        accepted_options=NEIGHBOR_READ_VIEW_OPTION_NAMES,
+        option_builder=build_neighbor_options,
     ),
     "correlation": ReadViewHandler(
-        "correlation", "required", run_read_correlation, default_format="text", accepted_options=_CORRELATION_OPTIONS
+        "correlation",
+        "required",
+        run_read_correlation,
+        default_format="text",
+        accepted_options=CORRELATION_READ_VIEW_OPTION_NAMES,
+        option_builder=build_correlation_options,
     ),
 }
 
@@ -118,6 +134,16 @@ def read_view_option_names() -> frozenset[str]:
     """Return every view-specific option name owned by read-view handlers."""
 
     return frozenset(option_name for handler in READ_VIEW_HANDLERS.values() for option_name in handler.accepted_options)
+
+
+def read_view_options_for_view(view: str, values: dict[str, object]) -> ReadViewOptions | None:
+    """Build typed options for one read view."""
+
+    try:
+        handler = READ_VIEW_HANDLERS[view]
+    except KeyError as exc:  # pragma: no cover - Click choice prevents this.
+        raise click.UsageError(f"Unknown read view: {view}") from exc
+    return handler.build_options(values)
 
 
 def validate_read_view_handler_registry() -> None:
@@ -151,6 +177,7 @@ __all__ = [
     "ReadViewRecoveryOptions",
     "read_view_handler_ids",
     "read_view_option_names",
+    "read_view_options_for_view",
     "run_bulk_export_view",
     "run_read_view",
     "validate_read_view_handler_registry",

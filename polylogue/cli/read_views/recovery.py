@@ -4,9 +4,22 @@ from __future__ import annotations
 
 from typing import cast
 
-from polylogue.cli.read_views.base import ReadViewInvocation, ReadViewRecoveryOptions, deliver_content
+from polylogue.cli.read_views.base import (
+    ReadViewInvocation,
+    ReadViewOptionValues,
+    ReadViewRecoveryOptions,
+    deliver_content,
+)
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
+
+RECOVERY_READ_VIEW_OPTION_NAMES = frozenset({"recovery_report"})
+
+
+def build_recovery_options(values: ReadViewOptionValues) -> ReadViewRecoveryOptions:
+    """Build options owned by the recovery read view."""
+
+    return ReadViewRecoveryOptions(report=cast(str | None, values.get("recovery_report")))
 
 
 def run_read_recovery(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
@@ -49,4 +62,4 @@ def run_read_recovery(env: AppEnv, request: RootModeRequest, invocation: ReadVie
     deliver_content(env, digest.resume_markdown, destination=invocation.destination, out_path=invocation.out_path)
 
 
-__all__ = ["run_read_recovery"]
+__all__ = ["RECOVERY_READ_VIEW_OPTION_NAMES", "build_recovery_options", "run_read_recovery"]
