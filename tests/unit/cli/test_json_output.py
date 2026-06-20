@@ -72,7 +72,7 @@ def _looks_like_json_output(text: str) -> bool:
 # Commands intentionally excluded:
 #   - delete, ops reset    → destructive
 #   - import               → requires source config, modifies archive
-#   - ops tutorial, auth, init → interactive or requires external service
+#   - tutorial, ops auth, init → interactive or requires external service
 #   - ops dashboard, open      → side effect (opens browser)
 #   - ops backup           → creates backup file; needs populated archive
 _COMMANDS: list[tuple[list[str], bool]] = [
@@ -119,7 +119,7 @@ _EXCLUDED: list[str] = [
     "delete (destructive)",
     "ops reset (destructive)",
     "import (requires source config, modifies archive)",
-    "ops tutorial (interactive)",
+    "tutorial (interactive)",
     "ops auth (interactive, requires external service)",
     "init (interactive, writes config)",
     "ops dashboard (side effect: opens browser)",

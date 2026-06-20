@@ -1,11 +1,11 @@
-"""Interactive first-run walkthrough — ``polylogue ops tutorial``.
+"""Interactive first-run walkthrough — ``polylogue tutorial``.
 
 The tutorial is an idempotent five-stage onboarding flow. Re-running picks
 up where the previous run left off: each stage probes the archive/config
 state and either marks itself ``[skip]`` (already satisfied) or guides the
 operator through the next action. ``--non-interactive`` suppresses prompts
 and prints the diagnostic block once — used by tests and as a "what would
-this do" preview. (#1263)
+this do" preview.
 """
 
 from __future__ import annotations
@@ -186,7 +186,7 @@ def tutorial_command(env: AppEnv, non_interactive: bool) -> None:
     """
     console = env.ui.console
     total = len(STAGES)
-    console.print("\n[bold]polylogue ops tutorial[/bold]")
+    console.print("\n[bold]polylogue tutorial[/bold]")
     console.print("  Five stages will walk you through a working install.\n")
 
     for stage in STAGES:
@@ -208,7 +208,7 @@ def tutorial_command(env: AppEnv, non_interactive: bool) -> None:
                     prompt_suffix="",
                 )
             except (click.exceptions.Abort, EOFError, KeyboardInterrupt):
-                console.print("\n  [dim]Tutorial paused. Re-run `polylogue ops tutorial` to resume.[/dim]")
+                console.print("\n  [dim]Tutorial paused. Re-run `polylogue tutorial` to resume.[/dim]")
                 sys.exit(0)
     console.print("\n[green]Done.[/green] See `polylogue --help` for more.")
 

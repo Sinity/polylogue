@@ -249,7 +249,7 @@ _PLAIN_COMMANDS: tuple[tuple[str, ...], ...] = (
     ("ops", "schema", "explain"),
     ("ops", "schema", "list"),
     ("ops", "status"),
-    ("ops", "tutorial"),
+    ("tutorial",),
     ("read",),
     ("continue",),
     ("stats",),

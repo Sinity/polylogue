@@ -171,6 +171,7 @@ Commands:
   ops       Run operational archive and daemon commands.
   read      Read matched sessions (route to view/destination).
   select
+  tutorial  Interactive first-run walk-through.
 ```
 
 ## Analyze Verb
@@ -471,7 +472,6 @@ Commands:
   schema       Inspect and audit provider schemas.
   state        Manage durable reader state.
   status       Show daemon and archive status.
-  tutorial     Interactive first-run walk-through.
 ```
 
 ## Doctor
@@ -680,7 +680,7 @@ Options:
 ## Tutorial
 
 ```text
-Usage: polylogue ops tutorial [OPTIONS]
+Usage: polylogue tutorial [OPTIONS]
 
   Walk through a fresh polylogue install end-to-end.
 
