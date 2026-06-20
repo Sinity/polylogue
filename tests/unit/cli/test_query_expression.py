@@ -2819,6 +2819,57 @@ class TestBooleanQueryExpression:
 
         assert [row.session_id for row in rows] == ["claude-code-session:ext-hit"]
 
+    def test_single_action_sequence_filter_still_executes_against_archive(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "shell-hit")
+            .provider("claude-code")
+            .title("shell action")
+            .add_message(
+                "m-shell",
+                role="assistant",
+                text="test",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Bash",
+                        "tool_id": "tool-shell",
+                        "input": {"command": "pytest tests/unit/cli/test_query_expression.py"},
+                        "semantic_type": "shell",
+                    }
+                ],
+            )
+            .save()
+        )
+        (
+            SessionBuilder(index_db, "edit-miss")
+            .provider("claude-code")
+            .title("edit action")
+            .add_message(
+                "m-edit",
+                role="assistant",
+                text="edit",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Edit",
+                        "tool_id": "tool-edit",
+                        "input": {"file_path": "polylogue/archive/query/expression.py"},
+                        "semantic_type": "file_edit",
+                    }
+                ],
+            )
+            .save()
+        )
+
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            rows = archive.list_summaries(limit=100, action_sequence=("shell",))
+
+        assert [row.session_id for row in rows] == ["claude-code-session:ext-shell-hit"]
+
     def test_sequence_predicate_filters_step_fields_against_archive(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
         from tests.infra.storage_records import SessionBuilder

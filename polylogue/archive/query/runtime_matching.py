@@ -123,7 +123,7 @@ def _matches_action_field(predicate: QueryFieldPredicate, action: Action) -> boo
         return _matches_text(action.command, values)
     if predicate.field == "path":
         normalized_paths = tuple(path.lower().replace("\\", "/") for path in action.affected_paths)
-        return all(any(value.replace("\\", "/") in path for path in normalized_paths) for value in values)
+        return any(value.replace("\\", "/") in path for value in values for path in normalized_paths)
     if predicate.field == "output":
         return _matches_text(action.output_text, values)
     if predicate.field == "text":
@@ -138,7 +138,7 @@ def _matches_exact_values(value: str | None, expected: tuple[str, ...]) -> bool:
 
 def _matches_text(value: str | None, expected: tuple[str, ...]) -> bool:
     normalized = (value or "").lower().replace("\\", "/")
-    return all(term.replace("\\", "/") in normalized for term in expected)
+    return any(term.replace("\\", "/") in normalized for term in expected)
 
 
 def matches_action_text_terms(plan: SessionQueryPlan, session: Session) -> bool:

@@ -163,3 +163,35 @@ def test_matches_action_predicate_sequence_filters_step_fields(monkeypatch: pyte
         QueryFieldPredicate(field="path", values=("archive/query",)),
     )
     assert matches_action_predicate_sequence(missed_steps, session) is False
+
+
+def test_matches_action_predicate_sequence_treats_field_values_as_alternatives(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _session()
+    _patch_events(
+        monkeypatch,
+        (
+            _event(ToolCategory.FILE_EDIT, tool_name="Edit", affected_paths=("polylogue/archive/query/expression.py",)),
+            _event(
+                ToolCategory.SHELL,
+                tool_name="Bash",
+                command="pytest tests/unit/cli/test_query_expression.py",
+                output_text="FAILED test_query_expression.py",
+            ),
+            _event(ToolCategory.FILE_EDIT, tool_name="Edit", affected_paths=("polylogue/archive/query/expression.py",)),
+        ),
+    )
+    steps = (
+        QueryFieldPredicate(field="action", values=("file_edit",)),
+        QueryBoolPredicate(
+            op="and",
+            children=(
+                QueryFieldPredicate(field="command", values=("ruff", "pytest")),
+                QueryFieldPredicate(field="output", values=("error", "failed")),
+            ),
+        ),
+        QueryFieldPredicate(field="path", values=("missing/path", "archive/query")),
+    )
+
+    assert matches_action_predicate_sequence(steps, session) is True

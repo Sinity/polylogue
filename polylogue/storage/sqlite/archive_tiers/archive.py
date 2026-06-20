@@ -5187,6 +5187,8 @@ def _boolean_predicate_clause(
     if isinstance(predicate, QueryExistsPredicate):
         return _exists_predicate_clause(table_alias, predicate)
     if isinstance(predicate, QuerySequencePredicate):
+        if len(predicate.steps) < 2:
+            raise ValueError("action sequence predicates require at least two steps")
         return _action_sequence_steps_clause(table_alias, predicate.steps)
     if isinstance(predicate, QueryTextPredicate):
         return _fts_predicate_clause(table_alias, predicate)
@@ -5516,8 +5518,6 @@ def _action_sequence_steps_clause(table_alias: str, steps: tuple[QueryPredicate,
     joins: list[str] = []
     predicates: list[str] = []
     params: list[object] = []
-    if len(steps) < 2:
-        raise ValueError("action sequence predicates require at least two steps")
     for index, step in enumerate(steps):
         action_alias = f"seq_a{index}"
         message_alias = f"seq_m{index}"
