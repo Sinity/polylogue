@@ -40,6 +40,7 @@ and explicit Boolean session predicates:
     messages where role:assistant AND text:timeout
     actions where action:file_edit AND path:polylogue/archive
     blocks where type:code AND text:timeout
+    messages where time >= 2026-01-01T00:00:00+00:00
     sessions where repo:polylogue | messages where role:assistant | group by role | count
 
 Unit-scoped ``messages/actions/blocks/assertions/runs/observed-events/context-snapshots where ...`` predicates are executable
@@ -49,6 +50,9 @@ predicates, while terminal query-unit surfaces preserve the selected unit and
 return raw message/action/block/assertion/observed-event/context-snapshot rows from the same predicate semantics.
 SQL-backed terminal units also support exact ``group by FIELD | count``
 aggregate pipelines for the closed aggregate fields declared in this module.
+They also support ``time >= VALUE``, ``time <= VALUE``, and
+``time between A and B`` predicates over the same row timestamp used by
+``sort by time``.
 
 Unknown fields and unsupported structured forms fail loudly. The Lark grammar
 in this module is the query grammar. Compact field/text clauses and explicit
@@ -410,6 +414,8 @@ _QUERY_GRAMMAR = r"""
         | COUNT_FIELD COMP_OP INT          -> count_compare_leaf
         | DATE_FIELD BETWEEN DATE_VALUE AND DATE_VALUE -> date_between_leaf
         | DATE_FIELD DATE_COMP_OP DATE_VALUE -> date_compare_leaf
+        | TIME_FIELD BETWEEN DATE_VALUE AND DATE_VALUE -> time_between_leaf
+        | TIME_FIELD DATE_COMP_OP DATE_VALUE -> time_compare_leaf
         | FIELD_CLAUSE                     -> field_leaf
         | "(" expr ")"
     sequence_step: FIELD_CLAUSE
@@ -426,6 +432,7 @@ _QUERY_GRAMMAR = r"""
     BETWEEN.6: /between/i
     COUNT_FIELD.6: /(messages|words)/i
     DATE_FIELD.6: /date/i
+    TIME_FIELD.6: /time/i
     DATE_COMP_OP: ">=" | "<=" | "=" | ">" | "<"
     COMP_OP: ">=" | "<=" | "=" | ">" | "<"
     DATE_VALUE: /[^\s"()]+/
@@ -557,6 +564,24 @@ def _normalize_date_comparison(op_text: str, value_text: str) -> _DateComparison
 
 def _normalize_date_range(min_text: str, max_text: str) -> _DateRangeToken:
     return _DateRangeToken(min_value=_parse_relative_date(min_text), max_value=_parse_relative_date(max_text))
+
+
+def _normalize_time_comparison(op_text: str, value_text: str) -> QueryFieldPredicate:
+    if op_text in {">=", ">"}:
+        return QueryFieldPredicate(field="time", values=(_parse_relative_date(value_text),), op=">=")
+    if op_text in {"<=", "<"}:
+        return QueryFieldPredicate(field="time", values=(_parse_relative_date(value_text),), op="<=")
+    raise ExpressionCompileError("time equality is not supported; use time between A and B", field="time")
+
+
+def _normalize_time_range(min_text: str, max_text: str) -> QueryPredicate:
+    return QueryBoolPredicate(
+        op="and",
+        children=(
+            QueryFieldPredicate(field="time", values=(_parse_relative_date(min_text),), op=">="),
+            QueryFieldPredicate(field="time", values=(_parse_relative_date(max_text),), op="<="),
+        ),
+    )
 
 
 @v_args(inline=True)
@@ -870,6 +895,15 @@ def _validate_predicate_context(predicate: QueryPredicate, *, unit: Literal["ses
                 raise ExpressionCompileError("field 'date' requires a value", field="date")
             if predicate.op not in {">=", "<="}:
                 raise ExpressionCompileError("field 'date' supports only >=, <=, >, <, and between", field="date")
+        if effective_field == "time":
+            if unit == "session":
+                raise ExpressionCompileError(
+                    "field 'time' is supported only for terminal unit predicates", field="time"
+                )
+            if not predicate.values:
+                raise ExpressionCompileError("field 'time' requires a value", field="time")
+            if predicate.op not in {">=", "<="}:
+                raise ExpressionCompileError("field 'time' supports only >=, <=, >, <, and between", field="time")
         if effective_field == "words":
             if not predicate.values:
                 raise ExpressionCompileError("field 'words' requires a numeric value", field="words")
@@ -967,6 +1001,19 @@ class _BooleanQueryTransformer(Transformer[Token, QueryPredicate]):
         max_value: Token,
     ) -> QueryPredicate:
         return _date_range_token_to_predicate(_normalize_date_range(str(min_value), str(max_value)))
+
+    def time_compare_leaf(self, _field_name: Token, op: Token, value: Token) -> QueryPredicate:
+        return _normalize_time_comparison(str(op), str(value))
+
+    def time_between_leaf(
+        self,
+        _field_name: Token,
+        _between: Token,
+        min_value: Token,
+        _and: Token,
+        max_value: Token,
+    ) -> QueryPredicate:
+        return _normalize_time_range(str(min_value), str(max_value))
 
     def field_leaf(self, token: Token) -> QueryPredicate:
         return _field_token_to_predicate(_QUERY_TRANSFORMER.field_clause(token))

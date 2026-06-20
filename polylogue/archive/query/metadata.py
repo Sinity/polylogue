@@ -178,10 +178,11 @@ _STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS = {
     "path",
     "output",
     "words",
+    "time",
 }
-_MESSAGE_STRUCTURAL_FIELDS = {"role", "type", "text", "tool", "action", "command", "path", "output", "words"}
-_ACTION_STRUCTURAL_FIELDS = {"tool", "action", "type", "command", "path", "output", "text"}
-_BLOCK_STRUCTURAL_FIELDS = {"type", "text", "tool", "action", "command", "path"}
+_MESSAGE_STRUCTURAL_FIELDS = {"role", "type", "text", "tool", "action", "command", "path", "output", "words", "time"}
+_ACTION_STRUCTURAL_FIELDS = {"tool", "action", "type", "command", "path", "output", "text", "time"}
+_BLOCK_STRUCTURAL_FIELDS = {"type", "text", "tool", "action", "command", "path", "time"}
 _ASSERTION_STRUCTURAL_FIELDS = {
     "kind",
     "status",
@@ -199,6 +200,7 @@ _ASSERTION_STRUCTURAL_FIELDS = {
     "value",
     "evidence",
     "context",
+    "time",
 }
 _OBSERVED_EVENT_STRUCTURAL_FIELDS = {
     "kind",
@@ -305,6 +307,7 @@ _COMMON_STRUCTURAL_FIELD_INFO: dict[str, StructuralQueryFieldInfo] = {
     "path": _field_info("path", "Referenced file or artifact path substring.", "path:polylogue/archive"),
     "role": _field_info("role", "Message role.", "role:assistant"),
     "text": _field_info("text", "Text/content substring for the selected unit.", "text:timeout"),
+    "time": _field_info("time", "Row timestamp predicate for the selected unit.", "time >= 2026-01-01"),
     "tool": _field_info("tool", "Normalized tool name.", "tool:bash"),
     "type": _field_info("type", "Unit-specific type token.", "type:code"),
     "words": _field_info("words", "Word-count predicate for the selected unit.", "words:>=200"),
@@ -325,6 +328,7 @@ _ASSERTION_STRUCTURAL_FIELD_INFO: dict[str, StructuralQueryFieldInfo] = {
     "target": _field_info("target", "Assertion target string.", "target:session"),
     "target_ref": _field_info("target_ref", "Assertion target ObjectRef.", "target_ref:session:abc"),
     "text": _field_info("text", "Assertion body/value/evidence text substring.", "text:query"),
+    "time": _field_info("time", "Assertion update/create timestamp predicate.", "time >= 2026-01-01"),
     "value": _field_info("value", "Assertion value JSON/text substring.", "value:priority"),
     "visibility": _field_info("visibility", "Assertion visibility.", "visibility:private"),
 }
