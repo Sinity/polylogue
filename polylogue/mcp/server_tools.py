@@ -65,6 +65,41 @@ class _MCPEmbeddingStatusEnv:
     config: Config
 
 
+@dataclass(frozen=True)
+class _MCPReadToolSpec:
+    name: str
+    description: str
+    linked_read_view: str | None = None
+    output_model: str | None = None
+
+
+_MCP_READ_TOOL_SPECS: dict[str, _MCPReadToolSpec] = {
+    "list_read_view_profiles": _MCPReadToolSpec(
+        name="list_read_view_profiles",
+        description="List executable read-view profile metadata for agents.",
+        output_model="MCPRootPayload",
+    ),
+    "get_recovery_work_packet": _MCPReadToolSpec(
+        name="get_recovery_work_packet",
+        description="Return the shared recovery work-packet DTO for one session.",
+        linked_read_view="recovery",
+        output_model="MCPRootPayload",
+    ),
+    "get_recovery_report": _MCPReadToolSpec(
+        name="get_recovery_report",
+        description="Return a shared deterministic recovery report for one session.",
+        linked_read_view="recovery",
+        output_model="MCPRootPayload",
+    ),
+}
+
+
+def _register_mcp_read_tool(mcp: FastMCP, handler: Any, spec: _MCPReadToolSpec) -> None:
+    handler.__name__ = spec.name
+    handler.__doc__ = spec.description
+    mcp.tool()(handler)
+
+
 def _split_archive_csv(value: str | None) -> tuple[str, ...]:
     if value is None:
         return ()
@@ -878,10 +913,7 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
         return await hooks.async_safe_call("archive_debt", run)
 
-    @mcp.tool()
     async def list_read_view_profiles() -> str:
-        """List executable read-view profile metadata for agents."""
-
         async def run() -> str:
             profiles = await hooks.get_polylogue().list_read_view_profiles()
             return hooks.json_payload(
@@ -890,10 +922,7 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
         return await hooks.async_safe_call("list_read_view_profiles", run)
 
-    @mcp.tool()
     async def get_recovery_work_packet(session_id: str) -> str:
-        """Return the shared recovery work-packet DTO for one session."""
-
         async def run() -> str:
             packet = await hooks.get_polylogue().recovery_work_packet(session_id)
             if packet is None:
@@ -913,13 +942,10 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
         return await hooks.async_safe_call("get_recovery_work_packet", run)
 
-    @mcp.tool()
     async def get_recovery_report(
         session_id: str,
         report: Literal["continue", "blame", "work-packet"] = "continue",
     ) -> str:
-        """Return a shared deterministic recovery report for one session."""
-
         async def run() -> str:
             content = await hooks.get_polylogue().recovery_report(session_id, report)
             if content is None:
@@ -938,6 +964,10 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             )
 
         return await hooks.async_safe_call("get_recovery_report", run)
+
+    _register_mcp_read_tool(mcp, list_read_view_profiles, _MCP_READ_TOOL_SPECS["list_read_view_profiles"])
+    _register_mcp_read_tool(mcp, get_recovery_work_packet, _MCP_READ_TOOL_SPECS["get_recovery_work_packet"])
+    _register_mcp_read_tool(mcp, get_recovery_report, _MCP_READ_TOOL_SPECS["get_recovery_report"])
 
     @mcp.tool()
     async def explain_query_expression(expression: str) -> str:
