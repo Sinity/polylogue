@@ -640,6 +640,10 @@ class TestBooleanQueryExpression:
                 "messages where role:assistant | group by role | count | limit 5 | sort by count"
             )
 
+    def test_pipeline_rejects_row_sort_before_aggregate(self) -> None:
+        with pytest.raises(ExpressionCompileError, match="cannot feed aggregate stages"):
+            parse_unit_source_expression("messages where role:assistant | sort by time asc | group by role | count")
+
     def test_pipeline_rejects_unlowered_session_stage_predicates(self) -> None:
         with pytest.raises(ExpressionCompileError, match="FTS, semantic, exists, lineage, and sequence"):
             parse_unit_source_expression('sessions where ~"timeout" | messages where role:assistant')

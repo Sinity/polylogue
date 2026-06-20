@@ -1338,6 +1338,8 @@ def _apply_pipeline_stage(source: QueryUnitSource, stage: str) -> QueryUnitSourc
     if group_by is not None:
         if source.aggregate is not None:
             raise ExpressionCompileError("pipeline `group by` must appear before `count`", field="group")
+        if source.sort is not None:
+            raise ExpressionCompileError("pipeline `sort by time` cannot feed aggregate stages", field="group")
         if source.limit is not None or source.offset is not None:
             raise ExpressionCompileError("pipeline `group by` must appear before `limit` and `offset`", field="group")
         if source.unit not in {"message", "action", "block", "assertion"}:

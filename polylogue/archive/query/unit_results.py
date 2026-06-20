@@ -681,7 +681,9 @@ def _build_sql_envelope(
             if source.sort is not None and source.sort.field in {"count", "key"}
             else None
         )
-        aggregate_sort_direction = source.sort.direction if source.sort is not None else "desc"
+        aggregate_sort_direction: Literal["asc", "desc"] = (
+            source.sort.direction if aggregate_sort is not None and source.sort is not None else "desc"
+        )
         aggregate_rows = archive.query_unit_counts(
             source.unit,
             source.predicate,
