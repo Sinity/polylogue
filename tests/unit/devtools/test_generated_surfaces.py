@@ -36,20 +36,32 @@ def test_generated_surface_cache_inputs_include_renderer_module() -> None:
 def test_generated_surface_cache_inputs_include_contract_owners() -> None:
     """Contract-owner edits must invalidate generated surfaces that publish them."""
     assert {
-        "polylogue/archive/query/metadata.py",
-        "polylogue/archive/viewport/profiles.py",
+        "polylogue/archive/query/",
+        "polylogue/archive/viewport/",
         "polylogue/operations/action_contracts.py",
         "polylogue/surfaces/payloads.py",
     }.issubset(_surface_inputs("cli-reference"))
 
     assert {
-        "polylogue/archive/query/metadata.py",
+        "polylogue/archive/query/",
         "polylogue/surfaces/payloads.py",
     }.issubset(_surface_inputs("cli-output-schemas"))
 
     assert {
-        "polylogue/archive/query/metadata.py",
-        "polylogue/archive/viewport/profiles.py",
-        "polylogue/daemon/route_contracts.py",
+        "polylogue/archive/query/",
+        "polylogue/archive/viewport/",
+        "polylogue/daemon/",
         "polylogue/surfaces/payloads.py",
     }.issubset(_surface_inputs("openapi"))
+
+    assert {
+        "devtools/benchmark_catalog.py",
+        "devtools/mutation_catalog.py",
+        "devtools/quality_registry.py",
+        "devtools/scenario_coverage.py",
+        "devtools/scenario_projection_catalog.py",
+        "devtools/validation_lane_catalog_contracts.py",
+        "devtools/validation_lane_catalog_live.py",
+        "polylogue/operations/specs.py",
+        "polylogue/scenarios/",
+    }.issubset(_surface_inputs("quality-reference"))
