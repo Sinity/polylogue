@@ -12,28 +12,38 @@ from .models import DemoVerifyResult
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
+    """Open a SQLite connection with mapping-style rows for demo checks."""
+
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     return conn
 
 
 def _session_count(root: Path) -> int:
+    """Return the number of normalized sessions in the demo index tier."""
+
     with _connect(root / "index.db") as conn:
         return int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
 
 
 def _message_count(root: Path) -> int:
+    """Return the number of normalized messages in the demo index tier."""
+
     with _connect(root / "index.db") as conn:
         return int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
 
 
 def _raw_source_paths(root: Path) -> tuple[str, ...]:
+    """Return stored raw source paths so verification can reject leaks."""
+
     with _connect(root / "source.db") as conn:
         rows = conn.execute("SELECT source_path FROM raw_sessions ORDER BY origin, native_id").fetchall()
     return tuple(str(row["source_path"]) for row in rows)
 
 
 def _overlay_count(root: Path) -> int:
+    """Return deterministic demo assertion count for the Claude Code seed."""
+
     user_db = root / "user.db"
     if not user_db.exists():
         return 0

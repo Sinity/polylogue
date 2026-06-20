@@ -20,6 +20,8 @@ DEMO_SOURCE_DIRNAME = "demo-fixture-world-source"
 
 @contextmanager
 def _pushd(path: Path) -> Iterator[None]:
+    """Temporarily run relative-source ingestion from *path*."""
+
     previous = Path.cwd()
     os.chdir(path)
     try:

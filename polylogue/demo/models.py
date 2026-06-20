@@ -19,6 +19,8 @@ class DemoSeedResult:
     assertion_count: int
 
     def to_payload(self) -> dict[str, object]:
+        """Serialize the seed result for CLI JSON output and tests."""
+
         return {
             "archive_root": str(self.archive_root),
             "source_root": str(self.source_root),
@@ -44,6 +46,8 @@ class DemoVerifyResult:
     problems: tuple[str, ...] = ()
 
     def to_payload(self) -> dict[str, object]:
+        """Serialize the verification result for CLI JSON output and tests."""
+
         return {
             "archive_root": str(self.archive_root),
             "ok": self.ok,
