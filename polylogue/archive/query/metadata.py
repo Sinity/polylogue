@@ -27,6 +27,7 @@ class QueryUnitDescriptor:
     fields: tuple[StructuralQueryFieldInfo, ...] = ()
     description: str = ""
     example: str = ""
+    terminal_example: str | None = None
 
     @property
     def source_aliases(self) -> tuple[str, str]:
@@ -662,6 +663,7 @@ QUERY_UNIT_DESCRIPTORS: tuple[QueryUnitDescriptor, ...] = (
         fields=_unit_info("message").fields,
         description=_unit_info("message").description,
         example=_unit_info("message").example,
+        terminal_example="messages where session.repo:polylogue AND role:assistant AND text:timeout",
     ),
     QueryUnitDescriptor(
         "action",
@@ -675,6 +677,7 @@ QUERY_UNIT_DESCRIPTORS: tuple[QueryUnitDescriptor, ...] = (
         fields=_unit_info("action").fields,
         description=_unit_info("action").description,
         example=_unit_info("action").example,
+        terminal_example="actions where session.repo:polylogue AND tool:bash AND text:pytest",
     ),
     QueryUnitDescriptor(
         "block",
@@ -688,6 +691,7 @@ QUERY_UNIT_DESCRIPTORS: tuple[QueryUnitDescriptor, ...] = (
         fields=_unit_info("block").fields,
         description=_unit_info("block").description,
         example=_unit_info("block").example,
+        terminal_example="blocks where session.origin:codex-session AND type:code AND text:timeout",
     ),
     QueryUnitDescriptor(
         "assertion",
@@ -701,6 +705,7 @@ QUERY_UNIT_DESCRIPTORS: tuple[QueryUnitDescriptor, ...] = (
         fields=_unit_info("assertion").fields,
         description=_unit_info("assertion").description,
         example=_unit_info("assertion").example,
+        terminal_example="assertions where kind:decision AND status:active AND text:review",
     ),
     QueryUnitDescriptor(
         "run",
@@ -974,6 +979,25 @@ def terminal_query_source_list(*, plural: bool = True, separator: str = "/") -> 
     return separator.join(labels)
 
 
+def terminal_query_cli_surfaces(*, output_format: str = "json") -> tuple[str, ...]:
+    """Return CLI surface examples for every executable terminal query unit."""
+
+    return tuple(
+        f"polylogue --format {output_format} {descriptor.plural_source} where ..."
+        for descriptor in query_unit_descriptors(terminal_supported=True)
+    )
+
+
+def terminal_query_examples() -> tuple[str, ...]:
+    """Return descriptor-owned example expressions for terminal query units."""
+
+    return tuple(
+        descriptor.terminal_example or descriptor.example
+        for descriptor in query_unit_descriptors(terminal_supported=True)
+        if descriptor.terminal_example or descriptor.example
+    )
+
+
 def terminal_query_fields(source: str) -> tuple[str, ...]:
     """Return field names accepted after ``<source> where``."""
 
@@ -1156,6 +1180,8 @@ __all__ = [
     "structural_query_units",
     "terminal_query_field_info",
     "terminal_query_fields",
+    "terminal_query_cli_surfaces",
+    "terminal_query_examples",
     "terminal_query_pipeline_stage_infos",
     "terminal_query_source_list",
     "terminal_query_source_pairs",

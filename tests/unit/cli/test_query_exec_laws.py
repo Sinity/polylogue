@@ -2696,6 +2696,28 @@ class TestSearchQueryContracts:
         assert payload["unit"] == "context-snapshot"
         assert [item["session_id"] for item in payload["items"]] == ["chatgpt-export:ext-conv1"]
 
+    def test_context_snapshot_unit_source_error_uses_descriptor_label(self, search_workspace: SearchWorkspace) -> None:
+        """Root-query incompatibility errors use descriptor-owned source labels."""
+        from polylogue.cli import cli
+
+        del search_workspace
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "--plain",
+                "--stream",
+                "find",
+                "context-snapshots",
+                "where",
+                "boundary:session_start",
+            ],
+        )
+
+        assert result.exit_code == 2
+        assert "context-snapshots where queries return context-snapshot rows" in result.output
+
 
 class TestSearchEdgeCases:
     """Tests for edge cases and error handling."""
