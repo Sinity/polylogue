@@ -142,6 +142,7 @@ _CLASS_PREFIXES: tuple[tuple[str, str], ...] = (
     ("workspace tasks", "query"),
     ("workspace failure-context", "query"),
     ("workspace worktree-gc", "query"),
+    ("workspace dev-loop", "query"),
     ("status", "query"),
 )
 

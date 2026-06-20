@@ -316,6 +316,7 @@ Start with the generated command and architecture references; use [docs/README.m
 | [Provider Package Completeness](docs/provider-completeness.md) | Readiness report for provider/importer package modes by origin and capture mode. |
 | [Archive Backup](docs/archive-backup.md) | Archive-tier backup profiles, restore boundaries, and blob-GC safety rules. |
 | [Developer Tools](docs/devtools.md) | `devtools` guide for generated surfaces, validation, and repo hygiene. |
+| [Branch-Local Development Loop](docs/dev-loop.md) | Branch-local daemon, web-shell, browser-capture, and extension debugging workflow. |
 | [Providers](docs/providers/README.md) | Provider-specific parsing and export-format notes. |
 
 <!-- END GENERATED: docs-surface -->

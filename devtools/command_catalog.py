@@ -303,6 +303,22 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace dev-loop",
+        "workspace",
+        "Preflight branch-local daemon, web-shell, and browser-capture development loops.",
+        "devtools.dev_loop",
+        use_when=(
+            "Before running a branch-local polylogued/web-shell/browser-capture loop, "
+            "check whether the deployed user service is active, which ports are occupied, "
+            "and which isolated archive/log paths this checkout should use."
+        ),
+        examples=(
+            "devtools workspace dev-loop",
+            "devtools workspace dev-loop --json",
+            "devtools workspace dev-loop --prepare --api-port 8876 --browser-capture-port 8875",
+        ),
+    ),
+    CommandSpec(
         "lab projections",
         "verification lab",
         "Render the authored scenario-bearing verification projections.",
