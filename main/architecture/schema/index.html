@@ -446,12 +446,12 @@ when embedding is enabled with a valid Voyage key (see
 <a href="architecture.md#embedding-pipeline">Architecture § Embedding Pipeline</a>).
 Rebuildable, but re-embedding costs Voyage API calls.</p>
 <h3><code>user.db</code> — irreplaceable human input (back up this one)</h3>
-<p>The only tier that is not rebuildable from source. Stores user marks,
-annotations, corrections (the learning feedback loop, keyed
-<code>(target_type, target_id, correction_type)</code>), suppressions, the user side of
-<code>session_tags</code>, <code>session_metadata</code> (per-session user key/value overlay used for
-title overrides, summaries, and custom keys), saved views, recall packs,
-workspaces, and blackboard notes.</p>
+<p>The only tier that is not rebuildable from source. Its canonical table is
+<code>assertions</code>: user marks, annotations, corrections, suppressions, tags,
+metadata, saved views, recall packs, workspaces, blackboard notes, candidate
+claims, and operator judgments are all assertion rows with lifecycle state.
+<code>index.db.session_tags</code> remains a rebuildable auto-tag/read-model projection;
+human-owned tag and metadata writes do not have separate user-tier tables.</p>
 <h3><code>ops.db</code> — disposable daemon telemetry</h3>
 <p>Ingest cursors (<code>ingest_cursor</code>), ingest attempts (<code>ingest_attempts</code>),
 convergence debt (<code>convergence_debt</code>), cursor-lag samples, daemon stage/event

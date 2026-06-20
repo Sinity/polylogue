@@ -574,9 +574,9 @@ rebuildable projections depend on.</li>
 indexes, graph/topology rows, and derived insight read models.</li>
 <li><code>embeddings.db</code> stores vector rows, embedding status, and embedding
 catch-up metadata; it is rebuildable, but expensive.</li>
-<li><code>user.db</code> stores irreplaceable human input such as marks,
-annotations, corrections, user tags, session metadata, saved views,
-recall packs, workspaces, and blackboard notes.</li>
+<li><code>user.db</code> stores irreplaceable human input as assertion rows: marks,
+annotations, corrections, user tags, metadata keys, saved views,
+recall packs, workspaces, blackboard notes, candidates, and judgments.</li>
 <li><code>ops.db</code> stores disposable daemon telemetry such as ingest cursors,
 attempts, convergence debt, stage events, embedding catch-up runs,
 and OTLP spans.</li>
