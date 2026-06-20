@@ -1211,17 +1211,6 @@ def _parse_sort_stage(stage: str) -> QueryUnitSort | None:
     )
 
 
-_AGGREGATE_GROUP_FIELDS: dict[QueryUnitName, frozenset[str]] = {
-    "message": frozenset({"role", "type", "session.origin", "session.repo"}),
-    "action": frozenset({"tool", "action", "type", "session.origin", "session.repo"}),
-    "block": frozenset({"type", "tool", "action", "session.origin", "session.repo"}),
-    "assertion": frozenset({"kind", "status", "visibility", "author_kind", "session.origin", "session.repo"}),
-    "run": frozenset(),
-    "observed-event": frozenset(),
-    "context-snapshot": frozenset(),
-}
-
-
 def _parse_group_stage(stage: str) -> str | None:
     normalized = " ".join(stage.split()).lower()
     if not normalized.startswith("group by "):
@@ -1239,8 +1228,10 @@ def _parse_count_stage(stage: str) -> bool:
 
 
 def _validate_aggregate_group_field(unit: QueryUnitName, field: str) -> None:
-    if field not in _AGGREGATE_GROUP_FIELDS[unit]:
-        supported = ", ".join(sorted(_AGGREGATE_GROUP_FIELDS[unit]))
+    descriptor = query_unit_descriptor(unit)
+    supported_fields = frozenset(descriptor.aggregate_group_fields) if descriptor is not None else frozenset()
+    if field not in supported_fields:
+        supported = ", ".join(sorted(supported_fields))
         if not supported:
             raise ExpressionCompileError(
                 f"pipeline `group by` is not supported for {unit} rows yet",

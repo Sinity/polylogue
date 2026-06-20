@@ -20,7 +20,9 @@ class QueryUnitDescriptor:
     terminal_supported: bool = True
     exists_supported: bool = False
     lowerer_kind: QueryUnitLowererKind = "sql"
+    sql_query_method: str | None = None
     cli_plain_renderer: str | None = None
+    aggregate_group_fields: tuple[str, ...] = ()
     fields: tuple[StructuralQueryFieldInfo, ...] = ()
     description: str = ""
     example: str = ""
@@ -521,7 +523,9 @@ QUERY_UNIT_DESCRIPTORS: tuple[QueryUnitDescriptor, ...] = (
         "messages",
         exists_supported=True,
         payload_model="MessageQueryRowPayload",
+        sql_query_method="query_messages",
         cli_plain_renderer="message",
+        aggregate_group_fields=("role", "type", "session.origin", "session.repo"),
         fields=_unit_info("message").fields,
         description=_unit_info("message").description,
         example=_unit_info("message").example,
@@ -532,7 +536,9 @@ QUERY_UNIT_DESCRIPTORS: tuple[QueryUnitDescriptor, ...] = (
         "actions",
         exists_supported=True,
         payload_model="ActionQueryRowPayload",
+        sql_query_method="query_actions",
         cli_plain_renderer="action",
+        aggregate_group_fields=("tool", "action", "type", "session.origin", "session.repo"),
         fields=_unit_info("action").fields,
         description=_unit_info("action").description,
         example=_unit_info("action").example,
@@ -543,7 +549,9 @@ QUERY_UNIT_DESCRIPTORS: tuple[QueryUnitDescriptor, ...] = (
         "blocks",
         exists_supported=True,
         payload_model="BlockQueryRowPayload",
+        sql_query_method="query_blocks",
         cli_plain_renderer="block",
+        aggregate_group_fields=("type", "tool", "action", "session.origin", "session.repo"),
         fields=_unit_info("block").fields,
         description=_unit_info("block").description,
         example=_unit_info("block").example,
@@ -554,7 +562,9 @@ QUERY_UNIT_DESCRIPTORS: tuple[QueryUnitDescriptor, ...] = (
         "assertions",
         exists_supported=True,
         payload_model="AssertionQueryRowPayload",
+        sql_query_method="query_assertions",
         cli_plain_renderer="assertion",
+        aggregate_group_fields=("kind", "status", "visibility", "author_kind", "session.origin", "session.repo"),
         fields=_unit_info("assertion").fields,
         description=_unit_info("assertion").description,
         example=_unit_info("assertion").example,
