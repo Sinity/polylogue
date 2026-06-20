@@ -11,6 +11,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any, Literal, TypedDict, cast
 
+from polylogue.archive.query.metadata import COUNT_QUERY_FIELD_REGISTRY
 from polylogue.archive.query.path_prefix import escaped_sql_path_prefix_patterns
 from polylogue.archive.query.predicate import (
     QueryBoolPredicate,
@@ -4723,28 +4724,8 @@ def _field_predicate_clause(
     elif field == "until":
         if values:
             kwargs["until_ms"] = _date_ms(values[-1], field="until")
-    elif field == "messages":
-        if not values:
-            return "", []
-        count_value = int(values[-1])
-        if predicate.op == ">=":
-            kwargs["min_messages"] = count_value
-        elif predicate.op == "<=":
-            kwargs["max_messages"] = count_value
-        else:
-            kwargs["min_messages"] = count_value
-            kwargs["max_messages"] = count_value
-    elif field == "words":
-        if not values:
-            return "", []
-        count_value = int(values[-1])
-        if predicate.op == ">=":
-            kwargs["min_words"] = count_value
-        elif predicate.op == "<=":
-            kwargs["max_words"] = count_value
-        else:
-            kwargs["min_words"] = count_value
-            kwargs["max_words"] = count_value
+    elif count_info := COUNT_QUERY_FIELD_REGISTRY.get(field):
+        return _count_predicate_clause(f"{table_alias}.{count_info.session_column}", predicate)
     else:
         raise ValueError(f"unsupported Boolean query field: {field}")
     where, params = _session_filter_clause(table_alias, tags_relation=tags_relation, prefix="WHERE", **kwargs)

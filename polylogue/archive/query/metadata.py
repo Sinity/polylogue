@@ -148,6 +148,42 @@ EXPRESSION_FIELD_REGISTRY: dict[str, dict[str, str]] = {
         "negatable": "no",
         "example": "words:>=200",
     },
+    "user_messages": {
+        "description": "Count comparison for user messages",
+        "spec_field": "boolean_predicate",
+        "negatable": "no",
+        "example": "sessions where user_messages >= 2",
+    },
+    "assistant_messages": {
+        "description": "Count comparison for assistant messages",
+        "spec_field": "boolean_predicate",
+        "negatable": "no",
+        "example": "sessions where assistant_messages >= 2",
+    },
+    "system_messages": {
+        "description": "Count comparison for system messages",
+        "spec_field": "boolean_predicate",
+        "negatable": "no",
+        "example": "sessions where system_messages = 0",
+    },
+    "tool_messages": {
+        "description": "Count comparison for tool messages",
+        "spec_field": "boolean_predicate",
+        "negatable": "no",
+        "example": "sessions where tool_messages = 0",
+    },
+    "user_words": {
+        "description": "Count comparison for user words",
+        "spec_field": "boolean_predicate",
+        "negatable": "no",
+        "example": "sessions where user_words >= 100",
+    },
+    "assistant_words": {
+        "description": "Count comparison for assistant words",
+        "spec_field": "boolean_predicate",
+        "negatable": "no",
+        "example": "sessions where assistant_words >= 500",
+    },
     "lane": {
         "description": "Force retrieval lane (auto, dialogue, hybrid)",
         "spec_field": "retrieval_lane",
@@ -178,6 +214,12 @@ _BOOLEAN_SUPPORTED_FIELDS = {
     "until",
     "messages",
     "words",
+    "user_messages",
+    "assistant_messages",
+    "system_messages",
+    "tool_messages",
+    "user_words",
+    "assistant_words",
     "lineage",
 }
 _STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS = {
@@ -296,6 +338,7 @@ class CountQueryFieldInfo:
     operators: tuple[str, ...]
     range_keyword: str
     example: str
+    session_column: str
 
 
 @dataclass(frozen=True)
@@ -662,12 +705,56 @@ COUNT_QUERY_FIELD_REGISTRY: dict[str, CountQueryFieldInfo] = {
         operators=(">=", "<=", "=", ">", "<"),
         range_keyword="between",
         example="messages between 5 and 20",
+        session_column="message_count",
     ),
     "words": CountQueryFieldInfo(
         description="Word-count predicate over normalized session text.",
         operators=(">=", "<=", "=", ">", "<"),
         range_keyword="between",
         example="words between 100 and 500",
+        session_column="word_count",
+    ),
+    "user_messages": CountQueryFieldInfo(
+        description="User-message-count predicate over normalized session messages.",
+        operators=(">=", "<=", "=", ">", "<"),
+        range_keyword="between",
+        example="user_messages >= 2",
+        session_column="user_message_count",
+    ),
+    "assistant_messages": CountQueryFieldInfo(
+        description="Assistant-message-count predicate over normalized session messages.",
+        operators=(">=", "<=", "=", ">", "<"),
+        range_keyword="between",
+        example="assistant_messages >= 2",
+        session_column="assistant_message_count",
+    ),
+    "system_messages": CountQueryFieldInfo(
+        description="System-message-count predicate over normalized session messages.",
+        operators=(">=", "<=", "=", ">", "<"),
+        range_keyword="between",
+        example="system_messages = 0",
+        session_column="system_message_count",
+    ),
+    "tool_messages": CountQueryFieldInfo(
+        description="Tool-message-count predicate over normalized session messages.",
+        operators=(">=", "<=", "=", ">", "<"),
+        range_keyword="between",
+        example="tool_messages = 0",
+        session_column="tool_message_count",
+    ),
+    "user_words": CountQueryFieldInfo(
+        description="User-word-count predicate over normalized session text.",
+        operators=(">=", "<=", "=", ">", "<"),
+        range_keyword="between",
+        example="user_words between 100 and 500",
+        session_column="user_word_count",
+    ),
+    "assistant_words": CountQueryFieldInfo(
+        description="Assistant-word-count predicate over normalized session text.",
+        operators=(">=", "<=", "=", ">", "<"),
+        range_keyword="between",
+        example="assistant_words >= 500",
+        session_column="assistant_word_count",
     ),
 }
 

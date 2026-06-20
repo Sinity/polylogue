@@ -2441,6 +2441,36 @@ class TestBooleanQueryExpression:
 
         assert [row.session_id for row in rows] == ["claude-code-session:ext-hit"]
 
+    def test_role_count_predicate_executes_against_archive(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "role-count-hit")
+            .provider("claude-code")
+            .title("role count hit")
+            .add_message("m-hit-user-1", role="user", text="please inspect the query")
+            .add_message("m-hit-user-2", role="user", text="and add coverage")
+            .add_message("m-hit-assistant", role="assistant", text="I added focused aggregate count coverage")
+            .save()
+        )
+        (
+            SessionBuilder(index_db, "role-count-control")
+            .provider("claude-code")
+            .title("role count control")
+            .add_message("m-control-user", role="user", text="please inspect")
+            .add_message("m-control-assistant", role="assistant", text="short reply")
+            .save()
+        )
+
+        spec = compile_expression("sessions where user_messages >= 2 AND assistant_words between 5 and 8")
+        assert spec.boolean_predicate is not None
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            rows = archive.list_summaries(limit=100, boolean_predicate=spec.boolean_predicate)
+
+        assert [row.session_id for row in rows] == ["claude-code-session:ext-role-count-hit"]
+
     def test_sequence_predicate_executes_in_order_against_archive(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
         from tests.infra.storage_records import SessionBuilder
@@ -2850,6 +2880,22 @@ class TestLowererFieldMapping:
         assert spec.max_messages == 20
         assert spec.min_words == 100
         assert spec.max_words == 500
+
+    def test_role_count_comparison_requires_boolean_query(self) -> None:
+        with pytest.raises(ExpressionCompileError, match="supported only inside `sessions where`"):
+            compile_expression("user_messages >= 2")
+
+    def test_boolean_ast_exposes_role_count_comparisons(self) -> None:
+        ast = parse_expression_ast("sessions where user_messages >= 2 AND assistant_words between 5 and 20")
+
+        assert ast.boolean_predicate == QueryBoolPredicate(
+            "and",
+            (
+                QueryFieldPredicate(field="user_messages", values=("2",), op=">="),
+                QueryFieldPredicate(field="assistant_words", values=("5",), op=">="),
+                QueryFieldPredicate(field="assistant_words", values=("20",), op="<="),
+            ),
+        )
 
     def test_readable_count_range_rejects_inverted_bounds(self) -> None:
         with pytest.raises(ExpressionCompileError, match="lower bound 20 is greater than upper bound 5"):
