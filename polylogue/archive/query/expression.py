@@ -107,6 +107,7 @@ from polylogue.archive.query.metadata import (
     COUNT_QUERY_FIELD_REGISTRY,
     DATE_QUERY_FIELD_REGISTRY,
     EXPRESSION_FIELD_REGISTRY,
+    NUMERIC_QUERY_FIELD_REGISTRY,
     STRUCTURAL_QUERY_UNIT_REGISTRY,
     CountQueryFieldInfo,
     DateQueryFieldInfo,
@@ -145,9 +146,10 @@ from polylogue.errors import PolylogueError
 
 
 def _count_field_regex() -> str:
-    """Return a regex alternation for count fields from the metadata registry."""
+    """Return a regex alternation for numeric comparison fields from metadata."""
 
-    return "|".join(re.escape(field) for field in sorted(COUNT_QUERY_FIELD_REGISTRY, key=len, reverse=True))
+    fields = (*COUNT_QUERY_FIELD_REGISTRY, *NUMERIC_QUERY_FIELD_REGISTRY)
+    return "|".join(re.escape(field) for field in sorted(fields, key=len, reverse=True))
 
 
 _COUNT_FIELD_REGEX = _count_field_regex()
@@ -711,7 +713,7 @@ def _field_token_to_predicate(token: _FieldToken) -> QueryPredicate:
         values = tuple(value.strip().lower() for value in values if value.strip())
     elif validation_field in {"since", "until"} and values:
         values = (_parse_relative_date(values[-1]),)
-    elif validation_field in COUNT_QUERY_FIELD_REGISTRY:
+    elif validation_field in COUNT_QUERY_FIELD_REGISTRY or validation_field in NUMERIC_QUERY_FIELD_REGISTRY:
         if not values:
             raise ExpressionCompileError(f"field {field_name!r} requires a numeric value", field=field_name)
         match = re.fullmatch(r"(>=|<=|=)?(\d+)", values[-1].strip())
@@ -918,7 +920,7 @@ def _validate_predicate_context(predicate: QueryPredicate, *, unit: Literal["ses
                 raise ExpressionCompileError("field 'time' requires a value", field="time")
             if predicate.op not in {">=", "<="}:
                 raise ExpressionCompileError("field 'time' supports only >=, <=, >, <, and between", field="time")
-        if effective_field in COUNT_QUERY_FIELD_REGISTRY:
+        if effective_field in COUNT_QUERY_FIELD_REGISTRY or effective_field in NUMERIC_QUERY_FIELD_REGISTRY:
             if not predicate.values:
                 raise ExpressionCompileError(
                     f"field {effective_field!r} requires a numeric value", field=effective_field
@@ -2178,7 +2180,7 @@ class _SpecAccumulator:
                         field="lane",
                     ) from exc
 
-        elif fname in COUNT_QUERY_FIELD_REGISTRY:
+        elif fname in COUNT_QUERY_FIELD_REGISTRY or fname in NUMERIC_QUERY_FIELD_REGISTRY:
             # Already handled via _CountToken; field:value form without op is an error
             raise ExpressionCompileError(
                 f"use comparison operator for {fname!r}: e.g. {fname}:>=10",

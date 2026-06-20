@@ -430,9 +430,10 @@ def upsert_message(conn: sqlite3.Connection, record: MessageRecord) -> bool:
             output_tokens,
             cache_read_tokens,
             cache_write_tokens,
+            duration_ms,
             content_hash,
             occurred_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(session_id, position, variant_index) DO UPDATE SET
             native_id = excluded.native_id,
             parent_message_id = excluded.parent_message_id,
@@ -448,6 +449,7 @@ def upsert_message(conn: sqlite3.Connection, record: MessageRecord) -> bool:
             output_tokens = excluded.output_tokens,
             cache_read_tokens = excluded.cache_read_tokens,
             cache_write_tokens = excluded.cache_write_tokens,
+            duration_ms = excluded.duration_ms,
             content_hash = excluded.content_hash,
             occurred_at_ms = excluded.occurred_at_ms
         WHERE
@@ -459,6 +461,7 @@ def upsert_message(conn: sqlite3.Connection, record: MessageRecord) -> bool:
             OR output_tokens != excluded.output_tokens
             OR cache_read_tokens != excluded.cache_read_tokens
             OR cache_write_tokens != excluded.cache_write_tokens
+            OR IFNULL(duration_ms, -1) != IFNULL(excluded.duration_ms, -1)
             OR IFNULL(model_name, '') != IFNULL(excluded.model_name, '')
             OR IFNULL(message_type, '') != IFNULL(excluded.message_type, '')
         """,
@@ -480,6 +483,7 @@ def upsert_message(conn: sqlite3.Connection, record: MessageRecord) -> bool:
             record.output_tokens,
             record.cache_read_tokens,
             record.cache_write_tokens,
+            record.duration_ms,
             bytes.fromhex(_writer_hash(record.content_hash)),
             int(record.sort_key * 1000) if record.sort_key is not None else None,
         ),
@@ -867,6 +871,7 @@ def _record_to_parsed_session(
             output_tokens=message.output_tokens,
             cache_read_tokens=message.cache_read_tokens,
             cache_write_tokens=message.cache_write_tokens,
+            duration_ms=message.duration_ms,
             model_name=message.model_name,
         )
         for position, message in enumerate(messages)

@@ -161,11 +161,14 @@ Negation is supported for fields that are semantically safe to negate, such as
 
 ### Comparisons And Ranges
 
-Readable comparisons are supported for message counts, word counts, and dates:
+Readable comparisons are supported for message counts, word counts, numeric
+durations/tokens, and dates:
 
 ```bash
 polylogue 'messages >= 5 AND messages <= 20'
 polylogue 'words between 100 and 500'
+polylogue 'sessions where duration_ms >= 60000'
+polylogue 'messages where input_tokens >= 1000 AND duration_ms between 2000 and 3000'
 polylogue 'date between 2026-06-01 and 2026-06-17'
 ```
 
@@ -187,6 +190,13 @@ rows. These fields are SQL-backed session predicates; use them in
 `sessions where ...` Boolean queries or as `session.<field>` predicates inside
 terminal unit queries.
 
+Supported non-count numeric fields are `duration_ms` on sessions and messages,
+plus message-scoped `input_tokens`, `output_tokens`, `cache_read_tokens`, and
+`cache_write_tokens`. Session `duration_ms` uses the archive's reported session
+duration; message `duration_ms` uses the stored per-message duration. Message
+numeric fields are accepted in `messages where ...` terminal queries and
+`exists message(...)` structural predicates.
+
 Compact count syntax is equivalent where available:
 
 ```bash
@@ -200,9 +210,9 @@ one child row matching the nested predicate.
 
 | Unit | Accepted fields |
 |------|-----------------|
-| `message` | `action`, `command`, `output`, `path`, `role`, `text`, `tool`, `type`, `words` |
-| `action` | `action`, `command`, `output`, `path`, `text`, `tool`, `type` |
-| `block` | `action`, `command`, `path`, `text`, `tool`, `type` |
+| `message` | `action`, `cache_read_tokens`, `cache_write_tokens`, `command`, `duration_ms`, `input_tokens`, `output`, `output_tokens`, `path`, `role`, `text`, `time`, `tool`, `type`, `words` |
+| `action` | `action`, `command`, `output`, `path`, `text`, `time`, `tool`, `type` |
+| `block` | `action`, `command`, `path`, `text`, `time`, `tool`, `type` |
 | `assertion` | `author`, `author_kind`, `author_ref`, `body`, `context`, `evidence`, `key`, `kind`, `scope`, `scope_ref`, `status`, `target`, `target_ref`, `text`, `value`, `visibility` |
 
 Structural units also accept `session.<field>` predicates for the owning

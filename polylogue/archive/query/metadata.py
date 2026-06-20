@@ -148,6 +148,12 @@ EXPRESSION_FIELD_REGISTRY: dict[str, dict[str, str]] = {
         "negatable": "no",
         "example": "words:>=200",
     },
+    "duration_ms": {
+        "description": "Session reported-duration comparison in milliseconds",
+        "spec_field": "boolean_predicate",
+        "negatable": "no",
+        "example": "sessions where duration_ms >= 60000",
+    },
     "user_messages": {
         "description": "Count comparison for user messages",
         "spec_field": "boolean_predicate",
@@ -232,6 +238,7 @@ _BOOLEAN_SUPPORTED_FIELDS = {
     "until",
     "messages",
     "words",
+    "duration_ms",
     "user_messages",
     "assistant_messages",
     "system_messages",
@@ -253,9 +260,30 @@ _STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS = {
     "path",
     "output",
     "words",
+    "input_tokens",
+    "output_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+    "duration_ms",
     "time",
 }
-_MESSAGE_STRUCTURAL_FIELDS = {"role", "type", "text", "tool", "action", "command", "path", "output", "words", "time"}
+_MESSAGE_STRUCTURAL_FIELDS = {
+    "role",
+    "type",
+    "text",
+    "tool",
+    "action",
+    "command",
+    "path",
+    "output",
+    "words",
+    "input_tokens",
+    "output_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+    "duration_ms",
+    "time",
+}
 _ACTION_STRUCTURAL_FIELDS = {"tool", "action", "type", "command", "path", "output", "text", "time"}
 _BLOCK_STRUCTURAL_FIELDS = {"type", "text", "tool", "action", "command", "path", "time"}
 _ASSERTION_STRUCTURAL_FIELDS = {
@@ -363,6 +391,17 @@ class CountQueryFieldInfo:
 
 
 @dataclass(frozen=True)
+class NumericQueryFieldInfo:
+    """Completion/query-builder metadata for non-count numeric predicates."""
+
+    description: str
+    operators: tuple[str, ...]
+    range_keyword: str
+    example: str
+    unit_columns: dict[str, str]
+
+
+@dataclass(frozen=True)
 class DateQueryFieldInfo:
     """Completion/query-builder metadata for readable date predicates."""
 
@@ -387,6 +426,19 @@ _COMMON_STRUCTURAL_FIELD_INFO: dict[str, StructuralQueryFieldInfo] = {
     "tool": _field_info("tool", "Normalized tool name.", "tool:bash"),
     "type": _field_info("type", "Unit-specific type token.", "type:code"),
     "words": _field_info("words", "Word-count predicate for the selected unit.", "words:>=200"),
+    "input_tokens": _field_info("input_tokens", "Message input-token count predicate.", "input_tokens >= 1000"),
+    "output_tokens": _field_info("output_tokens", "Message output-token count predicate.", "output_tokens >= 1000"),
+    "cache_read_tokens": _field_info(
+        "cache_read_tokens",
+        "Message cache-read token count predicate.",
+        "cache_read_tokens >= 1000",
+    ),
+    "cache_write_tokens": _field_info(
+        "cache_write_tokens",
+        "Message cache-write token count predicate.",
+        "cache_write_tokens >= 1000",
+    ),
+    "duration_ms": _field_info("duration_ms", "Duration predicate in milliseconds.", "duration_ms >= 1000"),
 }
 
 _ASSERTION_STRUCTURAL_FIELD_INFO: dict[str, StructuralQueryFieldInfo] = {
@@ -495,6 +547,7 @@ _RUN_STRUCTURAL_FIELD_INFO: dict[str, StructuralQueryFieldInfo] = {
 _SESSION_SCOPED_STRUCTURAL_EXAMPLES: dict[str, str] = {
     "action": "session.action:file_edit",
     "cwd": "session.cwd:/realm/project",
+    "duration_ms": "session.duration_ms:>=60000",
     "has": "session.has:tools",
     "id": "session.id:abc123",
     "messages": "session.messages:>=10",
@@ -800,6 +853,47 @@ COUNT_QUERY_FIELD_REGISTRY: dict[str, CountQueryFieldInfo] = {
     ),
 }
 
+NUMERIC_QUERY_FIELD_REGISTRY: dict[str, NumericQueryFieldInfo] = {
+    "duration_ms": NumericQueryFieldInfo(
+        description="Duration predicate in milliseconds.",
+        operators=(">=", "<=", "=", ">", "<"),
+        range_keyword="between",
+        example="duration_ms >= 60000",
+        unit_columns={
+            "session": "reported_duration_ms",
+            "message": "duration_ms",
+        },
+    ),
+    "input_tokens": NumericQueryFieldInfo(
+        description="Message input-token predicate.",
+        operators=(">=", "<=", "=", ">", "<"),
+        range_keyword="between",
+        example="input_tokens >= 1000",
+        unit_columns={"message": "input_tokens"},
+    ),
+    "output_tokens": NumericQueryFieldInfo(
+        description="Message output-token predicate.",
+        operators=(">=", "<=", "=", ">", "<"),
+        range_keyword="between",
+        example="output_tokens >= 1000",
+        unit_columns={"message": "output_tokens"},
+    ),
+    "cache_read_tokens": NumericQueryFieldInfo(
+        description="Message cache-read token predicate.",
+        operators=(">=", "<=", "=", ">", "<"),
+        range_keyword="between",
+        example="cache_read_tokens >= 1000",
+        unit_columns={"message": "cache_read_tokens"},
+    ),
+    "cache_write_tokens": NumericQueryFieldInfo(
+        description="Message cache-write token predicate.",
+        operators=(">=", "<=", "=", ">", "<"),
+        range_keyword="between",
+        example="cache_write_tokens >= 1000",
+        unit_columns={"message": "cache_write_tokens"},
+    ),
+}
+
 DATE_QUERY_FIELD_REGISTRY: dict[str, DateQueryFieldInfo] = {
     "date": DateQueryFieldInfo(
         description="Session timestamp predicate over COALESCE(updated_at, created_at).",
@@ -993,6 +1087,21 @@ def count_query_operators(field: str) -> tuple[str, ...]:
     return (*info.operators, info.range_keyword)
 
 
+def numeric_query_fields() -> tuple[str, ...]:
+    """Return non-count numeric fields with readable comparison/range syntax."""
+
+    return tuple(sorted(NUMERIC_QUERY_FIELD_REGISTRY))
+
+
+def numeric_query_operators(field: str) -> tuple[str, ...]:
+    """Return readable comparison/range operators accepted for a numeric field."""
+
+    info = NUMERIC_QUERY_FIELD_REGISTRY.get(field.lower())
+    if info is None:
+        return ()
+    return (*info.operators, info.range_keyword)
+
+
 def date_query_fields() -> tuple[str, ...]:
     """Return date fields with readable comparison/range syntax."""
 
@@ -1014,6 +1123,8 @@ __all__ = [
     "DATE_QUERY_FIELD_REGISTRY",
     "DateQueryFieldInfo",
     "EXPRESSION_FIELD_REGISTRY",
+    "NUMERIC_QUERY_FIELD_REGISTRY",
+    "NumericQueryFieldInfo",
     "QUERY_UNIT_DESCRIPTORS",
     "QueryUnitDescriptor",
     "QueryUnitLowererKind",
@@ -1036,6 +1147,8 @@ __all__ = [
     "count_query_operators",
     "date_query_fields",
     "date_query_operators",
+    "numeric_query_fields",
+    "numeric_query_operators",
     "query_unit_descriptor",
     "query_unit_descriptors",
     "structural_query_field_info",
