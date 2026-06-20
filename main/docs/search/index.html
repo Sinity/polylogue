@@ -684,6 +684,34 @@ block, assertion, and runtime projection refs (<code>run</code>, <code>observed-
 <code>context-snapshot</code>) when the addressed object exists. Unsupported or missing
 refs return a bounded unresolved payload with caveats; they never widen into a
 session search.</p>
+<h2>Outbound OTel Projection</h2>
+<p>Polylogue has two telemetry directions that should not be confused:</p>
+<ul>
+<li>inbound OTLP receiver routes store external telemetry in <code>ops.db</code> for local
+correlation;</li>
+<li>outbound OTel projection exports Polylogue archive evidence as an
+observability-shaped view.</li>
+</ul>
+<p>Outbound projection is not archive authority. Trace/span ids are stable export
+ids, while Polylogue refs remain the navigation surface back to canonical
+sessions, messages, runs, context snapshots, observed events, assertions, and
+evidence refs.</p>
+<p>The Python API exposes the first bounded projection surface:</p>
+<pre><code class="language-python">payload = await archive.export_otel(
+    source_ref=&quot;session:codex-session:abc123&quot;,
+    expressions=(
+        &quot;runs where session.id:codex-session:abc123&quot;,
+        &quot;observed-events where session.id:codex-session:abc123&quot;,
+        &quot;context-snapshots where session.id:codex-session:abc123&quot;,
+    ),
+)
+</code></pre>
+<p><code>OtelProjectionPayload</code> currently emits OTLP-like JSON (<code>format=&quot;otlp-json&quot;</code>)
+over existing query-unit row payloads. Runs and actions become spans;
+messages, observed events, and context snapshots become log/event records.
+Tool outputs and absolute local paths are omitted by default; the payload
+instead carries output length/presence, redaction flags, and refs that clients
+can resolve deliberately when the operator wants to inspect source evidence.</p>
 <h2>Filters</h2>
 <h3>Identity and content</h3>
 <table>
