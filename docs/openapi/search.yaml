@@ -90,8 +90,8 @@ paths:
     get:
       summary: Terminal query-unit rows
       description: Returns terminal row results for explicit ``messages/actions/blocks/assertions/runs/observed-events/context-snapshots
-        where ...`` expressions. This endpoint shares the ``QueryUnitEnvelope`` contract with CLI JSON output, MCP ``query_units``,
-        and ``Polylogue.query_units()``.
+        where ...`` expressions. This endpoint shares the query-unit row and aggregate envelope contracts with CLI JSON output,
+        MCP ``query_units``, and ``Polylogue.query_units()``.
       operationId: queryUnits
       parameters:
       - name: expression
@@ -277,11 +277,13 @@ paths:
           type: string
       responses:
         '200':
-          description: Terminal query-unit result envelope.
+          description: Terminal query-unit row or aggregate result envelope.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/QueryUnitEnvelope'
+                oneOf:
+                - $ref: '#/components/schemas/QueryUnitEnvelope'
+                - $ref: '#/components/schemas/QueryUnitAggregateEnvelope'
         '400':
           description: Malformed query or non-terminal session expression.
   /api/sessions/{session_id}/read:
@@ -1439,6 +1441,8 @@ components:
                 - sort
                 - limit
                 - offset
+                - group
+                - count
                 type: string
               predicate:
                 type: object
@@ -1446,6 +1450,12 @@ components:
                 type: object
               value:
                 type: integer
+              field:
+                type: string
+              metric:
+                enum:
+                - count
+                type: string
             required:
             - kind
             type: object
@@ -1474,6 +1484,124 @@ components:
       - limit
       - offset
       title: QueryUnitEnvelope
+      type: object
+    QueryUnitAggregateRowPayload:
+      additionalProperties: false
+      description: Grouped aggregate row over a terminal query-unit result set.
+      properties:
+        unit:
+          enum:
+          - message
+          - action
+          - block
+          - assertion
+          - run
+          - observed-event
+          - context-snapshot
+          title: Unit
+          type: string
+        group_by:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Group By
+        group_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Group Key
+        count:
+          title: Count
+          type: integer
+      required:
+      - unit
+      - count
+      title: QueryUnitAggregateRowPayload
+      type: object
+    QueryUnitAggregateEnvelope:
+      additionalProperties: false
+      description: Shared envelope for terminal query-unit aggregate results.
+      properties:
+        mode:
+          const: query-unit-aggregate
+          default: query-unit-aggregate
+          title: Mode
+          type: string
+        unit:
+          enum:
+          - message
+          - action
+          - block
+          - assertion
+          - run
+          - observed-event
+          - context-snapshot
+          title: Unit
+          type: string
+        query:
+          title: Query
+          type: string
+        items:
+          items:
+            $ref: '#/components/schemas/QueryUnitAggregateRowPayload'
+          title: Items
+          type: array
+        pipeline_stages:
+          default: []
+          items:
+            additionalProperties: true
+            properties:
+              kind:
+                enum:
+                - session_scope
+                - sort
+                - limit
+                - offset
+                - group
+                - count
+                type: string
+              predicate:
+                type: object
+              sort:
+                type: object
+              value:
+                type: integer
+              field:
+                type: string
+              metric:
+                enum:
+                - count
+                type: string
+            required:
+            - kind
+            type: object
+          title: Pipeline Stages
+          type: array
+        total:
+          title: Total
+          type: integer
+        limit:
+          title: Limit
+          type: integer
+        offset:
+          title: Offset
+          type: integer
+        next_offset:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: null
+          title: Next Offset
+      required:
+      - unit
+      - query
+      - items
+      - total
+      - limit
+      - offset
+      title: QueryUnitAggregateEnvelope
       type: object
     SessionReadViewEnvelope:
       additionalProperties: false
@@ -1956,7 +2084,7 @@ x-polylogue-route-contracts:
   kind: read_query
   stability: stable
   auth_policy: bearer_if_configured
-  response_contract: QueryUnitEnvelope
+  response_contract: QueryUnitResultEnvelope
 - method: GET
   pattern: /api/archive-debt
   kind: operational

@@ -33,7 +33,7 @@ def test_openapi_publishes_route_contract_extension() -> None:
 
     assert query_units["kind"] == "read_query"
     assert query_units["stability"] == "stable"
-    assert query_units["response_contract"] == "QueryUnitEnvelope"
+    assert query_units["response_contract"] == "QueryUnitResultEnvelope"
     assert recovery["kind"] == "read_detail"
     assert recovery["auth_policy"] == "bearer_if_configured"
     assert recovery["response_contract"] == "RecoveryReadPayload"

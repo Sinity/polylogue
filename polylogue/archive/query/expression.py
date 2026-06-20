@@ -40,12 +40,15 @@ and explicit Boolean session predicates:
     messages where role:assistant AND text:timeout
     actions where action:file_edit AND path:polylogue/archive
     blocks where type:code AND text:timeout
+    sessions where repo:polylogue | messages where role:assistant | group by role | count
 
 Unit-scoped ``messages/actions/blocks/assertions/runs/observed-events/context-snapshots where ...`` predicates are executable
 in two shared paths: ``compile_expression`` keeps the compatibility session
 selector behavior by lowering them to correlated ``exists <unit>(...)``
 predicates, while terminal query-unit surfaces preserve the selected unit and
 return raw message/action/block/assertion/observed-event/context-snapshot rows from the same predicate semantics.
+SQL-backed terminal units also support exact ``group by FIELD | count``
+aggregate pipelines for the closed aggregate fields declared in this module.
 
 Unknown fields and unsupported structured forms fail loudly. The Lark grammar
 in this module is the query grammar. Compact field/text clauses and explicit
@@ -247,7 +250,7 @@ class QueryUnitSort:
     direction: Literal["asc", "desc"] = "asc"
 
 
-QueryUnitPipelineStageKind = Literal["session_scope", "sort", "limit", "offset"]
+QueryUnitPipelineStageKind = Literal["session_scope", "sort", "limit", "offset", "group", "count"]
 
 
 @dataclass(frozen=True)
@@ -258,6 +261,8 @@ class QueryUnitPipelineStage:
     predicate: QueryPredicate | None = None
     sort: QueryUnitSort | None = None
     value: int | None = None
+    field: str | None = None
+    metric: Literal["count"] | None = None
 
     def to_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {"kind": self.kind}
@@ -270,6 +275,10 @@ class QueryUnitPipelineStage:
             }
         if self.value is not None:
             payload["value"] = self.value
+        if self.field is not None:
+            payload["field"] = self.field
+        if self.metric is not None:
+            payload["metric"] = self.metric
         return payload
 
 
@@ -283,6 +292,8 @@ class QueryUnitSource:
     limit: int | None = None
     offset: int | None = None
     sort: QueryUnitSort | None = None
+    group_by: str | None = None
+    aggregate: Literal["count"] | None = None
     pipeline_stages: tuple[QueryUnitPipelineStage, ...] = ()
 
 
@@ -1200,9 +1211,54 @@ def _parse_sort_stage(stage: str) -> QueryUnitSort | None:
     )
 
 
+_AGGREGATE_GROUP_FIELDS: dict[QueryUnitName, frozenset[str]] = {
+    "message": frozenset({"role", "type", "session.origin", "session.repo"}),
+    "action": frozenset({"tool", "action", "type", "session.origin", "session.repo"}),
+    "block": frozenset({"type", "tool", "action", "session.origin", "session.repo"}),
+    "assertion": frozenset({"kind", "status", "visibility", "author_kind", "session.origin", "session.repo"}),
+    "run": frozenset(),
+    "observed-event": frozenset(),
+    "context-snapshot": frozenset(),
+}
+
+
+def _parse_group_stage(stage: str) -> str | None:
+    normalized = " ".join(stage.split()).lower()
+    if not normalized.startswith("group by "):
+        return None
+    field = normalized.removeprefix("group by ").strip()
+    if not field:
+        raise ExpressionCompileError("pipeline `group by` requires a field", field="group")
+    if field in {"origin", "repo"}:
+        return f"session.{field}"
+    return field
+
+
+def _parse_count_stage(stage: str) -> bool:
+    return " ".join(stage.split()).lower() == "count"
+
+
+def _validate_aggregate_group_field(unit: QueryUnitName, field: str) -> None:
+    if field not in _AGGREGATE_GROUP_FIELDS[unit]:
+        supported = ", ".join(sorted(_AGGREGATE_GROUP_FIELDS[unit]))
+        if not supported:
+            raise ExpressionCompileError(
+                f"pipeline `group by` is not supported for {unit} rows yet",
+                field="group",
+            )
+        raise ExpressionCompileError(
+            f"pipeline `group by {field}` is not supported for {unit} rows; supported fields: {supported}",
+            field=field,
+        )
+
+
 def _apply_pipeline_stage(source: QueryUnitSource, stage: str) -> QueryUnitSource:
     sort = _parse_sort_stage(stage)
     if sort is not None:
+        if source.aggregate is not None:
+            raise ExpressionCompileError("pipeline `sort by` must appear before aggregate stages", field="sort")
+        if source.group_by is not None:
+            raise ExpressionCompileError("pipeline `sort by` must appear before `group by`", field="sort")
         if source.unit not in {"message", "action", "block", "assertion"}:
             raise ExpressionCompileError(
                 "pipeline `sort by time` currently supports message/action/block/assertion rows; "
@@ -1215,6 +1271,44 @@ def _apply_pipeline_stage(source: QueryUnitSource, stage: str) -> QueryUnitSourc
             pipeline_stages=(
                 *source.pipeline_stages,
                 QueryUnitPipelineStage(kind="sort", sort=sort),
+            ),
+        )
+    group_by = _parse_group_stage(stage)
+    if group_by is not None:
+        if source.aggregate is not None:
+            raise ExpressionCompileError("pipeline `group by` must appear before `count`", field="group")
+        if source.limit is not None or source.offset is not None:
+            raise ExpressionCompileError("pipeline `group by` must appear before `limit` and `offset`", field="group")
+        if source.unit not in {"message", "action", "block", "assertion"}:
+            raise ExpressionCompileError(
+                "pipeline `group by` currently supports message/action/block/assertion rows; "
+                "runtime-transform units need an aggregate lowerer first",
+                field="group",
+            )
+        _validate_aggregate_group_field(source.unit, group_by)
+        return replace(
+            source,
+            group_by=group_by,
+            pipeline_stages=(
+                *source.pipeline_stages,
+                QueryUnitPipelineStage(kind="group", field=group_by),
+            ),
+        )
+    if _parse_count_stage(stage):
+        if source.limit is not None or source.offset is not None:
+            raise ExpressionCompileError("pipeline `count` must appear before `limit` and `offset`", field="count")
+        if source.unit not in {"message", "action", "block", "assertion"}:
+            raise ExpressionCompileError(
+                "pipeline `count` currently supports message/action/block/assertion rows; "
+                "runtime-transform units need an aggregate lowerer first",
+                field="count",
+            )
+        return replace(
+            source,
+            aggregate="count",
+            pipeline_stages=(
+                *source.pipeline_stages,
+                QueryUnitPipelineStage(kind="count", metric="count"),
             ),
         )
     limit = _parse_non_negative_int_stage(stage, "limit")
@@ -1241,7 +1335,7 @@ def _apply_pipeline_stage(source: QueryUnitSource, stage: str) -> QueryUnitSourc
         )
     raise ExpressionCompileError(
         f"unsupported pipeline stage {stage!r}; supported terminal stages are "
-        "`sort by time [asc|desc]`, `limit N`, and `offset N`",
+        "`sort by time [asc|desc]`, `group by FIELD`, `count`, `limit N`, and `offset N`",
         field=None,
     )
 
@@ -1294,6 +1388,8 @@ def _parse_pipeline_unit_source(expression: str) -> QueryUnitSource | None:
             limit=terminal_source.limit,
             offset=terminal_source.offset,
             sort=terminal_source.sort,
+            group_by=terminal_source.group_by,
+            aggregate=terminal_source.aggregate,
             pipeline_stages=(
                 QueryUnitPipelineStage(kind="session_scope", predicate=session_predicate),
                 *terminal_source.pipeline_stages,
@@ -1564,6 +1660,8 @@ def _explain_execution_legs(spec: SessionQuerySpec) -> tuple[str, ...]:
 
 def _explain_unit_source_execution_legs(source: QueryUnitSource) -> tuple[str, ...]:
     legs = {f"terminal-{source.unit}-rows", *_predicate_execution_legs(source.predicate)}
+    if source.aggregate is not None:
+        legs.add(f"terminal-{source.unit}-{source.aggregate}-aggregate")
     if _query_unit_uses_runtime_transform(source.unit):
         legs.add("runtime-transform")
     else:
@@ -1599,6 +1697,10 @@ def _ast_payload(
                 "field": unit_source.sort.field,
                 "direction": unit_source.sort.direction,
             }
+        if unit_source.group_by is not None:
+            unit_payload["group_by"] = unit_source.group_by
+        if unit_source.aggregate is not None:
+            unit_payload["aggregate"] = unit_source.aggregate
         if unit_source.pipeline_stages:
             unit_payload["pipeline_stages"] = [stage.to_payload() for stage in unit_source.pipeline_stages]
         payload["unit_source"] = unit_payload

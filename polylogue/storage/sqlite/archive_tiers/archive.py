@@ -253,10 +253,63 @@ class ArchiveAssertionQueryRow:
     updated_at_ms: int
 
 
+@dataclass(frozen=True, slots=True)
+class ArchiveQueryUnitAggregateRow:
+    """Aggregate count row over a terminal query-unit result set."""
+
+    unit: str
+    group_by: str | None
+    group_key: str | None
+    count: int
+
+
 def _query_unit_order_direction(direction: Literal["asc", "desc"]) -> Literal["ASC", "DESC"]:
     """Return a closed SQL direction token for terminal row ordering."""
 
     return "DESC" if direction == "desc" else "ASC"
+
+
+def _query_unit_group_expression(unit: str, row_alias: str, group_by: str | None) -> str:
+    """Return the SQL expression for a supported terminal aggregate group."""
+
+    if group_by is None:
+        return "'all'"
+    normalized = group_by.removeprefix("session.")
+    session_fields = {
+        "origin": "COALESCE(NULLIF(s.origin, ''), 'unknown')",
+        "repo": "COALESCE(NULLIF(s.git_repository_url, ''), 'unknown')",
+    }
+    if group_by.startswith("session.") or group_by in {"origin", "repo"}:
+        try:
+            return session_fields[normalized]
+        except KeyError as exc:
+            raise ValueError(f"unsupported {unit} aggregate group field: {group_by}") from exc
+    unit_fields = {
+        "message": {
+            "role": f"COALESCE(NULLIF({row_alias}.role, ''), 'unknown')",
+            "type": f"COALESCE(NULLIF({row_alias}.message_type, ''), 'unknown')",
+        },
+        "action": {
+            "tool": f"COALESCE(NULLIF({row_alias}.tool_name, ''), 'unknown')",
+            "action": f"COALESCE(NULLIF({row_alias}.semantic_type, ''), 'unknown')",
+            "type": f"COALESCE(NULLIF({row_alias}.semantic_type, ''), 'unknown')",
+        },
+        "block": {
+            "type": f"COALESCE(NULLIF({row_alias}.block_type, ''), 'unknown')",
+            "tool": f"COALESCE(NULLIF({row_alias}.tool_name, ''), 'unknown')",
+            "action": f"COALESCE(NULLIF({row_alias}.semantic_type, ''), 'unknown')",
+        },
+        "assertion": {
+            "kind": f"COALESCE(NULLIF({row_alias}.kind, ''), 'unknown')",
+            "status": f"COALESCE(NULLIF({row_alias}.status, ''), '{ASSERTION_DEFAULT_STATUS}')",
+            "visibility": f"COALESCE(NULLIF({row_alias}.visibility, ''), '{ASSERTION_DEFAULT_VISIBILITY}')",
+            "author_kind": f"COALESCE(NULLIF({row_alias}.author_kind, ''), '{ASSERTION_DEFAULT_AUTHOR_KIND}')",
+        },
+    }
+    try:
+        return unit_fields[unit][group_by]
+    except KeyError as exc:
+        raise ValueError(f"unsupported {unit} aggregate group field: {group_by}") from exc
 
 
 class ArchiveStore:
@@ -3352,6 +3405,68 @@ class ArchiveStore:
                 position=int(row["position"]),
                 word_count=int(row["word_count"]),
                 text=str(row["text"] or ""),
+            )
+            for row in rows
+        ]
+
+    def query_unit_counts(
+        self,
+        unit: str,
+        predicate: QueryPredicate,
+        *,
+        group_by: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+        session_filters: Mapping[str, object] | None = None,
+    ) -> list[ArchiveQueryUnitAggregateRow]:
+        """Return exact grouped counts for SQL-backed terminal query units."""
+
+        normalized_limit = max(int(limit), 0)
+        normalized_offset = max(int(offset), 0)
+        if unit == "assertion" and not self.user_db_path.exists():
+            return []
+        if unit == "assertion":
+            self._attach_user_tier_if_present()
+
+        row_alias = {
+            "message": "m",
+            "action": "a",
+            "block": "b",
+            "assertion": "a",
+        }.get(unit)
+        if row_alias is None:
+            raise ValueError(f"Query unit {unit!r} is not wired to SQL aggregate counts")
+        group_expr = _query_unit_group_expression(unit, row_alias, group_by)
+        clause, params = _structural_predicate_clause(unit, row_alias, predicate, session_alias="s")
+        where_clause = clause or "1=1"
+        session_clause = ""
+        session_params: list[object] = []
+        if session_filters:
+            session_clause, session_params = cast(Any, _session_filter_clause)("s", prefix="AND", **session_filters)
+        from_sql = {
+            "message": "messages m JOIN sessions s ON s.session_id = m.session_id",
+            "action": "actions a JOIN sessions s ON s.session_id = a.session_id",
+            "block": "blocks b JOIN sessions s ON s.session_id = b.session_id",
+            "assertion": "user_tier.assertions a LEFT JOIN sessions s ON a.target_ref = 'session:' || s.session_id",
+        }[unit]
+        rows = self._conn.execute(
+            f"""
+            SELECT {group_expr} AS group_key, COUNT(*) AS count
+            FROM {from_sql}
+            WHERE {where_clause}
+            {session_clause}
+            GROUP BY group_key
+            ORDER BY count DESC, group_key
+            LIMIT ? OFFSET ?
+            """,
+            [*params, *session_params, normalized_limit, normalized_offset],
+        ).fetchall()
+        return [
+            ArchiveQueryUnitAggregateRow(
+                unit=unit,
+                group_by=group_by,
+                group_key=str(row["group_key"]) if row["group_key"] is not None else None,
+                count=int(row["count"]),
             )
             for row in rows
         ]

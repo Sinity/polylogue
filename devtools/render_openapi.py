@@ -36,6 +36,7 @@ from polylogue.surfaces.payloads import (
     RANKING_POLICY_MIXED,
     RANKING_POLICY_VERSION,
     AssertionClaimListPayload,
+    QueryUnitAggregateEnvelope,
     QueryUnitEnvelope,
     RecoveryReadPayload,
     SearchEnvelope,
@@ -52,6 +53,7 @@ POLYLOGUE_API_VERSION = "1"
 _PUBLISHED_MODELS: tuple[type[BaseModel], ...] = (
     SearchEnvelope,
     QueryUnitEnvelope,
+    QueryUnitAggregateEnvelope,
     SessionReadViewEnvelope,
     RecoveryReadPayload,
     AssertionClaimListPayload,
@@ -223,7 +225,7 @@ def _build_openapi_document() -> dict[str, Any]:
                     "description": (
                         "Returns terminal row results for explicit "
                         f"``{terminal_query_source_list()} where ...`` expressions. "
-                        "This endpoint shares the ``QueryUnitEnvelope`` contract "
+                        "This endpoint shares the query-unit row and aggregate envelope contracts "
                         "with CLI JSON output, MCP ``query_units``, and "
                         "``Polylogue.query_units()``."
                     ),
@@ -432,9 +434,16 @@ def _build_openapi_document() -> dict[str, Any]:
                     ],
                     "responses": {
                         "200": {
-                            "description": "Terminal query-unit result envelope.",
+                            "description": "Terminal query-unit row or aggregate result envelope.",
                             "content": {
-                                "application/json": {"schema": {"$ref": "#/components/schemas/QueryUnitEnvelope"}}
+                                "application/json": {
+                                    "schema": {
+                                        "oneOf": [
+                                            {"$ref": "#/components/schemas/QueryUnitEnvelope"},
+                                            {"$ref": "#/components/schemas/QueryUnitAggregateEnvelope"},
+                                        ]
+                                    }
+                                }
                             },
                         },
                         "400": {

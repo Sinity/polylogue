@@ -1,0 +1,177 @@
+{
+  "$defs": {
+    "QueryUnitAggregateRowPayload": {
+      "additionalProperties": false,
+      "description": "Grouped aggregate row over a terminal query-unit result set.",
+      "properties": {
+        "count": {
+          "title": "Count",
+          "type": "integer"
+        },
+        "group_by": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Group By"
+        },
+        "group_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Group Key"
+        },
+        "unit": {
+          "enum": [
+            "message",
+            "action",
+            "block",
+            "assertion",
+            "run",
+            "observed-event",
+            "context-snapshot"
+          ],
+          "title": "Unit",
+          "type": "string"
+        }
+      },
+      "required": [
+        "unit",
+        "count"
+      ],
+      "title": "QueryUnitAggregateRowPayload",
+      "type": "object"
+    }
+  },
+  "$id": "https://polylogue.dev/schemas/cli-output/query-unit-aggregate-envelope.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Grouped count envelope for explicit terminal query-unit aggregate pipelines such as `messages where text:timeout | group by role | count`. Shared by CLI JSON output, Python API, MCP, and daemon HTTP.\n\nGenerated from `polylogue.surfaces.payloads.QueryUnitAggregateEnvelope` by `devtools render cli-output-schemas`. Do not edit by hand.",
+  "properties": {
+    "items": {
+      "items": {
+        "$ref": "#/$defs/QueryUnitAggregateRowPayload"
+      },
+      "title": "Items",
+      "type": "array"
+    },
+    "limit": {
+      "title": "Limit",
+      "type": "integer"
+    },
+    "mode": {
+      "const": "query-unit-aggregate",
+      "default": "query-unit-aggregate",
+      "title": "Mode",
+      "type": "string"
+    },
+    "next_offset": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Next Offset"
+    },
+    "offset": {
+      "title": "Offset",
+      "type": "integer"
+    },
+    "pipeline_stages": {
+      "default": [],
+      "items": {
+        "additionalProperties": true,
+        "properties": {
+          "field": {
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "session_scope",
+              "sort",
+              "limit",
+              "offset",
+              "group",
+              "count"
+            ],
+            "type": "string"
+          },
+          "metric": {
+            "enum": [
+              "count"
+            ],
+            "type": "string"
+          },
+          "predicate": {
+            "type": "object"
+          },
+          "sort": {
+            "type": "object"
+          },
+          "value": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "type": "object"
+      },
+      "title": "Pipeline Stages",
+      "type": "array"
+    },
+    "query": {
+      "title": "Query",
+      "type": "string"
+    },
+    "total": {
+      "title": "Total",
+      "type": "integer"
+    },
+    "unit": {
+      "enum": [
+        "message",
+        "action",
+        "block",
+        "assertion",
+        "run",
+        "observed-event",
+        "context-snapshot"
+      ],
+      "title": "Unit",
+      "type": "string"
+    }
+  },
+  "required": [
+    "unit",
+    "query",
+    "items",
+    "total",
+    "limit",
+    "offset"
+  ],
+  "title": "Query Unit Aggregate Envelope",
+  "type": "object",
+  "x-polylogue-cli-surfaces": [
+    "polylogue --format json messages where ... | group by role | count",
+    "Polylogue.query_units(...)",
+    "MCP query_units",
+    "GET /api/query-units?expression=..."
+  ],
+  "x-polylogue-source-model": "QueryUnitAggregateEnvelope"
+}

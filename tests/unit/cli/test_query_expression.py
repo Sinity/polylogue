@@ -563,16 +563,37 @@ class TestBooleanQueryExpression:
         assert source.sort.field == "time"
         assert source.sort.direction == "desc"
 
+    def test_pipeline_group_by_count_stages_are_parsed(self) -> None:
+        source = parse_unit_source_expression(
+            "sessions where repo:polylogue | messages where role:assistant | group by role | count"
+        )
+
+        assert source is not None
+        assert source.group_by == "role"
+        assert source.aggregate == "count"
+        assert [stage.to_payload() for stage in source.pipeline_stages] == [
+            {
+                "kind": "session_scope",
+                "predicate": {"field": "repo", "kind": "field", "op": "=", "values": ["polylogue"]},
+            },
+            {"kind": "group", "field": "role"},
+            {"kind": "count", "metric": "count"},
+        ]
+
     def test_pipeline_rejects_unknown_terminal_stage(self) -> None:
         with pytest.raises(ExpressionCompileError, match="unsupported pipeline stage"):
-            parse_unit_source_expression(
-                "sessions where repo:polylogue | messages where role:assistant | group by role"
-            )
+            parse_unit_source_expression("sessions where repo:polylogue | messages where role:assistant | sample 3")
 
     def test_pipeline_rejects_sort_on_runtime_transform_units(self) -> None:
         with pytest.raises(ExpressionCompileError, match="runtime-transform units need a streaming lowerer"):
             parse_unit_source_expression(
                 "sessions where repo:polylogue | runs where status:completed | sort by time desc"
+            )
+
+    def test_pipeline_rejects_aggregate_on_runtime_transform_units(self) -> None:
+        with pytest.raises(ExpressionCompileError, match="runtime-transform units need an aggregate lowerer"):
+            parse_unit_source_expression(
+                "sessions where repo:polylogue | context-snapshots where boundary:session_start | count"
             )
 
     def test_pipeline_rejects_unlowered_session_stage_predicates(self) -> None:
@@ -1197,6 +1218,102 @@ class TestBooleanQueryExpression:
             {"kind": "offset", "value": 1},
         ]
         assert [item["text"] for item in payload["items"]] == ["second"]
+
+    def test_session_to_message_pipeline_group_by_count_executes_exact_counts(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        from polylogue.archive.query.unit_results import query_unit_rows
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from polylogue.surfaces.payloads import QueryUnitAggregateEnvelope
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "hit")
+            .provider("claude-code")
+            .git_repository_url("polylogue")
+            .title("pipeline aggregate")
+            .add_message("m-user", role="user", text="aggregate needle")
+            .add_message("m-assistant-1", role="assistant", text="aggregate needle one")
+            .add_message("m-assistant-2", role="assistant", text="aggregate needle two")
+            .save()
+        )
+        (
+            SessionBuilder(index_db, "wrong-repo")
+            .provider("claude-code")
+            .git_repository_url("sinex")
+            .title("aggregate wrong repo")
+            .add_message("m-wrong", role="assistant", text="aggregate needle")
+            .save()
+        )
+
+        source = parse_unit_source_expression(
+            "sessions where repo:polylogue | messages where text:aggregate | group by role | count"
+        )
+        assert source is not None
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            envelope = query_unit_rows(archive, source, query="pipeline-aggregate", limit=20)
+
+        assert isinstance(envelope, QueryUnitAggregateEnvelope)
+        assert envelope.mode == "query-unit-aggregate"
+        assert envelope.pipeline_stages == (
+            {
+                "kind": "session_scope",
+                "predicate": {"field": "repo", "kind": "field", "op": "=", "values": ["polylogue"]},
+            },
+            {"kind": "group", "field": "role"},
+            {"kind": "count", "metric": "count"},
+        )
+        assert [(row.group_by, row.group_key, row.count) for row in envelope.items] == [
+            ("role", "assistant", 2),
+            ("role", "user", 1),
+        ]
+
+    def test_cli_json_reports_terminal_aggregate_counts(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        from polylogue.cli import cli
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "hit")
+            .provider("claude-code")
+            .git_repository_url("polylogue")
+            .title("aggregate cli")
+            .add_message("m-user", role="user", text="aggregate cli")
+            .add_message("m-assistant", role="assistant", text="aggregate cli")
+            .save()
+        )
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "--plain",
+                "--format",
+                "json",
+                "find",
+                "sessions where repo:polylogue | messages where text:aggregate | group by role | count",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["mode"] == "query-unit-aggregate"
+        assert payload["pipeline_stages"] == [
+            {
+                "kind": "session_scope",
+                "predicate": {"field": "repo", "kind": "field", "op": "=", "values": ["polylogue"]},
+            },
+            {"kind": "group", "field": "role"},
+            {"kind": "count", "metric": "count"},
+        ]
+        assert sorted((item["group_key"], item["count"]) for item in payload["items"]) == [
+            ("assistant", 1),
+            ("user", 1),
+        ]
 
     def test_unknown_terminal_unit_does_not_fall_through_to_block_rows(self) -> None:
         from polylogue.archive.query.unit_results import query_unit_rows

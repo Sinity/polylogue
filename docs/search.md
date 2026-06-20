@@ -227,6 +227,7 @@ polylogue --format json assertions where kind:decision AND status:active AND tex
 polylogue --format json runs where role:subagent AND status:completed AND agent:Explore
 polylogue --format json observed-events where delivery_state:acted_on AND text:#2100
 polylogue --format json context-snapshots where boundary:session_start AND session.repo:polylogue
+polylogue --format json messages where text:timeout | group by role | count
 ```
 
 The row shape is the shared `QueryUnitEnvelope` used by CLI JSON/NDJSON/YAML,
@@ -234,6 +235,10 @@ Python `Polylogue.query_units()`, MCP `query_units`, and daemon
 `GET /api/query-units?expression=...`. Plain and CSV CLI output are
 transport-specific renderings of the same message/action/block/assertion/run/
 observed-event/context-snapshot row payloads.
+Aggregate pipelines over SQL-backed terminal rows use the sibling
+`QueryUnitAggregateEnvelope` and currently support `group by FIELD | count`
+over closed unit fields such as message role, action tool/action, block type,
+assertion kind/status, and owning-session origin/repo.
 Those surfaces share the same session-scoping filters for the row source
 where applicable, such as origin, tag, repo, title, date bounds, message-type
 and tool/paste/thinking feature filters.
