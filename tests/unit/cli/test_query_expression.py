@@ -42,6 +42,7 @@ from polylogue.archive.query.expression import (
     parse_expression_ast,
     parse_unit_source_expression,
 )
+from polylogue.archive.query.metadata import query_unit_descriptors
 from polylogue.archive.query.predicate import (
     QueryBoolPredicate,
     QueryExistsPredicate,
@@ -629,6 +630,47 @@ class TestBooleanQueryExpression:
             parse_unit_source_expression(
                 "sessions where repo:polylogue | context-snapshots where boundary:session_start | count"
             )
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            descriptor.plural_source
+            for descriptor in query_unit_descriptors(lowerer_kind="sql")
+            if descriptor.aggregate_group_fields
+        ],
+    )
+    def test_descriptor_sql_units_accept_advertised_aggregate_pipeline(self, source: str) -> None:
+        descriptor = next(
+            descriptor
+            for descriptor in query_unit_descriptors(lowerer_kind="sql")
+            if descriptor.plural_source == source
+        )
+        group_field = descriptor.aggregate_group_fields[0]
+
+        parsed = parse_unit_source_expression(
+            f"{source} where {descriptor.fields[0].example} | group by {group_field} | count | sort by count desc"
+        )
+
+        assert parsed is not None
+        assert parsed.unit == descriptor.unit
+        assert parsed.group_by == group_field
+        assert parsed.aggregate == "count"
+        assert parsed.sort is not None
+        assert parsed.sort.field == "count"
+
+    @pytest.mark.parametrize(
+        "source",
+        [descriptor.plural_source for descriptor in query_unit_descriptors(lowerer_kind="runtime_transform")],
+    )
+    def test_descriptor_runtime_transform_units_reject_aggregate_pipeline(self, source: str) -> None:
+        descriptor = next(
+            descriptor
+            for descriptor in query_unit_descriptors(lowerer_kind="runtime_transform")
+            if descriptor.plural_source == source
+        )
+
+        with pytest.raises(ExpressionCompileError, match="runtime-transform units need an aggregate lowerer"):
+            parse_unit_source_expression(f"{source} where {descriptor.fields[0].example} | count")
 
     def test_pipeline_rejects_aggregate_sort_before_count(self) -> None:
         with pytest.raises(ExpressionCompileError, match="require an aggregate `count` stage"):

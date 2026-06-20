@@ -1454,6 +1454,69 @@ async def test_search_envelope_returns_typed_envelope_on_empty_archive(
         await archive.close()
 
 
+async def test_search_envelope_executes_role_count_boolean_predicate(tmp_path: Path) -> None:
+    """``search_envelope()`` executes role-split count predicates through the shared DSL."""
+    archive = _archive(tmp_path)
+    try:
+        with ArchiveStore(archive.config.archive_root) as archive_db:
+            archive_db.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="role-count-hit",
+                    title="Role Count Hit",
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id="u1",
+                            role=Role.USER,
+                            text="one question",
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="one question")],
+                        ),
+                        ParsedMessage(
+                            provider_message_id="u2",
+                            role=Role.USER,
+                            text="second question",
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="second question")],
+                        ),
+                        ParsedMessage(
+                            provider_message_id="a1",
+                            role=Role.ASSISTANT,
+                            text="one two three four five",
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="one two three four five")],
+                        ),
+                    ],
+                )
+            )
+            archive_db.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="role-count-miss",
+                    title="Role Count Miss",
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id="u1",
+                            role=Role.USER,
+                            text="one question",
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="one question")],
+                        ),
+                        ParsedMessage(
+                            provider_message_id="a1",
+                            role=Role.ASSISTANT,
+                            text="one two three four five",
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="one two three four five")],
+                        ),
+                    ],
+                )
+            )
+
+        envelope = await archive.search_envelope(
+            "sessions where user_messages >= 2 AND assistant_words between 5 and 6"
+        )
+
+        assert [hit.session.id for hit in envelope.hits] == ["codex-session:role-count-hit"]
+    finally:
+        await archive.close()
+
+
 async def test_query_units_returns_typed_envelope_on_empty_archive(tmp_path: Path) -> None:
     """``query_units()`` returns a typed terminal-unit envelope even with no rows."""
     from polylogue.surfaces.payloads import QueryUnitEnvelope
