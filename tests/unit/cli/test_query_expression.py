@@ -3217,6 +3217,36 @@ class TestFieldRegistry:
         "contains": ("contains:foo", "contains_terms", ("foo",)),
         "messages": ("messages:>=10", "min_messages", 10),
         "words": ("words:>=200", "min_words", 200),
+        "user_messages": (
+            "sessions where user_messages >= 2",
+            "boolean_predicate",
+            QueryFieldPredicate(field="user_messages", values=("2",), op=">="),
+        ),
+        "assistant_messages": (
+            "sessions where assistant_messages >= 2",
+            "boolean_predicate",
+            QueryFieldPredicate(field="assistant_messages", values=("2",), op=">="),
+        ),
+        "system_messages": (
+            "sessions where system_messages = 0",
+            "boolean_predicate",
+            QueryFieldPredicate(field="system_messages", values=("0",), op="="),
+        ),
+        "tool_messages": (
+            "sessions where tool_messages = 0",
+            "boolean_predicate",
+            QueryFieldPredicate(field="tool_messages", values=("0",), op="="),
+        ),
+        "user_words": (
+            "sessions where user_words >= 100",
+            "boolean_predicate",
+            QueryFieldPredicate(field="user_words", values=("100",), op=">="),
+        ),
+        "assistant_words": (
+            "sessions where assistant_words >= 500",
+            "boolean_predicate",
+            QueryFieldPredicate(field="assistant_words", values=("500",), op=">="),
+        ),
         "lane": ("lane:dialogue", "retrieval_lane", "dialogue"),
         "lineage": (
             "lineage:id:chatgpt-export:ext-root",
