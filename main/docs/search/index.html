@@ -566,6 +566,15 @@ polylogue 'tool:bash AND NOT tag:stale'
 polylogue 'words between 100 and 500'
 polylogue 'date between 2026-06-01 and 2026-06-17'
 </code></pre>
+<p>Explicit Boolean queries can also compare the role-split session aggregate
+columns already maintained by the archive:</p>
+<pre><code class="language-bash">polylogue 'sessions where user_messages &gt;= 2 AND assistant_words between 500 and 2000'
+polylogue 'sessions where system_messages = 0 AND tool_messages = 0'
+</code></pre>
+<p>Supported role-split count fields are <code>user_messages</code>,
+<code>assistant_messages</code>, <code>system_messages</code>, <code>tool_messages</code>, <code>user_words</code>, and
+<code>assistant_words</code>. These fields are SQL-backed session predicates; use them in
+<code>sessions where ...</code> Boolean queries.</p>
 <p>Compact count syntax is equivalent where available:</p>
 <pre><code class="language-bash">polylogue messages:&gt;=5 words:&lt;=500
 </code></pre>
