@@ -8,6 +8,8 @@ shape that CLI/API/MCP surfaces can share.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Sequence
 from typing import Literal, cast
 
@@ -98,7 +100,7 @@ class ContextSnapshotRecord(ArchiveInsightModel):
     inheritance_mode: str = "explicit"
     segment_refs: tuple[str, ...] = ()
     evidence_refs: tuple[EvidenceRef, ...] = ()
-    metadata: dict[str, object] = Field(default_factory=dict)
+    metadata: dict[str, str] = Field(default_factory=dict)
 
 
 class RecoveryContextCompilation(ArchiveInsightModel):
@@ -242,6 +244,60 @@ def context_image_from_recovery(compilation: RecoveryContextCompilation) -> Cont
     )
 
 
+def context_snapshot_record_from_image(
+    image: ContextImage,
+    *,
+    boundary: str,
+    run_ref: str | None = None,
+    inheritance_mode: str = "explicit",
+) -> ContextSnapshotRecord:
+    """Build a storage-free evidence record for delivered context.
+
+    Compilation remains pure. Callers use this helper only at a delivery
+    boundary, then persist or emit the returned record through the surface that
+    actually performed the handoff.
+    """
+    if not boundary.strip():
+        raise ValueError("ContextSnapshotRecord requires a delivery boundary")
+    segment_refs = tuple(segment.segment_id for segment in image.segments)
+    metadata: dict[str, str] = {
+        "purpose": _metadata_value_to_text(image.spec.purpose),
+        "read_views": _metadata_value_to_text(image.spec.read_views),
+        "max_tokens": _metadata_value_to_text(image.spec.max_tokens),
+        "token_estimate": _metadata_value_to_text(image.token_estimate),
+        "include_assertions": _metadata_value_to_text(image.spec.include_assertions),
+        "include_candidates": _metadata_value_to_text(image.spec.include_candidates),
+        "redaction_policy": _metadata_value_to_text(image.spec.redaction_policy),
+        "omitted_count": _metadata_value_to_text(len(image.omitted)),
+        "assertion_refs": _metadata_value_to_text(image.assertion_refs),
+        "caveats": _metadata_value_to_text(image.caveats),
+    }
+    fingerprint_payload = {
+        "boundary": boundary,
+        "run_ref": run_ref,
+        "inheritance_mode": inheritance_mode,
+        "segment_refs": segment_refs,
+        "evidence_refs": tuple(ref.format() for ref in image.evidence_refs),
+        "metadata": metadata,
+    }
+    fingerprint = hashlib.sha256(json.dumps(fingerprint_payload, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+    return ContextSnapshotRecord(
+        snapshot_ref=f"context-snapshot:{fingerprint}",
+        run_ref=run_ref,
+        boundary=boundary,
+        inheritance_mode=inheritance_mode,
+        segment_refs=segment_refs,
+        evidence_refs=image.evidence_refs,
+        metadata=metadata,
+    )
+
+
+def _metadata_value_to_text(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
 def _attach_context_image(compilation: RecoveryContextCompilation) -> RecoveryContextCompilation:
     return compilation.model_copy(update={"context_image": context_image_from_recovery(compilation)})
 
@@ -310,4 +366,5 @@ __all__ = [
     "RecoveryContextKind",
     "compile_recovery_context",
     "context_image_from_recovery",
+    "context_snapshot_record_from_image",
 ]

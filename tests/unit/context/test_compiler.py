@@ -6,7 +6,12 @@ from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.domain_models import Session
-from polylogue.context.compiler import ContextSpec, compile_recovery_context, context_image_from_recovery
+from polylogue.context.compiler import (
+    ContextSpec,
+    compile_recovery_context,
+    context_image_from_recovery,
+    context_snapshot_record_from_image,
+)
 from polylogue.core.enums import Origin
 from polylogue.core.refs import EvidenceRef, ObjectRef
 from polylogue.insights.transforms import RecoveryWorkPacketEntry, compile_recovery_digest
@@ -163,6 +168,52 @@ def test_context_image_from_recovery_preserves_assertion_refs() -> None:
     assert image.segments[0].assertion_refs == ("claim-1",)
     assert image.segments[0].markdown is not None
     assert "Assertion Claims" in image.segments[0].markdown
+
+
+def test_context_snapshot_record_is_explicit_delivery_boundary() -> None:
+    digest = compile_recovery_digest(_session())
+    compiled = compile_recovery_context(digest, report="work-packet")
+    assert compiled.context_image is not None
+
+    record = context_snapshot_record_from_image(
+        compiled.context_image,
+        boundary="handoff",
+        run_ref="run:local-review",
+    )
+    record_again = context_snapshot_record_from_image(
+        compiled.context_image,
+        boundary="handoff",
+        run_ref="run:local-review",
+    )
+    different_boundary = context_snapshot_record_from_image(
+        compiled.context_image,
+        boundary="review",
+        run_ref="run:local-review",
+    )
+
+    assert record.snapshot_ref.startswith("context-snapshot:")
+    assert record.snapshot_ref == record_again.snapshot_ref
+    assert record.snapshot_ref != different_boundary.snapshot_ref
+    assert record.run_ref == "run:local-review"
+    assert record.boundary == "handoff"
+    assert record.inheritance_mode == "explicit"
+    assert record.segment_refs == (compiled.context_image.segments[0].segment_id,)
+    assert record.evidence_refs == compiled.context_image.evidence_refs
+    assert record.metadata["purpose"] == "handoff"
+    assert record.metadata["read_views"] == '["work-packet"]'
+    assert record.metadata["token_estimate"] == str(compiled.context_image.token_estimate)
+    assert record.metadata["include_candidates"] == "false"
+
+
+def test_context_snapshot_record_requires_delivery_boundary() -> None:
+    digest = compile_recovery_digest(_session())
+    compiled = compile_recovery_context(digest)
+    assert compiled.context_image is not None
+
+    with pytest.raises(ValueError, match="delivery boundary"):
+        context_snapshot_record_from_image(compiled.context_image, boundary="")
+    with pytest.raises(ValueError, match="delivery boundary"):
+        context_snapshot_record_from_image(compiled.context_image, boundary="   ")
 
 
 def test_context_spec_requires_an_explicit_seed() -> None:
