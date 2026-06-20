@@ -24,7 +24,7 @@ polylogued run
 In a second terminal with the same environment:
 
 ```bash
-polylogue import --demo
+polylogue import --demo --wait --timeout 30 --with-overlays
 polylogue ops status
 polylogue analyze
 polylogue find "pytest" then read --all --limit 5
@@ -38,10 +38,11 @@ devtools lab scenario verify-baselines
 
 `polylogue import --demo` is a daemon scheduling command, not an in-process
 archive build. It materializes approved fixture sources under the configured
-archive root, stages them into the daemon inbox, and reports success only after
-the daemon accepts scheduling. Until the running daemon converges the staged
-source, `polylogue ops status` may show an empty or in-progress archive and
-search/read/analyze examples can legitimately return no rows.
+archive root, stages them into the daemon inbox, and reports scheduling only
+after the daemon accepts the staged source. Add `--wait` to block until the
+daemon-built archive passes the semantic demo verifier before running the
+search/read/analyze examples. Add `--with-overlays` with `--wait` to attach the
+deterministic user-tier overlays after the target sessions exist.
 
 ## How It Works
 
@@ -73,10 +74,10 @@ typed assertions in `user.db`.
 
 ## README Demo Evidence
 
-The deterministic archive evidence for the current demo fixture world is
-`tests/unit/scenarios/test_demo_archive_convergence.py`. That test writes the
-same `build_demo_corpus_specs()` artifacts, converges them in process with
-`parse_sources_archive()`, and verifies:
+The deterministic archive evidence for the current demo fixture world is split
+across direct and daemon-backed checks. `tests/unit/scenarios/test_demo_archive_convergence.py`
+writes the same `build_demo_corpus_specs()` artifacts, converges them in
+process with `parse_sources_archive()`, and verifies:
 
 - three sessions are stored: ChatGPT export, Claude Code session, and Codex
   session;
@@ -91,11 +92,13 @@ same `build_demo_corpus_specs()` artifacts, converges them in process with
 - repeating convergence is idempotent for raw sessions, sessions, messages,
   blocks, and user overlay assertions.
 
-SPEC_MISMATCH: the README command transcript exercises the shipped
-daemon-backed scheduling surface, while the convergence evidence above uses
-the in-process archive parser. The documented search/read/analyze examples are
-therefore truthful after daemon convergence, but `polylogue import --demo`
-itself does not synchronously prove the archive contains those rows.
+`tests/integration/test_demo_daemon_convergence.py` exercises the shipped
+daemon-backed surface: `polylogue import --demo --wait --with-overlays` stages
+the fixture world, waits for live daemon convergence, seeds overlays only after
+the sessions exist, and reports success only after the archive passes semantic
+demo verification. The daemon path keeps absolute archive-local raw provenance
+internally; the direct `polylogue demo verify` path remains the stricter
+no-absolute-raw-path posture for fixture evidence.
 
 ---
 

@@ -254,7 +254,7 @@ polylogued run
 In a second terminal with the same environment:
 
 ```bash
-polylogue import --demo
+polylogue import --demo --wait --timeout 30 --with-overlays
 polylogue ops status
 polylogue analyze
 polylogue "pytest" read --all --limit 5
@@ -263,12 +263,9 @@ polylogue find "pytest" then analyze --facets
 ```
 
 `polylogue import --demo` writes only approved synthetic source files and asks
-the running daemon to ingest them. The command is asynchronous: `ops status` shows
-daemon/archive health, while search/read/analyze commands are
-meaningful after daemon convergence. The current deterministic archive
-evidence is the in-process fixture evidence in
-[docs/generate.md](docs/generate.md), including the expected `pytest` search
-hit and user-tier overlay evidence for the
+the running daemon to ingest them. Add `--wait` to block until the daemon-built
+archive passes the same semantic demo checks used by `polylogue demo verify`;
+`--with-overlays` then attaches the deterministic user-tier overlays for the
 `pytest-triage` tag, mark, note, saved query, and typed assertions.
 
 ## Developer tools

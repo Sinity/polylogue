@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -40,3 +41,24 @@ async def test_demo_verify_reports_missing_overlays(tmp_path: Path) -> None:
 
     assert verify.ok is False
     assert "expected demo overlays" in "\n".join(verify.problems)
+
+
+@pytest.mark.asyncio
+async def test_demo_verify_can_skip_daemon_source_path_leak_posture(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+
+    await seed_demo_archive(archive_root, force=True, with_overlays=True)
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute("UPDATE raw_sessions SET source_path = ?", (str(archive_root / "inbox" / "demo.jsonl"),))
+
+    strict = verify_demo_archive(archive_root, require_overlays=True)
+    daemon_wait = verify_demo_archive(
+        archive_root,
+        require_overlays=True,
+        check_source_path_leaks=False,
+    )
+
+    assert strict.ok is False
+    assert "raw source paths contain absolute paths" in "\n".join(strict.problems)
+    assert daemon_wait.ok is True
+    assert daemon_wait.absolute_path_leaks == ()

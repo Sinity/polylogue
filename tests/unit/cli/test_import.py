@@ -154,6 +154,136 @@ def test_import_demo_materializes_fixture_world_before_daemon_request(
     assert "polylogue analyze" in result.output
 
 
+def test_import_demo_wait_verifies_after_daemon_acceptance(
+    workspace_env: dict[str, Path],
+) -> None:
+    """--demo --wait blocks on the semantic verifier after daemon scheduling."""
+    from click.testing import CliRunner
+
+    from polylogue.cli.click_app import cli
+
+    captured: dict[str, Any] = {}
+
+    def fake_urlopen(req: Request, timeout: int) -> _FakeDaemonResponse:
+        del timeout
+        assert req.data is not None
+        request_data = cast("bytes", req.data)
+        staged_path = json.loads(request_data.decode("utf-8"))["path"]
+        return _FakeDaemonResponse(
+            {
+                "ok": True,
+                "operation_id": "import-demo-fixture-world",
+                "kind": "import",
+                "status": "pending",
+                "path": staged_path,
+                "message": "scheduled",
+            }
+        )
+
+    def fake_wait(*, timeout_s: float, require_overlays: bool = False) -> None:
+        captured["timeout_s"] = timeout_s
+        captured["require_overlays"] = require_overlays
+
+    runner = CliRunner()
+    with (
+        patch("polylogue.cli.commands.import_command.urlopen", side_effect=fake_urlopen),
+        patch("polylogue.cli.commands.import_command._wait_for_demo_archive_ready", side_effect=fake_wait),
+    ):
+        result = runner.invoke(cli, ["import", "--demo", "--wait", "--timeout", "12.5"])
+
+    assert result.exit_code == 0, result.output
+    assert captured == {"timeout_s": 12.5, "require_overlays": False}
+    staged = workspace_env["archive_root"] / "inbox" / "demo-fixture-world-source"
+    assert str(staged) in result.output
+    assert "Demo archive verified" in result.output
+    assert "overlays=no" in result.output
+
+
+def test_import_demo_wait_with_overlays_seeds_after_convergence() -> None:
+    """--with-overlays applies deterministic user overlays after base ingest."""
+    from click.testing import CliRunner
+
+    from polylogue.cli.click_app import cli
+
+    events: list[str] = []
+
+    def fake_urlopen(req: Request, timeout: int) -> _FakeDaemonResponse:
+        del timeout
+        assert req.data is not None
+        staged_path = json.loads(cast("bytes", req.data).decode("utf-8"))["path"]
+        events.append("daemon")
+        return _FakeDaemonResponse(
+            {
+                "ok": True,
+                "operation_id": "import-demo-fixture-world",
+                "kind": "import",
+                "status": "pending",
+                "path": staged_path,
+                "message": "scheduled",
+            }
+        )
+
+    def fake_wait(*, timeout_s: float, require_overlays: bool = False) -> None:
+        assert timeout_s == 30.0
+        assert require_overlays is False
+        events.append("wait-base")
+
+    def fake_seed(archive_root: Path) -> object:
+        assert archive_root.exists()
+        events.append("seed-overlays")
+        return object()
+
+    def fake_verify(*, require_overlays: bool = False) -> None:
+        assert require_overlays is True
+        events.append("verify-overlays")
+
+    runner = CliRunner()
+    with (
+        patch("polylogue.cli.commands.import_command.urlopen", side_effect=fake_urlopen),
+        patch("polylogue.cli.commands.import_command._wait_for_demo_archive_ready", side_effect=fake_wait),
+        patch("polylogue.scenarios.seed_demo_user_overlays", side_effect=fake_seed),
+        patch("polylogue.cli.commands.import_command._verify_demo_now", side_effect=fake_verify),
+    ):
+        result = runner.invoke(cli, ["import", "--demo", "--wait", "--with-overlays"])
+
+    assert result.exit_code == 0, result.output
+    assert events == ["daemon", "wait-base", "seed-overlays", "verify-overlays"]
+    assert "overlays=yes" in result.output
+
+
+def test_import_wait_requires_demo(tmp_path: Path) -> None:
+    """Waiting is tied to the deterministic demo verifier, not arbitrary imports."""
+    from click.testing import CliRunner
+
+    from polylogue.cli.click_app import cli
+
+    source = tmp_path / "source.jsonl"
+    source.write_text('{"type":"session"}\n')
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["import", str(source), "--wait"])
+
+    assert result.exit_code != 0
+    combined = (result.output + (result.stderr if result.stderr_bytes else "")).lower()
+    assert "--wait" in combined
+    assert "--demo" in combined
+
+
+def test_import_demo_with_overlays_requires_wait() -> None:
+    """Overlay seeding needs daemon-converged target refs."""
+    from click.testing import CliRunner
+
+    from polylogue.cli.click_app import cli
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["import", "--demo", "--with-overlays"])
+
+    assert result.exit_code != 0
+    combined = (result.output + (result.stderr if result.stderr_bytes else "")).lower()
+    assert "--with-overlays" in combined
+    assert "--wait" in combined
+
+
 def test_import_requires_path_or_demo() -> None:
     """Bare import refuses to claim success without a source selector."""
     from click.testing import CliRunner

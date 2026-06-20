@@ -60,6 +60,7 @@ def verify_demo_archive(
     archive_root: Path,
     *,
     require_overlays: bool = False,
+    check_source_path_leaks: bool = True,
 ) -> DemoVerifyResult:
     """Check semantic demo archive facts without a showcase catalog."""
 
@@ -103,11 +104,12 @@ def verify_demo_archive(
     if require_overlays and not overlays_present:
         problems.append("expected demo overlays, found none")
 
-    for raw_path in _raw_source_paths(archive_root):
-        if Path(raw_path).is_absolute():
-            leaks.append(raw_path)
-    if leaks:
-        problems.append("raw source paths contain absolute paths")
+    if check_source_path_leaks:
+        for raw_path in _raw_source_paths(archive_root):
+            if Path(raw_path).is_absolute():
+                leaks.append(raw_path)
+        if leaks:
+            problems.append("raw source paths contain absolute paths")
 
     return DemoVerifyResult(
         archive_root=archive_root,
