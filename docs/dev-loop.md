@@ -17,9 +17,12 @@ devtools workspace dev-loop --json
 It reports:
 
 - the current checkout path, branch, and commit;
+- a deterministic branch-local run id for correlating daemon, browser, and
+  receiver artifacts;
 - whether the user `polylogued.service` is active;
 - listeners on the daemon API port and browser-capture receiver port;
-- the branch-local archive root and log directory to use;
+- the branch-local archive root, run log directory, daemon log, browser
+  artifact directory, and preflight JSON path to use;
 - a concrete `polylogued run` command with branch-local environment variables.
 
 The default branch-local paths are:
@@ -34,6 +37,15 @@ Create them explicitly when needed:
 ```bash
 devtools workspace dev-loop --prepare
 ```
+
+For a reproducible debugging bundle, save the exact preflight before starting
+the daemon:
+
+```bash
+devtools workspace dev-loop --json > .cache/dev-loop/<run-id>/preflight.json
+```
+
+The printed `save_preflight` command expands the current run id for you.
 
 These paths are local development state. Do not commit archive data, logs,
 browser profiles, cookies, screenshots, or receiver payloads from them.
@@ -76,6 +88,8 @@ errors can be correlated with route logs and request failures. The development
 loop should make these facts obvious before an agent starts debugging:
 
 - which checkout started the daemon;
+- which run id ties together the daemon log, browser artifacts, and receiver
+  observations;
 - which archive root the daemon serves;
 - which API port the browser should open;
 - where daemon logs are written;

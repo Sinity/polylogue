@@ -112,6 +112,7 @@ def system_service_status(unit: str = "polylogued.service") -> dict[str, Any]:
 
 
 _PID_RE = re.compile(r"pid=(?P<pid>\d+)")
+_RUN_ID_SAFE_RE = re.compile(r"[^a-zA-Z0-9_.-]+")
 
 
 def _parse_ss_port_owners(stdout: str, port: int) -> list[dict[str, Any]]:
@@ -145,6 +146,12 @@ def port_status(port: int) -> dict[str, Any]:
     }
 
 
+def _dev_loop_run_id(*, branch: str | None, commit: str | None, api_port: int, browser_capture_port: int) -> str:
+    branch_part = _RUN_ID_SAFE_RE.sub("-", branch or "detached").strip("-") or "detached"
+    commit_part = _RUN_ID_SAFE_RE.sub("-", commit or "unknown").strip("-") or "unknown"
+    return f"{branch_part}-{commit_part}-api{api_port}-capture{browser_capture_port}"
+
+
 def build_dev_loop_status(
     *,
     repo_root: Path | None = None,
@@ -166,6 +173,15 @@ def build_dev_loop_status(
     receiver = port_status(browser_capture_port)
     branch = _git_value(["branch", "--show-current"], cwd=root)
     commit = _git_value(["rev-parse", "--short", "HEAD"], cwd=root)
+    run_id = _dev_loop_run_id(
+        branch=branch,
+        commit=commit,
+        api_port=api_port,
+        browser_capture_port=browser_capture_port,
+    )
+    run_log_dir = logs / run_id
+    daemon_log = run_log_dir / "polylogued.log"
+    browser_artifact_dir = run_log_dir / "browser"
     warnings: list[str] = []
     if service.get("active"):
         warnings.append(
@@ -179,9 +195,16 @@ def build_dev_loop_status(
         "repo_root": str(root),
         "branch": branch,
         "commit": commit,
+        "run_id": run_id,
         "prepared": prepare,
         "dev_archive_root": str(archive),
         "log_dir": str(logs),
+        "run_log_dir": str(run_log_dir),
+        "artifacts": {
+            "daemon_log": str(daemon_log),
+            "browser_dir": str(browser_artifact_dir),
+            "preflight_json": str(run_log_dir / "preflight.json"),
+        },
         "system_service": service,
         "ports": {
             "api": api,
@@ -191,15 +214,20 @@ def build_dev_loop_status(
             "POLYLOGUE_ARCHIVE_ROOT": str(archive),
             "POLYLOGUE_API_PORT": str(api_port),
             "POLYLOGUE_BROWSER_CAPTURE_PORT": str(browser_capture_port),
+            "POLYLOGUE_DEV_LOOP_RUN_ID": run_id,
+            "POLYLOGUE_DEV_LOOP_LOG_DIR": str(run_log_dir),
         },
         "commands": {
             "stop_system_service": "systemctl --user stop polylogued.service",
             "prepare": "devtools workspace dev-loop --prepare",
+            "save_preflight": f"mkdir -p {run_log_dir} && devtools workspace dev-loop --json > {run_log_dir / 'preflight.json'}",
             "run_daemon": (
                 f"env POLYLOGUE_ARCHIVE_ROOT={archive} "
                 f"POLYLOGUE_API_PORT={api_port} "
                 f"POLYLOGUE_BROWSER_CAPTURE_PORT={browser_capture_port} "
-                f"polylogued run 2>&1 | tee {logs / 'polylogued.log'}"
+                f"POLYLOGUE_DEV_LOOP_RUN_ID={run_id} "
+                f"POLYLOGUE_DEV_LOOP_LOG_DIR={run_log_dir} "
+                f"polylogued run 2>&1 | tee {daemon_log}"
             ),
             "open_web_shell": f"http://127.0.0.1:{api_port}/",
             "receiver_status": f"curl -sf http://127.0.0.1:{browser_capture_port}/v1/status",
@@ -212,8 +240,10 @@ def _print_human(payload: dict[str, Any]) -> None:
     print("Polylogue dev loop")
     print(f"  repo:    {payload['repo_root']}")
     print(f"  branch:  {payload.get('branch') or 'unknown'} @ {payload.get('commit') or 'unknown'}")
+    print(f"  run id:  {payload['run_id']}")
     print(f"  archive: {payload['dev_archive_root']}")
     print(f"  logs:    {payload['log_dir']}")
+    print(f"  run log: {payload['run_log_dir']}")
     service = payload["system_service"]
     assert isinstance(service, dict)
     print(
