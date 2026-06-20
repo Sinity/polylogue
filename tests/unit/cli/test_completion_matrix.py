@@ -390,6 +390,43 @@ def test_query_date_operator_empty_completion_per_shell(
 
 
 @pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
+def test_query_numeric_operator_completion_per_shell(
+    shell: str,
+    comp_cls: type[ShellComplete],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Readable numeric syntax completion suggests grammar-backed operators."""
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+    items = _run_completion_for_partial(shell, comp_cls, ["duration_ms"], "b")
+    item_map = dict(items)
+    assert item_map == {"between ": item_map["between "]}
+    assert "duration_ms >= 60000" in (item_map["between "] or "")
+
+
+@pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
+def test_query_numeric_operator_empty_completion_per_shell(
+    shell: str,
+    comp_cls: type[ShellComplete],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After a numeric field, completion is operator-only, not root-command mixed."""
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+    items = _run_completion(shell, comp_cls, ["duration_ms"])
+    values = {value for value, _ in items}
+    assert {">=", "<=", "=", ">", "<", "between "}.issubset(values)
+
+
+@pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
 def test_query_then_connector_completion_per_shell(
     shell: str,
     comp_cls: type[ShellComplete],
