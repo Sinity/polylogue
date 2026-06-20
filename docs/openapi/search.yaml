@@ -1465,6 +1465,43 @@ components:
         format:
           title: Format
           type: string
+        target_refs:
+          items:
+            type: string
+          title: Target Refs
+          type: array
+        object_refs:
+          default: []
+          items:
+            type: string
+          title: Object Refs
+          type: array
+        evidence_refs:
+          default: []
+          items:
+            type: string
+          title: Evidence Refs
+          type: array
+        caveats:
+          default: []
+          items:
+            type: string
+          title: Caveats
+          type: array
+        lossiness:
+          title: Lossiness
+          type: string
+        evidence_policy:
+          title: Evidence Policy
+          type: string
+        privacy_policy:
+          title: Privacy Policy
+          type: string
+        actions:
+          additionalProperties:
+            $ref: '#/components/schemas/ReaderActionAvailabilityPayload'
+          title: Actions
+          type: object
         payload:
           description: Profile-specific JSON payload for the selected read view.
           title: Payload
@@ -1472,6 +1509,10 @@ components:
       - session_id
       - view
       - format
+      - target_refs
+      - lossiness
+      - evidence_policy
+      - privacy_policy
       - payload
       title: SessionReadViewEnvelope
       type: object

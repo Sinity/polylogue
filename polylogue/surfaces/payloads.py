@@ -1414,7 +1414,25 @@ class SessionReadViewEnvelope(SurfacePayloadModel):
     session_id: str
     view: str
     format: str
+    target_refs: tuple[str, ...]
+    object_refs: tuple[str, ...] = ()
+    evidence_refs: tuple[str, ...] = ()
+    caveats: tuple[str, ...] = ()
+    lossiness: str
+    evidence_policy: str
+    privacy_policy: str
+    actions: dict[str, ReaderActionAvailabilityPayload] = Field(default_factory=reader_session_actions)
     payload: Any = Field(description="Profile-specific JSON payload for the selected read view.")
+
+    @field_validator("target_refs", "object_refs")
+    @classmethod
+    def _validate_session_read_object_refs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(normalize_object_ref_text(ref) for ref in value)
+
+    @field_validator("evidence_refs")
+    @classmethod
+    def _validate_session_read_evidence_refs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(normalize_public_ref_text(ref) for ref in value)
 
 
 class ObservedEventQueryRowPayload(SurfacePayloadModel):
