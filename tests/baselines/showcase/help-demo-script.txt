@@ -1,0 +1,9 @@
+Usage: polylogue demo script [OPTIONS]
+
+  Print a copy-pastable demo command script.
+
+Options:
+  --root PATH     Archive root to embed in the script. Defaults to
+                  POLYLOGUE_ARCHIVE_ROOT.
+  --shell [bash]  [default: bash]
+  -h, --help      Show this message and exit.
