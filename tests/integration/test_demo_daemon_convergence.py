@@ -79,6 +79,10 @@ def _run_import_demo(daemon_url: str, env: dict[str, str]) -> subprocess.Complet
             "polylogue.cli",
             "import",
             "--demo",
+            "--wait",
+            "--timeout",
+            "20",
+            "--with-overlays",
             "--daemon-url",
             daemon_url,
         ],
@@ -86,7 +90,7 @@ def _run_import_demo(daemon_url: str, env: dict[str, str]) -> subprocess.Complet
         text=True,
         capture_output=True,
         env=env,
-        timeout=10,
+        timeout=30,
     )
 
 
@@ -193,6 +197,8 @@ async def test_import_demo_converges_through_live_daemon_path(
             assert "demo-fixture-world-source" in result.stdout
             assert f"Daemon:       {daemon_url}" in result.stdout
             assert "Operation:    ingest-demo-fixture-world-source" in result.stdout
+            assert "Demo archive verified" in result.stdout
+            assert "overlays=yes" in result.stdout
 
             staged = inbox / "demo-fixture-world-source"
             assert sorted(path.name for path in staged.iterdir()) == ["chatgpt", "claude-code", "codex"]

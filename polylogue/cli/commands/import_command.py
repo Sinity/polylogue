@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -44,6 +45,7 @@ _DEFAULT_DAEMON_URL = "http://127.0.0.1:8766"
 # Statuses that mean the daemon accepted scheduling and the work is now
 # observable through the inbox / ``polylogue ops status`` surfaces.
 _ACCEPTED_STATUSES = frozenset({"accepted", "pending", "scheduled", "queued"})
+_DEMO_WAIT_POLL_INTERVAL_S = 0.25
 
 
 def _daemon_url(env: AppEnv) -> str:
@@ -84,6 +86,44 @@ def _materialize_demo_source() -> Path:
     from polylogue.demo import materialize_demo_source
 
     return materialize_demo_source(archive_root(), force=True)
+
+
+def _wait_for_demo_archive_ready(*, timeout_s: float, require_overlays: bool = False) -> None:
+    """Wait until the daemon-ingested demo archive passes semantic verification."""
+    from polylogue.demo import verify_demo_archive
+
+    deadline = time.monotonic() + timeout_s
+    last_problems: tuple[str, ...] = ("verification did not run",)
+    while time.monotonic() <= deadline:
+        result = verify_demo_archive(
+            archive_root(),
+            require_overlays=require_overlays,
+            check_source_path_leaks=False,
+        )
+        if result.ok:
+            return
+        last_problems = result.problems
+        time.sleep(_DEMO_WAIT_POLL_INTERVAL_S)
+
+    problem_text = "; ".join(last_problems) if last_problems else "semantic checks did not pass"
+    fail(
+        "import",
+        f"Timed out waiting {timeout_s:g}s for demo archive convergence: {problem_text}",
+    )
+
+
+def _verify_demo_now(*, require_overlays: bool = False) -> None:
+    """Run the demo verifier once and surface semantic failures through Click."""
+    from polylogue.demo import verify_demo_archive
+
+    result = verify_demo_archive(
+        archive_root(),
+        require_overlays=require_overlays,
+        check_source_path_leaks=False,
+    )
+    if not result.ok:
+        problem_text = "; ".join(result.problems) if result.problems else "semantic checks did not pass"
+        fail("import", f"Demo archive verification failed: {problem_text}")
 
 
 def _daemon_unreachable_message(daemon_url: str, reason: str) -> str:
@@ -141,6 +181,24 @@ def _daemon_http_error_message(exc: HTTPError, *, daemon_url: str, staged: Path)
     help="Explain detector/parser decisions without scheduling daemon import.",
 )
 @click.option(
+    "--wait",
+    is_flag=True,
+    help="With --demo, wait for daemon convergence and verify the demo archive.",
+)
+@click.option(
+    "--timeout",
+    "wait_timeout_s",
+    type=click.FloatRange(min=0.001),
+    default=30.0,
+    show_default=True,
+    help="Seconds to wait for --demo --wait convergence.",
+)
+@click.option(
+    "--with-overlays",
+    is_flag=True,
+    help="With --demo --wait, seed deterministic user overlays after daemon ingest.",
+)
+@click.option(
     "--format",
     "-f",
     "output_format",
@@ -156,6 +214,9 @@ def import_command(
     demo: bool,
     daemon_url: str,
     explain: bool,
+    wait: bool,
+    wait_timeout_s: float,
+    with_overlays: bool,
     output_format: str,
 ) -> None:
     """Schedule a file or directory for import by the running daemon.
@@ -179,6 +240,13 @@ def import_command(
             return
         click.echo(payload.to_json(exclude_none=True))
         return
+
+    if wait and not demo:
+        fail("import", "--wait is currently supported only with --demo.")
+    if with_overlays and not demo:
+        fail("import", "--with-overlays is currently supported only with --demo.")
+    if with_overlays and not wait:
+        fail("import", "--with-overlays requires --demo --wait so overlays attach to ingested sessions.")
 
     if demo:
         if path is not None:
@@ -233,6 +301,19 @@ def import_command(
         f"                Check progress:  journalctl --user -u polylogued.service -f\n"
         f"                Verify ingested: polylogue analyze"
     )
+
+    if wait:
+        env.ui.console.print(f"[bold]Waiting:[/bold] demo archive convergence (timeout {wait_timeout_s:g}s)")
+        _wait_for_demo_archive_ready(timeout_s=wait_timeout_s)
+        if with_overlays:
+            from polylogue.scenarios import seed_demo_user_overlays
+
+            seed_demo_user_overlays(archive_root())
+            _verify_demo_now(require_overlays=True)
+        env.ui.console.print(
+            "[bold green]Demo archive verified:[/bold green] "
+            f"sessions=3 messages=19 overlays={'yes' if with_overlays else 'no'}"
+        )
 
 
 __all__ = ["import_command"]
