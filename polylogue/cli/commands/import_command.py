@@ -81,14 +81,9 @@ def _stage_for_daemon(path: Path, *, replace_existing: bool = False) -> Path:
 
 def _materialize_demo_source() -> Path:
     """Write the approved deterministic demo fixture world to a local source dir."""
-    from polylogue.scenarios import build_demo_corpus_specs
-    from polylogue.schemas.synthetic import SyntheticCorpus
+    from polylogue.demo import materialize_demo_source
 
-    source_root = archive_root() / "demo-fixture-world-source"
-    if source_root.exists():
-        shutil.rmtree(source_root)
-    SyntheticCorpus.write_specs_artifacts(build_demo_corpus_specs(), source_root, prefix="demo", index_width=2)
-    return source_root
+    return materialize_demo_source(archive_root(), force=True)
 
 
 def _daemon_unreachable_message(daemon_url: str, reason: str) -> str:
