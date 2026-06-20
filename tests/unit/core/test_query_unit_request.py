@@ -46,3 +46,24 @@ def test_query_unit_request_preserves_prebuilt_session_filters() -> None:
     )
 
     assert request.session_filters is filters
+
+
+def test_query_unit_request_accepts_api_style_tuple_filters() -> None:
+    request = query_unit_request(
+        expression="messages where text:timeout",
+        limit=10,
+        origins=("codex-session",),
+        tags=("important", "follow-up"),
+        repo_names=("polylogue",),
+        tool_terms=("bash",),
+        action_terms=("file_edit",),
+        referenced_paths=("polylogue/archive/query",),
+    )
+
+    assert request.session_filters is not None
+    assert request.session_filters["origins"] == ("codex-session",)
+    assert request.session_filters["tags"] == ("important", "follow-up")
+    assert request.session_filters["repo_names"] == ("polylogue",)
+    assert request.session_filters["tool_terms"] == ("bash",)
+    assert request.session_filters["action_terms"] == ("file_edit",)
+    assert request.session_filters["referenced_paths"] == ("polylogue/archive/query",)
