@@ -16,6 +16,7 @@ class QueryUnitDescriptor:
     unit: QueryUnitName
     singular_source: str
     plural_source: str
+    payload_model: str
     terminal_supported: bool = True
     exists_supported: bool = False
     lowerer_kind: QueryUnitLowererKind = "sql"
@@ -519,6 +520,7 @@ QUERY_UNIT_DESCRIPTORS: tuple[QueryUnitDescriptor, ...] = (
         "message",
         "messages",
         exists_supported=True,
+        payload_model="MessageQueryRowPayload",
         cli_plain_renderer="message",
         fields=_unit_info("message").fields,
         description=_unit_info("message").description,
@@ -529,6 +531,7 @@ QUERY_UNIT_DESCRIPTORS: tuple[QueryUnitDescriptor, ...] = (
         "action",
         "actions",
         exists_supported=True,
+        payload_model="ActionQueryRowPayload",
         cli_plain_renderer="action",
         fields=_unit_info("action").fields,
         description=_unit_info("action").description,
@@ -539,6 +542,7 @@ QUERY_UNIT_DESCRIPTORS: tuple[QueryUnitDescriptor, ...] = (
         "block",
         "blocks",
         exists_supported=True,
+        payload_model="BlockQueryRowPayload",
         cli_plain_renderer="block",
         fields=_unit_info("block").fields,
         description=_unit_info("block").description,
@@ -549,6 +553,7 @@ QUERY_UNIT_DESCRIPTORS: tuple[QueryUnitDescriptor, ...] = (
         "assertion",
         "assertions",
         exists_supported=True,
+        payload_model="AssertionQueryRowPayload",
         cli_plain_renderer="assertion",
         fields=_unit_info("assertion").fields,
         description=_unit_info("assertion").description,
@@ -560,6 +565,7 @@ QUERY_UNIT_DESCRIPTORS: tuple[QueryUnitDescriptor, ...] = (
         "runs",
         exists_supported=False,
         lowerer_kind="runtime_transform",
+        payload_model="RunQueryRowPayload",
         cli_plain_renderer="run",
         fields=_unit_info("run").fields,
         description=_unit_info("run").description,
@@ -571,6 +577,7 @@ QUERY_UNIT_DESCRIPTORS: tuple[QueryUnitDescriptor, ...] = (
         "observed-events",
         exists_supported=False,
         lowerer_kind="runtime_transform",
+        payload_model="ObservedEventQueryRowPayload",
         cli_plain_renderer="observed-event",
         fields=_unit_info("observed-event").fields,
         description=_unit_info("observed-event").description,
@@ -582,6 +589,7 @@ QUERY_UNIT_DESCRIPTORS: tuple[QueryUnitDescriptor, ...] = (
         "context-snapshots",
         exists_supported=False,
         lowerer_kind="runtime_transform",
+        payload_model="ContextSnapshotQueryRowPayload",
         cli_plain_renderer="context-snapshot",
         fields=_unit_info("context-snapshot").fields,
         description=_unit_info("context-snapshot").description,

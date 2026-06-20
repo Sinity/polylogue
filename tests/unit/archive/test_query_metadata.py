@@ -78,8 +78,10 @@ def test_query_unit_descriptors_own_terminal_aliases() -> None:
     assert observed_descriptor.plural_source == "observed-events"
     assert observed_descriptor.exists_supported is False
     assert observed_descriptor.lowerer_kind == "runtime_transform"
+    assert observed_descriptor.payload_model == "ObservedEventQueryRowPayload"
     assert message_descriptor.exists_supported is True
     assert message_descriptor.lowerer_kind == "sql"
+    assert message_descriptor.payload_model == "MessageQueryRowPayload"
     assert context_descriptor.source_aliases == ("context-snapshot", "context-snapshots")
     assert terminal_query_source_list() == "messages/actions/blocks/assertions/runs/observed-events/context-snapshots"
     assert ("assertions", "assertion") in terminal_query_source_pairs()
@@ -97,3 +99,21 @@ def test_query_unit_descriptors_own_terminal_aliases() -> None:
     )
     assert structural_query_fields("context-snapshot") == ()
     assert "boundary" in terminal_query_fields("context-snapshots")
+
+
+def test_terminal_query_completion_payloads_expose_payload_model() -> None:
+    from polylogue.archive.query.completions import query_completion_payload
+
+    source_payload = query_completion_payload("terminal-source", incomplete="runs")
+    source_candidates = [
+        cast(dict[str, object], candidate) for candidate in cast(list[object], source_payload["candidates"])
+    ]
+    run_candidate = next(candidate for candidate in source_candidates if candidate["value"] == "runs")
+    assert run_candidate["payload_model"] == "RunQueryRowPayload"
+
+    field_payload = query_completion_payload("terminal-field", unit="assertions", incomplete="kind")
+    field_candidates = [
+        cast(dict[str, object], candidate) for candidate in cast(list[object], field_payload["candidates"])
+    ]
+    field_candidate = next(candidate for candidate in field_candidates if candidate["value"] == "kind")
+    assert field_candidate["payload_model"] == "AssertionQueryRowPayload"
