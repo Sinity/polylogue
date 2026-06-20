@@ -534,7 +534,7 @@ def test_continue_verb_renders_recovery_continue_report() -> None:
         output_format=None,
         destination="clipboard",
         out_path=None,
-        recovery=read_view_handlers.ReadViewRecoveryOptions(report="continue"),
+        options=read_view_handlers.ReadViewRecoveryOptions(report="continue"),
     )
 
 
@@ -700,7 +700,7 @@ def test_read_view_recovery_work_packet_json_uses_success_envelope(capsys: pytes
                 output_format="json",
                 destination="terminal",
                 out_path=None,
-                recovery=read_view_handlers.ReadViewRecoveryOptions(report="work-packet"),
+                options=read_view_handlers.ReadViewRecoveryOptions(report="work-packet"),
             ),
         )
 
@@ -793,7 +793,7 @@ def test_read_view_accepts_explicit_options_owned_by_selected_view() -> None:
             output_format=None,
             destination="terminal",
             out_path=None,
-            recovery=read_view_handlers.ReadViewRecoveryOptions(report="continue"),
+            options=read_view_handlers.ReadViewRecoveryOptions(report="continue"),
             explicit_options=frozenset({"recovery_report"}),
         ),
         RootModeRequest.from_params({}),

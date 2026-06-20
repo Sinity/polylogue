@@ -83,6 +83,16 @@ class ReadViewCorrelationOptions:
     otlp: bool = False
 
 
+ReadViewOptions = (
+    ReadViewMessageOptions
+    | ReadViewContextOptions
+    | ReadViewContextPackOptions
+    | ReadViewRecoveryOptions
+    | ReadViewNeighborOptions
+    | ReadViewCorrelationOptions
+)
+
+
 @dataclass(frozen=True, slots=True)
 class ReadViewInvocation:
     """Common transport and selection fields for one read-view execution."""
@@ -92,12 +102,7 @@ class ReadViewInvocation:
     output_format: str | None
     destination: str
     out_path: str | None
-    messages: ReadViewMessageOptions = ReadViewMessageOptions()
-    context: ReadViewContextOptions = ReadViewContextOptions()
-    context_pack: ReadViewContextPackOptions = ReadViewContextPackOptions()
-    recovery: ReadViewRecoveryOptions = ReadViewRecoveryOptions()
-    neighbors: ReadViewNeighborOptions = ReadViewNeighborOptions()
-    correlation: ReadViewCorrelationOptions = ReadViewCorrelationOptions()
+    options: ReadViewOptions | None = None
     explicit_options: frozenset[ReadViewOptionName] = frozenset()
 
 
@@ -175,6 +180,7 @@ __all__ = [
     "ReadViewOptionName",
     "ReadViewMessageOptions",
     "ReadViewNeighborOptions",
+    "ReadViewOptions",
     "ReadViewRecoveryOptions",
     "ReadViewSessionPolicy",
     "deliver_content",

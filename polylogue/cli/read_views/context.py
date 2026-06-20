@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
-from polylogue.cli.read_views.base import ReadViewInvocation, deliver_content
+from typing import cast
+
+from polylogue.cli.read_views.base import (
+    ReadViewContextOptions,
+    ReadViewContextPackOptions,
+    ReadViewInvocation,
+    deliver_content,
+)
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 
@@ -14,10 +21,11 @@ def run_read_context(env: AppEnv, request: RootModeRequest, invocation: ReadView
 
     del request
     assert invocation.session_id is not None
+    options = cast(ReadViewContextOptions, invocation.options or ReadViewContextOptions())
     preamble = compose_context_preamble(
         env,
         session_id=invocation.session_id,
-        related_limit=max(1, invocation.context.related_limit),
+        related_limit=max(1, options.related_limit),
     )
     deliver_content(env, preamble + "\n", destination=invocation.destination, out_path=invocation.out_path)
 
@@ -28,7 +36,7 @@ def run_read_context_pack(env: AppEnv, request: RootModeRequest, invocation: Rea
     from polylogue.context.pack import run_context_pack_view
 
     del request
-    options = invocation.context_pack
+    options = cast(ReadViewContextPackOptions, invocation.options or ReadViewContextPackOptions())
     run_context_pack_view(
         env,
         project_path=options.project_path,

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 from polylogue.archive.session.neighbor_candidates import SessionNeighborCandidate
-from polylogue.cli.read_views.base import ReadViewInvocation, deliver_content
+from polylogue.cli.read_views.base import ReadViewInvocation, ReadViewNeighborOptions, deliver_content
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 
@@ -48,7 +50,7 @@ def run_read_neighbors(env: AppEnv, request: RootModeRequest, invocation: ReadVi
     query_seed = " ".join(request.query_terms).strip() or None
     if not invocation.session_id and not query_seed:
         fail("read", "read --view neighbors requires a seed (use --id, id:prefix, --latest, or a query).")
-    options = invocation.neighbors
+    options = cast(ReadViewNeighborOptions, invocation.options or ReadViewNeighborOptions())
 
     origin = request.params.get("origin")
     provider = provider_from_origin(Origin(str(origin))).value if origin else None
