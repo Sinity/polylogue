@@ -11,6 +11,7 @@ from typing import Any
 from polylogue.daemon.convergence_debt_status import convergence_debt_summary_info
 from polylogue.daemon.embedding_readiness import embedding_readiness_info
 from polylogue.daemon.fts_status import fts_readiness_info
+from polylogue.maintenance.targets import MAINTENANCE_TARGET_NAMES
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from polylogue.surfaces.payloads import (
     ArchiveDebtActionPayload,
@@ -20,6 +21,13 @@ from polylogue.surfaces.payloads import (
     ArchiveDebtSeverity,
     ArchiveDebtTotalsPayload,
 )
+
+_CONVERGENCE_STAGE_MAINTENANCE_TARGETS = {
+    "fts": "dangling_fts",
+    "embed": "message_embeddings",
+    "insights": "session_insights",
+    "session_insights": "session_insights",
+}
 
 
 def archive_debt_list(
@@ -152,6 +160,7 @@ def _convergence_rows(index_db: Path) -> list[ArchiveDebtRowPayload]:
     rows: list[ArchiveDebtRowPayload] = []
     for item in summary.recent:
         subject_ref = f"{item.subject_type}:{item.subject_id}"
+        actions = _convergence_actions(item.stage) if item.retry_due else ()
         rows.append(
             ArchiveDebtRowPayload(
                 debt_ref=f"debt:convergence:{item.stage}:{item.subject_type}:{item.subject_id}",
@@ -166,17 +175,22 @@ def _convergence_rows(index_db: Path) -> list[ArchiveDebtRowPayload]:
                 source_family=_source_family(item.subject_type, item.subject_id),
                 observed_at=item.last_failed_at,
                 evidence_refs=(f"ops-db:{index_db.with_name('ops.db')}",),
-                actions=(
-                    ArchiveDebtActionPayload(
-                        label="Run maintenance",
-                        command=("polylogue", "ops", "maintenance", "run", "--target", item.stage),
-                    ),
-                )
-                if item.retry_due
-                else (),
+                actions=actions,
             )
         )
     return rows
+
+
+def _convergence_actions(stage: str) -> tuple[ArchiveDebtActionPayload, ...]:
+    target = _CONVERGENCE_STAGE_MAINTENANCE_TARGETS.get(stage)
+    if target is None or target not in MAINTENANCE_TARGET_NAMES:
+        return ()
+    return (
+        ArchiveDebtActionPayload(
+            label="Run maintenance",
+            command=("polylogue", "ops", "maintenance", "run", "--target", target),
+        ),
+    )
 
 
 def _source_family(subject_type: str, subject_id: str) -> str:

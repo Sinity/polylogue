@@ -66,7 +66,7 @@ def test_archive_debt_reports_convergence_failures(tmp_path: Path) -> None:
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                "session_insights",
+                "fts",
                 "session",
                 "sess-1",
                 "failed",
@@ -77,19 +77,48 @@ def test_archive_debt_reports_convergence_failures(tmp_path: Path) -> None:
                 None,
             ),
         )
+        conn.execute(
+            """
+            INSERT INTO convergence_debt (
+                stage, target_type, target_id, status, attempts, priority, updated_at_ms, last_error, next_retry_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "convergence",
+                "session",
+                "sess-2",
+                "failed",
+                1,
+                5,
+                int(datetime(2026, 6, 19, tzinfo=UTC).timestamp() * 1000) - 1,
+                "generic failure",
+                None,
+            ),
+        )
         conn.commit()
     finally:
         conn.close()
 
     payload = archive_debt_list(archive_root=tmp_path, kinds=("convergence",))
 
-    assert payload.totals.total == 1
-    row = payload.rows[0]
-    assert row.kind == "convergence"
-    assert row.stage == "session_insights"
-    assert row.subject_ref == "session:sess-1"
-    assert row.status == "actionable"
-    assert row.details == "boom"
+    assert payload.totals.total == 2
+    rows_by_stage = {row.stage: row for row in payload.rows}
+    fts_row = rows_by_stage["fts"]
+    assert fts_row.kind == "convergence"
+    assert fts_row.subject_ref == "session:sess-1"
+    assert fts_row.status == "actionable"
+    assert fts_row.details == "boom"
+    assert tuple(fts_row.actions[0].command) == (
+        "polylogue",
+        "ops",
+        "maintenance",
+        "run",
+        "--target",
+        "dangling_fts",
+    )
+    generic_row = rows_by_stage["convergence"]
+    assert generic_row.subject_ref == "session:sess-2"
+    assert generic_row.actions == ()
 
 
 def test_archive_debt_converts_embedding_and_fts_readiness(
