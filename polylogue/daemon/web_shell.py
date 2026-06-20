@@ -778,8 +778,6 @@ function renderFacets() {
 function renderReadViewSelector(c) {
   if (!c) return '';
   var profiles = state.readViewProfiles || [];
-  var supported = {messages: true, recovery: true, raw: true, context: true, 'context-pack': true, neighbors: true, correlation: true};
-  var labels = {messages: 'Messages', recovery: 'Recovery', raw: 'Raw', context: 'Context', 'context-pack': 'Context Pack', neighbors: 'Neighbors', correlation: 'Correlation'};
   if (!profiles.length) {
     var fallback = state.readViewProfileError || 'Read profiles loading';
     return '<div id="read-profile-selector" class="read-profile-selector muted">' + esc(fallback) + '</div>';
@@ -789,12 +787,14 @@ function renderReadViewSelector(c) {
   profiles.forEach(function(profile) {
     var id = profile.view_id || profile.id;
     if (!id) return;
-    var disabled = supported[id] ? '' : ' disabled';
-    var suffix = supported[id] ? '' : ' (pending HTTP route)';
+    var http = profile.http || {};
+    var supported = http.supported === true;
+    var disabled = supported ? '' : ' disabled';
+    var suffix = supported ? '' : ' (pending HTTP route)';
     var selected = (state.selectedReadView === id) ? ' selected' : '';
-    var title = profile.description || profile.summary || '';
+    var title = profile.purpose || profile.description || profile.summary || '';
     html += '<option value="' + escAttr(id) + '"' + selected + disabled + ' title="' + escAttr(title) + '">'
-      + esc(labels[id] || id) + esc(suffix) + '</option>';
+      + esc(profile.label || id) + esc(suffix) + '</option>';
   });
   html += '</select><span class="profile-hint">from /api/read-view-profiles</span></div>';
   return html;
