@@ -18,6 +18,7 @@ from polylogue.daemon.convergence import ConvergenceStage
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user import USER_SCHEMA_VERSION
 from tests.infra.frozen_clock import FrozenClock
@@ -119,7 +120,7 @@ def test_polylogued_status_json_reports_archive_storage(tmp_path: Path) -> None:
     tiers = cast(list[dict[str, object]], storage["tiers"])
     assert {tier["name"]: tier["user_version"] for tier in tiers} == {
         "source": 1,
-        "index": 3,
+        "index": INDEX_SCHEMA_VERSION,
         "embeddings": 1,
         "user": USER_SCHEMA_VERSION,
         "ops": 1,

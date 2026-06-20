@@ -5,7 +5,7 @@ from __future__ import annotations
 from polylogue.core.enums import BlockType, BranchType, LinkType, MessageType, Origin, PasteBoundary, Role
 from polylogue.storage.sqlite.archive_tiers.common import CONTENT_HASH_CHECK, check, nullable_check
 
-INDEX_SCHEMA_VERSION = 3
+INDEX_SCHEMA_VERSION = 4
 
 INDEX_DDL = f"""
 CREATE TABLE IF NOT EXISTS sessions (
@@ -183,6 +183,7 @@ SELECT
 FROM blocks u
 LEFT JOIN blocks r
     ON r.tool_id = u.tool_id
+   AND r.session_id = u.session_id
    AND r.block_type = 'tool_result'
 WHERE u.block_type = 'tool_use';
 

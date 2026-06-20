@@ -21,6 +21,7 @@ from polylogue.sources.live.batch_support import (
     _parse_path_as_session_artifact,
 )
 from polylogue.sources.live.cursor import CursorStore
+from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.user import USER_SCHEMA_VERSION
 
 
@@ -189,7 +190,10 @@ def test_full_ingest_writes_archive_with_route_observability(
         "archive_bootstrapped": False,
         "archive_present_tiers": "source,index,ops",
         "archive_missing_tiers": "embeddings,user",
-        "archive_tier_user_versions_json": ('{"embeddings": null, "index": 3, "ops": 1, "source": 1, "user": null}'),
+        "archive_tier_user_versions_json": json.dumps(
+            {"embeddings": None, "index": INDEX_SCHEMA_VERSION, "ops": 1, "source": 1, "user": None},
+            sort_keys=True,
+        ),
     }
     write_event = next(payload for phase, payload in stage_events if phase == "full_archive_write")
     assert write_event == {
@@ -278,7 +282,10 @@ def test_streaming_full_ingest_writes_archive_from_blob(
         "archive_bootstrapped": False,
         "archive_present_tiers": "source,index,ops",
         "archive_missing_tiers": "embeddings,user",
-        "archive_tier_user_versions_json": ('{"embeddings": null, "index": 3, "ops": 1, "source": 1, "user": null}'),
+        "archive_tier_user_versions_json": json.dumps(
+            {"embeddings": None, "index": INDEX_SCHEMA_VERSION, "ops": 1, "source": 1, "user": None},
+            sort_keys=True,
+        ),
     }
     write_event = next(payload for phase, payload in stage_events if phase == "full_archive_write")
     assert write_event == {
@@ -352,7 +359,7 @@ def test_full_ingest_bootstraps_archive_root(
         "archive_present_tiers": "source,index,embeddings,user,ops",
         "archive_missing_tiers": "",
         "archive_tier_user_versions_json": json.dumps(
-            {"embeddings": 1, "index": 3, "ops": 1, "source": 1, "user": USER_SCHEMA_VERSION},
+            {"embeddings": 1, "index": INDEX_SCHEMA_VERSION, "ops": 1, "source": 1, "user": USER_SCHEMA_VERSION},
             sort_keys=True,
         ),
     }
