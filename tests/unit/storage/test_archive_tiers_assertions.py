@@ -721,6 +721,38 @@ def test_candidate_assertion_rejection_preserves_reason_and_filtering(tmp_path: 
         conn.close()
 
 
+def test_candidate_assertion_defer_records_reason_without_promoting(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "user.db")
+    try:
+        digest = compile_recovery_digest(_recovery_candidate_session())
+        candidate = upsert_transform_candidate_assertions(conn, digest, now_ms=1_700_000_000_000)[0]
+
+        result = judge_assertion_candidate(
+            conn,
+            candidate_ref=f"assertion:{candidate.assertion_id}",
+            decision="defer",
+            reason="needs another source",
+            actor_ref="user:local",
+            now_ms=1_700_000_010_000,
+        )
+
+        assert result.resulting_assertion is None
+        assert result.candidate.status == "candidate"
+        assert candidate.assertion_id in {item.assertion_id for item in list_assertion_candidates(conn)}
+        assert result.judgment.value == {
+            "decision": "defer",
+            "candidate_ref": f"assertion:{candidate.assertion_id}",
+            "reason": "needs another source",
+            "resulting_assertion_ref": None,
+        }
+        assert result.judgment.evidence_refs == [
+            *candidate.evidence_refs,
+            f"assertion:{candidate.assertion_id}",
+        ]
+    finally:
+        conn.close()
+
+
 def test_candidate_assertion_supersede_records_replacement_and_lineage(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "user.db")
     try:
