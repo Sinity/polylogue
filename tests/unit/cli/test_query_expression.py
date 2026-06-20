@@ -295,6 +295,56 @@ class TestExplainExpression:
             ),
         )
 
+    def test_explain_expression_reports_terminal_pipeline_stages(self) -> None:
+        explanation = explain_expression("messages where role:assistant | sort by time desc | limit 2 | offset 3")
+
+        assert explanation.selected_units == ("message",)
+        payload = explanation.to_payload()
+        assert payload["ast"] == {
+            "entry": "unit_source",
+            "predicate": {"field": "role", "kind": "field", "op": "=", "values": ["assistant"]},
+            "unit_source": {
+                "unit": "message",
+                "predicate": {"field": "role", "kind": "field", "op": "=", "values": ["assistant"]},
+                "limit": 2,
+                "offset": 3,
+                "sort": {"field": "time", "direction": "desc"},
+                "pipeline_stages": [
+                    {"kind": "sort", "sort": {"field": "time", "direction": "desc"}},
+                    {"kind": "limit", "value": 2},
+                    {"kind": "offset", "value": 3},
+                ],
+            },
+        }
+        lowering_plan = cast(dict[str, Any], payload["lowering_plan"])
+        assert lowering_plan["pipeline_stages"] == [
+            {"kind": "sort", "sort": {"field": "time", "direction": "desc"}},
+            {"kind": "limit", "value": 2},
+            {"kind": "offset", "value": 3},
+        ]
+
+    def test_explain_expression_reports_session_scoped_pipeline_stage(self) -> None:
+        explanation = explain_expression("sessions where repo:polylogue | messages where role:assistant | limit 5")
+
+        payload = explanation.to_payload()
+        ast_payload = cast(dict[str, Any], payload["ast"])
+        unit_source = cast(dict[str, Any], ast_payload["unit_source"])
+        assert unit_source["session_predicate"] == {
+            "field": "repo",
+            "kind": "field",
+            "op": "=",
+            "values": ["polylogue"],
+        }
+        assert unit_source["pipeline_stages"] == [
+            {
+                "kind": "session_scope",
+                "predicate": {"field": "repo", "kind": "field", "op": "=", "values": ["polylogue"]},
+            },
+            {"kind": "limit", "value": 5},
+        ]
+        lowering_plan = cast(dict[str, Any], payload["lowering_plan"])
+        assert lowering_plan["pipeline_stages"] == unit_source["pipeline_stages"]
+
 
 class TestBooleanQueryExpression:
     def test_boolean_ast_exposes_predicate_tree(self) -> None:
@@ -474,6 +524,14 @@ class TestBooleanQueryExpression:
         assert source is not None
         assert source.limit == 2
         assert source.offset == 3
+        assert [stage.to_payload() for stage in source.pipeline_stages] == [
+            {
+                "kind": "session_scope",
+                "predicate": {"field": "repo", "kind": "field", "op": "=", "values": ["polylogue"]},
+            },
+            {"kind": "limit", "value": 2},
+            {"kind": "offset", "value": 3},
+        ]
 
     def test_terminal_source_pipeline_limit_offset_and_sort_are_parsed(self) -> None:
         source = parse_unit_source_expression("messages where role:assistant | sort by time desc | limit 2 | offset 3")
@@ -487,6 +545,11 @@ class TestBooleanQueryExpression:
         assert source.sort.field == "time"
         assert source.sort.direction == "desc"
         assert source.predicate == QueryFieldPredicate(field="role", values=("assistant",))
+        assert [stage.to_payload() for stage in source.pipeline_stages] == [
+            {"kind": "sort", "sort": {"field": "time", "direction": "desc"}},
+            {"kind": "limit", "value": 2},
+            {"kind": "offset", "value": 3},
+        ]
 
     def test_pipeline_sort_stage_is_parsed(self) -> None:
         source = parse_unit_source_expression(
