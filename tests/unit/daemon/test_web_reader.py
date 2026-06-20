@@ -1539,8 +1539,17 @@ class TestReaderViewProfiles:
         profiles = {profile["view_id"]: profile for profile in read_views}
         assert profiles["raw"]["lossiness"] == "raw"
         assert profiles["raw"]["evidence_policy"] == "required"
+        raw_http = cast(dict[str, object], profiles["raw"]["http"])
+        assert raw_http["supported"] is True
+        assert raw_http["route"] == "/api/sessions/{session_id}/read"
+        assert raw_http["formats"] == ["json"]
         assert profiles["recovery"]["successor_handoff"] is True
         assert "markdown" in profiles["recovery"]["formats"]
+        recovery_http = cast(dict[str, object], profiles["recovery"]["http"])
+        assert recovery_http["formats"] == ["json", "markdown"]
+        assert "report" in cast(list[str], recovery_http["query_params"])
+        context_pack_http = cast(dict[str, object], profiles["context-pack"]["http"])
+        assert "max_messages" in cast(list[str], context_pack_http["query_params"])
 
     def test_read_view_execution_route_returns_messages_recovery_raw_context_and_context_pack(
         self,

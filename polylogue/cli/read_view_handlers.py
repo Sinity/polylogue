@@ -113,6 +113,12 @@ def read_view_handler_ids() -> tuple[str, ...]:
     return tuple(READ_VIEW_HANDLERS)
 
 
+def read_view_option_names() -> frozenset[str]:
+    """Return every view-specific option name owned by read-view handlers."""
+
+    return frozenset(option_name for handler in READ_VIEW_HANDLERS.values() for option_name in handler.accepted_options)
+
+
 def validate_read_view_handler_registry() -> None:
     """Fail fast if profile metadata and executable handlers drift."""
 
@@ -142,6 +148,7 @@ __all__ = [
     "ReadViewNeighborOptions",
     "ReadViewRecoveryOptions",
     "read_view_handler_ids",
+    "read_view_option_names",
     "run_bulk_export_view",
     "run_read_view",
     "validate_read_view_handler_registry",
