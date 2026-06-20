@@ -24,7 +24,7 @@ def test_query_unit_request_compiles_source_and_session_filters() -> None:
     assert request.limit == 25
     assert request.offset == 3
     assert request.session_filters is not None
-    assert request.session_filters["origins"] == ("claude-code-session",)
+    assert request.session_filters["origin"] == "claude-code-session"
     assert request.session_filters["repo_names"] == ("polylogue", "sinex")
     assert request.session_filters["has_tool_use"] is True
     assert request.session_filters["min_messages"] == 2
