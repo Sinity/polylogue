@@ -1,9 +1,10 @@
 Usage: polylogue ops debt list [OPTIONS]
 
-  List archive debt across tier, convergence, embedding, and FTS signals.
+  List archive debt across assertions, tiers, convergence, embedding, and FTS
+  signals.
 
 Options:
-  --kind [archive-tier|convergence|embedding|fts]
+  --kind [archive-tier|assertion-candidate|convergence|embedding|fts]
                                   Restrict rows to one debt kind. Repeatable.
   --only-actionable               Only show rows with a direct operator
                                   action.

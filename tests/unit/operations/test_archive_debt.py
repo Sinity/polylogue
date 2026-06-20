@@ -10,7 +10,9 @@ import pytest
 
 from polylogue.operations import archive_debt as module
 from polylogue.operations.archive_debt import archive_debt_list
-from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
+from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
 
 
 def _write_tier_version(path: Path, version: int) -> None:
@@ -36,6 +38,44 @@ def test_archive_debt_reports_missing_required_tiers(tmp_path: Path) -> None:
     assert "debt:archive-tier:user:missing" in refs
     assert payload.totals.critical >= 2
     assert all(row.kind == "archive-tier" for row in payload.rows)
+
+
+def test_archive_debt_reports_candidate_assertions_as_actionable(tmp_path: Path) -> None:
+    _write_current_tier_files(tmp_path)
+    user_db = tmp_path / "user.db"
+    conn = sqlite3.connect(user_db)
+    try:
+        initialize_archive_tier(conn, ArchiveTier.USER)
+        upsert_assertion(
+            conn,
+            assertion_id="cand-1",
+            target_ref="session:sess-1",
+            kind=AssertionKind.TRANSFORM_CANDIDATE,
+            value={"candidate_kind": "summary", "source": "transform"},
+            body_text="Candidate summary",
+            evidence_refs=("message:msg-1",),
+            status="candidate",
+            context_policy={"inject": False, "promotion_required": True},
+            now_ms=1_765_584_000_000,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    payload = archive_debt_list(archive_root=tmp_path, kinds=("assertion-candidate",))
+
+    assert payload.totals.total == 1
+    row = payload.rows[0]
+    assert row.debt_ref == "debt:assertion-candidate:cand-1"
+    assert row.kind == "assertion-candidate"
+    assert row.stage == "candidate-judgment"
+    assert row.subject_ref == "assertion:cand-1"
+    assert row.severity == "info"
+    assert row.status == "actionable"
+    assert row.owner == "user"
+    assert row.details == "Candidate summary"
+    assert row.evidence_refs == ("message:msg-1", "assertion:cand-1")
+    assert row.actions[0].command == ("polylogue", "ops", "state", "candidates", "list", "--format", "json")
 
 
 def test_archive_debt_reports_convergence_failures(tmp_path: Path) -> None:

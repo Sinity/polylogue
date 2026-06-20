@@ -41,6 +41,9 @@ from polylogue.core.enums import BlockType, Origin, Provider
 from polylogue.errors import DatabaseError, PolylogueError
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
 from tests.infra.storage_records import db_setup
 
 # ---------------------------------------------------------------------------
@@ -107,6 +110,7 @@ READ_NULLARY_METHODS: frozenset[str] = frozenset(
         "list_views",
         "list_read_view_profiles",
         "list_assertion_claims",
+        "list_assertion_candidates",
         "list_recall_packs",
         "list_workspaces",
         "list_corrections",
@@ -230,6 +234,7 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         # Shared web/MCP payload DTO helpers covered by daemon/MCP surface tests.
         "explain_import",
         "list_assertion_claim_payloads",
+        "judge_assertion_candidate",
         "neighbor_candidate_payloads",
         "recovery_read_payload",
         "resolve_ref",
@@ -3709,5 +3714,52 @@ async def test_facade_runs_inside_workspace_env_fixture(
         rows = await archive.list_sessions()
         ids = {str(r.id) for r in rows}
         assert ids == {"claude-ai-export:conv-alpha", "chatgpt-export:conv-beta"}
+    finally:
+        await archive.close()
+
+
+async def test_facade_judges_candidate_assertion_in_user_tier(workspace_env: dict[str, Path]) -> None:
+    """Candidate assertion promotion is exposed through the Python facade."""
+
+    archive_root = workspace_env["archive_root"]
+    user_db = archive_root / "user.db"
+    conn = sqlite3.connect(user_db)
+    conn.row_factory = sqlite3.Row
+    try:
+        initialize_archive_tier(conn, ArchiveTier.USER)
+        upsert_assertion(
+            conn,
+            assertion_id="candidate-api-1",
+            target_ref="session:claude-ai-export:conv-alpha",
+            kind="transform_candidate",
+            value={"candidate_kind": "decision"},
+            body_text="Use the shared assertion lifecycle.",
+            evidence_refs=("session:claude-ai-export:conv-alpha",),
+            status="candidate",
+            visibility="private",
+            context_policy={"inject": False, "promotion_required": True},
+            now_ms=1_700_000_000_000,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
+    try:
+        candidates = await archive.list_assertion_candidates()
+        assert [candidate.assertion_id for candidate in candidates] == ["candidate-api-1"]
+
+        result = await archive.judge_assertion_candidate(
+            candidate_ref="assertion:candidate-api-1",
+            decision="accept",
+            reason="confirmed by operator",
+        )
+
+        assert result.candidate.status == "accepted"
+        assert result.judgment.decision == "accept"
+        assert result.judgment.reason == "confirmed by operator"
+        assert result.resulting_assertion is not None
+        assert result.resulting_assertion.kind == "decision"
+        assert result.resulting_assertion.supersedes == ("assertion:candidate-api-1",)
     finally:
         await archive.close()

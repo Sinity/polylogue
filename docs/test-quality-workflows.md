@@ -14,10 +14,10 @@ Current registry snapshot:
 - mutation campaigns: `19`
 - benchmark campaigns: `7`
 - synthetic benchmark campaigns: `6`
-- scenario projections: `287`
+- scenario projections: `293`
 - inferred corpus scenarios: `8`
   - benchmark-campaign: `7`
-  - exercise: `180`
+  - exercise: `186`
   - inferred-corpus-scenario: `8`
   - mutation-campaign: `19`
   - synthetic-benchmark: `6`
@@ -416,6 +416,12 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-ops-state-blackboard` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state blackboard help |
 | `exercise` | `help-ops-state-blackboard-list` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state blackboard list help |
 | `exercise` | `help-ops-state-blackboard-post` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state blackboard post help |
+| `exercise` | `help-ops-state-candidates` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state candidates help |
+| `exercise` | `help-ops-state-candidates-accept` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state candidates accept help |
+| `exercise` | `help-ops-state-candidates-defer` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state candidates defer help |
+| `exercise` | `help-ops-state-candidates-list` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state candidates list help |
+| `exercise` | `help-ops-state-candidates-reject` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state candidates reject help |
+| `exercise` | `help-ops-state-candidates-supersede` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state candidates supersede help |
 | `exercise` | `help-ops-state-feedback` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state feedback help |
 | `exercise` | `help-ops-state-feedback-clear` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state feedback clear help |
 | `exercise` | `help-ops-state-feedback-list` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state feedback list help |

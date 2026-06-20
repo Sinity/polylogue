@@ -94,6 +94,7 @@
         "kind": {
           "enum": [
             "archive-tier",
+            "assertion-candidate",
             "convergence",
             "embedding",
             "fts"

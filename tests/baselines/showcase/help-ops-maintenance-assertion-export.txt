@@ -6,7 +6,7 @@ Options:
   -f, --format [json|jsonl]       Export format for assertion rows.  [default:
                                   jsonl]
   --out PATH                      Write export to this path.
-  --kind [mark|highlight|annotation|correction|suppression|tag|metadata|saved_query|recall_pack|workspace_note|note|decision|caveat|lesson|blocker|handoff|run_state|prompt_eval|transform_candidate]
+  --kind [mark|highlight|annotation|correction|suppression|tag|metadata|saved_query|recall_pack|workspace_note|note|decision|caveat|lesson|blocker|handoff|judgment|run_state|prompt_eval|transform_candidate]
                                   Restrict export to one assertion kind;
                                   repeatable.
   --status TEXT                   Restrict export to one assertion status;
