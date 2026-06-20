@@ -6,8 +6,13 @@ from http import HTTPStatus
 
 import pytest
 
-from polylogue.daemon.http import implemented_daemon_route_patterns
-from polylogue.daemon.route_contracts import ROUTE_CONTRACTS, route_contract_for, stable_route_contracts
+from polylogue.daemon.http import _parameterized_get_routes, _static_get_routes, implemented_daemon_route_patterns
+from polylogue.daemon.route_contracts import (
+    ROUTE_CONTRACTS,
+    route_contract_for,
+    route_contract_for_pattern,
+    stable_route_contracts,
+)
 from tests.unit.daemon.test_daemon_http_security import (
     ENDPOINTS_DELETE,
     ENDPOINTS_GET,
@@ -44,6 +49,17 @@ def test_route_contract_metadata_targets_live_daemon_routes() -> None:
     declared = {(route.method, route.pattern) for route in ROUTE_CONTRACTS}
     implemented = _implemented_route_set()
     assert declared - implemented == set()
+
+
+def test_get_dispatch_tables_are_bound_to_route_contracts() -> None:
+    """GET dispatcher entries consume route contracts instead of restating them."""
+
+    for static_route in _static_get_routes():
+        assert static_route.contract is route_contract_for_pattern("GET", static_route.pattern)
+        assert static_route.pattern == static_route.contract.pattern
+    for parameterized_route in _parameterized_get_routes():
+        assert parameterized_route.contract is route_contract_for_pattern("GET", parameterized_route.pattern)
+        assert parameterized_route.pattern == parameterized_route.contract.pattern
 
 
 def test_stable_routes_have_explicit_auth_and_response_contracts() -> None:

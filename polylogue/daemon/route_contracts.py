@@ -405,6 +405,16 @@ def route_contract_for(method: str, path: str) -> RouteContract | None:
     return None
 
 
+def route_contract_for_pattern(method: str, pattern: str) -> RouteContract:
+    """Return the exact contract for a declared ``method pattern`` pair."""
+
+    normalized_method = method.upper()
+    for route in ROUTE_CONTRACTS:
+        if route.method == normalized_method and route.pattern == pattern:
+            return route
+    raise KeyError(f"no daemon route contract for {normalized_method} {pattern}")
+
+
 def _pattern_matches(pattern: str, path: str) -> bool:
     if pattern == path:
         return True
@@ -428,5 +438,6 @@ __all__ = [
     "ROUTE_CONTRACTS",
     "RouteContract",
     "route_contract_for",
+    "route_contract_for_pattern",
     "stable_route_contracts",
 ]

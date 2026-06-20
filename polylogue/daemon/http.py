@@ -24,6 +24,7 @@ from polylogue.daemon.events import (
     emit_daemon_event,
     get_latest_event_id,
 )
+from polylogue.daemon.route_contracts import RouteContract, route_contract_for_pattern
 from polylogue.daemon.status_snapshot import get_status_snapshot_payload
 from polylogue.daemon.web_shell_attachments import (
     LibraryEntry,
@@ -74,19 +75,27 @@ RouteMethod = Literal["GET", "POST", "DELETE"]
 
 @dataclass(frozen=True)
 class _StaticGetRoute:
-    pattern: str
+    contract: RouteContract
     segments: tuple[str, ...]
     handler_name: str
     passes_params: bool = False
 
+    @property
+    def pattern(self) -> str:
+        return self.contract.pattern
+
 
 @dataclass(frozen=True)
 class _ParameterizedGetRoute:
-    pattern: str
+    contract: RouteContract
     prefix: tuple[str, ...]
     suffix: tuple[str, ...]
     handler_name: str
     passes_params: bool = False
+
+    @property
+    def pattern(self) -> str:
+        return self.contract.pattern
 
 
 @dataclass(frozen=True)
@@ -95,6 +104,38 @@ class _StaticPostRoute:
     segments: tuple[str, ...]
     handler_name: str
     passes_path: bool = False
+
+
+def _route_segments(pattern: str) -> tuple[str, ...]:
+    if pattern == "/":
+        return ()
+    return tuple(part for part in pattern.strip("/").split("/") if part)
+
+
+def _static_get_route(pattern: str, handler_name: str, *, passes_params: bool = False) -> _StaticGetRoute:
+    contract = route_contract_for_pattern("GET", pattern)
+    return _StaticGetRoute(
+        contract=contract,
+        segments=_route_segments(contract.pattern),
+        handler_name=handler_name,
+        passes_params=passes_params,
+    )
+
+
+def _parameterized_get_route(pattern: str, handler_name: str, *, passes_params: bool = False) -> _ParameterizedGetRoute:
+    contract = route_contract_for_pattern("GET", pattern)
+    parts = _route_segments(contract.pattern)
+    try:
+        parameter_index = next(index for index, part in enumerate(parts) if part.startswith(":"))
+    except StopIteration as exc:
+        raise ValueError(f"parameterized route pattern has no parameter: {contract.pattern}") from exc
+    return _ParameterizedGetRoute(
+        contract=contract,
+        prefix=parts[:parameter_index],
+        suffix=parts[parameter_index + 1 :],
+        handler_name=handler_name,
+        passes_params=passes_params,
+    )
 
 
 @dataclass(frozen=True)
@@ -182,102 +223,48 @@ def _read_view_payload_field_values(payload: object, field_name: str, *, max_dep
 
 def _static_get_routes() -> tuple[_StaticGetRoute, ...]:
     return (
-        _StaticGetRoute("/api/health/check", ("api", "health", "check"), "_handle_health_check"),
-        _StaticGetRoute("/api/health", ("api", "health"), "_handle_health"),
-        _StaticGetRoute("/api/status", ("api", "status"), "_handle_status", passes_params=True),
-        _StaticGetRoute("/api/events", ("api", "events"), "_handle_events", passes_params=True),
-        _StaticGetRoute("/api/sessions", ("api", "sessions"), "_handle_list_sessions", passes_params=True),
-        _StaticGetRoute("/api/facets", ("api", "facets"), "_handle_facets", passes_params=True),
-        _StaticGetRoute("/api/query-units", ("api", "query-units"), "_handle_query_units", passes_params=True),
-        _StaticGetRoute("/api/archive-debt", ("api", "archive-debt"), "_handle_archive_debt", passes_params=True),
-        _StaticGetRoute("/api/refs/resolve", ("api", "refs", "resolve"), "_handle_ref_resolve", passes_params=True),
-        _StaticGetRoute(
-            "/api/query-completions", ("api", "query-completions"), "_handle_query_completions", passes_params=True
-        ),
-        _StaticGetRoute("/api/read-view-profiles", ("api", "read-view-profiles"), "_handle_read_view_profiles"),
-        _StaticGetRoute("/api/assertions", ("api", "assertions"), "_handle_assertions", passes_params=True),
-        _StaticGetRoute("/api/paste-browser", ("api", "paste-browser"), "_handle_paste_browser", passes_params=True),
-        _StaticGetRoute("/api/attachments", ("api", "attachments"), "_handle_attachment_library", passes_params=True),
-        _StaticGetRoute("/api/stack", ("api", "stack"), "_handle_stack", passes_params=True),
-        _StaticGetRoute("/api/compare", ("api", "compare"), "_handle_compare", passes_params=True),
-        _StaticGetRoute("/api/sources", ("api", "sources"), "_handle_sources"),
-        _StaticGetRoute(
-            "/api/thread-continue-templates",
-            ("api", "thread-continue-templates"),
-            "_handle_get_thread_continue_templates",
-        ),
-        _StaticGetRoute(
-            "/api/maintenance/operations", ("api", "maintenance", "operations"), "_handle_maintenance_operations"
-        ),
+        _static_get_route("/api/health/check", "_handle_health_check"),
+        _static_get_route("/api/health", "_handle_health"),
+        _static_get_route("/api/status", "_handle_status", passes_params=True),
+        _static_get_route("/api/events", "_handle_events", passes_params=True),
+        _static_get_route("/api/sessions", "_handle_list_sessions", passes_params=True),
+        _static_get_route("/api/facets", "_handle_facets", passes_params=True),
+        _static_get_route("/api/query-units", "_handle_query_units", passes_params=True),
+        _static_get_route("/api/archive-debt", "_handle_archive_debt", passes_params=True),
+        _static_get_route("/api/refs/resolve", "_handle_ref_resolve", passes_params=True),
+        _static_get_route("/api/query-completions", "_handle_query_completions", passes_params=True),
+        _static_get_route("/api/read-view-profiles", "_handle_read_view_profiles"),
+        _static_get_route("/api/assertions", "_handle_assertions", passes_params=True),
+        _static_get_route("/api/paste-browser", "_handle_paste_browser", passes_params=True),
+        _static_get_route("/api/attachments", "_handle_attachment_library", passes_params=True),
+        _static_get_route("/api/stack", "_handle_stack", passes_params=True),
+        _static_get_route("/api/compare", "_handle_compare", passes_params=True),
+        _static_get_route("/api/sources", "_handle_sources"),
+        _static_get_route("/api/thread-continue-templates", "_handle_get_thread_continue_templates"),
+        _static_get_route("/api/maintenance/operations", "_handle_maintenance_operations"),
     )
 
 
 def _parameterized_get_routes() -> tuple[_ParameterizedGetRoute, ...]:
     return (
-        _ParameterizedGetRoute("/api/sessions/:id", ("api", "sessions"), (), "_handle_get_session"),
-        _ParameterizedGetRoute(
-            "/api/sessions/:id/messages", ("api", "sessions"), ("messages",), "_handle_get_messages", passes_params=True
-        ),
-        _ParameterizedGetRoute(
-            "/api/sessions/:id/recovery",
-            ("api", "sessions"),
-            ("recovery",),
-            "_handle_get_session_recovery",
-            passes_params=True,
-        ),
-        _ParameterizedGetRoute(
-            "/api/sessions/:id/read", ("api", "sessions"), ("read",), "_handle_get_session_read", passes_params=True
-        ),
-        _ParameterizedGetRoute("/api/sessions/:id/raw", ("api", "sessions"), ("raw",), "_handle_get_session_raw"),
-        _ParameterizedGetRoute("/api/sessions/:id/cost", ("api", "sessions"), ("cost",), "_handle_get_session_cost"),
-        _ParameterizedGetRoute(
-            "/api/sessions/:id/provenance",
-            ("api", "sessions"),
-            ("provenance",),
-            "_handle_get_session_provenance",
-            passes_params=True,
-        ),
-        _ParameterizedGetRoute(
-            "/api/sessions/:id/topology",
-            ("api", "sessions"),
-            ("topology",),
-            "_handle_get_session_topology",
-            passes_params=True,
-        ),
-        _ParameterizedGetRoute(
+        _parameterized_get_route("/api/sessions/:id", "_handle_get_session"),
+        _parameterized_get_route("/api/sessions/:id/messages", "_handle_get_messages", passes_params=True),
+        _parameterized_get_route("/api/sessions/:id/recovery", "_handle_get_session_recovery", passes_params=True),
+        _parameterized_get_route("/api/sessions/:id/read", "_handle_get_session_read", passes_params=True),
+        _parameterized_get_route("/api/sessions/:id/raw", "_handle_get_session_raw"),
+        _parameterized_get_route("/api/sessions/:id/cost", "_handle_get_session_cost"),
+        _parameterized_get_route("/api/sessions/:id/provenance", "_handle_get_session_provenance", passes_params=True),
+        _parameterized_get_route("/api/sessions/:id/topology", "_handle_get_session_topology", passes_params=True),
+        _parameterized_get_route(
             "/api/sessions/:id/topology/parent-chain",
-            ("api", "sessions"),
-            ("topology", "parent-chain"),
             "_handle_get_session_parent_chain",
             passes_params=True,
         ),
-        _ParameterizedGetRoute(
-            "/api/sessions/:id/similar",
-            ("api", "sessions"),
-            ("similar",),
-            "_handle_get_session_similar",
-            passes_params=True,
-        ),
-        _ParameterizedGetRoute(
-            "/api/sessions/:id/attachments",
-            ("api", "sessions"),
-            ("attachments",),
-            "_handle_get_session_attachments",
-        ),
-        _ParameterizedGetRoute(
-            "/api/insights/sessions/:id",
-            ("api", "insights", "sessions"),
-            (),
-            "_handle_get_session_insights",
-            passes_params=True,
-        ),
-        _ParameterizedGetRoute("/api/raw_artifacts/:id", ("api", "raw_artifacts"), (), "_handle_get_raw_artifact"),
-        _ParameterizedGetRoute(
-            "/api/maintenance/status/:id",
-            ("api", "maintenance", "status"),
-            (),
-            "_handle_maintenance_status",
-        ),
+        _parameterized_get_route("/api/sessions/:id/similar", "_handle_get_session_similar", passes_params=True),
+        _parameterized_get_route("/api/sessions/:id/attachments", "_handle_get_session_attachments"),
+        _parameterized_get_route("/api/insights/sessions/:id", "_handle_get_session_insights", passes_params=True),
+        _parameterized_get_route("/api/raw_artifacts/:id", "_handle_get_raw_artifact"),
+        _parameterized_get_route("/api/maintenance/status/:id", "_handle_maintenance_status"),
     )
 
 
