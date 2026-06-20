@@ -119,6 +119,19 @@ The extension loop should verify both failure and success cases:
 - content adapters expose diagnostic state without dumping raw conversation
   text by default.
 
+Before involving a real browser, run the deterministic receiver smoke:
+
+```bash
+devtools workspace dev-loop --receiver-smoke
+devtools workspace dev-loop --receiver-smoke --json
+```
+
+The smoke starts an in-process loopback receiver on an ephemeral port, configures
+auth, verifies that an unauthenticated capture is rejected, verifies that an
+authenticated synthetic capture is accepted, and reports the written spool
+artifact. It uses the branch-local run directory and does not talk to the
+deployed `polylogued.service`.
+
 ## Current Boundary
 
 `devtools workspace dev-loop` is a preflight and directory-preparation command.

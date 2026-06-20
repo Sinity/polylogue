@@ -145,3 +145,34 @@ def test_main_json_outputs_machine_payload(
     payload = json.loads(capsys.readouterr().out)
     assert payload["prepared"] is True
     assert payload["branch"] == "feature/dev-loop"
+
+
+def test_receiver_smoke_proves_auth_rejection_and_acceptance(tmp_path: Path) -> None:
+    payload = dev_loop.run_receiver_smoke(spool_path=tmp_path / "spool")
+
+    assert payload["ok"] is True
+    assert payload["unauthenticated_status"] == 401
+    assert payload["unauthenticated_error"] == "unauthorized"
+    assert payload["authenticated_status"] == 202
+    assert payload["artifact_ref"] == "chatgpt/dev-loop-smoke-e368c8af2a6b.json"
+    assert Path(str(payload["artifact_path"])).is_file()
+
+
+def test_receiver_smoke_cli_outputs_combined_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(dev_loop, "system_service_status", lambda: {"active": False})
+    monkeypatch.setattr(
+        dev_loop,
+        "port_status",
+        lambda port: {"port": port, "connectable": False, "owner_count": 0, "owners": []},
+    )
+    monkeypatch.setattr(
+        dev_loop, "_git_value", lambda args, *, cwd: "feature/dev-loop" if args[0] == "branch" else "abc1234"
+    )
+
+    assert dev_loop.main(["--json", "--receiver-smoke", "--archive-root", str(tmp_path / "archive")]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["preflight"]["prepared"] is True
+    assert payload["preflight"]["preflight_json_written"] is True
+    assert payload["receiver_smoke"]["ok"] is True

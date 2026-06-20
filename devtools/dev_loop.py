@@ -10,13 +10,18 @@ import socket
 import subprocess
 import sys
 from dataclasses import dataclass
+from http.client import HTTPConnection
 from pathlib import Path
+from threading import Thread
 from typing import Any
 
 from devtools import repo_root as _repo_root
+from polylogue.browser_capture.server import make_server
 
 DEFAULT_API_PORT = 8766
 DEFAULT_BROWSER_CAPTURE_PORT = 8765
+_RECEIVER_SMOKE_ORIGIN = "chrome-extension://polylogue-dev-loop"
+_RECEIVER_SMOKE_TOKEN = "polylogue-dev-loop-token"
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,6 +151,92 @@ def port_status(port: int) -> dict[str, Any]:
     }
 
 
+def _browser_capture_smoke_payload() -> dict[str, object]:
+    return {
+        "polylogue_capture_kind": "browser_llm_session",
+        "schema_version": 1,
+        "provenance": {
+            "source_url": "https://chatgpt.com/c/dev-loop-smoke",
+            "page_title": "Polylogue dev-loop smoke",
+            "captured_at": "2026-06-20T00:00:00+00:00",
+            "adapter_name": "dev-loop-smoke",
+        },
+        "session": {
+            "provider": "chatgpt",
+            "provider_session_id": "dev-loop-smoke",
+            "title": "Polylogue dev-loop smoke",
+            "turns": [{"provider_turn_id": "turn-1", "role": "user", "text": "smoke"}],
+        },
+    }
+
+
+def _receiver_post(
+    *,
+    host: str,
+    port: int,
+    body: object,
+    auth_token: str | None,
+) -> tuple[int, dict[str, object]]:
+    headers = {
+        "Content-Type": "application/json",
+        "Origin": _RECEIVER_SMOKE_ORIGIN,
+    }
+    if auth_token is not None:
+        headers["Authorization"] = f"Bearer {auth_token}"
+    conn = HTTPConnection(host, port, timeout=5)
+    try:
+        conn.request("POST", "/v1/browser-captures", body=json.dumps(body), headers=headers)
+        response = conn.getresponse()
+        response_body = json.loads(response.read().decode("utf-8"))
+        return response.status, dict(response_body)
+    finally:
+        conn.close()
+
+
+def run_receiver_smoke(*, spool_path: Path) -> dict[str, object]:
+    spool_path.mkdir(parents=True, exist_ok=True)
+    server = make_server(
+        "127.0.0.1",
+        0,
+        spool_path=spool_path,
+        auth_token=_RECEIVER_SMOKE_TOKEN,
+        extra_origins=(_RECEIVER_SMOKE_ORIGIN,),
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address[:2]
+    try:
+        payload = _browser_capture_smoke_payload()
+        rejected_status, rejected_body = _receiver_post(host=str(host), port=int(port), body=payload, auth_token=None)
+        accepted_status, accepted_body = _receiver_post(
+            host=str(host),
+            port=int(port),
+            body=payload,
+            auth_token=_RECEIVER_SMOKE_TOKEN,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+    artifact_ref = accepted_body.get("artifact_ref")
+    artifact_path = spool_path / str(artifact_ref) if isinstance(artifact_ref, str) else None
+    return {
+        "ok": rejected_status == 401
+        and accepted_status == 202
+        and artifact_path is not None
+        and artifact_path.exists(),
+        "host": str(host),
+        "port": int(port),
+        "spool_path": str(spool_path),
+        "unauthenticated_status": rejected_status,
+        "unauthenticated_error": rejected_body.get("error"),
+        "authenticated_status": accepted_status,
+        "artifact_ref": artifact_ref,
+        "artifact_path": str(artifact_path) if artifact_path is not None else None,
+        "bytes_written": accepted_body.get("bytes_written"),
+    }
+
+
 def _dev_loop_run_id(*, branch: str | None, commit: str | None, api_port: int, browser_capture_port: int) -> str:
     branch_part = _RUN_ID_SAFE_RE.sub("-", branch or "detached").strip("-") or "detached"
     commit_part = _RUN_ID_SAFE_RE.sub("-", commit or "unknown").strip("-") or "unknown"
@@ -223,6 +314,7 @@ def build_dev_loop_status(
             "stop_system_service": "systemctl --user stop polylogued.service",
             "prepare": "devtools workspace dev-loop --prepare",
             "save_preflight": f"mkdir -p {run_log_dir} && devtools workspace dev-loop --json > {preflight_json}",
+            "receiver_smoke": "devtools workspace dev-loop --receiver-smoke --json",
             "run_daemon": (
                 f"env POLYLOGUE_ARCHIVE_ROOT={archive} "
                 f"POLYLOGUE_API_PORT={api_port} "
@@ -274,6 +366,19 @@ def _print_human(payload: dict[str, Any]) -> None:
         print(f"  {name}: {command}")
 
 
+def _print_receiver_smoke(payload: dict[str, Any]) -> None:
+    preflight = payload["preflight"]
+    smoke = payload["receiver_smoke"]
+    assert isinstance(preflight, dict)
+    assert isinstance(smoke, dict)
+    print("Polylogue dev-loop receiver smoke")
+    print(f"  run id:  {preflight['run_id']}")
+    print(f"  ok:      {smoke['ok']}")
+    print(f"  reject:  {smoke['unauthenticated_status']} {smoke.get('unauthenticated_error')}")
+    print(f"  accept:  {smoke['authenticated_status']}")
+    print(f"  artifact: {smoke.get('artifact_ref')}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
@@ -286,14 +391,30 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--archive-root", type=Path, help="Branch-local archive root to report/use.")
     parser.add_argument("--log-dir", type=Path, help="Branch-local dev-loop log directory to report/use.")
     parser.add_argument("--prepare", action="store_true", help="Create the reported archive/log directories.")
+    parser.add_argument(
+        "--receiver-smoke",
+        action="store_true",
+        help="Run a deterministic in-process browser-capture receiver smoke.",
+    )
     args = parser.parse_args(argv)
     payload = build_dev_loop_status(
         api_port=args.api_port,
         browser_capture_port=args.browser_capture_port,
         archive_root=args.archive_root,
         log_dir=args.log_dir,
-        prepare=args.prepare,
+        prepare=args.prepare or args.receiver_smoke,
     )
+    if args.receiver_smoke:
+        smoke_payload: dict[str, Any] = {
+            "preflight": payload,
+            "receiver_smoke": run_receiver_smoke(spool_path=Path(str(payload["run_log_dir"])) / "receiver-smoke-spool"),
+        }
+        if args.json:
+            json.dump(smoke_payload, sys.stdout, indent=2, sort_keys=True)
+            sys.stdout.write("\n")
+        else:
+            _print_receiver_smoke(smoke_payload)
+        return 0 if smoke_payload["receiver_smoke"]["ok"] else 1
     if args.json:
         json.dump(payload, sys.stdout, indent=2, sort_keys=True)
         sys.stdout.write("\n")
