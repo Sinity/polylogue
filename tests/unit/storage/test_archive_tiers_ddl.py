@@ -145,8 +145,41 @@ def test_archive_tiers_index_generates_ids_and_actions_view(tmp_path: Path) -> N
         """,
         (messages[0]["message_id"], session["session_id"], 2, "tool_result", "passed", "tool-1"),
     )
+    conn.execute(
+        """
+        INSERT INTO sessions (
+            native_id, origin, title, content_hash, created_at_ms, updated_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        ("other-native-session", "codex-session", "Other schema work", _HASH, 1_767_225_602_000, 1_767_225_603_000),
+    )
+    other_session = conn.execute(
+        "SELECT session_id FROM sessions WHERE native_id = ?", ("other-native-session",)
+    ).fetchone()
+    conn.execute(
+        """
+        INSERT INTO messages (
+            session_id, native_id, position, role, message_type, content_hash, occurred_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (other_session["session_id"], "other-native-message", 0, "assistant", "message", _HASH, 1_767_225_603_000),
+    )
+    other_message = conn.execute(
+        "SELECT message_id FROM messages WHERE session_id = ?", (other_session["session_id"],)
+    ).fetchone()
+    conn.execute(
+        """
+        INSERT INTO blocks (
+            message_id, session_id, position, block_type, text, tool_id
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (other_message["message_id"], other_session["session_id"], 0, "tool_result", "wrong session", "tool-1"),
+    )
 
-    blocks = conn.execute("SELECT block_id, tool_command, tool_path FROM blocks ORDER BY position").fetchall()
+    blocks = conn.execute(
+        "SELECT block_id, tool_command, tool_path FROM blocks WHERE session_id = ? ORDER BY position",
+        (session["session_id"],),
+    ).fetchall()
     assert [row["block_id"] for row in blocks] == [
         "codex-session:native-session:native-message:0",
         "codex-session:native-session:native-message:1",
@@ -155,8 +188,16 @@ def test_archive_tiers_index_generates_ids_and_actions_view(tmp_path: Path) -> N
     assert blocks[1]["tool_command"] == "pytest -q"
     assert blocks[1]["tool_path"] == "tests"
 
-    action = conn.execute("SELECT tool_command, output_text FROM actions").fetchone()
-    assert dict(action) == {"tool_command": "pytest -q", "output_text": "passed"}
+    actions = conn.execute(
+        """
+        SELECT tool_command, output_text
+        FROM actions
+        WHERE session_id = ?
+        ORDER BY output_text
+        """,
+        (session["session_id"],),
+    ).fetchall()
+    assert [dict(row) for row in actions] == [{"tool_command": "pytest -q", "output_text": "passed"}]
 
     fts_row = conn.execute(
         """
