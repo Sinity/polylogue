@@ -1517,6 +1517,48 @@ async def test_search_envelope_executes_role_count_boolean_predicate(tmp_path: P
         await archive.close()
 
 
+async def test_search_envelope_paginates_filter_only_boolean_predicates(tmp_path: Path) -> None:
+    """Filter-only DSL envelopes honor cursor offsets when fetching the next page."""
+    archive = _archive(tmp_path)
+    try:
+        with ArchiveStore(archive.config.archive_root) as archive_db:
+            for index in range(3):
+                archive_db.write_parsed(
+                    ParsedSession(
+                        source_name=Provider.CODEX,
+                        provider_session_id=f"role-count-page-{index}",
+                        title=f"Role Count Page {index}",
+                        messages=[
+                            ParsedMessage(
+                                provider_message_id=f"u{index}",
+                                role=Role.USER,
+                                text=f"page {index} question",
+                                blocks=[
+                                    ParsedContentBlock(
+                                        type=BlockType.TEXT,
+                                        text=f"page {index} question",
+                                    )
+                                ],
+                            )
+                        ],
+                    )
+                )
+
+        query = "sessions where user_messages >= 1"
+        first = await archive.search_envelope(query, limit=1)
+        assert first.total == 3
+        assert len(first.hits) == 1
+        assert first.next_cursor is not None
+
+        second = await archive.search_envelope(query, limit=1, cursor=first.next_cursor)
+
+        assert second.total == 3
+        assert len(second.hits) == 1
+        assert second.hits[0].session.id != first.hits[0].session.id
+    finally:
+        await archive.close()
+
+
 async def test_query_units_returns_typed_envelope_on_empty_archive(tmp_path: Path) -> None:
     """``query_units()`` returns a typed terminal-unit envelope even with no rows."""
     from polylogue.surfaces.payloads import QueryUnitEnvelope

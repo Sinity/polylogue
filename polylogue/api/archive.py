@@ -256,9 +256,15 @@ def _archive_list_summaries_for_spec(
     spec: SessionQuerySpec,
     *,
     default_limit: int,
+    limit: int | None = None,
+    offset: int | None = None,
 ) -> list[ArchiveSessionSummary]:
     query_text = _archive_text_query(spec)
     query_kwargs = _archive_query_kwargs(spec, default_limit=default_limit)
+    if limit is not None:
+        query_kwargs["limit"] = limit
+    if offset is not None:
+        query_kwargs["offset"] = offset
     if query_text is not None:
         return [archive.read_summary(hit.session_id) for hit in archive.search_summaries(query_text, **query_kwargs)]
     return cast(list[ArchiveSessionSummary], archive.list_summaries(**query_kwargs))
@@ -2511,13 +2517,19 @@ class PolylogueArchiveMixin:
                     _archive_search_hit_to_payload(hit, archive.read_summary(hit.session_id)) for hit in hits
                 )
             elif query.strip():
-                summaries = _archive_list_summaries_for_spec(archive, spec, default_limit=display_limit)
+                summaries = _archive_list_summaries_for_spec(
+                    archive,
+                    spec,
+                    default_limit=display_limit,
+                    limit=fetch_limit,
+                    offset=fetch_offset,
+                )
                 total = _archive_count_sessions_for_spec(archive, spec)
                 hit_payloads = tuple(
                     SessionSearchHitPayload.from_search_hit(
                         session_search_hit_from_summary(
                             _archive_summary_to_domain(summary),
-                            rank=display_offset + index,
+                            rank=fetch_offset + index,
                             retrieval_lane=spec.retrieval_lane,
                             match_surface="session",
                             message_id=None,
