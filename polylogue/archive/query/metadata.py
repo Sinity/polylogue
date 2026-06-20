@@ -33,6 +33,17 @@ class QueryUnitDescriptor:
         return (self.singular_source, self.plural_source)
 
 
+@dataclass(frozen=True)
+class QueryPipelineStageInfo:
+    """Completion/query-builder metadata for executable terminal pipeline stages."""
+
+    value: str
+    insert: str
+    description: str
+    source_unit: QueryUnitName
+    lowerer_kind: QueryUnitLowererKind
+
+
 #: Recognized DSL field tokens and a short human description.
 #: ``spec_field`` values correspond to :class:`~polylogue.archive.query.spec.SessionQuerySpec`
 #: attribute names or the special tokens ``"min_messages"``, ``"max_messages"`` etc.
@@ -762,6 +773,82 @@ def terminal_query_field_info(source: str, field: str) -> StructuralQueryFieldIn
     return None
 
 
+def terminal_query_pipeline_stage_infos(source: str) -> tuple[QueryPipelineStageInfo, ...]:
+    """Return executable pipeline-stage candidates for a terminal query source."""
+
+    descriptor = query_unit_descriptor(source)
+    if descriptor is None or not descriptor.terminal_supported:
+        return ()
+    stages: list[QueryPipelineStageInfo] = []
+    if descriptor.lowerer_kind == "sql":
+        stages.append(
+            QueryPipelineStageInfo(
+                value="sort by time",
+                insert="sort by time desc",
+                description="Order SQL-backed terminal rows by row timestamp before pagination.",
+                source_unit=descriptor.unit,
+                lowerer_kind=descriptor.lowerer_kind,
+            )
+        )
+    for field_name in descriptor.aggregate_group_fields:
+        stages.append(
+            QueryPipelineStageInfo(
+                value=f"group by {field_name}",
+                insert=f"group by {field_name}",
+                description=f"Group {descriptor.plural_source} by {field_name} before an aggregate count stage.",
+                source_unit=descriptor.unit,
+                lowerer_kind=descriptor.lowerer_kind,
+            )
+        )
+    if descriptor.aggregate_group_fields:
+        stages.append(
+            QueryPipelineStageInfo(
+                value="count",
+                insert="count",
+                description="Count rows in each preceding group.",
+                source_unit=descriptor.unit,
+                lowerer_kind=descriptor.lowerer_kind,
+            )
+        )
+        stages.extend(
+            (
+                QueryPipelineStageInfo(
+                    value="sort by count",
+                    insert="sort by count desc",
+                    description="Order aggregate groups by count after a count stage.",
+                    source_unit=descriptor.unit,
+                    lowerer_kind=descriptor.lowerer_kind,
+                ),
+                QueryPipelineStageInfo(
+                    value="sort by key",
+                    insert="sort by key asc",
+                    description="Order aggregate groups by group key after a count stage.",
+                    source_unit=descriptor.unit,
+                    lowerer_kind=descriptor.lowerer_kind,
+                ),
+            )
+        )
+    stages.extend(
+        (
+            QueryPipelineStageInfo(
+                value="limit",
+                insert="limit ",
+                description="Limit terminal rows after filtering or aggregation.",
+                source_unit=descriptor.unit,
+                lowerer_kind=descriptor.lowerer_kind,
+            ),
+            QueryPipelineStageInfo(
+                value="offset",
+                insert="offset ",
+                description="Skip terminal rows after filtering or aggregation.",
+                source_unit=descriptor.unit,
+                lowerer_kind=descriptor.lowerer_kind,
+            ),
+        )
+    )
+    return tuple(stages)
+
+
 def count_query_fields() -> tuple[str, ...]:
     """Return count fields with readable comparison/range syntax."""
 
@@ -802,6 +889,7 @@ __all__ = [
     "QueryUnitDescriptor",
     "QueryUnitLowererKind",
     "QueryUnitName",
+    "QueryPipelineStageInfo",
     "STRUCTURAL_QUERY_UNIT_REGISTRY",
     "StructuralQueryFieldInfo",
     "StructuralQueryUnitInfo",
@@ -826,6 +914,7 @@ __all__ = [
     "structural_query_units",
     "terminal_query_field_info",
     "terminal_query_fields",
+    "terminal_query_pipeline_stage_infos",
     "terminal_query_source_list",
     "terminal_query_source_pairs",
     "terminal_query_sources",

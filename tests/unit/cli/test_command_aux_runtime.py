@@ -211,6 +211,29 @@ def test_query_count_operator_candidates_come_from_expression_registry() -> None
     assert "messages between 5 and 20" in between_candidate.description
 
 
+def test_query_pipeline_stage_candidates_come_from_unit_descriptors() -> None:
+    candidates = shell_completion_values.query_pipeline_stage_candidates("messages", "g")
+    values = [candidate.value for candidate in candidates]
+
+    assert "group by role" in values
+    assert "group by session.repo" in values
+    role_candidate = next(candidate for candidate in candidates if candidate.value == "group by role")
+    assert role_candidate.insert == "group by role"
+    assert role_candidate.kind == "query-pipeline-stage"
+    assert role_candidate.source == "QUERY_UNIT_DESCRIPTORS"
+    assert role_candidate.payload_model == "MessageQueryRowPayload"
+
+    sort_candidates = shell_completion_values.query_pipeline_stage_candidates("messages", "sort")
+    sort_values = [candidate.value for candidate in sort_candidates]
+    assert "sort by count" in sort_values
+    assert "sort by key" in sort_values
+    count_sort_candidate = next(candidate for candidate in sort_candidates if candidate.value == "sort by count")
+    assert count_sort_candidate.insert == "sort by count desc"
+
+    runtime_candidates = shell_completion_values.query_pipeline_stage_candidates("context-snapshots", "")
+    assert [candidate.value for candidate in runtime_candidates] == ["limit", "offset"]
+
+
 def test_query_expression_value_completion_uses_field_completion_source() -> None:
     ctx, param = _ctx_param()
 
@@ -267,6 +290,14 @@ def test_query_expression_completion_handles_terminal_contexts() -> None:
         "context-snapshots where boundary:session_start AND sess",
     )
     assert "session.repo:" in {item.value for item in chained_snapshot_items}
+
+    pipeline_items = shell_completion_values.complete_query_expression_fields(
+        ctx,
+        param,
+        "messages where role:assistant | g",
+    )
+    pipeline_values = {item.value for item in pipeline_items}
+    assert {"group by role", "group by session.repo"}.issubset(pipeline_values)
 
 
 def test_query_action_candidates_come_from_action_contracts_with_danger_metadata() -> None:

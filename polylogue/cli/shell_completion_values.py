@@ -23,6 +23,7 @@ from polylogue.archive.query.completions import (
     query_count_operator_candidates,
     query_date_operator_candidates,
     query_field_candidates,
+    query_pipeline_stage_candidates,
     query_structural_field_candidates,
     query_structural_unit_candidates,
     query_terminal_field_candidates,
@@ -285,6 +286,29 @@ def _complete_terminal_query_context(incomplete: str) -> list[CompletionItem] | 
     ]
 
 
+def _pipeline_completion_context(incomplete: str) -> tuple[str, str] | None:
+    stripped = incomplete.strip()
+    if "|" not in stripped:
+        return None
+    before_pipe, stage_prefix = stripped.rsplit("|", 1)
+    terminal_context = _terminal_completion_context(before_pipe.strip())
+    if terminal_context is None:
+        return None
+    source, _field_prefix = terminal_context
+    return source, stage_prefix.lstrip()
+
+
+def _complete_pipeline_query_context(incomplete: str) -> list[CompletionItem] | None:
+    context = _pipeline_completion_context(incomplete)
+    if context is None:
+        return None
+    source, prefix = context
+    return [
+        query_completion_candidate_to_click_item(candidate)
+        for candidate in query_pipeline_stage_candidates(source, prefix)
+    ]
+
+
 def complete_query_expression_context_fields(
     ctx: click.Context,
     param: click.Parameter | None,
@@ -294,6 +318,9 @@ def complete_query_expression_context_fields(
 
     if incomplete.startswith("--"):
         return None
+    pipeline_items = _complete_pipeline_query_context(incomplete)
+    if pipeline_items is not None:
+        return pipeline_items
     terminal_items = _complete_terminal_query_context(incomplete)
     if terminal_items is not None:
         return terminal_items
@@ -533,6 +560,7 @@ __all__ = [
     "query_date_operator_candidates",
     "query_field_candidates",
     "query_completion_candidate_to_click_item",
+    "query_pipeline_stage_candidates",
     "query_structural_field_candidates",
     "query_structural_unit_candidates",
     "query_terminal_field_candidates",
