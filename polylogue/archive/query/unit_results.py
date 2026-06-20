@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 from polylogue.archive.query.archive_execution import _session_to_session
 from polylogue.archive.query.expression import QueryUnitSource
-from polylogue.archive.query.metadata import query_unit_descriptor
+from polylogue.archive.query.metadata import QueryUnitDescriptor, query_unit_descriptor
 from polylogue.archive.query.predicate import QueryBoolPredicate, QueryFieldPredicate, QueryNotPredicate, QueryPredicate
 from polylogue.archive.query.spec import (
     normalize_action_sequence,
@@ -36,6 +36,38 @@ from polylogue.surfaces.payloads import (
 )
 
 _SUMMARY_SCAN_BATCH_SIZE = 500
+
+
+class _RowPayloadModel(Protocol):
+    @classmethod
+    def from_row(cls, row: Any) -> Any: ...
+
+
+class _RuntimeQuery(Protocol):
+    def __call__(
+        self,
+        archive: ArchiveStore,
+        source: QueryUnitSource,
+        *,
+        limit: int,
+        offset: int,
+        session_filters: Mapping[str, object] | None,
+    ) -> Sequence[Any]: ...
+
+
+_ROW_PAYLOAD_MODELS: dict[str, _RowPayloadModel] = {
+    "ActionQueryRowPayload": ActionQueryRowPayload,
+    "AssertionQueryRowPayload": AssertionQueryRowPayload,
+    "BlockQueryRowPayload": BlockQueryRowPayload,
+    "MessageQueryRowPayload": MessageQueryRowPayload,
+}
+
+_SQL_QUERY_METHODS: dict[str, str] = {
+    "action": "query_actions",
+    "assertion": "query_assertions",
+    "block": "query_blocks",
+    "message": "query_messages",
+}
 
 
 def _bool_param(value: object) -> bool:
@@ -551,6 +583,13 @@ def _query_observed_events(
     return tuple(rows)
 
 
+_RUNTIME_TRANSFORM_QUERIES: dict[str, _RuntimeQuery] = {
+    "context-snapshot": _query_context_snapshots,
+    "observed-event": _query_observed_events,
+    "run": _query_runs,
+}
+
+
 def _build_runtime_transform_envelope(
     archive: ArchiveStore,
     source: QueryUnitSource,
@@ -561,60 +600,30 @@ def _build_runtime_transform_envelope(
     caller_offset: int,
     session_filters: Mapping[str, object] | None,
 ) -> QueryUnitEnvelope:
-    if source.unit == "observed-event":
-        event_rows = _query_observed_events(
-            archive,
-            source,
-            limit=limit,
-            offset=offset,
-            session_filters=session_filters,
-        )
-        return build_query_unit_envelope(
-            event_rows[:limit],
-            unit=source.unit,
-            query=query,
-            limit=limit,
-            offset=caller_offset,
-            has_next=len(event_rows) > limit,
-        )
-    if source.unit == "run":
-        run_rows = _query_runs(
-            archive,
-            source,
-            limit=limit,
-            offset=offset,
-            session_filters=session_filters,
-        )
-        return build_query_unit_envelope(
-            run_rows[:limit],
-            unit=source.unit,
-            query=query,
-            limit=limit,
-            offset=caller_offset,
-            has_next=len(run_rows) > limit,
-        )
-    if source.unit == "context-snapshot":
-        snapshot_rows = _query_context_snapshots(
-            archive,
-            source,
-            limit=limit,
-            offset=offset,
-            session_filters=session_filters,
-        )
-        return build_query_unit_envelope(
-            snapshot_rows[:limit],
-            unit=source.unit,
-            query=query,
-            limit=limit,
-            offset=caller_offset,
-            has_next=len(snapshot_rows) > limit,
-        )
-    raise ValueError(f"Query unit {source.unit!r} is not wired to a runtime-transform executor")
+    query_fn = _RUNTIME_TRANSFORM_QUERIES.get(source.unit)
+    if query_fn is None:
+        raise ValueError(f"Query unit {source.unit!r} is not wired to a runtime-transform executor")
+    rows = query_fn(
+        archive,
+        source,
+        limit=limit,
+        offset=offset,
+        session_filters=session_filters,
+    )
+    return build_query_unit_envelope(
+        rows[:limit],
+        unit=source.unit,
+        query=query,
+        limit=limit,
+        offset=caller_offset,
+        has_next=len(rows) > limit,
+    )
 
 
 def _build_sql_envelope(
     archive: ArchiveStore,
     source: QueryUnitSource,
+    descriptor: QueryUnitDescriptor,
     *,
     query: str,
     limit: int,
@@ -625,75 +634,30 @@ def _build_sql_envelope(
 ) -> QueryUnitEnvelope:
     sort = source.sort.field if source.sort is not None else None
     sort_direction = source.sort.direction if source.sort is not None else "asc"
-    if source.unit == "message":
-        message_rows = archive.query_messages(
+    method_name = _SQL_QUERY_METHODS.get(source.unit)
+    payload_model = _ROW_PAYLOAD_MODELS.get(descriptor.payload_model)
+    if method_name is None or payload_model is None:
+        raise ValueError(f"Query unit {source.unit!r} is not wired to a SQL executor")
+    query_method = cast(Any, getattr(archive, method_name))
+    rows = cast(
+        Sequence[Any],
+        query_method(
             source.predicate,
             limit=fetch_limit,
             offset=offset,
             session_filters=session_filters,
             sort=sort,
             sort_direction=sort_direction,
-        )
-        return build_query_unit_envelope(
-            tuple(MessageQueryRowPayload.from_row(row) for row in message_rows[:limit]),
-            unit=source.unit,
-            query=query,
-            limit=limit,
-            offset=caller_offset,
-            has_next=len(message_rows) > limit,
-        )
-    if source.unit == "action":
-        action_rows = archive.query_actions(
-            source.predicate,
-            limit=fetch_limit,
-            offset=offset,
-            session_filters=session_filters,
-            sort=sort,
-            sort_direction=sort_direction,
-        )
-        return build_query_unit_envelope(
-            tuple(ActionQueryRowPayload.from_row(row) for row in action_rows[:limit]),
-            unit=source.unit,
-            query=query,
-            limit=limit,
-            offset=caller_offset,
-            has_next=len(action_rows) > limit,
-        )
-    if source.unit == "assertion":
-        assertion_rows = archive.query_assertions(
-            source.predicate,
-            limit=fetch_limit,
-            offset=offset,
-            session_filters=session_filters,
-            sort=sort,
-            sort_direction=sort_direction,
-        )
-        return build_query_unit_envelope(
-            tuple(AssertionQueryRowPayload.from_row(row) for row in assertion_rows[:limit]),
-            unit=source.unit,
-            query=query,
-            limit=limit,
-            offset=caller_offset,
-            has_next=len(assertion_rows) > limit,
-        )
-    if source.unit == "block":
-        block_rows = archive.query_blocks(
-            source.predicate,
-            limit=fetch_limit,
-            offset=offset,
-            session_filters=session_filters,
-            sort=sort,
-            sort_direction=sort_direction,
-        )
-        return build_query_unit_envelope(
-            tuple(BlockQueryRowPayload.from_row(row) for row in block_rows[:limit]),
-            unit=source.unit,
-            query=query,
-            limit=limit,
-            offset=caller_offset,
-            has_next=len(block_rows) > limit,
-        )
-    raise ValueError(f"Query unit {source.unit!r} is not wired to a SQL executor")
+        ),
+    )
+    return build_query_unit_envelope(
+        tuple(payload_model.from_row(row) for row in rows[:limit]),
+        unit=source.unit,
+        query=query,
+        limit=limit,
+        offset=caller_offset,
+        has_next=len(rows) > limit,
+    )
 
 
 def query_unit_rows(
@@ -729,6 +693,7 @@ def query_unit_rows(
     return _build_sql_envelope(
         archive,
         source,
+        descriptor,
         query=query,
         limit=limit,
         offset=offset,
