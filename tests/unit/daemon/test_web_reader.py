@@ -1377,6 +1377,25 @@ class TestReaderQueryCompletions:
         assert [candidate["value"] for candidate in candidate_payloads] == ["boundary"]
         assert candidate_payloads[0]["insert"] == "boundary:"
 
+    def test_query_completions_endpoint_exposes_pipeline_stages(self) -> None:
+        with _running_server_without_seed() as (_server, base_url):
+            payload = _get_json(
+                base_url,
+                "/api/query-completions?kind=pipeline-stage&unit=messages&incomplete=sort",
+            )
+
+        payload_dict = cast(dict[str, object], payload)
+        envelope = payload_dict["query_completions"]
+        assert isinstance(envelope, dict)
+        envelope_payload = cast(dict[str, object], envelope)
+        assert envelope_payload["kind"] == "pipeline-stage"
+        candidates = envelope_payload["candidates"]
+        assert isinstance(candidates, list)
+        candidate_payloads = [cast(dict[str, object], candidate) for candidate in cast(list[object], candidates)]
+        assert {"sort by time", "sort by count", "sort by key"}.issubset(
+            {candidate["value"] for candidate in candidate_payloads}
+        )
+
 
 class TestReaderQueryUnits:
     def test_query_units_endpoint_returns_terminal_message_rows(self, workspace_env: dict[str, Path]) -> None:
