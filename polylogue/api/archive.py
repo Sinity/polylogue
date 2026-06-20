@@ -90,6 +90,7 @@ if TYPE_CHECKING:
         FacetsResponse,
         ImportExplainPayload,
         MetadataMutationResult,
+        OtelProjectionPayload,
         PublicRefResolutionPayload,
         QueryUnitEnvelope,
         RecoveryReadPayload,
@@ -1787,6 +1788,27 @@ class PolylogueArchiveMixin:
             return query_unit_rows(
                 archive, source, query=expression, limit=limit, offset=offset, session_filters=session_filters
             )
+
+    async def export_otel(
+        self,
+        *,
+        source_ref: str,
+        expressions: Sequence[str],
+        limit: int = 50,
+        include_message_text: bool = False,
+    ) -> OtelProjectionPayload:
+        """Project bounded query-unit evidence into an OTel-like JSON payload."""
+        from polylogue.telemetry.otel_projection import project_query_unit_rows_to_otel
+
+        rows: list[Any] = []
+        for expression in expressions:
+            envelope = await self.query_units(expression, limit=limit)
+            rows.extend(envelope.items)
+        return project_query_unit_rows_to_otel(
+            source_ref,
+            rows,
+            include_message_text=include_message_text,
+        )
 
     async def resolve_ref(self, ref: str) -> PublicRefResolutionPayload:
         """Resolve one public object/evidence ref into a bounded read payload."""

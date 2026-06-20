@@ -239,6 +239,7 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "neighbor_candidate_payloads",
         "recovery_read_payload",
         "resolve_ref",
+        "export_otel",
         "session_correlation_payload",
     }
 )
@@ -1818,6 +1819,67 @@ async def test_query_units_returns_run_rows(tmp_path: Path) -> None:
         assert item.agent_ref == "agent:codex/Explore"
         assert item.parent_run_ref == "run:codex-session:ext-facade-run-v1"
         assert item.run_ref == "run:codex-session:facade-run-child"
+    finally:
+        await archive.close()
+
+
+async def test_export_otel_projects_query_unit_rows(tmp_path: Path) -> None:
+    """``export_otel()`` projects bounded query-unit evidence into OTel-like JSON."""
+    from polylogue.surfaces.payloads import OtelProjectionPayload
+    from tests.infra.storage_records import SessionBuilder
+
+    archive = _archive(tmp_path)
+    try:
+        index_db = archive.config.archive_root / "index.db"
+        (
+            SessionBuilder(index_db, "facade-otel-v1")
+            .provider("codex")
+            .git_repository_url("polylogue")
+            .git_branch("feature/otel")
+            .working_directories(["/realm/project/polylogue"])
+            .title("Facade OTel projection")
+            .add_message(
+                "m-run",
+                role="assistant",
+                text="Subagent finished the OTel projection wiring.",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "id": "tool-run",
+                        "name": "Task",
+                        "tool_input": {
+                            "subagent_type": "Explore",
+                            "taskId": "task-otel",
+                            "child_session_id": "codex-session:facade-otel-child",
+                            "prompt": "Map facade OTel projection wiring.",
+                        },
+                    },
+                    {
+                        "type": "tool_result",
+                        "tool_id": "tool-run",
+                        "text": "Subagent done: facade OTel projection wired.\n4 passed in 0.31s",
+                    },
+                ],
+            )
+            .save()
+        )
+
+        payload = await archive.export_otel(
+            source_ref="session:codex-session:ext-facade-otel-v1",
+            expressions=("runs where session.repo:polylogue AND role:subagent AND agent:Explore",),
+        )
+
+        assert isinstance(payload, OtelProjectionPayload)
+        assert payload.mode == "otel-projection"
+        assert payload.trace_count == 1
+        assert payload.span_count == 1
+        assert "session:codex-session:ext-facade-otel-v1" in payload.refs
+        assert "run:codex-session:facade-otel-child" in payload.refs
+        assert any(ref.startswith("codex-session:ext-facade-otel-v1::") for ref in payload.refs)
+        assert "context-snapshot:codex-session:facade-otel-child:subagent_start" in payload.refs
+        [span] = payload.spans
+        assert span.attributes["polylogue.run.ref"] == "run:codex-session:facade-otel-child"
+        assert span.attributes["polylogue.run.cwd.redacted"] is True
     finally:
         await archive.close()
 
