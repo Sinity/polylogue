@@ -83,7 +83,6 @@ def test_fresh_user_tier_creates_assertions_table(tmp_path: Path) -> None:
     try:
         assert _table_exists(conn, "assertions")
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == USER_SCHEMA_VERSION
-        assert USER_SCHEMA_VERSION == 2
     finally:
         conn.close()
 

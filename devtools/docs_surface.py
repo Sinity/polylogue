@@ -26,6 +26,11 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "docs/devtools.md",
         "`devtools` guide for generated surfaces, validation, and repo hygiene.",
     ),
+    DocsEntry(
+        "Branch-Local Development Loop",
+        "docs/dev-loop.md",
+        "Branch-local daemon, web-shell, browser-capture, and extension debugging workflow.",
+    ),
     DocsEntry("Library API", "docs/library-api.md", "Async archive API, filters, and query patterns."),
     DocsEntry("Data Model", "docs/data-model.md", "Archive entities, storage shape, and metadata rules."),
     DocsEntry(
@@ -117,6 +122,7 @@ README_DOC_TITLES: tuple[str, ...] = (
     "Provider Package Completeness",
     "Archive Backup",
     "Developer Tools",
+    "Branch-Local Development Loop",
     "Providers",
 )
 
