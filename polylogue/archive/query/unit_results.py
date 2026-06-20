@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
 from polylogue.archive.query.archive_execution import _session_to_session
@@ -36,6 +37,17 @@ from polylogue.surfaces.payloads import (
 )
 
 _SUMMARY_SCAN_BATCH_SIZE = 500
+
+
+@dataclass(frozen=True)
+class QueryUnitRequest:
+    """Compiled terminal query-unit request shared by daemon, MCP, and API callers."""
+
+    expression: str
+    source: QueryUnitSource
+    limit: int
+    offset: int = 0
+    session_filters: Mapping[str, object] | None = None
 
 
 class _RowPayloadModel(Protocol):
@@ -142,6 +154,35 @@ def query_unit_session_filters(**params: object) -> dict[str, object]:
         "since_ms": int(since_ms) if isinstance(since_ms, int) else _epoch_ms("since", params.get("since")),
         "until_ms": int(until_ms) if isinstance(until_ms, int) else _epoch_ms("until", params.get("until")),
     }
+
+
+def query_unit_request(
+    *,
+    expression: str,
+    limit: int,
+    offset: int = 0,
+    session_filters: Mapping[str, object] | None = None,
+    **filter_params: object,
+) -> QueryUnitRequest:
+    """Build a terminal query-unit request from surface parameters."""
+
+    from polylogue.archive.query.expression import ExpressionCompileError, parse_unit_source_expression
+    from polylogue.archive.query.metadata import terminal_query_source_list
+
+    source = parse_unit_source_expression(expression)
+    if source is None:
+        raise ExpressionCompileError(
+            f"query_units requires an explicit {terminal_query_source_list()} where expression",
+            field=None,
+        )
+    filters = session_filters if session_filters is not None else query_unit_session_filters(**filter_params)
+    return QueryUnitRequest(
+        expression=expression,
+        source=source,
+        limit=limit,
+        offset=offset,
+        session_filters=filters,
+    )
 
 
 def _object_ref_text(ref: ObjectRef | None) -> str | None:
@@ -703,4 +744,23 @@ def query_unit_rows(
     )
 
 
-__all__ = ["query_unit_rows", "query_unit_session_filters"]
+def query_unit_envelope(archive: ArchiveStore, request: QueryUnitRequest) -> QueryUnitEnvelope:
+    """Execute a compiled terminal query-unit request."""
+
+    return query_unit_rows(
+        archive,
+        request.source,
+        query=request.expression,
+        limit=request.limit,
+        offset=request.offset,
+        session_filters=request.session_filters,
+    )
+
+
+__all__ = [
+    "QueryUnitRequest",
+    "query_unit_envelope",
+    "query_unit_request",
+    "query_unit_rows",
+    "query_unit_session_filters",
+]

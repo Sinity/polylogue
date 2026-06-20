@@ -197,37 +197,8 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
         async def run() -> str:
             from polylogue.archive.query.expression import ExpressionCompileError
-            from polylogue.archive.query.unit_results import query_unit_session_filters
 
             config = hooks.get_config()
-            session_filters = query_unit_session_filters(
-                origin=origin,
-                exclude_origin=exclude_origin,
-                tag=tag,
-                exclude_tag=exclude_tag,
-                repo=repo,
-                has_type=has_type,
-                referenced_path=referenced_path,
-                cwd_prefix=cwd_prefix,
-                action=action,
-                exclude_action=exclude_action,
-                action_sequence=action_sequence,
-                action_text=action_text,
-                tool=tool,
-                exclude_tool=exclude_tool,
-                title=title,
-                since=since,
-                until=until,
-                has_tool_use=has_tool_use,
-                has_thinking=has_thinking,
-                has_paste=has_paste,
-                typed_only=typed_only,
-                min_messages=min_messages,
-                max_messages=max_messages,
-                min_words=min_words,
-                max_words=max_words,
-                message_type=message_type,
-            )
             with ArchiveStore.open_existing(active_archive_root(config) or config.archive_root) as archive:
                 try:
                     return hooks.json_payload(
@@ -236,7 +207,32 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                             expression=expression,
                             limit=hooks.clamp_limit(limit),
                             offset=max(0, offset),
-                            session_filters=session_filters,
+                            origin=origin,
+                            exclude_origin=exclude_origin,
+                            tag=tag,
+                            exclude_tag=exclude_tag,
+                            repo=repo,
+                            has_type=has_type,
+                            referenced_path=referenced_path,
+                            cwd_prefix=cwd_prefix,
+                            action=action,
+                            exclude_action=exclude_action,
+                            action_sequence=action_sequence,
+                            action_text=action_text,
+                            tool=tool,
+                            exclude_tool=exclude_tool,
+                            title=title,
+                            since=since,
+                            until=until,
+                            has_tool_use=has_tool_use,
+                            has_thinking=has_thinking,
+                            has_paste=has_paste,
+                            typed_only=typed_only,
+                            min_messages=min_messages,
+                            max_messages=max_messages,
+                            min_words=min_words,
+                            max_words=max_words,
+                            message_type=message_type,
                         )
                     )
                 except ExpressionCompileError as exc:

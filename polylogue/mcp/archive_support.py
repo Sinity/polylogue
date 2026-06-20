@@ -397,21 +397,19 @@ def archive_query_unit_payload(
     limit: int,
     offset: int,
     session_filters: Mapping[str, object] | None = None,
+    **filter_params: object,
 ) -> QueryUnitEnvelope:
     """Build the shared terminal query-unit envelope from an archive."""
-    from polylogue.archive.query.expression import ExpressionCompileError, parse_unit_source_expression
-    from polylogue.archive.query.metadata import terminal_query_source_list
-    from polylogue.archive.query.unit_results import query_unit_rows
+    from polylogue.archive.query.unit_results import query_unit_envelope, query_unit_request
 
-    source = parse_unit_source_expression(expression)
-    if source is None:
-        raise ExpressionCompileError(
-            f"query_units requires an explicit {terminal_query_source_list()} where expression",
-            field=None,
-        )
-    return query_unit_rows(
-        archive, source, query=expression, limit=limit, offset=offset, session_filters=session_filters
+    request = query_unit_request(
+        expression=expression,
+        limit=limit,
+        offset=offset,
+        session_filters=session_filters,
+        **filter_params,
     )
+    return query_unit_envelope(archive, request)
 
 
 def archive_messages_payload(
