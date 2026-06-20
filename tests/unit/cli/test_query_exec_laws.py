@@ -95,6 +95,41 @@ def search_workspace(cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyP
         .add_message("m6", role="assistant", text="Rust ownership ensures memory safety without garbage collection.")
         .save()
     )
+    (
+        SessionBuilder(index_db, "run-hit")
+        .provider("codex")
+        .git_repository_url("polylogue")
+        .git_branch("feature/query-runs")
+        .working_directories(["/realm/project/polylogue"])
+        .title("Run query rendering")
+        .created_at((now - timedelta(minutes=30)).isoformat())
+        .updated_at((now - timedelta(minutes=30)).isoformat())
+        .add_message("m7", role="user", text="Wire run query unit rendering.")
+        .add_message(
+            "m8",
+            role="assistant",
+            text="Delegating the run query rendering check.",
+            blocks=[
+                {
+                    "type": "tool_use",
+                    "id": "tool-run",
+                    "name": "Task",
+                    "tool_input": {
+                        "subagent_type": "Explore",
+                        "taskId": "task-run",
+                        "child_session_id": "codex-session:child-run",
+                        "prompt": "Map run query unit CLI rendering.",
+                    },
+                },
+                {
+                    "type": "tool_result",
+                    "tool_id": "tool-run",
+                    "text": "Subagent done: run query unit rendered.\n2 passed in 0.12s",
+                },
+            ],
+        )
+        .save()
+    )
 
     with sqlite3.connect(cli_workspace["archive_root"] / "user.db") as conn:
         conn.row_factory = sqlite3.Row
@@ -2578,7 +2613,7 @@ class TestSearchQueryContracts:
             ],
         )
 
-        assert result.exit_code == 0
+        assert result.exit_code == 0, result.output
         payload = json.loads(result.output)
         assert payload["mode"] == "query-unit"
         assert payload["unit"] == "assertion"
@@ -2604,8 +2639,34 @@ class TestSearchQueryContracts:
             ],
         )
 
-        assert result.exit_code == 0
+        assert result.exit_code == 0, result.output
         assert "assertion-cli-decision [decision/active] Python terminal assertion" in result.output
+
+    def test_run_unit_source_renders_plain_rows(self, search_workspace: SearchWorkspace) -> None:
+        """Run terminal rows render through the CLI instead of failing after query execution."""
+        from polylogue.cli import cli
+
+        del search_workspace
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "--plain",
+                "find",
+                "runs",
+                "where",
+                "session.repo:polylogue",
+                "AND",
+                "role:subagent",
+                "AND",
+                "agent:Explore",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "run:codex-session:child-run [subagent/completed]" in result.output
+        assert "agent:codex/Explore" in result.output
 
     def test_context_snapshot_unit_source_routes_to_query_units(self, search_workspace: SearchWorkspace) -> None:
         """Context snapshot expressions stay on terminal query-unit routing, not stats."""

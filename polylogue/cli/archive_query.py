@@ -1552,6 +1552,8 @@ def _emit_unit_source_rows(
         text_line = _block_query_line
     elif source.unit == "assertion":
         text_line = _assertion_query_line
+    elif source.unit == "run":
+        text_line = _run_query_line
     elif source.unit == "observed-event":
         text_line = _observed_event_query_line
     elif source.unit == "context-snapshot":
@@ -1610,6 +1612,12 @@ def _block_query_line(item: dict[str, object]) -> str:
 def _assertion_query_line(item: dict[str, object]) -> str:
     detail = item.get("body_text") or item.get("key") or item.get("value") or item.get("target_ref") or ""
     return f"{item['assertion_id']} [{item['kind']}/{item['status']}] {_snippet(detail)}"
+
+
+def _run_query_line(item: dict[str, object]) -> str:
+    detail_parts = [str(part) for part in (item.get("agent_ref"), item.get("title")) if part]
+    detail = " ".join(detail_parts) or item.get("run_ref") or ""
+    return f"{item['run_ref']} [{item['role']}/{item['status']}] {_snippet(detail)}"
 
 
 def _observed_event_query_line(item: dict[str, object]) -> str:
