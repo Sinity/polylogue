@@ -869,6 +869,18 @@ def mark_verb(
 )
 @click.option("--facets", "show_facets", is_flag=True, help="Show facet aggregates for the matched result set")
 @click.option(
+    "--cost-outlook",
+    is_flag=True,
+    help="Project the current billing cycle for a configured subscription plan.",
+)
+@click.option("--plan", "plan_name", default=None, help="Subscription plan name for --cost-outlook.")
+@click.option(
+    "--method",
+    type=click.Choice(["linear", "trailing-7d-mean", "eom-naive"]),
+    default="linear",
+    help="Projection method for --cost-outlook.",
+)
+@click.option(
     "--no-idf",
     "no_idf",
     is_flag=True,
@@ -890,6 +902,9 @@ def analyze_verb(
     count_only: bool = False,
     stats_by: str | None = None,
     show_facets: bool = False,
+    cost_outlook: bool = False,
+    plan_name: str | None = None,
+    method: str = "linear",
     no_idf: bool = False,
     output_format: str | None = None,
     limit: int | None = None,
@@ -908,17 +923,27 @@ def analyze_verb(
         polylogue find 'repo:polylogue since:7d' then analyze --by month
         polylogue find 'repo:polylogue' then analyze --facets
         polylogue find 'repo:polylogue' then analyze --by day --format json
+        polylogue analyze --cost-outlook --plan claude-pro --format json
     """
     import json as _json
 
     from polylogue.api.sync.bridge import run_coroutine_sync
+    from polylogue.cli.shared.cost_rendering import render_outlook_plain
+    from polylogue.cost.outlook import ProjectionMethod
+    from polylogue.cost.plans import PlanLookupError
 
     env: AppEnv = ctx.obj
     request = _parent_request(ctx)
 
-    selected_modes = sum(bool(flag) for flag in (count_only, show_facets, stats_by is not None))
+    selected_modes = sum(bool(flag) for flag in (count_only, show_facets, cost_outlook, stats_by is not None))
     if selected_modes > 1:
-        raise click.UsageError("Choose only one analyze mode: --count, --facets, --by, or default stats.")
+        raise click.UsageError(
+            "Choose only one analyze mode: --count, --facets, --cost-outlook, --by, or default stats."
+        )
+    if not cost_outlook and plan_name is not None:
+        raise click.UsageError("`analyze --plan` requires --cost-outlook.")
+    if not cost_outlook and method != "linear":
+        raise click.UsageError("`analyze --method` requires --cost-outlook.")
 
     if count_only:
         if limit is not None:
@@ -958,6 +983,38 @@ def analyze_verb(
                 click.echo(f"    [{family}]")
                 for value, weight in sorted(values.items(), key=lambda kv: -kv[1]):
                     click.echo(f"      {value}: {weight:.3f}")
+        return
+
+    if cost_outlook:
+        if limit is not None:
+            raise click.UsageError("`analyze --cost-outlook` does not support --limit.")
+        if plan_name is None:
+            raise click.UsageError("`analyze --cost-outlook` requires --plan.")
+        projection_method = ProjectionMethod(method)
+        try:
+            outlook = run_coroutine_sync(env.polylogue.cost_outlook(plan_name, method=projection_method))
+        except PlanLookupError as exc:
+            raise click.ClickException(str(exc)) from exc
+        if outlook is None:
+            message = (
+                f"No cycle window for plan {plan_name!r}: the plan does not declare "
+                "a 'cycle_anchor_day'. Configure one under [[cost.subscription.plans]] "
+                "or use a plan with a fixed monthly anchor."
+            )
+            if output_format == "json":
+                click.echo(
+                    _json.dumps(
+                        {"plan_name": plan_name, "outlook": None, "reason": "no_cycle_anchor"},
+                        indent=2,
+                    )
+                )
+                return
+            env.ui.console.print(f"[yellow]{message}[/yellow]")
+            return
+        if output_format == "json":
+            click.echo(_json.dumps(outlook.model_dump(mode="json"), indent=2, default=str))
+            return
+        render_outlook_plain(env, outlook)
         return
 
     if stats_by:

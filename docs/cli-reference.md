@@ -190,6 +190,7 @@ Usage: polylogue analyze [OPTIONS]
       polylogue find 'repo:polylogue since:7d' then analyze --by month
       polylogue find 'repo:polylogue' then analyze --facets
       polylogue find 'repo:polylogue' then analyze --by day --format json
+      polylogue analyze --cost-outlook --plan claude-pro --format json
 
 Options:
   --count                         Print only the matched-session count.
@@ -197,6 +198,11 @@ Options:
                                   Group statistics by dimension
   --facets                        Show facet aggregates for the matched result
                                   set
+  --cost-outlook                  Project the current billing cycle for a
+                                  configured subscription plan.
+  --plan TEXT                     Subscription plan name for --cost-outlook.
+  --method [linear|trailing-7d-mean|eom-naive]
+                                  Projection method for --cost-outlook.
   --no-idf                        With --facets, skip inverse-document-
                                   frequency weighting
   -f, --format [markdown|json|ndjson|html|obsidian|org|yaml|plaintext|csv]
@@ -453,7 +459,6 @@ Commands:
   auth         Authenticate optional external services.
   backup       Create a timestamped durability-tier backup.
   completions  Emit shell completion setup for polylogue.
-  cost         Summarize session cost telemetry.
   dashboard    Open the local dashboard.
   debt         List archive work that needs operator attention.
   diagnostics  Run archive and session diagnostics.

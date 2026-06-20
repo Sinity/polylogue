@@ -230,7 +230,6 @@ _PLAIN_COMMANDS: tuple[tuple[str, ...], ...] = (
     ("list",),
     ("ops",),
     ("ops", "auth"),
-    ("ops", "cost"),
     ("ops", "backup"),
     ("ops", "completions"),
     ("ops", "dashboard"),

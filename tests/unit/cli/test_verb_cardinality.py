@@ -481,7 +481,7 @@ class TestAnalyzeVerbNoBcardinality:
 
         cb = self._analyze_callback()
         with patch("polylogue.cli.query_verbs._execute_query_verb", side_effect=_capture):
-            cb(child, False, None, False, False, None, None)  # type: ignore[operator]
+            cb(child, False, None, False, False, None, "linear", False, None, None)  # type: ignore[operator]
 
         assert captured, "analyze_verb must call _execute_query_verb for default stats"
         assert captured[0].params.get("stats_only") is True
@@ -497,7 +497,7 @@ class TestAnalyzeVerbNoBcardinality:
 
         cb = self._analyze_callback()
         with patch("polylogue.cli.query_verbs._execute_query_verb", side_effect=_capture):
-            cb(child, False, "origin", False, False, None, None)  # type: ignore[operator]
+            cb(child, False, "origin", False, False, None, "linear", False, None, None)  # type: ignore[operator]
 
         assert captured[0].params.get("stats_by") == "origin"
 

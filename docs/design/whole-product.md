@@ -125,10 +125,10 @@ A 2-second habit that answers "what did I do yesterday" and "what did it cost."
 The same command works with `--since monday`, `--since "last week"`, or any
 natural-language time expression.
 
-### Weekly check: `polylogue ops cost`
+### Weekly check: `polylogue analyze --cost-outlook`
 
 ```
-$ polylogue ops cost outlook --plan claude-pro
+$ polylogue analyze --cost-outlook --plan claude-pro
 Week of 2026-04-28 — 2026-05-04
   claude-code  32 sessions  $18.42
   chatgpt       2 sessions   $0.00
@@ -267,7 +267,7 @@ presentation, not capability.
 | List sessions | `polylogue list --since ...` | `polylogue_list_sessions` | Session list |
 | Show session | `polylogue show <id>` | `polylogue_get_session` | Session detail page |
 | Stats | `polylogue stats` | `polylogue_get_stats` | Dashboard stats panel |
-| Cost | `polylogue ops cost outlook` | `polylogue_get_cost` | Dashboard cost panel |
+| Cost | `polylogue analyze --cost-outlook` | `polylogue_get_cost` | Dashboard cost panel |
 | Calendar heatmap | `polylogue calendar` | `polylogue_calendar` | Calendar page |
 | Timeline | `polylogue timeline` | `polylogue_timeline` | Timeline page |
 | Eras | `polylogue eras` | `polylogue_get_eras` | Era browser |
@@ -307,7 +307,7 @@ This is a 12-18 month vision. The build order prioritizes immediate value:
 
 1. **Ship the core** (current): ingestion, FTS5 search, session profiles.
 2. **Surface the basics**: bare `polylogue` status, `polylogue stats`,
-   `polylogue ops cost outlook`, `polylogue --since`.
+   `polylogue analyze --cost-outlook`, `polylogue --since`.
 3. **Add discovery**: calendar heatmap, timeline, this-day-in-history.
 4. **Add narratives**: day-in-life story, feature birth story, era detection.
 5. **Add persistence**: project memory table, SessionStart hook injection.

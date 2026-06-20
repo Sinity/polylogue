@@ -157,14 +157,14 @@ def test_read_all_and_analyze_count_update_parent_request() -> None:
     wrapped_analyze = getattr(query_verbs.analyze_verb.callback, "__wrapped__", None)
     assert callable(wrapped_analyze)
     with patch("polylogue.cli.query_verbs._execute_query_verb") as execute:
-        wrapped_analyze(child, True, None, False, False, None, None)
+        wrapped_analyze(child, True, None, False, False, None, "linear", False, None, None)
 
     count_request = execute.call_args.args[1]
     assert isinstance(count_request, RootModeRequest)
     assert count_request.query_params()["count_only"] is True
 
     with pytest.raises(click.UsageError, match="does not support --limit"):
-        wrapped_analyze(child, True, None, False, False, None, 5)
+        wrapped_analyze(child, True, None, False, False, None, "linear", False, None, 5)
 
 
 def test_read_direct_ref_emits_shared_resolution_payload(capsys: pytest.CaptureFixture[str]) -> None:
@@ -233,7 +233,7 @@ def test_analyze_verb_toggles_stats_only_and_updates_grouping() -> None:
     assert callable(wrapped)
 
     with patch("polylogue.cli.query_verbs._execute_query_verb") as execute:
-        wrapped(child, False, None, False, False, None, None)
+        wrapped(child, False, None, False, False, None, "linear", False, None, None)
 
     request = execute.call_args.args[1]
     assert isinstance(request, RootModeRequest)
@@ -241,7 +241,7 @@ def test_analyze_verb_toggles_stats_only_and_updates_grouping() -> None:
     assert request.query_params()["query"] == ("alpha",)
 
     with patch("polylogue.cli.query_verbs._execute_query_verb") as execute:
-        wrapped(child, False, "origin", False, False, "markdown", 3)
+        wrapped(child, False, "origin", False, False, None, "linear", False, "markdown", 3)
 
     grouped_request = execute.call_args.args[1]
     assert isinstance(grouped_request, RootModeRequest)
