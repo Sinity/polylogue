@@ -8,7 +8,7 @@ from polylogue.operations.archive_debt import archive_debt_list
 from polylogue.paths import active_index_db_path
 from polylogue.surfaces.payloads import ArchiveDebtListPayload
 
-_DEBT_KINDS = ("archive-tier", "convergence", "embedding", "fts")
+_DEBT_KINDS = ("archive-tier", "assertion-candidate", "convergence", "embedding", "fts")
 
 
 @click.group("debt")
@@ -42,7 +42,7 @@ def debt_list_command(
     exact_fts: bool,
     output_format: str,
 ) -> None:
-    """List archive debt across tier, convergence, embedding, and FTS signals."""
+    """List archive debt across assertions, tiers, convergence, embedding, and FTS signals."""
     archive_root = active_index_db_path().parent
     payload = archive_debt_list(
         archive_root=archive_root,

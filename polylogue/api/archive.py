@@ -83,6 +83,7 @@ if TYPE_CHECKING:
     from polylogue.storage.sqlite.archive_tiers.write import ArchiveSessionEnvelope
     from polylogue.surfaces.payloads import (
         AssertionClaimPayload,
+        AssertionJudgmentResultPayload,
         BulkTagMutationResult,
         DeleteSessionResult,
         FacetsResponse,
@@ -516,6 +517,46 @@ def _archive_list_assertion_claims(
             conn.close()
     except sqlite3.Error:
         return []
+
+
+def _archive_judge_assertion_candidate(
+    config: Config,
+    *,
+    candidate_ref: str,
+    decision: str,
+    reason: str | None = None,
+    actor_ref: str = "user:local",
+    replacement_kind: str | None = None,
+    replacement_body_text: str | None = None,
+    replacement_value: object | None = None,
+) -> Any:
+    """Write an assertion-candidate judgment to ``user.db``."""
+
+    from polylogue.storage.sqlite.archive_tiers.user_write import judge_assertion_candidate
+
+    user_db = _active_archive_root(config) / "user.db"
+    if not user_db.exists():
+        raise ValueError("assertion user tier is not initialized")
+    try:
+        conn = sqlite3.connect(user_db)
+        conn.row_factory = sqlite3.Row
+        try:
+            result = judge_assertion_candidate(
+                conn,
+                candidate_ref=candidate_ref,
+                decision=decision,
+                reason=reason,
+                actor_ref=actor_ref,
+                replacement_kind=replacement_kind,
+                replacement_body_text=replacement_body_text,
+                replacement_value=replacement_value,
+            )
+            conn.commit()
+            return result
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        raise RuntimeError(f"failed to judge assertion candidate: {exc}") from exc
 
 
 def _archive_assertion_work_packet_entries(claims: Sequence[Any], session_id: str) -> tuple[Any, ...]:
@@ -1400,6 +1441,49 @@ class PolylogueArchiveMixin:
             limit=limit,
         )
         return [AssertionClaimPayload.from_envelope(claim) for claim in claims]
+
+    async def list_assertion_candidates(
+        self,
+        *,
+        target_ref: str | None = None,
+        kinds: Sequence[str] | None = None,
+        limit: int | None = None,
+    ) -> list[AssertionClaimPayload]:
+        """List candidate assertion claims awaiting explicit judgment."""
+
+        return await self.list_assertion_claim_payloads(
+            kinds=kinds,
+            target_ref=target_ref,
+            statuses=("candidate",),
+            limit=limit,
+        )
+
+    async def judge_assertion_candidate(
+        self,
+        *,
+        candidate_ref: str,
+        decision: str,
+        reason: str | None = None,
+        actor_ref: str = "user:local",
+        replacement_kind: str | None = None,
+        replacement_body_text: str | None = None,
+        replacement_value: object | None = None,
+    ) -> AssertionJudgmentResultPayload:
+        """Record an explicit judgment for one candidate assertion."""
+
+        from polylogue.surfaces.payloads import AssertionJudgmentResultPayload
+
+        result = _archive_judge_assertion_candidate(
+            self.config,
+            candidate_ref=candidate_ref,
+            decision=decision,
+            reason=reason,
+            actor_ref=actor_ref,
+            replacement_kind=replacement_kind,
+            replacement_body_text=replacement_body_text,
+            replacement_value=replacement_value,
+        )
+        return AssertionJudgmentResultPayload.from_envelope(result)
 
     async def recovery_read_payload(
         self,

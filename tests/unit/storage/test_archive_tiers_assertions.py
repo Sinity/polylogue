@@ -23,7 +23,11 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     ASSERTION_DEFAULT_VISIBILITY,
     AssertionKind,
     assertion_envelope_to_payload,
+    assertion_id_for_candidate_judgment,
+    assertion_id_for_promoted_candidate,
     assertion_id_for_transform_candidate,
+    judge_assertion_candidate,
+    list_assertion_candidates,
     list_assertion_claims,
     list_assertions_for_export,
     list_assertions_for_target,
@@ -646,5 +650,108 @@ def test_recovery_digest_candidates_write_transform_candidate_assertions(tmp_pat
         )
         assert len({item.assertion_id for item in duplicate_written}) == 2
         assert {item.value["candidate_index"] for item in duplicate_written if isinstance(item.value, dict)} == {0, 1}
+    finally:
+        conn.close()
+
+
+def test_candidate_assertion_acceptance_creates_active_assertion_with_lineage(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "user.db")
+    try:
+        digest = compile_recovery_digest(_recovery_candidate_session())
+        candidate = upsert_transform_candidate_assertions(conn, digest, now_ms=1_700_000_000_000)[0]
+
+        result = judge_assertion_candidate(
+            conn,
+            candidate_ref=f"assertion:{candidate.assertion_id}",
+            decision="accept",
+            reason="looks correct",
+            actor_ref="user:local",
+            now_ms=1_700_000_010_000,
+        )
+
+        assert result.candidate.assertion_id == candidate.assertion_id
+        assert result.candidate.status == "accepted"
+        assert result.resulting_assertion is not None
+        assert result.resulting_assertion.assertion_id == assertion_id_for_promoted_candidate(candidate.assertion_id)
+        assert isinstance(candidate.value, dict)
+        assert result.resulting_assertion.kind == candidate.value["candidate_kind"]
+        assert result.resulting_assertion.status == "active"
+        assert result.resulting_assertion.supersedes == [f"assertion:{candidate.assertion_id}"]
+        assert result.resulting_assertion.context_policy == {"inject": False}
+        assert result.judgment.assertion_id == assertion_id_for_candidate_judgment(candidate.assertion_id, "accept")
+        assert result.judgment.kind == AssertionKind.JUDGMENT
+        assert result.judgment.target_ref == f"assertion:{candidate.assertion_id}"
+        assert result.judgment.value == {
+            "decision": "accept",
+            "candidate_ref": f"assertion:{candidate.assertion_id}",
+            "reason": "looks correct",
+            "resulting_assertion_ref": f"assertion:{result.resulting_assertion.assertion_id}",
+        }
+    finally:
+        conn.close()
+
+
+def test_candidate_assertion_rejection_preserves_reason_and_filtering(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "user.db")
+    try:
+        digest = compile_recovery_digest(_recovery_candidate_session())
+        candidate = upsert_transform_candidate_assertions(conn, digest, now_ms=1_700_000_000_000)[0]
+
+        result = judge_assertion_candidate(
+            conn,
+            candidate_ref=candidate.assertion_id,
+            decision="reject",
+            reason="unsupported by transcript",
+            actor_ref="user:local",
+            now_ms=1_700_000_010_000,
+        )
+
+        assert result.resulting_assertion is None
+        assert result.candidate.status == "rejected"
+        assert result.judgment.value == {
+            "decision": "reject",
+            "candidate_ref": f"assertion:{candidate.assertion_id}",
+            "reason": "unsupported by transcript",
+            "resulting_assertion_ref": None,
+        }
+        assert candidate.assertion_id not in {item.assertion_id for item in list_assertion_candidates(conn)}
+        rejected = list_assertion_claims(conn, statuses=("rejected",))
+        assert [item.assertion_id for item in rejected] == [candidate.assertion_id]
+    finally:
+        conn.close()
+
+
+def test_candidate_assertion_supersede_records_replacement_and_lineage(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "user.db")
+    try:
+        digest = compile_recovery_digest(_recovery_candidate_session())
+        candidate = upsert_transform_candidate_assertions(conn, digest, now_ms=1_700_000_000_000)[0]
+
+        result = judge_assertion_candidate(
+            conn,
+            candidate_ref=f"assertion:{candidate.assertion_id}",
+            decision="supersede",
+            reason="replacement is more precise",
+            actor_ref="user:local",
+            replacement_kind="summary",
+            replacement_body_text="Accepted replacement summary",
+            replacement_value={"source": "operator"},
+            now_ms=1_700_000_010_000,
+        )
+
+        assert result.candidate.status == "superseded"
+        assert result.resulting_assertion is not None
+        assert result.resulting_assertion.assertion_id == assertion_id_for_promoted_candidate(candidate.assertion_id)
+        assert result.resulting_assertion.kind == "summary"
+        assert result.resulting_assertion.body_text == "Accepted replacement summary"
+        assert result.resulting_assertion.value == {"source": "operator"}
+        assert result.resulting_assertion.status == "active"
+        assert result.resulting_assertion.supersedes == [f"assertion:{candidate.assertion_id}"]
+        assert result.judgment.value == {
+            "decision": "supersede",
+            "candidate_ref": f"assertion:{candidate.assertion_id}",
+            "reason": "replacement is more precise",
+            "resulting_assertion_ref": f"assertion:{result.resulting_assertion.assertion_id}",
+        }
     finally:
         conn.close()

@@ -29,7 +29,10 @@ if TYPE_CHECKING:
         ArchiveBlockQueryRow,
         ArchiveMessageQueryRow,
     )
-    from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionEnvelope
+    from polylogue.storage.sqlite.archive_tiers.user_write import (
+        ArchiveAssertionEnvelope,
+        ArchiveAssertionJudgmentEnvelope,
+    )
 
 
 def serialize_surface_payload(payload: BaseModel, *, exclude_none: bool = False) -> str:
@@ -238,6 +241,7 @@ class ProviderPackageCompletenessPayload(SurfacePayloadModel):
 
 ArchiveDebtKind = Literal[
     "archive-tier",
+    "assertion-candidate",
     "convergence",
     "embedding",
     "fts",
@@ -1266,6 +1270,65 @@ class AssertionClaimListPayload(SurfacePayloadModel):
         )
 
 
+class AssertionJudgmentPayload(SurfacePayloadModel):
+    """Shared payload for explicit candidate-assertion judgments."""
+
+    judgment_id: str
+    candidate_ref: str
+    decision: Literal["accept", "reject", "defer", "supersede"]
+    reason: str | None = None
+    actor_ref: str | None = None
+    decided_at_ms: int
+    resulting_assertion_ref: str | None = None
+    evidence_refs: tuple[str, ...] = ()
+
+    @field_validator("candidate_ref", "actor_ref", "resulting_assertion_ref")
+    @classmethod
+    def _validate_judgment_object_refs(cls, value: str | None) -> str | None:
+        return normalize_object_ref_text(value) if value is not None else None
+
+    @field_validator("evidence_refs")
+    @classmethod
+    def _validate_judgment_evidence_refs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(normalize_public_ref_text(ref) for ref in value)
+
+    @classmethod
+    def from_envelope(cls, envelope: ArchiveAssertionEnvelope) -> AssertionJudgmentPayload:
+        value = envelope.value if isinstance(envelope.value, dict) else {}
+        decision = str(value.get("decision") or "")
+        if decision not in {"accept", "reject", "defer", "supersede"}:
+            raise ValueError("judgment assertion has invalid decision")
+        resulting_assertion_ref = value.get("resulting_assertion_ref")
+        return cls(
+            judgment_id=envelope.assertion_id,
+            candidate_ref=str(value.get("candidate_ref") or envelope.target_ref),
+            decision=cast(Literal["accept", "reject", "defer", "supersede"], decision),
+            reason=str(value["reason"]) if value.get("reason") is not None else None,
+            actor_ref=envelope.author_ref,
+            decided_at_ms=envelope.updated_at_ms,
+            resulting_assertion_ref=str(resulting_assertion_ref) if resulting_assertion_ref is not None else None,
+            evidence_refs=tuple(envelope.evidence_refs),
+        )
+
+
+class AssertionJudgmentResultPayload(SurfacePayloadModel):
+    """Shared result envelope for candidate-assertion judgment workflows."""
+
+    candidate: AssertionClaimPayload
+    judgment: AssertionJudgmentPayload
+    resulting_assertion: AssertionClaimPayload | None = None
+
+    @classmethod
+    def from_envelope(cls, envelope: ArchiveAssertionJudgmentEnvelope) -> AssertionJudgmentResultPayload:
+        return cls(
+            candidate=AssertionClaimPayload.from_envelope(envelope.candidate),
+            judgment=AssertionJudgmentPayload.from_envelope(envelope.judgment),
+            resulting_assertion=None
+            if envelope.resulting_assertion is None
+            else AssertionClaimPayload.from_envelope(envelope.resulting_assertion),
+        )
+
+
 RecoveryReportKind: TypeAlias = Literal["digest", "work-packet"]
 RecoveryReportFormat: TypeAlias = Literal["json", "markdown"]
 
@@ -2097,6 +2160,8 @@ __all__ = [
     "ActionQueryRowPayload",
     "AssertionClaimListPayload",
     "AssertionClaimPayload",
+    "AssertionJudgmentPayload",
+    "AssertionJudgmentResultPayload",
     "BlockQueryRowPayload",
     "BulkTagMutationResult",
     "SessionDetailPayload",

@@ -48,6 +48,7 @@ class AssertionKind(StrEnum):
     LESSON = "lesson"
     BLOCKER = "blocker"
     HANDOFF = "handoff"
+    JUDGMENT = "judgment"
     RUN_STATE = "run_state"
     PROMPT_EVAL = "prompt_eval"
     TRANSFORM_CANDIDATE = "transform_candidate"
@@ -239,6 +240,14 @@ def assertion_id_for_transform_candidate(
     )
 
 
+def assertion_id_for_candidate_judgment(candidate_assertion_id: str, decision: str) -> str:
+    return _deterministic_id(f"assertion-{AssertionKind.JUDGMENT}", candidate_assertion_id, decision)
+
+
+def assertion_id_for_promoted_candidate(candidate_assertion_id: str) -> str:
+    return _deterministic_id("assertion-promoted", candidate_assertion_id)
+
+
 def _target_ref(target_type: str | None, target_id: str | None) -> str | None:
     """Compose and validate an assertion ``target_ref`` from ``(type, id)``.
 
@@ -350,6 +359,13 @@ class ArchiveAssertionEnvelope:
     supersedes: list[str]
     created_at_ms: int
     updated_at_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveAssertionJudgmentEnvelope:
+    candidate: ArchiveAssertionEnvelope
+    judgment: ArchiveAssertionEnvelope
+    resulting_assertion: ArchiveAssertionEnvelope | None = None
 
 
 def upsert_suppression(
@@ -1003,6 +1019,161 @@ def mark_assertion_status(
     return int(cursor.rowcount) > 0
 
 
+def list_assertion_candidates(
+    conn: sqlite3.Connection,
+    *,
+    target_ref: str | None = None,
+    kinds: Sequence[str | AssertionKind] | None = None,
+    limit: int | None = None,
+) -> list[ArchiveAssertionEnvelope]:
+    """List candidate assertion claims awaiting explicit judgment."""
+
+    return list_assertion_claims(
+        conn,
+        kinds=ASSERTION_CLAIM_KINDS if kinds is None else kinds,
+        target_ref=target_ref,
+        statuses=("candidate",),
+        limit=limit,
+    )
+
+
+def judge_assertion_candidate(
+    conn: sqlite3.Connection,
+    *,
+    candidate_ref: str,
+    decision: str,
+    reason: str | None = None,
+    actor_ref: str = ASSERTION_DEFAULT_AUTHOR_REF,
+    replacement_kind: str | None = None,
+    replacement_body_text: str | None = None,
+    replacement_value: object | None = None,
+    now_ms: int | None = None,
+) -> ArchiveAssertionJudgmentEnvelope:
+    """Record an explicit operator judgment for one candidate assertion."""
+
+    normalized_decision = decision.strip().lower()
+    if normalized_decision not in {"accept", "reject", "defer", "supersede"}:
+        raise ValueError("candidate assertion decision must be accept, reject, defer, or supersede")
+    candidate_id = _assertion_id_from_ref(candidate_ref)
+    candidate = read_assertion_envelope(conn, candidate_id)
+    if candidate is None:
+        raise ValueError(f"candidate assertion not found: {candidate_ref}")
+    if candidate.status != "candidate":
+        raise ValueError(f"candidate assertion is not awaiting judgment: {candidate_ref}")
+
+    timestamp = now_ms if now_ms is not None else _now_ms()
+    resulting_assertion: ArchiveAssertionEnvelope | None = None
+    candidate_status = {
+        "accept": "accepted",
+        "reject": "rejected",
+        "defer": "candidate",
+        "supersede": "superseded",
+    }[normalized_decision]
+
+    if normalized_decision in {"accept", "supersede"}:
+        resulting_assertion = _promote_candidate_assertion(
+            conn,
+            candidate,
+            actor_ref=actor_ref,
+            replacement_kind=replacement_kind,
+            replacement_body_text=replacement_body_text,
+            replacement_value=replacement_value,
+            now_ms=timestamp,
+        )
+
+    if candidate_status != "candidate":
+        mark_assertion_status(conn, candidate_id, candidate_status, now_ms=timestamp)
+        refreshed = read_assertion_envelope(conn, candidate_id)
+        if refreshed is not None:
+            candidate = refreshed
+
+    evidence_refs = [*candidate.evidence_refs, f"assertion:{candidate_id}"]
+    if resulting_assertion is not None:
+        evidence_refs.append(f"assertion:{resulting_assertion.assertion_id}")
+    judgment = upsert_assertion(
+        conn,
+        assertion_id=assertion_id_for_candidate_judgment(candidate_id, normalized_decision),
+        scope_ref=candidate.scope_ref,
+        target_ref=f"assertion:{candidate_id}",
+        key=f"{normalized_decision}/{candidate_id}",
+        kind=AssertionKind.JUDGMENT,
+        value={
+            "decision": normalized_decision,
+            "candidate_ref": f"assertion:{candidate_id}",
+            "reason": reason,
+            "resulting_assertion_ref": None
+            if resulting_assertion is None
+            else f"assertion:{resulting_assertion.assertion_id}",
+        },
+        body_text=reason,
+        author_ref=actor_ref,
+        author_kind="user",
+        evidence_refs=evidence_refs,
+        status="active",
+        visibility="private",
+        context_policy={"inject": False},
+        supersedes=(f"assertion:{candidate_id}",),
+        now_ms=timestamp,
+    )
+    return ArchiveAssertionJudgmentEnvelope(
+        candidate=candidate,
+        judgment=judgment,
+        resulting_assertion=resulting_assertion,
+    )
+
+
+def _assertion_id_from_ref(value: str) -> str:
+    if value.startswith("assertion:"):
+        ref = ObjectRef.parse(value)
+        if ref.kind != "assertion" or ref.qualifiers:
+            raise ValueError("candidate_ref must be an assertion ref")
+        return ref.object_id
+    return value
+
+
+def _promote_candidate_assertion(
+    conn: sqlite3.Connection,
+    candidate: ArchiveAssertionEnvelope,
+    *,
+    actor_ref: str,
+    replacement_kind: str | None,
+    replacement_body_text: str | None,
+    replacement_value: object | None,
+    now_ms: int,
+) -> ArchiveAssertionEnvelope:
+    context_policy: dict[str, object] = dict(candidate.context_policy or ASSERTION_DEFAULT_CONTEXT_POLICY)
+    context_policy["inject"] = bool(context_policy.get("inject", False))
+    context_policy.pop("promotion_required", None)
+    return upsert_assertion(
+        conn,
+        assertion_id=assertion_id_for_promoted_candidate(candidate.assertion_id),
+        scope_ref=candidate.scope_ref,
+        target_ref=candidate.target_ref,
+        key=candidate.key,
+        kind=replacement_kind or _candidate_active_kind(candidate),
+        value=replacement_value if replacement_value is not None else candidate.value,
+        body_text=replacement_body_text if replacement_body_text is not None else candidate.body_text,
+        author_ref=actor_ref,
+        author_kind="user",
+        evidence_refs=(*candidate.evidence_refs, f"assertion:{candidate.assertion_id}"),
+        status="active",
+        visibility=candidate.visibility,
+        confidence=candidate.confidence,
+        staleness=candidate.staleness,
+        context_policy=context_policy,
+        supersedes=(f"assertion:{candidate.assertion_id}",),
+        now_ms=now_ms,
+    )
+
+
+def _candidate_active_kind(candidate: ArchiveAssertionEnvelope) -> str:
+    if candidate.kind == AssertionKind.TRANSFORM_CANDIDATE and isinstance(candidate.value, dict):
+        candidate_kind = candidate.value.get("candidate_kind")
+        if isinstance(candidate_kind, str) and candidate_kind:
+            return candidate_kind
+    return candidate.kind
+
+
 def _assertion_row_to_envelope(row: sqlite3.Row) -> ArchiveAssertionEnvelope:
     return ArchiveAssertionEnvelope(
         assertion_id=str(row[0]),
@@ -1221,6 +1392,7 @@ __all__ = [
     "ASSERTION_DEFAULT_VISIBILITY",
     "ArchiveAnnotationEnvelope",
     "ArchiveAssertionEnvelope",
+    "ArchiveAssertionJudgmentEnvelope",
     "ArchiveBlackboardNoteEnvelope",
     "ArchiveSuppressionEnvelope",
     "ArchiveMarkEnvelope",
@@ -1232,8 +1404,10 @@ __all__ = [
     "assertion_envelope_to_payload",
     "assertion_id_for_annotation",
     "assertion_id_for_blackboard_note",
+    "assertion_id_for_candidate_judgment",
     "assertion_id_for_correction",
     "assertion_id_for_mark",
+    "assertion_id_for_promoted_candidate",
     "assertion_id_for_recall_pack",
     "assertion_id_for_saved_view",
     "assertion_id_for_session_tag",
@@ -1241,7 +1415,9 @@ __all__ = [
     "assertion_id_for_transform_candidate",
     "assertion_id_for_workspace",
     "correction_id_for",
+    "judge_assertion_candidate",
     "list_archive_blackboard_note_envelopes",
+    "list_assertion_candidates",
     "list_assertion_claims",
     "list_assertions_for_export",
     "list_assertions_by_kind",

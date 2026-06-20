@@ -13,6 +13,7 @@ from polylogue.daemon.embedding_readiness import embedding_readiness_info
 from polylogue.daemon.fts_status import fts_readiness_info
 from polylogue.maintenance.targets import MAINTENANCE_TARGET_NAMES
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
+from polylogue.storage.sqlite.archive_tiers.user_write import list_assertion_candidates
 from polylogue.surfaces.payloads import (
     ArchiveDebtActionPayload,
     ArchiveDebtKind,
@@ -46,6 +47,8 @@ def archive_debt_list(
 
     if _include("archive-tier", selected_kinds):
         rows.extend(_tier_rows(archive_root))
+    if _include("assertion-candidate", selected_kinds):
+        rows.extend(_assertion_candidate_rows(archive_root / "user.db"))
     if _include("convergence", selected_kinds):
         rows.extend(_convergence_rows(index_db))
     if _include("embedding", selected_kinds):
@@ -139,6 +142,47 @@ def _tier_missing_severity(durability: str) -> ArchiveDebtSeverity:
     if durability in {"irreplaceable", "human"}:
         return "critical"
     return "warning"
+
+
+def _assertion_candidate_rows(user_db: Path) -> list[ArchiveDebtRowPayload]:
+    if not user_db.exists():
+        return []
+    try:
+        conn = sqlite3.connect(f"file:{user_db}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return []
+    try:
+        candidates = list_assertion_candidates(conn)
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+
+    rows: list[ArchiveDebtRowPayload] = []
+    for candidate in candidates:
+        assertion_ref = f"assertion:{candidate.assertion_id}"
+        rows.append(
+            ArchiveDebtRowPayload(
+                debt_ref=f"debt:assertion-candidate:{candidate.assertion_id}",
+                kind="assertion-candidate",
+                stage="candidate-judgment",
+                subject_ref=assertion_ref,
+                severity="info",
+                status="actionable",
+                owner="user",
+                summary=f"Candidate assertion awaits judgment for {candidate.target_ref}",
+                details=candidate.body_text,
+                observed_at=datetime.fromtimestamp(candidate.updated_at_ms / 1000, UTC).isoformat(),
+                evidence_refs=tuple(candidate.evidence_refs) + (assertion_ref,),
+                actions=(
+                    ArchiveDebtActionPayload(
+                        label="Review candidate assertions",
+                        command=("polylogue", "ops", "state", "candidates", "list", "--format", "json"),
+                    ),
+                ),
+            )
+        )
+    return rows
 
 
 def _read_user_version(path: Path) -> int | None:
