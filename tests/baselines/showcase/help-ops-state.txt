@@ -8,6 +8,7 @@ Options:
 Commands:
   annotations   Manage session and message annotations.
   blackboard    Persistent agent-addressable notes surface.
+  candidates    Review candidate assertions awaiting judgment.
   feedback      Record and inspect learning corrections for derived...
   marks         Manage session and message marks.
   recall-packs  Manage recall packs with explicit target evidence.

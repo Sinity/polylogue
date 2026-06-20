@@ -1,0 +1,9 @@
+Usage: polylogue ops state candidates accept [OPTIONS] CANDIDATE_REF
+
+  Accept a candidate assertion into an active assertion.
+
+Options:
+  --reason TEXT
+  --actor-ref TEXT     [default: user:local]
+  -f, --format [json]
+  -h, --help           Show this message and exit.
