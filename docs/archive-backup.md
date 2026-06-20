@@ -13,7 +13,7 @@ The configured archive root contains these durable paths:
 | `source.db` | Raw acquisition evidence and source observations. | Back up. This is the rebuild root for parsed/indexed data. |
 | `index.db` | Parsed sessions, messages, FTS/search indexes, graph rows, and derived read models. | Rebuildable from `source.db`; include in full evidence backups for faster restore, but cache-exclude profiles may omit it. |
 | `embeddings.db` | Vector rows, embedding status, and catch-up metadata. | Back up when present. It is rebuildable, but expensive and may require provider cost. |
-| `user.db` | Human/user/agent overlays: marks, annotations, corrections, tags, notes, saved views, recall packs, workspaces, and assertions. | Always back up. This tier is irreplaceable user state. |
+| `user.db` | Human/user/agent overlays stored as assertions: marks, annotations, corrections, tags, metadata, notes, saved views, recall packs, workspaces, candidates, and judgments. | Always back up. This tier is irreplaceable user state. |
 | `ops.db` | Daemon cursors, attempts, convergence debt, stage events, and operational telemetry. | Disposable. Include only in diagnostics bundles or incident snapshots. |
 | `blob/` | Content-addressed binary payloads keyed by SHA-256. | Back up referenced blobs with `source.db`/`user.db`; do not prune by age alone. |
 

@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
 
 class AssertionKind(StrEnum):
-    """Closed v0 vocabulary for ``assertions.kind`` (#1883).
+    """Closed vocabulary for ``assertions.kind``.
 
     The unified assertions table collapses the legacy user-tier overlays; each
     kind below corresponds to a meaning carried by one of those mini-systems or
@@ -214,6 +214,12 @@ def assertion_id_for_session_tag(session_id: str, tag: str, tag_source: str) -> 
     """Return the mirrored assertion id for one normalized session tag."""
     normalized_tag = tag.strip().lower()
     return _deterministic_id(f"assertion-{AssertionKind.TAG}", session_id, normalized_tag, tag_source)
+
+
+def assertion_id_for_session_metadata(session_id: str, key: str) -> str:
+    """Return the assertion id for one user metadata key."""
+    normalized_key = key.strip()
+    return _deterministic_id(f"assertion-{AssertionKind.METADATA}", session_id, normalized_key)
 
 
 def assertion_id_for_transform_candidate(
@@ -435,6 +441,10 @@ def upsert_session_tag_assertion(
     if tag_source != "user":
         return None
     normalized_tag = tag.strip().lower()
+    if not normalized_tag:
+        raise ValueError("tag cannot be empty")
+    if len(normalized_tag) > 200:
+        raise ValueError("tag exceeds maximum length of 200 characters")
     timestamp = now_ms if now_ms is not None else _now_ms()
     value: dict[str, object] = {"tag_source": tag_source}
     if method is not None:
@@ -451,6 +461,31 @@ def upsert_session_tag_assertion(
         body_text=normalized_tag,
         author_kind="user",
         confidence=confidence,
+        now_ms=timestamp,
+    )
+
+
+def upsert_session_metadata_assertion(
+    conn: sqlite3.Connection,
+    *,
+    session_id: str,
+    key: str,
+    value: object,
+    now_ms: int | None = None,
+) -> ArchiveAssertionEnvelope:
+    """Upsert one user metadata key as a first-class metadata assertion."""
+    normalized_key = key.strip()
+    if not normalized_key:
+        raise ValueError("metadata key cannot be empty")
+    timestamp = now_ms if now_ms is not None else _now_ms()
+    return upsert_assertion(
+        conn,
+        assertion_id=assertion_id_for_session_metadata(session_id, normalized_key),
+        target_ref=f"session:{session_id}",
+        kind=AssertionKind.METADATA,
+        key=normalized_key,
+        value=value,
+        author_kind="user",
         now_ms=timestamp,
     )
 
@@ -1408,6 +1443,7 @@ __all__ = [
     "assertion_id_for_correction",
     "assertion_id_for_mark",
     "assertion_id_for_promoted_candidate",
+    "assertion_id_for_session_metadata",
     "assertion_id_for_recall_pack",
     "assertion_id_for_saved_view",
     "assertion_id_for_session_tag",
@@ -1439,6 +1475,7 @@ __all__ = [
     "upsert_mark",
     "upsert_recall_pack",
     "upsert_saved_view",
+    "upsert_session_metadata_assertion",
     "upsert_session_tag_assertion",
     "upsert_suppression",
     "upsert_transform_candidate_assertions",

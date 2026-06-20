@@ -1,15 +1,14 @@
-"""User-tier assertion overlay audit helpers (#1883)."""
+"""User-tier assertion overlay audit helpers."""
 
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Mapping
 from dataclasses import dataclass
 
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind
 
-_ASSERTION_BACKED_SURFACES: Mapping[str, AssertionKind] = {
+_ASSERTION_BACKED_SURFACES: dict[str, AssertionKind] = {
     "marks": AssertionKind.MARK,
     "highlights": AssertionKind.HIGHLIGHT,
     "annotations": AssertionKind.ANNOTATION,
@@ -31,28 +30,6 @@ _ASSERTION_BACKED_SURFACES: Mapping[str, AssertionKind] = {
     "prompt_evals": AssertionKind.PROMPT_EVAL,
     "transform_candidates": AssertionKind.TRANSFORM_CANDIDATE,
 }
-
-_TABLE_BACKED_SURFACES: Mapping[str, tuple[str, str]] = {
-    "session_tags": (
-        "session_tags",
-        "simple session metadata table; not an assertion lifecycle claim",
-    ),
-    "session_metadata": (
-        "session_metadata",
-        "simple key/value session metadata table; not an assertion lifecycle claim",
-    ),
-}
-
-_REMOVED_OVERLAY_TABLES: tuple[str, ...] = (
-    "marks",
-    "annotations",
-    "corrections",
-    "suppressions",
-    "saved_views",
-    "recall_packs",
-    "workspaces",
-    "blackboard_notes",
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,13 +67,11 @@ class UserOverlayAudit:
     """Live audit of how user-overlay surfaces are stored."""
 
     surfaces: tuple[UserOverlayAuditSurface, ...]
-    legacy_tables_present: tuple[str, ...]
 
     def to_dict(self) -> JSONDocument:
         return json_document(
             {
                 "surfaces": [surface.to_dict() for surface in self.surfaces],
-                "legacy_tables_present": list(self.legacy_tables_present),
             }
         )
 
@@ -124,24 +99,7 @@ def audit_user_overlay_storage(conn: sqlite3.Connection) -> UserOverlayAudit:
             )
         )
 
-    for surface_name, (table_name, rationale) in _TABLE_BACKED_SURFACES.items():
-        count = _table_row_count(conn, table_name)
-        surfaces.append(
-            UserOverlayAuditSurface(
-                name=surface_name,
-                storage="table",
-                assertion_kind=None,
-                table=table_name,
-                total_count=count,
-                active_count=count,
-                deleted_count=0,
-                candidate_count=0,
-                rationale=rationale,
-            )
-        )
-
-    legacy_tables_present = tuple(table for table in _REMOVED_OVERLAY_TABLES if _table_exists(conn, table))
-    return UserOverlayAudit(surfaces=tuple(surfaces), legacy_tables_present=legacy_tables_present)
+    return UserOverlayAudit(surfaces=tuple(surfaces))
 
 
 def _assertion_counts_by_kind(conn: sqlite3.Connection) -> dict[str, dict[str, int]]:
@@ -160,13 +118,6 @@ def _assertion_counts_by_kind(conn: sqlite3.Connection) -> dict[str, dict[str, i
         status = str(row[1])
         counts.setdefault(kind, {})[status] = int(row[2] or 0)
     return counts
-
-
-def _table_row_count(conn: sqlite3.Connection, table_name: str) -> int:
-    if not _table_exists(conn, table_name):
-        return 0
-    row = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()
-    return int(row[0] or 0) if row is not None else 0
 
 
 def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:

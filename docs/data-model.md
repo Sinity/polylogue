@@ -50,11 +50,12 @@ and `attachments`.
 
 ### Metadata overlay and derived properties
 
-`metadata` is the user-owned key/value overlay (hydrated from `user.db`'s
-`session_metadata`). It holds the user title override, a user/LLM summary, and
+`metadata` is the user-owned key/value overlay projected from `user.db`
+metadata assertions. It holds the user title override, a user/LLM summary, and
 any custom keys. It is **excluded from the content hash**, so editing it never
-triggers re-import. Tags are not stored in this overlay — they come from the
-`session_tags` table via `tags_m2m`.
+triggers re-import. Tags are not stored in this overlay: user tags are tag
+assertions, while auto-tags are rebuildable `index.db.session_tags` rows and
+surface through `tags_m2m`.
 
 Convenience properties resolve these:
 
@@ -146,9 +147,9 @@ repo:polylogue         # Namespaced
 status:wip             # Namespaced
 ```
 
-User tags (the human-owned `session_tags` rows in `user.db`) and auto-tags (the
-heuristic `session_tags` rows in `index.db`) are kept distinct by their
-`tag_source`. The user side is irreplaceable; the auto side is rebuildable.
+User tags are assertion rows in `user.db`; auto-tags remain heuristic
+`session_tags` rows in `index.db`. The user side is irreplaceable durable
+overlay state; the auto side is rebuildable read-model state.
 
 ---
 

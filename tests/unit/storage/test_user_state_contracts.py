@@ -1,4 +1,4 @@
-"""Durable user-state storage contracts (#867)."""
+"""Durable user-state storage contracts."""
 
 from __future__ import annotations
 
@@ -243,7 +243,7 @@ async def test_blackboard_public_surface_writes_assertion_metadata(
 
 
 @pytest.mark.asyncio
-async def test_tags_and_metadata_remain_table_backed_user_metadata(
+async def test_tags_and_metadata_are_assertion_backed_user_metadata(
     workspace_env: dict[str, Path],
 ) -> None:
     archive_root = workspace_env["archive_root"]
@@ -260,31 +260,24 @@ async def test_tags_and_metadata_remain_table_backed_user_metadata(
     assert tag_result.outcome == "added"
     assert metadata_result.outcome == "set"
     with sqlite3.connect(archive_root / "user.db") as conn:
-        tag_row = conn.execute(
-            """
-            SELECT tag, tag_source, method
-            FROM session_tags
-            WHERE session_id = ?
-            """,
-            (session_id,),
-        ).fetchone()
-        metadata_row = conn.execute(
-            """
-            SELECT key, value_json
-            FROM session_metadata
-            WHERE session_id = ?
-            """,
-            (session_id,),
-        ).fetchone()
         assertion_rows = conn.execute(
-            "SELECT kind, target_ref, key, status FROM assertions WHERE kind IN ('tag', 'metadata')"
+            """
+            SELECT kind, target_ref, key, status, value_json
+            FROM assertions
+            WHERE kind IN ('tag', 'metadata') AND target_ref = ?
+            """,
+            (f"session:{session_id}",),
         ).fetchall()
 
-    assert tag_row == ("planning", "user", "cli")
-    assert metadata_row is not None
-    assert metadata_row[0] == "owner"
-    assert json.loads(metadata_row[1]) == {"name": "sinity"}
-    assert assertion_rows == [("tag", f"session:{session_id}", "planning", "active")]
+    rows_by_kind = {row[0]: row for row in assertion_rows}
+    assert rows_by_kind["tag"][:4] == ("tag", f"session:{session_id}", "planning", "active")
+    assert json.loads(rows_by_kind["tag"][4]) == {
+        "tag_source": "user",
+        "method": "cli",
+        "evidence": {"source": "archive_query"},
+    }
+    assert rows_by_kind["metadata"][:4] == ("metadata", f"session:{session_id}", "owner", "active")
+    assert json.loads(rows_by_kind["metadata"][4]) == {"name": "sinity"}
 
 
 @pytest.mark.asyncio

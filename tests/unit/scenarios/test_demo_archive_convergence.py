@@ -158,22 +158,21 @@ async def test_demo_fixture_world_converges_into_deterministic_archive(
     assert overlay.saved_view_id == "demo-view:pytest-triage"
 
     with _connect(archive_root / "user.db") as conn:
-        session_tags = conn.execute(
-            "SELECT tag, tag_source FROM session_tags WHERE session_id = ?",
-            (DEMO_CLAUDE_CODE_SESSION_ID,),
-        ).fetchall()
         assertions = list_assertions_for_target(conn, f"session:{DEMO_CLAUDE_CODE_SESSION_ID}")
 
-    assert tuple((row["tag"], row["tag_source"]) for row in session_tags) == (("pytest-triage", "user"),)
     assert {assertion.kind for assertion in assertions} == {
         AssertionKind.MARK,
         AssertionKind.NOTE,
         AssertionKind.TAG,
         AssertionKind.DECISION,
     }
-    assert {
-        assertion.key for assertion in assertions if assertion.kind in {AssertionKind.TAG, AssertionKind.DECISION}
-    } == {"pytest-triage"}
+    tag_assertions = tuple(assertion for assertion in assertions if assertion.kind == AssertionKind.TAG)
+    assert {assertion.key for assertion in tag_assertions} == {"pytest-triage"}
+    assert {assertion.author_kind for assertion in tag_assertions} == {"user", "fixture"}
+    tag_values = tuple(assertion.value for assertion in tag_assertions if isinstance(assertion.value, dict))
+    assert {value["tag_source"] for value in tag_values if "tag_source" in value} == {"user"}
+    assert {value["source"] for value in tag_values if "source" in value} == {"demo-fixture-world"}
+    assert {assertion.key for assertion in assertions if assertion.kind == AssertionKind.DECISION} == {"pytest-triage"}
     fixture_assertions = [assertion for assertion in assertions if assertion.author_kind == "fixture"]
     assert fixture_assertions
     assert all(assertion.context_policy == {"demo": True, "inject": False} for assertion in fixture_assertions)

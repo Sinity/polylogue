@@ -1,4 +1,4 @@
-"""Assertion-backed user-overlay storage contracts (#1883)."""
+"""Assertion-backed user-overlay storage contracts."""
 
 from __future__ import annotations
 
@@ -33,10 +33,10 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     upsert_mark,
     upsert_recall_pack,
     upsert_saved_view,
+    upsert_session_tag_assertion,
     upsert_suppression,
     upsert_workspace,
 )
-from polylogue.storage.sqlite.archive_tiers.write import upsert_session_tag
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -78,7 +78,7 @@ def test_mark_write_through_mirrors_assertion(tmp_path: Path) -> None:
 def test_user_session_tag_write_through_mirrors_assertion(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "user.db")
 
-    upsert_session_tag(
+    upsert_session_tag_assertion(
         conn,
         session_id="session-1",
         tag="Review",
