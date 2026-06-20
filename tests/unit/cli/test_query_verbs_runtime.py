@@ -533,7 +533,7 @@ def test_continue_verb_renders_recovery_continue_report() -> None:
         output_format=None,
         destination="clipboard",
         out_path=None,
-        recovery_report="continue",
+        recovery=read_view_handlers.ReadViewRecoveryOptions(report="continue"),
     )
 
 
@@ -669,7 +669,6 @@ def test_read_view_recovery_json_uses_success_envelope(capsys: pytest.CaptureFix
                 view="recovery",
                 session_id="s1",
                 output_format="json",
-                recovery_report=None,
                 destination="terminal",
                 out_path=None,
             ),
@@ -698,9 +697,9 @@ def test_read_view_recovery_work_packet_json_uses_success_envelope(capsys: pytes
                 view="recovery",
                 session_id="s1",
                 output_format="json",
-                recovery_report="work-packet",
                 destination="terminal",
                 out_path=None,
+                recovery=read_view_handlers.ReadViewRecoveryOptions(report="work-packet"),
             ),
         )
 
@@ -744,7 +743,6 @@ def test_read_view_recovery_requires_session_id() -> None:
                 view="recovery",
                 session_id=None,
                 output_format=None,
-                recovery_report=None,
                 destination="terminal",
                 out_path=None,
             ),

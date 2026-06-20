@@ -22,40 +22,83 @@ ReadViewSessionPolicy = Literal["optional", "required", "query_or_session", "non
 
 
 @dataclass(frozen=True, slots=True)
-class ReadViewInvocation:
-    """Normalized CLI arguments for one read-view execution."""
+class ReadViewMessageOptions:
+    """Options owned by the messages/raw read views."""
 
-    view: str
-    session_id: str | None
-    output_format: str | None
-    destination: str
-    out_path: str | None
     limit: int | None = None
     offset: int = 0
-    message_role: tuple[str, ...] = ()
+    role: tuple[str, ...] = ()
     message_type: str | None = None
     no_code_blocks: bool = False
     no_tool_calls: bool = False
     no_tool_outputs: bool = False
     no_file_reads: bool = False
     prose_only: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ReadViewContextOptions:
+    """Options owned by the context preamble view."""
+
+    related_limit: int = 5
+
+
+@dataclass(frozen=True, slots=True)
+class ReadViewContextPackOptions:
+    """Options owned by the project context-pack view."""
+
+    project_path: str | None = None
+    project_repo: str | None = None
+    since: str | None = None
+    until: str | None = None
+    origin: str | None = None
+    query: str | None = None
+    max_sessions: int = 5
+    max_messages: int = 20
+    no_redact: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ReadViewRecoveryOptions:
+    """Options owned by the recovery digest/report view."""
+
+    report: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ReadViewNeighborOptions:
+    """Options owned by the neighbor discovery view."""
+
+    limit: int | None = None
     window_hours: int = 24
+
+
+@dataclass(frozen=True, slots=True)
+class ReadViewCorrelationOptions:
+    """Options owned by the correlation evidence view."""
+
     repo_path: str | None = None
     since_hours: int = 2
     confidence_threshold: float = 0.3
     github_api: bool = True
     otlp: bool = False
-    related_limit: int = 5
-    recovery_report: str | None = None
-    project_path: str | None = None
-    project_repo: str | None = None
-    since: str | None = None
-    until: str | None = None
-    pack_origin: str | None = None
-    pack_query: str | None = None
-    max_sessions: int = 5
-    max_messages: int = 20
-    no_redact: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ReadViewInvocation:
+    """Common transport and selection fields for one read-view execution."""
+
+    view: str
+    session_id: str | None
+    output_format: str | None
+    destination: str
+    out_path: str | None
+    messages: ReadViewMessageOptions = ReadViewMessageOptions()
+    context: ReadViewContextOptions = ReadViewContextOptions()
+    context_pack: ReadViewContextPackOptions = ReadViewContextPackOptions()
+    recovery: ReadViewRecoveryOptions = ReadViewRecoveryOptions()
+    neighbors: ReadViewNeighborOptions = ReadViewNeighborOptions()
+    correlation: ReadViewCorrelationOptions = ReadViewCorrelationOptions()
 
 
 ReadViewHandlerFunc = Callable[[AppEnv, "RootModeRequest", ReadViewInvocation], None]
@@ -214,7 +257,8 @@ def _run_read_messages(env: AppEnv, request: RootModeRequest, invocation: ReadVi
     from polylogue.cli.messages import run_messages
 
     assert invocation.session_id is not None
-    limit = invocation.limit if invocation.limit is not None else 50
+    options = invocation.messages
+    limit = options.limit if options.limit is not None else 50
 
     if invocation.destination in ("file", "clipboard"):
         buf = io.StringIO()
@@ -229,15 +273,15 @@ def _run_read_messages(env: AppEnv, request: RootModeRequest, invocation: ReadVi
                 env,
                 request,
                 session_id=invocation.session_id,
-                message_role=invocation.message_role,
-                message_type=invocation.message_type,
+                message_role=options.role,
+                message_type=options.message_type,
                 limit=limit,
-                offset=invocation.offset,
-                no_code_blocks=invocation.no_code_blocks,
-                no_tool_calls=invocation.no_tool_calls,
-                no_tool_outputs=invocation.no_tool_outputs,
-                no_file_reads=invocation.no_file_reads,
-                prose_only=invocation.prose_only,
+                offset=options.offset,
+                no_code_blocks=options.no_code_blocks,
+                no_tool_calls=options.no_tool_calls,
+                no_tool_outputs=options.no_tool_outputs,
+                no_file_reads=options.no_file_reads,
+                prose_only=options.prose_only,
                 output_format=invocation.output_format,
             )
         finally:
@@ -249,15 +293,15 @@ def _run_read_messages(env: AppEnv, request: RootModeRequest, invocation: ReadVi
         env,
         request,
         session_id=invocation.session_id,
-        message_role=invocation.message_role,
-        message_type=invocation.message_type,
+        message_role=options.role,
+        message_type=options.message_type,
         limit=limit,
-        offset=invocation.offset,
-        no_code_blocks=invocation.no_code_blocks,
-        no_tool_calls=invocation.no_tool_calls,
-        no_tool_outputs=invocation.no_tool_outputs,
-        no_file_reads=invocation.no_file_reads,
-        prose_only=invocation.prose_only,
+        offset=options.offset,
+        no_code_blocks=options.no_code_blocks,
+        no_tool_calls=options.no_tool_calls,
+        no_tool_outputs=options.no_tool_outputs,
+        no_file_reads=options.no_file_reads,
+        prose_only=options.prose_only,
         output_format=invocation.output_format,
     )
 
@@ -268,7 +312,8 @@ def _run_read_raw(env: AppEnv, request: RootModeRequest, invocation: ReadViewInv
     from polylogue.cli.messages import run_raw
 
     assert invocation.session_id is not None
-    limit = invocation.limit if invocation.limit is not None else 50
+    options = invocation.messages
+    limit = options.limit if options.limit is not None else 50
     output_format = invocation.output_format or "json"
 
     if invocation.destination in ("file", "clipboard", "stdout"):
@@ -285,7 +330,7 @@ def _run_read_raw(env: AppEnv, request: RootModeRequest, invocation: ReadViewInv
                 request,
                 session_id=invocation.session_id,
                 limit=limit,
-                offset=invocation.offset,
+                offset=options.offset,
                 output_format=output_format,
             )
         finally:
@@ -298,7 +343,7 @@ def _run_read_raw(env: AppEnv, request: RootModeRequest, invocation: ReadViewInv
         request,
         session_id=invocation.session_id,
         limit=limit,
-        offset=invocation.offset,
+        offset=options.offset,
         output_format=output_format,
     )
 
@@ -313,7 +358,7 @@ def _run_read_context(env: AppEnv, request: RootModeRequest, invocation: ReadVie
     preamble = compose_context_preamble(
         env,
         session_id=invocation.session_id,
-        related_limit=max(1, invocation.related_limit),
+        related_limit=max(1, invocation.context.related_limit),
     )
     _deliver_content(env, preamble + "\n", destination=invocation.destination, out_path=invocation.out_path)
 
@@ -324,17 +369,18 @@ def _run_read_context_pack(env: AppEnv, request: RootModeRequest, invocation: Re
     from polylogue.context.pack import run_context_pack_view
 
     del request
+    options = invocation.context_pack
     run_context_pack_view(
         env,
-        project_path=invocation.project_path,
-        project_repo=invocation.project_repo,
-        since=invocation.since,
-        until=invocation.until,
-        origin=invocation.pack_origin,
-        query=invocation.pack_query,
-        max_sessions=invocation.max_sessions,
-        max_messages=invocation.max_messages,
-        no_redact=invocation.no_redact,
+        project_path=options.project_path,
+        project_repo=options.project_repo,
+        since=options.since,
+        until=options.until,
+        origin=options.origin,
+        query=options.query,
+        max_sessions=options.max_sessions,
+        max_messages=options.max_messages,
+        no_redact=options.no_redact,
     )
 
 
@@ -348,8 +394,9 @@ def _run_read_recovery(env: AppEnv, request: RootModeRequest, invocation: ReadVi
 
     del request
     assert invocation.session_id is not None
-    if invocation.recovery_report is not None:
-        if invocation.recovery_report == "work-packet" and invocation.output_format == "json":
+    options = invocation.recovery
+    if options.report is not None:
+        if options.report == "work-packet" and invocation.output_format == "json":
             packet = run_coroutine_sync(env.polylogue.recovery_work_packet(invocation.session_id))
             if packet is None:
                 fail("read", f"Session not found: {invocation.session_id}")
@@ -359,7 +406,7 @@ def _run_read_recovery(env: AppEnv, request: RootModeRequest, invocation: ReadVi
         rendered_report = run_coroutine_sync(
             env.polylogue.recovery_report(
                 invocation.session_id,
-                cast("RecoveryReportPreset", invocation.recovery_report),
+                cast("RecoveryReportPreset", options.report),
             )
         )
         if rendered_report is None:
@@ -416,6 +463,7 @@ def _run_read_neighbors(env: AppEnv, request: RootModeRequest, invocation: ReadV
     query_seed = " ".join(request.query_terms).strip() or None
     if not invocation.session_id and not query_seed:
         fail("read", "read --view neighbors requires a seed (use --id, id:prefix, --latest, or a query).")
+    options = invocation.neighbors
 
     origin = request.params.get("origin")
     provider = provider_from_origin(Origin(str(origin))).value if origin else None
@@ -426,8 +474,8 @@ def _run_read_neighbors(env: AppEnv, request: RootModeRequest, invocation: ReadV
                 session_id=invocation.session_id,
                 query=query_seed,
                 provider=provider,
-                limit=max(1, invocation.limit if invocation.limit is not None else 10),
-                window_hours=max(1, invocation.window_hours),
+                limit=max(1, options.limit if options.limit is not None else 10),
+                window_hours=max(1, options.window_hours),
             )
         )
     except NeighborDiscoveryError as exc:
@@ -459,15 +507,16 @@ def _run_read_correlation(env: AppEnv, request: RootModeRequest, invocation: Rea
 
     del request
     assert invocation.session_id is not None
+    options = invocation.correlation
     run_correlation_view(
         env,
         session_id=invocation.session_id,
-        repo_path=invocation.repo_path,
-        since_hours=invocation.since_hours,
+        repo_path=options.repo_path,
+        since_hours=options.since_hours,
         output_format=invocation.output_format,
-        confidence_threshold=invocation.confidence_threshold,
-        github_api=invocation.github_api,
-        otlp=invocation.otlp,
+        confidence_threshold=options.confidence_threshold,
+        github_api=options.github_api,
+        otlp=options.otlp,
     )
 
 
@@ -536,8 +585,14 @@ validate_read_view_handler_registry()
 
 __all__ = [
     "READ_VIEW_HANDLERS",
+    "ReadViewContextOptions",
+    "ReadViewContextPackOptions",
+    "ReadViewCorrelationOptions",
     "ReadViewHandler",
     "ReadViewInvocation",
+    "ReadViewMessageOptions",
+    "ReadViewNeighborOptions",
+    "ReadViewRecoveryOptions",
     "read_view_handler_ids",
     "run_bulk_export_view",
     "run_read_view",

@@ -16,7 +16,7 @@ import pytest
 
 from polylogue.archive.models import SessionSummary
 from polylogue.archive.session.neighbor_candidates import NeighborReason, SessionNeighborCandidate
-from polylogue.cli.read_view_handlers import ReadViewInvocation, _run_read_neighbors
+from polylogue.cli.read_view_handlers import ReadViewInvocation, ReadViewNeighborOptions, _run_read_neighbors
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.core.enums import Origin
 from polylogue.types import SessionId
@@ -56,11 +56,10 @@ def test_read_view_neighbors_emits_json_payload(capsys: pytest.CaptureFixture[st
         ReadViewInvocation(
             view="neighbors",
             session_id="target",
-            limit=10,
-            window_hours=24,
             output_format="json",
             destination="stdout",
             out_path=None,
+            neighbors=ReadViewNeighborOptions(limit=10, window_hours=24),
         ),
     )
 
@@ -88,11 +87,10 @@ def test_read_view_neighbors_plain_renders_reasons(capsys: pytest.CaptureFixture
         ReadViewInvocation(
             view="neighbors",
             session_id="target",
-            limit=10,
-            window_hours=24,
             output_format=None,
             destination="stdout",
             out_path=None,
+            neighbors=ReadViewNeighborOptions(limit=10, window_hours=24),
         ),
     )
 
@@ -117,11 +115,10 @@ def test_read_view_neighbors_surfaces_discovery_error(capsys: pytest.CaptureFixt
             ReadViewInvocation(
                 view="neighbors",
                 session_id="target",
-                limit=10,
-                window_hours=24,
                 output_format=None,
                 destination="stdout",
                 out_path=None,
+                neighbors=ReadViewNeighborOptions(limit=10, window_hours=24),
             ),
         )
 
@@ -139,11 +136,10 @@ def test_read_view_neighbors_empty_renders_message(capsys: pytest.CaptureFixture
         ReadViewInvocation(
             view="neighbors",
             session_id="target",
-            limit=10,
-            window_hours=24,
             output_format=None,
             destination="stdout",
             out_path=None,
+            neighbors=ReadViewNeighborOptions(limit=10, window_hours=24),
         ),
     )
 
@@ -161,11 +157,10 @@ def test_read_view_neighbors_requires_a_seed(capsys: pytest.CaptureFixture[str])
             ReadViewInvocation(
                 view="neighbors",
                 session_id=None,
-                limit=10,
-                window_hours=24,
                 output_format=None,
                 destination="stdout",
                 out_path=None,
+                neighbors=ReadViewNeighborOptions(limit=10, window_hours=24),
             ),
         )
 
