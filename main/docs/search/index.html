@@ -644,6 +644,29 @@ still narrow the owning sessions before rows are returned. Session-only actions
 and result-shaping modes that do not have row semantics yet, such as
 <code>delete</code>, <code>open</code>, <code>stats</code>, <code>count</code>, <code>--cursor</code>, and custom sort/reverse modes,
 are rejected instead of silently coercing row queries back to session queries.</p>
+<h2>Assertion Candidate Judgment</h2>
+<p>Transform and recovery jobs may emit assertion rows with <code>status:candidate</code>.
+Candidate rows are private, carry <code>context_policy.inject=false</code>, and keep
+<code>promotion_required=true</code> until an operator makes an explicit judgment. They
+can be inspected like any other assertion row:</p>
+<pre><code class="language-bash">polylogue assertions where 'status:candidate AND target:session:codex-session:abc123' --format json
+polylogue ops state candidates list --target-ref session:codex-session:abc123 --format json
+</code></pre>
+<p>The judgment workflow lives under <code>polylogue ops state candidates</code> and writes
+back into the same <code>user.db</code> assertion substrate:</p>
+<pre><code class="language-bash">polylogue ops state candidates accept assertion:candidate-id --reason &quot;confirmed by transcript&quot; --format json
+polylogue ops state candidates reject assertion:candidate-id --reason &quot;unsupported by evidence&quot; --format json
+polylogue ops state candidates defer assertion:candidate-id --reason &quot;needs another source&quot; --format json
+polylogue ops state candidates supersede assertion:candidate-id --kind summary --body &quot;replacement claim&quot; --format json
+</code></pre>
+<p><code>accept</code> and <code>supersede</code> create an active assertion whose evidence includes the
+candidate assertion ref and whose <code>supersedes</code> lineage points at the candidate.
+<code>reject</code> and <code>defer</code> preserve a judgment assertion with the reason and leave a
+durable lifecycle record. No candidate assertion is injected into compiled
+context unless a later surface asks for candidates explicitly.</p>
+<p>Pending candidate judgments also appear in the operator debt cockpit:</p>
+<pre><code class="language-bash">polylogue ops debt list --kind assertion-candidate --only-actionable --format json
+</code></pre>
 <h2>Public Ref Resolution</h2>
 <p>Query/read payloads carry public object and evidence refs so agents and the web
 shell can jump from a row, work packet, or assertion back to the exact archive
