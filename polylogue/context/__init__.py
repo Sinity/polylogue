@@ -11,6 +11,7 @@ __all__ = [
     "compile_recovery_context",
     "compose_context_preamble",
     "context_image_from_recovery",
+    "context_snapshot_record_from_image",
     "run_context_pack_view",
 ]
 
@@ -28,6 +29,10 @@ def __getattr__(name: str) -> object:
         from polylogue.context.compiler import context_image_from_recovery
 
         return context_image_from_recovery
+    if name == "context_snapshot_record_from_image":
+        from polylogue.context.compiler import context_snapshot_record_from_image
+
+        return context_snapshot_record_from_image
     if name == "compose_context_preamble":
         from polylogue.context.preamble import compose_context_preamble
 

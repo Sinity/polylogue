@@ -8,6 +8,8 @@ shape that CLI/API/MCP surfaces can share.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Sequence
 from typing import Literal, cast
 
@@ -242,6 +244,54 @@ def context_image_from_recovery(compilation: RecoveryContextCompilation) -> Cont
     )
 
 
+def context_snapshot_record_from_image(
+    image: ContextImage,
+    *,
+    boundary: str,
+    run_ref: str | None = None,
+    inheritance_mode: str = "explicit",
+) -> ContextSnapshotRecord:
+    """Build a storage-free evidence record for delivered context.
+
+    Compilation remains pure. Callers use this helper only at a delivery
+    boundary, then persist or emit the returned record through the surface that
+    actually performed the handoff.
+    """
+    if not boundary:
+        raise ValueError("ContextSnapshotRecord requires a delivery boundary")
+    segment_refs = tuple(segment.segment_id for segment in image.segments)
+    metadata: dict[str, object] = {
+        "purpose": image.spec.purpose,
+        "read_views": image.spec.read_views,
+        "max_tokens": image.spec.max_tokens,
+        "token_estimate": image.token_estimate,
+        "include_assertions": image.spec.include_assertions,
+        "include_candidates": image.spec.include_candidates,
+        "redaction_policy": image.spec.redaction_policy,
+        "omitted_count": len(image.omitted),
+        "assertion_refs": image.assertion_refs,
+        "caveats": image.caveats,
+    }
+    fingerprint_payload = {
+        "boundary": boundary,
+        "run_ref": run_ref,
+        "inheritance_mode": inheritance_mode,
+        "segment_refs": segment_refs,
+        "evidence_refs": tuple(ref.format() for ref in image.evidence_refs),
+        "metadata": metadata,
+    }
+    fingerprint = hashlib.sha256(json.dumps(fingerprint_payload, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+    return ContextSnapshotRecord(
+        snapshot_ref=f"context-snapshot:{fingerprint}",
+        run_ref=run_ref,
+        boundary=boundary,
+        inheritance_mode=inheritance_mode,
+        segment_refs=segment_refs,
+        evidence_refs=image.evidence_refs,
+        metadata=metadata,
+    )
+
+
 def _attach_context_image(compilation: RecoveryContextCompilation) -> RecoveryContextCompilation:
     return compilation.model_copy(update={"context_image": context_image_from_recovery(compilation)})
 
@@ -310,4 +360,5 @@ __all__ = [
     "RecoveryContextKind",
     "compile_recovery_context",
     "context_image_from_recovery",
+    "context_snapshot_record_from_image",
 ]
