@@ -91,7 +91,7 @@ def candidates_group() -> None:
 
 @candidates_group.command("list")
 @click.option("--target-ref", default=None, help="Limit candidates to one target object ref.")
-@click.option("--limit", type=int, default=50, show_default=True)
+@click.option("--limit", "-l", type=int, default=50, show_default=True)
 @click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
 @click.pass_obj
 def list_candidates_command(env: AppEnv, target_ref: str | None, limit: int, output_format: str | None) -> None:

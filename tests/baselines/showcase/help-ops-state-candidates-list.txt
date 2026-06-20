@@ -4,6 +4,6 @@ Usage: polylogue ops state candidates list [OPTIONS]
 
 Options:
   --target-ref TEXT    Limit candidates to one target object ref.
-  --limit INTEGER      [default: 50]
+  -l, --limit INTEGER  [default: 50]
   -f, --format [json]
   -h, --help           Show this message and exit.

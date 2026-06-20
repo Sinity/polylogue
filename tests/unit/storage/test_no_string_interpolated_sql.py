@@ -89,19 +89,19 @@ _AUDITED_SITES: Final[dict[tuple[str, int], str]] = {
     #   rows = conn.execute(f"SELECT {_ASSERTION_COLUMNS} FROM assertions ...", ...)
     # ``_ASSERTION_COLUMNS`` is a module-level literal projection list; all
     # dynamic row values are passed through bound parameters.
-    ("polylogue/storage/sqlite/archive_tiers/user_write.py", 748): (
+    ("polylogue/storage/sqlite/archive_tiers/user_write.py", 764): (
         "assertion kind listing: literal projection column list; kind value bound"
     ),
-    ("polylogue/storage/sqlite/archive_tiers/user_write.py", 762): (
+    ("polylogue/storage/sqlite/archive_tiers/user_write.py", 778): (
         "assertion kind/key lookup: literal projection column list; values bound"
     ),
-    ("polylogue/storage/sqlite/archive_tiers/user_write.py", 1038): (
+    ("polylogue/storage/sqlite/archive_tiers/user_write.py", 1209): (
         "assertion id lookup: literal projection column list; assertion id bound"
     ),
-    ("polylogue/storage/sqlite/archive_tiers/user_write.py", 1055): (
+    ("polylogue/storage/sqlite/archive_tiers/user_write.py", 1226): (
         "assertions for target: literal projection column list; target ref bound"
     ),
-    ("polylogue/storage/sqlite/archive_tiers/user_write.py", 1060): (
+    ("polylogue/storage/sqlite/archive_tiers/user_write.py", 1231): (
         "assertions for target/kind: literal projection column list; values bound"
     ),
 }

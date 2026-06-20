@@ -8,7 +8,7 @@ Options:
                                   Restrict rows to one debt kind. Repeatable.
   --only-actionable               Only show rows with a direct operator
                                   action.
-  --limit INTEGER                 Maximum rows to emit.
+  -l, --limit INTEGER             Maximum rows to emit.
   --exact-fts                     Run exact FTS reconciliation counts.
   -f, --format [text|json]        Output format.
   -h, --help                      Show this message and exit.

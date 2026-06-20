@@ -25,7 +25,7 @@ def debt_command() -> None:
     help="Restrict rows to one debt kind. Repeatable.",
 )
 @click.option("--only-actionable", is_flag=True, help="Only show rows with a direct operator action.")
-@click.option("--limit", type=int, default=None, help="Maximum rows to emit.")
+@click.option("--limit", "-l", type=int, default=None, help="Maximum rows to emit.")
 @click.option("--exact-fts", is_flag=True, help="Run exact FTS reconciliation counts.")
 @click.option(
     "--format",
