@@ -129,6 +129,7 @@ from polylogue.archive.query.predicate import (
     QueryCompareOp,
     QueryExistsPredicate,
     QueryFieldPredicate,
+    QueryFieldRef,
     QueryLineagePredicate,
     QueryNotPredicate,
     QueryPredicate,
@@ -985,6 +986,53 @@ def _validate_predicate_context(predicate: QueryPredicate, *, unit: Literal["ses
         return
 
 
+def _field_ref_for_predicate(
+    predicate: QueryFieldPredicate,
+    *,
+    unit: Literal["session"] | QueryUnitName,
+) -> QueryFieldRef:
+    session_field = _scoped_session_field(predicate.field)
+    if unit == "session":
+        return QueryFieldRef(scope="session", name=predicate.field, source_name=predicate.field)
+    if session_field is not None:
+        return QueryFieldRef(
+            scope="session",
+            name=session_field,
+            source_name=predicate.field,
+            unit=unit,
+        )
+    return QueryFieldRef(scope="unit", name=predicate.field, source_name=predicate.field, unit=unit)
+
+
+def _bind_predicate_context(
+    predicate: QueryPredicate,
+    *,
+    unit: Literal["session"] | QueryUnitName,
+) -> QueryPredicate:
+    """Validate a predicate tree and attach closed field identity to leaves."""
+
+    _validate_predicate_context(predicate, unit=unit)
+    if isinstance(predicate, QueryFieldPredicate):
+        return predicate.with_field_ref(_field_ref_for_predicate(predicate, unit=unit))
+    if isinstance(predicate, QueryNotPredicate):
+        return QueryNotPredicate(_bind_predicate_context(predicate.child, unit=unit))
+    if isinstance(predicate, QueryBoolPredicate):
+        return QueryBoolPredicate(
+            predicate.op,
+            tuple(_bind_predicate_context(child, unit=unit) for child in predicate.children),
+        )
+    if isinstance(predicate, QueryExistsPredicate):
+        return QueryExistsPredicate(
+            predicate.unit,
+            _bind_predicate_context(predicate.child, unit=predicate.unit),
+        )
+    if isinstance(predicate, QuerySequencePredicate):
+        return QuerySequencePredicate(
+            steps=tuple(_bind_predicate_context(step, unit="action") for step in predicate.steps)
+        )
+    return predicate
+
+
 @v_args(inline=True)
 class _BooleanQueryTransformer(Transformer[Token, QueryPredicate]):
     def boolean_query(self, *items: object) -> QueryPredicate:
@@ -1174,8 +1222,7 @@ def _transform_boolean_predicate(expression: str) -> QueryPredicate:
 
 def _parse_boolean_predicate(expression: str) -> QueryPredicate:
     transformed = _transform_boolean_predicate(expression)
-    _validate_predicate_context(transformed, unit="session")
-    return transformed
+    return _bind_predicate_context(transformed, unit="session")
 
 
 def _split_pipeline_stages(expression: str) -> tuple[str, ...]:
@@ -1461,8 +1508,8 @@ def _parse_plain_unit_source_expression(expression: str) -> QueryUnitSource | No
     if not inner:
         raise ExpressionCompileError(f"{unit}s where requires a predicate", field=None)
     transformed = _transform_boolean_predicate(inner)
-    _validate_predicate_context(transformed, unit=unit)
-    return QueryUnitSource(unit=unit, predicate=transformed)
+    bound = _bind_predicate_context(transformed, unit=unit)
+    return QueryUnitSource(unit=unit, predicate=bound)
 
 
 def _parse_pipeline_unit_source(expression: str) -> QueryUnitSource | None:
@@ -1484,10 +1531,10 @@ def _parse_pipeline_unit_source(expression: str) -> QueryUnitSource | None:
             )
         scoped_session_predicate = _scope_session_predicate(session_predicate)
         combined = QueryBoolPredicate("and", (scoped_session_predicate, terminal_source.predicate))
-        _validate_predicate_context(combined, unit=terminal_source.unit)
+        bound = _bind_predicate_context(combined, unit=terminal_source.unit)
         source = QueryUnitSource(
             unit=terminal_source.unit,
-            predicate=combined,
+            predicate=bound,
             session_predicate=session_predicate,
             limit=terminal_source.limit,
             offset=terminal_source.offset,

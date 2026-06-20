@@ -115,18 +115,19 @@ def _matches_action_field(predicate: QueryFieldPredicate, action: Action) -> boo
     values = tuple(value.strip().lower() for value in predicate.values if value.strip())
     if not values:
         return False
-    if predicate.field in {"action", "type"}:
+    field = predicate.field_ref.name if predicate.field_ref is not None else predicate.field
+    if field in {"action", "type"}:
         return _matches_exact_values(action.kind.value, values)
-    if predicate.field == "tool":
+    if field == "tool":
         return _matches_exact_values(action.normalized_tool_name, values)
-    if predicate.field == "command":
+    if field == "command":
         return _matches_text(action.command, values)
-    if predicate.field == "path":
+    if field == "path":
         normalized_paths = tuple(path.lower().replace("\\", "/") for path in action.affected_paths)
         return any(value.replace("\\", "/") in path for value in values for path in normalized_paths)
-    if predicate.field == "output":
+    if field == "output":
         return _matches_text(action.output_text, values)
-    if predicate.field == "text":
+    if field == "text":
         return _matches_text(action.search_text, values)
     return False
 

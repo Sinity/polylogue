@@ -535,6 +535,18 @@ class TestBooleanQueryExpression:
         with pytest.raises(ExpressionCompileError, match="not supported for session predicates"):
             parse_expression_ast("sessions where time >= 2026-01-02T00:00:00+00:00")
 
+    def test_session_predicate_carries_validated_field_ref(self) -> None:
+        ast = parse_expression_ast("sessions where repo:polylogue")
+
+        predicate = cast(QueryFieldPredicate, ast.boolean_predicate)
+
+        assert predicate.field == "repo"
+        assert predicate.field_ref is not None
+        assert predicate.field_ref.scope == "session"
+        assert predicate.field_ref.name == "repo"
+        assert predicate.field_ref.source_name == "repo"
+        assert predicate.field_ref.unit is None
+
     def test_pipeline_session_source_scopes_terminal_unit_query(self) -> None:
         source = parse_unit_source_expression(
             "sessions where repo:polylogue AND origin:claude-code-session | messages where role:assistant"
@@ -562,6 +574,30 @@ class TestBooleanQueryExpression:
                 QueryFieldPredicate(field="role", values=("assistant",)),
             ),
         )
+        assert isinstance(source.predicate, QueryBoolPredicate)
+        scoped_session = source.predicate.children[0]
+        role = source.predicate.children[1]
+        assert isinstance(scoped_session, QueryBoolPredicate)
+        assert isinstance(role, QueryFieldPredicate)
+        scoped_repo = scoped_session.children[0]
+        scoped_origin = scoped_session.children[1]
+        assert isinstance(scoped_repo, QueryFieldPredicate)
+        assert isinstance(scoped_origin, QueryFieldPredicate)
+
+        assert scoped_repo.field_ref is not None
+        assert scoped_repo.field_ref.scope == "session"
+        assert scoped_repo.field_ref.name == "repo"
+        assert scoped_repo.field_ref.source_name == "session.repo"
+        assert scoped_repo.field_ref.unit == "message"
+        assert scoped_origin.field_ref is not None
+        assert scoped_origin.field_ref.scope == "session"
+        assert scoped_origin.field_ref.name == "origin"
+        assert scoped_origin.field_ref.source_name == "session.origin"
+        assert scoped_origin.field_ref.unit == "message"
+        assert role.field_ref is not None
+        assert role.field_ref.scope == "unit"
+        assert role.field_ref.name == "role"
+        assert role.field_ref.unit == "message"
 
     def test_pipeline_split_ignores_field_alternation_pipe(self) -> None:
         source = parse_unit_source_expression(
@@ -910,6 +946,30 @@ class TestBooleanQueryExpression:
                 QueryFieldPredicate(field="action", values=("file_edit",)),
             ),
         )
+        assert isinstance(ast.boolean_predicate, QuerySequencePredicate)
+        sequence = ast.boolean_predicate
+        first_step = sequence.steps[0]
+        second_step = sequence.steps[1]
+        third_step = sequence.steps[2]
+        assert isinstance(first_step, QueryFieldPredicate)
+        assert isinstance(second_step, QueryBoolPredicate)
+        assert isinstance(third_step, QueryFieldPredicate)
+        second_action = second_step.children[0]
+        second_output = second_step.children[1]
+        assert isinstance(second_action, QueryFieldPredicate)
+        assert isinstance(second_output, QueryFieldPredicate)
+
+        assert first_step.field_ref is not None
+        assert first_step.field_ref.scope == "unit"
+        assert first_step.field_ref.unit == "action"
+        assert second_action.field_ref is not None
+        assert second_action.field_ref.name == "action"
+        assert second_output.field_ref is not None
+        assert second_output.field_ref.name == "output"
+        assert third_step.field_ref is not None
+        assert third_step.field_ref.scope == "unit"
+        assert third_step.field_ref.unit == "action"
+        assert third_step.field_ref.name == "action"
 
     def test_sequence_step_rejects_session_fields(self) -> None:
         with pytest.raises(ExpressionCompileError, match="not supported for action predicates"):

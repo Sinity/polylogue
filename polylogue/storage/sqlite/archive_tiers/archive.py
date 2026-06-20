@@ -4691,7 +4691,7 @@ def _field_predicate_clause(
     *,
     tags_relation: str,
 ) -> tuple[str, list[object]]:
-    field = predicate.field
+    field = predicate.field_ref.name if predicate.field_ref is not None else predicate.field
     values = predicate.values
     kwargs: dict[str, Any] = {}
     if field == "id":
@@ -4759,6 +4759,12 @@ def _scoped_session_field(field: str) -> str | None:
         return None
     scoped = field[len(prefix) :]
     return scoped or None
+
+
+def _predicate_session_field(predicate: QueryFieldPredicate) -> str | None:
+    if predicate.field_ref is not None and predicate.field_ref.scope == "session":
+        return predicate.field_ref.name
+    return _scoped_session_field(predicate.field)
 
 
 def _in_or_equals_clause(column: str, values: tuple[str, ...], *, lower: bool = False) -> tuple[str, list[object]]:
@@ -4843,7 +4849,7 @@ def _like_clause(
 
 
 def _message_field_predicate_clause(message_alias: str, predicate: QueryFieldPredicate) -> tuple[str, list[object]]:
-    field = predicate.field
+    field = predicate.field_ref.name if predicate.field_ref is not None else predicate.field
     if field == "role":
         return _in_or_equals_clause(f"{message_alias}.role", predicate.values, lower=True)
     if field == "type":
@@ -4910,7 +4916,7 @@ def _message_field_predicate_clause(message_alias: str, predicate: QueryFieldPre
 
 
 def _action_field_predicate_clause(action_alias: str, predicate: QueryFieldPredicate) -> tuple[str, list[object]]:
-    field = predicate.field
+    field = predicate.field_ref.name if predicate.field_ref is not None else predicate.field
     if field == "tool":
         return _in_or_equals_clause(f"{action_alias}.tool_name", predicate.values, lower=True)
     if field in {"action", "type"}:
@@ -4939,7 +4945,7 @@ def _action_field_predicate_clause(action_alias: str, predicate: QueryFieldPredi
 
 
 def _block_field_predicate_clause(block_alias: str, predicate: QueryFieldPredicate) -> tuple[str, list[object]]:
-    field = predicate.field
+    field = predicate.field_ref.name if predicate.field_ref is not None else predicate.field
     if field == "type":
         return _in_or_equals_clause(f"{block_alias}.block_type", predicate.values, lower=True)
     if field == "time":
@@ -4961,7 +4967,7 @@ def _block_field_predicate_clause(block_alias: str, predicate: QueryFieldPredica
 
 
 def _assertion_field_predicate_clause(assertion_alias: str, predicate: QueryFieldPredicate) -> tuple[str, list[object]]:
-    field = predicate.field
+    field = predicate.field_ref.name if predicate.field_ref is not None else predicate.field
     if field == "time":
         return _time_predicate_clause(_query_unit_time_expression("assertion", assertion_alias), predicate)
     if field == "status":
@@ -5007,7 +5013,7 @@ def _structural_predicate_clause(
     session_alias: str | None = None,
 ) -> tuple[str, list[object]]:
     if isinstance(predicate, QueryFieldPredicate):
-        session_field = _scoped_session_field(predicate.field)
+        session_field = _predicate_session_field(predicate)
         if session_field is not None:
             if session_alias is None:
                 raise ValueError(f"session-scoped {unit} predicate requires a session alias")
