@@ -409,6 +409,9 @@ predicate          ::= predicate &quot;OR&quot; predicate
                      | &quot;seq&quot; &quot;(&quot; sequence-step &quot;-&gt;&quot; sequence-step+ &quot;)&quot;
 
 structural-unit    ::= &quot;message&quot; | &quot;action&quot; | &quot;block&quot; | &quot;assertion&quot;
+sequence-step      ::= action-field-clause (&quot;AND&quot; action-field-clause)*
+action-field-clause ::= &quot;action:&quot; value | &quot;tool:&quot; value | &quot;command:&quot; value
+                      | &quot;path:&quot; value | &quot;output:&quot; value | &quot;text:&quot; value
 pipeline-stage     ::= &quot;sort&quot; &quot;by&quot; &quot;time&quot; [&quot;asc&quot; | &quot;desc&quot;]
                      | &quot;group&quot; &quot;by&quot; field
                      | &quot;count&quot;
@@ -425,7 +428,18 @@ polylogue near:id:codex-session:abc123
 <pre><code class="language-bash">polylogue sessions where '(repo:polylogue OR repo:sinex) AND NOT tag:stale'
 polylogue sessions where 'exists message(role:assistant AND text:timeout)'
 polylogue sessions where 'seq(action:file_edit -&gt; action:shell)'
+polylogue sessions where 'seq(action:file_edit -&gt; action:shell AND output:failed -&gt; action:file_edit)'
 </code></pre>
+<p>Sequence predicates match an ordered subsequence of action rows inside a
+session. Each step is an action-unit predicate, so the sequence can describe
+real coding workflows instead of only action categories:</p>
+<pre><code class="language-bash">polylogue sessions where 'seq(action:file_edit -&gt; action:shell AND output:failed -&gt; action:file_edit)'
+polylogue sessions where 'seq(tool:edit AND path:polylogue/archive -&gt; tool:bash AND command:pytest)'
+</code></pre>
+<p>The SQL lowerer applies every step predicate to its own ordered action row and
+then enforces message/block order between steps. Unsupported fields in a
+sequence step fail typed as action-predicate errors; they do not broaden into a
+plain text search.</p>
 <p>Unit queries select terminal rows instead of sessions:</p>
 <pre><code class="language-bash">polylogue messages where 'role:assistant AND text:timeout'
 polylogue actions where 'session.repo:polylogue AND action:file_edit AND path:polylogue/archive'
