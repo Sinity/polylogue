@@ -1743,18 +1743,13 @@ class PolylogueArchiveMixin:
         message_type: str | None = None,
     ) -> QueryUnitEnvelope:
         """Execute a terminal unit-source query."""
-        from polylogue.archive.query.expression import ExpressionCompileError, parse_unit_source_expression
-        from polylogue.archive.query.metadata import terminal_query_source_list
-        from polylogue.archive.query.unit_results import query_unit_rows, query_unit_session_filters
+        from polylogue.archive.query.unit_results import query_unit_envelope, query_unit_request
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-        source = parse_unit_source_expression(expression)
-        if source is None:
-            raise ExpressionCompileError(
-                f"query_units requires an explicit {terminal_query_source_list()} where expression",
-                field=None,
-            )
-        session_filters = query_unit_session_filters(
+        request = query_unit_request(
+            expression=expression,
+            limit=limit,
+            offset=offset,
             origin=origin,
             origins=origins,
             tags=(tag,) if tag else tags,
@@ -1785,9 +1780,7 @@ class PolylogueArchiveMixin:
             message_type=message_type,
         )
         with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return query_unit_rows(
-                archive, source, query=expression, limit=limit, offset=offset, session_filters=session_filters
-            )
+            return query_unit_envelope(archive, request)
 
     async def export_otel(
         self,
