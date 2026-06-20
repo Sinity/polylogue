@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol, cast
+from typing import Any, Literal, Protocol, cast
 
 from polylogue.archive.query.archive_execution import _session_to_session
 from polylogue.archive.query.expression import QueryUnitSource
@@ -676,10 +676,18 @@ def _build_sql_envelope(
     session_filters: Mapping[str, object] | None,
 ) -> QueryUnitResultEnvelope:
     if source.aggregate == "count":
+        aggregate_sort = (
+            cast(Literal["count", "key"], source.sort.field)
+            if source.sort is not None and source.sort.field in {"count", "key"}
+            else None
+        )
+        aggregate_sort_direction = source.sort.direction if source.sort is not None else "desc"
         aggregate_rows = archive.query_unit_counts(
             source.unit,
             source.predicate,
             group_by=source.group_by,
+            sort=aggregate_sort,
+            sort_direction=aggregate_sort_direction,
             limit=fetch_limit,
             offset=offset,
             session_filters=session_filters,

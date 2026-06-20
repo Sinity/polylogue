@@ -56,6 +56,9 @@ predicate          ::= predicate "OR" predicate
 
 structural-unit    ::= "message" | "action" | "block" | "assertion"
 pipeline-stage     ::= "sort" "by" "time" ["asc" | "desc"]
+                     | "group" "by" field
+                     | "count"
+                     | "sort" "by" ("count" | "key") ["asc" | "desc"]
                      | "limit" integer
                      | "offset" integer
 ```
@@ -106,11 +109,12 @@ executor as direct `messages/actions/...` pipelines. For now the session stage
 accepts field/count/date predicates only; FTS, semantic, `exists`, lineage, and
 sequence stages are typed errors until they have dedicated unit-changing
 lowerers. Terminal pipeline stages currently support `sort by time [asc|desc]`,
-`limit N`, and `offset N` for SQL-backed terminal rows (`messages`, `actions`,
-`blocks`, `assertions`). Query-string limits narrow the surface limit instead
-of expanding caller/API caps, and query-string offsets are added to the caller
-offset. Runtime-transform terminal rows (`runs`, `observed-events`,
-`context-snapshots`) reject sort stages until they have streaming lowerers;
+`group by FIELD | count`, aggregate `sort by count|key [asc|desc]`, `limit N`,
+and `offset N` for SQL-backed terminal rows (`messages`, `actions`, `blocks`,
+`assertions`). Query-string limits narrow the surface limit instead of expanding
+caller/API caps, and query-string offsets are added to the caller offset.
+Runtime-transform terminal rows (`runs`, `observed-events`, `context-snapshots`)
+reject sort/aggregate stages until they have streaming or aggregate lowerers;
 they must not collect every projected row in memory merely to sort a page.
 
 `--explain --format json` reports terminal pipelines as a `unit_source` AST with
@@ -239,6 +243,9 @@ Aggregate pipelines over SQL-backed terminal rows use the sibling
 `QueryUnitAggregateEnvelope` and currently support `group by FIELD | count`
 over closed unit fields such as message role, action tool/action, block type,
 assertion kind/status, and owning-session origin/repo.
+Aggregate rows can be ordered with `sort by count [asc|desc]` or
+`sort by key [asc|desc]` before `limit`/`offset`; the default order is count
+descending, then key.
 Those surfaces share the same session-scoping filters for the row source
 where applicable, such as origin, tag, repo, title, date bounds, message-type
 and tool/paste/thinking feature filters.
