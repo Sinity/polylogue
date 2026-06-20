@@ -24,6 +24,7 @@ from polylogue.storage.sqlite.archive_tiers.ops_write import (
     record_ingest_attempt,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
 
 
 def _seed_minimal_archive(db: Path, source: Path) -> str:
@@ -318,18 +319,23 @@ def test_daemon_workload_probe_reports_archive_tier_inventory(tmp_path: Path) ->
             ) VALUES ('session_profile', 'codex-session:native-1', 1, 1)
             """
         )
+    initialize_archive_database(tmp_path / "user.db", ArchiveTier.USER)
     with sqlite3.connect(tmp_path / "user.db") as conn:
-        conn.execute(
-            """
-            INSERT INTO session_tags (session_id, tag, tag_source)
-            VALUES ('codex-session:native-1', 'important', 'user')
-            """
+        upsert_assertion(
+            conn,
+            assertion_id="tag-present",
+            target_ref="session:codex-session:native-1",
+            kind=AssertionKind.TAG,
+            key="important",
+            value={"tag_source": "user"},
         )
-        conn.execute(
-            """
-            INSERT INTO session_tags (session_id, tag, tag_source)
-            VALUES ('missing-session', 'orphaned', 'user')
-            """
+        upsert_assertion(
+            conn,
+            assertion_id="tag-orphaned",
+            target_ref="session:missing-session",
+            kind=AssertionKind.TAG,
+            key="orphaned",
+            value={"tag_source": "user"},
         )
         conn.execute(
             """
@@ -363,7 +369,7 @@ def test_daemon_workload_probe_reports_archive_tier_inventory(tmp_path: Path) ->
     assert layout["evidence"]["blocked_surface_count"] >= 1
     assert tiers["user_overlay_orphans"]["checked"] is True
     assert tiers["user_overlay_orphans"]["total_orphan_session_references"] == 2
-    assert tiers["user_overlay_orphans"]["orphan_session_reference_counts"]["session_tags"] == 1
+    assert tiers["user_overlay_orphans"]["orphan_session_reference_counts"]["assertion_tags"] == 1
     assert tiers["user_overlay_orphans"]["orphan_session_reference_counts"]["assertion_corrections"] == 1
     readiness = tiers["derived_readiness"]
     assert readiness["checked"] is True
@@ -416,7 +422,7 @@ def test_daemon_workload_probe_reports_archive_tier_inventory(tmp_path: Path) ->
     assert expensive_payload["archive_tiers"]["derived_readiness"]["counts"]["action_count_exact"] is True
     assert tiers["tiers"]["source"]["table_counts"]["raw_sessions"] == 1
     assert tiers["tiers"]["index"]["table_counts"]["sessions"] == 2
-    assert tiers["tiers"]["user"]["table_counts"]["session_tags"] == 2
+    assert tiers["tiers"]["user"]["table_counts"]["assertions"] == 3
     assert tiers["tiers"]["embeddings"]["exists"] is False
 
 

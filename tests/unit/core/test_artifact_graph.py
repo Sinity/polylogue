@@ -244,12 +244,13 @@ def test_artifact_graph_operations_reference_only_declared_nodes() -> None:
     graph = build_artifact_graph()
     node_names = set(graph.by_name())
     path_names = set(graph.path_names())
-    # Mutation operations reference conceptual artifacts (session_metadata,
+    # Mutation operations reference conceptual artifacts (metadata assertions,
     # tag counts, etc.) that are not modelled as full graph nodes. The operation
     # catalog is the authority for their input/output contracts; the graph check
     # below only applies to materialization and query operations.
     node_names |= {
-        "session_metadata",
+        "assertions",
+        "sessions",
         "tag_counts",
         "metadata_keys",
         "session_tags",

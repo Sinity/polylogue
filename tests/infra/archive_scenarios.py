@@ -198,11 +198,9 @@ class ArchiveScenario:
                     path=attachment.path,
                 )
         builder.save()
-        # Native user tags live in ``user.db`` ``session_tags`` keyed by the
-        # generated session id with ``tag_source = 'user'``. Seed them through
-        # the same archive primitive (``ArchiveStore.add_user_tags``) the public
-        # tag API uses, rather than the retired legacy ``tags`` /
-        # ``session_tags`` M2M tables.
+        # Native user tags live as ``user.db`` assertions keyed by the generated
+        # session id. Seed them through the same archive primitive
+        # (``ArchiveStore.add_user_tags``) the public tag API uses.
         metadata_tags = self.metadata.get("tags") if self.metadata else None
         if isinstance(metadata_tags, list):
             from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore

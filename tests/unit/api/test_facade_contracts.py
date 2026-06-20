@@ -2624,7 +2624,11 @@ async def test_archive_tiers_api_user_mutations_write_user_tier(tmp_path: Path) 
     from polylogue.core.enums import BlockType
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.user_write import assertion_id_for_session_tag, read_assertion_envelope
+    from polylogue.storage.sqlite.archive_tiers.user_write import (
+        assertion_id_for_session_metadata,
+        assertion_id_for_session_tag,
+        read_assertion_envelope,
+    )
 
     archive = _archive(tmp_path)
     session = ParsedSession(
@@ -2674,11 +2678,6 @@ async def test_archive_tiers_api_user_mutations_write_user_tier(tmp_path: Path) 
         assert missing_delete.outcome == "not_found"
 
         with sqlite3.connect(tmp_path / "user.db") as conn:
-            remaining_tags = conn.execute("SELECT COUNT(*) FROM session_tags").fetchone()[0]
-            remaining_metadata = conn.execute(
-                "SELECT key, value_json FROM session_metadata WHERE session_id = ? ORDER BY key",
-                (session_id,),
-            ).fetchall()
             review_assertion = read_assertion_envelope(
                 conn,
                 assertion_id_for_session_tag(session_id, "review", "user"),
@@ -2687,12 +2686,23 @@ async def test_archive_tiers_api_user_mutations_write_user_tier(tmp_path: Path) 
                 conn,
                 assertion_id_for_session_tag(session_id, "bulk-a", "user"),
             )
-        assert remaining_tags == 2
-        assert remaining_metadata == [("priority", '"high"')]
+            priority_assertion = read_assertion_envelope(
+                conn,
+                assertion_id_for_session_metadata(session_id, "priority"),
+            )
+            status_assertion = read_assertion_envelope(
+                conn,
+                assertion_id_for_session_metadata(session_id, "status"),
+            )
         assert review_assertion is not None
         assert review_assertion.status == "deleted"
         assert bulk_a_assertion is not None
         assert bulk_a_assertion.status == "active"
+        assert priority_assertion is not None
+        assert priority_assertion.value == "high"
+        assert priority_assertion.status == "active"
+        assert status_assertion is not None
+        assert status_assertion.status == "deleted"
     finally:
         await archive.close()
 
@@ -3010,7 +3020,9 @@ async def test_archive_tiers_api_delete_uses_index_tier_and_keeps_user_overlay(t
         with sqlite3.connect(tmp_path / "index.db") as index_conn:
             session_count = index_conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
         with sqlite3.connect(tmp_path / "user.db") as user_conn:
-            tag_count = user_conn.execute("SELECT COUNT(*) FROM session_tags").fetchone()[0]
+            tag_count = user_conn.execute(
+                "SELECT COUNT(*) FROM assertions WHERE kind = 'tag' AND status = 'active'"
+            ).fetchone()[0]
         assert session_count == 0
         assert tag_count == 1
     finally:
@@ -3594,6 +3606,7 @@ async def test_archive_tiers_api_archive_debt_reads_archive_consistency(tmp_path
     from polylogue.insights.archive import ArchiveDebtInsightQuery
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
 
     archive = _archive(tmp_path)
     session = ParsedSession(
@@ -3614,11 +3627,13 @@ async def test_archive_tiers_api_archive_debt_reads_archive_consistency(tmp_path
             assert archive_db.add_user_tags((session_id,), ("valid",)) == 1
             assert session_id
         with sqlite3.connect(tmp_path / "user.db") as conn:
-            conn.execute(
-                """
-                INSERT INTO session_tags (session_id, tag, tag_source)
-                VALUES ('missing-session', 'orphan', 'user')
-                """
+            upsert_assertion(
+                conn,
+                assertion_id="assertion-orphan-tag",
+                target_ref="session:missing-session",
+                kind=AssertionKind.TAG,
+                key="orphan",
+                value={"tag_source": "user"},
             )
             conn.commit()
 

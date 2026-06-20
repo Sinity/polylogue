@@ -105,11 +105,13 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     assertion_id_for_mark,
     assertion_id_for_recall_pack,
     assertion_id_for_saved_view,
+    assertion_id_for_session_metadata,
     assertion_id_for_session_tag,
     assertion_id_for_workspace,
     correction_id_for,
     list_archive_blackboard_note_envelopes,
     list_assertions_by_kind,
+    list_assertions_for_target,
     mark_assertion_status,
     read_assertion_envelope,
     upsert_annotation,
@@ -118,6 +120,8 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     upsert_mark,
     upsert_recall_pack,
     upsert_saved_view,
+    upsert_session_metadata_assertion,
+    upsert_session_tag_assertion,
     upsert_workspace,
 )
 from polylogue.storage.sqlite.archive_tiers.write import (
@@ -131,7 +135,6 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     read_session_work_events,
     rebuild_archive_messages_fts,
     search_archive_blocks,
-    upsert_session_tag,
     write_parsed_session_to_archive,
 )
 from polylogue.storage.sqlite.connection_profile import (
@@ -1280,52 +1283,42 @@ class ArchiveStore:
         return IndexStatus(exists=True, count=_count_scalar(self._conn, "SELECT COUNT(*) FROM messages_fts"))
 
     def add_user_tags(self, session_ids: tuple[str, ...], tags: tuple[str, ...]) -> int:
-        """Add user tags to archive user.db and return changed row count."""
+        """Add user tag assertions to archive user.db and return changed count."""
         user_db_path = self.user_db_path
         initialize_archive_database(user_db_path, ArchiveTier.USER)
         changed = 0
         user_conn = sqlite3.connect(user_db_path)
         user_conn.row_factory = sqlite3.Row
         try:
-            for session_id in tuple(dict.fromkeys(self.resolve_session_id(session_id) for session_id in session_ids)):
-                for tag in tags:
-                    normalized_tag = tag.strip().lower()
-                    if not normalized_tag:
-                        raise ValueError("tag cannot be empty")
-                    existing = user_conn.execute(
-                        """
-                        SELECT 1
-                        FROM session_tags
-                        WHERE session_id = ? AND tag = ? AND tag_source = 'user'
-                        """,
-                        (session_id, normalized_tag),
-                    ).fetchone()
-                    if existing is not None:
-                        upsert_session_tag(
+            with user_conn:
+                for session_id in tuple(
+                    dict.fromkeys(self.resolve_session_id(session_id) for session_id in session_ids)
+                ):
+                    for tag in tags:
+                        normalized_tag = tag.strip().lower()
+                        if not normalized_tag:
+                            raise ValueError("tag cannot be empty")
+                        existing = read_assertion_envelope(
+                            user_conn,
+                            assertion_id_for_session_tag(session_id, normalized_tag, "user"),
+                        )
+                        if existing is None or existing.status == "deleted":
+                            changed += 1
+                        upsert_session_tag_assertion(
                             user_conn,
                             session_id=session_id,
-                            tag=tag,
+                            tag=normalized_tag,
                             tag_source="user",
                             method="cli",
                             evidence={"source": "archive_query"},
                         )
-                        continue
-                    upsert_session_tag(
-                        user_conn,
-                        session_id=session_id,
-                        tag=tag,
-                        tag_source="user",
-                        method="cli",
-                        evidence={"source": "archive_query"},
-                    )
-                    changed += 1
         finally:
             user_conn.close()
         self._attach_user_tier_if_present()
         return changed
 
     def remove_user_tags(self, session_ids: tuple[str, ...], tags: tuple[str, ...]) -> int:
-        """Remove user tags from archive user.db and return deleted row count."""
+        """Mark user tag assertions deleted and return deleted row count."""
         resolved_session_ids = tuple(dict.fromkeys(self.resolve_session_id(session_id) for session_id in session_ids))
         if not resolved_session_ids or not self.user_db_path.exists():
             return 0
@@ -1338,21 +1331,12 @@ class ArchiveStore:
                         normalized_tag = tag.strip().lower()
                         if not normalized_tag:
                             raise ValueError("tag cannot be empty")
-                        cursor = user_conn.execute(
-                            """
-                            DELETE FROM session_tags
-                            WHERE session_id = ? AND tag = ? AND tag_source = 'user'
-                            """,
-                            (session_id, normalized_tag),
-                        )
-                        deleted = max(int(cursor.rowcount), 0)
-                        if deleted and _table_exists(user_conn, "assertions"):
-                            mark_assertion_status(
-                                user_conn,
-                                assertion_id_for_session_tag(session_id, normalized_tag, "user"),
-                                "deleted",
-                            )
-                        removed += deleted
+                        assertion_id = assertion_id_for_session_tag(session_id, normalized_tag, "user")
+                        assertion = read_assertion_envelope(user_conn, assertion_id)
+                        if assertion is None or assertion.status == "deleted":
+                            continue
+                        if mark_assertion_status(user_conn, assertion_id, "deleted"):
+                            removed += 1
         finally:
             user_conn.close()
         self._attach_user_tier_if_present()
@@ -1700,13 +1684,13 @@ class ArchiveStore:
         ]
 
     def set_user_metadata(self, session_ids: tuple[str, ...], pairs: tuple[tuple[str, object], ...]) -> int:
-        """Set human-owned session metadata in archive user.db."""
+        """Set human-owned metadata as archive user.db assertions."""
         user_db_path = self.user_db_path
         initialize_archive_database(user_db_path, ArchiveTier.USER)
         user_conn = sqlite3.connect(user_db_path)
+        user_conn.row_factory = sqlite3.Row
         try:
             changed = 0
-            now_ms = int(datetime.now(UTC).timestamp() * 1000)
             with user_conn:
                 for session_id in tuple(
                     dict.fromkeys(self.resolve_session_id(session_id) for session_id in session_ids)
@@ -1715,64 +1699,43 @@ class ArchiveStore:
                         normalized_key = key.strip()
                         if not normalized_key:
                             raise ValueError("metadata key cannot be empty")
-                        value_json = json.dumps(value, ensure_ascii=False)
-                        existing = user_conn.execute(
-                            "SELECT created_at_ms, value_json FROM session_metadata WHERE session_id = ? AND key = ?",
-                            (session_id, normalized_key),
-                        ).fetchone()
-                        if existing is not None and str(existing[1]) == value_json:
-                            continue
-                        created_at_ms = int(existing[0]) if existing is not None else now_ms
-                        before = user_conn.total_changes
-                        user_conn.execute(
-                            """
-                            INSERT INTO session_metadata (session_id, key, value_json, created_at_ms, updated_at_ms)
-                            VALUES (?, ?, ?, ?, ?)
-                            ON CONFLICT(session_id, key) DO UPDATE SET
-                                value_json = excluded.value_json,
-                                updated_at_ms = excluded.updated_at_ms
-                            """,
-                            (
-                                session_id,
-                                normalized_key,
-                                value_json,
-                                created_at_ms,
-                                now_ms,
-                            ),
+                        existing = read_assertion_envelope(
+                            user_conn,
+                            assertion_id_for_session_metadata(session_id, normalized_key),
                         )
-                        changed += user_conn.total_changes - before
+                        if existing is not None and existing.status != "deleted" and existing.value == value:
+                            continue
+                        upsert_session_metadata_assertion(
+                            user_conn,
+                            session_id=session_id,
+                            key=normalized_key,
+                            value=value,
+                        )
+                        changed += 1
         finally:
             user_conn.close()
         return changed
 
     def read_user_metadata(self, session_id: str) -> dict[str, object]:
-        """Read human-owned metadata for one archive session."""
+        """Read human-owned metadata assertions for one archive session."""
         resolved_session_id = self.resolve_session_id(session_id)
         if not self.user_db_path.exists():
             return {}
         user_conn = sqlite3.connect(f"file:{self.user_db_path}?mode=ro", uri=True)
+        user_conn.row_factory = sqlite3.Row
         try:
-            rows = user_conn.execute(
-                """
-                SELECT key, value_json
-                FROM session_metadata
-                WHERE session_id = ?
-                ORDER BY key
-                """,
-                (resolved_session_id,),
-            ).fetchall()
+            rows = list_assertions_for_target(user_conn, f"session:{resolved_session_id}", kind=AssertionKind.METADATA)
         finally:
             user_conn.close()
         decoded: dict[str, object] = {}
-        for key, value_json in rows:
-            try:
-                decoded[str(key)] = json.loads(str(value_json))
-            except json.JSONDecodeError:
-                decoded[str(key)] = str(value_json)
+        for assertion in rows:
+            if assertion.status == "deleted" or assertion.key is None:
+                continue
+            decoded[str(assertion.key)] = assertion.value
         return decoded
 
     def delete_user_metadata(self, session_id: str, key: str) -> int:
-        """Delete one user metadata key from archive user.db."""
+        """Mark one user metadata assertion deleted."""
         resolved_session_id = self.resolve_session_id(session_id)
         normalized_key = key.strip()
         if not normalized_key:
@@ -1782,11 +1745,11 @@ class ArchiveStore:
         user_conn = sqlite3.connect(self.user_db_path)
         try:
             with user_conn:
-                cursor = user_conn.execute(
-                    "DELETE FROM session_metadata WHERE session_id = ? AND key = ?",
-                    (resolved_session_id, normalized_key),
-                )
-                return max(int(cursor.rowcount), 0)
+                assertion_id = assertion_id_for_session_metadata(resolved_session_id, normalized_key)
+                assertion = read_assertion_envelope(user_conn, assertion_id)
+                if assertion is None or assertion.status == "deleted":
+                    return 0
+                return 1 if mark_assertion_status(user_conn, assertion_id, "deleted") else 0
         finally:
             user_conn.close()
 
@@ -4109,8 +4072,18 @@ def _all_session_tags_sql() -> str:
             FROM session_tags
             WHERE tag_source = 'auto'
             UNION ALL
-            SELECT session_id, tag, tag_source, method, confidence, evidence_json
-            FROM user_tier.session_tags
+            SELECT
+                substr(target_ref, 9) AS session_id,
+                COALESCE(key, body_text) AS tag,
+                'user' AS tag_source,
+                json_extract(value_json, '$.method') AS method,
+                confidence,
+                json_extract(value_json, '$.evidence') AS evidence_json
+            FROM user_tier.assertions
+            WHERE kind = 'tag'
+              AND target_ref LIKE 'session:%'
+              AND COALESCE(status, 'active') != 'deleted'
+              AND COALESCE(key, body_text) IS NOT NULL
         )
     """
 
@@ -5917,12 +5890,8 @@ def _archive_user_overlay_debt(conn: sqlite3.Connection, user_db_path: Path) -> 
     conn.execute("ATTACH DATABASE ? AS user_debt", (f"file:{user_db_path}?mode=ro",))
     try:
         checks = (
-            "SELECT COUNT(*) FROM user_debt.session_tags u "
-            "WHERE NOT EXISTS (SELECT 1 FROM sessions s WHERE s.session_id = u.session_id)",
-            "SELECT COUNT(*) FROM user_debt.session_metadata u "
-            "WHERE NOT EXISTS (SELECT 1 FROM sessions s WHERE s.session_id = u.session_id)",
             "SELECT COUNT(*) FROM user_debt.assertions u "
-            "WHERE u.kind IN ('mark', 'annotation', 'note', 'suppression') "
+            "WHERE u.kind IN ('mark', 'annotation', 'note', 'suppression', 'tag', 'metadata') "
             "AND u.target_ref LIKE 'session:%' "
             "AND COALESCE(u.status, '') != 'deleted' "
             "AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.session_id = substr(u.target_ref, 9))",

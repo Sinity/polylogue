@@ -2,32 +2,13 @@
 
 from __future__ import annotations
 
-USER_SCHEMA_VERSION = 2
+USER_SCHEMA_VERSION = 3
 
 USER_DDL = """
-CREATE TABLE IF NOT EXISTS session_tags (
-    session_id     TEXT NOT NULL,
-    tag            TEXT NOT NULL,
-    tag_source     TEXT NOT NULL CHECK(tag_source = 'user'),
-    method         TEXT,
-    confidence     REAL CHECK(confidence IS NULL OR confidence BETWEEN 0 AND 1),
-    evidence_json  TEXT,
-    PRIMARY KEY(session_id, tag, tag_source)
-) STRICT;
-
-CREATE TABLE IF NOT EXISTS session_metadata (
-    session_id      TEXT NOT NULL,
-    key             TEXT NOT NULL,
-    value_json      TEXT NOT NULL,
-    created_at_ms   INTEGER NOT NULL,
-    updated_at_ms   INTEGER NOT NULL,
-    PRIMARY KEY(session_id, key)
-) STRICT;
-
--- Unified evidence-linked user assertion (#1883). Marks, annotations,
--- corrections, suppressions, saved views, recall packs, workspaces, and
--- blackboard notes are represented here directly. ``kind`` carries the closed
--- v0 vocabulary defined by ``AssertionKind`` in user_write.py.
+-- Unified evidence-linked user assertion. Marks, annotations,
+-- corrections, suppressions, tags, metadata, saved views, recall packs,
+-- workspaces, and blackboard notes are represented here directly. ``kind``
+-- carries the vocabulary defined by ``AssertionKind`` in user_write.py.
 CREATE TABLE IF NOT EXISTS assertions (
     assertion_id        TEXT PRIMARY KEY,
     scope_ref           TEXT,
@@ -51,6 +32,12 @@ CREATE TABLE IF NOT EXISTS assertions (
 
 CREATE INDEX IF NOT EXISTS idx_assertions_target_kind
 ON assertions(target_ref, kind);
+
+CREATE INDEX IF NOT EXISTS idx_assertions_kind_status_updated
+ON assertions(kind, status, updated_at_ms);
+
+CREATE INDEX IF NOT EXISTS idx_assertions_target_kind_status_visibility
+ON assertions(target_ref, kind, status, visibility);
 """
 
 __all__ = ["USER_DDL", "USER_SCHEMA_VERSION"]

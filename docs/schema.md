@@ -75,12 +75,12 @@ Rebuildable, but re-embedding costs Voyage API calls.
 
 ### `user.db` — irreplaceable human input (back up this one)
 
-The only tier that is not rebuildable from source. Stores user marks,
-annotations, corrections (the learning feedback loop, keyed
-`(target_type, target_id, correction_type)`), suppressions, the user side of
-`session_tags`, `session_metadata` (per-session user key/value overlay used for
-title overrides, summaries, and custom keys), saved views, recall packs,
-workspaces, and blackboard notes.
+The only tier that is not rebuildable from source. Its canonical table is
+`assertions`: user marks, annotations, corrections, suppressions, tags,
+metadata, saved views, recall packs, workspaces, blackboard notes, candidate
+claims, and operator judgments are all assertion rows with lifecycle state.
+`index.db.session_tags` remains a rebuildable auto-tag/read-model projection;
+human-owned tag and metadata writes do not have separate user-tier tables.
 
 ### `ops.db` — disposable daemon telemetry
 

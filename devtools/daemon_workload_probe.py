@@ -8,7 +8,7 @@ state that can be diffed across convergence cycles.  Operators run::
     polylogue ops diagnostics workload --json > after.json
     polylogue ops diagnostics workload --compare before.json after.json
 
-to produce structured before/after evidence (see issue #845).
+to produce structured before/after convergence evidence.
 """
 
 from __future__ import annotations
@@ -627,7 +627,7 @@ def _archive_source_path_churn(
 
 
 def _cursor_lag_baselines(conn: sqlite3.Connection, *, ops_db: Path | None = None) -> dict[str, Any]:
-    """Rolling-window cursor-lag baseline state per source family (#1349).
+    """Rolling-window cursor-lag baseline state per source family.
 
     Prefer ``ops.db`` ``cursor_lag_samples`` and fall back to single-file
     ``live_cursor_lag_sample``. Returns the same per-family snapshot the
@@ -1444,13 +1444,17 @@ def _archive_user_overlay_orphans(root: Path) -> dict[str, Any]:
                 "AND COALESCE(u.status, '') != 'deleted' "
                 "AND NOT EXISTS (SELECT 1 FROM index_tier.sessions AS s WHERE s.session_id = substr(u.target_ref, 9))"
             ),
-            "session_tags": (
-                "SELECT COUNT(*) FROM session_tags AS u "
-                "WHERE NOT EXISTS (SELECT 1 FROM index_tier.sessions AS s WHERE s.session_id = u.session_id)"
+            "assertion_tags": (
+                "SELECT COUNT(*) FROM assertions AS u "
+                "WHERE u.kind = 'tag' AND u.target_ref LIKE 'session:%' "
+                "AND COALESCE(u.status, '') != 'deleted' "
+                "AND NOT EXISTS (SELECT 1 FROM index_tier.sessions AS s WHERE s.session_id = substr(u.target_ref, 9))"
             ),
-            "session_metadata": (
-                "SELECT COUNT(*) FROM session_metadata AS u "
-                "WHERE NOT EXISTS (SELECT 1 FROM index_tier.sessions AS s WHERE s.session_id = u.session_id)"
+            "assertion_metadata": (
+                "SELECT COUNT(*) FROM assertions AS u "
+                "WHERE u.kind = 'metadata' AND u.target_ref LIKE 'session:%' "
+                "AND COALESCE(u.status, '') != 'deleted' "
+                "AND NOT EXISTS (SELECT 1 FROM index_tier.sessions AS s WHERE s.session_id = substr(u.target_ref, 9))"
             ),
             "assertion_notes": (
                 "SELECT COUNT(*) FROM assertions AS u "
@@ -1485,7 +1489,7 @@ def _archive_user_overlay_orphans(root: Path) -> dict[str, Any]:
 
 
 def _topology_quarantine_state(conn: sqlite3.Connection) -> dict[str, Any]:
-    """Report the state of the session-link cycle quarantine (#1260).
+    """Report the state of the session-link cycle quarantine.
 
     Surfaces:
     - ``table_present`` — is ``session_links`` materialized in the database

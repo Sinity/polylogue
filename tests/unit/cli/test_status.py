@@ -533,12 +533,11 @@ class TestNoArchiveStatus:
         assert assertions["counts"] == {"assertion_count": 1, "target_count": 1, "active_count": 1}
         assert assertions["evidence_refs"] == ["user.db:assertions"]
         overlay_audit = assertions["metadata"]["overlay_audit"]
-        assert overlay_audit["legacy_tables_present"] == []
         surfaces = {surface["name"]: surface for surface in overlay_audit["surfaces"]}
         assert surfaces["marks"]["storage"] == "assertions"
         assert surfaces["marks"]["active_count"] == 1
-        assert surfaces["session_tags"]["storage"] == "table"
-        assert "metadata table" in surfaces["session_tags"]["rationale"]
+        assert surfaces["tag_assertions"]["storage"] == "assertions"
+        assert surfaces["metadata_assertions"]["storage"] == "assertions"
         assert transforms["scope"] == "recovery"
         assert transforms["state"] == "ready"
         assert transforms["counts"]["session_count"] == 3

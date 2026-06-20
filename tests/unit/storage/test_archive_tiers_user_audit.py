@@ -27,7 +27,7 @@ def _surface(payload: Mapping[str, object], name: str) -> Mapping[str, object]:
     raise AssertionError(f"missing audit surface {name}")
 
 
-def test_user_overlay_audit_reports_assertion_and_table_backed_surfaces(tmp_path: Path) -> None:
+def test_user_overlay_audit_reports_assertion_backed_surfaces(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "user.db")
     try:
         upsert_assertion(
@@ -71,18 +71,6 @@ def test_user_overlay_audit_reports_assertion_and_table_backed_surfaces(tmp_path
             status="active",
             now_ms=6,
         )
-        conn.execute(
-            """
-            INSERT INTO session_tags (session_id, tag, tag_source, method, confidence, evidence_json)
-            VALUES ('s1', 'important', 'user', NULL, NULL, NULL)
-            """
-        )
-        conn.execute(
-            """
-            INSERT INTO session_metadata (session_id, key, value_json, created_at_ms, updated_at_ms)
-            VALUES ('s1', 'owner', '{"name":"sinity"}', 7, 7)
-            """
-        )
         conn.commit()
 
         payload = audit_user_overlay_storage(conn).to_dict()
@@ -109,18 +97,6 @@ def test_user_overlay_audit_reports_assertion_and_table_backed_surfaces(tmp_path
     assert tag_assertions["storage"] == "assertions"
     assert tag_assertions["assertion_kind"] == "tag"
     assert tag_assertions["active_count"] == 1
-
-    tags = _surface(payload, "session_tags")
-    assert tags["storage"] == "table"
-    assert tags["assertion_kind"] is None
-    assert tags["total_count"] == 1
-    assert "metadata table" in str(tags["rationale"])
-
-    metadata = _surface(payload, "session_metadata")
-    assert metadata["storage"] == "table"
-    assert metadata["total_count"] == 1
-
-    assert payload["legacy_tables_present"] == []
 
 
 def test_user_overlay_audit_covers_every_assertion_kind(tmp_path: Path) -> None:

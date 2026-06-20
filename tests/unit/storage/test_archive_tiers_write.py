@@ -577,13 +577,6 @@ def test_archive_tiers_session_tags_upsert_normalizes_and_refreshes_scores(tmp_p
         confidence=0.75,
         evidence={"matched": "v1"},
     )
-    user_tag = upsert_session_tag(
-        conn,
-        session_id=session_id,
-        tag="Pinned",
-        tag_source="user",
-    )
-
     assert first.tag == "archive"
     assert refreshed == ArchiveSessionTag(
         session_id=session_id,
@@ -592,14 +585,6 @@ def test_archive_tiers_session_tags_upsert_normalizes_and_refreshes_scores(tmp_p
         method="classifier",
         confidence=0.75,
         evidence={"matched": "v1"},
-    )
-    assert user_tag == ArchiveSessionTag(
-        session_id=session_id,
-        tag="pinned",
-        tag_source="user",
-        method=None,
-        confidence=None,
-        evidence=None,
     )
     assert read_session_tags(conn, session_id=session_id, tag_source="auto") == {"archive": refreshed}
 

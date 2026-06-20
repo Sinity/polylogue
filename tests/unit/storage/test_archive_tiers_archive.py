@@ -8,8 +8,11 @@ from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedPasteEvidence, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.user_write import assertion_id_for_session_tag, read_assertion_envelope
-from polylogue.storage.sqlite.archive_tiers.write import read_session_tags
+from polylogue.storage.sqlite.archive_tiers.user_write import (
+    assertion_id_for_session_metadata,
+    assertion_id_for_session_tag,
+    read_assertion_envelope,
+)
 
 
 def test_active_archive_root_facade_writes_reads_and_searches_archive_db(tmp_path: Path) -> None:
@@ -155,7 +158,6 @@ def test_archive_tiers_archive_facade_adds_user_tags(tmp_path: Path) -> None:
     user_conn = sqlite3.connect(root / "user.db")
     user_conn.row_factory = sqlite3.Row
     try:
-        tags = read_session_tags(user_conn, session_id=session_id, tag_source="user")
         review_assertion = read_assertion_envelope(
             user_conn,
             assertion_id_for_session_tag(session_id, "review", "user"),
@@ -170,80 +172,12 @@ def test_archive_tiers_archive_facade_adds_user_tags(tmp_path: Path) -> None:
     assert changed == 2
     assert duplicate_changed == 0
     assert removed == 1
-    assert sorted(tags) == ["review"]
     assert tag_counts == {"review": 1}
     assert review_assertion is not None
     assert review_assertion.status == "active"
     assert ready_assertion is not None
     assert ready_assertion.status == "deleted"
     assert [summary.session_id for summary in summaries] == [session_id]
-
-
-def test_archive_tiers_remove_user_tags_tolerates_legacy_user_db_without_assertions(tmp_path: Path) -> None:
-    session = ParsedSession(
-        source_name=Provider.CODEX,
-        provider_session_id="codex-tag-legacy",
-        messages=[
-            ParsedMessage(
-                provider_message_id="m1",
-                role=Role.USER,
-                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="legacy taggable")],
-            )
-        ],
-    )
-    root = tmp_path / "archive"
-
-    with ArchiveStore(root) as facade:
-        session_id = facade.write_parsed(session)
-        assert facade.add_user_tags((session_id,), ("legacy",)) == 1
-
-    with sqlite3.connect(root / "user.db") as conn:
-        conn.execute("DROP TABLE assertions")
-        conn.commit()
-
-    with ArchiveStore(root) as facade:
-        assert facade.remove_user_tags((session_id,), ("legacy",)) == 1
-
-    with sqlite3.connect(root / "user.db") as conn:
-        remaining = conn.execute("SELECT COUNT(*) FROM session_tags").fetchone()[0]
-    assert remaining == 0
-
-
-def test_archive_tiers_duplicate_user_tag_add_backfills_missing_assertion(tmp_path: Path) -> None:
-    session = ParsedSession(
-        source_name=Provider.CODEX,
-        provider_session_id="codex-tag-backfill",
-        messages=[
-            ParsedMessage(
-                provider_message_id="m1",
-                role=Role.USER,
-                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="backfill taggable")],
-            )
-        ],
-    )
-    root = tmp_path / "archive"
-
-    with ArchiveStore(root) as facade:
-        session_id = facade.write_parsed(session)
-        assert facade.add_user_tags((session_id,), ("review",)) == 1
-
-    with sqlite3.connect(root / "user.db") as conn:
-        conn.execute(
-            "DELETE FROM assertions WHERE assertion_id = ?",
-            (assertion_id_for_session_tag(session_id, "review", "user"),),
-        )
-        conn.commit()
-
-    with ArchiveStore(root) as facade:
-        assert facade.add_user_tags((session_id,), ("review",)) == 0
-
-    with sqlite3.connect(root / "user.db") as conn:
-        assertion = read_assertion_envelope(
-            conn,
-            assertion_id_for_session_tag(session_id, "review", "user"),
-        )
-    assert assertion is not None
-    assert assertion.status == "active"
 
 
 def test_archive_tiers_archive_facade_deletes_archive_sessions_but_keeps_user_tags(tmp_path: Path) -> None:
@@ -267,15 +201,18 @@ def test_archive_tiers_archive_facade_deletes_archive_sessions_but_keeps_user_ta
         remaining = facade.count_sessions()
 
     user_conn = sqlite3.connect(root / "user.db")
-    user_conn.row_factory = sqlite3.Row
     try:
-        tags = read_session_tags(user_conn, session_id=session_id, tag_source="user")
+        assertion = read_assertion_envelope(
+            user_conn,
+            assertion_id_for_session_tag(session_id, "keep-user-state", "user"),
+        )
     finally:
         user_conn.close()
 
     assert deleted == 1
     assert remaining == 0
-    assert sorted(tags) == ["keep-user-state"]
+    assert assertion is not None
+    assert assertion.status == "active"
 
 
 def test_archive_tiers_archive_facade_sets_user_metadata(tmp_path: Path) -> None:
@@ -301,10 +238,14 @@ def test_archive_tiers_archive_facade_sets_user_metadata(tmp_path: Path) -> None
 
     user_conn = sqlite3.connect(root / "user.db")
     try:
-        rows = user_conn.execute(
-            "SELECT key, value_json FROM session_metadata WHERE session_id = ? ORDER BY key",
-            (session_id,),
-        ).fetchall()
+        priority_assertion = read_assertion_envelope(
+            user_conn,
+            assertion_id_for_session_metadata(session_id, "priority"),
+        )
+        status_assertion = read_assertion_envelope(
+            user_conn,
+            assertion_id_for_session_metadata(session_id, "status"),
+        )
     finally:
         user_conn.close()
 
@@ -312,7 +253,12 @@ def test_archive_tiers_archive_facade_sets_user_metadata(tmp_path: Path) -> None
     assert unchanged == 0
     assert metadata == {"priority": "high", "status": "reviewed"}
     assert deleted == 1
-    assert rows == [("priority", '"high"')]
+    assert priority_assertion is not None
+    assert priority_assertion.kind == "metadata"
+    assert priority_assertion.value == "high"
+    assert priority_assertion.status == "active"
+    assert status_assertion is not None
+    assert status_assertion.status == "deleted"
 
 
 def test_archive_tiers_archive_facade_lists_and_searches_session_summaries(tmp_path: Path) -> None:

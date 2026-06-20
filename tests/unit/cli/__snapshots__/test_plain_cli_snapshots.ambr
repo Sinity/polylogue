@@ -215,8 +215,8 @@
         "path": "<PATH>",
         "exists": true,
         "size_bytes": 532480,
-        "expected_user_version": 3,
-        "user_version": 3,
+        "expected_user_version": 4,
+        "user_version": 4,
         "version_status": "ok",
         "table_counts": {
           "sessions": 2,
@@ -244,13 +244,12 @@
       "user": {
         "path": "<PATH>",
         "exists": true,
-        "size_bytes": 32768,
-        "expected_user_version": 2,
-        "user_version": 2,
+        "size_bytes": 24576,
+        "expected_user_version": 3,
+        "user_version": 3,
         "version_status": "ok",
         "table_counts": {
-          "session_tags": 0,
-          "session_metadata": 0
+          "assertions": 0
         }
       },
       "ops": {
@@ -1506,31 +1505,8 @@
                 "deleted_count": 0,
                 "candidate_count": 0,
                 "rationale": "assertion lifecycle claim"
-              },
-              {
-                "name": "session_tags",
-                "storage": "table",
-                "assertion_kind": null,
-                "table": "session_tags",
-                "total_count": 0,
-                "active_count": 0,
-                "deleted_count": 0,
-                "candidate_count": 0,
-                "rationale": "simple session metadata table; not an assertion lifecycle claim"
-              },
-              {
-                "name": "session_metadata",
-                "storage": "table",
-                "assertion_kind": null,
-                "table": "session_metadata",
-                "total_count": 0,
-                "active_count": 0,
-                "deleted_count": 0,
-                "candidate_count": 0,
-                "rationale": "simple key/value session metadata table; not an assertion lifecycle claim"
               }
-            ],
-            "legacy_tables_present": []
+            ]
           }
         }
       },

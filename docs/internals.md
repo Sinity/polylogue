@@ -127,9 +127,9 @@ The archive file set is split by durability class:
   indexes, graph/topology rows, and derived insight read models.
 - `embeddings.db` stores vector rows, embedding status, and embedding
   catch-up metadata; it is rebuildable, but expensive.
-- `user.db` stores irreplaceable human input such as marks,
-  annotations, corrections, user tags, session metadata, saved views,
-  recall packs, workspaces, and blackboard notes.
+- `user.db` stores irreplaceable human input as assertion rows: marks,
+  annotations, corrections, user tags, metadata keys, saved views,
+  recall packs, workspaces, blackboard notes, candidates, and judgments.
 - `ops.db` stores disposable daemon telemetry such as ingest cursors,
   attempts, convergence debt, stage events, embedding catch-up runs,
   and OTLP spans.
