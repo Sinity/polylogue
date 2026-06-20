@@ -25,6 +25,9 @@ from polylogue.surfaces.payloads import (
     ArchiveDebtListPayload,
     ArchiveDebtTotalsPayload,
     AssertionClaimPayload,
+    ImportExplainEntryPayload,
+    ImportExplainPayload,
+    ImportProducedRowsPayload,
     PublicRefResolutionPayload,
 )
 from polylogue.types import SessionId
@@ -978,6 +981,45 @@ class TestArchiveGenericToolSurfaces:
             only_actionable=True,
             limit=3,
             exact_fts=False,
+        )
+
+    @pytest.mark.asyncio
+    async def test_explain_import_reads_shared_facade_payload(self: object, mcp_server: MCPServerUnderTest) -> None:
+        mock_poly = make_polylogue_mock()
+        mock_poly.explain_import.return_value = ImportExplainPayload(
+            source_path="archive:raw:raw-1",
+            entries=(
+                ImportExplainEntryPayload(
+                    raw_ref="raw:raw-1",
+                    source_path="~/.codex/sessions/a.jsonl",
+                    artifact_kind="session_record_stream",
+                    detected_origin="codex-session",
+                    detector="source.raw_sessions",
+                    parser="archive source/index evidence",
+                    parser_mode="archived_raw_session",
+                    produced=ImportProducedRowsPayload(sessions=1, raw_records=1),
+                ),
+            ),
+            produced=ImportProducedRowsPayload(sessions=1, raw_records=1),
+        )
+
+        with patch("polylogue.mcp.server._get_polylogue", return_value=mock_poly):
+            result = await invoke_surface_async(
+                mcp_server._tool_manager._tools["explain_import"].fn,
+                raw_ref="raw:raw-1",
+                limit=7,
+            )
+
+        payload = json.loads(result)
+        assert payload["mode"] == "import-explain"
+        assert payload["entries"][0]["raw_ref"] == "raw:raw-1"
+        mock_poly.explain_import.assert_awaited_once_with(
+            None,
+            raw_ref="raw:raw-1",
+            source_path=None,
+            source_name="unknown",
+            limit=7,
+            redact_paths=True,
         )
 
     @pytest.mark.asyncio

@@ -128,6 +128,7 @@ def test_read_view_execution_route_is_published_as_stable_api() -> None:
         ("GET", "/api/sessions", "/api/sessions", "read_query", "bearer_if_configured"),
         ("GET", "/api/query-units", "/api/query-units", "read_query", "bearer_if_configured"),
         ("GET", "/api/archive-debt", "/api/archive-debt", "operational", "bearer_if_configured"),
+        ("GET", "/api/import/explain", "/api/import/explain", "operational", "bearer_if_configured"),
         ("GET", "/api/assertions", "/api/assertions", "user_overlay", "bearer_if_configured"),
         (
             "GET",

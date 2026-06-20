@@ -909,6 +909,36 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
         return await hooks.async_safe_call("archive_debt", run)
 
+    @mcp.tool()
+    async def explain_import(
+        path: str | None = None,
+        raw_ref: str | None = None,
+        source_path: str | None = None,
+        source_name: str = "unknown",
+        limit: MCPToolLimit = 100,
+        redact_paths: bool = True,
+    ) -> str:
+        """Explain import detection/parsing from a local path or archived raw evidence."""
+
+        async def run() -> str:
+            if path is None and raw_ref is None and source_path is None:
+                return hooks.error_json(
+                    "explain_import requires path, raw_ref, or source_path",
+                    code="invalid_request",
+                    tool="explain_import",
+                )
+            payload = await hooks.get_polylogue().explain_import(
+                path,
+                raw_ref=raw_ref,
+                source_path=source_path,
+                source_name=source_name,
+                limit=hooks.clamp_limit(limit),
+                redact_paths=redact_paths,
+            )
+            return hooks.json_payload(payload, exclude_none=True)
+
+        return await hooks.async_safe_call("explain_import", run)
+
     async def list_read_view_profiles() -> str:
         async def run() -> str:
             profiles = await hooks.get_polylogue().list_read_view_profiles()

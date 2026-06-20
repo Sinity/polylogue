@@ -66,6 +66,7 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     "explain_query_expression": "single_object",
     "query_completions": "single_object",
     "resolve_ref": "single_object",
+    "explain_import": "typed_envelope",
     "raw_artifacts": ("envelope", frozenset({"raw_artifacts", "total"})),
     "archive_list_sessions": ("envelope", frozenset({"items", "total", "limit", "offset"})),
     "archive_search_sessions": ("envelope", frozenset({"items", "total", "limit", "query"})),
@@ -220,6 +221,7 @@ def _build_typed_envelope_classes() -> dict[str, type[BaseModel]]:
     )
     from polylogue.surfaces.payloads import (
         ArchiveDebtListPayload,
+        ImportExplainPayload,
         PublicRefResolutionPayload,
         QueryUnitEnvelope,
         SearchEnvelope,
@@ -229,6 +231,7 @@ def _build_typed_envelope_classes() -> dict[str, type[BaseModel]]:
         "search": SearchEnvelope,
         "query_units": QueryUnitEnvelope,
         "archive_debt": ArchiveDebtListPayload,
+        "explain_import": ImportExplainPayload,
         "resolve_ref": PublicRefResolutionPayload,
         "list_sessions": MCPPaginatedQueryResultPayload,
         "neighbor_candidates": MCPNeighborCandidatesPayload,

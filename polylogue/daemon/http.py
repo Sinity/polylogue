@@ -231,6 +231,7 @@ def _static_get_routes() -> tuple[_StaticGetRoute, ...]:
         _static_get_route("/api/facets", "_handle_facets", passes_params=True),
         _static_get_route("/api/query-units", "_handle_query_units", passes_params=True),
         _static_get_route("/api/archive-debt", "_handle_archive_debt", passes_params=True),
+        _static_get_route("/api/import/explain", "_handle_import_explain", passes_params=True),
         _static_get_route("/api/refs/resolve", "_handle_ref_resolve", passes_params=True),
         _static_get_route("/api/query-completions", "_handle_query_completions", passes_params=True),
         _static_get_route("/api/read-view-profiles", "_handle_read_view_profiles"),
@@ -2554,6 +2555,40 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 only_actionable=self._get_bool(params, "only_actionable"),
                 limit=limit,
                 exact_fts=self._get_bool(params, "exact_fts"),
+            )
+        )
+        self._send_json(HTTPStatus.OK, payload.model_dump(mode="json", exclude_none=True))
+
+    @daemon_safe_handler
+    def _handle_import_explain(self, params: dict[str, list[str]]) -> None:
+        """``GET /api/import/explain`` explains archived import/source evidence."""
+
+        from polylogue import Polylogue
+        from polylogue.api.sync.bridge import run_coroutine_sync
+
+        path = self._get_param(params, "path")
+        raw_ref = self._get_param(params, "raw_ref")
+        source_path = self._get_param(params, "source_path")
+        if not path and not raw_ref and not source_path:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {
+                    "error": "missing_import_explain_target",
+                    "message": "path, raw_ref, or source_path query parameter is required",
+                },
+            )
+            return
+        archive_root = _web_reader_archive_root()
+        if archive_root is None:
+            self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "archive_unavailable")
+            return
+        payload = run_coroutine_sync(
+            Polylogue(archive_root=archive_root, db_path=archive_root / "index.db").explain_import(
+                path,
+                raw_ref=raw_ref,
+                source_path=source_path,
+                limit=self._get_int(params, "limit", 100),
+                redact_paths=not self._get_bool(params, "no_redact"),
             )
         )
         self._send_json(HTTPStatus.OK, payload.model_dump(mode="json", exclude_none=True))
