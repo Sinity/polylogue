@@ -583,10 +583,31 @@ QUERY_UNIT_DESCRIPTORS: tuple[QueryUnitDescriptor, ...] = (
 _QUERY_UNIT_BY_UNIT: dict[QueryUnitName, QueryUnitDescriptor] = {
     descriptor.unit: descriptor for descriptor in QUERY_UNIT_DESCRIPTORS
 }
+
+
+def query_unit_descriptors(
+    *,
+    terminal_supported: bool | None = None,
+    exists_supported: bool | None = None,
+    lowerer_kind: QueryUnitLowererKind | None = None,
+) -> tuple[QueryUnitDescriptor, ...]:
+    """Return query-unit descriptors matching the requested capabilities."""
+
+    descriptors = QUERY_UNIT_DESCRIPTORS
+    if terminal_supported is not None:
+        descriptors = tuple(
+            descriptor for descriptor in descriptors if descriptor.terminal_supported is terminal_supported
+        )
+    if exists_supported is not None:
+        descriptors = tuple(descriptor for descriptor in descriptors if descriptor.exists_supported is exists_supported)
+    if lowerer_kind is not None:
+        descriptors = tuple(descriptor for descriptor in descriptors if descriptor.lowerer_kind == lowerer_kind)
+    return descriptors
+
+
 _SOURCE_WHERE_SOURCES: tuple[tuple[str, QueryUnitName], ...] = tuple(
     (source, descriptor.unit)
-    for descriptor in QUERY_UNIT_DESCRIPTORS
-    if descriptor.terminal_supported
+    for descriptor in query_unit_descriptors(terminal_supported=True)
     for source in descriptor.source_aliases
 )
 
@@ -618,7 +639,7 @@ DATE_QUERY_FIELD_REGISTRY: dict[str, DateQueryFieldInfo] = {
 def structural_query_units() -> tuple[str, ...]:
     """Return the structural units accepted by the query grammar."""
 
-    return tuple(sorted(descriptor.unit for descriptor in QUERY_UNIT_DESCRIPTORS if descriptor.exists_supported))
+    return tuple(sorted(descriptor.unit for descriptor in query_unit_descriptors(exists_supported=True)))
 
 
 def structural_query_fields(unit: str) -> tuple[str, ...]:
@@ -680,8 +701,7 @@ def terminal_query_source_list(*, plural: bool = True, separator: str = "/") -> 
 
     labels = [
         descriptor.plural_source if plural else descriptor.singular_source
-        for descriptor in QUERY_UNIT_DESCRIPTORS
-        if descriptor.terminal_supported
+        for descriptor in query_unit_descriptors(terminal_supported=True)
     ]
     return separator.join(labels)
 
@@ -765,10 +785,11 @@ __all__ = [
     "count_query_operators",
     "date_query_fields",
     "date_query_operators",
+    "query_unit_descriptor",
+    "query_unit_descriptors",
     "structural_query_field_info",
     "structural_query_fields",
     "structural_query_units",
-    "query_unit_descriptor",
     "terminal_query_field_info",
     "terminal_query_fields",
     "terminal_query_source_list",

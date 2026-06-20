@@ -221,7 +221,7 @@ def query_terminal_source_candidates(incomplete: str) -> list[QueryCompletionCan
                 kind="query-terminal-source",
                 group="query terminal sources",
                 description=description,
-                source="_SOURCE_WHERE_SOURCES",
+                source="QUERY_UNIT_DESCRIPTORS",
             )
         )
     return candidates
@@ -251,7 +251,7 @@ def query_terminal_field_candidates(source: str, incomplete: str) -> list[QueryC
                 kind="query-terminal-field",
                 group=f"{source} terminal fields",
                 description=description,
-                source="_SOURCE_WHERE_SOURCES/STRUCTURAL_QUERY_UNIT_REGISTRY",
+                source="QUERY_UNIT_DESCRIPTORS",
             )
         )
     return candidates

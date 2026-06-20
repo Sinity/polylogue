@@ -42,6 +42,7 @@ def test_terminal_query_completion_payloads_are_lightweight() -> None:
     source_candidate = next(candidate for candidate in source_candidates if candidate["value"] == "observed-events")
     assert source_candidate["insert"] == "observed-events where "
     assert source_candidate["kind"] == "query-terminal-source"
+    assert source_candidate["source"] == "QUERY_UNIT_DESCRIPTORS"
 
     field_payload = query_completion_payload("terminal-field", unit="context-snapshots", incomplete="bound")
     field_candidates = [
@@ -51,11 +52,13 @@ def test_terminal_query_completion_payloads_are_lightweight() -> None:
     field_candidate = field_candidates[0]
     assert field_candidate["insert"] == "boundary:"
     assert field_candidate["kind"] == "query-terminal-field"
+    assert field_candidate["source"] == "QUERY_UNIT_DESCRIPTORS"
 
 
 def test_query_unit_descriptors_own_terminal_aliases() -> None:
     from polylogue.archive.query.metadata import (
         query_unit_descriptor,
+        query_unit_descriptors,
         structural_query_fields,
         structural_query_units,
         terminal_query_fields,
@@ -81,5 +84,16 @@ def test_query_unit_descriptors_own_terminal_aliases() -> None:
     assert terminal_query_source_list() == "messages/actions/blocks/assertions/runs/observed-events/context-snapshots"
     assert ("assertions", "assertion") in terminal_query_source_pairs()
     assert structural_query_units() == ("action", "assertion", "block", "message")
+    assert tuple(descriptor.unit for descriptor in query_unit_descriptors(exists_supported=True)) == (
+        "message",
+        "action",
+        "block",
+        "assertion",
+    )
+    assert tuple(descriptor.unit for descriptor in query_unit_descriptors(lowerer_kind="runtime_transform")) == (
+        "run",
+        "observed-event",
+        "context-snapshot",
+    )
     assert structural_query_fields("context-snapshot") == ()
     assert "boundary" in terminal_query_fields("context-snapshots")
