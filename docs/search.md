@@ -55,6 +55,9 @@ predicate          ::= predicate "OR" predicate
                      | "seq" "(" sequence-step "->" sequence-step+ ")"
 
 structural-unit    ::= "message" | "action" | "block" | "assertion"
+sequence-step      ::= action-field-clause ("AND" action-field-clause)*
+action-field-clause ::= "action:" value | "tool:" value | "command:" value
+                      | "path:" value | "output:" value | "text:" value
 pipeline-stage     ::= "sort" "by" "time" ["asc" | "desc"]
                      | "group" "by" field
                      | "count"
@@ -77,7 +80,22 @@ Explicit Boolean session queries also select sessions:
 polylogue sessions where '(repo:polylogue OR repo:sinex) AND NOT tag:stale'
 polylogue sessions where 'exists message(role:assistant AND text:timeout)'
 polylogue sessions where 'seq(action:file_edit -> action:shell)'
+polylogue sessions where 'seq(action:file_edit -> action:shell AND output:failed -> action:file_edit)'
 ```
+
+Sequence predicates match an ordered subsequence of action rows inside a
+session. Each step is an action-unit predicate, so the sequence can describe
+real coding workflows instead of only action categories:
+
+```bash
+polylogue sessions where 'seq(action:file_edit -> action:shell AND output:failed -> action:file_edit)'
+polylogue sessions where 'seq(tool:edit AND path:polylogue/archive -> tool:bash AND command:pytest)'
+```
+
+The SQL lowerer applies every step predicate to its own ordered action row and
+then enforces message/block order between steps. Unsupported fields in a
+sequence step fail typed as action-predicate errors; they do not broaden into a
+plain text search.
 
 Unit queries select terminal rows instead of sessions:
 

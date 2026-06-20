@@ -431,7 +431,8 @@ _QUERY_GRAMMAR = rf"""
         | TIME_FIELD DATE_COMP_OP DATE_VALUE -> time_compare_leaf
         | FIELD_CLAUSE                     -> field_leaf
         | "(" expr ")"
-    sequence_step: FIELD_CLAUSE
+    sequence_step: sequence_atom (AND sequence_atom)*
+    ?sequence_atom: FIELD_CLAUSE                     -> field_leaf
 
     SESSIONS: /sessions/i
     WHERE: /where/i
@@ -815,6 +816,14 @@ def _predicate_children(items: tuple[object, ...]) -> tuple[QueryPredicate, ...]
     )
 
 
+def _sequence_step_has_positive_match(predicate: QueryPredicate) -> bool:
+    if isinstance(predicate, QueryFieldPredicate):
+        return bool(predicate.values)
+    if isinstance(predicate, QueryBoolPredicate):
+        return any(_sequence_step_has_positive_match(child) for child in predicate.children)
+    return False
+
+
 def _validate_predicate_context(predicate: QueryPredicate, *, unit: Literal["session"] | QueryUnitName) -> None:
     if isinstance(predicate, QueryFieldPredicate):
         session_field = _scoped_session_field(predicate.field)
@@ -953,6 +962,14 @@ def _validate_predicate_context(predicate: QueryPredicate, *, unit: Literal["ses
     if isinstance(predicate, QuerySequencePredicate):
         if unit != "session":
             raise ExpressionCompileError("seq predicates are only supported from sessions", field=None)
+        if len(predicate.steps) < 2:
+            raise ExpressionCompileError("seq() requires at least two action steps", field=None)
+        for step in predicate.steps:
+            _validate_predicate_context(step, unit="action")
+            if not _sequence_step_has_positive_match(step):
+                raise ExpressionCompileError(
+                    "seq() steps must include at least one positive action predicate", field=None
+                )
         return
     if isinstance(predicate, QueryTextPredicate):
         if unit != "session":
@@ -1068,19 +1085,19 @@ class _BooleanQueryTransformer(Transformer[Token, QueryPredicate]):
             unit=cast(Literal["message", "action", "block", "assertion"], unit_value), child=child
         )
 
-    def sequence_step(self, token: Token) -> QueryPredicate:
-        predicate = _field_token_to_predicate(_QUERY_TRANSFORMER.field_clause(token))
-        if not isinstance(predicate, QueryFieldPredicate) or predicate.field != "action" or predicate.op != "=":
-            raise ExpressionCompileError("seq() currently supports action:<kind> steps", field=None)
-        if len(predicate.values) != 1:
-            raise ExpressionCompileError("seq() action steps must name exactly one action", field="action")
-        return predicate
+    def sequence_step(self, *items: object) -> QueryPredicate:
+        predicates = _predicate_children(items)
+        if not predicates:
+            raise ExpressionCompileError("seq() steps require at least one action predicate", field=None)
+        if len(predicates) == 1:
+            return predicates[0]
+        return QueryBoolPredicate(op="and", children=predicates)
 
     def sequence_leaf(self, _seq: Token, *items: object) -> QueryPredicate:
-        steps = [item for item in items if isinstance(item, QueryFieldPredicate)]
+        steps = _predicate_children(items)
         if len(steps) < 2:
             raise ExpressionCompileError("seq() requires at least two action steps", field=None)
-        return QuerySequencePredicate(action_terms=tuple(step.values[0] for step in steps))
+        return QuerySequencePredicate(steps=steps)
 
 
 _BOOLEAN_QUERY_TRANSFORMER = _BooleanQueryTransformer()

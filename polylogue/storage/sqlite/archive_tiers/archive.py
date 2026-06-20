@@ -5187,7 +5187,9 @@ def _boolean_predicate_clause(
     if isinstance(predicate, QueryExistsPredicate):
         return _exists_predicate_clause(table_alias, predicate)
     if isinstance(predicate, QuerySequencePredicate):
-        return _action_sequence_clause(table_alias, predicate.action_terms)
+        if len(predicate.steps) < 2:
+            raise ValueError("action sequence predicates require at least two steps")
+        return _action_sequence_steps_clause(table_alias, predicate.steps)
     if isinstance(predicate, QueryTextPredicate):
         return _fts_predicate_clause(table_alias, predicate)
     if isinstance(predicate, QueryLineagePredicate):
@@ -5506,10 +5508,17 @@ def _session_filter_clause(
 
 
 def _action_sequence_clause(table_alias: str, action_sequence: tuple[str, ...]) -> tuple[str, list[object]]:
+    steps = tuple(
+        QueryFieldPredicate(field="action", values=(term,), op="=") for term in action_sequence if term.strip()
+    )
+    return _action_sequence_steps_clause(table_alias, steps)
+
+
+def _action_sequence_steps_clause(table_alias: str, steps: tuple[QueryPredicate, ...]) -> tuple[str, list[object]]:
     joins: list[str] = []
     predicates: list[str] = []
     params: list[object] = []
-    for index, term in enumerate(action_sequence):
+    for index, step in enumerate(steps):
         action_alias = f"seq_a{index}"
         message_alias = f"seq_m{index}"
         block_alias = f"seq_b{index}"
@@ -5523,8 +5532,10 @@ def _action_sequence_clause(table_alias: str, action_sequence: tuple[str, ...]) 
               ON {block_alias}.block_id = {action_alias}.tool_use_block_id
             """.strip()
         )
-        predicates.append(f"{action_alias}.semantic_type = ?")
-        params.append(term)
+        step_clause, step_params = _structural_predicate_clause("action", action_alias, step)
+        if step_clause:
+            predicates.append(f"({step_clause})")
+            params.extend(step_params)
         if index > 0:
             predicates.append(_action_after_predicate(index - 1, index))
     sql = (

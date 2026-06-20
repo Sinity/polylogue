@@ -244,11 +244,26 @@ class TestExplainExpression:
 
     def test_explain_expression_reports_semantic_and_sequence_legs(self) -> None:
         semantic = explain_expression('sessions where semantic:"query compiler" AND title:hit')
-        sequence = explain_expression("sessions where seq(action:file_edit -> action:shell)")
+        sequence = explain_expression("sessions where seq(action:file_edit -> action:shell AND output:failed)")
 
         assert semantic.execution_legs == ("sql", "vector")
         assert sequence.selected_units == ("action", "session")
         assert sequence.execution_legs == ("sequence-action",)
+        assert sequence.predicate is not None
+        assert sequence.predicate.to_payload() == {
+            "kind": "sequence",
+            "unit": "action",
+            "steps": [
+                {"kind": "field", "field": "action", "op": "=", "values": ["file_edit"]},
+                {
+                    "kind": "and",
+                    "children": [
+                        {"kind": "field", "field": "action", "op": "=", "values": ["shell"]},
+                        {"kind": "field", "field": "output", "op": "=", "values": ["failed"]},
+                    ],
+                },
+            ],
+        }
 
     def test_explain_expression_reports_terminal_unit_source(self) -> None:
         explanation = explain_expression("messages where role:assistant AND text:timeout")
@@ -866,6 +881,39 @@ class TestBooleanQueryExpression:
         ast = parse_expression_ast("seq(action:file_edit -> action:shell -> action:file_edit)")
 
         assert ast.boolean_predicate == QuerySequencePredicate(action_terms=("file_edit", "shell", "file_edit"))
+
+    def test_sequence_predicate_derives_action_terms_from_steps_when_both_are_supplied(self) -> None:
+        predicate = QuerySequencePredicate(
+            steps=(
+                QueryFieldPredicate(field="action", values=("file_edit",)),
+                QueryFieldPredicate(field="action", values=("shell",)),
+            ),
+            action_terms=("conflicting",),
+        )
+
+        assert predicate.action_terms == ("file_edit", "shell")
+        assert predicate.to_payload()["actions"] == ["file_edit", "shell"]
+
+    def test_sequence_ast_exposes_step_predicates(self) -> None:
+        ast = parse_expression_ast("seq(action:file_edit -> action:shell AND output:failed -> action:file_edit)")
+
+        assert ast.boolean_predicate == QuerySequencePredicate(
+            steps=(
+                QueryFieldPredicate(field="action", values=("file_edit",)),
+                QueryBoolPredicate(
+                    op="and",
+                    children=(
+                        QueryFieldPredicate(field="action", values=("shell",)),
+                        QueryFieldPredicate(field="output", values=("failed",)),
+                    ),
+                ),
+                QueryFieldPredicate(field="action", values=("file_edit",)),
+            ),
+        )
+
+    def test_sequence_step_rejects_session_fields(self) -> None:
+        with pytest.raises(ExpressionCompileError, match="not supported for action predicates"):
+            compile_expression("seq(action:file_edit -> repo:polylogue)")
 
     def test_fts_ast_exposes_text_predicate(self) -> None:
         ast = parse_expression_ast('repo:polylogue AND ~"timeout failure"')
@@ -2782,6 +2830,172 @@ class TestBooleanQueryExpression:
             rows = archive.list_summaries(limit=100, boolean_predicate=spec.boolean_predicate)
 
         assert [row.session_id for row in rows] == ["claude-code-session:ext-hit"]
+
+    def test_single_action_sequence_filter_still_executes_against_archive(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "shell-hit")
+            .provider("claude-code")
+            .title("shell action")
+            .add_message(
+                "m-shell",
+                role="assistant",
+                text="test",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Bash",
+                        "tool_id": "tool-shell",
+                        "input": {"command": "pytest tests/unit/cli/test_query_expression.py"},
+                        "semantic_type": "shell",
+                    }
+                ],
+            )
+            .save()
+        )
+        (
+            SessionBuilder(index_db, "edit-miss")
+            .provider("claude-code")
+            .title("edit action")
+            .add_message(
+                "m-edit",
+                role="assistant",
+                text="edit",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Edit",
+                        "tool_id": "tool-edit",
+                        "input": {"file_path": "polylogue/archive/query/expression.py"},
+                        "semantic_type": "file_edit",
+                    }
+                ],
+            )
+            .save()
+        )
+
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            rows = archive.list_summaries(limit=100, action_sequence=("shell",))
+
+        assert [row.session_id for row in rows] == ["claude-code-session:ext-shell-hit"]
+
+    def test_sequence_predicate_filters_step_fields_against_archive(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "failed-cycle")
+            .provider("claude-code")
+            .title("failed test edit cycle")
+            .add_message(
+                "m-failed-1",
+                role="assistant",
+                text="edit",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Edit",
+                        "tool_id": "edit-hit-1",
+                        "input": {"file_path": "polylogue/archive/query/expression.py"},
+                        "semantic_type": "file_edit",
+                    }
+                ],
+            )
+            .add_message(
+                "m-failed-2",
+                role="assistant",
+                text="test failed",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Bash",
+                        "tool_id": "bash-hit-1",
+                        "input": {"command": "pytest tests/unit/cli/test_query_expression.py"},
+                        "semantic_type": "shell",
+                    },
+                    {
+                        "type": "tool_result",
+                        "tool_id": "bash-hit-1",
+                        "text": "FAILED tests/unit/cli/test_query_expression.py::test_sequence",
+                    },
+                ],
+            )
+            .add_message(
+                "m-failed-3",
+                role="assistant",
+                text="fix",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Edit",
+                        "tool_id": "edit-hit-2",
+                        "input": {"file_path": "polylogue/archive/query/expression.py"},
+                        "semantic_type": "file_edit",
+                    }
+                ],
+            )
+            .save()
+        )
+        (
+            SessionBuilder(index_db, "passed-cycle")
+            .provider("claude-code")
+            .title("passed test edit cycle")
+            .add_message(
+                "m-passed-1",
+                role="assistant",
+                text="edit",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Edit",
+                        "tool_id": "edit-miss-1",
+                        "input": {"file_path": "polylogue/archive/query/expression.py"},
+                        "semantic_type": "file_edit",
+                    }
+                ],
+            )
+            .add_message(
+                "m-passed-2",
+                role="assistant",
+                text="test passed",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Bash",
+                        "tool_id": "bash-miss-1",
+                        "input": {"command": "pytest tests/unit/cli/test_query_expression.py"},
+                        "semantic_type": "shell",
+                    },
+                    {"type": "tool_result", "tool_id": "bash-miss-1", "text": "1 passed"},
+                ],
+            )
+            .add_message(
+                "m-passed-3",
+                role="assistant",
+                text="fix",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Edit",
+                        "tool_id": "edit-miss-2",
+                        "input": {"file_path": "polylogue/archive/query/expression.py"},
+                        "semantic_type": "file_edit",
+                    }
+                ],
+            )
+            .save()
+        )
+
+        spec = compile_expression("seq(action:file_edit -> action:shell AND output:failed -> action:file_edit)")
+        assert spec.boolean_predicate is not None
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            rows = archive.list_summaries(limit=100, boolean_predicate=spec.boolean_predicate)
+
+        assert [row.session_id for row in rows] == ["claude-code-session:ext-failed-cycle"]
 
     def test_fts_predicate_executes_against_archive(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore

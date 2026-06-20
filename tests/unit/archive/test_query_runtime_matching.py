@@ -7,7 +7,9 @@ import pytest
 from polylogue.archive.actions.actions import Action
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.query.plan import SessionQueryPlan
+from polylogue.archive.query.predicate import QueryBoolPredicate, QueryFieldPredicate
 from polylogue.archive.query.runtime_matching import (
+    matches_action_predicate_sequence,
     matches_action_sequence,
     matches_action_terms,
     matches_action_text_terms,
@@ -33,6 +35,8 @@ def _event(
     *,
     tool_name: str = "unknown",
     affected_paths: tuple[str, ...] = (),
+    command: str | None = None,
+    output_text: str | None = None,
     search_text: str = "",
     index: int = 0,
 ) -> Action:
@@ -48,11 +52,12 @@ def _event(
         affected_paths=affected_paths,
         cwd_path=None,
         branch_names=(),
-        command=None,
+        command=command,
         query=None,
         url=None,
-        output_text=None,
-        search_text=search_text,
+        output_text=output_text,
+        search_text=search_text
+        or " ".join(part for part in (kind.value, tool_name, command, output_text, *affected_paths) if part),
         raw={},
     )
 
@@ -118,3 +123,75 @@ def test_matches_action_sequence_and_search_text(monkeypatch: pytest.MonkeyPatch
     assert matches_action_sequence(SessionQueryPlan(action_sequence=("shell", "search")), session) is False
     assert matches_action_text_terms(SessionQueryPlan(action_text_terms=("schema", "pytest")), session) is True
     assert matches_action_text_terms(SessionQueryPlan(action_text_terms=("deployment",)), session) is False
+
+
+def test_matches_action_predicate_sequence_filters_step_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    session = _session()
+    _patch_events(
+        monkeypatch,
+        (
+            _event(ToolCategory.FILE_EDIT, tool_name="Edit", affected_paths=("polylogue/archive/query/expression.py",)),
+            _event(
+                ToolCategory.SHELL, tool_name="Bash", command="pytest", output_text="FAILED test_query_expression.py"
+            ),
+            _event(ToolCategory.FILE_EDIT, tool_name="Edit", affected_paths=("polylogue/archive/query/expression.py",)),
+        ),
+    )
+    steps = (
+        QueryFieldPredicate(field="action", values=("file_edit",)),
+        QueryBoolPredicate(
+            op="and",
+            children=(
+                QueryFieldPredicate(field="tool", values=("bash",)),
+                QueryFieldPredicate(field="output", values=("failed",)),
+            ),
+        ),
+        QueryFieldPredicate(field="path", values=("archive/query",)),
+    )
+
+    assert matches_action_predicate_sequence(steps, session) is True
+
+    missed_steps = (
+        QueryFieldPredicate(field="action", values=("file_edit",)),
+        QueryBoolPredicate(
+            op="and",
+            children=(
+                QueryFieldPredicate(field="tool", values=("bash",)),
+                QueryFieldPredicate(field="output", values=("passed",)),
+            ),
+        ),
+        QueryFieldPredicate(field="path", values=("archive/query",)),
+    )
+    assert matches_action_predicate_sequence(missed_steps, session) is False
+
+
+def test_matches_action_predicate_sequence_treats_field_values_as_alternatives(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _session()
+    _patch_events(
+        monkeypatch,
+        (
+            _event(ToolCategory.FILE_EDIT, tool_name="Edit", affected_paths=("polylogue/archive/query/expression.py",)),
+            _event(
+                ToolCategory.SHELL,
+                tool_name="Bash",
+                command="pytest tests/unit/cli/test_query_expression.py",
+                output_text="FAILED test_query_expression.py",
+            ),
+            _event(ToolCategory.FILE_EDIT, tool_name="Edit", affected_paths=("polylogue/archive/query/expression.py",)),
+        ),
+    )
+    steps = (
+        QueryFieldPredicate(field="action", values=("file_edit",)),
+        QueryBoolPredicate(
+            op="and",
+            children=(
+                QueryFieldPredicate(field="command", values=("ruff", "pytest")),
+                QueryFieldPredicate(field="output", values=("error", "failed")),
+            ),
+        ),
+        QueryFieldPredicate(field="path", values=("missing/path", "archive/query")),
+    )
+
+    assert matches_action_predicate_sequence(steps, session) is True

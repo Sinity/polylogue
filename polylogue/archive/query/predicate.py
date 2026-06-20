@@ -57,10 +57,43 @@ class QueryExistsPredicate:
 class QuerySequencePredicate:
     """Ordered action-sequence predicate over a session."""
 
-    action_terms: tuple[str, ...]
+    steps: tuple[QueryPredicate, ...] = ()
+    action_terms: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.steps:
+            object.__setattr__(self, "action_terms", _simple_sequence_action_terms(self.steps))
+        elif self.action_terms:
+            object.__setattr__(
+                self,
+                "steps",
+                tuple(QueryFieldPredicate(field="action", values=(term,), op="=") for term in self.action_terms),
+            )
 
     def to_payload(self) -> dict[str, object]:
-        return {"kind": "sequence", "unit": "action", "actions": list(self.action_terms)}
+        payload: dict[str, object] = {
+            "kind": "sequence",
+            "unit": "action",
+            "steps": [step.to_payload() for step in self.steps],
+        }
+        if self.action_terms:
+            payload["actions"] = list(self.action_terms)
+        return payload
+
+
+def _simple_sequence_action_terms(steps: tuple[QueryPredicate, ...]) -> tuple[str, ...]:
+    terms: list[str] = []
+    for step in steps:
+        if (
+            isinstance(step, QueryFieldPredicate)
+            and step.field == "action"
+            and step.op == "="
+            and len(step.values) == 1
+        ):
+            terms.append(step.values[0])
+            continue
+        return ()
+    return tuple(terms)
 
 
 @dataclass(frozen=True)
