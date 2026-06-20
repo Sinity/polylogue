@@ -19,6 +19,7 @@ from polylogue.archive.query.metadata import (
     structural_query_units,
     terminal_query_field_info,
     terminal_query_fields,
+    terminal_query_pipeline_stage_infos,
     terminal_query_sources,
     terminal_query_unit,
 )
@@ -33,6 +34,7 @@ QUERY_COMPLETION_KINDS: tuple[str, ...] = (
     "structural-field",
     "terminal-source",
     "terminal-field",
+    "pipeline-stage",
     "count-operator",
     "date-operator",
     "action",
@@ -269,6 +271,30 @@ def query_terminal_field_candidates(source: str, incomplete: str) -> list[QueryC
     return candidates
 
 
+def query_pipeline_stage_candidates(source: str, incomplete: str) -> list[QueryCompletionCandidate]:
+    """Return executable pipeline-stage candidates for a terminal query source."""
+
+    current = incomplete.strip().lower()
+    descriptor = query_unit_descriptor(source)
+    candidates: list[QueryCompletionCandidate] = []
+    for stage in terminal_query_pipeline_stage_infos(source):
+        if current and not stage.value.startswith(current):
+            continue
+        candidates.append(
+            QueryCompletionCandidate(
+                value=stage.value,
+                insert=stage.insert,
+                display=stage.insert,
+                kind="query-pipeline-stage",
+                group=f"{source} pipeline stages",
+                description=stage.description,
+                source="QUERY_UNIT_DESCRIPTORS",
+                payload_model=descriptor.payload_model if descriptor is not None else None,
+            )
+        )
+    return candidates
+
+
 def query_count_operator_candidates(field: str, incomplete: str) -> list[QueryCompletionCandidate]:
     """Return readable count operators accepted by the query grammar."""
 
@@ -385,6 +411,10 @@ def query_completion_candidates(
         if unit is None:
             raise QueryCompletionError("--unit is required for terminal-field completion")
         return query_terminal_field_candidates(unit, incomplete)
+    if kind == "pipeline-stage":
+        if unit is None:
+            raise QueryCompletionError("--unit is required for pipeline-stage completion")
+        return query_pipeline_stage_candidates(unit, incomplete)
     if kind == "count-operator":
         if field is None:
             raise QueryCompletionError("--field is required for count-operator completion")
@@ -427,6 +457,7 @@ __all__ = [
     "query_count_operator_candidates",
     "query_date_operator_candidates",
     "query_field_candidates",
+    "query_pipeline_stage_candidates",
     "query_structural_field_candidates",
     "query_structural_unit_candidates",
     "query_terminal_field_candidates",

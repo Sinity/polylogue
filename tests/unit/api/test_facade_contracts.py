@@ -897,6 +897,18 @@ async def test_query_completions_exposes_shared_completion_payload(tmp_path: Pat
         terminal_candidate_payloads = [cast(dict[str, object], candidate) for candidate in terminal_candidates]
         assert [candidate["value"] for candidate in terminal_candidate_payloads] == ["delivery_state"]
         assert terminal_candidate_payloads[0]["insert"] == "delivery_state:"
+
+        pipeline_payload = await archive.query_completions("pipeline-stage", unit="messages", incomplete="g")
+        assert pipeline_payload["kind"] == "pipeline-stage"
+        pipeline_candidates = pipeline_payload["candidates"]
+        assert isinstance(pipeline_candidates, list)
+        pipeline_candidate_payloads = [cast(dict[str, object], candidate) for candidate in pipeline_candidates]
+        assert "group by role" in {candidate["value"] for candidate in pipeline_candidate_payloads}
+        role_candidate = next(
+            candidate for candidate in pipeline_candidate_payloads if candidate["value"] == "group by role"
+        )
+        assert role_candidate["insert"] == "group by role"
+        assert role_candidate["payload_model"] == "MessageQueryRowPayload"
     finally:
         await archive.close()
 
