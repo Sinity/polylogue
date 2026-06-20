@@ -475,6 +475,36 @@ class TestBooleanQueryExpression:
             ),
         )
 
+    def test_terminal_source_time_comparison_is_parsed(self) -> None:
+        source = parse_unit_source_expression("messages where time >= 2026-01-02T00:00:00+00:00")
+
+        assert source is not None
+        assert source.unit == "message"
+        assert source.predicate == QueryFieldPredicate(
+            field="time",
+            values=("2026-01-02T00:00:00+00:00",),
+            op=">=",
+        )
+
+    def test_terminal_source_time_range_is_parsed(self) -> None:
+        source = parse_unit_source_expression(
+            "messages where time between 2026-01-01T00:00:00+00:00 and 2026-01-02T00:00:00+00:00"
+        )
+
+        assert source is not None
+        assert source.unit == "message"
+        assert source.predicate == QueryBoolPredicate(
+            op="and",
+            children=(
+                QueryFieldPredicate(field="time", values=("2026-01-01T00:00:00+00:00",), op=">="),
+                QueryFieldPredicate(field="time", values=("2026-01-02T00:00:00+00:00",), op="<="),
+            ),
+        )
+
+    def test_time_predicate_is_rejected_on_sessions(self) -> None:
+        with pytest.raises(ExpressionCompileError, match="not supported for session predicates"):
+            parse_expression_ast("sessions where time >= 2026-01-02T00:00:00+00:00")
+
     def test_pipeline_session_source_scopes_terminal_unit_query(self) -> None:
         source = parse_unit_source_expression(
             "sessions where repo:polylogue AND origin:claude-code-session | messages where role:assistant"
@@ -1005,6 +1035,55 @@ class TestBooleanQueryExpression:
             )
         ]
 
+    def test_terminal_message_source_filters_by_row_time(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "hit")
+            .provider("chatgpt")
+            .title("message time hit")
+            .add_message("m-old", role="assistant", text="old", timestamp="2026-01-01T00:00:00+00:00")
+            .add_message("m-new", role="assistant", text="new", timestamp="2026-01-02T00:00:00+00:00")
+            .save()
+        )
+
+        source = parse_unit_source_expression("messages where time >= 2026-01-02T00:00:00+00:00")
+        assert source is not None
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            rows = archive.query_messages(source.predicate, limit=100)
+
+        assert [(row.message_id, row.text) for row in rows] == [("chatgpt-export:ext-hit:m-new", "new")]
+
+    def test_exists_message_predicate_filters_by_row_time(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "hit")
+            .provider("chatgpt")
+            .title("message time hit")
+            .add_message("m-old", role="assistant", text="old", timestamp="2026-01-01T00:00:00+00:00")
+            .add_message("m-new", role="assistant", text="new", timestamp="2026-01-02T00:00:00+00:00")
+            .save()
+        )
+        (
+            SessionBuilder(index_db, "miss")
+            .provider("chatgpt")
+            .title("message time miss")
+            .add_message("m-old", role="assistant", text="old", timestamp="2026-01-01T00:00:00+00:00")
+            .save()
+        )
+
+        spec = compile_expression("exists message(time >= 2026-01-02T00:00:00+00:00)")
+        assert spec.boolean_predicate is not None
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            rows = archive.list_summaries(limit=100, boolean_predicate=spec.boolean_predicate)
+
+        assert [row.session_id for row in rows] == ["chatgpt-export:ext-hit"]
+
     def test_session_scoped_message_predicate_executes_against_archive(
         self,
         workspace_env: dict[str, Path],
@@ -1489,6 +1568,57 @@ class TestBooleanQueryExpression:
                 "file_edit",
                 "polylogue/archive/query/expression.py",
             )
+        ]
+
+    def test_terminal_action_source_filters_by_row_time(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "hit")
+            .provider("claude-code")
+            .title("action time hit")
+            .add_message(
+                "m-old",
+                role="assistant",
+                text="old edit",
+                timestamp="2026-01-01T00:00:00+00:00",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Edit",
+                        "tool_id": "tool-old",
+                        "input": {"file_path": "polylogue/archive/old.py"},
+                        "semantic_type": "file_edit",
+                    }
+                ],
+            )
+            .add_message(
+                "m-new",
+                role="assistant",
+                text="new edit",
+                timestamp="2026-01-02T00:00:00+00:00",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Edit",
+                        "tool_id": "tool-new",
+                        "input": {"file_path": "polylogue/archive/new.py"},
+                        "semantic_type": "file_edit",
+                    }
+                ],
+            )
+            .save()
+        )
+
+        source = parse_unit_source_expression("actions where time >= 2026-01-02T00:00:00+00:00")
+        assert source is not None
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            rows = archive.query_actions(source.predicate, limit=100)
+
+        assert [(row.message_id, row.tool_path) for row in rows] == [
+            ("claude-code-session:ext-hit:m-new", "polylogue/archive/new.py")
         ]
 
     def test_terminal_action_source_accepts_session_scoped_predicate(

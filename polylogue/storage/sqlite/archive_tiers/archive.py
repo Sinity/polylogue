@@ -4766,6 +4766,37 @@ def _count_predicate_clause(column: str, predicate: QueryFieldPredicate) -> tupl
     return f"{column} = ?", [value]
 
 
+def _time_predicate_clause(expression: str, predicate: QueryFieldPredicate) -> tuple[str, list[object]]:
+    if not predicate.values:
+        return "", []
+    value_ms = _date_ms(predicate.values[-1], field="time")
+    if predicate.op == ">=":
+        return f"{expression} >= ?", [value_ms]
+    if predicate.op == "<=":
+        return f"{expression} <= ?", [value_ms]
+    raise ValueError("unsupported Boolean query operator for time")
+
+
+def _query_unit_time_expression(unit: str, row_alias: str) -> str:
+    if unit == "message":
+        return (
+            f"COALESCE({row_alias}.occurred_at_ms, "
+            f"(SELECT time_sessions.sort_key_ms FROM sessions time_sessions "
+            f"WHERE time_sessions.session_id = {row_alias}.session_id), 0)"
+        )
+    if unit in {"action", "block"}:
+        return (
+            f"(SELECT COALESCE(time_messages.occurred_at_ms, time_sessions.sort_key_ms, 0) "
+            f"FROM messages time_messages "
+            f"JOIN sessions time_sessions ON time_sessions.session_id = time_messages.session_id "
+            f"WHERE time_messages.message_id = {row_alias}.message_id "
+            f"LIMIT 1)"
+        )
+    if unit == "assertion":
+        return f"COALESCE({row_alias}.updated_at_ms, {row_alias}.created_at_ms, 0)"
+    raise ValueError(f"unsupported time predicate unit: {unit}")
+
+
 def _like_clause(
     expression: str,
     values: tuple[str, ...],
@@ -4788,6 +4819,8 @@ def _message_field_predicate_clause(message_alias: str, predicate: QueryFieldPre
         return _in_or_equals_clause(f"{message_alias}.message_type", predicate.values, lower=True)
     if field == "words":
         return _count_predicate_clause(f"{message_alias}.word_count", predicate)
+    if field == "time":
+        return _time_predicate_clause(_query_unit_time_expression("message", message_alias), predicate)
     if field in {"text", "command", "path", "output", "tool", "action"}:
         action_clause = ""
         params: list[object] = []
@@ -4846,6 +4879,8 @@ def _action_field_predicate_clause(action_alias: str, predicate: QueryFieldPredi
         return _in_or_equals_clause(f"{action_alias}.tool_name", predicate.values, lower=True)
     if field in {"action", "type"}:
         return _in_or_equals_clause(f"{action_alias}.semantic_type", predicate.values, lower=True)
+    if field == "time":
+        return _time_predicate_clause(_query_unit_time_expression("action", action_alias), predicate)
     if field == "command":
         return _like_clause(f"COALESCE({action_alias}.tool_command, '')", predicate.values)
     if field == "path":
@@ -4871,6 +4906,8 @@ def _block_field_predicate_clause(block_alias: str, predicate: QueryFieldPredica
     field = predicate.field
     if field == "type":
         return _in_or_equals_clause(f"{block_alias}.block_type", predicate.values, lower=True)
+    if field == "time":
+        return _time_predicate_clause(_query_unit_time_expression("block", block_alias), predicate)
     if field == "text":
         return _like_clause(f"COALESCE({block_alias}.search_text, '')", predicate.values)
     if field == "tool":
@@ -4889,6 +4926,8 @@ def _block_field_predicate_clause(block_alias: str, predicate: QueryFieldPredica
 
 def _assertion_field_predicate_clause(assertion_alias: str, predicate: QueryFieldPredicate) -> tuple[str, list[object]]:
     field = predicate.field
+    if field == "time":
+        return _time_predicate_clause(_query_unit_time_expression("assertion", assertion_alias), predicate)
     if field == "status":
         clause, params = _in_or_equals_clause(f"COALESCE({assertion_alias}.status, ?)", predicate.values, lower=True)
         return clause, [ASSERTION_DEFAULT_STATUS, *params]
