@@ -30,16 +30,69 @@ if TYPE_CHECKING:
     from polylogue.cli.root_request import RootModeRequest
 
 
+_MESSAGE_OPTIONS = frozenset(
+    {
+        "limit",
+        "message_role",
+        "message_type",
+        "no_code_blocks",
+        "no_file_reads",
+        "no_tool_calls",
+        "no_tool_outputs",
+        "offset",
+        "prose_only",
+    }
+)
+_CONTEXT_PACK_OPTIONS = frozenset(
+    {
+        "max_messages",
+        "max_sessions",
+        "no_redact",
+        "pack_origin",
+        "pack_query",
+        "project_path",
+        "project_repo",
+        "since",
+        "until",
+    }
+)
+_CORRELATION_OPTIONS = frozenset({"confidence_threshold", "github_api", "otlp", "repo_path", "since_hours"})
+
+
 READ_VIEW_HANDLERS: dict[str, ReadViewHandler] = {
     "summary": ReadViewHandler("summary", "optional", run_read_summary_or_transcript, default_format="markdown"),
     "transcript": ReadViewHandler("transcript", "optional", run_read_summary_or_transcript, default_format="markdown"),
-    "messages": ReadViewHandler("messages", "required", run_read_messages, default_format="text"),
-    "raw": ReadViewHandler("raw", "required", run_read_raw, default_format="json"),
-    "context": ReadViewHandler("context", "required", run_read_context, default_format="json"),
-    "context-pack": ReadViewHandler("context-pack", "none", run_read_context_pack, default_format="markdown"),
-    "recovery": ReadViewHandler("recovery", "required", run_read_recovery, default_format="markdown"),
-    "neighbors": ReadViewHandler("neighbors", "query_or_session", run_read_neighbors, default_format="text"),
-    "correlation": ReadViewHandler("correlation", "required", run_read_correlation, default_format="text"),
+    "messages": ReadViewHandler(
+        "messages", "required", run_read_messages, default_format="text", accepted_options=_MESSAGE_OPTIONS
+    ),
+    "raw": ReadViewHandler("raw", "required", run_read_raw, default_format="json", accepted_options=_MESSAGE_OPTIONS),
+    "context": ReadViewHandler(
+        "context", "required", run_read_context, default_format="json", accepted_options=frozenset({"related_limit"})
+    ),
+    "context-pack": ReadViewHandler(
+        "context-pack",
+        "none",
+        run_read_context_pack,
+        default_format="markdown",
+        accepted_options=_CONTEXT_PACK_OPTIONS,
+    ),
+    "recovery": ReadViewHandler(
+        "recovery",
+        "required",
+        run_read_recovery,
+        default_format="markdown",
+        accepted_options=frozenset({"recovery_report"}),
+    ),
+    "neighbors": ReadViewHandler(
+        "neighbors",
+        "query_or_session",
+        run_read_neighbors,
+        default_format="text",
+        accepted_options=frozenset({"limit", "window_hours"}),
+    ),
+    "correlation": ReadViewHandler(
+        "correlation", "required", run_read_correlation, default_format="text", accepted_options=_CORRELATION_OPTIONS
+    ),
 }
 
 

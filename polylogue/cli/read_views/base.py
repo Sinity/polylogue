@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 
 
 ReadViewSessionPolicy = Literal["optional", "required", "query_or_session", "none"]
+ReadViewOptionName = str
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +98,7 @@ class ReadViewInvocation:
     recovery: ReadViewRecoveryOptions = ReadViewRecoveryOptions()
     neighbors: ReadViewNeighborOptions = ReadViewNeighborOptions()
     correlation: ReadViewCorrelationOptions = ReadViewCorrelationOptions()
+    explicit_options: frozenset[ReadViewOptionName] = frozenset()
 
 
 ReadViewHandlerFunc = Callable[[AppEnv, "RootModeRequest", ReadViewInvocation], None]
@@ -110,6 +112,7 @@ class ReadViewHandler:
     session_policy: ReadViewSessionPolicy
     handler: ReadViewHandlerFunc
     default_format: str | None = None
+    accepted_options: frozenset[ReadViewOptionName] = frozenset()
 
     def validate(self, invocation: ReadViewInvocation, request: RootModeRequest) -> None:
         """Validate cross-view selection rules before executing the handler."""
@@ -132,6 +135,10 @@ class ReadViewHandler:
                     f"read --view {self.view_id} does not support --format {invocation.output_format}. "
                     f"Supported formats: {supported}."
                 )
+        unsupported_options = sorted(invocation.explicit_options - self.accepted_options)
+        if unsupported_options:
+            options = ", ".join(f"--{option.replace('_', '-')}" for option in unsupported_options)
+            raise click.UsageError(f"read --view {self.view_id} does not use {options}.")
 
 
 def deliver_content(env: AppEnv, content: str, *, destination: str, out_path: str | None) -> None:
@@ -165,6 +172,7 @@ __all__ = [
     "ReadViewHandler",
     "ReadViewHandlerFunc",
     "ReadViewInvocation",
+    "ReadViewOptionName",
     "ReadViewMessageOptions",
     "ReadViewNeighborOptions",
     "ReadViewRecoveryOptions",
