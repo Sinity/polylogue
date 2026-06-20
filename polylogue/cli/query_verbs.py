@@ -30,6 +30,7 @@ from polylogue.cli.read_view_handlers import (
     ReadViewInvocation,
     ReadViewMessageOptions,
     ReadViewNeighborOptions,
+    ReadViewOptions,
     ReadViewRecoveryOptions,
     read_view_option_names,
     run_bulk_export_view,
@@ -87,6 +88,77 @@ def _explicit_read_view_options(ctx: click.Context) -> frozenset[str]:
         for name in read_view_option_names()
         if (source := ctx.get_parameter_source(name)) is not None and source.name == "COMMANDLINE"
     )
+
+
+def _read_view_options_for_view(
+    view: str,
+    *,
+    limit: int | None,
+    offset: int,
+    message_role: tuple[str, ...],
+    message_type: str | None,
+    no_code_blocks: bool,
+    no_tool_calls: bool,
+    no_tool_outputs: bool,
+    no_file_reads: bool,
+    prose_only: bool,
+    related_limit: int,
+    project_path: str | None,
+    project_repo: str | None,
+    since: str | None,
+    until: str | None,
+    pack_origin: str | None,
+    pack_query: str | None,
+    max_sessions: int,
+    max_messages: int,
+    no_redact: bool,
+    recovery_report: str | None,
+    window_hours: int,
+    repo_path: str | None,
+    since_hours: int,
+    confidence_threshold: float,
+    github_api: bool,
+    otlp: bool,
+) -> ReadViewOptions | None:
+    if view in {"messages", "raw"}:
+        return ReadViewMessageOptions(
+            limit=limit,
+            offset=offset,
+            role=message_role,
+            message_type=message_type,
+            no_code_blocks=no_code_blocks,
+            no_tool_calls=no_tool_calls,
+            no_tool_outputs=no_tool_outputs,
+            no_file_reads=no_file_reads,
+            prose_only=prose_only,
+        )
+    if view == "context":
+        return ReadViewContextOptions(related_limit=related_limit)
+    if view == "context-pack":
+        return ReadViewContextPackOptions(
+            project_path=project_path,
+            project_repo=project_repo,
+            since=since,
+            until=until,
+            origin=pack_origin,
+            query=pack_query,
+            max_sessions=max_sessions,
+            max_messages=max_messages,
+            no_redact=no_redact,
+        )
+    if view == "recovery":
+        return ReadViewRecoveryOptions(report=recovery_report)
+    if view == "neighbors":
+        return ReadViewNeighborOptions(limit=limit, window_hours=window_hours)
+    if view == "correlation":
+        return ReadViewCorrelationOptions(
+            repo_path=repo_path,
+            since_hours=since_hours,
+            confidence_threshold=confidence_threshold,
+            github_api=github_api,
+            otlp=otlp,
+        )
+    return None
 
 
 _CONTINUE_CANDIDATE_DEFAULT_LIMIT = 10
@@ -474,32 +546,29 @@ def read_verb(
             output_format=effective_format,
             destination=destination,
             out_path=out_path,
-            messages=ReadViewMessageOptions(
+            options=_read_view_options_for_view(
+                view,
                 limit=limit,
                 offset=offset,
-                role=message_role,
+                message_role=message_role,
                 message_type=message_type,
                 no_code_blocks=no_code_blocks,
                 no_tool_calls=no_tool_calls,
                 no_tool_outputs=no_tool_outputs,
                 no_file_reads=no_file_reads,
                 prose_only=prose_only,
-            ),
-            context=ReadViewContextOptions(related_limit=related_limit),
-            context_pack=ReadViewContextPackOptions(
+                related_limit=related_limit,
                 project_path=project_path,
                 project_repo=project_repo,
                 since=since,
                 until=until,
-                origin=pack_origin,
-                query=pack_query,
+                pack_origin=pack_origin,
+                pack_query=pack_query,
                 max_sessions=max_sessions,
                 max_messages=max_messages,
                 no_redact=no_redact,
-            ),
-            recovery=ReadViewRecoveryOptions(report=recovery_report),
-            neighbors=ReadViewNeighborOptions(limit=limit, window_hours=window_hours),
-            correlation=ReadViewCorrelationOptions(
+                recovery_report=recovery_report,
+                window_hours=window_hours,
                 repo_path=repo_path,
                 since_hours=since_hours,
                 confidence_threshold=confidence_threshold,
@@ -631,7 +700,7 @@ def continue_verb(
             output_format=effective_format,
             destination=destination,
             out_path=out_path,
-            recovery=ReadViewRecoveryOptions(report="continue"),
+            options=ReadViewRecoveryOptions(report="continue"),
         ),
     )
 

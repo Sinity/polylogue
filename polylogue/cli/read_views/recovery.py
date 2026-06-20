@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import cast
 
-from polylogue.cli.read_views.base import ReadViewInvocation, deliver_content
+from polylogue.cli.read_views.base import ReadViewInvocation, ReadViewRecoveryOptions, deliver_content
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 
@@ -20,7 +20,7 @@ def run_read_recovery(env: AppEnv, request: RootModeRequest, invocation: ReadVie
 
     del request
     assert invocation.session_id is not None
-    options = invocation.recovery
+    options = cast(ReadViewRecoveryOptions, invocation.options or ReadViewRecoveryOptions())
     if options.report is not None:
         if options.report == "work-packet" and invocation.output_format == "json":
             packet = run_coroutine_sync(env.polylogue.recovery_work_packet(invocation.session_id))

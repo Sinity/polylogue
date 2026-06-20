@@ -60,7 +60,7 @@ def test_read_view_neighbors_emits_json_payload(capsys: pytest.CaptureFixture[st
             output_format="json",
             destination="stdout",
             out_path=None,
-            neighbors=ReadViewNeighborOptions(limit=10, window_hours=24),
+            options=ReadViewNeighborOptions(limit=10, window_hours=24),
         ),
     )
 
@@ -91,7 +91,7 @@ def test_read_view_neighbors_plain_renders_reasons(capsys: pytest.CaptureFixture
             output_format=None,
             destination="stdout",
             out_path=None,
-            neighbors=ReadViewNeighborOptions(limit=10, window_hours=24),
+            options=ReadViewNeighborOptions(limit=10, window_hours=24),
         ),
     )
 
@@ -119,7 +119,7 @@ def test_read_view_neighbors_surfaces_discovery_error(capsys: pytest.CaptureFixt
                 output_format=None,
                 destination="stdout",
                 out_path=None,
-                neighbors=ReadViewNeighborOptions(limit=10, window_hours=24),
+                options=ReadViewNeighborOptions(limit=10, window_hours=24),
             ),
         )
 
@@ -140,7 +140,7 @@ def test_read_view_neighbors_empty_renders_message(capsys: pytest.CaptureFixture
             output_format=None,
             destination="stdout",
             out_path=None,
-            neighbors=ReadViewNeighborOptions(limit=10, window_hours=24),
+            options=ReadViewNeighborOptions(limit=10, window_hours=24),
         ),
     )
 
@@ -161,7 +161,7 @@ def test_read_view_neighbors_requires_a_seed(capsys: pytest.CaptureFixture[str])
                 output_format=None,
                 destination="stdout",
                 out_path=None,
-                neighbors=ReadViewNeighborOptions(limit=10, window_hours=24),
+                options=ReadViewNeighborOptions(limit=10, window_hours=24),
             ),
         )
 

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from polylogue.cli.read_views.base import ReadViewInvocation
+from typing import cast
+
+from polylogue.cli.read_views.base import ReadViewCorrelationOptions, ReadViewInvocation
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 
@@ -14,7 +16,7 @@ def run_read_correlation(env: AppEnv, request: RootModeRequest, invocation: Read
 
     del request
     assert invocation.session_id is not None
-    options = invocation.correlation
+    options = cast(ReadViewCorrelationOptions, invocation.options or ReadViewCorrelationOptions())
     run_correlation_view(
         env,
         session_id=invocation.session_id,

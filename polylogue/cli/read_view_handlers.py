@@ -15,6 +15,7 @@ from polylogue.cli.read_views.base import (
     ReadViewInvocation,
     ReadViewMessageOptions,
     ReadViewNeighborOptions,
+    ReadViewOptions,
     ReadViewRecoveryOptions,
 )
 from polylogue.cli.read_views.bulk import run_bulk_export_view
@@ -146,6 +147,7 @@ __all__ = [
     "ReadViewInvocation",
     "ReadViewMessageOptions",
     "ReadViewNeighborOptions",
+    "ReadViewOptions",
     "ReadViewRecoveryOptions",
     "read_view_handler_ids",
     "read_view_option_names",

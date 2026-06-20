@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import io
+from typing import cast
 
 import click
 
-from polylogue.cli.read_views.base import ReadViewInvocation, deliver_content
+from polylogue.cli.read_views.base import ReadViewInvocation, ReadViewMessageOptions, deliver_content
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 
@@ -17,7 +18,7 @@ def run_read_messages(env: AppEnv, request: RootModeRequest, invocation: ReadVie
     from polylogue.cli.messages import run_messages
 
     assert invocation.session_id is not None
-    options = invocation.messages
+    options = cast(ReadViewMessageOptions, invocation.options or ReadViewMessageOptions())
     limit = options.limit if options.limit is not None else 50
 
     if invocation.destination in ("file", "clipboard"):
@@ -72,7 +73,7 @@ def run_read_raw(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvo
     from polylogue.cli.messages import run_raw
 
     assert invocation.session_id is not None
-    options = invocation.messages
+    options = cast(ReadViewMessageOptions, invocation.options or ReadViewMessageOptions())
     limit = options.limit if options.limit is not None else 50
     output_format = invocation.output_format or "json"
 
