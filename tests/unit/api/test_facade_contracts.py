@@ -994,8 +994,10 @@ async def test_compile_context_builds_recovery_segments_from_refs_and_query(tmp_
         assert [segment.payload_kind for segment in image.segments] == [
             "recovery_digest",
             "work_packet",
+            "messages",
             "recovery_digest",
             "work_packet",
+            "messages",
         ]
         assert {ref.object_id for ref in image.object_refs if ref.kind == "session"} == {
             "claude-ai-export:conv-alpha",
@@ -1007,9 +1009,12 @@ async def test_compile_context_builds_recovery_segments_from_refs_and_query(tmp_
         }
         assert image.token_estimate > 0
         unsupported = [item for item in image.omitted if item.reason == "unsupported"]
-        assert len(unsupported) == 3
+        assert len(unsupported) == 1
         assert unsupported[0].ref == "assertion:claim-1"
-        assert {item.view for item in unsupported[1:]} == {"messages"}
+        message_segments = [segment for segment in image.segments if segment.payload_kind == "messages"]
+        assert len(message_segments) == 2
+        assert "user: alpha body" in (message_segments[0].markdown or "")
+        assert "user: beta body" in (message_segments[1].markdown or "")
     finally:
         await archive.close()
 

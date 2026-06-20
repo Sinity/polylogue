@@ -244,6 +244,33 @@ def context_image_from_recovery(compilation: RecoveryContextCompilation) -> Cont
     )
 
 
+def compile_messages_context_segment(
+    *,
+    session_id: str,
+    title: str | None,
+    messages: Sequence[tuple[str, str]],
+    evidence_refs: Sequence[EvidenceRef],
+) -> ContextSegment:
+    """Compile a normalized message transcript into a context segment."""
+
+    lines = [f"# Messages: {title or session_id}", ""]
+    for role, text in messages:
+        lines.append(f"{role}: {text}")
+        lines.append("")
+    markdown = "\n".join(lines).rstrip() + "\n"
+    return ContextSegment(
+        segment_id=f"read-view:{session_id}:messages",
+        kind="read_view",
+        title="Messages",
+        markdown=markdown,
+        payload_kind="messages",
+        object_refs=(ObjectRef(kind="session", object_id=session_id),),
+        evidence_refs=tuple(evidence_refs),
+        token_estimate=_estimate_tokens(markdown),
+        lossiness="normalized_message_text",
+    )
+
+
 def context_snapshot_record_from_image(
     image: ContextImage,
     *,
@@ -364,6 +391,7 @@ __all__ = [
     "ContextSpec",
     "RecoveryContextCompilation",
     "RecoveryContextKind",
+    "compile_messages_context_segment",
     "compile_recovery_context",
     "context_image_from_recovery",
     "context_snapshot_record_from_image",

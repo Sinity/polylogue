@@ -1534,7 +1534,12 @@ class PolylogueArchiveMixin:
         reuses existing recovery/read primitives and records unsupported or
         missing inputs as omissions instead of creating a parallel memory store.
         """
-        from polylogue.context.compiler import ContextImage, ContextOmission, ContextSegment
+        from polylogue.context.compiler import (
+            ContextImage,
+            ContextOmission,
+            ContextSegment,
+            compile_messages_context_segment,
+        )
 
         segments: list[ContextSegment] = []
         omitted: list[ContextOmission] = []
@@ -1586,14 +1591,52 @@ class PolylogueArchiveMixin:
                     )
                 )
                 continue
+            session = await self.get_session(session_id)
             for view in requested_views:
+                if view == "messages":
+                    if session is None:
+                        omitted.append(
+                            ContextOmission(
+                                ref=f"session:{session_id}",
+                                view=view,
+                                reason="not_found",
+                                detail="session seed did not resolve to messages",
+                            )
+                        )
+                        continue
+                    segment = compile_messages_context_segment(
+                        session_id=digest.session_id,
+                        title=digest.title,
+                        messages=tuple(
+                            (
+                                str(getattr(message.role, "value", message.role)),
+                                message.text or "",
+                            )
+                            for message in session.messages
+                            if message.text
+                        ),
+                        evidence_refs=tuple(ref.to_evidence_ref() for ref in digest.raw_refs),
+                    )
+                    if token_budget is not None and token_total + segment.token_estimate > token_budget:
+                        omitted.append(
+                            ContextOmission(
+                                ref=f"session:{session_id}",
+                                view=view,
+                                reason="budget",
+                                detail="segment exceeded the requested context token budget",
+                            )
+                        )
+                        continue
+                    token_total += segment.token_estimate
+                    segments.append(segment)
+                    continue
                 if view not in {"recovery", "work-packet"}:
                     omitted.append(
                         ContextOmission(
                             ref=f"session:{session_id}",
                             view=view,
                             reason="unsupported",
-                            detail="compile_context currently supports recovery and work-packet views",
+                            detail="compile_context currently supports recovery, work-packet, and messages views",
                         )
                     )
                     continue
