@@ -388,6 +388,8 @@ through the same typed AST and query planner:</p>
 <pre><code class="language-text">compact-query      ::= compact-clause*
 boolean-query      ::= [&quot;sessions&quot; &quot;where&quot;] predicate
 unit-query         ::= (&quot;messages&quot; | &quot;actions&quot; | &quot;blocks&quot; | &quot;assertions&quot; | &quot;runs&quot; | &quot;observed-events&quot; | &quot;context-snapshots&quot;) &quot;where&quot; predicate
+pipeline-query     ::= unit-query (&quot;|&quot; pipeline-stage)+
+                     | &quot;sessions&quot; &quot;where&quot; predicate &quot;|&quot; unit-query (&quot;|&quot; pipeline-stage)*
 
 compact-clause     ::= field-clause
                      | quoted-text | bare-text
@@ -407,6 +409,9 @@ predicate          ::= predicate &quot;OR&quot; predicate
                      | &quot;seq&quot; &quot;(&quot; sequence-step &quot;-&gt;&quot; sequence-step+ &quot;)&quot;
 
 structural-unit    ::= &quot;message&quot; | &quot;action&quot; | &quot;block&quot; | &quot;assertion&quot;
+pipeline-stage     ::= &quot;sort&quot; &quot;by&quot; &quot;time&quot; [&quot;asc&quot; | &quot;desc&quot;]
+                     | &quot;limit&quot; integer
+                     | &quot;offset&quot; integer
 </code></pre>
 <p>Compact queries select sessions:</p>
 <pre><code class="language-bash">polylogue repo:polylogue tag:active -&quot;stale plan&quot; &quot;query envelope&quot;
@@ -448,6 +453,12 @@ of expanding caller/API caps, and query-string offsets are added to the caller
 offset. Runtime-transform terminal rows (<code>runs</code>, <code>observed-events</code>,
 <code>context-snapshots</code>) reject sort stages until they have streaming lowerers;
 they must not collect every projected row in memory merely to sort a page.</p>
+<p><code>--explain --format json</code> reports terminal pipelines as a <code>unit_source</code> AST with
+ordered <code>pipeline_stages</code>. Session-scoped pipelines include a <code>session_scope</code>
+stage carrying the original session predicate, followed by any terminal
+<code>sort</code>/<code>limit</code>/<code>offset</code> stages. Consumers should use that stage list rather than
+inferring pipeline behavior from incidental <code>limit</code>, <code>offset</code>, or <code>sort</code>
+fields.</p>
 <p>Unsupported forms raise typed <code>ExpressionCompileError</code>s and must not broaden
 into looser full-text search. In particular, reserved unit prefixes such as
 <code>messages where</code> are errors when malformed; they are not treated as ordinary
