@@ -261,6 +261,29 @@ def test_archive_tiers_archive_facade_sets_user_metadata(tmp_path: Path) -> None
     assert status_assertion.status == "deleted"
 
 
+def test_archive_tiers_archive_facade_preserves_metadata_json_type_changes(tmp_path: Path) -> None:
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="codex-meta-type-change",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="metadata type target")],
+            )
+        ],
+    )
+    root = tmp_path / "archive"
+
+    with ArchiveStore(root) as facade:
+        session_id = facade.write_parsed(session)
+        assert facade.set_user_metadata((session_id,), (("ambiguous", True),)) == 1
+        assert facade.set_user_metadata((session_id,), (("ambiguous", 1),)) == 1
+        assert facade.read_user_metadata(session_id) == {"ambiguous": 1}
+        assert facade.set_user_metadata((session_id,), (("ambiguous", 1.0),)) == 1
+        assert facade.read_user_metadata(session_id) == {"ambiguous": 1.0}
+
+
 def test_archive_tiers_archive_facade_lists_and_searches_session_summaries(tmp_path: Path) -> None:
     first = ParsedSession(
         source_name=Provider.CODEX,

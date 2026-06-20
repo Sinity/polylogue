@@ -1703,7 +1703,11 @@ class ArchiveStore:
                             user_conn,
                             assertion_id_for_session_metadata(session_id, normalized_key),
                         )
-                        if existing is not None and existing.status != "deleted" and existing.value == value:
+                        if (
+                            existing is not None
+                            and existing.status != "deleted"
+                            and _canonical_json_text(existing.value) == _canonical_json_text(value)
+                        ):
                             continue
                         upsert_session_metadata_assertion(
                             user_conn,
@@ -4577,6 +4581,10 @@ def _json_value(value: object, *, default: JSONValue) -> JSONValue:
         return require_json_value(decoded)
     except TypeError:
         return default
+
+
+def _canonical_json_text(value: object) -> str:
+    return json.dumps(require_json_value(value), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def _json_str_tuple(value: object) -> tuple[str, ...]:
