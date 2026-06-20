@@ -431,8 +431,8 @@ subcommand group.</p>
 </tr>
 <tr>
 <td>Archive Debt</td>
-<td><code>insights debt</code></td>
-<td>Maintenance readiness and known debt</td>
+<td><code>ops debt list</code></td>
+<td>Unified archive/operator debt across tiers, assertions, convergence, embedding, and FTS readiness</td>
 </tr>
 </tbody>
 </table>
@@ -623,12 +623,18 @@ polylogue ops insights tags --query polylogue
 <p>Shows tag names with session counts, explicit count (user-assigned), and
 auto count (derived from session content).</p>
 <h2>Archive Debt</h2>
-<pre><code class="language-bash">polylogue ops insights debt
-polylogue ops insights debt --category schema
-polylogue ops insights debt --only-actionable
+<pre><code class="language-bash">polylogue ops debt list
+polylogue ops debt list --kind embedding --only-actionable
+polylogue ops debt list --format json
 </code></pre>
-<p>Tracks maintenance readiness: schema version gaps, rebuild debt, stale
-indexes, and unprocessed raw records.</p>
+<p><code>polylogue ops debt list</code> is the canonical debt surface. It returns the shared
+<code>ArchiveDebtListPayload</code> used by CLI JSON, the Python API, MCP, and the daemon
+<code>/api/archive-debt</code> route. Rows carry refs, severity, status, caveats, and
+operator actions when a direct action exists.</p>
+<p>The older registry-backed archive-debt insight remains an implementation detail
+for insight/read-model readiness. User-facing archive debt should route through
+the unified <code>ops debt</code> surface so operators do not have to compare multiple debt
+vocabularies.</p>
 
 <hr style="margin: 3rem 0 1rem; border-color: var(--border);">
 <nav style="display: flex; justify-content: space-between; font-size: 0.9rem;">
