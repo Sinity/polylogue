@@ -261,7 +261,12 @@ async def test_tags_and_metadata_are_assertion_backed_user_metadata(
     assert metadata_result.outcome == "set"
     with sqlite3.connect(archive_root / "user.db") as conn:
         assertion_rows = conn.execute(
-            "SELECT kind, target_ref, key, status, value_json FROM assertions WHERE kind IN ('tag', 'metadata')"
+            """
+            SELECT kind, target_ref, key, status, value_json
+            FROM assertions
+            WHERE kind IN ('tag', 'metadata') AND target_ref = ?
+            """,
+            (f"session:{session_id}",),
         ).fetchall()
 
     rows_by_kind = {row[0]: row for row in assertion_rows}

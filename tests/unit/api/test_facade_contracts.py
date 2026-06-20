@@ -3021,7 +3021,7 @@ async def test_archive_tiers_api_delete_uses_index_tier_and_keeps_user_overlay(t
             session_count = index_conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
         with sqlite3.connect(tmp_path / "user.db") as user_conn:
             tag_count = user_conn.execute(
-                "SELECT COUNT(*) FROM assertions WHERE kind = 'tag' AND status = 'active'"
+                "SELECT COUNT(*) FROM assertions WHERE kind = 'tag' AND COALESCE(status, '') IN ('', 'active')"
             ).fetchone()[0]
         assert session_count == 0
         assert tag_count == 1
@@ -3634,6 +3634,7 @@ async def test_archive_tiers_api_archive_debt_reads_archive_consistency(tmp_path
                 kind=AssertionKind.TAG,
                 key="orphan",
                 value={"tag_source": "user"},
+                status="active",
             )
             conn.commit()
 

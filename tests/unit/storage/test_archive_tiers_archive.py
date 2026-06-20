@@ -157,6 +157,7 @@ def test_archive_tiers_archive_facade_adds_user_tags(tmp_path: Path) -> None:
 
     user_conn = sqlite3.connect(root / "user.db")
     user_conn.row_factory = sqlite3.Row
+    user_conn.row_factory = sqlite3.Row
     try:
         review_assertion = read_assertion_envelope(
             user_conn,
@@ -201,6 +202,7 @@ def test_archive_tiers_archive_facade_deletes_archive_sessions_but_keeps_user_ta
         remaining = facade.count_sessions()
 
     user_conn = sqlite3.connect(root / "user.db")
+    user_conn.row_factory = sqlite3.Row
     try:
         assertion = read_assertion_envelope(
             user_conn,

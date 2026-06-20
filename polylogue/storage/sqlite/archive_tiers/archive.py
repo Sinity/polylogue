@@ -5899,8 +5899,7 @@ def _archive_user_overlay_debt(conn: sqlite3.Connection, user_db_path: Path) -> 
     try:
         checks = (
             "SELECT COUNT(*) FROM user_debt.assertions u "
-            "WHERE u.kind IN ('mark', 'annotation', 'note', 'suppression', 'tag', 'metadata') "
-            "AND u.target_ref LIKE 'session:%' "
+            "WHERE u.target_ref LIKE 'session:%' "
             "AND COALESCE(u.status, '') != 'deleted' "
             "AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.session_id = substr(u.target_ref, 9))",
             "SELECT COUNT(*) FROM user_debt.assertions u "
