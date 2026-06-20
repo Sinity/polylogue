@@ -1580,12 +1580,23 @@ class TestReaderViewProfiles:
             )
 
         assert messages["view"] == "messages"
+        assert messages["target_refs"] == [f"session:{C1}"]
+        assert messages["lossiness"] == "filtered"
+        assert messages["evidence_policy"] == "optional"
+        assert "projection flags" in cast(str, messages["privacy_policy"])
+        message_actions = cast(dict[str, dict[str, object]], messages["actions"])
+        assert message_actions["open"]["enabled"] is True
         message_payload = cast(dict[str, object], messages["payload"])
         assert message_payload["total"] == 1
         assert recovery["view"] == "recovery"
+        assert recovery["lossiness"] == "derived"
+        assert recovery["evidence_policy"] == "required"
         recovery_payload = cast(dict[str, object], recovery["payload"])
         assert recovery_payload["report"] == "work-packet"
         assert raw["view"] == "raw"
+        assert raw["target_refs"] == [f"session:{C1}"]
+        assert raw["lossiness"] == "raw"
+        assert "raw provider data" in cast(str, raw["privacy_policy"])
         raw_payload = cast(dict[str, object], raw["payload"])
         assert raw_payload["id"] == C1
         assert context["view"] == "context"

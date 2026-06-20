@@ -7,7 +7,7 @@ import contextlib
 import functools
 import json
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from http import HTTPStatus
@@ -145,6 +145,39 @@ def _read_view_http_capability_payloads() -> dict[str, JSONDocument]:
     """Return daemon execution capabilities keyed by read-view id."""
 
     return {view_id: capability.to_payload() for view_id, capability in _SESSION_READ_VIEW_HTTP_CAPABILITIES.items()}
+
+
+def _read_view_payload_field_values(payload: object, field_name: str, *, max_depth: int = 4) -> tuple[str, ...]:
+    """Collect common read-view metadata fields from a profile-specific payload."""
+
+    seen: set[str] = set()
+    values: list[str] = []
+
+    def add(value: object) -> None:
+        if isinstance(value, str) and value not in seen:
+            seen.add(value)
+            values.append(value)
+
+    def walk(value: object, depth: int) -> None:
+        if depth < 0:
+            return
+        if hasattr(value, "model_dump"):
+            value = cast(Any, value).model_dump(mode="python", exclude_none=True)
+        if isinstance(value, Mapping):
+            field_value = value.get(field_name)
+            if isinstance(field_value, str):
+                add(field_value)
+            elif isinstance(field_value, Sequence) and not isinstance(field_value, str):
+                for item in field_value:
+                    add(item)
+            for child in value.values():
+                walk(child, depth - 1)
+        elif isinstance(value, Sequence) and not isinstance(value, str):
+            for child in value:
+                walk(child, depth - 1)
+
+    walk(payload, max_depth)
+    return tuple(values)
 
 
 def _static_get_routes() -> tuple[_StaticGetRoute, ...]:
@@ -2837,10 +2870,20 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if payload is None:
             self._send_error(HTTPStatus.NOT_FOUND, "not_found")
             return
+        from polylogue.archive.viewport import get_read_view_profile
+
+        profile = get_read_view_profile(view)
         envelope = SessionReadViewEnvelope(
             session_id=conv_id,
             view=view,
             format=output_format,
+            target_refs=(f"session:{conv_id}",),
+            object_refs=_read_view_payload_field_values(payload, "object_refs"),
+            evidence_refs=_read_view_payload_field_values(payload, "evidence_refs"),
+            caveats=_read_view_payload_field_values(payload, "caveats"),
+            lossiness=profile.lossiness,
+            evidence_policy=profile.evidence_policy,
+            privacy_policy=profile.privacy_policy,
             payload=payload,
         )
         self._send_json(HTTPStatus.OK, model_json_document(envelope, exclude_none=True))
