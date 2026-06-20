@@ -30,7 +30,7 @@ from pydantic import BaseModel
 
 from devtools.command_catalog import control_plane_command
 from devtools.render_support import write_if_changed
-from polylogue.archive.query.metadata import terminal_query_source_list
+from polylogue.archive.query.metadata import terminal_query_examples, terminal_query_source_list
 from polylogue.daemon.route_contracts import ROUTE_CONTRACTS, RouteContract
 from polylogue.surfaces.payloads import (
     RANKING_POLICY_MIXED,
@@ -235,9 +235,9 @@ def _build_openapi_document() -> dict[str, Any]:
                             "name": "expression",
                             "in": "query",
                             "description": (
-                                "Explicit unit-source expression such as "
-                                "``messages where role:assistant AND text:timeout`` or "
-                                "``assertions where kind:decision``."
+                                "Explicit unit-source expression. Examples: "
+                                + "; ".join(f"``{example}``" for example in terminal_query_examples())
+                                + "."
                             ),
                             "required": True,
                             "schema": {"type": "string"},

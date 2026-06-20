@@ -289,8 +289,9 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                     reverse,
                 )
             ):
+                unit_label = _unit_source_display_name(unit_source)
                 raise click.UsageError(
-                    f"{unit_source.unit}s where queries return {unit_source.unit} rows and do not combine "
+                    f"{unit_label} where queries return {unit_source.unit} rows and do not combine "
                     "with session-only actions, aggregate modes, sort, reverse, or cursor."
                 )
             _emit_unit_source_rows(
@@ -1553,6 +1554,13 @@ def _emit_unit_source_rows(
     if not items:
         _emit_unit_no_results(envelope, unit=source.unit, output_format=output_format)
     _emit_rows(envelope, items, output_format=output_format, text_line=text_line, fields=fields)
+
+
+def _unit_source_display_name(source: QueryUnitSource) -> str:
+    descriptor = query_unit_descriptor(source.unit)
+    if descriptor is None:
+        return source.unit
+    return descriptor.plural_source
 
 
 def _unit_source_session_filters(filter_kwargs: _ArchiveFilterKwargs) -> dict[str, object]:

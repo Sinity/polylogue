@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
-from typing import cast
+from typing import cast, get_args, get_type_hints
 
 
 def test_query_completions_do_not_import_expression_parser() -> None:
@@ -61,6 +61,8 @@ def test_query_unit_descriptors_own_terminal_aliases() -> None:
         query_unit_descriptors,
         structural_query_fields,
         structural_query_units,
+        terminal_query_cli_surfaces,
+        terminal_query_examples,
         terminal_query_fields,
         terminal_query_source_list,
         terminal_query_source_pairs,
@@ -99,6 +101,28 @@ def test_query_unit_descriptors_own_terminal_aliases() -> None:
     )
     assert structural_query_fields("context-snapshot") == ()
     assert "boundary" in terminal_query_fields("context-snapshots")
+    assert "polylogue --format json runs where ..." in terminal_query_cli_surfaces()
+    assert "runs where session.repo:polylogue AND role:main" in terminal_query_examples()
+
+
+def test_query_unit_schema_surfaces_are_descriptor_derived() -> None:
+    from devtools.render_cli_output_schemas import SCHEMAS
+    from polylogue.archive.query.metadata import terminal_query_cli_surfaces
+
+    query_unit_schema = next(schema for schema in SCHEMAS if schema.name == "query-unit-envelope")
+    for surface in terminal_query_cli_surfaces():
+        assert surface in query_unit_schema.surfaces
+
+
+def test_query_unit_payload_and_structural_types_track_descriptors() -> None:
+    from polylogue.archive.query.metadata import query_unit_descriptors, structural_query_units
+    from polylogue.archive.query.predicate import QueryExistsPredicate
+    from polylogue.surfaces.payloads import QueryUnitKind
+
+    assert tuple(get_args(QueryUnitKind)) == tuple(
+        descriptor.unit for descriptor in query_unit_descriptors(terminal_supported=True)
+    )
+    assert frozenset(get_args(get_type_hints(QueryExistsPredicate)["unit"])) == frozenset(structural_query_units())
 
 
 def test_terminal_query_completion_payloads_expose_payload_model() -> None:

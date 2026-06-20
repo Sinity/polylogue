@@ -23,7 +23,7 @@ from pydantic import BaseModel
 
 from devtools.command_catalog import control_plane_command
 from devtools.render_support import write_if_changed
-from polylogue.archive.query.metadata import terminal_query_source_list
+from polylogue.archive.query.metadata import terminal_query_cli_surfaces, terminal_query_source_list
 from polylogue.surfaces.payloads import (
     ArchiveDebtListPayload,
     ImportExplainPayload,
@@ -144,13 +144,8 @@ SCHEMAS: tuple[CliOutputSchema, ...] = (
             "Shared by CLI JSON output, Python API, MCP, and daemon HTTP."
         ),
         model=QueryUnitEnvelope,
-        surfaces=(
-            "polylogue --format json messages where ...",
-            "polylogue --format json actions where ...",
-            "polylogue --format json blocks where ...",
-            "polylogue --format json assertions where ...",
-            "polylogue --format json observed-events where ...",
-            "polylogue --format json context-snapshots where ...",
+        surfaces=terminal_query_cli_surfaces()
+        + (
             "Polylogue.query_units(...)",
             "MCP query_units",
             "GET /api/query-units?expression=...",

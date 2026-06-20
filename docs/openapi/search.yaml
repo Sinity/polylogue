@@ -96,8 +96,11 @@ paths:
       parameters:
       - name: expression
         in: query
-        description: Explicit unit-source expression such as ``messages where role:assistant AND text:timeout`` or ``assertions
-          where kind:decision``.
+        description: 'Explicit unit-source expression. Examples: ``messages where session.repo:polylogue AND role:assistant
+          AND text:timeout``; ``actions where session.repo:polylogue AND tool:bash AND text:pytest``; ``blocks where session.origin:codex-session
+          AND type:code AND text:timeout``; ``assertions where kind:decision AND status:active AND text:review``; ``runs where
+          session.repo:polylogue AND role:main``; ``observed-events where session.repo:polylogue AND delivery_state:acted_on``;
+          ``context-snapshots where session.repo:polylogue AND boundary:session_start``.'
         required: true
         schema:
           type: string
