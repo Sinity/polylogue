@@ -98,11 +98,13 @@ def test_build_dev_loop_status_uses_branch_local_paths_and_warnings(
     assert payload["commit"] == "abc1234"
     assert payload["run_id"] == "feature-dev-loop-abc1234-api9999-capture9998"
     assert payload["prepared"] is True
+    assert payload["preflight_json_written"] is True
     assert Path(str(payload["dev_archive_root"])).is_dir()
     assert Path(str(payload["log_dir"])).is_dir()
     assert payload["run_log_dir"] == str(repo / ".cache" / "dev-loop" / "feature-dev-loop-abc1234-api9999-capture9998")
     assert Path(str(payload["run_log_dir"])).is_dir()
     assert Path(str(payload["artifacts"]["browser_dir"])).is_dir()
+    assert Path(str(payload["artifacts"]["preflight_json"])).is_file()
     assert payload["artifacts"]["daemon_log"].endswith(
         ".cache/dev-loop/feature-dev-loop-abc1234-api9999-capture9998/polylogued.log"
     )
@@ -126,6 +128,7 @@ def test_main_json_outputs_machine_payload(
             "commit": "abc1234",
             "run_id": "feature-dev-loop-abc1234-api8766-capture8765",
             "prepared": kwargs["prepare"],
+            "preflight_json_written": kwargs["prepare"],
             "dev_archive_root": str(tmp_path / "archive"),
             "log_dir": str(tmp_path / "logs"),
             "run_log_dir": str(tmp_path / "logs" / "run"),

@@ -38,14 +38,12 @@ Create them explicitly when needed:
 devtools workspace dev-loop --prepare
 ```
 
-For a reproducible debugging bundle, save the exact preflight before starting
-the daemon:
+`--prepare` creates the branch-local archive root, the run-specific browser
+artifact directory, and writes the preflight payload to:
 
-```bash
-devtools workspace dev-loop --json > .cache/dev-loop/<run-id>/preflight.json
+```text
+.cache/dev-loop/<run-id>/preflight.json
 ```
-
-The printed `save_preflight` command expands the current run id for you.
 
 These paths are local development state. Do not commit archive data, logs,
 browser profiles, cookies, screenshots, or receiver payloads from them.

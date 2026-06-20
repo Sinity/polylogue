@@ -179,6 +179,7 @@ def build_dev_loop_status(
     run_log_dir = logs / run_id
     daemon_log = run_log_dir / "polylogued.log"
     browser_artifact_dir = run_log_dir / "browser"
+    preflight_json = run_log_dir / "preflight.json"
     if prepare:
         archive.mkdir(parents=True, exist_ok=True)
         browser_artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -191,19 +192,20 @@ def build_dev_loop_status(
         if int(status.get("owner_count") or 0) > 0:
             warnings.append(f"{name} port {status['port']} already has a listener")
 
-    return {
+    payload = {
         "repo_root": str(root),
         "branch": branch,
         "commit": commit,
         "run_id": run_id,
         "prepared": prepare,
+        "preflight_json_written": False,
         "dev_archive_root": str(archive),
         "log_dir": str(logs),
         "run_log_dir": str(run_log_dir),
         "artifacts": {
             "daemon_log": str(daemon_log),
             "browser_dir": str(browser_artifact_dir),
-            "preflight_json": str(run_log_dir / "preflight.json"),
+            "preflight_json": str(preflight_json),
         },
         "system_service": service,
         "ports": {
@@ -220,7 +222,7 @@ def build_dev_loop_status(
         "commands": {
             "stop_system_service": "systemctl --user stop polylogued.service",
             "prepare": "devtools workspace dev-loop --prepare",
-            "save_preflight": f"mkdir -p {run_log_dir} && devtools workspace dev-loop --json > {run_log_dir / 'preflight.json'}",
+            "save_preflight": f"mkdir -p {run_log_dir} && devtools workspace dev-loop --json > {preflight_json}",
             "run_daemon": (
                 f"env POLYLOGUE_ARCHIVE_ROOT={archive} "
                 f"POLYLOGUE_API_PORT={api_port} "
@@ -234,6 +236,10 @@ def build_dev_loop_status(
         },
         "warnings": warnings,
     }
+    if prepare:
+        payload["preflight_json_written"] = True
+        preflight_json.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return payload
 
 
 def _print_human(payload: dict[str, Any]) -> None:
