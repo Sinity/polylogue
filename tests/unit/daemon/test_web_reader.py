@@ -372,6 +372,98 @@ def _index_db_path(workspace: dict[str, Path]) -> Path:
     return workspace["data_root"] / "polylogue" / "index.db"
 
 
+def _seed_import_explain_archive(workspace: dict[str, Path]) -> tuple[str, str]:
+    import sqlite3
+
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    raw_id = "raw-import-route"
+    source_path = str(Path.home() / ".codex" / "sessions" / "route.jsonl")
+    digest = b"r" * 32
+    archive_root = workspace["archive_root"]
+    archive_root.mkdir(parents=True, exist_ok=True)
+    source_conn = sqlite3.connect(archive_root / "source.db")
+    index_conn = sqlite3.connect(archive_root / "index.db")
+    try:
+        initialize_archive_tier(source_conn, ArchiveTier.SOURCE)
+        initialize_archive_tier(index_conn, ArchiveTier.INDEX)
+        source_conn.execute(
+            """
+            INSERT OR REPLACE INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size,
+                acquired_at_ms, parsed_at_ms, validated_at_ms, validation_status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                raw_id,
+                "codex-session",
+                "route-native",
+                source_path,
+                0,
+                digest,
+                128,
+                1_700_000_000_000,
+                1_700_000_000_100,
+                1_700_000_000_200,
+                "passed",
+            ),
+        )
+        source_conn.execute(
+            """
+            INSERT OR REPLACE INTO raw_artifacts (
+                artifact_id, raw_id, origin, source_path, source_index, artifact_kind,
+                support_status, classification_reason, parse_as_session, schema_eligible,
+                first_observed_at_ms, last_observed_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "route-artifact",
+                raw_id,
+                "codex-session",
+                source_path,
+                0,
+                "session_record_stream",
+                "supported_parseable",
+                "codex route fixture",
+                1,
+                1,
+                1_700_000_000_000,
+                1_700_000_000_000,
+            ),
+        )
+        index_conn.execute(
+            """
+            INSERT OR REPLACE INTO sessions (
+                native_id, origin, raw_id, title, content_hash, message_count, tool_use_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("route-native", "codex-session", raw_id, "Route import explain", digest, 1, 1),
+        )
+        index_conn.execute(
+            """
+            INSERT OR REPLACE INTO messages (
+                session_id, native_id, position, role, message_type, content_hash
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("codex-session:route-native", "m1", 0, "assistant", "message", digest),
+        )
+        index_conn.execute(
+            """
+            INSERT OR REPLACE INTO blocks (
+                message_id, session_id, position, block_type, text, tool_id
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("codex-session:route-native:m1", "codex-session:route-native", 0, "tool_use", "pytest", "tool-1"),
+        )
+        source_conn.commit()
+        index_conn.commit()
+    finally:
+        source_conn.close()
+        index_conn.close()
+    return raw_id, source_path
+
+
 def _get_json(base_url: str, path: str, *, headers: dict[str, str] | None = None) -> object:
     req = Request(f"{base_url}{path}", headers=headers or {})
     with urlopen(req, timeout=10) as resp:
@@ -646,6 +738,28 @@ class TestReaderSessionState:
         assert result["payload_kind"] == "session-summary"
         resolved_payload = cast(dict[str, object], result["payload"])
         assert resolved_payload["id"] == "claude-code-session:c1"
+
+    def test_import_explain_route_reads_archived_raw_evidence(self, workspace_env: dict[str, Path]) -> None:
+        raw_id, source_path = _seed_import_explain_archive(workspace_env)
+        with _running_server(workspace_env, seeded=False) as (_, base_url):
+            payload = cast(
+                dict[str, object],
+                _get_json(base_url, f"/api/import/explain?raw_ref={quote(f'raw:{raw_id}')}"),
+            )
+
+        assert payload["mode"] == "import-explain"
+        assert payload["source_path"] == f"archive:raw:{raw_id}"
+        produced = cast(dict[str, object], payload["produced"])
+        assert produced["sessions"] == 1
+        assert produced["messages"] == 1
+        assert produced["blocks"] == 1
+        assert produced["actions"] == 1
+        entries = cast(list[dict[str, object]], payload["entries"])
+        assert entries[0]["raw_ref"] == f"raw:{raw_id}"
+        assert entries[0]["source_path"] == "~/.codex/sessions/route.jsonl"
+        assert entries[0]["artifact_kind"] == "session_record_stream"
+        assert entries[0]["parser_mode"] == "archived_raw_session"
+        assert source_path not in json.dumps(payload)
 
     def test_session_messages_apply_content_projection_flags(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.archive.message.roles import Role

@@ -2096,6 +2096,13 @@ x-polylogue-route-contracts:
   response_contract: ArchiveDebtListPayload
   notes: Unified archive debt rows shared by CLI, Python API, MCP, and daemon clients.
 - method: GET
+  pattern: /api/import/explain
+  kind: operational
+  stability: shell_supported
+  auth_policy: bearer_if_configured
+  response_contract: ImportExplainPayload
+  notes: Local import/source evidence explanation; paths are redacted unless explicitly requested.
+- method: GET
   pattern: /api/refs/resolve
   kind: read_query
   stability: stable

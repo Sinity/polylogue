@@ -159,6 +159,15 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
         "Unified archive debt rows shared by CLI, Python API, MCP, and daemon clients.",
     ),
     RouteContract(
+        "GET",
+        "/api/import/explain",
+        "operational",
+        "shell_supported",
+        "bearer_if_configured",
+        "ImportExplainPayload",
+        "Local import/source evidence explanation; paths are redacted unless explicitly requested.",
+    ),
+    RouteContract(
         "GET", "/api/refs/resolve", "read_query", "stable", "bearer_if_configured", "PublicRefResolutionPayload"
     ),
     RouteContract(

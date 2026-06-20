@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import sqlite3
 import zipfile
 from collections.abc import Iterable
 from io import BytesIO
@@ -72,6 +74,68 @@ def explain_import_path(
     return _envelope(resolved, entries=entries, skipped=skipped, caveats=caveats)
 
 
+def explain_import_archive(
+    archive_root: Path,
+    *,
+    raw_ref: str | None = None,
+    source_path: str | None = None,
+    limit: int = 100,
+    redact_paths: bool = True,
+) -> ImportExplainPayload:
+    """Return an import explanation from already-archived source/index evidence."""
+
+    if raw_ref is None and source_path is None:
+        raise ValueError("raw_ref or source_path is required for archive import explain")
+
+    source_db = archive_root / "source.db"
+    index_db = archive_root / "index.db"
+    query_label = _archive_query_label(raw_ref=raw_ref, source_path=source_path, redact_paths=redact_paths)
+    entries: list[ImportExplainEntryPayload] = []
+    skipped: list[ImportSkippedRowPayload] = []
+    caveats: list[str] = ["archive-backed explanation; raw bytes are omitted."]
+
+    if not source_db.exists():
+        skipped.append(ImportSkippedRowPayload(reason="source tier is unavailable", raw_ref=raw_ref))
+        return _envelope(Path(query_label), entries=entries, skipped=skipped, caveats=caveats)
+
+    raw_id = _normalize_raw_ref(raw_ref) if raw_ref is not None else None
+    with _readonly_sqlite(source_db) as source_conn:
+        raw_rows = _select_raw_session_rows(source_conn, raw_id=raw_id, source_path=source_path, limit=limit)
+        if not raw_rows:
+            skipped.append(
+                ImportSkippedRowPayload(
+                    reason="no archived raw session matched",
+                    source_path=_display_source_path(source_path, redact=redact_paths),
+                    raw_ref=raw_ref,
+                )
+            )
+            return _envelope(Path(query_label), entries=entries, skipped=skipped, caveats=caveats)
+
+        index_conn: sqlite3.Connection | None = None
+        if index_db.exists():
+            index_conn = _readonly_sqlite(index_db)
+        else:
+            caveats.append("index tier is unavailable; produced archive row counts are incomplete")
+        try:
+            for row in raw_rows:
+                artifact_rows = _select_artifact_rows(source_conn, raw_id=str(row["raw_id"]))
+                entry = _archive_entry_from_rows(
+                    row,
+                    artifact_rows=artifact_rows,
+                    index_conn=index_conn,
+                    redact_paths=redact_paths,
+                )
+                entries.append(entry)
+                skipped.extend(entry.skipped)
+        finally:
+            if index_conn is not None:
+                index_conn.close()
+
+    if len(raw_rows) >= limit:
+        caveats.append(f"entry limit {limit} reached; remaining archived raw rows omitted")
+    return _envelope(Path(query_label), entries=entries, skipped=skipped, caveats=caveats)
+
+
 def _candidate_paths(path: Path, *, source_name: str) -> Iterable[Path]:
     if path.is_file():
         yield path
@@ -101,6 +165,235 @@ def _envelope(
         skipped=tuple(skipped),
         caveats=tuple(caveats),
     )
+
+
+def _archive_entry_from_rows(
+    row: sqlite3.Row,
+    *,
+    artifact_rows: tuple[sqlite3.Row, ...],
+    index_conn: sqlite3.Connection | None,
+    redact_paths: bool,
+) -> ImportExplainEntryPayload:
+    raw_id = str(row["raw_id"])
+    source_path = _display_source_path(str(row["source_path"]), redact=redact_paths)
+    parse_error = _optional_text(row["parse_error"])
+    validation_error = _optional_text(row["validation_error"])
+    detection_warnings = _loads_warning_tuple(_optional_text(row["detection_warnings_json"]))
+    artifact_kind = _archive_artifact_kind(artifact_rows)
+    produced = _archive_produced_rows(index_conn, raw_id)
+    skipped: list[ImportSkippedRowPayload] = []
+    caveats: list[str] = []
+
+    if parse_error is not None:
+        skipped.append(
+            ImportSkippedRowPayload(
+                reason=f"parse error: {parse_error}",
+                source_path=source_path,
+                raw_ref=f"raw:{raw_id}",
+            )
+        )
+    if validation_error is not None:
+        caveats.append(f"validation error: {validation_error}")
+    for artifact in artifact_rows:
+        decode_error = _optional_text(artifact["decode_error"])
+        if decode_error is not None:
+            skipped.append(
+                ImportSkippedRowPayload(
+                    reason=f"decode error: {decode_error}",
+                    source_path=source_path,
+                    raw_ref=f"raw:{raw_id}",
+                )
+            )
+    if redact_paths and source_path != str(row["source_path"]):
+        caveats.append("source path redacted for this surface")
+    if artifact_rows:
+        artifact_evidence = tuple(
+            _evidence(
+                f"source.raw_artifacts.{artifact['artifact_id']}",
+                matched=bool(artifact["parse_as_session"]),
+                reason=str(artifact["classification_reason"]),
+            )
+            for artifact in artifact_rows
+        )
+    else:
+        artifact_evidence = (_evidence("source.raw_artifacts", matched=False, reason="no artifact row recorded"),)
+
+    return ImportExplainEntryPayload(
+        raw_ref=f"raw:{raw_id}",
+        source_path=source_path,
+        artifact_kind=artifact_kind,
+        provider_hint=str(row["origin"]),
+        detected_origin=str(row["origin"]),
+        detected_provider=None,
+        detector="source.raw_sessions",
+        detector_evidence=(
+            _evidence("source.raw_sessions", matched=True, reason=f"raw_id={raw_id}"),
+            *artifact_evidence,
+        ),
+        parser="archive source/index evidence",
+        parser_mode="archived_raw_session",
+        schema_resolution=_schema_resolution(row),
+        produced=produced,
+        skipped=tuple(skipped),
+        caveats=tuple(caveats),
+        raw_evidence_refs=(f"raw:{raw_id}",)
+        + tuple(f"raw-artifact:{artifact['artifact_id']}" for artifact in artifact_rows),
+        normalization_warnings=detection_warnings,
+    )
+
+
+def _readonly_sqlite(path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _select_raw_session_rows(
+    conn: sqlite3.Connection,
+    *,
+    raw_id: str | None,
+    source_path: str | None,
+    limit: int,
+) -> tuple[sqlite3.Row, ...]:
+    clauses: list[str] = []
+    params: list[object] = []
+    if raw_id is not None:
+        clauses.append("raw_id = ?")
+        params.append(raw_id)
+    if source_path is not None:
+        clauses.append("source_path = ?")
+        params.append(source_path)
+    where = " AND ".join(clauses) if clauses else "1 = 1"
+    return tuple(
+        conn.execute(
+            f"""
+            SELECT
+                raw_id, origin, native_id, source_path, source_index, blob_size,
+                acquired_at_ms, parsed_at_ms, parse_error, validated_at_ms,
+                validation_status, validation_error, detection_warnings_json
+            FROM raw_sessions
+            WHERE {where}
+            ORDER BY source_path, source_index, raw_id
+            LIMIT ?
+            """,
+            (*params, max(0, limit)),
+        ).fetchall()
+    )
+
+
+def _select_artifact_rows(conn: sqlite3.Connection, *, raw_id: str) -> tuple[sqlite3.Row, ...]:
+    return tuple(
+        conn.execute(
+            """
+            SELECT artifact_id, artifact_kind, classification_reason, parse_as_session,
+                   support_status, decode_error
+            FROM raw_artifacts
+            WHERE raw_id = ?
+            ORDER BY source_index, artifact_id
+            """,
+            (raw_id,),
+        ).fetchall()
+    )
+
+
+def _archive_produced_rows(conn: sqlite3.Connection | None, raw_id: str) -> ImportProducedRowsPayload:
+    if conn is None:
+        return ImportProducedRowsPayload(raw_records=1)
+    session_rows = tuple(
+        conn.execute(
+            """
+            SELECT session_id, message_count, tool_use_count
+            FROM sessions
+            WHERE raw_id = ?
+            ORDER BY session_id
+            """,
+            (raw_id,),
+        ).fetchall()
+    )
+    if not session_rows:
+        return ImportProducedRowsPayload(raw_records=1)
+    session_ids = tuple(str(row["session_id"]) for row in session_rows)
+    placeholders = ",".join("?" for _ in session_ids)
+    messages = int(
+        conn.execute(f"SELECT COUNT(*) FROM messages WHERE session_id IN ({placeholders})", session_ids).fetchone()[0]
+    )
+    blocks = int(
+        conn.execute(f"SELECT COUNT(*) FROM blocks WHERE session_id IN ({placeholders})", session_ids).fetchone()[0]
+    )
+    actions = int(
+        conn.execute(f"SELECT COUNT(*) FROM actions WHERE session_id IN ({placeholders})", session_ids).fetchone()[0]
+    )
+    return ImportProducedRowsPayload(
+        sessions=len(session_rows),
+        messages=messages,
+        blocks=blocks,
+        actions=actions,
+        raw_records=1,
+        session_refs=tuple(f"session:{session_id}" for session_id in session_ids),
+    )
+
+
+def _archive_artifact_kind(rows: tuple[sqlite3.Row, ...]) -> str:
+    kinds = tuple(dict.fromkeys(str(row["artifact_kind"]) for row in rows if row["artifact_kind"] is not None))
+    if not kinds:
+        return "raw_session"
+    if len(kinds) == 1:
+        return kinds[0]
+    return "mixed_raw_artifacts"
+
+
+def _schema_resolution(row: sqlite3.Row) -> str | None:
+    status = _optional_text(row["validation_status"])
+    if status is not None:
+        return status
+    if row["validated_at_ms"] is not None:
+        return "validated"
+    if row["parsed_at_ms"] is not None:
+        return "parsed"
+    return None
+
+
+def _normalize_raw_ref(raw_ref: str) -> str:
+    return raw_ref.removeprefix("raw:")
+
+
+def _archive_query_label(*, raw_ref: str | None, source_path: str | None, redact_paths: bool) -> str:
+    if raw_ref is not None:
+        return f"archive:{raw_ref}"
+    return _display_source_path(source_path or "archive:source-path", redact=redact_paths) or "archive:source-path"
+
+
+def _display_source_path(raw_path: str | None, *, redact: bool) -> str | None:
+    if raw_path is None:
+        return None
+    if not redact:
+        return raw_path
+    home = os.path.expanduser("~")
+    if home and home != "/" and (raw_path == home or raw_path.startswith(home + os.sep)):
+        return "~" + raw_path[len(home) :]
+    path = Path(raw_path)
+    if path.is_absolute():
+        return f".../{path.name}" if path.name else "<absolute-path>"
+    return raw_path
+
+
+def _optional_text(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    return text or None
+
+
+def _loads_warning_tuple(value: str | None) -> tuple[str, ...]:
+    if not value:
+        return ()
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return (value,)
+    if isinstance(parsed, list):
+        return tuple(str(item) for item in parsed)
+    return (str(parsed),)
 
 
 def _explain_file(path: Path, *, provider_hint: Provider) -> ImportExplainEntryPayload:
@@ -365,4 +658,4 @@ def _evidence(check: str, *, matched: bool, reason: str | None = None) -> Import
     return ImportDetectorEvidencePayload(check=check, matched=matched, reason=reason)
 
 
-__all__ = ["explain_import_path"]
+__all__ = ["explain_import_archive", "explain_import_path"]

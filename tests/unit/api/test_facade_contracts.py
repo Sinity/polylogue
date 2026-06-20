@@ -281,6 +281,95 @@ def _archive(tmp_path: Path) -> Polylogue:
     return Polylogue(archive_root=tmp_path, db_path=tmp_path / "index.db")
 
 
+_HASH = b"x" * 32
+
+
+def _seed_import_explain_archive(tmp_path: Path, *, source_path: str | None = None) -> tuple[str, str]:
+    source_path = source_path or str(Path.home() / ".codex" / "sessions" / "session.jsonl")
+    raw_id = "raw-import-1"
+    source_conn = sqlite3.connect(tmp_path / "source.db")
+    index_conn = sqlite3.connect(tmp_path / "index.db")
+    try:
+        initialize_archive_tier(source_conn, ArchiveTier.SOURCE)
+        initialize_archive_tier(index_conn, ArchiveTier.INDEX)
+        source_conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size,
+                acquired_at_ms, parsed_at_ms, validated_at_ms, validation_status,
+                detection_warnings_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                raw_id,
+                "codex-session",
+                "native-1",
+                source_path,
+                0,
+                _HASH,
+                42,
+                1_700_000_000_000,
+                1_700_000_000_100,
+                1_700_000_000_200,
+                "passed",
+                '["normalized path separators"]',
+            ),
+        )
+        source_conn.execute(
+            """
+            INSERT INTO raw_artifacts (
+                artifact_id, raw_id, origin, source_path, source_index, artifact_kind,
+                support_status, classification_reason, parse_as_session, schema_eligible,
+                first_observed_at_ms, last_observed_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "artifact-1",
+                raw_id,
+                "codex-session",
+                source_path,
+                0,
+                "session_record_stream",
+                "supported_parseable",
+                "codex session stream",
+                1,
+                1,
+                1_700_000_000_000,
+                1_700_000_000_000,
+            ),
+        )
+        index_conn.execute(
+            """
+            INSERT INTO sessions (
+                native_id, origin, raw_id, title, content_hash, message_count, tool_use_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("native-1", "codex-session", raw_id, "Import explain", _HASH, 1, 1),
+        )
+        index_conn.execute(
+            """
+            INSERT INTO messages (
+                session_id, native_id, position, role, message_type, content_hash
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("codex-session:native-1", "msg-1", 0, "assistant", "message", _HASH),
+        )
+        index_conn.execute(
+            """
+            INSERT INTO blocks (
+                message_id, session_id, position, block_type, text, tool_id
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("codex-session:native-1:msg-1", "codex-session:native-1", 0, "tool_use", "pytest", "tool-1"),
+        )
+        source_conn.commit()
+        index_conn.commit()
+    finally:
+        source_conn.close()
+        index_conn.close()
+    return raw_id, source_path
+
+
 @pytest.mark.asyncio
 async def test_archive_tiers_facade_reads_active_db_override_root(tmp_path: Path) -> None:
     """Archive facade reads open the active index root, not just config.archive_root."""
@@ -868,6 +957,47 @@ async def test_explain_import_reports_bounded_decode_failure(tmp_path: Path) -> 
         rendered = payload.to_json(exclude_none=True)
         assert "{not json" not in rendered
         assert "raw_bytes" not in rendered
+    finally:
+        await archive.close()
+
+
+async def test_explain_import_reads_archived_raw_evidence(tmp_path: Path) -> None:
+    """``explain_import`` can explain already-archived source/index rows."""
+    raw_id, source_path = _seed_import_explain_archive(tmp_path)
+    archive = _archive(tmp_path)
+    try:
+        payload = await archive.explain_import(raw_ref=f"raw:{raw_id}")
+
+        assert payload.mode == "import-explain"
+        assert payload.source_path == f"archive:raw:{raw_id}"
+        assert payload.produced.raw_records == 1
+        assert payload.produced.sessions == 1
+        assert payload.produced.messages == 1
+        assert payload.produced.blocks == 1
+        assert payload.produced.actions == 1
+        assert payload.entries[0].raw_ref == f"raw:{raw_id}"
+        assert payload.entries[0].detected_origin == "codex-session"
+        assert payload.entries[0].artifact_kind == "session_record_stream"
+        assert payload.entries[0].parser_mode == "archived_raw_session"
+        assert payload.entries[0].schema_resolution == "passed"
+        assert payload.entries[0].raw_evidence_refs == (f"raw:{raw_id}", "raw-artifact:artifact-1")
+        assert payload.entries[0].normalization_warnings == ("normalized path separators",)
+        rendered = payload.to_json(exclude_none=True)
+        assert source_path not in rendered
+        assert "raw_bytes" not in rendered
+    finally:
+        await archive.close()
+
+
+async def test_explain_import_redacts_non_home_absolute_archive_paths(tmp_path: Path) -> None:
+    """Archive-backed import explain does not expose arbitrary absolute paths by default."""
+    raw_id, source_path = _seed_import_explain_archive(tmp_path, source_path="/realm/private/imports/session.jsonl")
+    archive = _archive(tmp_path)
+    try:
+        payload = await archive.explain_import(raw_ref=f"raw:{raw_id}")
+
+        assert payload.entries[0].source_path == ".../session.jsonl"
+        assert source_path not in payload.to_json(exclude_none=True)
     finally:
         await archive.close()
 

@@ -1310,14 +1310,27 @@ class PolylogueArchiveMixin:
 
     async def explain_import(
         self,
-        path: str | Path,
+        path: str | Path | None = None,
         *,
+        raw_ref: str | None = None,
+        source_path: str | None = None,
         source_name: str = "unknown",
         limit: int = 100,
+        redact_paths: bool = True,
     ) -> ImportExplainPayload:
-        """Explain detector/parser decisions for a local import path without writing archive rows."""
-        from polylogue.sources.import_explain import explain_import_path
+        """Explain detector/parser decisions for local or archived import evidence."""
+        from polylogue.sources.import_explain import explain_import_archive, explain_import_path
 
+        if raw_ref is not None or source_path is not None:
+            return explain_import_archive(
+                _active_archive_root(self.config),
+                raw_ref=raw_ref,
+                source_path=source_path,
+                limit=limit,
+                redact_paths=redact_paths,
+            )
+        if path is None:
+            raise ValueError("path is required unless raw_ref or source_path is provided")
         return explain_import_path(Path(path), source_name=source_name, limit=limit)
 
     async def recovery_digest(self, session_id: str) -> RecoveryDigest | None:
