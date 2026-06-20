@@ -14,10 +14,10 @@ Current registry snapshot:
 - mutation campaigns: `19`
 - benchmark campaigns: `7`
 - synthetic benchmark campaigns: `6`
-- scenario projections: `285`
+- scenario projections: `287`
 - inferred corpus scenarios: `8`
   - benchmark-campaign: `7`
-  - exercise: `178`
+  - exercise: `180`
   - inferred-corpus-scenario: `8`
   - mutation-campaign: `19`
   - synthetic-benchmark: `6`
@@ -360,6 +360,8 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-ops-cost` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops cost help |
 | `exercise` | `help-ops-cost-outlook` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops cost outlook help |
 | `exercise` | `help-ops-dashboard` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops dashboard help |
+| `exercise` | `help-ops-debt` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops debt help |
+| `exercise` | `help-ops-debt-list` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops debt list help |
 | `exercise` | `help-ops-diagnostics` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops diagnostics help |
 | `exercise` | `help-ops-diagnostics-pace` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops diagnostics pace help |
 | `exercise` | `help-ops-diagnostics-space` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops diagnostics space help |

@@ -92,6 +92,7 @@ _SHORT_HELP: dict[str, str] = {
     "config": "Show configuration paths and resolved settings.",
     "cost": "Summarize session cost telemetry.",
     "dashboard": "Open the local dashboard.",
+    "debt": "List archive work that needs operator attention.",
     "diagnostics": "Run archive and session diagnostics.",
     "embed": "Enable, preflight, and backfill the embedding pipeline.",
     "import_command": "Import sessions from configured sources.",
@@ -115,6 +116,7 @@ _COMMAND_NAMES: dict[str, str] = {
 
 _GROUP_ATTRS: dict[str, str] = {
     "cost": "cost_command",
+    "debt": "debt_command",
     "diagnostics": "diagnostics_group",
     "embed": "embed_command",
     "insights": "insights_command",
@@ -154,6 +156,7 @@ OPS_COMMANDS: tuple[click.Command, ...] = (
     _L("completions"),
     _L("cost"),
     _L("dashboard"),
+    _L("debt"),
     _L("diagnostics"),
     _L("embed"),
     _L("insights"),

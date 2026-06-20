@@ -454,6 +454,7 @@ Commands:
   completions  Emit shell completion setup for polylogue.
   cost         Summarize session cost telemetry.
   dashboard    Open the local dashboard.
+  debt         List archive work that needs operator attention.
   diagnostics  Run archive and session diagnostics.
   doctor       Run archive health checks and repairs.
   embed        Enable, preflight, and backfill the embedding pipeline.
@@ -718,6 +719,7 @@ The schema files live under `docs/schemas/cli-output/`.
 | `search-envelope` | `SearchEnvelope` | `polylogue --format json <query>`<br>`GET /api/sessions?query=...` |
 | `query-unit-envelope` | `QueryUnitEnvelope` | `polylogue --format json messages where ...`<br>`polylogue --format json actions where ...`<br>`polylogue --format json blocks where ...`<br>`polylogue --format json assertions where ...`<br>`polylogue --format json observed-events where ...`<br>`polylogue --format json context-snapshots where ...`<br>`Polylogue.query_units(...)`<br>`MCP query_units`<br>`GET /api/query-units?expression=...` |
 | `import-explain` | `ImportExplainPayload` | `polylogue import PATH --explain --format json`<br>`polylogue import PATH --explain --format ndjson (entries)` |
+| `archive-debt-list` | `ArchiveDebtListPayload` | `polylogue ops debt list --format json` |
 | `session-neighbor-candidate` | `SessionNeighborCandidatePayload` | `polylogue read --view neighbors --format json` |
 | `mutation-result` | `MutationResultPayload` | `polylogue find <query> then delete --dry-run`<br>`polylogue find <query> then delete --yes`<br>`MCP mutation tools`<br>`daemon mutation endpoints` |
 | `machine-error` | `MachineErrorPayload` | `polylogue * --machine (error path)` |
