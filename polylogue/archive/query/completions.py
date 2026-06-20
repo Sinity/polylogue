@@ -98,13 +98,18 @@ def query_field_candidates(incomplete: str) -> list[QueryCompletionCandidate]:
     for field_name, info in sorted(EXPRESSION_FIELD_REGISTRY.items()):
         if current and not field_name.startswith(current):
             continue
-        insert = f"{field_name}:"
+        count_info = COUNT_QUERY_FIELD_REGISTRY.get(field_name)
+        # The compact grammar keeps messages:/words: for compatibility.
+        # Role-split count fields are Boolean-only and complete with an
+        # operator-ready space, e.g. "user_messages >= 2".
+        insert = (
+            f"{field_name} " if count_info is not None and field_name not in {"messages", "words"} else f"{field_name}:"
+        )
         description = info.get("description", "")
         example = info.get("example")
         if example:
             description = f"{description} Example: {example}" if description else f"Example: {example}"
         source = "EXPRESSION_FIELD_REGISTRY"
-        count_info = COUNT_QUERY_FIELD_REGISTRY.get(field_name)
         if count_info is not None:
             operators = ", ".join((*count_info.operators, count_info.range_keyword))
             description = (

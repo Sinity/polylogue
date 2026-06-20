@@ -149,6 +149,14 @@ def test_query_field_candidates_include_readable_operator_fields() -> None:
     assert message_candidate.source == "EXPRESSION_FIELD_REGISTRY/COUNT_QUERY_FIELD_REGISTRY"
     assert "messages between 5 and 20" in message_candidate.description
 
+    role_count_candidates = shell_completion_values.query_field_candidates("user_m")
+    user_messages_candidate = next(
+        candidate for candidate in role_count_candidates if candidate.value == "user_messages"
+    )
+    assert user_messages_candidate.insert == "user_messages "
+    assert user_messages_candidate.source == "EXPRESSION_FIELD_REGISTRY/COUNT_QUERY_FIELD_REGISTRY"
+    assert "sessions where user_messages >= 2" in user_messages_candidate.description
+
 
 def test_query_field_candidates_disappear_with_registry_entry(monkeypatch: pytest.MonkeyPatch) -> None:
     from polylogue.archive.query.expression import EXPRESSION_FIELD_REGISTRY

@@ -42,6 +42,7 @@ from polylogue.archive.query.expression import (
     parse_expression_ast,
     parse_unit_source_expression,
 )
+from polylogue.archive.query.metadata import query_unit_descriptors
 from polylogue.archive.query.predicate import (
     QueryBoolPredicate,
     QueryExistsPredicate,
@@ -629,6 +630,47 @@ class TestBooleanQueryExpression:
             parse_unit_source_expression(
                 "sessions where repo:polylogue | context-snapshots where boundary:session_start | count"
             )
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            descriptor.plural_source
+            for descriptor in query_unit_descriptors(lowerer_kind="sql")
+            if descriptor.aggregate_group_fields
+        ],
+    )
+    def test_descriptor_sql_units_accept_advertised_aggregate_pipeline(self, source: str) -> None:
+        descriptor = next(
+            descriptor
+            for descriptor in query_unit_descriptors(lowerer_kind="sql")
+            if descriptor.plural_source == source
+        )
+        group_field = descriptor.aggregate_group_fields[0]
+
+        parsed = parse_unit_source_expression(
+            f"{source} where {descriptor.fields[0].example} | group by {group_field} | count | sort by count desc"
+        )
+
+        assert parsed is not None
+        assert parsed.unit == descriptor.unit
+        assert parsed.group_by == group_field
+        assert parsed.aggregate == "count"
+        assert parsed.sort is not None
+        assert parsed.sort.field == "count"
+
+    @pytest.mark.parametrize(
+        "source",
+        [descriptor.plural_source for descriptor in query_unit_descriptors(lowerer_kind="runtime_transform")],
+    )
+    def test_descriptor_runtime_transform_units_reject_aggregate_pipeline(self, source: str) -> None:
+        descriptor = next(
+            descriptor
+            for descriptor in query_unit_descriptors(lowerer_kind="runtime_transform")
+            if descriptor.plural_source == source
+        )
+
+        with pytest.raises(ExpressionCompileError, match="runtime-transform units need an aggregate lowerer"):
+            parse_unit_source_expression(f"{source} where {descriptor.fields[0].example} | count")
 
     def test_pipeline_rejects_aggregate_sort_before_count(self) -> None:
         with pytest.raises(ExpressionCompileError, match="require an aggregate `count` stage"):
@@ -2441,6 +2483,36 @@ class TestBooleanQueryExpression:
 
         assert [row.session_id for row in rows] == ["claude-code-session:ext-hit"]
 
+    def test_role_count_predicate_executes_against_archive(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "role-count-hit")
+            .provider("claude-code")
+            .title("role count hit")
+            .add_message("m-hit-user-1", role="user", text="please inspect the query")
+            .add_message("m-hit-user-2", role="user", text="and add coverage")
+            .add_message("m-hit-assistant", role="assistant", text="I added focused aggregate count coverage")
+            .save()
+        )
+        (
+            SessionBuilder(index_db, "role-count-control")
+            .provider("claude-code")
+            .title("role count control")
+            .add_message("m-control-user", role="user", text="please inspect")
+            .add_message("m-control-assistant", role="assistant", text="short reply")
+            .save()
+        )
+
+        spec = compile_expression("sessions where user_messages >= 2 AND assistant_words between 5 and 8")
+        assert spec.boolean_predicate is not None
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            rows = archive.list_summaries(limit=100, boolean_predicate=spec.boolean_predicate)
+
+        assert [row.session_id for row in rows] == ["claude-code-session:ext-role-count-hit"]
+
     def test_sequence_predicate_executes_in_order_against_archive(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
         from tests.infra.storage_records import SessionBuilder
@@ -2851,6 +2923,22 @@ class TestLowererFieldMapping:
         assert spec.min_words == 100
         assert spec.max_words == 500
 
+    def test_role_count_comparison_requires_boolean_query(self) -> None:
+        with pytest.raises(ExpressionCompileError, match="supported only inside `sessions where`"):
+            compile_expression("user_messages >= 2")
+
+    def test_boolean_ast_exposes_role_count_comparisons(self) -> None:
+        ast = parse_expression_ast("sessions where user_messages >= 2 AND assistant_words between 5 and 20")
+
+        assert ast.boolean_predicate == QueryBoolPredicate(
+            "and",
+            (
+                QueryFieldPredicate(field="user_messages", values=("2",), op=">="),
+                QueryFieldPredicate(field="assistant_words", values=("5",), op=">="),
+                QueryFieldPredicate(field="assistant_words", values=("20",), op="<="),
+            ),
+        )
+
     def test_readable_count_range_rejects_inverted_bounds(self) -> None:
         with pytest.raises(ExpressionCompileError, match="lower bound 20 is greater than upper bound 5"):
             compile_expression("messages between 20 and 5")
@@ -3171,6 +3259,36 @@ class TestFieldRegistry:
         "contains": ("contains:foo", "contains_terms", ("foo",)),
         "messages": ("messages:>=10", "min_messages", 10),
         "words": ("words:>=200", "min_words", 200),
+        "user_messages": (
+            "sessions where user_messages >= 2",
+            "boolean_predicate",
+            QueryFieldPredicate(field="user_messages", values=("2",), op=">="),
+        ),
+        "assistant_messages": (
+            "sessions where assistant_messages >= 2",
+            "boolean_predicate",
+            QueryFieldPredicate(field="assistant_messages", values=("2",), op=">="),
+        ),
+        "system_messages": (
+            "sessions where system_messages = 0",
+            "boolean_predicate",
+            QueryFieldPredicate(field="system_messages", values=("0",), op="="),
+        ),
+        "tool_messages": (
+            "sessions where tool_messages = 0",
+            "boolean_predicate",
+            QueryFieldPredicate(field="tool_messages", values=("0",), op="="),
+        ),
+        "user_words": (
+            "sessions where user_words >= 100",
+            "boolean_predicate",
+            QueryFieldPredicate(field="user_words", values=("100",), op=">="),
+        ),
+        "assistant_words": (
+            "sessions where assistant_words >= 500",
+            "boolean_predicate",
+            QueryFieldPredicate(field="assistant_words", values=("500",), op=">="),
+        ),
         "lane": ("lane:dialogue", "retrieval_lane", "dialogue"),
         "lineage": (
             "lineage:id:chatgpt-export:ext-root",

@@ -110,6 +110,7 @@ from polylogue.archive.query.metadata import (
     STRUCTURAL_QUERY_UNIT_REGISTRY,
     CountQueryFieldInfo,
     DateQueryFieldInfo,
+    QueryUnitLowererKind,
     QueryUnitName,
     StructuralQueryUnitInfo,
     count_query_fields,
@@ -431,7 +432,7 @@ _QUERY_GRAMMAR = r"""
     AND: /and/i
     NOT: /not/i
     BETWEEN.6: /between/i
-    COUNT_FIELD.6: /(messages|words)/i
+    COUNT_FIELD.6: /(messages|words|user_messages|assistant_messages|system_messages|tool_messages|user_words|assistant_words)/i
     DATE_FIELD.6: /date/i
     TIME_FIELD.6: /time/i
     DATE_COMP_OP: ">=" | "<=" | "=" | ">" | "<"
@@ -441,7 +442,7 @@ _QUERY_GRAMMAR = r"""
     SEMANTIC_BARE_TEXT.6: /(?:semantic|near:text):[^\s"()]+/i
     FTS_QUOTED_TEXT.6: /~"(\\.|[^"\\])*"/
     FTS_BARE_TEXT.5: /~[^\s"()]+/
-    COUNT_CLAUSE.8: /(messages|words):(>=|<=|=)\d+(?!\S)/
+    COUNT_CLAUSE.8: /(messages|words|user_messages|assistant_messages|system_messages|tool_messages|user_words|assistant_words):(>=|<=|=)\d+(?!\S)/
     FIELD_CLAUSE.4: /-?[a-zA-Z_][a-zA-Z0-9_.]*:(?:"(\\.|[^"\\])*"|\([^)]*\)|[^\s"()\[\]{}]+)/
     NEG_QUOTED_TEXT.3: /-"(\\.|[^"\\])*"/
     QUOTED_TEXT.2: /"(\\.|[^"\\])*"/
@@ -461,7 +462,9 @@ _QUERY_PARSER = Lark(
     maybe_placeholders=False,
 )
 
-_COUNT_CLAUSE_RE = re.compile(r"^(messages|words):(>=|<=|=)(\d+)$")
+_COUNT_CLAUSE_RE = re.compile(
+    r"^(messages|words|user_messages|assistant_messages|system_messages|tool_messages|user_words|assistant_words):(>=|<=|=)(\d+)$"
+)
 _FIELD_CLAUSE_RE = re.compile(
     r"""
     ^(-?)
@@ -905,13 +908,17 @@ def _validate_predicate_context(predicate: QueryPredicate, *, unit: Literal["ses
                 raise ExpressionCompileError("field 'time' requires a value", field="time")
             if predicate.op not in {">=", "<="}:
                 raise ExpressionCompileError("field 'time' supports only >=, <=, >, <, and between", field="time")
-        if effective_field == "words":
+        if effective_field in COUNT_QUERY_FIELD_REGISTRY:
             if not predicate.values:
-                raise ExpressionCompileError("field 'words' requires a numeric value", field="words")
+                raise ExpressionCompileError(
+                    f"field {effective_field!r} requires a numeric value", field=effective_field
+                )
             try:
                 int(predicate.values[-1])
             except ValueError as exc:
-                raise ExpressionCompileError("field 'words' requires a numeric value", field="words") from exc
+                raise ExpressionCompileError(
+                    f"field {effective_field!r} requires a numeric value", field=effective_field
+                ) from exc
         return
     if isinstance(predicate, QueryNotPredicate):
         _validate_predicate_context(predicate.child, unit=unit)
@@ -1294,6 +1301,31 @@ def _validate_aggregate_group_field(unit: QueryUnitName, field: str) -> None:
         )
 
 
+def _query_unit_lowerer_kind(unit: QueryUnitName) -> QueryUnitLowererKind:
+    descriptor = query_unit_descriptor(unit)
+    if descriptor is None or not descriptor.terminal_supported:
+        raise ExpressionCompileError(f"unsupported terminal query unit {unit!r}", field=None)
+    return descriptor.lowerer_kind
+
+
+def _ensure_sql_row_pipeline_lowerer(unit: QueryUnitName, *, stage: str) -> None:
+    if _query_unit_lowerer_kind(unit) != "sql":
+        raise ExpressionCompileError(
+            f"pipeline `{stage}` currently supports SQL-backed terminal rows; "
+            "runtime-transform units need a streaming lowerer first",
+            field=stage.partition(" ")[0],
+        )
+
+
+def _ensure_sql_aggregate_pipeline_lowerer(unit: QueryUnitName, *, stage: str) -> None:
+    if _query_unit_lowerer_kind(unit) != "sql":
+        raise ExpressionCompileError(
+            f"pipeline `{stage}` currently supports SQL-backed terminal rows; "
+            "runtime-transform units need an aggregate lowerer first",
+            field=stage.partition(" ")[0],
+        )
+
+
 def _apply_pipeline_stage(source: QueryUnitSource, stage: str) -> QueryUnitSource:
     sort = _parse_sort_stage(stage)
     if sort is not None:
@@ -1304,12 +1336,7 @@ def _apply_pipeline_stage(source: QueryUnitSource, stage: str) -> QueryUnitSourc
                 )
             if source.group_by is not None:
                 raise ExpressionCompileError("pipeline `sort by time` must appear before `group by`", field="sort")
-            if source.unit not in {"message", "action", "block", "assertion"}:
-                raise ExpressionCompileError(
-                    "pipeline `sort by time` currently supports message/action/block/assertion rows; "
-                    "runtime-transform units need a streaming lowerer first",
-                    field="sort",
-                )
+            _ensure_sql_row_pipeline_lowerer(source.unit, stage="sort by time")
         elif source.aggregate != "count":
             raise ExpressionCompileError(
                 "pipeline `sort by count` and `sort by key` require an aggregate `count` stage",
@@ -1320,12 +1347,7 @@ def _apply_pipeline_stage(source: QueryUnitSource, stage: str) -> QueryUnitSourc
                 "pipeline aggregate `sort by` must appear before `limit` and `offset`",
                 field="sort",
             )
-        if source.unit not in {"message", "action", "block", "assertion"}:
-            raise ExpressionCompileError(
-                "pipeline aggregate sorting currently supports message/action/block/assertion rows; "
-                "runtime-transform units need an aggregate lowerer first",
-                field="sort",
-            )
+        _ensure_sql_aggregate_pipeline_lowerer(source.unit, stage=f"sort by {sort.field}")
         return replace(
             source,
             sort=sort,
@@ -1342,12 +1364,7 @@ def _apply_pipeline_stage(source: QueryUnitSource, stage: str) -> QueryUnitSourc
             raise ExpressionCompileError("pipeline `sort by time` cannot feed aggregate stages", field="group")
         if source.limit is not None or source.offset is not None:
             raise ExpressionCompileError("pipeline `group by` must appear before `limit` and `offset`", field="group")
-        if source.unit not in {"message", "action", "block", "assertion"}:
-            raise ExpressionCompileError(
-                "pipeline `group by` currently supports message/action/block/assertion rows; "
-                "runtime-transform units need an aggregate lowerer first",
-                field="group",
-            )
+        _ensure_sql_aggregate_pipeline_lowerer(source.unit, stage="group by")
         _validate_aggregate_group_field(source.unit, group_by)
         return replace(
             source,
@@ -1360,12 +1377,7 @@ def _apply_pipeline_stage(source: QueryUnitSource, stage: str) -> QueryUnitSourc
     if _parse_count_stage(stage):
         if source.limit is not None or source.offset is not None:
             raise ExpressionCompileError("pipeline `count` must appear before `limit` and `offset`", field="count")
-        if source.unit not in {"message", "action", "block", "assertion"}:
-            raise ExpressionCompileError(
-                "pipeline `count` currently supports message/action/block/assertion rows; "
-                "runtime-transform units need an aggregate lowerer first",
-                field="count",
-            )
+        _ensure_sql_aggregate_pipeline_lowerer(source.unit, stage="count")
         return replace(
             source,
             aggregate="count",
@@ -1984,6 +1996,11 @@ class _SpecAccumulator:
                 else:  # "="
                     self.min_words = tok.number
                     self.max_words = tok.number
+            else:
+                raise ExpressionCompileError(
+                    f"field {tok.field!r} is supported only inside `sessions where` Boolean queries",
+                    field=tok.field,
+                )
             return
 
         if isinstance(tok, _CountRangeToken):
@@ -1993,6 +2010,11 @@ class _SpecAccumulator:
             elif tok.field == "words":
                 self.min_words = tok.min_number
                 self.max_words = tok.max_number
+            else:
+                raise ExpressionCompileError(
+                    f"field {tok.field!r} is supported only inside `sessions where` Boolean queries",
+                    field=tok.field,
+                )
             return
 
         if isinstance(tok, _DateComparisonToken):

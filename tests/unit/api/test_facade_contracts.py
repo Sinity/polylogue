@@ -1454,6 +1454,139 @@ async def test_search_envelope_returns_typed_envelope_on_empty_archive(
         await archive.close()
 
 
+async def test_search_envelope_executes_role_count_boolean_predicate(tmp_path: Path) -> None:
+    """``search_envelope()`` executes role-split count predicates through the shared DSL."""
+    archive = _archive(tmp_path)
+    try:
+        with ArchiveStore(archive.config.archive_root) as archive_db:
+            archive_db.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="role-count-hit",
+                    title="Role Count Hit",
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id="u1",
+                            role=Role.USER,
+                            text="one question",
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="one question")],
+                        ),
+                        ParsedMessage(
+                            provider_message_id="u2",
+                            role=Role.USER,
+                            text="second question",
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="second question")],
+                        ),
+                        ParsedMessage(
+                            provider_message_id="a1",
+                            role=Role.ASSISTANT,
+                            text="one two three four five",
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="one two three four five")],
+                        ),
+                    ],
+                )
+            )
+            archive_db.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="role-count-miss",
+                    title="Role Count Miss",
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id="u1",
+                            role=Role.USER,
+                            text="one question",
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="one question")],
+                        ),
+                        ParsedMessage(
+                            provider_message_id="a1",
+                            role=Role.ASSISTANT,
+                            text="one two three four five",
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="one two three four five")],
+                        ),
+                    ],
+                )
+            )
+
+        envelope = await archive.search_envelope(
+            "sessions where user_messages >= 2 AND assistant_words between 5 and 6"
+        )
+
+        assert [hit.session.id for hit in envelope.hits] == ["codex-session:role-count-hit"]
+    finally:
+        await archive.close()
+
+
+async def test_search_envelope_paginates_filter_only_boolean_predicates(tmp_path: Path) -> None:
+    """Filter-only DSL envelopes honor cursor offsets when fetching the next page."""
+    archive = _archive(tmp_path)
+    try:
+        with ArchiveStore(archive.config.archive_root) as archive_db:
+            for index in range(3):
+                archive_db.write_parsed(
+                    ParsedSession(
+                        source_name=Provider.CODEX,
+                        provider_session_id=f"role-count-page-{index}",
+                        title=f"Role Count Page {index}",
+                        messages=[
+                            ParsedMessage(
+                                provider_message_id=f"u{index}",
+                                role=Role.USER,
+                                text=f"page {index} question",
+                                blocks=[
+                                    ParsedContentBlock(
+                                        type=BlockType.TEXT,
+                                        text=f"page {index} question",
+                                    )
+                                ],
+                            )
+                        ],
+                    )
+                )
+
+        query = "sessions where user_messages >= 1"
+        first = await archive.search_envelope(query, limit=1)
+        assert first.total == 3
+        assert len(first.hits) == 1
+        assert first.next_cursor is not None
+
+        second = await archive.search_envelope(query, limit=1, cursor=first.next_cursor)
+
+        assert second.total == 3
+        assert len(second.hits) == 1
+        assert second.hits[0].session.id != first.hits[0].session.id
+    finally:
+        await archive.close()
+
+
+async def test_query_sessions_sampled_text_query_uses_search_kwargs(tmp_path: Path) -> None:
+    """Sampled specs with text queries do not leak list-only kwargs into FTS search."""
+    archive = _archive(tmp_path)
+    try:
+        with ArchiveStore(archive.config.archive_root) as archive_db:
+            archive_db.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="sampled-text-query",
+                    title="Sampled Text Query",
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id="u1",
+                            role=Role.USER,
+                            text="sampled needle",
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="sampled needle")],
+                        )
+                    ],
+                )
+            )
+
+        rows = await archive.query_sessions(query="sampled needle", sample=1, limit=5)
+
+        assert [row["id"] for row in rows] == ["codex-session:sampled-text-query"]
+    finally:
+        await archive.close()
+
+
 async def test_query_units_returns_typed_envelope_on_empty_archive(tmp_path: Path) -> None:
     """``query_units()`` returns a typed terminal-unit envelope even with no rows."""
     from polylogue.surfaces.payloads import QueryUnitEnvelope

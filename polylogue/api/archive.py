@@ -231,6 +231,7 @@ def _archive_query_kwargs(spec: SessionQuerySpec, *, default_limit: int | None) 
         "since_ms": _archive_query_date_ms("since", spec.since),
         "until_ms": _archive_query_date_ms("until", spec.until),
         "since_session_id": spec.since_session_id,
+        "boolean_predicate": spec.boolean_predicate,
     }
     if limit is not None:
         kwargs["limit"] = limit
@@ -255,12 +256,34 @@ def _archive_list_summaries_for_spec(
     spec: SessionQuerySpec,
     *,
     default_limit: int,
+    limit: int | None = None,
+    offset: int | None = None,
 ) -> list[ArchiveSessionSummary]:
     query_text = _archive_text_query(spec)
     query_kwargs = _archive_query_kwargs(spec, default_limit=default_limit)
+    if limit is not None:
+        query_kwargs["limit"] = limit
+    if offset is not None:
+        query_kwargs["offset"] = offset
     if query_text is not None:
+        query_kwargs.pop("sample", None)
         return [archive.read_summary(hit.session_id) for hit in archive.search_summaries(query_text, **query_kwargs)]
     return cast(list[ArchiveSessionSummary], archive.list_summaries(**query_kwargs))
+
+
+def _archive_search_hits_for_spec(
+    archive: Any,
+    spec: SessionQuerySpec,
+    query_text: str,
+    *,
+    limit: int,
+    offset: int,
+) -> list[Any]:
+    query_kwargs = _archive_query_kwargs(spec, default_limit=None)
+    query_kwargs.pop("sample", None)
+    query_kwargs["limit"] = limit
+    query_kwargs["offset"] = offset
+    return cast(list[Any], archive.search_summaries(query_text, **query_kwargs))
 
 
 def _archive_count_sessions_for_spec(archive: Any, spec: SessionQuerySpec) -> int:
@@ -2441,18 +2464,21 @@ class PolylogueArchiveMixin:
         without losing or duplicating hits even when the archive grew
         between requests (#1268).
         """
+        from polylogue.archive.query.expression import compile_expression_into
+        from polylogue.archive.query.search_hits import session_search_hit_from_summary
         from polylogue.archive.query.spec import SessionQuerySpec
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
         from polylogue.surfaces.payloads import (
             InvalidSearchCursorError,
+            SessionSearchHitPayload,
             build_search_envelope,
             decode_search_cursor,
             search_cursor_lane_matches_request,
         )
 
-        spec = SessionQuerySpec.from_params(
+        base_spec = SessionQuerySpec.from_params(
             {
-                "query": query,
+                "query": "",
                 "origin": origin,
                 "since": since,
                 "until": until,
@@ -2464,6 +2490,7 @@ class PolylogueArchiveMixin:
             },
             strict=True,
         )
+        spec = compile_expression_into(query, base_spec) if query.strip() else base_spec
         decoded_cursor = decode_search_cursor(spec.cursor) if spec.cursor else None
         if decoded_cursor is not None and not search_cursor_lane_matches_request(
             decoded_cursor.lane,
@@ -2477,45 +2504,53 @@ class PolylogueArchiveMixin:
         display_offset = spec.offset
         fetch_offset = decoded_cursor.r if decoded_cursor is not None else display_offset
         fetch_limit = display_limit * 2 if decoded_cursor is not None else display_limit
-        origins = spec.origins
-        excluded_origins = spec.excluded_origins
+        query_text = _archive_text_query(spec)
         with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            if query.strip():
-                hits = archive.search_summaries(
-                    query,
+            if query_text is not None:
+                hits = _archive_search_hits_for_spec(
+                    archive,
+                    spec,
+                    query_text,
                     limit=fetch_limit,
                     offset=fetch_offset,
-                    sort=spec.sort,
-                    origins=origins,
-                    excluded_origins=excluded_origins,
-                    since_ms=_archive_query_date_ms("since", since),
-                    until_ms=_archive_query_date_ms("until", until),
                 )
-                total = archive.count_search_sessions(
-                    query,
-                    origins=origins,
-                    excluded_origins=excluded_origins,
-                    since_ms=_archive_query_date_ms("since", since),
-                    until_ms=_archive_query_date_ms("until", until),
-                )
+                total = _archive_count_sessions_for_spec(archive, spec)
                 hit_payloads = tuple(
                     _archive_search_hit_to_payload(hit, archive.read_summary(hit.session_id)) for hit in hits
                 )
+            elif query.strip():
+                summaries = _archive_list_summaries_for_spec(
+                    archive,
+                    spec,
+                    default_limit=display_limit,
+                    limit=fetch_limit,
+                    offset=fetch_offset,
+                )
+                total = _archive_count_sessions_for_spec(archive, spec)
+                hit_payloads = tuple(
+                    SessionSearchHitPayload.from_search_hit(
+                        session_search_hit_from_summary(
+                            _archive_summary_to_domain(summary),
+                            rank=fetch_offset + index,
+                            retrieval_lane=spec.retrieval_lane,
+                            match_surface="session",
+                            message_id=None,
+                            snippet=None,
+                        ),
+                        message_count=summary.message_count,
+                    )
+                    for index, summary in enumerate(summaries, start=1)
+                )
             else:
                 hit_payloads = ()
-                total = archive.count_sessions(
-                    origins=origins,
-                    excluded_origins=excluded_origins,
-                    since_ms=_archive_query_date_ms("since", since),
-                    until_ms=_archive_query_date_ms("until", until),
-                )
+                total = _archive_count_sessions_for_spec(archive, spec)
         return build_search_envelope(
             hit_payloads,
             total=total,
             limit=display_limit,
             offset=display_offset,
             query=query,
-            retrieval_lane="dialogue" if query.strip() else spec.retrieval_lane,
+            retrieval_lane="dialogue" if query_text is not None else spec.retrieval_lane,
             sort=spec.sort,
             cursor=decoded_cursor,
         )
