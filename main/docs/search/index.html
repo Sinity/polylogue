@@ -561,9 +561,12 @@ polylogue 'tool:bash AND NOT tag:stale'
 <p>Negation is supported for fields that are semantically safe to negate, such as
 <code>origin</code>, <code>tag</code>, <code>tool</code>, and <code>action</code>.</p>
 <h3>Comparisons And Ranges</h3>
-<p>Readable comparisons are supported for message counts, word counts, and dates:</p>
+<p>Readable comparisons are supported for message counts, word counts, numeric
+durations/tokens, and dates:</p>
 <pre><code class="language-bash">polylogue 'messages &gt;= 5 AND messages &lt;= 20'
 polylogue 'words between 100 and 500'
+polylogue 'sessions where duration_ms &gt;= 60000'
+polylogue 'messages where input_tokens &gt;= 1000 AND duration_ms between 2000 and 3000'
 polylogue 'date between 2026-06-01 and 2026-06-17'
 </code></pre>
 <p>Explicit Boolean queries can also compare the session aggregate columns already
@@ -580,6 +583,12 @@ polylogue 'sessions where tool_use_messages &gt;= 1 AND paste_messages = 0'
 rows. These fields are SQL-backed session predicates; use them in
 <code>sessions where ...</code> Boolean queries or as <code>session.&lt;field&gt;</code> predicates inside
 terminal unit queries.</p>
+<p>Supported non-count numeric fields are <code>duration_ms</code> on sessions and messages,
+plus message-scoped <code>input_tokens</code>, <code>output_tokens</code>, <code>cache_read_tokens</code>, and
+<code>cache_write_tokens</code>. Session <code>duration_ms</code> uses the archive's reported session
+duration; message <code>duration_ms</code> uses the stored per-message duration. Message
+numeric fields are accepted in <code>messages where ...</code> terminal queries and
+<code>exists message(...)</code> structural predicates.</p>
 <p>Compact count syntax is equivalent where available:</p>
 <pre><code class="language-bash">polylogue messages:&gt;=5 words:&lt;=500
 </code></pre>
@@ -596,15 +605,15 @@ one child row matching the nested predicate.</p>
 <tbody>
 <tr>
 <td><code>message</code></td>
-<td><code>action</code>, <code>command</code>, <code>output</code>, <code>path</code>, <code>role</code>, <code>text</code>, <code>tool</code>, <code>type</code>, <code>words</code></td>
+<td><code>action</code>, <code>cache_read_tokens</code>, <code>cache_write_tokens</code>, <code>command</code>, <code>duration_ms</code>, <code>input_tokens</code>, <code>output</code>, <code>output_tokens</code>, <code>path</code>, <code>role</code>, <code>text</code>, <code>time</code>, <code>tool</code>, <code>type</code>, <code>words</code></td>
 </tr>
 <tr>
 <td><code>action</code></td>
-<td><code>action</code>, <code>command</code>, <code>output</code>, <code>path</code>, <code>text</code>, <code>tool</code>, <code>type</code></td>
+<td><code>action</code>, <code>command</code>, <code>output</code>, <code>path</code>, <code>text</code>, <code>time</code>, <code>tool</code>, <code>type</code></td>
 </tr>
 <tr>
 <td><code>block</code></td>
-<td><code>action</code>, <code>command</code>, <code>path</code>, <code>text</code>, <code>tool</code>, <code>type</code></td>
+<td><code>action</code>, <code>command</code>, <code>path</code>, <code>text</code>, <code>time</code>, <code>tool</code>, <code>type</code></td>
 </tr>
 <tr>
 <td><code>assertion</code></td>
