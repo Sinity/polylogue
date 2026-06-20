@@ -2483,16 +2483,13 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         from polylogue import Polylogue
         from polylogue.api.sync.bridge import run_coroutine_sync
+        from polylogue.paths import archive_root as configured_archive_root
 
-        archive_root = _web_reader_archive_root()
-        if archive_root is None:
-            self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "archive_unavailable")
-            return
+        archive_root = configured_archive_root()
         kinds = _csv_values(params, "kind")
-        limit_param = self._get_param(params, "limit")
-        limit = self._get_int(params, "limit", 50) if limit_param is not None else None
+        limit = self._get_int(params, "limit", 50)
         payload = run_coroutine_sync(
-            Polylogue(archive_root=archive_root, db_path=archive_root / "index.db").archive_debt(
+            Polylogue(archive_root=archive_root).archive_debt(
                 kinds=kinds or None,
                 only_actionable=self._get_bool(params, "only_actionable"),
                 limit=limit,
