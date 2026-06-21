@@ -557,6 +557,7 @@ _SESSION_SCOPED_STRUCTURAL_EXAMPLES: dict[str, str] = {
     "messages": "session.messages:>=10",
     "origin": "session.origin:claude-code-session",
     "paste_messages": "session.paste_messages:=0",
+    "path": "session.path:polylogue/archive",
     "repo": "session.repo:polylogue",
     "since": "session.since:7d",
     "system_messages": "session.system_messages:=0",

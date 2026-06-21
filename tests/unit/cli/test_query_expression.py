@@ -611,6 +611,19 @@ class TestBooleanQueryExpression:
         with pytest.raises(ExpressionCompileError, match="field 'session.action' is not supported"):
             parse_unit_source_expression("context-snapshots where session.action:file_edit")
 
+    def test_sql_terminal_unit_accepts_session_path_scope(self) -> None:
+        source = parse_unit_source_expression("messages where session.path:polylogue/archive AND role:assistant")
+
+        assert source is not None
+        predicate = cast(QueryBoolPredicate, source.predicate)
+        scoped_path = cast(QueryFieldPredicate, predicate.children[0])
+
+        assert scoped_path.field_ref is not None
+        assert scoped_path.field_ref.scope == "session"
+        assert scoped_path.field_ref.name == "path"
+        assert scoped_path.field_ref.source_name == "session.path"
+        assert scoped_path.field_ref.unit == "message"
+
     def test_pipeline_session_source_scopes_terminal_unit_query(self) -> None:
         source = parse_unit_source_expression(
             "sessions where repo:polylogue AND origin:claude-code-session | messages where role:assistant"

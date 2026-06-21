@@ -112,7 +112,7 @@ def test_runtime_terminal_units_expose_only_summary_available_session_scope() ->
     context_fields = set(terminal_query_fields("context-snapshots"))
     observed_fields = set(terminal_query_fields("observed-events"))
 
-    assert {"session.action", "session.tool", "session.has"}.issubset(message_fields)
+    assert {"session.action", "session.tool", "session.path", "session.has"}.issubset(message_fields)
     assert {"session.repo", "session.origin", "session.messages", "session.date"}.issubset(context_fields)
     assert {"session.repo", "session.origin", "session.messages", "session.date"}.issubset(observed_fields)
     assert context_fields.isdisjoint({"session.action", "session.tool", "session.path", "session.has"})
