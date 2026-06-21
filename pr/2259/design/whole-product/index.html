@@ -1,0 +1,798 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Whole Product Vision — Polylogue</title>
+    <style>
+
+        :root {
+            --bg-primary: #0B0E14;
+            --bg-secondary: #13171F;
+            --bg-tertiary: #1A1F2A;
+            --text-primary: #E6E8EC;
+            --text-secondary: #8B919A;
+            --text-tertiary: #555B63;
+            --accent: #3B82F6;
+            --accent-hover: #2563EB;
+            --border: #1E2430;
+            --shadow: rgba(0, 0, 0, 0.4);
+            --green: #22C55E;
+            --yellow: #EAB308;
+            --red: #EF4444;
+            --provider-claude-code: #D97706;
+            --provider-codex: #3B82F6;
+            --provider-chatgpt: #10B981;
+            --provider-gemini: #8B5CF6;
+            --provider-claude-ai: #F59E0B;
+            --header-height: 56px;
+            --nav-width: 240px;
+            --content-max-width: 720px;
+            --footer-height: 40px;
+            --font-body: &#39;Inter&#39;, system-ui, -apple-system, sans-serif;
+            --font-code: &#39;JetBrains Mono&#39;, &#39;Fira Code&#39;, monospace;
+        }
+        @media (prefers-color-scheme: light) {
+            :root {
+                --bg-primary: #FAFAFA;
+                --bg-secondary: #FFFFFF;
+                --bg-tertiary: #F3F4F6;
+                --text-primary: #111827;
+                --text-secondary: #6B7280;
+                --text-tertiary: #9CA3AF;
+                --border: #E5E7EB;
+                --shadow: rgba(0, 0, 0, 0.08);
+            }
+        }
+
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        html { font-size: 15px; }
+        body {
+            font-family: var(--font-body);
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+            -webkit-font-smoothing: antialiased;
+        }
+        .site-header {
+            position: sticky; top: 0; z-index: 10;
+            height: var(--header-height);
+            background-color: var(--bg-secondary);
+            border-bottom: 1px solid var(--border);
+            display: flex; align-items: center; padding: 0 1.5rem; gap: 1rem;
+        }
+        .site-header .logo { font-weight: 700; font-size: 1.1rem; color: var(--text-primary); text-decoration: none; white-space: nowrap; }
+        .site-header .logo span { color: var(--accent); }
+        .site-header .search-bar { flex: 1; max-width: 400px; margin: 0 auto; }
+        .site-header .search-bar input {
+            width: 100%; padding: 0.4rem 0.75rem; border-radius: 6px;
+            border: 1px solid var(--border); background-color: var(--bg-tertiary);
+            color: var(--text-primary); font-family: var(--font-body); font-size: 0.9rem;
+        }
+        .site-header .theme-toggle {
+            background: none; border: 1px solid var(--border); border-radius: 6px;
+            padding: 0.3rem 0.6rem; cursor: pointer; color: var(--text-secondary); font-size: 0.9rem;
+        }
+        .page-layout { display: flex; min-height: calc(100vh - var(--header-height)); }
+        .site-nav {
+            width: var(--nav-width); flex-shrink: 0; padding: 2rem 1.5rem;
+            background-color: var(--bg-primary); border-right: 1px solid var(--border);
+            overflow-y: auto; position: sticky; top: var(--header-height);
+            height: calc(100vh - var(--header-height));
+        }
+        .site-nav .nav-section { margin-bottom: 1.5rem; }
+        .site-nav .nav-section-title { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-tertiary); margin-bottom: 0.5rem; }
+        .site-nav a { display: block; padding: 0.3rem 0; color: var(--text-secondary); text-decoration: none; font-size: 0.9rem; }
+        .site-nav a:hover { color: var(--text-primary); }
+        .site-nav a.active { color: var(--accent); font-weight: 500; }
+        .content { flex: 1; max-width: var(--content-max-width); margin: 0 auto; padding: 2rem 2rem 4rem; width: 100%; }
+        h1 { font-size: 1.87rem; font-weight: 600; line-height: 1.3; margin: 2rem 0 1rem; }
+        h1:first-child { margin-top: 0; }
+        h2 { font-size: 1.47rem; font-weight: 600; line-height: 1.3; margin: 2rem 0 0.75rem; }
+        h3 { font-size: 1.2rem; font-weight: 600; line-height: 1.4; margin: 1.5rem 0 0.5rem; }
+        p { margin-bottom: 1rem; }
+        a { color: var(--accent); text-decoration: none; }
+        a:hover { color: var(--accent-hover); }
+        code { font-family: var(--font-code); font-size: 0.87rem; background-color: var(--bg-tertiary); padding: 0.15em 0.4em; border-radius: 3px; }
+        pre { background-color: var(--bg-secondary); border: 1px solid var(--border); border-radius: 6px; padding: 1rem 1.25rem; overflow-x: auto; margin-bottom: 1.25rem; font-size: 0.87rem; line-height: 1.5; }
+        pre code { background: none; padding: 0; font-size: inherit; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 1.25rem; font-size: 0.9rem; }
+        th, td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid var(--border); }
+        th { font-weight: 600; color: var(--text-secondary); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }
+        .card { background-color: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem; margin-bottom: 1rem; }
+        .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+        .stat-card { background-color: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem; text-align: center; }
+        .stat-card .stat-value { font-size: 2rem; font-weight: 700; color: var(--accent); }
+        .stat-card .stat-label { font-size: 0.8rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 0.25rem; }
+        .badge { display: inline-block; padding: 0.15em 0.5em; border-radius: 4px; font-size: 0.8rem; font-weight: 500; }
+        .badge-green { background-color: rgba(34, 197, 94, 0.15); color: var(--green); }
+        .badge-yellow { background-color: rgba(234, 179, 8, 0.15); color: var(--yellow); }
+        .badge-red { background-color: rgba(239, 68, 68, 0.15); color: var(--red); }
+        .site-footer { height: var(--footer-height); display: flex; align-items: center; justify-content: space-between; padding: 0 1.5rem; border-top: 1px solid var(--border); font-size: 0.8rem; color: var(--text-tertiary); }
+        .site-footer a { color: var(--text-secondary); }
+        .home-hero { text-align: center; padding: 4rem 0 3rem; }
+        .home-hero h1 { font-size: 3rem; margin-bottom: 0.5rem; }
+        .home-hero .tagline { font-size: 1.2rem; color: var(--text-secondary); margin-bottom: 2rem; }
+        .home-hero .hero-search { max-width: 500px; margin: 0 auto 3rem; }
+        .home-hero .hero-search input { width: 100%; padding: 0.75rem 1rem; border-radius: 8px; border: 1px solid var(--border); background-color: var(--bg-secondary); color: var(--text-primary); font-family: var(--font-body); font-size: 1rem; }
+        .home-links { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; margin-top: 2rem; }
+        .home-links a { display: inline-block; padding: 0.6rem 1.5rem; border-radius: 6px; background-color: var(--bg-secondary); border: 1px solid var(--border); font-weight: 500; }
+        .home-links a:hover { background-color: var(--bg-tertiary); border-color: var(--accent); }
+        @media (max-width: 768px) {
+            .site-nav { display: none; }
+            .content { padding: 1.5rem 1rem; }
+            .home-hero h1 { font-size: 2rem; }
+        }
+        @media print {
+            .site-header, .site-nav, .site-footer { display: none; }
+            .content { max-width: none; padding: 0; }
+            body { background: white; color: black; }
+        }
+
+pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.highlight .hll { background-color: #49483e }
+.highlight { background: #272822; color: #F8F8F2 }
+.highlight .c { color: #959077 } /* Comment */
+.highlight .err { color: #ED007E; background-color: #1E0010 } /* Error */
+.highlight .esc { color: #F8F8F2 } /* Escape */
+.highlight .g { color: #F8F8F2 } /* Generic */
+.highlight .k { color: #66D9EF } /* Keyword */
+.highlight .l { color: #AE81FF } /* Literal */
+.highlight .n { color: #F8F8F2 } /* Name */
+.highlight .o { color: #FF4689 } /* Operator */
+.highlight .x { color: #F8F8F2 } /* Other */
+.highlight .p { color: #F8F8F2 } /* Punctuation */
+.highlight .ch { color: #959077 } /* Comment.Hashbang */
+.highlight .cm { color: #959077 } /* Comment.Multiline */
+.highlight .cp { color: #959077 } /* Comment.Preproc */
+.highlight .cpf { color: #959077 } /* Comment.PreprocFile */
+.highlight .c1 { color: #959077 } /* Comment.Single */
+.highlight .cs { color: #959077 } /* Comment.Special */
+.highlight .gd { color: #FF4689 } /* Generic.Deleted */
+.highlight .ge { color: #F8F8F2; font-style: italic } /* Generic.Emph */
+.highlight .ges { color: #F8F8F2; font-weight: bold; font-style: italic } /* Generic.EmphStrong */
+.highlight .gr { color: #F8F8F2 } /* Generic.Error */
+.highlight .gh { color: #F8F8F2 } /* Generic.Heading */
+.highlight .gi { color: #A6E22E } /* Generic.Inserted */
+.highlight .go { color: #66D9EF } /* Generic.Output */
+.highlight .gp { color: #FF4689; font-weight: bold } /* Generic.Prompt */
+.highlight .gs { color: #F8F8F2; font-weight: bold } /* Generic.Strong */
+.highlight .gu { color: #959077 } /* Generic.Subheading */
+.highlight .gt { color: #F8F8F2 } /* Generic.Traceback */
+.highlight .kc { color: #66D9EF } /* Keyword.Constant */
+.highlight .kd { color: #66D9EF } /* Keyword.Declaration */
+.highlight .kn { color: #FF4689 } /* Keyword.Namespace */
+.highlight .kp { color: #66D9EF } /* Keyword.Pseudo */
+.highlight .kr { color: #66D9EF } /* Keyword.Reserved */
+.highlight .kt { color: #66D9EF } /* Keyword.Type */
+.highlight .ld { color: #E6DB74 } /* Literal.Date */
+.highlight .m { color: #AE81FF } /* Literal.Number */
+.highlight .s { color: #E6DB74 } /* Literal.String */
+.highlight .na { color: #A6E22E } /* Name.Attribute */
+.highlight .nb { color: #F8F8F2 } /* Name.Builtin */
+.highlight .nc { color: #A6E22E } /* Name.Class */
+.highlight .no { color: #66D9EF } /* Name.Constant */
+.highlight .nd { color: #A6E22E } /* Name.Decorator */
+.highlight .ni { color: #F8F8F2 } /* Name.Entity */
+.highlight .ne { color: #A6E22E } /* Name.Exception */
+.highlight .nf { color: #A6E22E } /* Name.Function */
+.highlight .nl { color: #F8F8F2 } /* Name.Label */
+.highlight .nn { color: #F8F8F2 } /* Name.Namespace */
+.highlight .nx { color: #A6E22E } /* Name.Other */
+.highlight .py { color: #F8F8F2 } /* Name.Property */
+.highlight .nt { color: #FF4689 } /* Name.Tag */
+.highlight .nv { color: #F8F8F2 } /* Name.Variable */
+.highlight .ow { color: #FF4689 } /* Operator.Word */
+.highlight .pm { color: #F8F8F2 } /* Punctuation.Marker */
+.highlight .w { color: #F8F8F2 } /* Text.Whitespace */
+.highlight .mb { color: #AE81FF } /* Literal.Number.Bin */
+.highlight .mf { color: #AE81FF } /* Literal.Number.Float */
+.highlight .mh { color: #AE81FF } /* Literal.Number.Hex */
+.highlight .mi { color: #AE81FF } /* Literal.Number.Integer */
+.highlight .mo { color: #AE81FF } /* Literal.Number.Oct */
+.highlight .sa { color: #E6DB74 } /* Literal.String.Affix */
+.highlight .sb { color: #E6DB74 } /* Literal.String.Backtick */
+.highlight .sc { color: #E6DB74 } /* Literal.String.Char */
+.highlight .dl { color: #E6DB74 } /* Literal.String.Delimiter */
+.highlight .sd { color: #E6DB74 } /* Literal.String.Doc */
+.highlight .s2 { color: #E6DB74 } /* Literal.String.Double */
+.highlight .se { color: #AE81FF } /* Literal.String.Escape */
+.highlight .sh { color: #E6DB74 } /* Literal.String.Heredoc */
+.highlight .si { color: #E6DB74 } /* Literal.String.Interpol */
+.highlight .sx { color: #E6DB74 } /* Literal.String.Other */
+.highlight .sr { color: #E6DB74 } /* Literal.String.Regex */
+.highlight .s1 { color: #E6DB74 } /* Literal.String.Single */
+.highlight .ss { color: #E6DB74 } /* Literal.String.Symbol */
+.highlight .bp { color: #F8F8F2 } /* Name.Builtin.Pseudo */
+.highlight .fm { color: #A6E22E } /* Name.Function.Magic */
+.highlight .vc { color: #F8F8F2 } /* Name.Variable.Class */
+.highlight .vg { color: #F8F8F2 } /* Name.Variable.Global */
+.highlight .vi { color: #F8F8F2 } /* Name.Variable.Instance */
+.highlight .vm { color: #F8F8F2 } /* Name.Variable.Magic */
+.highlight .il { color: #AE81FF } /* Literal.Number.Integer.Long */
+    </style>
+    
+</head>
+<body>
+    <header class="site-header">
+        <a href="/polylogue/" class="logo">poly<span>logue</span></a>
+        <div class="search-bar">
+            <input type="search" placeholder="Search docs..." id="search-input">
+        </div>
+        <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme">
+            <span class="light-icon">☀</span>
+            <span class="dark-icon">☾</span>
+        </button>
+    </header>
+    <div class="page-layout">
+        <nav class="site-nav" id="site-nav">
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Documentation</div>
+                
+                <a href="/polylogue/docs/getting-started/" >
+                    Getting Started
+                </a>
+                
+                <a href="/polylogue/docs/search/" >
+                    Search
+                </a>
+                
+                <a href="/polylogue/docs/providers/" >
+                    Providers
+                </a>
+                
+                <a href="/polylogue/docs/insights/" >
+                    Insights
+                </a>
+                
+                <a href="/polylogue/docs/export/" >
+                    Export
+                </a>
+                
+                <a href="/polylogue/docs/daemon/" >
+                    Daemon
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Reference</div>
+                
+                <a href="/polylogue/reference/cli/" >
+                    CLI
+                </a>
+                
+                <a href="/polylogue/reference/mcp/" >
+                    MCP
+                </a>
+                
+                <a href="/polylogue/reference/api/" >
+                    API
+                </a>
+                
+                <a href="/polylogue/reference/config/" >
+                    Config
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Architecture</div>
+                
+                <a href="/polylogue/architecture/rings/" >
+                    Rings
+                </a>
+                
+                <a href="/polylogue/architecture/internals/" >
+                    Internals
+                </a>
+                
+                <a href="/polylogue/architecture/schema/" >
+                    Schema
+                </a>
+                
+                <a href="/polylogue/architecture/contributing/" >
+                    Contributing
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Verifiability</div>
+                
+                <a href="/polylogue/verifiability/catalog/" >
+                    Catalog
+                </a>
+                
+                <a href="/polylogue/verifiability/coverage/" >
+                    Coverage
+                </a>
+                
+                <a href="/polylogue/verifiability/mutation/" >
+                    Mutation
+                </a>
+                
+                <a href="/polylogue/verifiability/freshness/" >
+                    Freshness
+                </a>
+                
+                <a href="/polylogue/verifiability/drift/" >
+                    Drift
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Design</div>
+                
+                <a href="/polylogue/design/second-brain/" >
+                    Second Brain
+                </a>
+                
+                <a href="/polylogue/design/time-machine/" >
+                    Time Machine
+                </a>
+                
+                <a href="/polylogue/design/project-memory/" >
+                    Project Memory
+                </a>
+                
+                <a href="/polylogue/design/agent-first-mcp/" >
+                    Agent-First MCP
+                </a>
+                
+                <a href="/polylogue/design/archive-storytelling/" >
+                    Archive Storytelling
+                </a>
+                
+                <a href="/polylogue/design/whole-product/" class="active">
+                    Whole Product
+                </a>
+                
+            </div>
+            
+        </nav>
+        <main class="content">
+            
+<h1>Whole Product Vision</h1>
+<p>Polylogue: your AI memory.</p>
+<p>A local archive that remembers every AI session so you can find, trace,
+and understand your AI-assisted work across days, months, and years.</p>
+<h2>One-Line Description</h2>
+<p>Polylogue records every AI session, makes it searchable, and surfaces
+patterns you didn't know were there — all from a local SQLite archive on your
+machine.</p>
+<h2>First Experience</h2>
+<h3>30 seconds: bare <code>polylogue</code></h3>
+<p>The user installs polylogue, runs it with no arguments, and sees:</p>
+<pre><code>$ polylogue
+
+Polylogue — your AI memory
+Archive: /home/user/.local/share/polylogue/
+Sources configured: 1  (1 active, 0 stale)
+Last ingestion: 2 minutes ago
+
+Recent activity (7 days):
+  claude-code  28 sessions  142,000 words  $3.42
+  chatgpt       2 sessions    3,200 words  $0.00
+
+  Today                                    This week
+  polylogue/docs/design/time-machine.md   polylogue/storage/sqlite/archive_tiers/index.py
+  ── 2h 15min, 4 tool calls             ── 8 sessions, $1.20
+
+Quick search: polylogue &quot;error handling&quot;
+Full help:    polylogue --help
+</code></pre>
+<p>This is the zero-configuration landing. The user sees that polylogue is
+already working (if sources are configured), understands their usage at a
+glance, and gets immediate next actions.</p>
+<p>Time budget: &lt;500ms wall clock. Achievable because the status query is a
+handful of indexed <code>COUNT</code> and <code>SUM</code> queries.</p>
+<h3>5 minutes: first search</h3>
+<pre><code>$ polylogue &quot;schema rebuild&quot;
+  claude-code:abc123  2026-03-10  Schema is fresh-only, no in-place upgrade chain
+  claude-code:def456  2026-03-15  Considered v3-&gt;v4 rebuild, accepted
+  claude-code:ghi789  2026-04-02  FTS rowid repair — schema impact
+  3 results (23ms)
+</code></pre>
+<p>The user searches for a concept they remember discussing. Results appear
+instantly. Clicking any result (in the web UI) or running <code>polylogue show</code>
+(in the CLI) opens the full session.</p>
+<h3>15 minutes: first insight</h3>
+<p>The user runs <code>polylogue stats</code> and sees something they didn't know:</p>
+<pre><code>$ polylogue stats
+Archive: 2025-06-12 to 2026-05-04  (327 days)
+Sessions: 1,847
+Messages: 284,012
+Total words: 12,847,234
+Total cost: $847.23
+
+Most active month: March 2026 (182 sessions, $92.41)
+Most active day: 2026-03-17 (14 sessions, $7.80)
+Provider split: claude-code 92%, chatgpt 5%, gemini 3%
+
+Your archive contains 12,847,234 words.
+That's roughly the length of 7 copies of &quot;War and Peace.&quot;
+</code></pre>
+<p>This is the hook. The user didn't know March 2026 was their busiest AI month.
+They didn't know they'd spent $847. The &quot;War and Peace&quot; comparison makes the
+scale tangible.</p>
+<h2>One-Week Habit Formation</h2>
+<h3>SessionStart hook (immediate value)</h3>
+<p>The SessionStart hook injects yesterday's summary into the agent's context
+before the first prompt. The user doesn't need to run a command — context
+arrives automatically.</p>
+<pre><code>[Polylogue — recent activity in polylogue/]
+Yesterday: feature/fix/schema-annotations — 4h, 12 tool calls, $0.87
+   Files: schema_inference.py, verification.py, runtime.py
+   Outcome: PR #795 opened
+
+3 days ago: fixed FTS trigger leak — 2h, $0.42
+</code></pre>
+<p>The user sees this in their first agent interaction of the day. It becomes
+background awareness — &quot;oh right, I was working on schema annotations.&quot;</p>
+<h3>Daily command: <code>polylogue --since yesterday</code></h3>
+<pre><code>$ polylogue --since yesterday
+
+Yesterday — 2026-05-03
+  claude-code  4 sessions  18,000 words  $0.87
+  Projects: polylogue (4)
+
+  feature/fix/schema-annotations               $0.52  3,200 words
+  devtools verify                               $0.21  1,100 words
+  PR body writing                               $0.08    400 words
+  SessionStart context check                    $0.06    300 words
+
+Cost yesterday: $0.87
+Cost this week: $3.42
+Cost this month: $0.87
+</code></pre>
+<p>A 2-second habit that answers &quot;what did I do yesterday&quot; and &quot;what did it cost.&quot;
+The same command works with <code>--since monday</code>, <code>--since &quot;last week&quot;</code>, or any
+natural-language time expression.</p>
+<h3>Weekly check: <code>polylogue analyze --cost-outlook</code></h3>
+<pre><code>$ polylogue analyze --cost-outlook --plan claude-pro
+Week of 2026-04-28 — 2026-05-04
+  claude-code  32 sessions  $18.42
+  chatgpt       2 sessions   $0.00
+  Total:                    $18.42
+
+Cost trend:
+  This week:   $18.42  ████████░░
+  Last week:   $22.10  ██████████░
+  2 weeks ago: $14.30  ██████░░░░
+
+Projection (month): ~$78 based on current rate.
+</code></pre>
+<p>The user develops cost awareness. No surprises at the end of the month.</p>
+<h2>One-Month Indispensability</h2>
+<h3>Project memory (context that persists)</h3>
+<p>After a month, the user has 30+ project memory entries accumulated across
+their repos. The SessionStart hook now injects:</p>
+<pre><code>[Project Memory — polylogue]
+Recent decisions (3):
+- Schema is fresh-only, no in-place upgrade chain (2026-03-10, 55 days ago)
+- Content hash excludes user metadata (2026-03-15, 50 days ago)
+- FTS5 tokenizer is unicode61, no porter stemmer (2026-03-20, 45 days ago)
+</code></pre>
+<p>The agent knows these decisions without being told. The user doesn't have to
+repeat themselves or rediscover failed approaches.</p>
+<h3>Time machine (a year of history)</h3>
+<p>With a year of archive data, the time machine surfaces patterns:</p>
+<pre><code>$ polylogue calendar --year 2025
+
+2025
+    Jun  █░░░░░░░░░░░░░  1 session   — first contact
+    Jul  ███░░░░█████░░  8 sessions  — exploration
+    Aug  ███░█░█████░░░  10 sessions
+    Sep  ███░█░████░░░░  8 sessions
+    Oct  ██░██░████░░░░  9 sessions
+    Nov  █████████████░  14 sessions — Claude Code adoption
+    Dec  █████░████░░░░  9 sessions
+</code></pre>
+<p>The heatmap reveals the adoption arc — from cautious exploration in June to
+daily usage by November.</p>
+<h3>Session continuity (seamless handoff)</h3>
+<p>The user finishes a session, opens a new one an hour later. The SessionStart
+hook injects:</p>
+<pre><code>[Polylogue — continuing from 1 hour ago]
+Previous session: feature/fix/schema-annotations (42 min)
+  Last action: ran devtools verify --quick
+  Outcome: format check passed, lint passed, 4 mypy errors remain
+  Files in play: polylogue/schemas/inference/semantic/runtime.py,
+                 polylogue/schemas/verification.py
+
+4 unresolved tasks from this session:
+  - Fix mypy errors in runtime.py (labeling)
+  - Add test for new annotation type
+  - Update docs/schema-annotations.md
+  - Open PR
+</code></pre>
+<p>The user picks up exactly where they left off. The agent already knows the
+context. Zero time spent re-establishing state.</p>
+<h2>Design Values</h2>
+<h3>Speed</h3>
+<p>Every interaction must feel instant. The archive is local — there is no
+network latency, no server round-trip, no cloud dependency.</p>
+<table>
+<thead>
+<tr>
+<th>Interaction</th>
+<th>Target</th>
+<th>Reality</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Bare <code>polylogue</code></td>
+<td>&lt;500ms</td>
+<td>Handful of indexed counts</td>
+</tr>
+<tr>
+<td>FTS5 search</td>
+<td>&lt;2s</td>
+<td>Single SQLite query, unicode61 tokenizer</td>
+</tr>
+<tr>
+<td>Heatmap render</td>
+<td>&lt;50ms</td>
+<td>One aggregation scan</td>
+</tr>
+<tr>
+<td>Story render</td>
+<td>&lt;5s</td>
+<td>Multiple queries + template assembly</td>
+</tr>
+<tr>
+<td>Web UI first paint</td>
+<td>&lt;1s</td>
+<td>Static files + API calls to local daemon</td>
+</tr>
+</tbody>
+</table>
+<p>If any operation exceeds its target, the performance is treated as a bug.</p>
+<h3>Trust</h3>
+<p>Every number in polylogue has provenance. The user should never wonder
+&quot;where did that come from?&quot;</p>
+<ul>
+<li><strong>Content hashing</strong>: archive writes are idempotent by SHA-256. If a
+session was ingested, its content hasn't been silently modified.</li>
+<li><strong>Verification dashboard</strong>: <code>polylogue ops doctor</code> audits the archive for
+integrity — schema consistency, foreign key violations, orphan records,
+FTS5 index health.</li>
+<li><strong>Provenance links</strong>: stories and insights link back to source sessions.
+Claims are verifiable.</li>
+<li><strong>No inference without evidence</strong>: derived data (session profiles, era
+labels) is stored alongside its provenance — materializer version, input
+data hash, compute timestamp. When inputs change, stale derivations are
+visible.</li>
+</ul>
+<h3>Discovery</h3>
+<p>The user should find things without knowing what to search for. The time
+machine, stories, and heatmap are discovery surfaces — they reveal patterns
+the user wasn't looking for.</p>
+<table>
+<thead>
+<tr>
+<th>Surface</th>
+<th>Discovery mode</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Calendar heatmap</td>
+<td>&quot;I didn't realize I was that active in March&quot;</td>
+</tr>
+<tr>
+<td>This day in history</td>
+<td>&quot;Oh right, I was debugging that exact same thing last year&quot;</td>
+</tr>
+<tr>
+<td>Era detection</td>
+<td>&quot;That was my Claude Code adoption month&quot;</td>
+</tr>
+<tr>
+<td>Feature Birth</td>
+<td>&quot;That feature took 12 sessions across 3 weeks&quot;</td>
+</tr>
+<tr>
+<td>AI Journey</td>
+<td>&quot;I've gone from 1 session/week to 5 sessions/day&quot;</td>
+</tr>
+<tr>
+<td>Stats</td>
+<td>&quot;I've written 12 million words to AI — that's 20 novels&quot;</td>
+</tr>
+</tbody>
+</table>
+<p>No query language required. The user pans and zooms through their own history.</p>
+<h2>Surface Matrix</h2>
+<p>Every feature is available through every surface. The surface determines
+presentation, not capability.</p>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>CLI</th>
+<th>MCP</th>
+<th>Web</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Search</td>
+<td><code>polylogue &quot;query&quot;</code></td>
+<td><code>polylogue_search</code></td>
+<td>Search bar</td>
+</tr>
+<tr>
+<td>List sessions</td>
+<td><code>polylogue list --since ...</code></td>
+<td><code>polylogue_list_sessions</code></td>
+<td>Session list</td>
+</tr>
+<tr>
+<td>Show session</td>
+<td><code>polylogue show &lt;id&gt;</code></td>
+<td><code>polylogue_get_session</code></td>
+<td>Session detail page</td>
+</tr>
+<tr>
+<td>Stats</td>
+<td><code>polylogue stats</code></td>
+<td><code>polylogue_get_stats</code></td>
+<td>Dashboard stats panel</td>
+</tr>
+<tr>
+<td>Cost</td>
+<td><code>polylogue analyze --cost-outlook</code></td>
+<td><code>polylogue_get_cost</code></td>
+<td>Dashboard cost panel</td>
+</tr>
+<tr>
+<td>Calendar heatmap</td>
+<td><code>polylogue calendar</code></td>
+<td><code>polylogue_calendar</code></td>
+<td>Calendar page</td>
+</tr>
+<tr>
+<td>Timeline</td>
+<td><code>polylogue timeline</code></td>
+<td><code>polylogue_timeline</code></td>
+<td>Timeline page</td>
+</tr>
+<tr>
+<td>Eras</td>
+<td><code>polylogue eras</code></td>
+<td><code>polylogue_get_eras</code></td>
+<td>Era browser</td>
+</tr>
+<tr>
+<td>This day</td>
+<td><code>polylogue this-day</code></td>
+<td><code>polylogue_this_day</code></td>
+<td>&quot;On this day&quot; panel</td>
+</tr>
+<tr>
+<td>Feature birth</td>
+<td><code>polylogue story feature-birth</code></td>
+<td><code>polylogue_story_feature_birth</code></td>
+<td>Story page</td>
+</tr>
+<tr>
+<td>Day in life</td>
+<td><code>polylogue story day-in-life</code></td>
+<td><code>polylogue_story_day_in_life</code></td>
+<td>Story page</td>
+</tr>
+<tr>
+<td>Refactor story</td>
+<td><code>polylogue story refactor</code></td>
+<td><code>polylogue_story_refactor</code></td>
+<td>Story page</td>
+</tr>
+<tr>
+<td>AI journey</td>
+<td><code>polylogue story ai-journey</code></td>
+<td><code>polylogue_story_ai_journey</code></td>
+<td>Story page</td>
+</tr>
+<tr>
+<td>Project memory</td>
+<td><code>polylogue memory</code></td>
+<td><code>polylogue_get_project_memory</code></td>
+<td>Memory page</td>
+</tr>
+<tr>
+<td>Tags</td>
+<td><code>polylogue find QUERY then mark --tag-add TAG</code></td>
+<td><code>polylogue_tag_session</code></td>
+<td>Tag editor</td>
+</tr>
+<tr>
+<td>Health check</td>
+<td><code>polylogue ops doctor</code></td>
+<td><code>polylogue_health</code></td>
+<td>Health dashboard</td>
+</tr>
+<tr>
+<td>MCP server</td>
+<td><code>polylogue mcp</code></td>
+<td>(self)</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Daemon</td>
+<td><code>polylogued</code></td>
+<td><code>polylogue_shutdown</code></td>
+<td>Daemon status</td>
+</tr>
+</tbody>
+</table>
+<p>The CLI is the primary human interface. MCP is the primary agent interface.
+Web is the exploration and sharing interface. Same data, same operations,
+different presentations.</p>
+<h2>Non-Goals</h2>
+<ul>
+<li>Not a cloud service. Polylogue data stays on the user's machine. No
+telemetry, no sync, no accounts.</li>
+<li>Not a replacement for <a href="http://CLAUDE.md">CLAUDE.md</a>. Polylogue provides context <em>about</em> AI
+usage; <a href="http://CLAUDE.md">CLAUDE.md</a> provides instructions <em>for</em> AI usage.</li>
+<li>Not a project management tool. Polylogue surfaces work that happened; it
+does not plan work that should happen.</li>
+<li>Not a code search engine. FTS5 indexes session text, not code
+repositories. Cross-reference between sessions and code is via
+<code>actions.affected_paths</code>, not via code indexing.</li>
+<li>Not a general note-taking tool. Polylogue is for AI sessions
+specifically. General notes, todos, and documentation belong in a
+knowledgebase, not in the archive.</li>
+</ul>
+<h2>Build Order</h2>
+<p>This is a 12-18 month vision. The build order prioritizes immediate value:</p>
+<ol>
+<li><strong>Ship the core</strong> (current): ingestion, FTS5 search, session profiles.</li>
+<li><strong>Surface the basics</strong>: bare <code>polylogue</code> status, <code>polylogue stats</code>,
+<code>polylogue analyze --cost-outlook</code>, <code>polylogue --since</code>.</li>
+<li><strong>Add discovery</strong>: calendar heatmap, timeline, this-day-in-history.</li>
+<li><strong>Add narratives</strong>: day-in-life story, feature birth story, era detection.</li>
+<li><strong>Add persistence</strong>: project memory table, SessionStart hook injection.</li>
+<li><strong>Add the big story</strong>: AI journey, refactor story.</li>
+<li><strong>Polish the web surface</strong>: dashboard with heatmap, story pages, health panel.</li>
+<li><strong>Era detection v2</strong>: machine learning on session embeddings (far future,
+speculative).</li>
+</ol>
+<p>Each step delivers value independently. The user doesn't need to wait for
+step 8 to benefit from step 1.</p>
+
+<hr style="margin: 3rem 0 1rem; border-color: var(--border);">
+<nav style="display: flex; justify-content: space-between; font-size: 0.9rem;">
+    <a href="/polylogue/design/archive-storytelling/">← Archive Storytelling</a>
+    <span></span>
+</nav>
+
+        </main>
+    </div>
+    <footer class="site-footer">
+        <span>Polylogue — your AI memory</span>
+        <a href="https://github.com/Sinity/polylogue">GitHub</a>
+    </footer>
+    <script>
+        function toggleTheme() {
+            var html = document.documentElement;
+            var current = html.getAttribute('data-theme');
+            html.setAttribute('data-theme', current === 'dark' ? 'light' : 'dark');
+            localStorage.setItem('theme', current === 'dark' ? 'light' : 'dark');
+        }
+        (function() {
+            var saved = localStorage.getItem('theme');
+            if (saved) document.documentElement.setAttribute('data-theme', saved);
+        })();
+    </script>
+    
+</body>
+</html>
