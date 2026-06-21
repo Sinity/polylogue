@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import re
 import shlex
@@ -16,7 +17,7 @@ from datetime import UTC, datetime
 from http.client import HTTPConnection
 from pathlib import Path
 from threading import Thread
-from typing import Any, TextIO
+from typing import Any, TextIO, cast
 
 from devtools import repo_root as _repo_root
 from polylogue.browser_capture.server import make_server
@@ -26,6 +27,7 @@ DEFAULT_BROWSER_CAPTURE_PORT = 8765
 _RECEIVER_SMOKE_ORIGIN = "chrome-extension://polylogue-dev-loop"
 _RECEIVER_SMOKE_TOKEN = "polylogue-dev-loop-token"
 _SENSITIVE_ENV_NAME_RE = re.compile(r"(TOKEN|SECRET|PASSWORD|PASS|KEY|CREDENTIAL|AUTH)", re.IGNORECASE)
+_LOG = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -581,6 +583,225 @@ def build_browser_plan(*, preflight: dict[str, Any]) -> dict[str, object]:
     return payload
 
 
+def build_tui_plan(*, preflight: dict[str, Any]) -> dict[str, object]:
+    """Write a local terminal/TUI visual-inspection plan for this dev-loop run."""
+
+    artifacts = preflight.get("artifacts")
+    if not isinstance(artifacts, dict):
+        raise ValueError("preflight payload is missing artifact paths")
+    tui_dir = Path(str(artifacts["tui_dir"]))
+    terminal_dir = Path(str(artifacts["terminal_dir"]))
+    tui_dir.mkdir(parents=True, exist_ok=True)
+    terminal_dir.mkdir(parents=True, exist_ok=True)
+    event_path = Path(str(artifacts.get("dev_events", Path(str(preflight["run_log_dir"])) / "dev-loop.events.jsonl")))
+
+    env_exports = {
+        "POLYLOGUE_ARCHIVE_ROOT": str(preflight["dev_archive_root"]),
+        "POLYLOGUE_API_PORT": str(preflight["ports"]["api"]["port"]),
+        "POLYLOGUE_BROWSER_CAPTURE_PORT": str(preflight["ports"]["browser_capture"]["port"]),
+        "POLYLOGUE_DEV_LOOP_RUN_ID": str(preflight["run_id"]),
+        "POLYLOGUE_DEV_LOOP_LOG_DIR": str(preflight["run_log_dir"]),
+        "POLYLOGUE_FORCE_PLAIN": "0",
+    }
+    env_prefix = " ".join(f"{key}={shlex.quote(value)}" for key, value in env_exports.items())
+    typescript_path = tui_dir / "polylogue-ops-status.typescript"
+    vhs_tape_path = tui_dir / "polylogue-status.tape"
+    vhs_gif_path = tui_dir / "polylogue-status.gif"
+    screenshot_dir = tui_dir / "screenshots"
+    screenshot_dir.mkdir(parents=True, exist_ok=True)
+    plan_artifacts = {
+        "json": str(tui_dir / "tui-plan.json"),
+        "markdown": str(tui_dir / "tui-plan.md"),
+        "typescript": str(typescript_path),
+        "vhs_tape": str(vhs_tape_path),
+        "vhs_gif": str(vhs_gif_path),
+        "screenshots": str(screenshot_dir),
+        "events": str(event_path),
+    }
+    script_command = (
+        f"script -q -c {shlex.quote(env_prefix + ' polylogue ops status')} {shlex.quote(str(typescript_path))}"
+    )
+    vhs_tape = "\n".join(
+        [
+            f"Output {shlex.quote(str(vhs_gif_path))}",
+            'Set Shell "zsh"',
+            "Set FontSize 18",
+            "Set Width 1200",
+            "Set Height 720",
+            f"Type {shlex.quote(env_prefix + ' polylogue ops status')}",
+            "Enter",
+            "Sleep 2s",
+            "",
+        ]
+    )
+    vhs_tape_path.write_text(vhs_tape, encoding="utf-8")
+    payload: dict[str, object] = {
+        "ok": True,
+        "run_id": str(preflight["run_id"]),
+        "env": env_exports,
+        "commands": {
+            "script_status": script_command,
+            "vhs_render": f"vhs {shlex.quote(str(vhs_tape_path))}",
+            "manual_tui_dir": str(tui_dir),
+        },
+        "artifacts": plan_artifacts,
+        "notes": [
+            "Use script output for ordinary CLI transcript evidence.",
+            "Use VHS or the local terminal-control surface for full-screen TUI/visual playback.",
+            "Keep generated recordings under the ignored run-local tui directory.",
+        ],
+    }
+    json_path = Path(plan_artifacts["json"])
+    markdown_path = Path(plan_artifacts["markdown"])
+    json_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    markdown = "\n".join(
+        [
+            "# Polylogue TUI Dev-Loop Plan",
+            "",
+            f"- Run id: `{payload['run_id']}`",
+            f"- TUI artifacts: `{tui_dir}`",
+            f"- Terminal artifacts: `{terminal_dir}`",
+            "",
+            "## Environment",
+            "",
+            "```bash",
+            *(f"export {key}={shlex.quote(value)}" for key, value in env_exports.items()),
+            "```",
+            "",
+            "## Script Capture",
+            "",
+            "```bash",
+            script_command,
+            "```",
+            "",
+            "## VHS",
+            "",
+            f"Edit `{vhs_tape_path}` if the command needs to drive a richer flow, then run:",
+            "",
+            "```bash",
+            f"vhs {shlex.quote(str(vhs_tape_path))}",
+            "```",
+            "",
+            "## Artifact Paths",
+            "",
+            f"- Typescript: `{typescript_path}`",
+            f"- VHS tape: `{vhs_tape_path}`",
+            f"- VHS GIF: `{vhs_gif_path}`",
+            f"- Screenshots: `{screenshot_dir}`",
+            "",
+        ]
+    )
+    markdown_path.write_text(markdown + "\n", encoding="utf-8")
+    _write_dev_loop_event(
+        event_path,
+        preflight=preflight,
+        surface="tui",
+        event_type="tui_plan_written",
+        status="ok",
+        payload={
+            "artifacts": payload["artifacts"],
+            "commands": payload["commands"],
+        },
+    )
+    return payload
+
+
+def _read_json_file(path: Path) -> object | None:
+    try:
+        return cast(object, json.loads(path.read_text(encoding="utf-8")))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _read_event_rows(path: Path) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    rows: list[dict[str, object]] = []
+    malformed: list[dict[str, object]] = []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return rows, malformed
+    for line_number, line in enumerate(lines, start=1):
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError as exc:
+            preview = line[:500]
+            _LOG.warning("Skipping malformed dev-loop event row in %s:%s: %r", path, line_number, preview)
+            malformed.append({"line": line_number, "error": str(exc), "text": preview})
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows, malformed
+
+
+def summarize_dev_loop_run(run_dir: Path) -> dict[str, object]:
+    """Summarize one dev-loop run directory from persisted local artifacts."""
+
+    run_dir = run_dir.resolve()
+    preflight_path = run_dir / "preflight.json"
+    events_path = run_dir / "dev-loop.events.jsonl"
+    preflight = _read_json_file(preflight_path)
+    events, malformed_event_lines = _read_event_rows(events_path)
+    event_status_counts: dict[str, int] = {}
+    event_surface_counts: dict[str, int] = {}
+    problem_events: list[dict[str, object]] = []
+    for row in events:
+        status = str(row.get("status") or "unknown")
+        surface = str(row.get("surface") or "unknown")
+        event_status_counts[status] = event_status_counts.get(status, 0) + 1
+        event_surface_counts[surface] = event_surface_counts.get(surface, 0) + 1
+        if status in {"failed", "blocked"}:
+            problem_events.append(row)
+
+    summary_files = {
+        "daemon_launch": run_dir / "polylogued.launch.json",
+        "browser_plan": run_dir / "browser" / "browser-plan.json",
+        "extension_smoke": run_dir / "browser" / "extension-smoke.json",
+        "tui_plan": run_dir / "tui" / "tui-plan.json",
+    }
+    loaded_summaries = {name: _read_json_file(path) for name, path in summary_files.items() if path.exists()}
+    terminal_summaries = sorted((run_dir / "terminal").glob("*.summary.json"))
+    loaded_terminal = [
+        payload for payload in (_read_json_file(path) for path in terminal_summaries) if isinstance(payload, dict)
+    ]
+    missing_artifacts = [
+        str(path)
+        for path in (
+            preflight_path,
+            events_path,
+            run_dir / "polylogued.log",
+        )
+        if not path.exists()
+    ]
+    warnings: list[str] = []
+    if preflight is None:
+        warnings.append("preflight.json is missing or unreadable")
+    if not events:
+        warnings.append("dev-loop.events.jsonl is missing or empty")
+    if malformed_event_lines:
+        warnings.append(f"{len(malformed_event_lines)} malformed dev-loop event row(s) were skipped")
+    if problem_events:
+        warnings.append(f"{len(problem_events)} event(s) have failed/blocked status")
+    return {
+        "ok": not warnings,
+        "run_dir": str(run_dir),
+        "run_id": preflight.get("run_id") if isinstance(preflight, dict) else run_dir.name,
+        "preflight": preflight if isinstance(preflight, dict) else None,
+        "event_count": len(events),
+        "event_status_counts": event_status_counts,
+        "event_surface_counts": event_surface_counts,
+        "last_event": events[-1] if events else None,
+        "problem_events": problem_events,
+        "malformed_event_lines": malformed_event_lines,
+        "summaries": loaded_summaries,
+        "terminal_captures": loaded_terminal,
+        "terminal_capture_count": len(loaded_terminal),
+        "missing_artifacts": missing_artifacts,
+        "warnings": warnings,
+    }
+
+
 def run_cli_capture(
     *,
     preflight: dict[str, Any],
@@ -1107,6 +1328,43 @@ def _print_browser_plan(payload: dict[str, Any]) -> None:
     print(f"  plan:      {artifacts['markdown']}")
 
 
+def _print_tui_plan(payload: dict[str, Any]) -> None:
+    preflight = payload["preflight"]
+    plan = payload["tui_plan"]
+    assert isinstance(preflight, dict)
+    assert isinstance(plan, dict)
+    artifacts = plan["artifacts"]
+    assert isinstance(artifacts, dict)
+    commands = plan["commands"]
+    assert isinstance(commands, dict)
+    print("Polylogue dev-loop TUI plan")
+    print(f"  run id:     {preflight['run_id']}")
+    print(f"  script:     {commands['script_status']}")
+    print(f"  vhs:        {commands['vhs_render']}")
+    print(f"  plan:       {artifacts['markdown']}")
+    print(f"  artifacts:  {artifacts['screenshots']}")
+
+
+def _print_run_summary(payload: dict[str, object]) -> None:
+    print("Polylogue dev-loop run summary")
+    print(f"  run id:     {payload.get('run_id')}")
+    print(f"  run dir:    {payload.get('run_dir')}")
+    print(f"  ok:         {payload.get('ok')}")
+    print(f"  events:     {payload.get('event_count')}")
+    print(f"  terminals:  {payload.get('terminal_capture_count')}")
+    warnings = payload.get("warnings")
+    if isinstance(warnings, list) and warnings:
+        print("  warnings:")
+        for warning in warnings:
+            print(f"    - {warning}")
+    last_event = payload.get("last_event")
+    if isinstance(last_event, dict):
+        print(
+            "  last event: "
+            f"{last_event.get('surface')}/{last_event.get('event_type')} status={last_event.get('status')}"
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     original_argv = list(argv) if argv is not None else sys.argv[1:]
     parser = argparse.ArgumentParser(description=__doc__)
@@ -1152,6 +1410,18 @@ def main(argv: list[str] | None = None) -> int:
         help="Write branch-local browser profile, extension load, receiver, and inspection plan artifacts.",
     )
     parser.add_argument(
+        "--tui-plan",
+        action="store_true",
+        help="Write branch-local terminal/TUI visual-inspection plan artifacts.",
+    )
+    parser.add_argument(
+        "--inspect-run",
+        nargs="?",
+        const=Path("."),
+        type=Path,
+        help="Summarize an existing dev-loop run directory instead of building a new preflight.",
+    )
+    parser.add_argument(
         "--daemon-ready-timeout-s",
         type=float,
         default=10.0,
@@ -1159,6 +1429,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("capture_command", nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    if args.inspect_run is not None:
+        summary = summarize_dev_loop_run(args.inspect_run)
+        if args.json:
+            json.dump(summary, sys.stdout, indent=2, sort_keys=True)
+            sys.stdout.write("\n")
+        else:
+            _print_run_summary(summary)
+        return 0 if summary["ok"] is True else 1
     capture_command = list(args.capture_command)
     if args.capture_cli and not args.json and "--" not in original_argv and capture_command[-1:] == ["--json"]:
         args.json = True
@@ -1168,7 +1446,12 @@ def main(argv: list[str] | None = None) -> int:
         browser_capture_port=args.browser_capture_port,
         archive_root=args.archive_root,
         log_dir=args.log_dir,
-        prepare=args.prepare or args.receiver_smoke or args.launch_daemon or args.extension_smoke or args.browser_plan,
+        prepare=args.prepare
+        or args.receiver_smoke
+        or args.launch_daemon
+        or args.extension_smoke
+        or args.browser_plan
+        or args.tui_plan,
     )
     if args.receiver_smoke:
         smoke_payload: dict[str, Any] = {
@@ -1248,6 +1531,21 @@ def main(argv: list[str] | None = None) -> int:
         else:
             _print_browser_plan(combined_payload)
         return 0 if browser_plan.get("ok") is True else 1
+    if args.tui_plan:
+        try:
+            tui_plan = build_tui_plan(preflight=payload)
+        except ValueError as exc:
+            parser.error(str(exc))
+        combined_payload = {
+            "preflight": payload,
+            "tui_plan": tui_plan,
+        }
+        if args.json:
+            json.dump(combined_payload, sys.stdout, indent=2, sort_keys=True)
+            sys.stdout.write("\n")
+        else:
+            _print_tui_plan(combined_payload)
+        return 0 if tui_plan.get("ok") is True else 1
     if args.json:
         json.dump(payload, sys.stdout, indent=2, sort_keys=True)
         sys.stdout.write("\n")

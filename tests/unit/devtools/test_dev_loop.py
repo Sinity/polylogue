@@ -301,6 +301,58 @@ def test_browser_plan_writes_local_extension_launch_artifacts(
     assert event_rows[-1]["payload"]["receiver_url"] == "http://127.0.0.1:9875"
 
 
+def test_tui_plan_writes_visual_inspection_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(dev_loop, "system_service_status", lambda: {"active": False})
+    monkeypatch.setattr(
+        dev_loop,
+        "port_status",
+        lambda port: {"port": port, "connectable": False, "owner_count": 0, "owners": []},
+    )
+    monkeypatch.setattr(
+        dev_loop, "_git_value", lambda args, *, cwd: "feature/dev-loop" if args[0] == "branch" else "abc1234"
+    )
+
+    assert (
+        dev_loop.main(
+            [
+                "--json",
+                "--log-dir",
+                str(tmp_path / "dev-loop-logs"),
+                "--archive-root",
+                str(tmp_path / "archive"),
+                "--api-port",
+                "9876",
+                "--browser-capture-port",
+                "9875",
+                "--tui-plan",
+            ]
+        )
+        == 0
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    plan = payload["tui_plan"]
+    assert plan["ok"] is True
+    assert plan["env"]["POLYLOGUE_ARCHIVE_ROOT"] == str(tmp_path / "archive")
+    assert plan["env"]["POLYLOGUE_FORCE_PLAIN"] == "0"
+    assert "script -q -c" in plan["commands"]["script_status"]
+    assert plan["commands"]["vhs_render"].startswith("vhs ")
+    artifacts = plan["artifacts"]
+    assert Path(artifacts["json"]).is_file()
+    assert Path(artifacts["markdown"]).is_file()
+    assert Path(artifacts["vhs_tape"]).is_file()
+    assert Path(artifacts["screenshots"]).is_dir()
+    assert "polylogue ops status" in Path(artifacts["vhs_tape"]).read_text(encoding="utf-8")
+    event_rows = [json.loads(line) for line in Path(artifacts["events"]).read_text(encoding="utf-8").splitlines()]
+    assert event_rows[-1]["event_type"] == "tui_plan_written"
+    assert event_rows[-1]["surface"] == "tui"
+    assert event_rows[-1]["payload"]["artifacts"]["vhs_tape"] == artifacts["vhs_tape"]
+
+
 def test_cli_capture_runs_command_with_branch_local_artifacts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -367,6 +419,64 @@ def test_cli_capture_runs_command_with_branch_local_artifacts(
     assert capture_events[1]["status"] == "ok"
     assert capture_events[1]["payload"]["exit_code"] == 0
     assert capture_events[1]["payload"]["artifacts"]["transcript"] == str(transcript_path)
+
+
+def test_inspect_run_summarizes_dev_loop_artifacts(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run_dir = tmp_path / "dev-loop" / "feature-dev-loop-abc1234-api8766-capture8765"
+    terminal_dir = run_dir / "terminal"
+    browser_dir = run_dir / "browser"
+    tui_dir = run_dir / "tui"
+    terminal_dir.mkdir(parents=True)
+    browser_dir.mkdir()
+    tui_dir.mkdir()
+    preflight = {
+        "run_id": run_dir.name,
+        "repo_root": "/repo",
+        "dev_archive_root": "/repo/.local/dev-archive",
+    }
+    (run_dir / "preflight.json").write_text(json.dumps(preflight), encoding="utf-8")
+    events = [
+        {"surface": "daemon", "event_type": "launch_requested", "status": "starting"},
+        {"surface": "cli", "event_type": "cli_capture_finished", "status": "ok"},
+        {"surface": "browser_extension", "event_type": "extension_smoke_finished", "status": "failed"},
+    ]
+    (run_dir / "dev-loop.events.jsonl").write_text(
+        "\n".join([json.dumps(events[0]), "{not-json", *(json.dumps(row) for row in events[1:])]) + "\n",
+        encoding="utf-8",
+    )
+    (run_dir / "polylogued.log").write_text("daemon log\n", encoding="utf-8")
+    (run_dir / "polylogued.launch.json").write_text(json.dumps({"ok": True, "pid": 1234}), encoding="utf-8")
+    (browser_dir / "browser-plan.json").write_text(json.dumps({"ok": True}), encoding="utf-8")
+    (browser_dir / "extension-smoke.json").write_text(json.dumps({"ok": False}), encoding="utf-8")
+    (tui_dir / "tui-plan.json").write_text(json.dumps({"ok": True}), encoding="utf-8")
+    (terminal_dir / "polylogue.summary.json").write_text(
+        json.dumps({"ok": True, "exit_code": 0}),
+        encoding="utf-8",
+    )
+
+    assert dev_loop.main(["--json", "--inspect-run", str(run_dir)]) == 1
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["ok"] is False
+    assert payload["run_id"] == run_dir.name
+    assert payload["event_count"] == 3
+    assert payload["event_status_counts"] == {"failed": 1, "ok": 1, "starting": 1}
+    assert payload["event_surface_counts"]["browser_extension"] == 1
+    assert payload["problem_events"][0]["event_type"] == "extension_smoke_finished"
+    assert payload["malformed_event_lines"][0]["line"] == 2
+    assert payload["malformed_event_lines"][0]["text"] == "{not-json"
+    assert payload["summaries"]["daemon_launch"]["pid"] == 1234
+    assert payload["summaries"]["tui_plan"]["ok"] is True
+    assert payload["terminal_capture_count"] == 1
+    assert payload["terminal_captures"][0]["exit_code"] == 0
+    assert payload["missing_artifacts"] == []
+    assert payload["warnings"] == [
+        "1 malformed dev-loop event row(s) were skipped",
+        "1 event(s) have failed/blocked status",
+    ]
 
 
 def test_cli_capture_rejects_missing_command(capsys: pytest.CaptureFixture[str]) -> None:
