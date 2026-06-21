@@ -18,6 +18,50 @@ from polylogue.core.enums import AssertionKind
 from polylogue.core.json import JSONDocument, JSONValue, require_json_document
 from polylogue.core.refs import normalize_object_ref_text, normalize_public_ref_text
 
+MutationStatus: TypeAlias = Literal[
+    "ok",
+    "deleted",
+    "not_found",
+    "unchanged",
+    "partial",
+    "preview",
+    "aborted",
+    "failed",
+]
+MutationOutcome: TypeAlias = Literal[
+    "added",
+    "updated",
+    "no_op",
+    "removed",
+    "not_present",
+    "set",
+    "deleted",
+    "not_found",
+    "cleared",
+    "tag_reject",
+    "tag_accept",
+    "summary_override",
+]
+MutationOperation: TypeAlias = Literal[
+    "add_tag",
+    "set_meta",
+    "mutate",
+    "delete",
+    "mark.add",
+    "mark.delete",
+    "annotation.save",
+    "annotation.delete",
+    "saved_view.save",
+    "saved_view.delete",
+    "recall_pack.save",
+    "recall_pack.delete",
+    "workspace.save",
+    "workspace.delete",
+    "correction.save",
+    "correction.delete",
+    "correction.clear",
+]
+
 if TYPE_CHECKING:
     from collections.abc import Container
 
@@ -2288,18 +2332,16 @@ class MutationResultPayload(SurfacePayloadModel):
     same mutation contract shape.
     """
 
-    status: str
-    """``ok``, ``deleted``, ``not_found``, ``unchanged``, or ``partial``. The CLI
-    bulk-delete surface additionally emits ``preview`` (dry-run) and ``aborted``
-    (operator declined the confirmation prompt)."""
+    status: MutationStatus
+    """Closed status for user-visible mutation surfaces."""
 
     session_id: str | None = None
     detail: str | None = None
     """Machine-readable detail: ``already_present``, ``tag_not_present``,
     ``updated``, ``key_not_found``, ``value_unchanged``, ``session_not_found``."""
 
-    outcome: str | None = None
-    """Tag idempotency outcome: ``added``, ``no_op``, ``removed``, or ``not_present``."""
+    outcome: MutationOutcome | None = None
+    """Optional idempotency outcome for resource-level mutations."""
 
     affected_count: int | None = None
     skipped_count: int | None = None
@@ -2314,9 +2356,8 @@ class MutationResultPayload(SurfacePayloadModel):
     session_count: int | None = None
     tag_count: int | None = None
     applied_count: int | None = None
-    operation: str | None = None
-    """Mutation discriminator such as ``add_tag``, ``set_meta``,
-    ``annotation.save``, ``saved_view.delete``, ``mutate``, or ``delete``."""
+    operation: MutationOperation | None = None
+    """Closed mutation discriminator for surfaces that expose operation names."""
     session_ids: tuple[str, ...] | None = None
     """Session ids enumerated by a CLI bulk operation (e.g. the delete dry-run
     preview lists the sessions that *would* be deleted). ``None`` for

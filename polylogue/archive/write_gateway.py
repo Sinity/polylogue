@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from threading import RLock
-from typing import Any
+from typing import Any, Literal
 
 from polylogue.storage.sqlite.connection_profile import open_connection as _open_conn
 
@@ -30,12 +30,15 @@ class WriteOperation(Enum):
     BLOB_STORE = "blob_store"
 
 
+WriteResultStatus = Literal["committed", "rejected", "deferred"]
+
+
 @dataclass(frozen=True, slots=True)
 class WriteResult:
     operation_id: str
     operation: WriteOperation
     rows_affected: int
-    status: str  # "committed", "rejected", "deferred"
+    status: WriteResultStatus
 
 
 class ArchiveWriteGateway:
@@ -98,4 +101,5 @@ __all__ = [
     "ArchiveWriteGateway",
     "WriteOperation",
     "WriteResult",
+    "WriteResultStatus",
 ]

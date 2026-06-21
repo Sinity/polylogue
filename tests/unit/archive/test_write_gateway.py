@@ -4,8 +4,10 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.archive.write_gateway import ArchiveWriteGateway, WriteOperation
+from polylogue.archive.write_gateway import ArchiveWriteGateway, WriteOperation, WriteResultStatus
 from polylogue.storage.sqlite.connection import open_connection
+
+COMMITTED: WriteResultStatus = "committed"
 
 
 def test_write_gateway_commits_effects_on_caller_owned_connection(tmp_path: Path) -> None:
@@ -21,7 +23,7 @@ def test_write_gateway_commits_effects_on_caller_owned_connection(tmp_path: Path
         )
 
         assert result.operation is WriteOperation.INGEST
-        assert result.status == "committed"
+        assert result.status == COMMITTED
         assert conn.execute("SELECT 1").fetchone()[0] == 1
 
 
@@ -51,7 +53,7 @@ def test_write_gateway_normal_commit_does_not_drop_fts_triggers(
             },
         )
 
-    assert result.status == "committed"
+    assert result.status == COMMITTED
     assert ensured == [True]
 
 
@@ -79,7 +81,7 @@ def test_write_gateway_can_skip_fts_repairs_when_triggers_maintained_rows(
             },
         )
 
-    assert result.status == "committed"
+    assert result.status == COMMITTED
     assert repaired == []
 
 
@@ -105,7 +107,7 @@ def test_write_gateway_repairs_fts_when_requested_even_if_live_triggers_exist(
             },
         )
 
-    assert result.status == "committed"
+    assert result.status == COMMITTED
     assert repaired == ["messages"]
 
 
@@ -133,7 +135,7 @@ def test_write_gateway_repairs_fts_when_live_triggers_were_missing(
             },
         )
 
-    assert result.status == "committed"
+    assert result.status == COMMITTED
     assert repaired == ["messages"]
 
 
@@ -150,4 +152,4 @@ async def test_write_gateway_async_commit_uses_same_local_effects_path(tmp_path:
         )
 
         assert result.operation is WriteOperation.INGEST
-        assert result.status == "committed"
+        assert result.status == COMMITTED

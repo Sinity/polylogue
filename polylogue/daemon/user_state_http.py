@@ -11,7 +11,7 @@ from typing import Any, Literal, cast
 
 from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.core.user_state_targets import TARGET_SESSION, is_mark_type_supported, validate_target_kind
-from polylogue.surfaces.payloads import MutationResultPayload
+from polylogue.surfaces.payloads import MutationResultPayload, MutationStatus
 
 RouteMethod = Literal["GET", "POST", "DELETE"]
 
@@ -137,7 +137,9 @@ def _default_annotation_id(target_type: str, target_id: str, note_text: str) -> 
     return f"annotation-{digest}"
 
 
-def _mutation_status(created_or_deleted: bool, *, missing_detail: str | None = None) -> tuple[str, str | None, int]:
+def _mutation_status(
+    created_or_deleted: bool, *, missing_detail: str | None = None
+) -> tuple[MutationStatus, str | None, int]:
     if created_or_deleted:
         return "ok", None, 1
     if missing_detail is None:
@@ -145,10 +147,14 @@ def _mutation_status(created_or_deleted: bool, *, missing_detail: str | None = N
     return "not_found", missing_detail, 0
 
 
-def _save_mutation_status(created: bool) -> tuple[str, str | None, int]:
+def _save_mutation_status(created: bool) -> tuple[MutationStatus, str | None, int]:
     if created:
         return "ok", None, 1
     return "ok", "updated", 1
+
+
+def _delete_mutation_status(status: MutationStatus) -> MutationStatus:
+    return "deleted" if status == "ok" else status
 
 
 def _send_mutation_result(handler: Any, result: MutationResultPayload, *, created: bool = False) -> None:
@@ -355,7 +361,7 @@ def handle_delete_annotation(handler: Any, annotation_id: str) -> None:
         deleted = await poly.delete_annotation(annotation_id)
         status, detail, affected_count = _mutation_status(deleted, missing_detail="annotation_not_found")
         return MutationResultPayload(
-            status="deleted" if status == "ok" else status,
+            status=_delete_mutation_status(status),
             detail=detail,
             operation="annotation.delete",
             affected_count=affected_count,
@@ -424,7 +430,7 @@ def handle_delete_saved_view(handler: Any, view_id: str) -> None:
         deleted = await poly.delete_view(view_id)
         status, detail, affected_count = _mutation_status(deleted, missing_detail="saved_view_not_found")
         return MutationResultPayload(
-            status="deleted" if status == "ok" else status,
+            status=_delete_mutation_status(status),
             detail=detail,
             operation="saved_view.delete",
             affected_count=affected_count,
@@ -495,7 +501,7 @@ def handle_delete_recall_pack(handler: Any, pack_id: str) -> None:
         deleted = await poly.delete_recall_pack(pack_id)
         status, detail, affected_count = _mutation_status(deleted, missing_detail="recall_pack_not_found")
         return MutationResultPayload(
-            status="deleted" if status == "ok" else status,
+            status=_delete_mutation_status(status),
             detail=detail,
             operation="recall_pack.delete",
             affected_count=affected_count,
@@ -579,7 +585,7 @@ def handle_delete_workspace(handler: Any, workspace_id: str) -> None:
         deleted = await poly.delete_workspace(workspace_id)
         status, detail, affected_count = _mutation_status(deleted, missing_detail="workspace_not_found")
         return MutationResultPayload(
-            status="deleted" if status == "ok" else status,
+            status=_delete_mutation_status(status),
             detail=detail,
             operation="workspace.delete",
             affected_count=affected_count,

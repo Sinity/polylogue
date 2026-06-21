@@ -79,6 +79,25 @@
     "operation": {
       "anyOf": [
         {
+          "enum": [
+            "add_tag",
+            "set_meta",
+            "mutate",
+            "delete",
+            "mark.add",
+            "mark.delete",
+            "annotation.save",
+            "annotation.delete",
+            "saved_view.save",
+            "saved_view.delete",
+            "recall_pack.save",
+            "recall_pack.delete",
+            "workspace.save",
+            "workspace.delete",
+            "correction.save",
+            "correction.delete",
+            "correction.clear"
+          ],
           "type": "string"
         },
         {
@@ -91,6 +110,20 @@
     "outcome": {
       "anyOf": [
         {
+          "enum": [
+            "added",
+            "updated",
+            "no_op",
+            "removed",
+            "not_present",
+            "set",
+            "deleted",
+            "not_found",
+            "cleared",
+            "tag_reject",
+            "tag_accept",
+            "summary_override"
+          ],
           "type": "string"
         },
         {
@@ -176,6 +209,16 @@
       "title": "Skipped Count"
     },
     "status": {
+      "enum": [
+        "ok",
+        "deleted",
+        "not_found",
+        "unchanged",
+        "partial",
+        "preview",
+        "aborted",
+        "failed"
+      ],
       "title": "Status",
       "type": "string"
     },
