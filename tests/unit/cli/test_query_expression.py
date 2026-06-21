@@ -639,6 +639,19 @@ class TestBooleanQueryExpression:
                 QueryFieldPredicate(field="origin", values=("claude-code-session",)),
             ),
         )
+        session_predicate = source.session_predicate
+        session_repo = cast(QueryFieldPredicate, session_predicate.children[0])
+        session_origin = cast(QueryFieldPredicate, session_predicate.children[1])
+        assert session_repo.field_ref is not None
+        assert session_repo.field_ref.scope == "session"
+        assert session_repo.field_ref.name == "repo"
+        assert session_repo.field_ref.source_name == "repo"
+        assert session_repo.field_ref.unit is None
+        assert session_origin.field_ref is not None
+        assert session_origin.field_ref.scope == "session"
+        assert session_origin.field_ref.name == "origin"
+        assert session_origin.field_ref.source_name == "origin"
+        assert session_origin.field_ref.unit is None
         assert source.predicate == QueryBoolPredicate(
             op="and",
             children=(

@@ -112,6 +112,7 @@ from polylogue.archive.query.metadata import (
     date_query_fields,
     date_query_operators,
     query_unit_descriptor,
+    query_unit_field_info,
     query_unit_field_names,
     structural_query_fields,
     structural_query_units,
@@ -963,13 +964,17 @@ def _field_ref_for_predicate(
     if unit == "session":
         return QueryFieldRef(scope="session", name=predicate.field, source_name=predicate.field)
     if session_field is not None:
+        field_info = query_unit_field_info(unit, predicate.field)
+        source_name = field_info.name if field_info is not None else predicate.field
         return QueryFieldRef(
             scope="session",
             name=session_field,
-            source_name=predicate.field,
+            source_name=source_name,
             unit=unit,
         )
-    return QueryFieldRef(scope="unit", name=predicate.field, source_name=predicate.field, unit=unit)
+    field_info = query_unit_field_info(unit, predicate.field)
+    field_name = field_info.name if field_info is not None else predicate.field
+    return QueryFieldRef(scope="unit", name=field_name, source_name=field_name, unit=unit)
 
 
 def _bind_predicate_context(
