@@ -177,6 +177,12 @@ and a JSON summary under:
 .cache/dev-loop/<run-id>/terminal/
 ```
 
+It also appends `cli_capture_requested` and `cli_capture_finished` rows to the
+same `dev-loop.events.jsonl` stream used by daemon launches. Those rows carry
+the command, timeout, exit code, duration, timeout flag, and artifact paths, so
+a run directory has one timeline covering the branch-local daemon and any CLI
+captures performed against it.
+
 The preflight payload still includes `commands.capture_cli_status` as a
 copy-pastable `script` example when an actual terminal typescript is useful.
 
