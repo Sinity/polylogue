@@ -9,19 +9,19 @@ Install (per shell):
 
 * **bash** — append to ``~/.bashrc``::
 
-      eval "$(polylogue ops completions --shell bash)"
+      eval "$(polylogue config completions --shell bash)"
 
 * **zsh** — append to ``~/.zshrc`` (ensure ``compinit`` runs first)::
 
-      eval "$(polylogue ops completions --shell zsh)"
+      eval "$(polylogue config completions --shell zsh)"
 
 * **fish** — load on every shell start::
 
-      polylogue ops completions --shell fish | source
+      polylogue config completions --shell fish | source
 
   Or persist to fish's per-user completions directory::
 
-      polylogue ops completions --shell fish > ~/.config/fish/completions/polylogue.fish
+      polylogue config completions --shell fish > ~/.config/fish/completions/polylogue.fish
 
 Dynamic completers cover: session IDs, origin/source-family
 tokens, tags, repository names, working-directory prefixes, action
@@ -38,9 +38,9 @@ from click.shell_completion import get_completion_class
 _INSTALL_EPILOG = """\
 \b
 Install:
-  bash: add  eval "$(polylogue ops completions --shell bash)"  to ~/.bashrc
-  zsh:  add  eval "$(polylogue ops completions --shell zsh)"   to ~/.zshrc
-  fish: polylogue ops completions --shell fish > ~/.config/fish/completions/polylogue.fish
+  bash: add  eval "$(polylogue config completions --shell bash)"  to ~/.bashrc
+  zsh:  add  eval "$(polylogue config completions --shell zsh)"   to ~/.zshrc
+  fish: polylogue config completions --shell fish > ~/.config/fish/completions/polylogue.fish
 
 \b
 Dynamic completers cover: session IDs, origins/source-families,

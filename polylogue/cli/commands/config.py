@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import click
 
+from polylogue.cli.commands.completions import completions_command
 from polylogue.cli.shared.types import AppEnv
 
 
-@click.command("config")
+@click.group("config", invoke_without_command=True, no_args_is_help=False)
 @click.option(
     "--format",
     "-f",
@@ -22,9 +23,20 @@ from polylogue.cli.shared.types import AppEnv
     default=False,
     help="Show the layer source for each config key (default/site/user/env/cli).",
 )
-@click.pass_obj
-def config_command(env: AppEnv, output_format: str, show_layers: bool) -> None:
+@click.pass_context
+def config_command(ctx: click.Context, output_format: str, show_layers: bool) -> None:
     """Show resolved Polylogue configuration with precedence sources."""
+    if ctx.invoked_subcommand is not None:
+        return
+    env = ctx.obj
+    assert isinstance(env, AppEnv)
+    _show_config(env, output_format, show_layers)
+
+
+config_command.add_command(completions_command)
+
+
+def _show_config(env: AppEnv, output_format: str, show_layers: bool) -> None:
     from polylogue.config import (
         describe_config_layers,
         format_config_toml,

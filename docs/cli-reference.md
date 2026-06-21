@@ -161,7 +161,7 @@ Options:
 
 Commands:
   analyze
-  config    Show configuration paths and resolved settings.
+  config    Show resolved Polylogue configuration with precedence sources.
   continue  Compile a successor-agent continuation report.
   delete    Delete matched sessions.
   demo      Seed and verify the deterministic demo archive.
@@ -459,7 +459,6 @@ Options:
 Commands:
   auth         Authenticate optional external services.
   backup       Create a timestamped durability-tier backup.
-  completions  Emit shell completion setup for polylogue.
   dashboard    Open the local dashboard.
   debt         List archive work that needs operator attention.
   diagnostics  Run archive and session diagnostics.
@@ -648,7 +647,7 @@ Commands:
 ## Completions
 
 ```text
-Usage: polylogue ops completions [OPTIONS]
+Usage: polylogue config completions [OPTIONS]
 
   Generate shell completion scripts.
 
@@ -657,9 +656,9 @@ Options:
   --help                   Show this message and exit.
 
   Install:
-    bash: add  eval "$(polylogue ops completions --shell bash)"  to ~/.bashrc
-    zsh:  add  eval "$(polylogue ops completions --shell zsh)"   to ~/.zshrc
-    fish: polylogue ops completions --shell fish > ~/.config/fish/completions/polylogue.fish
+    bash: add  eval "$(polylogue config completions --shell bash)"  to ~/.bashrc
+    zsh:  add  eval "$(polylogue config completions --shell zsh)"   to ~/.zshrc
+    fish: polylogue config completions --shell fish > ~/.config/fish/completions/polylogue.fish
 
   Dynamic completers cover: session IDs, origins/source-families,
   tags, repos, cwd prefixes, action categories and sequences, tool names,

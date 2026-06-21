@@ -1,13 +1,13 @@
-"""Systematic test that every CLI command accepts ``--json`` without crashing (#1689).
+"""Systematic test that every CLI command accepts ``--json`` without crashing.
 
 Tests that each command, when invoked with ``--json --plain``, produces:
 - Exit code 0 or a clean error (no traceback)
 - Valid JSON on stdout (or empty/non-JSON output for commands that don't claim JSON)
 - No ANSI escape codes in stdout (pipeability)
 
-The root-level ``--json`` flag (#1712) forces plain output and sets
-``output_format=json``. This test ensures every command either produces
-valid JSON or exits cleanly without a traceback.
+The root-level ``--json`` flag forces plain output and sets
+``output_format=json``. This test ensures every command either produces valid
+JSON or exits cleanly without a traceback.
 """
 
 from __future__ import annotations
@@ -111,7 +111,7 @@ _COMMANDS: list[tuple[list[str], bool]] = [
     (["ops", "maintenance", "status"], False),
     (["ops", "maintenance", "preview"], False),
     # ── Shell integration (emits scripts, not JSON; must not crash) ──
-    (["ops", "completions", "--shell", "bash"], False),
+    (["config", "completions", "--shell", "bash"], False),
 ]
 
 # Excluded from COMMANDS for documented reasons:

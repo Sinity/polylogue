@@ -6,6 +6,8 @@ import importlib
 
 import click
 
+from polylogue.cli.commands.config import config_command
+
 # ── lazy-command wrapper ───────────────────────────────────────────
 
 
@@ -143,7 +145,7 @@ def _L(name: str) -> _LazyCommand:  # noqa: N802
 # ── command list ───────────────────────────────────────────────────
 
 ROOT_COMMANDS: tuple[click.Command, ...] = (
-    _L("config"),
+    config_command,
     _L("demo"),
     _L("import_command"),
     _L("init"),
@@ -155,7 +157,6 @@ OPS_COMMANDS: tuple[click.Command, ...] = (
     _L("auth"),
     _L("backup"),
     _L("check"),
-    _L("completions"),
     _L("dashboard"),
     _L("debt"),
     _L("diagnostics"),
