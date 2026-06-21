@@ -143,6 +143,15 @@ directory from the daemon process. The launcher-side `dev-loop.events.jsonl`
 then gives agents a stable local artifact to correlate that UI-visible run id
 with the process spawn and readiness state that created it.
 
+The shell also records the latest API request it made. Every request sent by
+the shell carries an `X-Request-ID` header, measures client-side duration, and
+updates the `api:` status chip with success latency or failure status. Hover the
+chip to see the route, request id, status, duration, any echoed response request
+id, and a bounded response-body summary. This is intentionally a local UI-debug
+aid: use it with browser network logs and daemon logs to identify which route
+handled the visible action, without storing raw archive payloads in a separate
+ledger.
+
 ## CLI and TUI Capture
 
 Human-facing CLI/TUI behavior should be debuggable as rendered, not only as
