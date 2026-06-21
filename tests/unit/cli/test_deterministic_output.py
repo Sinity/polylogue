@@ -4,8 +4,7 @@ Verifies:
 1. `--format json` output is always valid JSON (parseable by json.loads)
 2. `POLYLOGUE_FORCE_PLAIN=1` produces no ANSI escape codes
 3. Frozen clock produces deterministic timestamps in `doctor --format json`
-4. QA report `generate_qa_session` produces deterministic timestamps
-5. Commands parametrized across `doctor`, `tags`, `sources` with `--format json`
+4. Commands parametrized across common CLI help surfaces produce plain output
 """
 
 from __future__ import annotations
@@ -13,7 +12,6 @@ from __future__ import annotations
 import json
 import re
 import sys
-from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -23,15 +21,6 @@ from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
 from polylogue.core.json import JSONDocument
-from polylogue.core.outcomes import OutcomeCheck, OutcomeStatus
-from polylogue.scenarios import polylogue_execution
-from polylogue.schemas.audit.models import AuditReport
-from polylogue.schemas.validation.models import ArtifactCoverageReport, ProviderArtifactCoverage
-from polylogue.showcase.exercises import Exercise
-from polylogue.showcase.invariants import InvariantResult
-from polylogue.showcase.qa_runner import QAResult
-from polylogue.showcase.qa_session_payload import generate_qa_session
-from polylogue.showcase.runner import ExerciseResult, ShowcaseResult
 from tests.infra.json_contracts import envelope_result, extract_json_object
 
 # ANSI escape code pattern: ESC[ ... final-byte
@@ -107,96 +96,6 @@ class TestFrozenClockCheckJson:
         ts_a = _result_payload(_extract_json(result_a.output))["timestamp"]
         ts_b = _result_payload(_extract_json(result_b.output))["timestamp"]
         assert ts_a != ts_b
-
-
-# ---------------------------------------------------------------------------
-# F3: Frozen clock → deterministic showcase QA session timestamps
-# ---------------------------------------------------------------------------
-
-
-class TestFrozenClockShowcaseReport:
-    """generate_qa_session uses datetime.now(UTC); patching produces deterministic output."""
-
-    FROZEN_DT = datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
-
-    @staticmethod
-    def _make_qa_result() -> QAResult:
-        """Build a minimal QAResult for testing."""
-        exercise = Exercise(
-            name="test-exercise",
-            group="structural",
-            tier=0,
-            description="A test exercise",
-            execution=polylogue_execution("--help"),
-        )
-        ex_result = ExerciseResult(
-            exercise=exercise,
-            passed=True,
-            exit_code=0,
-            output="Usage: polylogue ...",
-            duration_ms=42.0,
-        )
-        showcase_result = ShowcaseResult(
-            results=[ex_result],
-            total_duration_ms=42.0,
-        )
-        return QAResult(
-            audit_report=AuditReport(
-                checks=[
-                    OutcomeCheck(name="privacy", status=OutcomeStatus.OK, summary="ok"),
-                ]
-            ),
-            coverage_report=ArtifactCoverageReport(
-                providers={
-                    "chatgpt": ProviderArtifactCoverage(
-                        provider="chatgpt",
-                        total_records=1,
-                        contract_backed_records=1,
-                    )
-                },
-                total_records=1,
-            ),
-            showcase_result=showcase_result,
-            invariant_results=[
-                InvariantResult("json_valid", "test-exercise", OutcomeStatus.OK),
-            ],
-        )
-
-    def test_qa_session_timestamp_is_deterministic(self: TestFrozenClockShowcaseReport) -> None:
-        """Two calls with same frozen clock produce identical timestamps."""
-        result = self._make_qa_result()
-
-        with patch("polylogue.showcase.qa_session_payload.datetime") as mock_dt:
-            mock_dt.now.return_value = self.FROZEN_DT
-            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
-            session_a = generate_qa_session(result)
-
-        with patch("polylogue.showcase.qa_session_payload.datetime") as mock_dt:
-            mock_dt.now.return_value = self.FROZEN_DT
-            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
-            session_b = generate_qa_session(result)
-
-        assert session_a["timestamp"] == session_b["timestamp"]
-        assert session_a["timestamp"] == "2024-06-15T12:00:00+00:00"
-
-    def test_qa_session_timestamp_changes_with_clock(self: TestFrozenClockShowcaseReport) -> None:
-        """Different frozen times produce different timestamps."""
-        result = self._make_qa_result()
-
-        dt_a = datetime(2024, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
-        dt_b = datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
-
-        with patch("polylogue.showcase.qa_session_payload.datetime") as mock_dt:
-            mock_dt.now.return_value = dt_a
-            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
-            session_a = generate_qa_session(result)
-
-        with patch("polylogue.showcase.qa_session_payload.datetime") as mock_dt:
-            mock_dt.now.return_value = dt_b
-            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
-            session_b = generate_qa_session(result)
-
-        assert session_a["timestamp"] != session_b["timestamp"]
 
 
 # ---------------------------------------------------------------------------

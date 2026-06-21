@@ -624,7 +624,7 @@ files:
     target: polylogue/archive/write_effects.py
     owner: stable
   - path: polylogue/archive/write_gateway.py
-    loc: 101
+    loc: 105
     target: polylogue/archive/write_gateway.py
     owner: stable
   - path: polylogue/artifacts/__init__.py
@@ -677,7 +677,7 @@ files:
     target: polylogue/cli/__main__.py
     owner: stable
   - path: polylogue/cli/archive_query.py
-    loc: 1920
+    loc: 1921
     target: polylogue/cli/archive_query.py
     owner: stable
   - path: polylogue/cli/bulk_export.py
@@ -973,18 +973,6 @@ files:
   - path: polylogue/cli/shared/machine_errors.py
     loc: 367
     target: polylogue/cli/shared/machine_errors.py
-    owner: stable
-  - path: polylogue/cli/shared/qa_capture.py
-    loc: 49
-    target: polylogue/cli/shared/qa_capture.py
-    owner: stable
-  - path: polylogue/cli/shared/qa_requests.py
-    loc: 142
-    target: polylogue/cli/shared/qa_requests.py
-    owner: stable
-  - path: polylogue/cli/shared/qa_snapshot.py
-    loc: 133
-    target: polylogue/cli/shared/qa_snapshot.py
     owner: stable
   - path: polylogue/cli/shared/resume_rendering.py
     loc: 84
@@ -1340,7 +1328,7 @@ files:
     target: polylogue/daemon/topology_http.py
     owner: stable
   - path: polylogue/daemon/user_state_http.py
-    loc: 630
+    loc: 636
     target: polylogue/daemon/user_state_http.py
     owner: stable
   - path: polylogue/daemon/web_shell.py
@@ -2407,30 +2395,9 @@ files:
     target: polylogue/showcase/qa_runner_workflow.py
     owner: stable
     reason: verification-lab showcase substrate retained
-  - path: polylogue/showcase/qa_session_payload.py
-    loc: 69
-    target: polylogue/showcase/qa_session_payload.py
-    owner: stable
-    reason: verification-lab showcase substrate retained
-  - path: polylogue/showcase/report_common.py
-    loc: 39
-    target: polylogue/showcase/report_common.py
-    owner: stable
-    reason: verification-lab showcase substrate retained
-  - path: polylogue/showcase/report_models.py
-    loc: 342
-    target: polylogue/showcase/report_models.py
-    owner: stable
-    reason: verification-lab showcase substrate retained
-    cross_cut: { lifecycle: model }
   - path: polylogue/showcase/runner.py
     loc: 133
     target: polylogue/showcase/runner.py
-    owner: stable
-    reason: verification-lab showcase substrate retained
-  - path: polylogue/showcase/showcase_report_payloads.py
-    loc: 79
-    target: polylogue/showcase/showcase_report_payloads.py
     owner: stable
     reason: verification-lab showcase substrate retained
   - path: polylogue/showcase/showcase_runner_models.py
@@ -3547,7 +3514,7 @@ files:
     target: polylogue/surfaces/__init__.py
     owner: stable
   - path: polylogue/surfaces/payloads.py
-    loc: 2486
+    loc: 2527
     target: polylogue/surfaces/payloads.py
     owner: stable
   - path: polylogue/telemetry/__init__.py

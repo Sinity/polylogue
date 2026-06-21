@@ -15,7 +15,6 @@ from polylogue.showcase.cli_boundary import invoke_showcase_cli
 from polylogue.showcase.exercises import EXERCISES, Exercise
 from polylogue.showcase.qa_runner_request import QAStage, build_qa_session_request
 from polylogue.showcase.qa_runner_workflow import run_qa_session
-from polylogue.showcase.qa_session_payload import generate_qa_session
 from polylogue.showcase.showcase_runner_support import run_exercise
 
 _SCENARIO_NAMES = ("archive-smoke", "reader-visual-smoke")
@@ -154,6 +153,19 @@ def _format_scenario_summary(result: _ScenarioResult) -> str:
     return "\n".join(lines)
 
 
+def _scenario_payload(result: _ScenarioResult) -> dict[str, object]:
+    """Return the direct lab-scenario payload without QA report wrapping."""
+    stage_statuses = result.stage_statuses()
+    failed_stages = result.failed_stages()
+    return {
+        "scenario": "archive-smoke",
+        "stages": {name: status.value for name, status in stage_statuses.items()},
+        "failed_stages": list(failed_stages),
+        "ok": not failed_stages,
+        "report_dir": str(result.report_dir) if result.report_dir is not None else None,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -179,7 +191,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     result = run_qa_session(request)
     if args.json:
-        print(json.dumps(generate_qa_session(result), indent=2))
+        print(json.dumps(_scenario_payload(result), indent=2))
     else:
         print(_format_scenario_summary(result))
     return 0 if result.all_passed else 1
