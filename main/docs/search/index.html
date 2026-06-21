@@ -455,15 +455,22 @@ through a session source stage:</p>
 polylogue 'actions where action:file_edit | limit 20 | offset 40'
 polylogue 'sessions where repo:polylogue AND origin:claude-code-session | messages where role:assistant'
 polylogue 'sessions where origin:(codex-session|claude-code-session) | actions where action:file_edit'
+polylogue 'sessions where ~&quot;timeout failure&quot; | messages where role:user'
+polylogue 'sessions where exists block(type:code) | messages where role:user'
+polylogue 'sessions where seq(action:file_edit -&gt; action:shell) | messages where role:user'
+polylogue 'sessions where lineage:id:chatgpt-export:ext-child | messages where role:user'
 polylogue 'sessions where repo:polylogue | messages where role:assistant | limit 10 | offset 20'
 polylogue 'sessions where repo:polylogue | messages where role:assistant | sort by time desc | limit 10'
 </code></pre>
 <p>When a pipeline starts with <code>sessions where ...</code>, the left stage is lowered into
-<code>session.&lt;field&gt;</code> predicates on the terminal unit query, so it uses the same row
-executor as direct <code>messages/actions/...</code> pipelines. For now the session stage
-accepts field/count/date predicates only; FTS, semantic, <code>exists</code>, lineage, and
-sequence stages are typed errors until they have dedicated unit-changing
-lowerers. Terminal pipeline stages currently support <code>sort by time [asc|desc]</code>,
+predicates on the terminal unit query, so it uses the same row executor as direct
+<code>messages/actions/...</code> pipelines. Field/count/date predicates become
+<code>session.&lt;field&gt;</code> row predicates. FTS (<code>~&quot;...&quot;</code>), <code>exists ...</code>, sequence
+(<code>seq(...)</code>), and <code>lineage:id:&lt;session-id&gt;</code> stages lower through the existing
+session Boolean lowerers against the terminal row's owning session. Semantic
+vector predicates still reject in a session pipeline stage until terminal row
+queries have explicit ranked-result semantics. Terminal pipeline stages
+currently support <code>sort by time [asc|desc]</code>,
 <code>group by FIELD | count</code>, aggregate <code>sort by count|key [asc|desc]</code>, <code>limit N</code>,
 and <code>offset N</code> for SQL-backed terminal rows (<code>messages</code>, <code>actions</code>, <code>blocks</code>,
 <code>assertions</code>). Query-string limits narrow the surface limit instead of expanding
