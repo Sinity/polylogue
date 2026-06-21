@@ -250,7 +250,7 @@ class QueryFirstGroupBase(click.Group):
 
         parse_args, query_terms, has_subcommand, explicit_query = _split_query_mode_args(self, args)
         ctx.meta["polylogue_has_subcommand"] = has_subcommand
-        ctx.meta["polylogue_query_terms"] = query_terms if not has_subcommand else ()
+        ctx.meta["polylogue_query_terms"] = query_terms
         ctx.meta["polylogue_explicit_query"] = explicit_query
         subcommand, verb = _detect_subcommand_and_verb(self, original_args)
         ctx.meta["polylogue_dispatch_subcommand"] = subcommand

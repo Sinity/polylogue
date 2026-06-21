@@ -2478,7 +2478,7 @@ SEARCH_FILTER_CASES = [
 ]
 
 SEARCH_FORMAT_CASES = [
-    ("json_read", ["Python", "then", "read", "-f", "json"], "json_list"),
+    ("json_read", ["Python", "then", "read", "-f", "json"], "json_read"),
     ("json_single", ["JavaScript", "-f", "json", "--limit", "1"], "json_single"),
     (
         "json_unit_messages",
@@ -2545,6 +2545,14 @@ class TestSearchQueryContracts:
             assert isinstance(data, dict), case_id
             assert isinstance(data.get("items"), list), case_id
             assert data["items"] and "id" in data["items"][0], case_id
+        elif expectation == "json_read":
+            data = json.loads(result.output)
+            assert isinstance(data, dict), case_id
+            assert isinstance(data.get("items"), list), case_id
+            assert data["items"], case_id
+            first = data["items"][0]
+            assert "match" in first, case_id
+            assert first["session"]["id"] == "chatgpt-export:ext-conv1", case_id
         elif expectation == "json_single":
             data = json.loads(result.output)
             assert isinstance(data, (list, dict)), case_id
