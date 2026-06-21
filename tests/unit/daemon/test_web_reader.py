@@ -2432,6 +2432,19 @@ class TestReaderInformability:
         assert "function renderDevLoopChip(" in body
         assert "/api/dev-loop" in body
 
+    def test_web_shell_surfaces_latest_api_request_diagnostics(self, workspace_env: dict[str, Path]) -> None:
+        """The web shell has local request diagnostics for UI/API failures."""
+
+        with _running_server(workspace_env) as (_, base_url):
+            _, _, body = _get_text(base_url, "/")
+
+        assert 'id="status-api-debug"' in body
+        assert "function nextApiRequestId(" in body
+        assert "'X-Request-ID': requestId" in body
+        assert "function renderApiDebugChip(" in body
+        assert "response_summary" in body
+        assert "invalid_json" in body
+
     def test_insight_freshness_chip_keeps_legacy_fallback(self, workspace_env: dict[str, Path]) -> None:
         """Session insight freshness gets its own status-strip chip. It now
         prefers ``component_readiness.session_profiles`` and keeps the

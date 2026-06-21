@@ -267,6 +267,7 @@ __ATTACHMENT_CSS__
     <span class="chip" id="status-ingest" style="display:none">live</span>
     <span class="chip" id="status-browser-capture" title="Browser capture readiness" style="display:none">capture: --</span>
     <span class="chip" id="status-dev-loop" title="Branch-local dev loop" style="display:none">dev: --</span>
+    <span class="chip" id="status-api-debug" title="Latest API request" style="display:none">api: --</span>
     <span class="chip" id="status-live" title="Realtime channel">live: --</span>
   </div>
   <div id="sidebar">
@@ -384,23 +385,104 @@ var state = {
   // session_id; populated on demand when the Similar inspector
   // tab is opened. ``undefined`` means "not loaded yet"; the envelope
   // carries the explicit pipeline state under ``status``.
-  similarPanels: {}
+  similarPanels: {},
+  // Latest web-shell API request metadata. This is a UI/debug aid only: it
+  // records route, status, duration, request id, and a bounded response summary
+  // without storing raw archive payloads.
+  apiDebug: {counter: 0, last: null}
 };
 
 function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function escAttr(s) { return String(s).replace(/'/g,"\\'").replace(/"/g,'&quot;'); }
 
+function nowMs() {
+  return (window.performance && performance.now) ? performance.now() : Date.now();
+}
+
+function nextApiRequestId() {
+  state.apiDebug.counter += 1;
+  return 'web-' + Date.now().toString(36) + '-' + state.apiDebug.counter;
+}
+
+function summarizeApiBody(text) {
+  if (!text) return '';
+  var compact = String(text).replace(/\s+/g, ' ').trim();
+  return compact.length > 240 ? compact.slice(0, 237) + '...' : compact;
+}
+
+function rememberApiDebug(entry) {
+  state.apiDebug.last = entry;
+  renderApiDebugChip();
+}
+
+async function requestJSON(url, opts) {
+  opts = opts || {};
+  var method = opts.method || 'GET';
+  var requestId = nextApiRequestId();
+  var headers = Object.assign({'X-Request-ID': requestId}, opts.headers || {});
+  var requestOpts = Object.assign({}, opts, {method: method, headers: headers});
+  var started = nowMs();
+  var response;
+  try {
+    response = await fetch(API + url, requestOpts);
+  } catch(e) {
+    var networkDuration = Math.round(nowMs() - started);
+    rememberApiDebug({
+      ok: false, method: method, url: url, request_id: requestId,
+      status: 'network_error', duration_ms: networkDuration,
+      response_summary: String(e && e.message ? e.message : e)
+    });
+    throw e;
+  }
+  var text = await response.text();
+  var duration = Math.round(nowMs() - started);
+  var responseRequestId = response.headers && response.headers.get ? response.headers.get('X-Request-ID') : '';
+  var summary = summarizeApiBody(text);
+  rememberApiDebug({
+    ok: response.ok,
+    method: method,
+    url: url,
+    request_id: requestId,
+    response_request_id: responseRequestId || '',
+    status: response.status,
+    duration_ms: duration,
+    response_summary: summary
+  });
+  if (!response.ok) {
+    var error = new Error(String(response.status));
+    error.status = response.status;
+    error.request_id = requestId;
+    error.response_summary = summary;
+    throw error;
+  }
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch(e) {
+    rememberApiDebug({
+      ok: false,
+      method: method,
+      url: url,
+      request_id: requestId,
+      response_request_id: responseRequestId || '',
+      status: 'invalid_json',
+      duration_ms: duration,
+      response_summary: summary
+    });
+    var parseError = new Error('invalid_json');
+    parseError.request_id = requestId;
+    parseError.response_summary = summary;
+    throw parseError;
+  }
+}
+
 async function fetchJSON(url) {
-  var r = await fetch(API + url);
-  if (!r.ok) throw new Error(r.status);
-  return r.json();
+  return requestJSON(url, {method: 'GET'});
 }
 async function sendJSON(url, method, body) {
   var opts = {method: method, headers: {'Content-Type': 'application/json'}};
   if (body !== undefined) opts.body = JSON.stringify(body);
-  var r = await fetch(API + url, opts);
-  if (!r.ok) throw new Error(r.status);
-  return r.json();
+  return requestJSON(url, opts);
 }
 
 function markSetFor(sessionId) {
@@ -695,6 +777,31 @@ function renderDevLoopChip(payload) {
   el.title = 'Branch-local dev loop'
     + (payload.run_id ? ' ' + payload.run_id : '')
     + (details.length ? '; ' + details.join('; ') : '');
+}
+
+function renderApiDebugChip() {
+  var el = document.getElementById('status-api-debug');
+  if (!el) return;
+  var entry = state.apiDebug && state.apiDebug.last;
+  if (!entry) { el.style.display = 'none'; return; }
+  el.style.display = '';
+  var status = entry.status || 'unknown';
+  if (entry.ok) {
+    el.textContent = 'api: ' + entry.duration_ms + 'ms';
+    setChipQuality(el, 'canonical');
+  } else {
+    el.textContent = 'api: ' + status;
+    setChipQuality(el, 'stale');
+  }
+  var title = [
+    entry.method + ' ' + entry.url,
+    'status ' + status,
+    'duration ' + entry.duration_ms + 'ms',
+    'request ' + entry.request_id
+  ];
+  if (entry.response_request_id) title.push('response ' + entry.response_request_id);
+  if (entry.response_summary) title.push('body ' + entry.response_summary);
+  el.title = title.join('; ');
 }
 
 function renderSidebarState(kind, msg) {
