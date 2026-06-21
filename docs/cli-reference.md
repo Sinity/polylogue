@@ -248,7 +248,7 @@ Usage: polylogue read [OPTIONS] [REF]
       polylogue --latest read --view correlation --otlp --format json
       polylogue read session:abc123 --format json
 
-  Deferred views (not yet implemented; note in PR body):
+  Reserved views (not yet implemented):
       timeline, tools, files, metadata, continuation
 
 Options:

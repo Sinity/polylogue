@@ -47,6 +47,7 @@ from polylogue.logging import configure_logging, get_logger
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
 from polylogue.sources.live.watcher import INBOX_SOURCE_SUFFIXES, default_sources
+from polylogue.version import POLYLOGUE_VERSION
 
 logger = get_logger(__name__)
 _CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS = 60
@@ -1080,6 +1081,7 @@ async def _shutdown_server_if_serving(
 
 
 @click.group(help="Run long-lived Polylogue local services.")
+@click.version_option(version=POLYLOGUE_VERSION, prog_name="polylogued")
 def main() -> None:
     pass
 

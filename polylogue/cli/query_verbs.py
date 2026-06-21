@@ -473,7 +473,7 @@ def read_verb(
         polylogue read session:abc123 --format json
 
     \b
-    Deferred views (not yet implemented; note in PR body):
+    Reserved views (not yet implemented):
         timeline, tools, files, metadata, continuation
     """
     env: AppEnv = ctx.obj

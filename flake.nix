@@ -54,6 +54,7 @@
           markdown-it-py
           pygments
           ijson
+          lark
           sqlite-vec
           questionary
           click
