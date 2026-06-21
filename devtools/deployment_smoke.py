@@ -30,6 +30,7 @@ REQUIRED_DAEMON_ROUTES = (
     "/api/read-view-profiles",
 )
 REQUIRED_WEB_ROUTES = (
+    "/",
     "/api/sessions?limit=1&offset=0",
     "/api/facets",
 )
@@ -68,6 +69,8 @@ class RouteProbe:
     ok: bool
     payload: dict[str, Any] | None = None
     error: str | None = None
+    content_type: str | None = None
+    body_bytes: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -468,12 +471,25 @@ def _probe_browser_capture_receiver_archive_state(
 def _probe_route(url: str, *, timeout_s: float) -> RouteProbe:
     try:
         with _open_url(url, timeout_s=timeout_s) as response:
-            raw = response.read().decode("utf-8", "replace")
+            raw_bytes = response.read()
+            raw = raw_bytes.decode("utf-8", "replace")
+            headers = getattr(response, "headers", None)
+            content_type = headers.get("Content-Type") if headers is not None else None
             payload: dict[str, Any] | None = None
             if raw:
-                decoded = json.loads(raw)
-                payload = decoded if isinstance(decoded, dict) else {"value": decoded}
-            return RouteProbe(url=url, status=response.status, ok=200 <= response.status < 300, payload=payload)
+                if (content_type and "json" in content_type) or raw.lstrip().startswith(("{", "[")):
+                    decoded = json.loads(raw)
+                    payload = decoded if isinstance(decoded, dict) else {"value": decoded}
+                else:
+                    payload = {"body_preview": raw[:500]}
+            return RouteProbe(
+                url=url,
+                status=response.status,
+                ok=200 <= response.status < 300,
+                payload=payload,
+                content_type=content_type,
+                body_bytes=len(raw_bytes),
+            )
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", "replace")
         payload = None
@@ -483,7 +499,16 @@ def _probe_route(url: str, *, timeout_s: float) -> RouteProbe:
                 payload = decoded if isinstance(decoded, dict) else {"value": decoded}
             except json.JSONDecodeError:
                 payload = {"body": body[:500]}
-        return RouteProbe(url=url, status=exc.code, ok=False, payload=payload, error="http_error")
+        content_type = exc.headers.get("Content-Type")
+        return RouteProbe(
+            url=url,
+            status=exc.code,
+            ok=False,
+            payload=payload,
+            error="http_error",
+            content_type=content_type,
+            body_bytes=len(body.encode("utf-8")),
+        )
     except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
         return RouteProbe(url=url, status=None, ok=False, error=f"{type(exc).__name__}: {exc}")
 
@@ -503,6 +528,7 @@ def _diagnose(
     read_view_route = route_by_path.get("read-view-profiles")
     facets_route = next((probe for probe in routes if probe.url.endswith("/api/facets")), None)
     daemon_status = next((probe for probe in routes if probe.url.endswith("/api/status")), None)
+    root_route = next((probe for probe in routes if urllib.parse.urlparse(probe.url).path in ("", "/")), None)
     browser_capture_state = None
     if daemon_status is not None and daemon_status.payload is not None:
         browser_capture_state = {
@@ -521,6 +547,9 @@ def _diagnose(
     if facets_route is not None and not facets_route.ok:
         likely_causes.append("web-shell facets route exceeds the deployed smoke timeout")
         next_actions.append("profile /api/facets and move expensive facet aggregation behind caching or bounded reads")
+    if root_route is not None and not root_route.ok:
+        likely_causes.append("web-shell root document is unavailable or exceeds the deployed smoke timeout")
+        next_actions.append("verify the daemon can serve the workbench root before debugging browser-side rendering")
     if browser_capture_archive.error == "spooled_newer_than_raw_rows":
         likely_causes.append("browser-capture raw archive rows lag behind newer spooled artifacts")
         next_actions.append(

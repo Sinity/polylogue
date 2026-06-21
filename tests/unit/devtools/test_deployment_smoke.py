@@ -51,9 +51,17 @@ def _write_spooled_capture(path: Path, *, provider_session_id: str = "capture") 
 
 
 class _FakeResponse:
-    def __init__(self, status: int, payload: dict[str, object]) -> None:
+    def __init__(
+        self,
+        status: int,
+        payload: dict[str, object] | str,
+        *,
+        content_type: str = "application/json",
+    ) -> None:
         self.status = status
         self._payload = payload
+        self.headers = Message()
+        self.headers["Content-Type"] = content_type
 
     def __enter__(self) -> _FakeResponse:
         return self
@@ -62,6 +70,8 @@ class _FakeResponse:
         return None
 
     def read(self) -> bytes:
+        if isinstance(self._payload, str):
+            return self._payload.encode()
         return json.dumps(self._payload).encode()
 
 
@@ -254,6 +264,26 @@ def test_deployment_smoke_reports_facets_timeout(
     assert any(failure.startswith("route:http://daemon/api/facets:") for failure in report.failures)
     assert "web-shell facets route exceeds the deployed smoke timeout" in report.diagnostics["likely_causes"]
     assert any("facet aggregation" in action for action in report.diagnostics["next_actions"])
+
+
+def test_deployment_smoke_accepts_html_root_document(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        deployment_smoke,
+        "_open_url",
+        lambda url, *, timeout_s: _FakeResponse(
+            200,
+            "<!doctype html><title>Polylogue</title>",
+            content_type="text/html; charset=utf-8",
+        ),
+    )
+
+    probe = deployment_smoke._probe_route("http://daemon/", timeout_s=1)
+
+    assert probe.ok is True
+    assert probe.status == 200
+    assert probe.content_type == "text/html; charset=utf-8"
+    assert probe.body_bytes == len("<!doctype html><title>Polylogue</title>")
+    assert probe.payload == {"body_preview": "<!doctype html><title>Polylogue</title>"}
 
 
 def test_deployment_smoke_reports_spooled_browser_capture_without_raw_rows(tmp_path: Path) -> None:
