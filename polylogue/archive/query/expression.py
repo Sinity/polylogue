@@ -925,8 +925,6 @@ def _validate_predicate_context(predicate: QueryPredicate, *, unit: Literal["ses
         _validate_predicate_context(predicate.child, unit=predicate.unit)
         return
     if isinstance(predicate, QueryLineagePredicate):
-        if unit != "session":
-            raise ExpressionCompileError("lineage predicates are only supported from sessions", field=None)
         if not predicate.seed_session_id.strip():
             raise ExpressionCompileError("lineage predicate requires a session id", field="lineage")
         return
@@ -1266,11 +1264,29 @@ def _scope_session_predicate(predicate: QueryPredicate) -> QueryPredicate:
         return QueryBoolPredicate(predicate.op, tuple(_scope_session_predicate(child) for child in predicate.children))
     if isinstance(predicate, QueryNotPredicate):
         return QueryNotPredicate(_scope_session_predicate(predicate.child))
+    if isinstance(
+        predicate, QueryTextPredicate | QueryExistsPredicate | QueryLineagePredicate | QuerySequencePredicate
+    ):
+        return predicate
     raise ExpressionCompileError(
-        "pipeline session stages currently support field/count/date predicates only; "
-        "FTS, semantic, exists, lineage, and sequence stages need dedicated lowerers.",
+        "pipeline session stages currently support SQL-backed Boolean session predicates only; "
+        "semantic stages need a ranked terminal lowerer.",
         field=None,
     )
+
+
+def _bind_scoped_session_predicate(predicate: QueryPredicate, *, terminal_unit: QueryUnitName) -> QueryPredicate:
+    scoped = _scope_session_predicate(predicate)
+    if isinstance(scoped, QueryFieldPredicate):
+        return _bind_predicate_context(scoped, unit=terminal_unit)
+    if isinstance(scoped, QueryBoolPredicate):
+        return QueryBoolPredicate(
+            scoped.op,
+            tuple(_bind_scoped_session_predicate(child, terminal_unit=terminal_unit) for child in scoped.children),
+        )
+    if isinstance(scoped, QueryNotPredicate):
+        return QueryNotPredicate(_bind_scoped_session_predicate(scoped.child, terminal_unit=terminal_unit))
+    return _bind_predicate_context(scoped, unit="session")
 
 
 def _parse_non_negative_int_stage(stage: str, keyword: str) -> int | None:
@@ -1499,9 +1515,8 @@ def _parse_pipeline_unit_source(expression: str) -> QueryUnitSource | None:
                 "pipeline terminal stage must be an executable `<unit>s where ...` query",
                 field=None,
             )
-        scoped_session_predicate = _scope_session_predicate(session_predicate)
-        combined = QueryBoolPredicate("and", (scoped_session_predicate, terminal_source.predicate))
-        bound = _bind_predicate_context(combined, unit=terminal_source.unit)
+        scoped_session_predicate = _bind_scoped_session_predicate(session_predicate, terminal_unit=terminal_source.unit)
+        bound = QueryBoolPredicate("and", (scoped_session_predicate, terminal_source.predicate))
         source = QueryUnitSource(
             unit=terminal_source.unit,
             predicate=bound,

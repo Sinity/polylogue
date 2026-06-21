@@ -5062,6 +5062,12 @@ def _structural_predicate_clause(
             return "", merged_params
         joiner = " OR " if predicate.op == "or" else " AND "
         return joiner.join(child_clauses), merged_params
+    if isinstance(
+        predicate, QueryTextPredicate | QueryExistsPredicate | QuerySequencePredicate | QueryLineagePredicate
+    ):
+        if session_alias is None:
+            raise ValueError(f"session-scoped {unit} predicate requires a session alias")
+        return _boolean_predicate_clause(session_alias, predicate, tags_relation="session_tags")
     raise ValueError(f"unsupported nested structural predicate for {unit}: {predicate!r}")
 
 

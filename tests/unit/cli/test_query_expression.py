@@ -29,6 +29,7 @@ from click.testing import CliRunner
 from polylogue.archive.query.expression import (
     EXPRESSION_FIELD_REGISTRY,
     ExpressionCompileError,
+    QueryUnitPipelineStage,
     QueryUnitSource,
     _CountRangeToken,
     _CountToken,
@@ -676,6 +677,28 @@ class TestBooleanQueryExpression:
         assert role.field_ref.name == "role"
         assert role.field_ref.unit == "message"
 
+    def test_pipeline_session_source_accepts_lineage_predicate(self) -> None:
+        source = parse_unit_source_expression(
+            "sessions where lineage:id:chatgpt-export:ext-child | messages where role:user"
+        )
+
+        assert source is not None
+        assert source.unit == "message"
+        assert source.session_predicate == QueryLineagePredicate(seed_session_id="chatgpt-export:ext-child")
+        assert source.predicate == QueryBoolPredicate(
+            op="and",
+            children=(
+                QueryLineagePredicate(seed_session_id="chatgpt-export:ext-child"),
+                QueryFieldPredicate(field="role", values=("user",)),
+            ),
+        )
+        assert source.pipeline_stages == (
+            QueryUnitPipelineStage(
+                kind="session_scope",
+                predicate=QueryLineagePredicate(seed_session_id="chatgpt-export:ext-child"),
+            ),
+        )
+
     def test_pipeline_split_ignores_field_alternation_pipe(self) -> None:
         source = parse_unit_source_expression(
             "sessions where origin:(codex-session|claude-code-session) | actions where action:file_edit"
@@ -822,9 +845,9 @@ class TestBooleanQueryExpression:
         with pytest.raises(ExpressionCompileError, match="cannot feed aggregate stages"):
             parse_unit_source_expression("messages where role:assistant | sort by time asc | group by role | count")
 
-    def test_pipeline_rejects_unlowered_session_stage_predicates(self) -> None:
-        with pytest.raises(ExpressionCompileError, match="FTS, semantic, exists, lineage, and sequence"):
-            parse_unit_source_expression('sessions where ~"timeout" | messages where role:assistant')
+    def test_pipeline_rejects_ranked_semantic_session_stage(self) -> None:
+        with pytest.raises(ExpressionCompileError, match="semantic stages need a ranked terminal lowerer"):
+            parse_unit_source_expression('sessions where semantic:"timeout" | messages where role:assistant')
 
     def test_compile_expression_rejects_terminal_pipelines_as_session_selector(self) -> None:
         with pytest.raises(ExpressionCompileError, match="pipeline unit queries return terminal rows"):
@@ -1641,6 +1664,193 @@ class TestBooleanQueryExpression:
             )
         ]
 
+    def test_session_to_message_pipeline_fts_stage_executes_against_archive(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "hit")
+            .provider("chatgpt")
+            .title("fts pipeline hit")
+            .add_message(
+                "m-fts",
+                role="assistant",
+                text="diagnostic",
+                blocks=[{"type": "text", "text": "timeout failure in lowerer"}],
+            )
+            .add_message("m-selected", role="user", text="selected terminal row")
+            .save()
+        )
+        (
+            SessionBuilder(index_db, "miss")
+            .provider("chatgpt")
+            .title("fts pipeline miss")
+            .add_message(
+                "m-fts",
+                role="assistant",
+                text="diagnostic",
+                blocks=[{"type": "text", "text": "ordinary lowerer"}],
+            )
+            .add_message("m-selected", role="user", text="wrong terminal row")
+            .save()
+        )
+
+        source = parse_unit_source_expression('sessions where ~"timeout failure" | messages where role:user')
+        assert source is not None
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            rows = archive.query_messages(source.predicate, limit=100)
+
+        assert [(row.session_id, row.message_id, row.text) for row in rows] == [
+            (
+                "chatgpt-export:ext-hit",
+                "chatgpt-export:ext-hit:m-selected",
+                "selected terminal row",
+            )
+        ]
+
+    def test_session_to_message_pipeline_exists_stage_executes_against_archive(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "hit")
+            .provider("chatgpt")
+            .title("exists pipeline hit")
+            .add_message(
+                "m-code",
+                role="assistant",
+                text="diagnostic",
+                blocks=[{"type": "code", "text": "pipeline_sentinel()"}],
+            )
+            .add_message("m-selected", role="user", text="selected terminal row")
+            .save()
+        )
+        (
+            SessionBuilder(index_db, "miss")
+            .provider("chatgpt")
+            .title("exists pipeline miss")
+            .add_message("m-code", role="assistant", text="no code here")
+            .add_message("m-selected", role="user", text="wrong terminal row")
+            .save()
+        )
+
+        source = parse_unit_source_expression(
+            "sessions where exists block(type:code AND text:pipeline_sentinel) | messages where role:user"
+        )
+        assert source is not None
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            rows = archive.query_messages(source.predicate, limit=100)
+
+        assert [(row.session_id, row.message_id, row.text) for row in rows] == [
+            (
+                "chatgpt-export:ext-hit",
+                "chatgpt-export:ext-hit:m-selected",
+                "selected terminal row",
+            )
+        ]
+
+    def test_session_to_message_pipeline_sequence_stage_executes_against_archive(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "hit")
+            .provider("claude-code")
+            .title("sequence pipeline hit")
+            .add_message(
+                "m-edit",
+                role="assistant",
+                text="edit",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Edit",
+                        "tool_id": "tool-edit",
+                        "input": {"file_path": "polylogue/archive/query/expression.py"},
+                        "semantic_type": "file_edit",
+                    }
+                ],
+            )
+            .add_message(
+                "m-shell",
+                role="assistant",
+                text="shell",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Bash",
+                        "tool_id": "tool-shell",
+                        "input": {"command": "pytest"},
+                        "semantic_type": "shell",
+                    }
+                ],
+            )
+            .add_message("m-selected", role="user", text="selected terminal row")
+            .save()
+        )
+        (
+            SessionBuilder(index_db, "miss")
+            .provider("claude-code")
+            .title("sequence pipeline miss")
+            .add_message(
+                "m-shell",
+                role="assistant",
+                text="shell",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Bash",
+                        "tool_id": "tool-shell-miss",
+                        "input": {"command": "pytest"},
+                        "semantic_type": "shell",
+                    }
+                ],
+            )
+            .add_message(
+                "m-edit",
+                role="assistant",
+                text="edit",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Edit",
+                        "tool_id": "tool-edit-miss",
+                        "input": {"file_path": "polylogue/archive/query/expression.py"},
+                        "semantic_type": "file_edit",
+                    }
+                ],
+            )
+            .add_message("m-selected", role="user", text="wrong terminal row")
+            .save()
+        )
+
+        source = parse_unit_source_expression(
+            "sessions where seq(action:file_edit -> action:shell) | messages where role:user"
+        )
+        assert source is not None
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            rows = archive.query_messages(source.predicate, limit=100)
+
+        assert [(row.session_id, row.message_id, row.text) for row in rows] == [
+            (
+                "claude-code-session:ext-hit",
+                "claude-code-session:ext-hit:m-selected",
+                "selected terminal row",
+            )
+        ]
+
     def test_session_to_message_pipeline_limit_offset_executes_terminal_window(
         self,
         workspace_env: dict[str, Path],
@@ -1694,6 +1904,64 @@ class TestBooleanQueryExpression:
         assert isinstance(next_row, MessageQueryRowPayload)
         assert next_row.message_id == "claude-code-session:ext-hit:m-3"
         assert next_row.text == "third"
+
+    def test_session_to_message_pipeline_lineage_executes_against_archive(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        from polylogue.archive.query.unit_results import query_unit_rows
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from polylogue.surfaces.payloads import MessageQueryRowPayload
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "root")
+            .provider("chatgpt")
+            .title("lineage root")
+            .add_message("m-root", role="user", text="root message")
+            .save()
+        )
+        (
+            SessionBuilder(index_db, "child")
+            .provider("chatgpt")
+            .title("lineage child")
+            .parent_session("ext-root")
+            .add_message("m-child", role="user", text="child message")
+            .save()
+        )
+        (
+            SessionBuilder(index_db, "other")
+            .provider("chatgpt")
+            .title("lineage other")
+            .add_message("m-other", role="user", text="other message")
+            .save()
+        )
+
+        source = parse_unit_source_expression(
+            "sessions where lineage:id:chatgpt-export:ext-child | messages where role:user | sort by time asc"
+        )
+        assert source is not None
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            envelope = query_unit_rows(archive, source, query="pipeline-lineage", limit=20)
+
+        assert envelope.pipeline_stages == (
+            {
+                "kind": "session_scope",
+                "predicate": {
+                    "kind": "lineage",
+                    "seed_session_id": "chatgpt-export:ext-child",
+                    "unit": "session",
+                },
+            },
+            {"kind": "sort", "sort": {"field": "time", "direction": "asc"}},
+        )
+        rows = [row for row in envelope.items if isinstance(row, MessageQueryRowPayload)]
+        assert [row.session_id for row in rows] == [
+            "chatgpt-export:ext-root",
+            "chatgpt-export:ext-child",
+        ]
+        assert [row.text for row in rows] == ["root message", "child message"]
 
     def test_cli_json_reports_terminal_pipeline_stages(
         self,
