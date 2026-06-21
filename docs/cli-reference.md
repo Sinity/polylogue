@@ -178,7 +178,7 @@ Commands:
 ## Analyze Verb
 
 ```text
-Usage: polylogue analyze [OPTIONS]
+Usage: polylogue analyze [OPTIONS] COMMAND [ARGS]...
 
   Analyze matched sessions: statistics, facets, and aggregates.
 
@@ -212,6 +212,9 @@ Options:
                                   per row, streaming-friendly)
   -l, -n, --limit INTEGER         Max matched sessions before grouping
   --help                          Show this message and exit.
+
+Commands:
+  insights  Inspect durable archive insight read models.
 ```
 
 ## Read Verb
@@ -440,32 +443,15 @@ Options:
 ```text
 Usage: polylogue ops insights [OPTIONS] COMMAND [ARGS]...
 
-  Inspect durable archive insights.
+  Operate durable archive insight materialization.
 
 Options:
   --help  Show this message and exit.
 
-Session-level:
-  phases
-  profiles
-  timeline
-  work-events
-
-Aggregate:
-  coverage
-  tags
-  threads
-
-Analytics:
-  cost-rollups
-  costs
-  debt
-  tool-usage
-
-Admin:
-  audit
-  export
-  status
+Commands:
+  audit   Report per-product rigor profile across materialized insights...
+  export  Export versioned archive-insight bundles.
+  status  Report insight materialization coverage and readiness.
 ```
 
 ## Operations
@@ -485,10 +471,9 @@ Commands:
   diagnostics  Run archive and session diagnostics.
   doctor       Run archive health checks and repairs.
   embed        Enable, preflight, and backfill the embedding pipeline.
-  insights     Rebuild and inspect derived session insights.
+  insights     Check and export derived insight materialization.
   maintenance  Preview and run maintenance backfill operations.
   reset        Reset local archive state.
-  schema       Inspect and audit provider schemas.
   status       Show daemon and archive status.
 ```
 
@@ -601,22 +586,6 @@ Options:
   --session TEXT     Tombstone a specific session by ID
   --source PATH      Tombstone all sessions from a source path
   --help             Show this message and exit.
-```
-
-## Schema
-
-```text
-Usage: polylogue ops schema [OPTIONS] COMMAND [ARGS]...
-
-  Inspect schema packages, versions, and evidence.
-
-Options:
-  --help  Show this message and exit.
-
-Commands:
-  compare  Compare two schema package versions for a provider.
-  explain  Explain a package element schema with evidence and annotations.
-  list     List available schema packages, versions, and evidence manifests.
 ```
 
 ## Config

@@ -15,13 +15,12 @@ import click
 
 from polylogue.cli.click_app import cli as root_cli
 from polylogue.cli.command_inventory import CommandPath, iter_command_paths
-from polylogue.core.enums import ExerciseIOMode
 from polylogue.scenarios import (
     build_insight_contract_surfaces,
     build_operational_contract_surfaces,
     polylogue_execution,
 )
-from polylogue.showcase.dimensions import query_read, schema_exercise
+from polylogue.showcase.dimensions import query_read
 from polylogue.showcase.exercise_models import AssertionSpec, Exercise
 
 
@@ -303,27 +302,6 @@ JSON_CONTRACT_SCENARIOS: tuple[Exercise, ...] = (
         artifact_targets=("message_fts", "session_query_results"),
         operation_targets=("query-sessions",),
     ),
-    _json_contract_scenario(
-        "json-schema-list",
-        "schema list JSON contract",
-        "ops",
-        "schema",
-        "list",
-        "--format",
-        "json",
-        needs_data=False,
-        tier=0,
-        env="any",
-        path_targets=("schema-list-query-loop",),
-        artifact_targets=(
-            "schema_packages",
-            "schema_cluster_manifests",
-            "inferred_corpus_specs",
-            "inferred_corpus_scenarios",
-            "schema_list_results",
-        ),
-        operation_targets=("query-schema-catalog",),
-    ),
     *_product_json_contract_scenarios(),
 )
 
@@ -437,46 +415,14 @@ def generate_format_exercises() -> list[Exercise]:
 
 
 def generate_schema_scenarios() -> tuple[Exercise, ...]:
-    """Generate schema verification scenarios."""
-    from polylogue.schemas.observation import PROVIDERS
+    """Return product showcase schema scenarios.
 
-    scenarios: list[Exercise] = []
-
-    # Tier 0: schema list returns valid JSON
-    dims_smoke = schema_exercise(complexity="smoke", io_mode=ExerciseIOMode.READ)
-    scenarios.append(
-        Exercise(
-            name="gen-schema-list",
-            group="generated-schema",
-            description="Generated: schema list --format json returns valid JSON",
-            execution=polylogue_execution("schema", "list", "--format", "json"),
-            assertion=AssertionSpec(stdout_is_valid_json=True),
-            tier=dims_smoke.derived_tier,
-            env="any",
-            output_ext=".json",
-            artifact_class="json",
-            origin="generated.schema",
-            tags=("generated", "schema", "list"),
-        )
-    )
-
-    # Tier 1: schema explain for each provider
-    dims_explain = schema_exercise(complexity="basic", io_mode=ExerciseIOMode.READ)
-    for provider in PROVIDERS:
-        scenarios.append(
-            Exercise(
-                name=f"gen-schema-explain-{provider}",
-                group="generated-schema",
-                description=f"Generated: schema explain --provider {provider}",
-                execution=polylogue_execution("schema", "explain", "--provider", provider),
-                tier=dims_explain.derived_tier,
-                env="any",
-                origin="generated.schema",
-                tags=("generated", "schema", provider),
-            )
-        )
-
-    return tuple(scenarios)
+    Provider schema inspection belongs to ``devtools lab schema``. The
+    showcase exercise model intentionally remains a public ``polylogue`` CLI
+    surface, so schema-lab checks live in validation-lane/devtools coverage
+    rather than product exercises.
+    """
+    return ()
 
 
 def generate_schema_exercises() -> list[Exercise]:

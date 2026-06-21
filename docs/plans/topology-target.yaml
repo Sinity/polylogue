@@ -689,7 +689,7 @@ files:
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
-    loc: 181
+    loc: 178
     target: polylogue/cli/click_command_registration.py
     owner: stable
   - path: polylogue/cli/click_option_groups.py
@@ -753,7 +753,7 @@ files:
     target: polylogue/cli/commands/init.py
     owner: stable
   - path: polylogue/cli/commands/insights.py
-    loc: 492
+    loc: 496
     target: polylogue/cli/commands/insights.py
     owner: stable
   - path: polylogue/cli/commands/maintenance.py
@@ -771,10 +771,6 @@ files:
   - path: polylogue/cli/commands/reset.py
     loc: 335
     target: polylogue/cli/commands/reset.py
-    owner: stable
-  - path: polylogue/cli/commands/schema.py
-    loc: 130
-    target: polylogue/cli/commands/schema.py
     owner: stable
   - path: polylogue/cli/commands/status.py
     loc: 1341
@@ -825,7 +821,7 @@ files:
     target: polylogue/cli/query_feedback.py
     owner: stable
   - path: polylogue/cli/query_group.py
-    loc: 277
+    loc: 306
     target: polylogue/cli/query_group.py
     owner: stable
   - path: polylogue/cli/query_output.py
@@ -845,7 +841,7 @@ files:
     target: polylogue/cli/query_stats.py
     owner: stable
   - path: polylogue/cli/query_verbs.py
-    loc: 1277
+    loc: 1287
     target: polylogue/cli/query_verbs.py
     owner: stable
   - path: polylogue/cli/read_view_handlers.py
@@ -1927,7 +1923,7 @@ files:
     target: polylogue/scenarios/executable.py
     owner: stable
   - path: polylogue/scenarios/execution.py
-    loc: 613
+    loc: 625
     target: polylogue/scenarios/execution.py
     owner: stable
   - path: polylogue/scenarios/insight_surfaces.py
@@ -2371,7 +2367,7 @@ files:
     owner: stable
     reason: verification-lab showcase substrate retained
   - path: polylogue/showcase/generators.py
-    loc: 569
+    loc: 515
     target: polylogue/showcase/generators.py
     owner: stable
     reason: verification-lab showcase substrate retained

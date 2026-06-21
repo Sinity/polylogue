@@ -203,8 +203,8 @@ class TestJsonModeExitCodeConsistency:
     """Exit code semantics are stable across plain and JSON output modes."""
 
     def test_help_exits_zero_json_format(self, runner: CliRunner) -> None:
-        """schema list --format json --help exits 0 (--help short-circuits before format matters)."""
-        result = runner.invoke(cli, ["ops", "schema", "list", "--help"])
+        """ops insights --format json --help exits 0 (--help short-circuits before format matters)."""
+        result = runner.invoke(cli, ["ops", "insights", "status", "--format", "json", "--help"])
         assert result.exit_code == 0
 
     def test_int_type_error_exits_two_regardless_of_output_format(self, runner: CliRunner) -> None:

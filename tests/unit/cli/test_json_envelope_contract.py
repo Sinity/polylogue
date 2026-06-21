@@ -102,7 +102,6 @@ class TestQueryShapedJsonMatrix:
         ("args", "result_key"),
         [
             (["ops", "insights", "status", "--format", "json"], "insights"),
-            (["ops", "schema", "list", "--format", "json"], "providers"),
         ],
     )
     @pytest.mark.contract
@@ -121,7 +120,6 @@ class TestQueryShapedJsonMatrix:
         "args",
         [
             ["ops", "insights", "status", "--format", "json"],
-            ["ops", "schema", "list", "--format", "json"],
         ],
     )
     def test_json_alias_uses_success_envelope(
@@ -440,55 +438,6 @@ class TestConfigJsonContract:
 
 
 # ---------------------------------------------------------------------------
-# schema explain --format json
-# ---------------------------------------------------------------------------
-
-
-class TestSchemaExplainJsonContract:
-    """schema explain --provider <p> --format json uses the emit_success envelope."""
-
-    @pytest.mark.contract
-    def test_schema_explain_json_claude_ai(
-        self: object,
-        monkeypatch: pytest.MonkeyPatch,
-        workspace_env: dict[str, Path],
-    ) -> None:
-        """schema explain --provider claude-ai --format json uses success envelope."""
-        parsed = _invoke_json_command(
-            ["ops", "schema", "explain", "--provider", "claude-ai", "--format", "json"],
-            monkeypatch,
-        )
-        assert parsed["status"] == "ok"
-        result = envelope_result(parsed, context="schema explain envelope")
-        assert "provider" in result or "schema" in result or len(result) > 0
-
-    def test_schema_explain_json_unknown_provider_no_traceback(
-        self: object,
-        monkeypatch: pytest.MonkeyPatch,
-        workspace_env: dict[str, Path],
-    ) -> None:
-        """schema explain with unknown provider exits non-zero without traceback."""
-        exit_code, output = _invoke_raw_json_command(
-            ["ops", "schema", "explain", "--provider", "nonexistent_provider_xyz", "--format", "json"],
-            monkeypatch,
-        )
-        assert exit_code != 0
-        assert TRACEBACK_SENTINEL not in output
-
-    def test_schema_explain_json_missing_provider_no_traceback(
-        self: object,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """schema explain without --provider exits non-zero without traceback."""
-        exit_code, output = _invoke_raw_json_command(
-            ["ops", "schema", "explain", "--format", "json"],
-            monkeypatch,
-        )
-        assert exit_code != 0
-        assert TRACEBACK_SENTINEL not in output
-
-
-# ---------------------------------------------------------------------------
 # Cross-command: all --format json commands produce valid JSON
 # ---------------------------------------------------------------------------
 
@@ -506,7 +455,6 @@ class TestAllJsonCommandsProduceValidJson:
         [
             (["ops", "doctor", "--format", "json"], "cli.doctor_json_matrix", False),
             (["mark", "candidates", "list", "--format", "json"], "cli.candidate_assertions_json_matrix", False),
-            (["ops", "schema", "list", "--format", "json"], "cli.schema_list_json_matrix", False),
             (["config", "--format", "json"], "cli.config_json_matrix", False),
             # read --all browse on empty archive → exit 0 + empty archive envelope (valid JSON)
             (["read", "--all", "--format", "json"], "cli.read_all_json_matrix", False),

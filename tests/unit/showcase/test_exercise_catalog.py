@@ -69,7 +69,7 @@ class TestExercisesByGroup:
         observed = {command_path.display_name for command_path in inventory_command_paths()}
         assert {
             "ops diagnostics turns",
-            "ops schema explain",
+            "analyze insights profiles",
         } <= observed
 
     def test_all_json_contract_commands_have_generated_exercises(self) -> None:
@@ -128,56 +128,6 @@ class TestExercisesByGroup:
             "json-contract",
             "maintenance",
             "session-insights",
-        )
-
-        profiles = observed["json-insights-profiles"]
-        assert profiles.path_targets == ("session-profile-query-loop",)
-        assert profiles.artifact_targets == (
-            "session_profile_rows",
-            "session_profile_results",
-        )
-        assert profiles.operation_targets == (
-            "cli.json-contract",
-            "query-session-profiles",
-        )
-        assert profiles.tags == (
-            "generated",
-            "json-contract",
-            "insights",
-            "session-profiles",
-        )
-
-        threads = observed["json-insights-threads"]
-        assert threads.path_targets == ("thread-query-loop",)
-        assert threads.artifact_targets == ("thread_rows", "thread_fts", "thread_results")
-        assert threads.operation_targets == (
-            "cli.json-contract",
-            "query-threads",
-        )
-        assert threads.tags == (
-            "generated",
-            "json-contract",
-            "insights",
-            "threads",
-        )
-
-        tags = observed["json-tags"]
-        assert tags.path_targets == ("session-query-loop",)
-        assert tags.artifact_targets == ("message_fts", "session_query_results")
-        assert tags.operation_targets == ("cli.json-contract", "query-sessions")
-
-        schema_list = observed["json-schema-list"]
-        assert schema_list.path_targets == ("schema-list-query-loop",)
-        assert schema_list.artifact_targets == (
-            "schema_packages",
-            "schema_cluster_manifests",
-            "inferred_corpus_specs",
-            "inferred_corpus_scenarios",
-            "schema_list_results",
-        )
-        assert schema_list.operation_targets == (
-            "cli.json-contract",
-            "query-schema-catalog",
         )
 
     def test_exported_qa_extra_roots_match_generated_family(self) -> None:

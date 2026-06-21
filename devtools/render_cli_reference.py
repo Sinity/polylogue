@@ -26,7 +26,6 @@ SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Doctor", ("ops", "doctor")),
     ("Auth", ("ops", "auth")),
     ("Reset", ("ops", "reset")),
-    ("Schema", ("ops", "schema")),
     ("Config", ("config",)),
     ("Completions", ("config", "completions")),
     ("Paths", ("config", "paths")),

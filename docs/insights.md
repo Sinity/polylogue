@@ -3,28 +3,25 @@
 # Insights
 
 Polylogue derives structured read models from raw session data. These are
-materialized in the database and queried through the `polylogue ops insights`
-subcommand group.
+materialized in the database and queried through `polylogue analyze insights`.
+Operational readiness, audit, and export stay under `polylogue ops insights`.
 
 ## Overview
 
 | Insight Type | CLI Command | Description |
 |-------------|-------------|-------------|
-| Session Profiles | `insights profiles` | Per-session evidence, inference, and probabilistic enrichment: repos, tools, costs, durations, message counts, workflow shape, terminal state, summaries |
-| Work Events | `insights work-events` | File-level operations detected within sessions |
-| Work Phases | `insights phases` | Session segment classification: planning, implementation, verification, exploration |
-| Work Threads | `insights threads` | Multi-session groupings by repo and work continuity |
+| Session Profiles | `analyze insights profiles` | Per-session evidence, inference, and probabilistic enrichment: repos, tools, costs, durations, message counts, workflow shape, terminal state, summaries |
+| Work Events | `analyze insights work-events` | File-level operations detected within sessions |
+| Work Phases | `analyze insights phases` | Session segment classification: planning, implementation, verification, exploration |
+| Work Threads | `analyze insights threads` | Multi-session groupings by repo and work continuity |
 | Session Latency Profiles | API / MCP | Per-session response/tool latency aggregates and stuck-tool counts |
-| Tag Rollups | `insights tags` | Tag usage across sessions |
-| Day Summaries | `insights day-summaries` | Per-day session and message counts |
-| Week Summaries | `insights week-summaries` | Per-week session and message counts |
-| Provider Analytics | `insights analytics` | Per-provider message, tool, and thinking stats |
-| Session Costs | `insights costs` | Per-session cost estimates with model identification |
-| Cost Rollups | `insights cost-rollups` | Provider/model-level cost aggregation |
+| Tag Rollups | `analyze insights tags` | Tag usage across sessions |
+| Session Costs | `analyze insights costs` | Per-session cost estimates with model identification |
+| Cost Rollups | `analyze insights cost-rollups` | Provider/model-level cost aggregation |
 | Archive Debt | `ops debt list` | Unified archive/operator debt across tiers, assertions, convergence, embedding, and FTS readiness |
 
 All insight commands support `--limit`, `--offset`, `--format json`, and
-inherit root-level filters (`--provider`, `--since`, `--until`).
+inherit root-level filters (`--origin`, `--since`, `--until`).
 
 The per-product evidence / inference / fallback semantics, plus the
 `polylogue ops insights audit` CLI, are documented in
@@ -35,9 +32,9 @@ The per-product evidence / inference / fallback semantics, plus the
 Per-session derived aggregates. Materialized in the `session_profiles` table.
 
 ```bash
-polylogue ops insights profiles
-polylogue ops insights profiles --tier merged --sort first-message
-polylogue --provider claude-code insights profiles --min-wallclock-seconds 300
+polylogue analyze insights profiles
+polylogue analyze insights profiles --tier merged --sort first-message
+polylogue --origin claude-code-session analyze insights profiles --min-wallclock-seconds 300
 ```
 
 Fields: session ID, provider, raw title, inferred topic, session date,
@@ -146,9 +143,9 @@ as the session-level semantic contract. Use `workflow_shape` and
 session.
 
 ```bash
-polylogue ops insights work-events
-polylogue ops insights work-events --heuristic-label implementation
-polylogue ops insights work-events --session-id claude-ai:abc123
+polylogue analyze insights work-events
+polylogue analyze insights work-events --heuristic-label implementation
+polylogue analyze insights work-events --session-id claude-ai:abc123
 ```
 
 Each event has: start/end time, duration, file paths, tools used, a short
@@ -161,8 +158,8 @@ surfaces, not in `session_work_events.heuristic_label`.
 Sessions are segmented into phases based on activity patterns.
 
 ```bash
-polylogue ops insights phases
-polylogue ops insights phases --kind implementation
+polylogue analyze insights phases
+polylogue analyze insights phases --kind implementation
 ```
 
 Phase kinds:
@@ -180,30 +177,11 @@ Multi-session groupings connected by repo, branch relationships, and work
 continuity.
 
 ```bash
-polylogue ops insights threads
+polylogue analyze insights threads
 ```
 
 Fields: thread ID, dominant repo, session count, total messages, depth,
 session IDs.
-
-## Day and Week Summaries
-
-Pre-aggregated rollups for calendar views.
-
-```bash
-polylogue ops insights day-summaries
-polylogue ops insights week-summaries
-```
-
-## Provider Analytics
-
-Per-provider message counts, tool use percentages, and thinking block
-percentages.
-
-```bash
-polylogue ops insights analytics
-polylogue ops insights analytics --format json
-```
 
 ## Cost Tracking
 
@@ -213,9 +191,9 @@ Google models.
 ### Session Costs
 
 ```bash
-polylogue ops insights costs
-polylogue ops insights costs --model claude-opus-4-6
-polylogue ops insights costs --status exact
+polylogue analyze insights costs
+polylogue analyze insights costs --model claude-opus-4-6
+polylogue analyze insights costs --status exact
 ```
 
 Cost statuses: `exact` (API-reported tokens), `priced` (inferred tokens),
@@ -224,8 +202,8 @@ Cost statuses: `exact` (API-reported tokens), `priced` (inferred tokens),
 ### Cost Rollups
 
 ```bash
-polylogue ops insights cost-rollups
-polylogue ops insights cost-rollups --model gpt-4o
+polylogue analyze insights cost-rollups
+polylogue analyze insights cost-rollups --model gpt-4o
 ```
 
 ### Pricing Catalog
@@ -244,8 +222,8 @@ models that support prompt caching), and cache-write tokens.
 ## Tags
 
 ```bash
-polylogue ops insights tags
-polylogue ops insights tags --query polylogue
+polylogue analyze insights tags
+polylogue analyze insights tags --query polylogue
 ```
 
 Shows tag names with session counts, explicit count (user-assigned), and

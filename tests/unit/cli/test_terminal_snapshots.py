@@ -125,7 +125,7 @@ class TestPlainModeConsistency:
 
     def test_error_consistency_across_modes(self) -> None:
         """Verify Click's unknown-subcommand error is rendered in the PTY."""
-        result = run_in_pty(["ops", "schema", "invalid-xyz"])
+        result = run_in_pty(["ops", "insights", "invalid-xyz"])
         assert result.exit_code != 0
 
         error_text = grid_to_text(result.grid)

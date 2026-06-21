@@ -1,8 +1,8 @@
 """Archive insight inspection commands — registry-driven.
 
 Insight commands inherit ``--origin``, ``--since``, and ``--until`` from
-the root CLI context so that ``polylogue --origin codex-session insights profiles``
-works without re-specifying the filter on the subcommand.
+the root CLI context so that ``polylogue --origin codex-session analyze insights
+profiles`` works without re-specifying the filter on the subcommand.
 """
 
 from __future__ import annotations
@@ -147,14 +147,13 @@ def _build_insight_command(pt: InsightType) -> click.Command:
     )
 
 
-class _InsightsGroup(click.Group):
+class _AnalyzeInsightsGroup(click.Group):
     """Click group with section headers for command listing."""
 
     _SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
         ("Session-level", ("profiles", "work-events", "phases", "timeline")),
         ("Aggregate", ("threads", "tag-rollups", "coverage", "tags")),
         ("Analytics", ("tool-usage", "costs", "cost-rollups", "debt", "latency")),
-        ("Admin", ("status", "audit", "export")),
     )
 
     def format_commands(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
@@ -188,9 +187,14 @@ class _InsightsGroup(click.Group):
                 formatter.write_dl(sorted(other), col_max=limit)
 
 
-@click.group("insights", cls=_InsightsGroup)
-def insights_command() -> None:
-    """Inspect durable archive insights."""
+@click.group("insights", cls=_AnalyzeInsightsGroup)
+def analyze_insights_command() -> None:
+    """Inspect durable archive insight read models."""
+
+
+@click.group("insights")
+def ops_insights_command() -> None:
+    """Operate durable archive insight materialization."""
 
 
 def _status_wants_json(ctx: click.Context, *, output_format: str | None) -> bool:
@@ -253,7 +257,7 @@ def _render_export_plain(result: InsightExportBundleResult) -> None:
             click.echo(f"  error: {error}")
 
 
-@insights_command.command("status")
+@ops_insights_command.command("status")
 @click.option("--insight", "insights", multiple=True, help="Insight readiness target. May be repeated.")
 @click.option("--origin", "-o", default=None, help="Limit origin coverage details to one origin.")
 @click.option("--since", default=None, help="Limit coverage details to rows at/after this timestamp or date.")
@@ -298,7 +302,7 @@ def insights_status_command(
     _render_status_plain(report)
 
 
-@insights_command.command("export")
+@ops_insights_command.command("export")
 @click.option("--out", "output_path", required=True, type=click.Path(path_type=Path), help="Output bundle directory.")
 @click.option("--insight", "insights", multiple=True, help="Insight to include. Defaults to all exportable insights.")
 @click.option("--origin", "-o", default=None, help="Limit supported insights to one origin.")
@@ -393,7 +397,7 @@ def _render_audit_plain(report: InsightRigorAuditReport) -> None:
             click.echo(f"  note: {note}")
 
 
-@insights_command.command("audit")
+@ops_insights_command.command("audit")
 @click.option(
     "--insight",
     "insights",
@@ -442,7 +446,7 @@ def insights_audit_command(
     _render_audit_plain(report)
 
 
-@insights_command.command("timeline")
+@analyze_insights_command.command("timeline")
 @click.argument("session_id")
 @click.option(
     "--format",
@@ -486,7 +490,7 @@ def insights_timeline_command(
 # Register all insight types as subcommands
 for _pt in INSIGHT_REGISTRY.values():
     if _pt.query_model is not None and _pt.operations_method_name:
-        insights_command.add_command(_build_insight_command(_pt))
+        analyze_insights_command.add_command(_build_insight_command(_pt))
 
 
-__all__ = ["insights_command"]
+__all__ = ["analyze_insights_command", "ops_insights_command"]

@@ -99,12 +99,11 @@ _SHORT_HELP: dict[str, str] = {
     "embed": "Enable, preflight, and backfill the embedding pipeline.",
     "import_command": "Import sessions from configured sources.",
     "init": "Detect chat sources and write a starter polylogue.toml.",
-    "insights": "Rebuild and inspect derived session insights.",
+    "insights": "Check and export derived insight materialization.",
     "maintenance": "Preview and run maintenance backfill operations.",
     "ops": "Run operational archive and daemon commands.",
     "paths": "Print canonical archive paths and bind-mount detection.",
     "reset": "Reset local archive state.",
-    "schema": "Inspect and audit provider schemas.",
     "status": "Show daemon and archive status.",
     "tutorial": "Interactive first-run walk-through.",
 }
@@ -119,10 +118,9 @@ _GROUP_ATTRS: dict[str, str] = {
     "demo": "demo_command",
     "diagnostics": "diagnostics_group",
     "embed": "embed_command",
-    "insights": "insights_command",
+    "insights": "ops_insights_command",
     "maintenance": "maintenance_group",
     "ops": "ops_command",
-    "schema": "schema_command",
 }
 
 _COMMAND_ATTRS: dict[str, str] = {
@@ -161,7 +159,6 @@ OPS_COMMANDS: tuple[click.Command, ...] = (
     _L("insights"),
     _L("maintenance"),
     _L("reset"),
-    _L("schema"),
     _L("status"),
 )
 
