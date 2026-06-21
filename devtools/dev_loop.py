@@ -6,10 +6,13 @@ import argparse
 import json
 import os
 import re
+import shlex
 import socket
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from http.client import HTTPConnection
 from pathlib import Path
 from threading import Thread
@@ -43,6 +46,12 @@ def _run_command(args: list[str], *, timeout_s: float = 2.0) -> CommandResult:
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired) as exc:
         return CommandResult(exit_code=127, stdout="", stderr=str(exc))
     return CommandResult(exit_code=result.returncode, stdout=result.stdout.strip(), stderr=result.stderr.strip())
+
+
+def _safe_artifact_name(command: list[str]) -> str:
+    raw = "-".join(Path(part).name if index == 0 else part for index, part in enumerate(command))
+    name = _RUN_ID_SAFE_RE.sub("-", raw).strip("-").lower()
+    return name[:80] or "command"
 
 
 def _git_value(args: list[str], *, cwd: Path) -> str | None:
@@ -237,6 +246,119 @@ def run_receiver_smoke(*, spool_path: Path) -> dict[str, object]:
     }
 
 
+def _decode_timeout_stream(value: bytes | str | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
+
+
+def run_cli_capture(
+    *,
+    preflight: dict[str, Any],
+    command: list[str],
+    timeout_s: float,
+) -> dict[str, object]:
+    """Run a branch-local CLI command and persist debug artifacts."""
+
+    if not command:
+        raise ValueError("capture command must not be empty")
+    if command[0] == "--":
+        command = command[1:]
+    if not command:
+        raise ValueError("capture command must not be empty")
+
+    artifacts = preflight.get("artifacts")
+    if not isinstance(artifacts, dict):
+        raise ValueError("preflight payload is missing artifact paths")
+    terminal_dir = Path(str(artifacts["terminal_dir"]))
+    terminal_dir.mkdir(parents=True, exist_ok=True)
+
+    env = os.environ.copy()
+    suggested_env = preflight.get("suggested_env")
+    if isinstance(suggested_env, dict):
+        env.update({str(key): str(value) for key, value in suggested_env.items()})
+    env.setdefault("POLYLOGUE_FORCE_PLAIN", "1")
+
+    artifact_name = _safe_artifact_name(command)
+    stdout_path = terminal_dir / f"{artifact_name}.stdout"
+    stderr_path = terminal_dir / f"{artifact_name}.stderr"
+    transcript_path = terminal_dir / f"{artifact_name}.transcript.txt"
+    env_path = terminal_dir / f"{artifact_name}.env.json"
+    summary_path = terminal_dir / f"{artifact_name}.summary.json"
+
+    started_at = datetime.now(UTC)
+    started = time.monotonic()
+    timed_out = False
+    try:
+        result = subprocess.run(
+            command,
+            cwd=str(preflight["repo_root"]),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            check=False,
+        )
+        exit_code = int(result.returncode)
+        stdout = result.stdout
+        stderr = result.stderr
+    except subprocess.TimeoutExpired as exc:
+        timed_out = True
+        exit_code = 124
+        stdout = _decode_timeout_stream(exc.stdout)
+        stderr = _decode_timeout_stream(exc.stderr)
+        stderr = (stderr + "\n" if stderr else "") + f"command timed out after {timeout_s:.1f}s\n"
+    except OSError as exc:
+        exit_code = 127
+        stdout = ""
+        stderr = f"{type(exc).__name__}: {exc}\n"
+    duration_ms = int((time.monotonic() - started) * 1000)
+    ended_at = datetime.now(UTC)
+
+    stdout_path.write_text(stdout, encoding="utf-8")
+    stderr_path.write_text(stderr, encoding="utf-8")
+    transcript = (
+        f"$ {shlex.join(command)}\n"
+        f"# cwd={preflight['repo_root']}\n"
+        f"# run_id={preflight['run_id']}\n"
+        f"# started_at={started_at.isoformat()}\n\n"
+        "[stdout]\n"
+        f"{stdout}"
+        "\n[stderr]\n"
+        f"{stderr}"
+        f"\n[exit {exit_code}]\n"
+    )
+    transcript_path.write_text(transcript, encoding="utf-8")
+    env_snapshot = {
+        key: env[key] for key in sorted(env) if key.startswith("POLYLOGUE_") or key in {"PATH", "PYTHONPATH"}
+    }
+    env_path.write_text(json.dumps(env_snapshot, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    payload: dict[str, object] = {
+        "ok": exit_code == 0,
+        "command": command,
+        "command_text": shlex.join(command),
+        "cwd": str(preflight["repo_root"]),
+        "run_id": str(preflight["run_id"]),
+        "started_at": started_at.isoformat(),
+        "ended_at": ended_at.isoformat(),
+        "duration_ms": duration_ms,
+        "exit_code": exit_code,
+        "timed_out": timed_out,
+        "artifacts": {
+            "stdout": str(stdout_path),
+            "stderr": str(stderr_path),
+            "transcript": str(transcript_path),
+            "env": str(env_path),
+            "summary": str(summary_path),
+        },
+    }
+    summary_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return payload
+
+
 def _dev_loop_run_id(*, branch: str | None, commit: str | None, api_port: int, browser_capture_port: int) -> str:
     branch_part = _RUN_ID_SAFE_RE.sub("-", branch or "detached").strip("-") or "detached"
     commit_part = _RUN_ID_SAFE_RE.sub("-", commit or "unknown").strip("-") or "unknown"
@@ -394,6 +516,21 @@ def _print_receiver_smoke(payload: dict[str, Any]) -> None:
     print(f"  artifact: {smoke.get('artifact_ref')}")
 
 
+def _print_cli_capture(payload: dict[str, Any]) -> None:
+    preflight = payload["preflight"]
+    capture = payload["cli_capture"]
+    assert isinstance(preflight, dict)
+    assert isinstance(capture, dict)
+    artifacts = capture["artifacts"]
+    assert isinstance(artifacts, dict)
+    print("Polylogue dev-loop CLI capture")
+    print(f"  run id:    {preflight['run_id']}")
+    print(f"  command:   {capture['command_text']}")
+    print(f"  exit:      {capture['exit_code']}")
+    print(f"  duration:  {capture['duration_ms']} ms")
+    print(f"  transcript: {artifacts['transcript']}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
@@ -411,6 +548,18 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Run a deterministic in-process browser-capture receiver smoke.",
     )
+    parser.add_argument(
+        "--capture-timeout-s",
+        type=float,
+        default=30.0,
+        help="Timeout for --capture-cli commands.",
+    )
+    parser.add_argument(
+        "--capture-cli",
+        action="store_true",
+        help="Run a branch-local CLI command and write stdout/stderr/transcript artifacts.",
+    )
+    parser.add_argument("capture_command", nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     payload = build_dev_loop_status(
         api_port=args.api_port,
@@ -430,6 +579,28 @@ def main(argv: list[str] | None = None) -> int:
         else:
             _print_receiver_smoke(smoke_payload)
         return 0 if smoke_payload["receiver_smoke"]["ok"] else 1
+    if args.capture_cli:
+        try:
+            capture_payload = run_cli_capture(
+                preflight=payload,
+                command=list(args.capture_command),
+                timeout_s=args.capture_timeout_s,
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
+        combined_payload: dict[str, Any] = {
+            "preflight": payload,
+            "cli_capture": capture_payload,
+        }
+        if args.json:
+            json.dump(combined_payload, sys.stdout, indent=2, sort_keys=True)
+            sys.stdout.write("\n")
+        else:
+            _print_cli_capture(combined_payload)
+        capture_exit = capture_payload["exit_code"]
+        if not isinstance(capture_exit, int):
+            capture_exit = 1
+        return 0 if capture_payload.get("ok") is True else capture_exit
     if args.json:
         json.dump(payload, sys.stdout, indent=2, sort_keys=True)
         sys.stdout.write("\n")

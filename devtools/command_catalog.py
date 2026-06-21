@@ -319,6 +319,8 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools workspace dev-loop",
             "devtools workspace dev-loop --json",
             "devtools workspace dev-loop --prepare --api-port 8876 --browser-capture-port 8875",
+            "devtools workspace dev-loop --capture-cli -- polylogue ops status",
+            "devtools workspace dev-loop --receiver-smoke --json",
         ),
     ),
     CommandSpec(

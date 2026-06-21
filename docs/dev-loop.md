@@ -104,10 +104,23 @@ JSON payloads. The preflight reserves run-local directories for those artifacts:
 .cache/dev-loop/<run-id>/tui/
 ```
 
-The `commands.capture_cli_status` entry shows a concrete terminal transcript
-capture for `polylogue ops status` against the branch-local archive. Use the
-same pattern for other CLI commands whose layout, colors, wrapping, or progress
-behavior matters.
+Use the managed capture helper for normal command-line runs:
+
+```bash
+devtools workspace dev-loop --capture-cli -- polylogue ops status
+devtools workspace dev-loop --capture-cli -- polylogue analyze insights profiles --limit 5
+```
+
+The helper runs the command with the branch-local `POLYLOGUE_*` environment and
+writes stdout, stderr, a combined transcript, the relevant environment snapshot,
+and a JSON summary under:
+
+```text
+.cache/dev-loop/<run-id>/terminal/
+```
+
+The preflight payload still includes `commands.capture_cli_status` as a
+copy-pastable `script` example when an actual terminal typescript is useful.
 
 For TUI or full-screen terminal work, record into the run-local `tui/`
 directory using the local terminal-control surface, `script`, or VHS-style
