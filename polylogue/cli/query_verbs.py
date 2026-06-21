@@ -282,7 +282,15 @@ def select_verb(ctx: click.Context, limit: int, print_field: str, json_output: b
     from polylogue.cli.select import run_select
 
     field: SelectPrintField = "json" if json_output else cast("SelectPrintField", print_field)
-    run_select(ctx.obj, _parent_request(ctx), limit=limit, print_field=field)
+    request = _parent_request(ctx)
+    if _explain_terminal_action(
+        request,
+        action="select",
+        limit=limit,
+        print_field=field,
+    ):
+        return
+    run_select(ctx.obj, request, limit=limit, print_field=field)
 
 
 @click.command("read")
@@ -473,6 +481,15 @@ def read_verb(
         _emit_read_view_profiles(output_format)
         return
     request = _parent_request(ctx)
+    if _explain_terminal_action(
+        request,
+        action="read",
+        view=view,
+        destination=destination,
+        format=_effective_read_output_format(request, view=view, output_format=output_format) or "default",
+        all=export_all,
+    ):
+        return
     if ref is not None:
         if output_format not in (None, "json"):
             raise click.UsageError("Direct ref reads currently support --format json only.")
@@ -505,10 +522,7 @@ def read_verb(
         return
 
     session_id = _resolve_target_session_id(request)
-    effective_format = output_format
-    if view == "recovery" and effective_format is None:
-        root_format = request.params.get("output_format")
-        effective_format = root_format if isinstance(root_format, str) else None
+    effective_format = _effective_read_output_format(request, view=view, output_format=output_format)
     explicit_options = _explicit_read_view_options(ctx)
     if destination == "browser":
         run_read_view(
@@ -630,6 +644,14 @@ def continue_verb(
     """
     env: AppEnv = ctx.obj
     request = _parent_request(ctx)
+    if _explain_terminal_action(
+        request,
+        action="continue",
+        destination=destination,
+        format=output_format or request.params.get("output_format") or "default",
+        candidates=candidates,
+    ):
+        return
     if candidates:
         if destination not in ("terminal", "stdout") or out_path is not None:
             raise click.UsageError("continue --candidates writes to terminal/stdout; omit --to/--out.")
@@ -720,6 +742,14 @@ def delete_verb(ctx: click.Context, dry_run: bool, yes_flag: bool, all_flag: boo
 
     env: AppEnv = ctx.obj
     request = _parent_request(ctx)
+    if _explain_terminal_action(
+        request,
+        action="delete",
+        dry_run=dry_run,
+        yes=yes_flag,
+        all=all_flag,
+    ):
+        return
 
     from polylogue.cli.archive_query import execute_delete_by_session_ids
 
@@ -802,6 +832,22 @@ def mark_verb(
 
     env: AppEnv = ctx.obj
     request = _parent_request(ctx)
+    if _explain_terminal_action(
+        request,
+        action="mark",
+        tag_add=tags_to_add,
+        tag_remove=tags_to_remove,
+        star=star,
+        unstar=unstar,
+        pin=pin,
+        unpin=unpin,
+        archive=do_archive,
+        unarchive=do_unarchive,
+        note=note_text is not None,
+        all=apply_all,
+        first=first_only,
+    ):
+        return
 
     # Resolve matched sessions and enforce cardinality.
     session_ids = resolve_session_ids_for_verb(env, request)
@@ -1117,6 +1163,17 @@ def analyze_verb(
 
     env: AppEnv = ctx.obj
     request = _parent_request(ctx)
+    if _explain_terminal_action(
+        request,
+        action="analyze",
+        count=count_only,
+        by=stats_by,
+        facets=show_facets,
+        cost_outlook=cost_outlook,
+        format=output_format or request.params.get("output_format") or "default",
+        limit=limit,
+    ):
+        return
 
     selected_modes = sum(bool(flag) for flag in (count_only, show_facets, cost_outlook, stats_by is not None))
     if selected_modes > 1:
@@ -1231,6 +1288,24 @@ def _parent_query_terms(ctx: click.Context) -> tuple[str, ...]:
     """Load query terms captured on the parent query context."""
     raw_terms = _require_parent_context(ctx).meta.get("polylogue_query_terms", ())
     return tuple(str(term) for term in raw_terms)
+
+
+def _explain_terminal_action(request: RootModeRequest, **terminal_action: object) -> bool:
+    """Render query explain output for a terminal query action when requested."""
+    if not request.explain_query:
+        return False
+    from polylogue.cli.query import explain_query_request
+
+    explain_query_request(request, terminal_action=terminal_action)
+    return True
+
+
+def _effective_read_output_format(request: RootModeRequest, *, view: str, output_format: str | None) -> str | None:
+    effective_format = output_format
+    if view == "recovery" and effective_format is None:
+        root_format = request.params.get("output_format")
+        effective_format = root_format if isinstance(root_format, str) else None
+    return effective_format
 
 
 def _parent_request(ctx: click.Context) -> RootModeRequest:

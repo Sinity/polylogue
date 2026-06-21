@@ -300,6 +300,158 @@ def test_root_query_explain_json_outputs_terminal_pipeline_stages(cli_runner: Cl
     assert lowering_plan["pipeline_stages"] == expected_stages
 
 
+def test_query_action_read_explain_json_outputs_terminal_action(cli_runner: CliRunner) -> None:
+    result = cli_runner.invoke(
+        click_cli,
+        [
+            "--plain",
+            "--format",
+            "json",
+            "--explain",
+            "find",
+            "repo:polylogue",
+            "then",
+            "read",
+            "--view",
+            "messages",
+            "--limit",
+            "3",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = cast(dict[str, Any], json.loads(result.output))
+    terminal_action = cast(dict[str, Any], payload["terminal_action"])
+    assert terminal_action == {
+        "action": "read",
+        "all": False,
+        "destination": "terminal",
+        "format": "default",
+        "view": "messages",
+    }
+    lowering_plan = cast(dict[str, Any], payload["lowering_plan"])
+    assert lowering_plan["terminal_action"] == terminal_action
+    assert payload["plan_description"][-1] == "terminal action: read"
+
+
+def test_query_action_read_explain_recovery_inherits_root_format(cli_runner: CliRunner) -> None:
+    result = cli_runner.invoke(
+        click_cli,
+        [
+            "--plain",
+            "--format",
+            "json",
+            "--explain",
+            "find",
+            "repo:polylogue",
+            "then",
+            "read",
+            "--view",
+            "recovery",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = cast(dict[str, Any], json.loads(result.output))
+    assert cast(dict[str, Any], payload["terminal_action"])["format"] == "json"
+
+
+def test_query_action_read_explain_uses_local_read_format(cli_runner: CliRunner) -> None:
+    result = cli_runner.invoke(
+        click_cli,
+        [
+            "--plain",
+            "--format",
+            "json",
+            "--explain",
+            "find",
+            "repo:polylogue",
+            "then",
+            "read",
+            "--view",
+            "messages",
+            "--format",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = cast(dict[str, Any], json.loads(result.output))
+    assert cast(dict[str, Any], payload["terminal_action"])["format"] == "json"
+
+
+@pytest.mark.parametrize(
+    "action_args,expected",
+    [
+        (
+            ["select", "--limit", "5", "--print", "title"],
+            {"action": "select", "limit": 5, "print_field": "title"},
+        ),
+        (
+            ["continue"],
+            {"action": "continue", "candidates": False, "destination": "terminal", "format": "json"},
+        ),
+        (
+            ["delete", "--dry-run"],
+            {"action": "delete", "all": False, "dry_run": True, "yes": False},
+        ),
+        (
+            ["mark", "--tag-add", "reviewed"],
+            {
+                "action": "mark",
+                "all": False,
+                "archive": False,
+                "first": False,
+                "note": False,
+                "pin": False,
+                "star": False,
+                "tag_add": ["reviewed"],
+                "tag_remove": [],
+                "unarchive": False,
+                "unpin": False,
+                "unstar": False,
+            },
+        ),
+        (
+            ["analyze", "--count"],
+            {
+                "action": "analyze",
+                "by": None,
+                "cost_outlook": False,
+                "count": True,
+                "facets": False,
+                "format": "json",
+                "limit": None,
+            },
+        ),
+    ],
+)
+def test_query_action_explain_json_outputs_terminal_action_floor(
+    cli_runner: CliRunner,
+    action_args: list[str],
+    expected: dict[str, object],
+) -> None:
+    result = cli_runner.invoke(
+        click_cli,
+        [
+            "--plain",
+            "--format",
+            "json",
+            "find",
+            "repo:polylogue",
+            "--explain",
+            "then",
+            *action_args,
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = cast(dict[str, Any], json.loads(result.output))
+    assert payload["terminal_action"] == expected
+    assert cast(dict[str, Any], payload["lowering_plan"])["terminal_action"] == expected
+    assert payload["plan_description"][-1] == f"terminal action: {expected['action']}"
+
+
 def test_root_query_explain_json_marks_runtime_transform_unit_payload(cli_runner: CliRunner) -> None:
     result = cli_runner.invoke(
         click_cli,

@@ -76,7 +76,11 @@ def _create_query_vector_provider(config: Config, *, db_path: Path | None = None
         return None
 
 
-def _explain_query_request(request: RootModeRequest) -> None:
+def explain_query_request(
+    request: RootModeRequest,
+    *,
+    terminal_action: dict[str, object] | None = None,
+) -> None:
     if not request.query_terms:
         raise click.UsageError("--explain requires query terms. Use `polylogue find QUERY --explain`.")
     from polylogue.cli.query_explain import explain_query_expression
@@ -85,7 +89,15 @@ def _explain_query_request(request: RootModeRequest) -> None:
     if output_format not in {"plain", "plaintext", "markdown", "json"}:
         raise click.UsageError(f"--explain does not support --format {output_format}.")
     render_format = "json" if output_format == "json" else "plain"
-    explain_query_expression(" ".join(request.query_terms), output_format=render_format)
+    explain_query_expression(
+        " ".join(request.query_terms),
+        output_format=render_format,
+        terminal_action=terminal_action,
+    )
+
+
+def _explain_query_request(request: RootModeRequest) -> None:
+    explain_query_request(request)
 
 
 def execute_query_request(env: AppEnv, request: RootModeRequest) -> None:
