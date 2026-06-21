@@ -51,6 +51,7 @@ from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.surfaces.payloads import (
     SEARCH_CURSOR_VERSION,
     InvalidSearchCursorError,
+    MutationOperation,
     MutationResultPayload,
     SearchCursor,
     SessionListRowPayload,
@@ -1195,7 +1196,7 @@ def _emit_stats_by(
     _emit_rows(envelope, items, output_format=output_format, text_line=_stats_by_line, fields=fields)
 
 
-def _emit_mutation(changed: int, *, operation: str) -> None:
+def _emit_mutation(changed: int, *, operation: MutationOperation) -> None:
     click.echo(
         MutationResultPayload(status="ok", operation=operation, affected_count=changed).to_json(exclude_none=True)
     )

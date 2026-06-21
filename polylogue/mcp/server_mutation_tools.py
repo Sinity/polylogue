@@ -861,7 +861,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 MutationResultPayload(
                     status="ok" if removed else "not_found",
                     session_id=resolved,
-                    outcome=kind,
+                    outcome="deleted" if removed else "not_found",
                 ),
                 exclude_none=True,
             )

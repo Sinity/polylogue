@@ -9,6 +9,9 @@ import json
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import pytest
+from pydantic import ValidationError
+
 from polylogue.surfaces.payloads import TagMutationResult
 from tests.infra.mcp import (
     MCPServerUnderTest,
@@ -202,3 +205,51 @@ class TestMutationResultPayloadRoundtrip:
         serialized = payload.model_dump_json(exclude_none=True)
         parsed = json.loads(serialized)
         assert "outcome" not in parsed
+
+    def test_payload_rejects_unknown_mutation_vocabularies(self) -> None:
+        from polylogue.mcp.payloads import MutationResultPayload
+
+        with pytest.raises(ValidationError):
+            MutationResultPayload(status="bogus")  # type: ignore[arg-type]
+        with pytest.raises(ValidationError):
+            MutationResultPayload(status="ok", outcome="bogus")  # type: ignore[arg-type]
+        with pytest.raises(ValidationError):
+            MutationResultPayload(status="ok", operation="bogus")  # type: ignore[arg-type]
+
+
+class TestCorrectionMutationOutcomes:
+    """Correction mutation payloads expose mutation outcomes, not input kinds."""
+
+    def test_clear_one_correction_reports_deleted_outcome(self, mcp_server: MCPServerUnderTest) -> None:
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock(resolved_id=_CONV_ID)
+            mock_poly.delete_correction = AsyncMock(return_value=True)
+            mock_get_polylogue.return_value = mock_poly
+
+            result = invoke_surface(
+                mcp_server._tool_manager._tools["clear_corrections"].fn,
+                session_id=_CONV_ID,
+                kind="tag_accept",
+            )
+
+        parsed = json.loads(result)
+        assert parsed["status"] == "ok"
+        assert parsed["outcome"] == "deleted"
+        _assert_mutation_schema(parsed)
+
+    def test_clear_missing_correction_reports_not_found_outcome(self, mcp_server: MCPServerUnderTest) -> None:
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock(resolved_id=_CONV_ID)
+            mock_poly.delete_correction = AsyncMock(return_value=False)
+            mock_get_polylogue.return_value = mock_poly
+
+            result = invoke_surface(
+                mcp_server._tool_manager._tools["clear_corrections"].fn,
+                session_id=_CONV_ID,
+                kind="tag_accept",
+            )
+
+        parsed = json.loads(result)
+        assert parsed["status"] == "not_found"
+        assert parsed["outcome"] == "not_found"
+        _assert_mutation_schema(parsed)
