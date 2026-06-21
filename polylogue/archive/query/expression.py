@@ -1126,15 +1126,15 @@ _BOOLEAN_QUERY_TRANSFORMER = _BooleanQueryTransformer()
 def _is_boolean_expression(expression: str) -> bool:
     stripped = expression.lstrip()
     lower = stripped.lower()
+    exists_prefixes = tuple(
+        prefix
+        for unit in ("message", "action", "block", "assertion", "file")
+        for prefix in (f"exists {unit}(", f"exists {unit} (")
+    )
     if (
         stripped.startswith("(")
         or lower.startswith("sessions where ")
-        or lower.startswith("exists message(")
-        or lower.startswith("exists message (")
-        or lower.startswith("exists action(")
-        or lower.startswith("exists action (")
-        or lower.startswith("exists block(")
-        or lower.startswith("exists block (")
+        or lower.startswith(exists_prefixes)
         or lower.startswith("seq(")
         or lower.startswith("seq (")
         or lower.startswith("lineage:")

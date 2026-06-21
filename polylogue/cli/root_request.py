@@ -13,6 +13,37 @@ if TYPE_CHECKING:
     import click
 
 
+def _is_shell_quoted_structured_query(term: str) -> bool:
+    """Return whether one shell term should be compiled as DSL, not a phrase."""
+
+    stripped = term.strip()
+    lowered = stripped.lower()
+    if not stripped:
+        return False
+    if lowered.startswith(("exists ", "exists(", "seq(", "lineage:id:")):
+        return True
+    if " where " in lowered:
+        from polylogue.archive.query.metadata import terminal_query_sources
+
+        prefixes = tuple(f"{source} where " for source in terminal_query_sources()) + ("sessions where ",)
+        return lowered.startswith(prefixes)
+    return False
+
+
+def _expression_from_query_terms(query_terms: tuple[str, ...]) -> str:
+    if len(query_terms) == 1 and _is_shell_quoted_structured_query(query_terms[0]):
+        return query_terms[0].strip()
+
+    parts: list[str] = []
+    for term in query_terms:
+        if any(char.isspace() for char in term):
+            escaped = term.replace('"', '\\"')
+            parts.append(f'"{escaped}"')
+        else:
+            parts.append(term)
+    return " ".join(parts)
+
+
 @dataclass(frozen=True)
 class RootModeRequest:
     """Canonical root request for stats-or-query dispatch."""
@@ -81,21 +112,7 @@ class RootModeRequest:
         if not self.query_terms:
             return base
 
-        # Re-join query_terms into a DSL expression string.  Terms that
-        # contain spaces (e.g. shell-quoted phrases) are re-wrapped in
-        # double-quotes so the lexer treats them as quoted phrases.
-        parts: list[str] = []
-        for term in self.query_terms:
-            if " " in term:
-                # Quote term with embedded spaces so the lexer handles them
-                # as quoted phrases rather than splitting on the space.
-                escaped = term.replace('"', '\\"')
-                parts.append(f'"{escaped}"')
-            else:
-                parts.append(term)
-        expression = " ".join(parts)
-
-        return compile_expression_into(expression, base)
+        return compile_expression_into(_expression_from_query_terms(self.query_terms), base)
 
     @property
     def verbose(self) -> bool:
