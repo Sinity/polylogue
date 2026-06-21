@@ -95,14 +95,7 @@ from lark import Lark, Token, Transformer, v_args
 from lark.exceptions import UnexpectedInput, VisitError
 
 from polylogue.archive.query.metadata import (
-    _ACTION_STRUCTURAL_FIELDS,
-    _ASSERTION_STRUCTURAL_FIELDS,
-    _BLOCK_STRUCTURAL_FIELDS,
     _BOOLEAN_SUPPORTED_FIELDS,
-    _CONTEXT_SNAPSHOT_STRUCTURAL_FIELDS,
-    _MESSAGE_STRUCTURAL_FIELDS,
-    _OBSERVED_EVENT_STRUCTURAL_FIELDS,
-    _RUN_STRUCTURAL_FIELDS,
     _STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS,
     COUNT_QUERY_FIELD_REGISTRY,
     DATE_QUERY_FIELD_REGISTRY,
@@ -119,6 +112,7 @@ from polylogue.archive.query.metadata import (
     date_query_fields,
     date_query_operators,
     query_unit_descriptor,
+    query_unit_field_names,
     structural_query_fields,
     structural_query_units,
     terminal_query_source_pairs,
@@ -830,37 +824,19 @@ def _validate_predicate_context(predicate: QueryPredicate, *, unit: Literal["ses
         session_field = _scoped_session_field(predicate.field)
         if unit == "session":
             supported = _BOOLEAN_SUPPORTED_FIELDS
-            effective_field = predicate.field
-        elif unit == "message":
-            supported = _MESSAGE_STRUCTURAL_FIELDS
-            effective_field = session_field or predicate.field
-        elif unit == "action":
-            supported = _ACTION_STRUCTURAL_FIELDS
-            effective_field = session_field or predicate.field
-        elif unit == "block":
-            supported = _BLOCK_STRUCTURAL_FIELDS
-            effective_field = session_field or predicate.field
-        elif unit == "assertion":
-            supported = _ASSERTION_STRUCTURAL_FIELDS
-            effective_field = session_field or predicate.field
-        elif unit == "observed-event":
-            supported = _OBSERVED_EVENT_STRUCTURAL_FIELDS
-            effective_field = session_field or predicate.field
-        elif unit == "context-snapshot":
-            supported = _CONTEXT_SNAPSHOT_STRUCTURAL_FIELDS
-            effective_field = session_field or predicate.field
+            supported_field = predicate.field
+            validation_field = predicate.field
         else:
-            supported = _RUN_STRUCTURAL_FIELDS
-            effective_field = session_field or predicate.field
-        if session_field is not None and unit != "session":
-            supported = _BOOLEAN_SUPPORTED_FIELDS
-        if effective_field not in supported:
+            supported = set(query_unit_field_names(unit))
+            supported_field = predicate.field
+            validation_field = session_field or predicate.field
+        if supported_field not in supported:
             raise ExpressionCompileError(
                 f"field {predicate.field!r} is not supported for {unit} predicates",
                 field=predicate.field,
             )
         if (
-            effective_field
+            validation_field
             in {
                 "role",
                 "type",
@@ -916,12 +892,12 @@ def _validate_predicate_context(predicate: QueryPredicate, *, unit: Literal["ses
             and not predicate.values
         ):
             raise ExpressionCompileError(f"field {predicate.field!r} requires a value", field=predicate.field)
-        if effective_field == "date":
+        if validation_field == "date":
             if not predicate.values:
                 raise ExpressionCompileError("field 'date' requires a value", field="date")
             if predicate.op not in {">=", "<="}:
                 raise ExpressionCompileError("field 'date' supports only >=, <=, >, <, and between", field="date")
-        if effective_field == "time":
+        if validation_field == "time":
             if unit == "session":
                 raise ExpressionCompileError(
                     "field 'time' is supported only for terminal unit predicates", field="time"
@@ -930,16 +906,16 @@ def _validate_predicate_context(predicate: QueryPredicate, *, unit: Literal["ses
                 raise ExpressionCompileError("field 'time' requires a value", field="time")
             if predicate.op not in {">=", "<="}:
                 raise ExpressionCompileError("field 'time' supports only >=, <=, >, <, and between", field="time")
-        if effective_field in COUNT_QUERY_FIELD_REGISTRY or effective_field in NUMERIC_QUERY_FIELD_REGISTRY:
+        if validation_field in COUNT_QUERY_FIELD_REGISTRY or validation_field in NUMERIC_QUERY_FIELD_REGISTRY:
             if not predicate.values:
                 raise ExpressionCompileError(
-                    f"field {effective_field!r} requires a numeric value", field=effective_field
+                    f"field {validation_field!r} requires a numeric value", field=validation_field
                 )
             try:
                 int(predicate.values[-1])
             except ValueError as exc:
                 raise ExpressionCompileError(
-                    f"field {effective_field!r} requires a numeric value", field=effective_field
+                    f"field {validation_field!r} requires a numeric value", field=validation_field
                 ) from exc
         return
     if isinstance(predicate, QueryNotPredicate):

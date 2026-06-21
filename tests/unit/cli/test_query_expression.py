@@ -71,6 +71,45 @@ def _clauses(expression: str) -> list[object]:
     return list(parse_expression_ast(expression).clauses)
 
 
+def _field_payload(
+    field: str,
+    *values: str,
+    op: str = "=",
+    field_ref: dict[str, object] | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {"kind": "field", "field": field, "op": op, "values": list(values)}
+    if field_ref is not None:
+        payload["field_ref"] = field_ref
+    return payload
+
+
+def _session_field_ref(name: str, *, source_name: str | None = None, unit: str | None = None) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "scope": "session",
+        "name": name,
+        "source_name": source_name or name,
+    }
+    if unit is not None:
+        payload["unit"] = unit
+    return payload
+
+
+def _unit_field_ref(name: str, unit: str, *, source_name: str | None = None) -> dict[str, object]:
+    return {
+        "scope": "unit",
+        "name": name,
+        "source_name": source_name or name,
+        "unit": unit,
+    }
+
+
+def _session_scope_stage(field: str, *values: str) -> dict[str, object]:
+    return {
+        "kind": "session_scope",
+        "predicate": _field_payload(field, *values, field_ref=_session_field_ref(field)),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Lexer tests
 # ---------------------------------------------------------------------------
@@ -214,7 +253,7 @@ class TestExplainExpression:
             "predicate": {
                 "children": [
                     {
-                        "child": {"field": "type", "kind": "field", "op": "=", "values": ["code"]},
+                        "child": _field_payload("type", "code", field_ref=_unit_field_ref("type", "block")),
                         "kind": "exists",
                         "unit": "block",
                     },
@@ -254,12 +293,12 @@ class TestExplainExpression:
             "kind": "sequence",
             "unit": "action",
             "steps": [
-                {"kind": "field", "field": "action", "op": "=", "values": ["file_edit"]},
+                _field_payload("action", "file_edit", field_ref=_unit_field_ref("action", "action")),
                 {
                     "kind": "and",
                     "children": [
-                        {"kind": "field", "field": "action", "op": "=", "values": ["shell"]},
-                        {"kind": "field", "field": "output", "op": "=", "values": ["failed"]},
+                        _field_payload("action", "shell", field_ref=_unit_field_ref("action", "action")),
+                        _field_payload("output", "failed", field_ref=_unit_field_ref("output", "action")),
                     ],
                 },
             ],
@@ -280,8 +319,8 @@ class TestExplainExpression:
             "entry": "unit_source",
             "predicate": {
                 "children": [
-                    {"field": "role", "kind": "field", "op": "=", "values": ["assistant"]},
-                    {"field": "text", "kind": "field", "op": "=", "values": ["timeout"]},
+                    _field_payload("role", "assistant", field_ref=_unit_field_ref("role", "message")),
+                    _field_payload("text", "timeout", field_ref=_unit_field_ref("text", "message")),
                 ],
                 "kind": "and",
             },
@@ -289,8 +328,8 @@ class TestExplainExpression:
                 "unit": "message",
                 "predicate": {
                     "children": [
-                        {"field": "role", "kind": "field", "op": "=", "values": ["assistant"]},
-                        {"field": "text", "kind": "field", "op": "=", "values": ["timeout"]},
+                        _field_payload("role", "assistant", field_ref=_unit_field_ref("role", "message")),
+                        _field_payload("text", "timeout", field_ref=_unit_field_ref("text", "message")),
                     ],
                     "kind": "and",
                 },
@@ -321,10 +360,10 @@ class TestExplainExpression:
         payload = explanation.to_payload()
         assert payload["ast"] == {
             "entry": "unit_source",
-            "predicate": {"field": "role", "kind": "field", "op": "=", "values": ["assistant"]},
+            "predicate": _field_payload("role", "assistant", field_ref=_unit_field_ref("role", "message")),
             "unit_source": {
                 "unit": "message",
-                "predicate": {"field": "role", "kind": "field", "op": "=", "values": ["assistant"]},
+                "predicate": _field_payload("role", "assistant", field_ref=_unit_field_ref("role", "message")),
                 "limit": 2,
                 "offset": 3,
                 "sort": {"field": "time", "direction": "desc"},
@@ -348,17 +387,11 @@ class TestExplainExpression:
         payload = explanation.to_payload()
         ast_payload = cast(dict[str, Any], payload["ast"])
         unit_source = cast(dict[str, Any], ast_payload["unit_source"])
-        assert unit_source["session_predicate"] == {
-            "field": "repo",
-            "kind": "field",
-            "op": "=",
-            "values": ["polylogue"],
-        }
+        assert unit_source["session_predicate"] == _field_payload(
+            "repo", "polylogue", field_ref=_session_field_ref("repo")
+        )
         assert unit_source["pipeline_stages"] == [
-            {
-                "kind": "session_scope",
-                "predicate": {"field": "repo", "kind": "field", "op": "=", "values": ["polylogue"]},
-            },
+            _session_scope_stage("repo", "polylogue"),
             {"kind": "limit", "value": 5},
         ]
         lowering_plan = cast(dict[str, Any], payload["lowering_plan"])
@@ -547,6 +580,50 @@ class TestBooleanQueryExpression:
         assert predicate.field_ref.source_name == "repo"
         assert predicate.field_ref.unit is None
 
+    def test_runtime_terminal_unit_accepts_descriptor_backed_session_scope(self) -> None:
+        source = parse_unit_source_expression(
+            "context-snapshots where session.repo:polylogue AND boundary:session_start"
+        )
+
+        assert source is not None
+        assert source.unit == "context-snapshot"
+        predicate = cast(QueryBoolPredicate, source.predicate)
+        scoped_repo = cast(QueryFieldPredicate, predicate.children[0])
+        boundary = cast(QueryFieldPredicate, predicate.children[1])
+
+        assert scoped_repo.field_ref is not None
+        assert scoped_repo.field_ref.scope == "session"
+        assert scoped_repo.field_ref.name == "repo"
+        assert scoped_repo.field_ref.source_name == "session.repo"
+        assert scoped_repo.field_ref.unit == "context-snapshot"
+        assert boundary.field_ref is not None
+        assert boundary.field_ref.scope == "unit"
+        assert boundary.field_ref.name == "boundary"
+        assert boundary.field_ref.unit == "context-snapshot"
+        assert scoped_repo.to_payload()["field_ref"] == {
+            "scope": "session",
+            "name": "repo",
+            "source_name": "session.repo",
+            "unit": "context-snapshot",
+        }
+
+    def test_runtime_terminal_unit_rejects_session_scope_not_in_summary_projection(self) -> None:
+        with pytest.raises(ExpressionCompileError, match="field 'session.action' is not supported"):
+            parse_unit_source_expression("context-snapshots where session.action:file_edit")
+
+    def test_sql_terminal_unit_accepts_session_path_scope(self) -> None:
+        source = parse_unit_source_expression("messages where session.path:polylogue/archive AND role:assistant")
+
+        assert source is not None
+        predicate = cast(QueryBoolPredicate, source.predicate)
+        scoped_path = cast(QueryFieldPredicate, predicate.children[0])
+
+        assert scoped_path.field_ref is not None
+        assert scoped_path.field_ref.scope == "session"
+        assert scoped_path.field_ref.name == "path"
+        assert scoped_path.field_ref.source_name == "session.path"
+        assert scoped_path.field_ref.unit == "message"
+
     def test_pipeline_session_source_scopes_terminal_unit_query(self) -> None:
         source = parse_unit_source_expression(
             "sessions where repo:polylogue AND origin:claude-code-session | messages where role:assistant"
@@ -623,10 +700,7 @@ class TestBooleanQueryExpression:
         assert source.limit == 2
         assert source.offset == 3
         assert [stage.to_payload() for stage in source.pipeline_stages] == [
-            {
-                "kind": "session_scope",
-                "predicate": {"field": "repo", "kind": "field", "op": "=", "values": ["polylogue"]},
-            },
+            _session_scope_stage("repo", "polylogue"),
             {"kind": "limit", "value": 2},
             {"kind": "offset", "value": 3},
         ]
@@ -671,10 +745,7 @@ class TestBooleanQueryExpression:
         assert source.sort.field == "count"
         assert source.sort.direction == "asc"
         assert [stage.to_payload() for stage in source.pipeline_stages] == [
-            {
-                "kind": "session_scope",
-                "predicate": {"field": "repo", "kind": "field", "op": "=", "values": ["polylogue"]},
-            },
+            _session_scope_stage("repo", "polylogue"),
             {"kind": "group", "field": "role"},
             {"kind": "count", "metric": "count"},
             {"kind": "sort", "sort": {"field": "count", "direction": "asc"}},
@@ -1560,10 +1631,7 @@ class TestBooleanQueryExpression:
         assert envelope.offset == 0
         assert envelope.next_offset == 1
         assert envelope.pipeline_stages == (
-            {
-                "kind": "session_scope",
-                "predicate": {"field": "repo", "kind": "field", "op": "=", "values": ["polylogue"]},
-            },
+            _session_scope_stage("repo", "polylogue"),
             {"kind": "limit", "value": 1},
             {"kind": "offset", "value": 1},
         )
@@ -1618,10 +1686,7 @@ class TestBooleanQueryExpression:
         assert result.exit_code == 0, result.output
         payload = json.loads(result.output)
         assert payload["pipeline_stages"] == [
-            {
-                "kind": "session_scope",
-                "predicate": {"field": "repo", "kind": "field", "op": "=", "values": ["polylogue"]},
-            },
+            _session_scope_stage("repo", "polylogue"),
             {"kind": "limit", "value": 1},
             {"kind": "offset", "value": 1},
         ]
@@ -1666,10 +1731,7 @@ class TestBooleanQueryExpression:
         assert isinstance(envelope, QueryUnitAggregateEnvelope)
         assert envelope.mode == "query-unit-aggregate"
         assert envelope.pipeline_stages == (
-            {
-                "kind": "session_scope",
-                "predicate": {"field": "repo", "kind": "field", "op": "=", "values": ["polylogue"]},
-            },
+            _session_scope_stage("repo", "polylogue"),
             {"kind": "group", "field": "role"},
             {"kind": "count", "metric": "count"},
         )
@@ -1753,10 +1815,7 @@ class TestBooleanQueryExpression:
         payload = json.loads(result.output)
         assert payload["mode"] == "query-unit-aggregate"
         assert payload["pipeline_stages"] == [
-            {
-                "kind": "session_scope",
-                "predicate": {"field": "repo", "kind": "field", "op": "=", "values": ["polylogue"]},
-            },
+            _session_scope_stage("repo", "polylogue"),
             {"kind": "group", "field": "role"},
             {"kind": "count", "metric": "count"},
         ]
@@ -2534,33 +2593,11 @@ class TestBooleanQueryExpression:
         )
         assert review_row.metadata["delivery_state"] == "injected_context"
 
-        unsupported_summary_source = parse_unit_source_expression(
-            "context-snapshots where session.tool:bash AND boundary:session_start"
-        )
-        assert unsupported_summary_source is not None
-        with ArchiveStore.open_existing(archive_root) as archive:
-            unsupported_summary_envelope = query_unit_rows(
-                archive,
-                unsupported_summary_source,
-                query="context-snapshots where session.tool:bash AND boundary:session_start",
-                limit=10,
-            )
+        with pytest.raises(ExpressionCompileError, match="field 'session.tool' is not supported"):
+            parse_unit_source_expression("context-snapshots where session.tool:bash AND boundary:session_start")
 
-        assert unsupported_summary_envelope.items == ()
-
-        path_source = parse_unit_source_expression(
-            "context-snapshots where session.path:polylogue AND boundary:session_start"
-        )
-        assert path_source is not None
-        with ArchiveStore.open_existing(archive_root) as archive:
-            path_envelope = query_unit_rows(
-                archive,
-                path_source,
-                query="context-snapshots where session.path:polylogue AND boundary:session_start",
-                limit=10,
-            )
-
-        assert path_envelope.items == ()
+        with pytest.raises(ExpressionCompileError, match="field 'session.path' is not supported"):
+            parse_unit_source_expression("context-snapshots where session.path:polylogue AND boundary:session_start")
 
     def test_context_snapshot_session_since_uses_created_at_fallback(self, workspace_env: dict[str, Path]) -> None:
         """Runtime-transform session date filters match normal session timestamp semantics."""
