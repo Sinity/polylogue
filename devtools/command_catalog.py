@@ -342,6 +342,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=(
             "devtools workspace deployment-smoke",
             "devtools workspace deployment-smoke --json",
+            "devtools workspace deployment-smoke --browser --browser-executable /etc/profiles/per-user/sinity/bin/google-chrome",
             "devtools workspace deployment-smoke --daemon-url http://127.0.0.1:8766 --receiver-url http://127.0.0.1:8765",
         ),
     ),

@@ -9,6 +9,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -112,6 +113,18 @@ class BrowserCaptureReceiverArchiveStateProbe:
 
 
 @dataclass(frozen=True, slots=True)
+class BrowserRenderProbe:
+    url: str
+    executable: str | None
+    exit_code: int | None
+    ok: bool
+    dom_bytes: int | None = None
+    screenshot_bytes: int | None = None
+    stderr_tail: str = ""
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class DeploymentSmokeReport:
     ok: bool
     path: str
@@ -121,6 +134,7 @@ class DeploymentSmokeReport:
     commands: list[CommandProbe]
     routes: list[RouteProbe]
     completions: list[CompletionProbe]
+    browser_render: BrowserRenderProbe | None
     browser_capture_archive: BrowserCaptureArchiveProbe
     browser_capture_receiver_archive_state: BrowserCaptureReceiverArchiveStateProbe
     diagnostics: dict[str, Any]
@@ -513,10 +527,106 @@ def _probe_route(url: str, *, timeout_s: float) -> RouteProbe:
         return RouteProbe(url=url, status=None, ok=False, error=f"{type(exc).__name__}: {exc}")
 
 
+def _resolve_browser_executable(path: str, executable: str | None) -> str | None:
+    return executable or shutil.which("google-chrome", path=path) or shutil.which("chrome", path=path)
+
+
+def _run_browser_command(command: list[str], *, path: str, timeout_s: float) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        command,
+        env=_command_env(path),
+        text=True,
+        capture_output=True,
+        timeout=timeout_s + 5,
+        check=False,
+    )
+
+
+def _timeout_output_text(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace")
+    return ""
+
+
+def _probe_browser_render(
+    url: str,
+    *,
+    path: str,
+    timeout_s: float,
+    executable: str | None,
+) -> BrowserRenderProbe:
+    resolved = _resolve_browser_executable(path, executable)
+    if resolved is None:
+        return BrowserRenderProbe(
+            url=url,
+            executable=None,
+            exit_code=None,
+            ok=False,
+            error="chrome_not_found",
+        )
+    with tempfile.TemporaryDirectory(prefix="polylogue-deployment-browser-", ignore_cleanup_errors=True) as tmp:
+        profile_dir = Path(tmp) / "profile"
+        screenshot_path = Path(tmp) / "root.png"
+        command = [
+            resolved,
+            "--headless=new",
+            "--disable-gpu",
+            "--disable-background-networking",
+            "--disable-sync",
+            "--disable-component-update",
+            "--disable-features=MediaRouter,OptimizationHints,AutofillServerCommunication",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--remote-debugging-port=0",
+            f"--user-data-dir={profile_dir}",
+            f"--screenshot={screenshot_path}",
+            "--window-size=1440,1000",
+            f"--timeout={int(timeout_s * 1000)}",
+            f"--virtual-time-budget={int(timeout_s * 1000)}",
+            "--dump-dom",
+            url,
+        ]
+        try:
+            proc = _run_browser_command(
+                command,
+                path=path,
+                timeout_s=timeout_s,
+            )
+        except subprocess.TimeoutExpired as exc:
+            stderr = _timeout_output_text(exc.stderr)
+            stdout = _timeout_output_text(exc.stdout)
+            return BrowserRenderProbe(
+                url=url,
+                executable=resolved,
+                exit_code=None,
+                ok=False,
+                dom_bytes=len(stdout.encode()),
+                screenshot_bytes=screenshot_path.stat().st_size if screenshot_path.exists() else None,
+                stderr_tail=stderr[-2000:],
+                error="browser_timeout",
+            )
+        dom_bytes = len(proc.stdout.encode())
+        screenshot_bytes = screenshot_path.stat().st_size if screenshot_path.exists() else None
+        ok = proc.returncode == 0 and dom_bytes > 0 and bool(screenshot_bytes)
+        return BrowserRenderProbe(
+            url=url,
+            executable=resolved,
+            exit_code=proc.returncode,
+            ok=ok,
+            dom_bytes=dom_bytes,
+            screenshot_bytes=screenshot_bytes,
+            stderr_tail=proc.stderr[-2000:],
+            error=None if ok else "browser_render_failed",
+        )
+
+
 def _diagnose(
     commands: list[CommandProbe],
     routes: list[RouteProbe],
     repo_head: str | None,
+    browser_render: BrowserRenderProbe | None,
     browser_capture_archive: BrowserCaptureArchiveProbe,
     browser_capture_receiver_archive_state: BrowserCaptureReceiverArchiveStateProbe,
 ) -> dict[str, Any]:
@@ -550,6 +660,9 @@ def _diagnose(
     if root_route is not None and not root_route.ok:
         likely_causes.append("web-shell root document is unavailable or exceeds the deployed smoke timeout")
         next_actions.append("verify the daemon can serve the workbench root before debugging browser-side rendering")
+    if browser_render is not None and not browser_render.ok:
+        likely_causes.append("web-shell browser render does not reach DOM/screenshot within the deployed smoke budget")
+        next_actions.append("profile first-paint bootstrap and defer slow status/facet/attachment loaders")
     if browser_capture_archive.error == "spooled_newer_than_raw_rows":
         likely_causes.append("browser-capture raw archive rows lag behind newer spooled artifacts")
         next_actions.append(
@@ -572,6 +685,7 @@ def _diagnose(
         "polylogue_commit": deployed_commit,
         "polylogued_version_ok": polylogued.ok if polylogued is not None else None,
         "browser_capture_state": browser_capture_state,
+        "browser_render": asdict(browser_render) if browser_render is not None else None,
         "browser_capture_archive": asdict(browser_capture_archive),
         "browser_capture_receiver_archive_state": asdict(browser_capture_receiver_archive_state),
         "likely_causes": likely_causes,
@@ -586,6 +700,9 @@ def build_report(
     receiver_base_url: str,
     archive_root: Path,
     timeout_s: float,
+    browser: bool = False,
+    browser_executable: str | None = None,
+    browser_timeout_s: float | None = None,
 ) -> DeploymentSmokeReport:
     commands = [
         _probe_command(["polylogue", "--version"], path=path, timeout_s=timeout_s),
@@ -613,6 +730,16 @@ def build_report(
         for probe in completions
         if not probe.ok
     )
+    browser_render = None
+    if browser:
+        browser_render = _probe_browser_render(
+            f"{daemon_base_url.rstrip('/')}/",
+            path=path,
+            timeout_s=browser_timeout_s or timeout_s,
+            executable=browser_executable,
+        )
+        if not browser_render.ok:
+            failures.append(f"browser-render:{browser_render.error or browser_render.exit_code}")
     browser_capture_archive = _probe_browser_capture_archive(archive_root=archive_root)
     if not browser_capture_archive.ok:
         failures.append(f"browser-capture-archive:{browser_capture_archive.error or 'spooled_without_raw_rows'}")
@@ -636,12 +763,14 @@ def build_report(
         commands=commands,
         routes=routes,
         completions=completions,
+        browser_render=browser_render,
         browser_capture_archive=browser_capture_archive,
         browser_capture_receiver_archive_state=browser_capture_receiver_archive_state,
         diagnostics=_diagnose(
             commands,
             routes,
             repo_head,
+            browser_render,
             browser_capture_archive,
             browser_capture_receiver_archive_state,
         ),
@@ -675,6 +804,16 @@ def _print_human(report: DeploymentSmokeReport) -> None:
         if completion_probe.missing:
             detail = f"missing={','.join(completion_probe.missing)} candidates={detail}"
         print(f"  {marker} {completion_probe.name}: {detail}")
+    if report.browser_render is not None:
+        browser_probe = report.browser_render
+        marker = "ok" if browser_probe.ok else "FAIL"
+        print("")
+        print("Browser render:")
+        print(
+            f"  {marker} executable={browser_probe.executable or ''} exit={browser_probe.exit_code} "
+            f"dom_bytes={browser_probe.dom_bytes} screenshot_bytes={browser_probe.screenshot_bytes} "
+            f"error={browser_probe.error or ''}"
+        )
     capture_probe = report.browser_capture_archive
     print("")
     print("Browser capture archive:")
@@ -717,6 +856,22 @@ def main(argv: list[str] | None = None) -> int:
         help="Archive root used for local browser-capture/archive consistency probes.",
     )
     parser.add_argument("--timeout-s", type=float, default=5.0, help="Per-probe timeout in seconds.")
+    parser.add_argument(
+        "--browser",
+        action="store_true",
+        help="Also run an opt-in headless Chrome first-paint smoke against the web root.",
+    )
+    parser.add_argument(
+        "--browser-executable",
+        default=None,
+        help="Chrome executable for --browser; defaults to google-chrome/chrome on PATH.",
+    )
+    parser.add_argument(
+        "--browser-timeout-s",
+        type=float,
+        default=None,
+        help="Timeout for --browser; defaults to --timeout-s.",
+    )
     args = parser.parse_args(argv)
 
     report = build_report(
@@ -725,6 +880,9 @@ def main(argv: list[str] | None = None) -> int:
         receiver_base_url=str(args.receiver_url),
         archive_root=Path(args.archive_root),
         timeout_s=float(args.timeout_s),
+        browser=bool(args.browser),
+        browser_executable=str(args.browser_executable) if args.browser_executable else None,
+        browser_timeout_s=float(args.browser_timeout_s) if args.browser_timeout_s is not None else None,
     )
     if args.json:
         print(json.dumps(asdict(report), indent=2, sort_keys=True))
