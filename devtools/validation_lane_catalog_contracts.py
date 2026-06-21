@@ -98,8 +98,6 @@ CONTRACT_LANES: dict[str, LaneEntry] = {
             "tests/unit/core/test_semantic_facts.py",
             "tests/unit/core/test_schema_semantic_inference.py",
             "tests/unit/cli/test_check.py",
-            "tests/unit/showcase/test_qa_runner.py",
-            "tests/unit/showcase/test_report.py",
             "tests/unit/core/test_session_semantics.py",
         ),
     ),

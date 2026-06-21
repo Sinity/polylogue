@@ -13,9 +13,9 @@ from devtools import repo_root as _get_root
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.showcase.cli_boundary import invoke_showcase_cli
 from polylogue.showcase.exercises import EXERCISES, Exercise
-from polylogue.showcase.qa_runner_request import QAStage, build_qa_session_request
-from polylogue.showcase.qa_runner_workflow import run_qa_session
-from polylogue.showcase.qa_session_payload import generate_qa_session
+from polylogue.showcase.invariants import InvariantResult, check_invariants
+from polylogue.showcase.runner import ShowcaseRunner
+from polylogue.showcase.showcase_runner_models import ShowcaseResult
 from polylogue.showcase.showcase_runner_support import run_exercise
 
 _SCENARIO_NAMES = ("archive-smoke", "reader-visual-smoke")
@@ -29,6 +29,39 @@ class _ScenarioResult(Protocol):
     def stage_statuses(self) -> dict[str, OutcomeStatus]: ...
 
     def failed_stages(self) -> tuple[str, ...]: ...
+
+
+class ArchiveSmokeResult:
+    """Direct result wrapper for the archive-smoke lab scenario."""
+
+    def __init__(
+        self,
+        *,
+        showcase_result: ShowcaseResult,
+        invariant_results: list[InvariantResult],
+        report_dir: Path | None,
+    ) -> None:
+        self.showcase_result = showcase_result
+        self.invariant_results = invariant_results
+        self.report_dir = report_dir
+
+    @property
+    def all_passed(self) -> bool:
+        return not self.failed_stages()
+
+    def stage_statuses(self) -> dict[str, OutcomeStatus]:
+        invariant_status = (
+            OutcomeStatus.ERROR
+            if any(result.status is OutcomeStatus.ERROR for result in self.invariant_results)
+            else OutcomeStatus.OK
+        )
+        return {
+            "showcase": OutcomeStatus.OK if self.showcase_result.failed == 0 else OutcomeStatus.ERROR,
+            "invariants": invariant_status,
+        }
+
+    def failed_stages(self) -> tuple[str, ...]:
+        return tuple(name for name, status in self.stage_statuses().items() if status is OutcomeStatus.ERROR)
 
 
 def get_tier_0_exercises() -> list[Exercise]:
@@ -154,6 +187,44 @@ def _format_scenario_summary(result: _ScenarioResult) -> str:
     return "\n".join(lines)
 
 
+def run_archive_smoke(
+    *,
+    live: bool,
+    tier: int | None,
+    report_dir: Path | None,
+    verbose: bool,
+    fail_fast: bool,
+) -> ArchiveSmokeResult:
+    """Run the archive-smoke lab scenario without QA session wrapping."""
+    runner = ShowcaseRunner(
+        live=live,
+        output_dir=report_dir,
+        fail_fast=fail_fast,
+        verbose=verbose,
+        tier_filter=tier,
+    )
+    showcase_result = runner.run()
+    invariant_results = check_invariants(showcase_result.results)
+    return ArchiveSmokeResult(
+        showcase_result=showcase_result,
+        invariant_results=invariant_results,
+        report_dir=showcase_result.output_dir,
+    )
+
+
+def _scenario_payload(result: _ScenarioResult) -> dict[str, object]:
+    """Return the direct lab-scenario payload without QA report wrapping."""
+    stage_statuses = result.stage_statuses()
+    failed_stages = result.failed_stages()
+    return {
+        "scenario": "archive-smoke",
+        "stages": {name: status.value for name, status in stage_statuses.items()},
+        "failed_stages": list(failed_stages),
+        "ok": not failed_stages,
+        "report_dir": str(result.report_dir) if result.report_dir is not None else None,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -163,23 +234,15 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"unknown action: {args.action}")
     if args.scenario == "reader-visual-smoke":
         return run_reader_visual_smoke(report_dir=args.report_dir, as_json=bool(args.json))
-    request = build_qa_session_request(
-        synthetic=not bool(args.live),
-        source_names=None,
-        fresh=None,
-        ingest=None,
-        regenerate_schemas=False,
-        only_stage=QAStage.EXERCISES,
-        skip_stages=(),
-        workspace=None,
+    result = run_archive_smoke(
+        live=bool(args.live),
+        tier=args.tier,
         report_dir=args.report_dir,
         verbose=bool(args.verbose),
         fail_fast=bool(args.fail_fast),
-        tier_filter=args.tier,
     )
-    result = run_qa_session(request)
     if args.json:
-        print(json.dumps(generate_qa_session(result), indent=2))
+        print(json.dumps(_scenario_payload(result), indent=2))
     else:
         print(_format_scenario_summary(result))
     return 0 if result.all_passed else 1

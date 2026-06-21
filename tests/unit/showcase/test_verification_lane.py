@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import importlib
 import json
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -43,24 +42,41 @@ def test_list_scenarios_reports_live_paths_without_baseline_counts(capsys: pytes
 
 def test_main_prints_direct_stage_summary(capsys: pytest.CaptureFixture[str]) -> None:
     from devtools.lab_scenario import main
-    from polylogue.core.outcomes import OutcomeStatus
+    from polylogue.showcase.showcase_runner_models import ShowcaseResult
 
-    result = SimpleNamespace(
-        all_passed=True,
-        report_dir=None,
-        stage_statuses=lambda: {
-            "audit": OutcomeStatus.OK,
-            "artifact_coverage": OutcomeStatus.SKIP,
-            "showcase": OutcomeStatus.OK,
-            "invariants": OutcomeStatus.OK,
-        },
-        failed_stages=lambda: (),
-    )
-
-    with patch("devtools.lab_scenario.run_qa_session", return_value=result):
+    with (
+        patch("devtools.lab_scenario.ShowcaseRunner") as runner_class,
+        patch("devtools.lab_scenario.check_invariants", return_value=[]),
+    ):
+        runner_class.return_value.run.return_value = ShowcaseResult()
         assert main(["run", "archive-smoke", "--tier", "0"]) == 0
 
     out = capsys.readouterr().out
     assert "Scenario stages:" in out
-    assert "artifact_coverage: skip" in out
+    assert "showcase: ok" in out
+    assert "invariants: ok" in out
     assert "Failed stages: none" in out
+
+
+def test_main_json_reports_direct_scenario_payload(capsys: pytest.CaptureFixture[str]) -> None:
+    from devtools.lab_scenario import main
+    from polylogue.showcase.showcase_runner_models import ShowcaseResult
+
+    with (
+        patch("devtools.lab_scenario.ShowcaseRunner") as runner_class,
+        patch("devtools.lab_scenario.check_invariants", return_value=[]),
+    ):
+        runner_class.return_value.run.return_value = ShowcaseResult()
+        assert main(["run", "archive-smoke", "--tier", "0", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "scenario": "archive-smoke",
+        "stages": {
+            "showcase": "ok",
+            "invariants": "ok",
+        },
+        "failed_stages": [],
+        "ok": True,
+        "report_dir": None,
+    }
