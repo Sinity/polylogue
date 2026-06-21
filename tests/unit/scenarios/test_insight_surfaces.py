@@ -6,9 +6,9 @@ from polylogue.scenarios import build_insight_contract_surfaces, build_live_insi
 def test_build_insight_contract_surfaces_compiles_canonical_json_contract_entries() -> None:
     surfaces = {surface.name: surface for surface in build_insight_contract_surfaces()}
 
-    assert surfaces["json-insights-profiles"].args == ("ops", "insights", "profiles", "--format", "json")
+    assert surfaces["json-insights-profiles"].args == ("analyze", "insights", "profiles", "--format", "json")
     assert surfaces["json-insights-profiles"].tags == ("insights", "session-profiles")
-    assert surfaces["json-insights-coverage"].args == ("ops", "insights", "coverage", "--format", "json")
+    assert surfaces["json-insights-coverage"].args == ("analyze", "insights", "coverage", "--format", "json")
 
 
 def test_build_live_insight_surface_lanes_compiles_live_variants() -> None:
@@ -16,7 +16,7 @@ def test_build_live_insight_surface_lanes_compiles_live_variants() -> None:
 
     assert surfaces["live-insights-status"].args == ("ops", "insights", "status", "--format", "json")
     assert surfaces["live-insights-profiles-evidence"].args == (
-        "ops",
+        "analyze",
         "insights",
         "profiles",
         "--tier",
@@ -31,7 +31,7 @@ def test_build_live_insight_surface_lanes_compiles_live_variants() -> None:
         "claude-code",
         "--since",
         "2026-03-01",
-        "ops",
+        "analyze",
         "insights",
         "coverage",
         "--group-by",

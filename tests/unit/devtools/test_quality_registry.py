@@ -10,7 +10,8 @@ ROOT = Path(__file__).resolve().parents[3]
 def test_build_quality_registry_exposes_live_catalogs() -> None:
     registry = build_quality_registry()
 
-    assert any(entry.name == "gen-schema-list" for entry in registry.catalog.qa_extra_scenarios)
+    assert any(entry.name == "schema-list-contract" for entry in registry.contract_lanes)
+    assert any(entry.name == "schema-explain-contract" for entry in registry.contract_lanes)
     assert any(entry.name == "frontier-local" for entry in registry.composite_lanes)
     assert any(entry.name == "machine-contract" for entry in registry.contract_lanes)
     assert any(entry.name == "live-exercises" for entry in registry.live_lanes)

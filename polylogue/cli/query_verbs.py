@@ -1020,7 +1020,7 @@ def _emit_candidate_judgment(
     click.echo(f"{decision}: {payload.candidate.assertion_id} -> {result_ref}")
 
 
-@click.group("analyze", invoke_without_command=True)
+@click.group("analyze", invoke_without_command=True, no_args_is_help=False)
 @click.option("--count", "count_only", is_flag=True, help="Print only the matched-session count.")
 @click.option(
     "--by",
@@ -1103,7 +1103,8 @@ def analyze_verb(
         ):
             raise click.UsageError(
                 "`analyze` options apply to the aggregate analyze view; "
-                "put subcommand options after `analyze <command>`."
+                "put read-model options after `analyze insights <command>` "
+                "or subcommand-specific options after `analyze <command>`."
             )
         return
 

@@ -44,7 +44,8 @@ def test_render_scenario_projections_text_lists_authored_sources() -> None:
     rendered = scenario_projections.render_scenario_projections(as_json=False)
 
     assert "Scenario Projections (" in rendered
-    assert "exercise:gen-schema-list" in rendered
+    assert "validation-lane:schema-list-contract" in rendered
+    assert "validation-lane:schema-explain-contract" in rendered
     assert "validation-lane:machine-contract" in rendered
     assert "mutation-campaign:filters" in rendered
     assert "benchmark-campaign:search-filters" in rendered

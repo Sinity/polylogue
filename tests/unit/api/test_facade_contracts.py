@@ -1809,7 +1809,13 @@ async def test_query_units_reports_pipeline_stages(tmp_path: Path) -> None:
         assert envelope.pipeline_stages == (
             {
                 "kind": "session_scope",
-                "predicate": {"field": "origin", "kind": "field", "op": "=", "values": ["codex-session"]},
+                "predicate": {
+                    "field": "origin",
+                    "field_ref": {"name": "origin", "scope": "session", "source_name": "origin"},
+                    "kind": "field",
+                    "op": "=",
+                    "values": ["codex-session"],
+                },
             },
             {"kind": "limit", "value": 1},
             {"kind": "offset", "value": 1},

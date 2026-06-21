@@ -51,7 +51,7 @@ def test_verification_lab_surface_is_explicit_and_implemented() -> None:
 
     assert tuple(spec.name for spec in specs) == VERIFICATION_LAB_COMMAND_NAMES
     assert {spec.category for spec in specs} == {"verification lab"}
-    assert len({spec.module for spec in specs}) == len(specs)
+    assert len({(spec.module, spec.entrypoint) for spec in specs}) == len(specs)
 
     for spec in specs:
         assert spec.module.startswith("devtools.")
