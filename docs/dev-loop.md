@@ -74,9 +74,9 @@ devtools workspace dev-loop --api-port 8876 --browser-capture-port 8875 --launch
 The helper refuses to start if the selected API or browser-capture port already
 has a listener. It starts `polylogued run --no-watch` in a separate process
 group, writes `polylogued.pid`, `polylogued.env.json`,
-`polylogued.launch.json`, and the daemon log into the run-local directory, and
-waits briefly for both the API and receiver ports to become reachable. The
-important variables are:
+`polylogued.launch.json`, `dev-loop.events.jsonl`, and the daemon log into the
+run-local directory, and waits briefly for both the API and receiver ports to
+become reachable. The important variables are:
 
 ```bash
 POLYLOGUE_ARCHIVE_ROOT=.local/dev-archive
@@ -85,6 +85,21 @@ POLYLOGUE_BROWSER_CAPTURE_PORT=8875
 POLYLOGUE_DEV_LOOP_RUN_ID=<run-id>
 POLYLOGUE_DEV_LOOP_LOG_DIR=.cache/dev-loop/<run-id>
 ```
+
+The JSONL event stream records the launcher-side lifecycle in order:
+
+```text
+launch_requested
+process_spawned
+readiness_succeeded | readiness_failed
+```
+
+If the selected ports are already occupied, the helper writes a
+`launch_rejected` event before exiting. Each event carries the run id, checkout
+path, branch, commit, archive root, status, timestamp, and a small event
+payload. Use this file together with `polylogued.launch.json` and
+`polylogued.log` when diagnosing whether a branch-local failure happened before
+process spawn, during API/receiver readiness, or inside the daemon itself.
 
 ## Web Shell Debugging
 
@@ -119,6 +134,11 @@ facts obvious before an agent starts debugging:
 - which API port the browser should open;
 - where daemon logs are written;
 - whether the deployed service is still active.
+
+The web shell `dev:` chip and `/api/dev-loop` endpoint expose the run id and log
+directory from the daemon process. The launcher-side `dev-loop.events.jsonl`
+then gives agents a stable local artifact to correlate that UI-visible run id
+with the process spawn and readiness state that created it.
 
 ## CLI and TUI Capture
 

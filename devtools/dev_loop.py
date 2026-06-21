@@ -282,6 +282,33 @@ def _start_daemon_process(
     )
 
 
+def _write_dev_loop_event(
+    path: Path,
+    *,
+    preflight: dict[str, Any],
+    surface: str,
+    event_type: str,
+    status: str,
+    payload: dict[str, object] | None = None,
+) -> dict[str, object]:
+    event: dict[str, object] = {
+        "recorded_at": datetime.now(UTC).isoformat(),
+        "run_id": str(preflight["run_id"]),
+        "surface": surface,
+        "event_type": event_type,
+        "status": status,
+        "repo_root": str(preflight["repo_root"]),
+        "branch": preflight.get("branch"),
+        "commit": preflight.get("commit"),
+        "archive_root": str(preflight["dev_archive_root"]),
+        "payload": payload or {},
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(event, sort_keys=True) + "\n")
+    return event
+
+
 def run_cli_capture(
     *,
     preflight: dict[str, Any],
@@ -392,6 +419,18 @@ def launch_branch_daemon(
 ) -> dict[str, object]:
     """Launch a branch-local polylogued and persist process/debug artifacts."""
 
+    artifacts = preflight.get("artifacts")
+    if not isinstance(artifacts, dict):
+        raise ValueError("preflight payload is missing artifact paths")
+    run_log_dir = Path(str(preflight["run_log_dir"]))
+    run_log_dir.mkdir(parents=True, exist_ok=True)
+    daemon_log = Path(str(artifacts["daemon_log"]))
+    daemon_log.parent.mkdir(parents=True, exist_ok=True)
+    event_path = Path(str(artifacts.get("dev_events", run_log_dir / "dev-loop.events.jsonl")))
+    env_path = run_log_dir / "polylogued.env.json"
+    pid_path = run_log_dir / "polylogued.pid"
+    summary_path = run_log_dir / "polylogued.launch.json"
+
     ports = preflight.get("ports")
     if not isinstance(ports, dict):
         raise ValueError("preflight payload is missing port status")
@@ -401,22 +440,19 @@ def launch_branch_daemon(
         if isinstance(status, dict) and int(status.get("owner_count") or 0) > 0:
             occupied_ports.append(f"{name} port {status.get('port')}")
     if occupied_ports:
+        _write_dev_loop_event(
+            event_path,
+            preflight=preflight,
+            surface="daemon",
+            event_type="launch_rejected",
+            status="blocked",
+            payload={"occupied_ports": occupied_ports, "ports": ports},
+        )
         raise ValueError(
             "selected branch-local ports already have listeners: "
             + ", ".join(occupied_ports)
             + "; stop the deployed service or choose isolated ports"
         )
-
-    artifacts = preflight.get("artifacts")
-    if not isinstance(artifacts, dict):
-        raise ValueError("preflight payload is missing artifact paths")
-    run_log_dir = Path(str(preflight["run_log_dir"]))
-    run_log_dir.mkdir(parents=True, exist_ok=True)
-    daemon_log = Path(str(artifacts["daemon_log"]))
-    daemon_log.parent.mkdir(parents=True, exist_ok=True)
-    env_path = run_log_dir / "polylogued.env.json"
-    pid_path = run_log_dir / "polylogued.pid"
-    summary_path = run_log_dir / "polylogued.launch.json"
 
     env = os.environ.copy()
     suggested_env = preflight.get("suggested_env")
@@ -447,6 +483,22 @@ def launch_branch_daemon(
     env_snapshot = _dev_loop_env_snapshot(env)
     env_path.write_text(json.dumps(env_snapshot, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     started_at = datetime.now(UTC)
+    started = time.monotonic()
+    _write_dev_loop_event(
+        event_path,
+        preflight=preflight,
+        surface="daemon",
+        event_type="launch_requested",
+        status="starting",
+        payload={
+            "command": command,
+            "cwd": str(preflight["repo_root"]),
+            "api_port": api_port,
+            "browser_capture_port": receiver_port,
+            "spool_path": str(spool_path),
+            "log_path": str(daemon_log),
+        },
+    )
     with daemon_log.open("a", encoding="utf-8") as log_file:
         log_file.write(
             f"\n# dev-loop launch {started_at.isoformat()} run_id={preflight['run_id']}\n$ {shlex.join(command)}\n"
@@ -459,6 +511,14 @@ def launch_branch_daemon(
             log_file=log_file,
         )
     pid_path.write_text(f"{process.pid}\n", encoding="utf-8")
+    _write_dev_loop_event(
+        event_path,
+        preflight=preflight,
+        surface="daemon",
+        event_type="process_spawned",
+        status="running",
+        payload={"pid": process.pid},
+    )
 
     deadline = time.monotonic() + max(0.0, readiness_timeout_s)
     api_ready = False
@@ -473,15 +533,35 @@ def launch_branch_daemon(
         time.sleep(0.1)
     if exit_code is None:
         exit_code = process.poll()
+    duration_ms = int((time.monotonic() - started) * 1000)
+    ended_at = datetime.now(UTC)
+    launch_ok = exit_code is None and api_ready and receiver_ready
+    _write_dev_loop_event(
+        event_path,
+        preflight=preflight,
+        surface="daemon",
+        event_type="readiness_succeeded" if launch_ok else "readiness_failed",
+        status="ok" if launch_ok else "failed",
+        payload={
+            "pid": process.pid,
+            "exit_code": exit_code,
+            "api_ready": api_ready,
+            "browser_capture_ready": receiver_ready,
+            "duration_ms": duration_ms,
+            "readiness_timeout_s": readiness_timeout_s,
+        },
+    )
 
     payload: dict[str, object] = {
-        "ok": exit_code is None and api_ready and receiver_ready,
+        "ok": launch_ok,
         "pid": process.pid,
         "command": command,
         "command_text": shlex.join(command),
         "cwd": str(preflight["repo_root"]),
         "run_id": str(preflight["run_id"]),
         "started_at": started_at.isoformat(),
+        "ended_at": ended_at.isoformat(),
+        "duration_ms": duration_ms,
         "exit_code": exit_code,
         "api_ready": api_ready,
         "browser_capture_ready": receiver_ready,
@@ -492,6 +572,7 @@ def launch_branch_daemon(
             "env": str(env_path),
             "pid": str(pid_path),
             "summary": str(summary_path),
+            "events": str(event_path),
         },
     }
     summary_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -534,6 +615,7 @@ def build_dev_loop_status(
     terminal_artifact_dir = run_log_dir / "terminal"
     tui_artifact_dir = run_log_dir / "tui"
     preflight_json = run_log_dir / "preflight.json"
+    dev_events = run_log_dir / "dev-loop.events.jsonl"
     if prepare:
         archive.mkdir(parents=True, exist_ok=True)
         browser_artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -564,6 +646,7 @@ def build_dev_loop_status(
             "terminal_dir": str(terminal_artifact_dir),
             "tui_dir": str(tui_artifact_dir),
             "preflight_json": str(preflight_json),
+            "dev_events": str(dev_events),
         },
         "system_service": service,
         "ports": {
