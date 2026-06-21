@@ -170,7 +170,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         self.send_header("X-Request-ID", self._request_id())
         self.send_header("Access-Control-Allow-Origin", origin or "null")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-ID")
         self.send_header("Access-Control-Max-Age", "600")
         self.end_headers()
 

@@ -436,6 +436,83 @@ def test_browser_plan_and_extension_smoke_can_share_one_dev_loop_run(
     assert event_types[-3:] == ["extension_smoke_requested", "extension_smoke_finished", "browser_plan_written"]
 
 
+def test_browser_smoke_records_real_chrome_extension_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(dev_loop, "system_service_status", lambda: {"active": False})
+    monkeypatch.setattr(
+        dev_loop,
+        "port_status",
+        lambda port: {"port": port, "connectable": False, "owner_count": 0, "owners": []},
+    )
+    monkeypatch.setattr(
+        dev_loop, "_git_value", lambda args, *, cwd: "feature/dev-loop" if args[0] == "branch" else "abc1234"
+    )
+
+    class Completed:
+        returncode = 0
+        stdout = '{"ok":true}\n'
+        stderr = ""
+
+    def fake_run(*args: object, **kwargs: object) -> Completed:
+        env_obj = kwargs.get("env")
+        if not isinstance(env_obj, dict) or "POLYLOGUE_BROWSER_SMOKE_OUT" not in env_obj:
+            return Completed()
+        env = env_obj
+        output_path = Path(env["POLYLOGUE_BROWSER_SMOKE_OUT"])
+        artifact_ref = "chatgpt/dev-loop-browser-smoke.json"
+        artifact_path = output_path.parent / "browser-smoke-spool" / artifact_ref
+        artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        artifact_path.write_text('{"ok": true}\n', encoding="utf-8")
+        output_path.write_text(
+            json.dumps(
+                {
+                    "ok": True,
+                    "extension_id": "extension-id",
+                    "manifest": {"manifest_version": 3, "name": "Polylogue Browser Capture", "version": "0.1.0"},
+                    "capture": {"body": {"artifact_ref": artifact_ref}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        return Completed()
+
+    monkeypatch.setattr("devtools.dev_loop.subprocess.run", fake_run)
+
+    assert (
+        dev_loop.main(
+            [
+                "--json",
+                "--log-dir",
+                str(tmp_path / "dev-loop-logs"),
+                "--archive-root",
+                str(tmp_path / "archive"),
+                "--browser-smoke",
+            ]
+        )
+        == 0
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    smoke = payload["browser_smoke"]
+    assert smoke["ok"] is True
+    assert smoke["extension_id"] == "extension-id"
+    assert smoke["artifact_ref"] == "chatgpt/dev-loop-browser-smoke.json"
+    assert Path(smoke["artifact_path"]).is_file()
+    artifacts = smoke["artifacts"]
+    assert Path(artifacts["summary"]).is_file()
+    assert Path(artifacts["profile"]).is_dir()
+    event_rows = [
+        json.loads(line)
+        for line in Path(payload["preflight"]["artifacts"]["dev_events"]).read_text(encoding="utf-8").splitlines()
+    ]
+    assert [row["event_type"] for row in event_rows[-2:]] == ["browser_smoke_requested", "browser_smoke_finished"]
+    assert event_rows[-1]["surface"] == "browser"
+    assert event_rows[-1]["payload"]["extension_id"] == "extension-id"
+
+
 def test_tui_plan_writes_visual_inspection_artifacts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

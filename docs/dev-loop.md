@@ -304,6 +304,36 @@ Combine it with `--browser-plan` when you want one run id and browser artifact
 directory containing both the synthetic extension proof and the real-browser
 handoff plan.
 
+For a local proof that real Chrome can load the unpacked extension and reach the
+branch-local receiver from the extension-origin service-worker context, run:
+
+```bash
+devtools workspace dev-loop --browser-smoke
+devtools workspace dev-loop --browser-smoke --json
+devtools workspace dev-loop --browser-plan --extension-smoke --browser-smoke --json
+```
+
+This launches `google-chrome-stable` in headless mode with
+`--load-extension=browser-extension`, discovers the Polylogue MV3 service worker
+over Chrome DevTools Protocol, reads the extension manifest, starts a temporary
+branch-local receiver, then sends unauthenticated and authenticated receiver
+requests from the extension service-worker context. It writes
+`browser_smoke_requested` / `browser_smoke_finished` rows to
+`dev-loop.events.jsonl` plus:
+
+```text
+.cache/dev-loop/<run-id>/browser/browser-smoke.json
+.cache/dev-loop/<run-id>/browser/browser-smoke-result.json
+.cache/dev-loop/<run-id>/browser/browser-smoke-profile/
+.cache/dev-loop/<run-id>/browser/browser-smoke-spool/
+```
+
+This still does not claim authenticated ChatGPT/Claude.ai DOM adapter coverage.
+It proves the repo-owned unpacked-extension + real-browser + receiver plumbing.
+Use `--browser-plan` for the visible/private browser handoff when content-script
+diagnostics, screenshots, copied-profile cookies, or real provider pages are
+needed.
+
 For GUI/browser inspection, generate a branch-local browser plan:
 
 ```bash

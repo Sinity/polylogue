@@ -410,6 +410,158 @@ def run_extension_smoke(*, preflight: dict[str, Any]) -> dict[str, object]:
     return payload
 
 
+def run_browser_smoke(*, preflight: dict[str, Any]) -> dict[str, object]:
+    """Run real Chrome with the unpacked extension against a local receiver."""
+
+    artifacts = preflight.get("artifacts")
+    if not isinstance(artifacts, dict):
+        raise ValueError("preflight payload is missing artifact paths")
+    browser_dir = Path(str(artifacts["browser_dir"]))
+    browser_dir.mkdir(parents=True, exist_ok=True)
+    event_path = Path(str(artifacts.get("dev_events", Path(str(preflight["run_log_dir"])) / "dev-loop.events.jsonl")))
+    extension_root = Path(str(preflight["repo_root"])) / "browser-extension"
+    spool_path = browser_dir / "browser-smoke-spool"
+    profile_dir = browser_dir / "browser-smoke-profile"
+    summary_path = browser_dir / "browser-smoke.json"
+    result_path = browser_dir / "browser-smoke-result.json"
+    stdout_path = browser_dir / "browser-smoke.stdout"
+    stderr_path = browser_dir / "browser-smoke.stderr"
+    env_path = browser_dir / "browser-smoke.env.json"
+
+    _write_dev_loop_event(
+        event_path,
+        preflight=preflight,
+        surface="browser",
+        event_type="browser_smoke_requested",
+        status="starting",
+        payload={
+            "extension_root": str(extension_root),
+            "profile_dir": str(profile_dir),
+            "spool_path": str(spool_path),
+        },
+    )
+
+    spool_path.mkdir(parents=True, exist_ok=True)
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    server = make_server(
+        "127.0.0.1",
+        0,
+        spool_path=spool_path,
+        auth_token=_RECEIVER_SMOKE_TOKEN,
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address[:2]
+    if isinstance(host, bytes):
+        host = host.decode("ascii")
+    receiver_url = f"http://{host}:{port}"
+    env = os.environ.copy()
+    env.update(
+        {
+            "POLYLOGUE_BROWSER_SMOKE_EXTENSION_ROOT": str(extension_root),
+            "POLYLOGUE_BROWSER_SMOKE_KEEP_PROFILE": "1",
+            "POLYLOGUE_BROWSER_SMOKE_OUT": str(result_path),
+            "POLYLOGUE_BROWSER_SMOKE_PROFILE_DIR": str(profile_dir),
+            "POLYLOGUE_BROWSER_SMOKE_RECEIVER_TOKEN": _RECEIVER_SMOKE_TOKEN,
+            "POLYLOGUE_BROWSER_SMOKE_RECEIVER_URL": receiver_url,
+        }
+    )
+    env_path.write_text(json.dumps(_dev_loop_env_snapshot(env), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    started = time.monotonic()
+    try:
+        result = subprocess.run(
+            ["npm", "run", "dev-loop-browser-smoke", "--silent"],
+            cwd=str(extension_root),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=35,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = _decode_timeout_stream(exc.stdout)
+        stderr = _decode_timeout_stream(exc.stderr)
+        result_payload: dict[str, object] | None = None
+        exit_code = 124
+        stderr = (stderr + "\n" if stderr else "") + "browser smoke timed out after 35s\n"
+    except OSError as exc:
+        stdout = ""
+        stderr = f"{type(exc).__name__}: {exc}\n"
+        result_payload = None
+        exit_code = 127
+    else:
+        stdout = result.stdout
+        stderr = result.stderr
+        exit_code = int(result.returncode)
+        result_payload = None
+        if result_path.exists():
+            result_payload = json.loads(result_path.read_text(encoding="utf-8"))
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    duration_ms = int((time.monotonic() - started) * 1000)
+    stdout_path.write_text(stdout, encoding="utf-8")
+    stderr_path.write_text(stderr, encoding="utf-8")
+    artifact_ref = None
+    artifact_path: Path | None = None
+    extension_id = None
+    manifest = None
+    if isinstance(result_payload, dict):
+        extension_id = result_payload.get("extension_id")
+        raw_manifest = result_payload.get("manifest")
+        manifest = raw_manifest if isinstance(raw_manifest, dict) else None
+        capture = result_payload.get("capture")
+        if isinstance(capture, dict):
+            body = capture.get("body")
+            if isinstance(body, dict):
+                artifact_ref = body.get("artifact_ref")
+                if isinstance(artifact_ref, str):
+                    artifact_path = spool_path / artifact_ref
+    ok = exit_code == 0 and artifact_path is not None and artifact_path.exists()
+    payload: dict[str, object] = {
+        "ok": ok,
+        "exit_code": exit_code,
+        "duration_ms": duration_ms,
+        "extension_id": extension_id,
+        "extension_root": str(extension_root),
+        "manifest": manifest,
+        "profile_dir": str(profile_dir),
+        "receiver_url": receiver_url,
+        "spool_path": str(spool_path),
+        "artifact_ref": artifact_ref,
+        "artifact_path": str(artifact_path) if artifact_path is not None else None,
+        "result": result_payload,
+        "artifacts": {
+            "stdout": str(stdout_path),
+            "stderr": str(stderr_path),
+            "summary": str(summary_path),
+            "result": str(result_path),
+            "env": str(env_path),
+            "profile": str(profile_dir),
+            "spool": str(spool_path),
+        },
+    }
+    summary_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _write_dev_loop_event(
+        event_path,
+        preflight=preflight,
+        surface="browser",
+        event_type="browser_smoke_finished",
+        status="ok" if ok else "failed",
+        payload={
+            "exit_code": exit_code,
+            "duration_ms": duration_ms,
+            "extension_id": extension_id,
+            "artifact_ref": artifact_ref,
+            "artifact_path": str(artifact_path) if artifact_path is not None else None,
+            "artifacts": payload["artifacts"],
+        },
+    )
+    return payload
+
+
 def _decode_timeout_stream(value: bytes | str | None) -> str:
     if value is None:
         return ""
@@ -774,6 +926,7 @@ def summarize_dev_loop_run(run_dir: Path) -> dict[str, object]:
     summary_files = {
         "daemon_launch": run_dir / "polylogued.launch.json",
         "browser_plan": run_dir / "browser" / "browser-plan.json",
+        "browser_smoke": run_dir / "browser" / "browser-smoke.json",
         "extension_smoke": run_dir / "browser" / "extension-smoke.json",
         "tui_plan": run_dir / "tui" / "tui-plan.json",
     }
@@ -1336,6 +1489,23 @@ def _print_extension_smoke(payload: dict[str, Any]) -> None:
     print(f"  summary:  {artifacts['summary']}")
 
 
+def _print_browser_smoke(payload: dict[str, Any]) -> None:
+    preflight = payload["preflight"]
+    smoke = payload["browser_smoke"]
+    assert isinstance(preflight, dict)
+    assert isinstance(smoke, dict)
+    artifacts = smoke["artifacts"]
+    assert isinstance(artifacts, dict)
+    print("Polylogue dev-loop real browser smoke")
+    print(f"  run id:    {preflight['run_id']}")
+    print(f"  ok:        {smoke['ok']}")
+    print(f"  receiver:  {smoke['receiver_url']}")
+    print(f"  extension: {smoke.get('extension_id')}")
+    print(f"  artifact:  {smoke.get('artifact_ref')}")
+    print(f"  profile:   {artifacts['profile']}")
+    print(f"  summary:   {artifacts['summary']}")
+
+
 def _print_browser_plan(payload: dict[str, Any]) -> None:
     preflight = payload["preflight"]
     plan = payload["browser_plan"]
@@ -1439,6 +1609,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Run the browser-extension background worker against a temporary local receiver.",
     )
     parser.add_argument(
+        "--browser-smoke",
+        action="store_true",
+        help="Launch real Chrome headless with the unpacked extension against a temporary receiver.",
+    )
+    parser.add_argument(
         "--browser-plan",
         action="store_true",
         help="Write branch-local browser profile, extension load, receiver, and inspection plan artifacts.",
@@ -1490,6 +1665,7 @@ def main(argv: list[str] | None = None) -> int:
         or args.receiver_smoke
         or args.launch_daemon
         or args.extension_smoke
+        or args.browser_smoke
         or args.browser_plan
         or args.tui_plan,
         port_selection=port_selection,
@@ -1545,6 +1721,10 @@ def main(argv: list[str] | None = None) -> int:
         smoke_payload = run_extension_smoke(preflight=payload)
         combined_payload["extension_smoke"] = smoke_payload
         combined_ok = combined_ok and smoke_payload.get("ok") is True
+    if args.browser_smoke:
+        smoke_payload = run_browser_smoke(preflight=payload)
+        combined_payload["browser_smoke"] = smoke_payload
+        combined_ok = combined_ok and smoke_payload.get("ok") is True
     if args.browser_plan:
         try:
             browser_plan = build_browser_plan(preflight=payload)
@@ -1568,6 +1748,8 @@ def main(argv: list[str] | None = None) -> int:
                 _print_receiver_smoke(combined_payload)
             if "extension_smoke" in combined_payload:
                 _print_extension_smoke(combined_payload)
+            if "browser_smoke" in combined_payload:
+                _print_browser_smoke(combined_payload)
             if "browser_plan" in combined_payload:
                 _print_browser_plan(combined_payload)
             if "tui_plan" in combined_payload:
