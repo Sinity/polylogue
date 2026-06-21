@@ -43,8 +43,8 @@ XDG environment variables. The defaults (when no override is set) are:
 | Config file | `~/.config/polylogue/polylogue.toml` | `POLYLOGUE_CONFIG` |
 | Config dir | `~/.config/polylogue/` | `XDG_CONFIG_HOME` |
 
-Use `polylogue ops paths` to print the resolved paths for the current
-environment, or `polylogue ops paths --format json` for machine-readable
+Use `polylogue config paths` to print the resolved paths for the current
+environment, or `polylogue config paths --format json` for machine-readable
 output. The command also reports any detected bind mounts.
 
 ### Bind Mounts and `/realm/data/captures/`

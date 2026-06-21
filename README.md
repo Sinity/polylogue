@@ -156,7 +156,7 @@ polylogue config completions --shell zsh
 polylogue import ~/.claude/projects  # ingest sessions from a source path
 polylogue ops doctor                 # FTS coverage, blob store, daemon liveness
 polylogue ops status                 # daemon + archive status
-polylogue ops paths                  # canonical archive paths
+polylogue config paths               # canonical archive paths
 polylogued run                       # daemon: convergence + insights + HTTP reader
 polylogued watch                     # watch source dirs and ingest live
 polylogue-mcp --role read            # MCP stdio bridge for AI assistants

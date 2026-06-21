@@ -347,6 +347,7 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-analyze` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | analyze help |
 | `exercise` | `help-config` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | config help |
 | `exercise` | `help-config-completions` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | config completions help |
+| `exercise` | `help-config-paths` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | config paths help |
 | `exercise` | `help-continue` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | continue help |
 | `exercise` | `help-dashboard` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | dashboard help |
 | `exercise` | `help-delete` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | delete help |
@@ -403,7 +404,6 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-ops-maintenance-preview` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops maintenance preview help |
 | `exercise` | `help-ops-maintenance-run` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops maintenance run help |
 | `exercise` | `help-ops-maintenance-status` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops maintenance status help |
-| `exercise` | `help-ops-paths` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops paths help |
 | `exercise` | `help-ops-reset` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops reset help |
 | `exercise` | `help-ops-schema` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops schema help |
 | `exercise` | `help-ops-schema-compare` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops schema compare help |

@@ -163,7 +163,6 @@ OPS_COMMANDS: tuple[click.Command, ...] = (
     _L("embed"),
     _L("insights"),
     _L("maintenance"),
-    _L("paths"),
     _L("reset"),
     _L("schema"),
     _L("user_state"),

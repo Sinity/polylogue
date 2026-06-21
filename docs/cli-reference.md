@@ -466,7 +466,6 @@ Commands:
   embed        Enable, preflight, and backfill the embedding pipeline.
   insights     Rebuild and inspect derived session insights.
   maintenance  Preview and run maintenance backfill operations.
-  paths        Print canonical archive paths and bind-mount detection.
   reset        Reset local archive state.
   schema       Inspect and audit provider schemas.
   state        Manage durable reader state.
@@ -644,6 +643,24 @@ Commands:
   list     List available schema packages, versions, and evidence manifests.
 ```
 
+## Config
+
+```text
+Usage: polylogue config [OPTIONS] COMMAND [ARGS]...
+
+  Show resolved Polylogue configuration with precedence sources.
+
+Options:
+  -f, --format [toml|json]  Output format.
+  --show-layers             Show the layer source for each config key
+                            (default/site/user/env/cli).
+  --help                    Show this message and exit.
+
+Commands:
+  completions  Generate shell completion scripts.
+  paths        Print canonical archive paths and filesystem topology.
+```
+
 ## Completions
 
 ```text
@@ -663,6 +680,21 @@ Options:
   Dynamic completers cover: session IDs, origins/source-families,
   tags, repos, cwd prefixes, action categories and sequences, tool names,
   message types, retrieval lanes.
+```
+
+## Paths
+
+```text
+Usage: polylogue config paths [OPTIONS]
+
+  Print canonical archive paths and filesystem topology.
+
+  Reports the resolved archive root, database path, config file path, blob
+  store root, and whether any bind mounts are detected.
+
+Options:
+  -f, --format [text|json]  Output format.
+  --help                    Show this message and exit.
 ```
 
 ## Dashboard
