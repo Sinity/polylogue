@@ -603,6 +603,7 @@ def default_sources() -> tuple[WatchSource, ...]:
     from polylogue.paths import (
         antigravity_path,
         archive_root,
+        browser_capture_spool_root,
         claude_code_path,
         codex_path,
         gemini_cli_path,
@@ -616,6 +617,7 @@ def default_sources() -> tuple[WatchSource, ...]:
         WatchSource(name="gemini-cli", root=gemini_cli_path(), suffixes=(".json", ".jsonl")),
         WatchSource(name="hermes", root=hermes_sessions_path(), suffixes=(".json",)),
         WatchSource(name="antigravity", root=antigravity_path(), suffixes=(".metadata.json",)),
+        WatchSource(name="browser-capture", root=browser_capture_spool_root(), suffixes=(".json",)),
         # #1683: inbox accepts archive, zip, and json-line formats so that
         # GDPR exports (typically .zip) and raw .json dumps are observed.
         WatchSource(name="inbox", root=archive_root() / "inbox", suffixes=INBOX_SOURCE_SUFFIXES),

@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from polylogue.browser_capture.receiver import BrowserCaptureReceiverConfig
 from polylogue.core.json import JSONDocument
 from polylogue.daemon import status as status_module
 from polylogue.daemon.status import (
@@ -111,6 +112,24 @@ def test_build_daemon_status_reports_failed_live_cursor_files(tmp_path: Path) ->
     assert status.live_cursor.failing_files[0].source_path == str(failed)
     assert status.live_cursor.failing_files[0].failure_count == 1
     assert status.live_cursor.failing_files[0].next_retry_at is not None
+
+
+def test_daemon_status_uses_default_browser_capture_spool(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        BrowserCaptureReceiverConfig,
+        "default",
+        classmethod(lambda cls: BrowserCaptureReceiverConfig(spool_path=tmp_path / "browser-capture")),
+    )
+
+    payload = daemon_status_payload(sources=())
+
+    assert payload["browser_capture_active"] is True
+    component_state = payload["component_state"]
+    assert isinstance(component_state, dict)
+    assert component_state["browser_capture"] == "running"
 
 
 def test_daemon_status_payload_and_plain_output_include_failed_files(tmp_path: Path) -> None:

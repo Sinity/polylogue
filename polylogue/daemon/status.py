@@ -1704,6 +1704,12 @@ def build_daemon_status(
 ) -> DaemonStatus:
     """Build a typed DaemonStatus from durable component state."""
     watch_sources = sources if sources is not None else default_sources()
+    effective_browser_capture_spool_path = (
+        browser_capture_spool_path
+        if browser_capture_spool_path is not None
+        else BrowserCaptureReceiverConfig.default().spool_path
+    )
+    browser_capture_active = effective_browser_capture_spool_path is not None
     db_info = _db_size_info()
     storage_info = _archive_storage_info()
     fts = _fts_readiness_info()
@@ -1754,7 +1760,7 @@ def build_daemon_status(
     component_state = ComponentState(
         watcher="running" if watch_sources else "stopped",
         api="running",
-        browser_capture="running" if browser_capture_spool_path else "stopped",
+        browser_capture="running" if browser_capture_active else "stopped",
     )
     fts_readiness = FTSReadiness(
         indexed_surface=str(fts.get("indexed_surface", "messages_fts")),
@@ -1823,7 +1829,7 @@ def build_daemon_status(
             live_ingest_attempts=live_ingest_attempts,
         ),
         health=health,
-        browser_capture_active=browser_capture_spool_path is not None,
+        browser_capture_active=browser_capture_active,
         rss_current_mb=rss_current_mb,
         rss_peak_mb=rss_peak_mb,
         cgroup_memory_current_mb=cgroup_memory_current_mb,

@@ -1747,6 +1747,27 @@ def test_inbox_source_accepts_zip_and_archive_formats() -> None:
     assert ".ndjson" in inbox.suffixes
 
 
+def test_browser_capture_spool_is_default_json_source(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import polylogue.paths as polylogue_paths
+    from polylogue.sources.live.watcher import default_sources
+
+    spool = tmp_path / "browser-capture"
+    monkeypatch.setattr(
+        polylogue_paths,
+        "browser_capture_spool_root",
+        lambda: spool,
+    )
+
+    browser_capture = next(s for s in default_sources() if s.name == "browser-capture")
+
+    assert browser_capture.root == spool
+    assert browser_capture.accepts(spool / "chatgpt" / "capture.json") is True
+    assert browser_capture.accepts(spool / "chatgpt" / "capture.jsonl") is False
+
+
 # --- end-to-end via watchfiles -------------------------------------------------
 
 
