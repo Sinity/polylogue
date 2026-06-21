@@ -240,6 +240,67 @@ def test_extension_smoke_runs_background_worker_against_receiver(
     assert extension_events[1]["payload"]["artifact_ref"] == smoke["artifact_ref"]
 
 
+def test_browser_plan_writes_local_extension_launch_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(dev_loop, "system_service_status", lambda: {"active": False})
+    monkeypatch.setattr(
+        dev_loop,
+        "port_status",
+        lambda port: {"port": port, "connectable": False, "owner_count": 0, "owners": []},
+    )
+    monkeypatch.setattr(
+        dev_loop, "_git_value", lambda args, *, cwd: "feature/dev-loop" if args[0] == "branch" else "abc1234"
+    )
+    monkeypatch.setenv("POLYLOGUE_BROWSER_CAPTURE_AUTH_TOKEN", "dev-token")
+
+    assert (
+        dev_loop.main(
+            [
+                "--json",
+                "--log-dir",
+                str(tmp_path / "dev-loop-logs"),
+                "--archive-root",
+                str(tmp_path / "archive"),
+                "--api-port",
+                "9876",
+                "--browser-capture-port",
+                "9875",
+                "--browser-plan",
+            ]
+        )
+        == 0
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    plan = payload["browser_plan"]
+    assert plan["ok"] is True
+    assert plan["receiver_url"] == "http://127.0.0.1:9875"
+    assert plan["web_shell_url"] == "http://127.0.0.1:9876/"
+    assert plan["receiver_auth_configured"] is True
+    assert Path(plan["profile_dir"]).is_dir()
+    assert Path(plan["screenshot_dir"]).is_dir()
+    assert Path(plan["downloads_dir"]).is_dir()
+    assert Path(plan["extension_root"]).name == "browser-extension"
+    chrome = plan["commands"]["chrome"]
+    assert chrome[0] == "google-chrome-stable"
+    assert f"--load-extension={plan['extension_root']}" in chrome
+    assert f"--user-data-dir={plan['profile_dir']}" in chrome
+
+    artifacts = plan["artifacts"]
+    json_plan = Path(artifacts["json"])
+    markdown_plan = Path(artifacts["markdown"])
+    assert json_plan.is_file()
+    assert markdown_plan.is_file()
+    assert "POLYLOGUE_BROWSER_CAPTURE_AUTH_TOKEN" in markdown_plan.read_text(encoding="utf-8")
+    event_rows = [json.loads(line) for line in Path(artifacts["events"]).read_text(encoding="utf-8").splitlines()]
+    assert event_rows[-1]["event_type"] == "browser_plan_written"
+    assert event_rows[-1]["surface"] == "browser"
+    assert event_rows[-1]["payload"]["receiver_url"] == "http://127.0.0.1:9875"
+
+
 def test_cli_capture_runs_command_with_branch_local_artifacts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
