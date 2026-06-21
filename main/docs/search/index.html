@@ -710,14 +710,14 @@ Candidate rows are private, carry <code>context_policy.inject=false</code>, and 
 <code>promotion_required=true</code> until an operator makes an explicit judgment. They
 can be inspected like any other assertion row:</p>
 <pre><code class="language-bash">polylogue assertions where 'status:candidate AND target:session:codex-session:abc123' --format json
-polylogue ops state candidates list --target-ref session:codex-session:abc123 --format json
+polylogue mark candidates list --target-ref session:codex-session:abc123 --format json
 </code></pre>
-<p>The judgment workflow lives under <code>polylogue ops state candidates</code> and writes
+<p>The judgment workflow lives under <code>polylogue mark candidates</code> and writes
 back into the same <code>user.db</code> assertion substrate:</p>
-<pre><code class="language-bash">polylogue ops state candidates accept assertion:candidate-id --reason &quot;confirmed by transcript&quot; --format json
-polylogue ops state candidates reject assertion:candidate-id --reason &quot;unsupported by evidence&quot; --format json
-polylogue ops state candidates defer assertion:candidate-id --reason &quot;needs another source&quot; --format json
-polylogue ops state candidates supersede assertion:candidate-id --kind summary --body &quot;replacement claim&quot; --format json
+<pre><code class="language-bash">polylogue mark candidates accept assertion:candidate-id --reason &quot;confirmed by transcript&quot; --format json
+polylogue mark candidates reject assertion:candidate-id --reason &quot;unsupported by evidence&quot; --format json
+polylogue mark candidates defer assertion:candidate-id --reason &quot;needs another source&quot; --format json
+polylogue mark candidates supersede assertion:candidate-id --kind summary --body &quot;replacement claim&quot; --format json
 </code></pre>
 <p><code>accept</code> and <code>supersede</code> create an active assertion whose evidence includes the
 candidate assertion ref and whose <code>supersedes</code> lineage points at the candidate.
