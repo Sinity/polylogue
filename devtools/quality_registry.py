@@ -23,8 +23,8 @@ class QualityRegistry:
         return self.catalog.exercise_scenarios
 
     @property
-    def qa_extra_scenarios(self) -> tuple[Exercise, ...]:
-        return self.catalog.qa_extra_scenarios
+    def supplemental_scenarios(self) -> tuple[Exercise, ...]:
+        return self.catalog.supplemental_scenarios
 
     @property
     def contract_lanes(self) -> tuple[LaneEntry, ...]:

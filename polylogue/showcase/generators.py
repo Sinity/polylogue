@@ -466,8 +466,8 @@ def generate_provider_feature_exercises() -> list[Exercise]:
     return list(generate_provider_feature_scenarios())
 
 
-def generate_qa_extra_scenarios() -> tuple[Exercise, ...]:
-    """Generate the extra scenario families exercised by the QA workflow."""
+def generate_supplemental_scenarios() -> tuple[Exercise, ...]:
+    """Generate supplemental scenario families for projection and coverage maps."""
     return (
         *generate_schema_scenarios(),
         *generate_format_scenarios(),
@@ -500,7 +500,7 @@ __all__ = [
     "generate_filter_scenarios",
     "generate_format_exercises",
     "generate_format_scenarios",
-    "generate_qa_extra_scenarios",
+    "generate_supplemental_scenarios",
     "generate_provider_feature_exercises",
     "generate_provider_feature_scenarios",
     "command_help_exercise_names",

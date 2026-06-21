@@ -5,15 +5,15 @@ from __future__ import annotations
 from polylogue.showcase.exercises import (
     EXERCISES,
     GROUPS,
-    QA_EXTRA_EXERCISES,
-    QA_EXTRA_SCENARIOS,
+    SUPPLEMENTAL_EXERCISES,
+    SUPPLEMENTAL_SCENARIOS,
     Exercise,
     exercises_by_group,
     topological_order,
 )
 from polylogue.showcase.generators import (
     command_help_exercise_names,
-    generate_qa_extra_scenarios,
+    generate_supplemental_scenarios,
     inventory_command_paths,
     json_contract_exercise_names,
 )
@@ -129,11 +129,11 @@ class TestExercisesByGroup:
             "session-insights",
         )
 
-    def test_exported_qa_extra_roots_match_generated_family(self) -> None:
-        expected_names = [scenario.name for scenario in generate_qa_extra_scenarios()]
+    def test_exported_supplemental_roots_match_generated_family(self) -> None:
+        expected_names = [scenario.name for scenario in generate_supplemental_scenarios()]
 
-        assert [scenario.name for scenario in QA_EXTRA_SCENARIOS] == expected_names
-        assert [exercise.name for exercise in QA_EXTRA_EXERCISES] == expected_names
+        assert [scenario.name for scenario in SUPPLEMENTAL_SCENARIOS] == expected_names
+        assert [exercise.name for exercise in SUPPLEMENTAL_EXERCISES] == expected_names
 
 
 class TestTopologicalOrder:

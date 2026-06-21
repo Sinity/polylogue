@@ -775,7 +775,7 @@ def rebuild_session_insights_sync(
         # #1607: the seven DELETEs hold the write lock for seconds-to-minutes
         # at archive scale and were previously silent. Emit a progress
         # heartbeat per table so the operator sees forward motion instead
-        # of "polylogue qa --rebuild-insights" hanging with no output.
+        # of full insight rebuilds appearing to hang with no output.
         # The full rebuild stays inside one transaction (the implicit tx
         # started by the first DELETE spans every subsequent DML through
         # the final ``conn.commit()`` at the bottom of this function), so

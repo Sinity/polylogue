@@ -25,7 +25,7 @@ def test_build_document_includes_live_registry_sections() -> None:
     registry = QualityRegistry(
         catalog=AuthoredScenarioCatalog(
             exercise_scenarios=(),
-            qa_extra_scenarios=(),
+            supplemental_scenarios=(),
             validation_lanes=(
                 LaneEntry(
                     name="machine-contract",
@@ -179,7 +179,7 @@ def test_build_document_includes_runtime_coverage_section() -> None:
     registry = QualityRegistry(
         catalog=AuthoredScenarioCatalog(
             exercise_scenarios=(),
-            qa_extra_scenarios=(),
+            supplemental_scenarios=(),
             validation_lanes=(),
             mutation_campaigns=(),
             benchmark_campaigns=(),
