@@ -385,48 +385,49 @@ def run_probe(*, tursodb: str | None = None, scratch_dir: Path | None = None) ->
     else:
         tmp_context = None
         scratch_root = scratch_dir
-    results = [
-        _python_binding_probe(),
-        _python_runtime_api_probe(),
-        _python_readonly_uri_probe(scratch_dir=scratch_root),
-        _python_multiprocess_probe(scratch_dir=scratch_root),
-    ]
-    if resolved_tursodb is None:
-        results.append(
-            ProbeResult(
-                name="tursodb_binary",
-                status="skip",
-                expected_status="skip",
-                summary="`tursodb` is not on PATH; CLI feature probes were not run.",
-                command=["tursodb", "--version"],
-            )
-        )
-    else:
-        with tempfile.TemporaryDirectory(dir=scratch_root) as tmp:
-            root = Path(tmp)
-            for name, flags, sql, expected_status, summary in SQL_PROBES:
-                results.append(
-                    _run_tursodb_sql(
-                        tursodb=resolved_tursodb,
-                        scratch_dir=root,
-                        name=name,
-                        flags=flags,
-                        sql=sql,
-                        expected_status=expected_status,
-                        summary=summary,
-                    )
+    try:
+        results = [
+            _python_binding_probe(),
+            _python_runtime_api_probe(),
+            _python_readonly_uri_probe(scratch_dir=scratch_root),
+            _python_multiprocess_probe(scratch_dir=scratch_root),
+        ]
+        if resolved_tursodb is None:
+            results.append(
+                ProbeResult(
+                    name="tursodb_binary",
+                    status="skip",
+                    expected_status="skip",
+                    summary="`tursodb` is not on PATH; CLI feature probes were not run.",
+                    command=["tursodb", "--version"],
                 )
-            results.append(_attach_probe(tursodb=resolved_tursodb, scratch_dir=root))
-    if tmp_context is not None:
-        tmp_context.cleanup()
+            )
+        else:
+            with tempfile.TemporaryDirectory(dir=scratch_root) as tmp:
+                root = Path(tmp)
+                for name, flags, sql, expected_status, summary in SQL_PROBES:
+                    results.append(
+                        _run_tursodb_sql(
+                            tursodb=resolved_tursodb,
+                            scratch_dir=root,
+                            name=name,
+                            flags=flags,
+                            sql=sql,
+                            expected_status=expected_status,
+                            summary=summary,
+                        )
+                    )
+                results.append(_attach_probe(tursodb=resolved_tursodb, scratch_dir=root))
+    finally:
+        if tmp_context is not None:
+            tmp_context.cleanup()
     blockers = [
         result.name
         for result in results
         if (
             (result.name == "python_binding" and result.status != "pass")
             or (result.name == "python_readonly_uri" and result.status == "fail")
-            or result.name in {"stored_generated_columns", "fts5_virtual_table"}
-            and result.status != "pass"
+            or (result.name in {"stored_generated_columns", "fts5_virtual_table"} and result.status != "pass")
         )
     ]
     unexpected = [result.name for result in results if not result.expected]
