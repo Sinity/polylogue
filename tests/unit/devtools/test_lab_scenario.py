@@ -53,7 +53,7 @@ def test_main_prints_direct_stage_summary(capsys: pytest.CaptureFixture[str]) ->
     def _invoke(execution: object, **_kwargs: object) -> SimpleNamespace:
         return SimpleNamespace(output=f"{execution}\npolylogue candidates complete", exit_code=0)
 
-    with patch("devtools.lab_scenario.invoke_showcase_cli", side_effect=_invoke):
+    with patch("devtools.lab_scenario.invoke_polylogue_cli", side_effect=_invoke):
         assert main(["run", "archive-smoke", "--tier", "0"]) == 0
 
     out = capsys.readouterr().out
@@ -68,7 +68,7 @@ def test_main_json_reports_direct_scenario_payload(capsys: pytest.CaptureFixture
     def _invoke(_execution: object, **_kwargs: object) -> SimpleNamespace:
         return SimpleNamespace(output="polylogue candidates complete", exit_code=0)
 
-    with patch("devtools.lab_scenario.invoke_showcase_cli", side_effect=_invoke):
+    with patch("devtools.lab_scenario.invoke_polylogue_cli", side_effect=_invoke):
         assert main(["run", "archive-smoke", "--tier", "0", "--json"]) == 0
 
     payload = json.loads(capsys.readouterr().out)
@@ -89,7 +89,7 @@ def test_main_json_reports_direct_check_failures(capsys: pytest.CaptureFixture[s
     def _invoke(_execution: object, **_kwargs: object) -> SimpleNamespace:
         return SimpleNamespace(output="", exit_code=3)
 
-    with patch("devtools.lab_scenario.invoke_showcase_cli", side_effect=_invoke):
+    with patch("devtools.lab_scenario.invoke_polylogue_cli", side_effect=_invoke):
         assert main(["run", "archive-smoke", "--tier", "0", "--json", "--fail-fast"]) == 1
 
     output = capsys.readouterr().out
@@ -112,7 +112,7 @@ def test_main_writes_direct_archive_smoke_report(tmp_path: Path, capsys: pytest.
         return SimpleNamespace(output="polylogue candidates complete", exit_code=0)
 
     report_dir = tmp_path / "reports"
-    with patch("devtools.lab_scenario.invoke_showcase_cli", side_effect=_invoke):
+    with patch("devtools.lab_scenario.invoke_polylogue_cli", side_effect=_invoke):
         assert main(["run", "archive-smoke", "--tier", "0", "--report-dir", str(report_dir), "--json"]) == 0
 
     payload = json.loads(capsys.readouterr().out)

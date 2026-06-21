@@ -335,14 +335,17 @@ rows:
         the unit lane
 
   # ── Verification & ops ──────────────────────────────────────────────────
-  - domain: showcase
+  - domain: verification-lab-support
     target_files:
-      - polylogue/showcase/
+      - polylogue/demo/
+      - devtools/cli_boundary.py
+      - devtools/lab_scenario.py
+      - devtools/visual_vhs.py
     representative_tests:
-      - tests/unit/showcase/test_cli_boundary.py
-      - tests/unit/showcase/test_verification_lane.py
-      - tests/unit/showcase/test_vhs_generation.py
-      - tests/unit/showcase/test_workspace.py
+      - tests/unit/demo/test_workspace.py
+      - tests/unit/devtools/test_cli_boundary.py
+      - tests/unit/devtools/test_lab_scenario.py
+      - tests/unit/devtools/test_visual_vhs.py
     gate: required
 
   - domain: scenarios

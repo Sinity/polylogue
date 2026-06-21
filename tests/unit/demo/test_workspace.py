@@ -6,8 +6,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from polylogue.config import Config, Source
-from polylogue.scenarios import CorpusProfile, CorpusRequest, CorpusSpec
-from polylogue.showcase.workspace import (
+from polylogue.demo.workspace import (
     build_synthetic_corpus_scenarios,
     build_synthetic_corpus_specs,
     create_verification_workspace,
@@ -19,6 +18,7 @@ from polylogue.showcase.workspace import (
     seed_workspace_from_corpus_request,
     seed_workspace_from_scenarios,
 )
+from polylogue.scenarios import CorpusProfile, CorpusRequest, CorpusSpec
 
 
 class _RecordingPolylogue:
@@ -60,7 +60,7 @@ def test_run_pipeline_for_configured_sources_uses_all_sources(tmp_path: Path) ->
     )
 
     _RecordingPolylogue.instances.clear()
-    with patch("polylogue.showcase.workspace.get_config", return_value=config):
+    with patch("polylogue.demo.workspace.get_config", return_value=config):
         with patch("polylogue.api.Polylogue", _RecordingPolylogue):
             run_pipeline_for_configured_sources(workspace)
 
@@ -83,7 +83,7 @@ def test_run_pipeline_for_configured_sources_filters_named_sources(tmp_path: Pat
     )
 
     _RecordingPolylogue.instances.clear()
-    with patch("polylogue.showcase.workspace.get_config", return_value=config):
+    with patch("polylogue.demo.workspace.get_config", return_value=config):
         with patch("polylogue.api.Polylogue", _RecordingPolylogue):
             run_pipeline_for_configured_sources(workspace, source_names=["codex"])
 

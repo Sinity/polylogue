@@ -123,10 +123,6 @@ STORAGE_ROOT_KEEP = frozenset(
     }
 )
 
-# polylogue/showcase/ is now declared as verification-lab substrate. The
-# public archive CLI no longer exposes audit/qa/showcase vocabulary; lab
-# scenarios remain here until a future package split is useful.
-
 # Placement owner per target prefix.
 TARGET_TO_OWNER = [
     ("polylogue/insights/", "insight-domain"),
@@ -303,10 +299,6 @@ def classify(path: Path) -> dict[str, Any]:
                 reason = "storage-root cross-cutting helper"
             else:
                 owner = placement_owner(target) or "storage-domain"
-    elif rel.startswith("polylogue/showcase/"):
-        target = rel
-        owner = "stable"
-        reason = "verification-lab showcase substrate retained"
     elif rel.startswith("polylogue/sources/"):
         # Drive-specific files cluster
         suffix = rel[len("polylogue/sources/") :]

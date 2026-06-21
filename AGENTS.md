@@ -750,13 +750,13 @@ Leaf adapters over archive operations and derived insights.
 
 - schema inference and verification
 - synthetic corpus generation
-- showcase and deterministic acceptance exercises
+- deterministic demo fixtures and verification-lab acceptance flows
 - validation lanes, mutation campaigns, benchmark campaigns
 
 Primary modules:
 
 - `polylogue/schemas/`
-- `polylogue/showcase/`
+- `polylogue/demo/`
 - `devtools/`
 - `tests/`
 
@@ -1025,7 +1025,7 @@ attachments, exports):
 
 ### Verification (repo health)
 - `devtools/` — operator tooling, lints, campaigns, rendering
-- `showcase/` — verification-lab scenarios and deterministic acceptance tests
+- `demo/` — deterministic archive/demo workspace fixtures
 - `tests/` — pytest suite, property tests, integration tests
 
 ### Cross-cutting
@@ -1553,7 +1553,7 @@ Cross-check adjacent surfaces after changes:
 - query: `cli/query*.py` ↔ `archive/filter/filters.py` ↔ `storage/search*.py`
 - pipeline: `daemon/` ↔ `pipeline/` ↔ `storage/` ↔ `insights/`
 - maintenance: `cli/commands/check.py` ↔ `storage/repair.py` ↔ `health.py`
-- publication: `rendering/` ↔ `site/` ↔ `showcase/`
+- publication: `rendering/` ↔ `site/` ↔ `devtools/`
 - schema: `schemas/` ↔ `sources/providers/` ↔ `pipeline/services/validation_*`
 
 Drift check:

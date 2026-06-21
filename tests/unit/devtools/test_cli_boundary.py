@@ -4,8 +4,13 @@ from pathlib import Path
 
 import pytest
 
+from devtools import cli_boundary
 from polylogue.scenarios import ExecutionResult, ExecutionSpec, polylogue_execution
-from polylogue.showcase import cli_boundary
+
+
+def test_project_root_points_at_checkout_root() -> None:
+    assert (cli_boundary._PROJECT_ROOT / "pyproject.toml").exists()
+    assert (cli_boundary._PROJECT_ROOT / "polylogue").is_dir()
 
 
 def _captured_execution(captured: dict[str, object]) -> ExecutionSpec:
@@ -29,7 +34,7 @@ def _make_project_cli(project_root: Path) -> Path:
     return cli_path
 
 
-def test_invoke_showcase_cli_uses_current_project_polylogue_command(
+def test_invoke_polylogue_cli_uses_current_project_polylogue_command(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -46,7 +51,7 @@ def test_invoke_showcase_cli_uses_current_project_polylogue_command(
     monkeypatch.setattr(cli_boundary, "_PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(cli_boundary, "run_execution", fake_run)
 
-    result = cli_boundary.invoke_showcase_cli(polylogue_execution("--help"))
+    result = cli_boundary.invoke_polylogue_cli(polylogue_execution("--help"))
     kwargs = _captured_kwargs(captured)
     execution = _captured_execution(captured)
 
@@ -56,7 +61,7 @@ def test_invoke_showcase_cli_uses_current_project_polylogue_command(
     assert execution.command == ("polylogue", "--plain", "--help")
 
 
-def test_invoke_showcase_cli_passes_runtime_options(
+def test_invoke_polylogue_cli_passes_runtime_options(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -73,7 +78,7 @@ def test_invoke_showcase_cli_passes_runtime_options(
     monkeypatch.setattr(cli_boundary, "_PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(cli_boundary, "run_execution", fake_run)
 
-    cli_boundary.invoke_showcase_cli(
+    cli_boundary.invoke_polylogue_cli(
         polylogue_execution("ops", "doctor", "--format", "json"),
         env={"POLYLOGUE_FORCE_PLAIN": "1"},
         cwd=None,
@@ -87,7 +92,7 @@ def test_invoke_showcase_cli_passes_runtime_options(
     assert kwargs["timeout"] == 30.0
 
 
-def test_invoke_showcase_cli_uses_python_fallback_without_project_command(
+def test_invoke_polylogue_cli_uses_python_fallback_without_project_command(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -105,9 +110,9 @@ def test_invoke_showcase_cli_uses_python_fallback_without_project_command(
         return Result()
 
     monkeypatch.setattr(cli_boundary, "_PROJECT_ROOT", tmp_path)
-    monkeypatch.setattr("polylogue.showcase.cli_boundary.subprocess.run", fake_run)
+    monkeypatch.setattr("devtools.cli_boundary.subprocess.run", fake_run)
 
-    result = cli_boundary.invoke_showcase_cli(polylogue_execution("--help"))
+    result = cli_boundary.invoke_polylogue_cli(polylogue_execution("--help"))
 
     command = captured["command"]
     assert isinstance(command, tuple)
