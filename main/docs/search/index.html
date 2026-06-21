@@ -363,7 +363,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <h1>Search &amp; Query Reference</h1>
 <p>Polylogue uses a query-first grammar over archive units. Bare tokens are
 full-text terms, field clauses narrow the selected unit, explicit
-<code>sessions/messages/actions/blocks/assertions/runs/observed-events/context-snapshots where ...</code>
+<code>sessions/messages/actions/blocks/files/assertions/runs/observed-events/context-snapshots where ...</code>
 forms opt into Boolean predicates,
 and trailing CLI verbs render or mutate the selected session set. The same
 query semantics — filters, retrieval lanes, ranking policy, and typed response
@@ -372,7 +372,8 @@ payloads — apply across the CLI, MCP, Python API, and daemon HTTP surfaces.</p
 <ul>
 <li><a href="#retrieval-lanes">Retrieval Lanes</a> — <code>dialogue</code>, <code>actions</code>, <code>hybrid</code>,
 <code>semantic</code>, and how <code>auto</code> elevates.</li>
-<li><a href="#terminal-unit-queries">Terminal Unit Queries</a> — <code>messages/actions/blocks/ assertions/runs/observed-events/context-snapshots where ...</code> row results.</li>
+<li><a href="#terminal-unit-queries">Terminal Unit Queries</a> — <code>messages/actions/blocks/ files/assertions/runs/observed-events/context-snapshots where ...</code> row
+results.</li>
 <li><a href="#ranking-policy">Ranking Policy</a> — current <code>mixed-bm25-rrf-vector</code>
 policy and version contract.</li>
 <li><a href="#searchenvelope-contract">SearchEnvelope Contract</a> — the typed
@@ -387,7 +388,7 @@ counts with both views (<a href="https://github.com/Sinity/polylogue/issues/1269
 through the same typed AST and query planner:</p>
 <pre><code class="language-text">compact-query      ::= compact-clause*
 boolean-query      ::= [&quot;sessions&quot; &quot;where&quot;] predicate
-unit-query         ::= (&quot;messages&quot; | &quot;actions&quot; | &quot;blocks&quot; | &quot;assertions&quot; | &quot;runs&quot; | &quot;observed-events&quot; | &quot;context-snapshots&quot;) &quot;where&quot; predicate
+unit-query         ::= (&quot;messages&quot; | &quot;actions&quot; | &quot;blocks&quot; | &quot;files&quot; | &quot;assertions&quot; | &quot;runs&quot; | &quot;observed-events&quot; | &quot;context-snapshots&quot;) &quot;where&quot; predicate
 pipeline-query     ::= unit-query (&quot;|&quot; pipeline-stage)+
                      | &quot;sessions&quot; &quot;where&quot; predicate &quot;|&quot; unit-query (&quot;|&quot; pipeline-stage)*
 
@@ -408,7 +409,7 @@ predicate          ::= predicate &quot;OR&quot; predicate
                      | &quot;exists&quot; structural-unit &quot;(&quot; predicate &quot;)&quot;
                      | &quot;seq&quot; &quot;(&quot; sequence-step &quot;-&gt;&quot; sequence-step+ &quot;)&quot;
 
-structural-unit    ::= &quot;message&quot; | &quot;action&quot; | &quot;block&quot; | &quot;assertion&quot;
+structural-unit    ::= &quot;message&quot; | &quot;action&quot; | &quot;block&quot; | &quot;file&quot; | &quot;assertion&quot;
 sequence-step      ::= action-field-clause (&quot;AND&quot; action-field-clause)*
 action-field-clause ::= &quot;action:&quot; value | &quot;tool:&quot; value | &quot;command:&quot; value
                       | &quot;path:&quot; value | &quot;output:&quot; value | &quot;text:&quot; value
@@ -444,6 +445,7 @@ plain text search.</p>
 <pre><code class="language-bash">polylogue messages where 'role:assistant AND text:timeout'
 polylogue actions where 'session.repo:polylogue AND action:file_edit AND path:polylogue/archive'
 polylogue blocks where 'type:code AND text:sqlite'
+polylogue files where 'action:file_edit AND path:polylogue/archive/query'
 polylogue assertions where 'kind:decision AND status:active AND text:review'
 polylogue runs where 'role:subagent AND status:completed AND agent:Explore'
 polylogue observed-events where 'delivery_state:acted_on AND text:#2100'
@@ -455,6 +457,7 @@ through a session source stage:</p>
 polylogue 'actions where action:file_edit | limit 20 | offset 40'
 polylogue 'sessions where repo:polylogue AND origin:claude-code-session | messages where role:assistant'
 polylogue 'sessions where origin:(codex-session|claude-code-session) | actions where action:file_edit'
+polylogue 'sessions where repo:polylogue | files where action:file_edit | group by path | count'
 polylogue 'sessions where ~&quot;timeout failure&quot; | messages where role:user'
 polylogue 'sessions where exists block(type:code) | messages where role:user'
 polylogue 'sessions where seq(action:file_edit -&gt; action:shell) | messages where role:user'
@@ -464,7 +467,7 @@ polylogue 'sessions where repo:polylogue | messages where role:assistant | sort 
 </code></pre>
 <p>When a pipeline starts with <code>sessions where ...</code>, the left stage is lowered into
 predicates on the terminal unit query, so it uses the same row executor as direct
-<code>messages/actions/...</code> pipelines. Field/count/date predicates become
+<code>messages/actions/files/...</code> pipelines. Field/count/date predicates become
 <code>session.&lt;field&gt;</code> row predicates. FTS (<code>~&quot;...&quot;</code>), <code>exists ...</code>, sequence
 (<code>seq(...)</code>), and <code>lineage:id:&lt;session-id&gt;</code> stages lower through the existing
 session Boolean lowerers against the terminal row's owning session. Semantic
@@ -473,7 +476,7 @@ queries have explicit ranked-result semantics. Terminal pipeline stages
 currently support <code>sort by time [asc|desc]</code>,
 <code>group by FIELD | count</code>, aggregate <code>sort by count|key [asc|desc]</code>, <code>limit N</code>,
 and <code>offset N</code> for SQL-backed terminal rows (<code>messages</code>, <code>actions</code>, <code>blocks</code>,
-<code>assertions</code>). Query-string limits narrow the surface limit instead of expanding
+<code>files</code>, <code>assertions</code>). Query-string limits narrow the surface limit instead of expanding
 caller/API caps, and query-string offsets are added to the caller offset.
 Runtime-transform terminal rows (<code>runs</code>, <code>observed-events</code>, <code>context-snapshots</code>)
 reject sort/aggregate stages until they have streaming or aggregate lowerers;
@@ -637,6 +640,10 @@ one child row matching the nested predicate.</p>
 <td><code>action</code>, <code>command</code>, <code>path</code>, <code>text</code>, <code>time</code>, <code>tool</code>, <code>type</code></td>
 </tr>
 <tr>
+<td><code>file</code></td>
+<td><code>action</code>, <code>command</code>, <code>path</code>, <code>text</code>, <code>time</code>, <code>tool</code>, <code>type</code></td>
+</tr>
+<tr>
 <td><code>assertion</code></td>
 <td><code>author</code>, <code>author_kind</code>, <code>author_ref</code>, <code>body</code>, <code>context</code>, <code>evidence</code>, <code>key</code>, <code>kind</code>, <code>scope</code>, <code>scope_ref</code>, <code>status</code>, <code>target</code>, <code>target_ref</code>, <code>text</code>, <code>value</code>, <code>visibility</code></td>
 </tr>
@@ -661,6 +668,7 @@ flat root filters (<code>messages &gt; 10</code>, <code>words &lt; 500</code>) s
 exclusive-bound fields.</p>
 <p>Examples:</p>
 <pre><code class="language-bash">polylogue sessions where 'exists action(session.repo:polylogue AND tool:bash AND text:pytest)'
+polylogue sessions where 'exists file(session.repo:polylogue AND action:file_edit AND path:archive/query)'
 polylogue sessions where 'exists block(type:code AND text:timeout)'
 </code></pre>
 <h3>FTS And Semantic Leaves</h3>
@@ -679,6 +687,7 @@ rows instead:</p>
 <pre><code class="language-bash">polylogue --format json messages where role:assistant AND text:timeout
 polylogue --format ndjson actions where session.repo:polylogue AND action:file_edit AND path:polylogue/archive
 polylogue --format yaml blocks where type:code AND text:sqlite
+polylogue --format json files where action:file_edit AND path:polylogue/archive/query
 polylogue --format json assertions where kind:decision AND status:active AND text:review
 polylogue --format json runs where role:subagent AND status:completed AND agent:Explore
 polylogue --format json observed-events where delivery_state:acted_on AND text:#2100
@@ -688,11 +697,12 @@ polylogue --format json messages where text:timeout | group by role | count
 <p>The row shape is the shared <code>QueryUnitEnvelope</code> used by CLI JSON/NDJSON/YAML,
 Python <code>Polylogue.query_units()</code>, MCP <code>query_units</code>, and daemon
 <code>GET /api/query-units?expression=...</code>. Plain and CSV CLI output are
-transport-specific renderings of the same message/action/block/assertion/run/
+transport-specific renderings of the same message/action/block/file/assertion/run/
 observed-event/context-snapshot row payloads.
 Aggregate pipelines over SQL-backed terminal rows use the sibling
 <code>QueryUnitAggregateEnvelope</code> and currently support <code>group by FIELD | count</code>
 over closed unit fields such as message role, action tool/action, block type,
+file path,
 assertion kind/status, and owning-session origin/repo.
 Aggregate rows can be ordered with <code>sort by count [asc|desc]</code> or
 <code>sort by key [asc|desc]</code> before <code>limit</code>/<code>offset</code>; the default order is count
@@ -705,11 +715,16 @@ by their owning session:</p>
 <pre><code class="language-bash">polylogue messages where session.origin:claude-code-session AND role:assistant
 polylogue actions where session.repo:polylogue AND action:file_edit
 polylogue blocks where session.since:7d AND session.words:&lt;=500 AND type:code
+polylogue files where session.repo:polylogue AND action:file_edit AND path:archive/query
 polylogue assertions where session.repo:polylogue AND kind:caveat
 polylogue runs where session.repo:polylogue AND role:subagent AND status:completed
 polylogue observed-events where session.origin:codex-session AND object_ref:github-review
 polylogue context-snapshots where session.messages:&gt;=2 AND session.date:&gt;=2026-01-02 AND boundary:subagent_start
 </code></pre>
+<p><code>files where ...</code> is an affected-path evidence projection over action rows with
+non-empty <code>tool_path</code>. It returns one row per owning session and normalized path,
+with action counts and first/last tool-use refs. It is not a global filesystem
+inventory and does not claim that a file still exists on disk.</p>
 <p><code>runs</code>, <code>observed-events</code>, and <code>context-snapshots</code> are runtime-transform row
 sources. They return projected evidence from existing recovery/run-projection
 transforms, not durable SQL table rows, so they are terminal unit sources only;
