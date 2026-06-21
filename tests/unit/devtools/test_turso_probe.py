@@ -21,6 +21,10 @@ def test_probe_reports_missing_python_binding_and_binary(
     assert payload["ok"] is True
     assert payload["tursodb"] is None
     assert payload["compatibility_blockers"] == ["python_binding"]
+    benchmarks = cast(list[dict[str, object]], payload["benchmarks"])
+    benchmark_rows = {row["name"]: row for row in benchmarks}
+    assert benchmark_rows["sqlite_ops_workload"]["status"] == "pass"
+    assert benchmark_rows["turso_ops_workload"]["status"] == "skip"
     rows = cast(list[dict[str, object]], payload["results"])
     results = {row["name"]: row for row in rows}
     assert results["python_binding"]["status"] == "skip"
@@ -36,8 +40,8 @@ def test_probe_classifies_polylogue_sql_compatibility(
 ) -> None:
     monkeypatch.setattr(turso_probe, "_find_python_turso", lambda: None)
 
-    def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
-        sql = command[-1]
+    def fake_run(command: list[str], *, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
+        sql = stdin if stdin is not None else command[-1]
         failing = "STORED" in sql or "fts5" in sql or "journal_size_limit" in sql
         return subprocess.CompletedProcess(
             command,
@@ -57,6 +61,11 @@ def test_probe_classifies_polylogue_sql_compatibility(
         "stored_generated_columns",
         "fts5_virtual_table",
     ]
+    benchmarks = cast(list[dict[str, object]], payload["benchmarks"])
+    benchmark_rows = {row["name"]: row for row in benchmarks}
+    assert benchmark_rows["sqlite_ops_workload"]["status"] == "pass"
+    assert benchmark_rows["turso_ops_workload"]["status"] == "pass"
+    assert benchmark_rows["turso_ops_workload"]["row_count"] == turso_probe.OPS_BENCHMARK_ROWS * 3
     rows = cast(list[dict[str, object]], payload["results"])
     results = {row["name"]: row for row in rows}
     assert results["strict_tables"]["status"] == "pass"
@@ -135,6 +144,7 @@ def test_main_json_emits_probe_payload(
             "ok": True,
             "tursodb": tursodb,
             "results": [],
+            "benchmarks": [],
             "compatibility_blockers": [],
             "unexpected": [],
             "recommendation": "ok",
