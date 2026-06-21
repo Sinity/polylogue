@@ -177,7 +177,7 @@ def _assertion_candidate_rows(user_db: Path) -> list[ArchiveDebtRowPayload]:
                 actions=(
                     ArchiveDebtActionPayload(
                         label="Review candidate assertions",
-                        command=("polylogue", "ops", "state", "candidates", "list", "--format", "json"),
+                        command=("polylogue", "mark", "candidates", "list", "--format", "json"),
                     ),
                 ),
             )

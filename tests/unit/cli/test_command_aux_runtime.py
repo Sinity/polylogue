@@ -1,15 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import click
 import pytest
 from click.shell_completion import CompletionItem
-from click.testing import CliRunner
 
 from polylogue.cli import shell_completion_values
-from polylogue.cli.commands.user_state_tags import tags_command
 
 
 def _ctx_param() -> tuple[click.Context, click.Parameter]:
@@ -335,40 +333,3 @@ def test_query_action_candidates_come_from_action_contracts_with_danger_metadata
     help_text = shell_completion_values.query_completion_candidate_to_click_item(delete_candidate).help
     assert help_text is not None
     assert help_text.startswith("DANGER:")
-
-
-@pytest.fixture
-def cli_runner() -> CliRunner:
-    return CliRunner()
-
-
-def test_tags_command_plain_paths_cover_empty_hint_and_tabular_counts(cli_runner: CliRunner) -> None:
-    env = MagicMock()
-    env.ui = MagicMock()
-    env.polylogue = MagicMock()
-    env.polylogue.list_tags = AsyncMock(return_value={})
-
-    empty = cli_runner.invoke(tags_command, ["--origin", "chatgpt-export"], obj=env, catch_exceptions=False)
-    assert empty.exit_code == 0
-    assert "No tags found for origin 'chatgpt-export'." in empty.output
-    assert "polylogue find QUERY then mark --tag-add" in empty.output
-    env.polylogue.list_tags.assert_awaited_with(origin="chatgpt-export")
-
-    env.polylogue.list_tags = AsyncMock(return_value={"alpha": 5, "beta": 2})
-    table = cli_runner.invoke(tags_command, ["--count", "1"], obj=env, catch_exceptions=False)
-    assert table.exit_code == 0
-    # Tags uses plain click.echo text output, not Rich table rendering
-    assert "alpha" in table.output
-    assert "5" in table.output
-
-    env.polylogue.list_tags = AsyncMock(return_value={"alpha": 5})
-    with patch("polylogue.cli.commands.user_state_tags.emit_success") as emit_success:
-        json_result = cli_runner.invoke(tags_command, ["--format", "json"], obj=env, catch_exceptions=False)
-    assert json_result.exit_code == 0
-    emit_success.assert_called_once_with({"tags": {"alpha": 5}})
-
-    env.polylogue.list_tags = AsyncMock(return_value={})
-    generic_empty = cli_runner.invoke(tags_command, [], obj=env, catch_exceptions=False)
-    assert generic_empty.exit_code == 0
-    assert "No tags found." in generic_empty.output
-    assert "polylogue find QUERY then mark --tag-add" in generic_empty.output

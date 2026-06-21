@@ -234,12 +234,12 @@ def test_random_query_no_traceback(query: str) -> None:
 class TestCompletionsErrorBoundaries:
     def test_completions_invalid_shell(self, runner: CliRunner) -> None:
         """Unknown --shell value should not produce traceback."""
-        result = runner.invoke(cli, ["ops", "completions", "--shell", "unknown-shell"])
+        result = runner.invoke(cli, ["config", "completions", "--shell", "unknown-shell"])
         assert TRACEBACK_SENTINEL not in result.output
 
     def test_completions_missing_shell(self, runner: CliRunner) -> None:
         """Missing --shell should not produce traceback (Click enforces required)."""
-        result = runner.invoke(cli, ["ops", "completions"])
+        result = runner.invoke(cli, ["config", "completions"])
         # Click will show usage error, not traceback
         assert TRACEBACK_SENTINEL not in result.output
 

@@ -1,8 +1,0 @@
-Usage: polylogue ops state feedback list [OPTIONS] [SESSION_ID]
-
-  List stored corrections, optionally filtered by session and/or kind.
-
-Options:
-  --kind [tag_reject|tag_accept|summary_override]
-  -f, --format [json]
-  -h, --help                      Show this message and exit.

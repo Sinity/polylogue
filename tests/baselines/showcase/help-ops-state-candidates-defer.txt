@@ -1,9 +1,0 @@
-Usage: polylogue ops state candidates defer [OPTIONS] CANDIDATE_REF
-
-  Record a candidate assertion deferral without changing candidate status.
-
-Options:
-  --reason TEXT
-  --actor-ref TEXT     [default: user:local]
-  -f, --format [json]
-  -h, --help           Show this message and exit.

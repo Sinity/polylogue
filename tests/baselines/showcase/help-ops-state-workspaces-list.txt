@@ -1,7 +1,0 @@
-Usage: polylogue ops state workspaces list [OPTIONS]
-
-  List reader workspaces.
-
-Options:
-  -f, --format [json]
-  -h, --help           Show this message and exit.

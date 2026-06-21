@@ -198,7 +198,7 @@ rows:
       - polylogue/storage/sqlite/queries/sessions_identity.py
     representative_tests:
       - tests/unit/storage/test_tag_contracts.py
-      - tests/integration/test_cli_tags_surface.py
+      - tests/unit/cli/test_cli_action_contracts.py
     gate: required
 
   - domain: storage.schema_policy

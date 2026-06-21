@@ -75,7 +75,7 @@ def test_archive_debt_reports_candidate_assertions_as_actionable(tmp_path: Path)
     assert row.owner == "user"
     assert row.details == "Candidate summary"
     assert row.evidence_refs == ("message:msg-1", "assertion:cand-1")
-    assert row.actions[0].command == ("polylogue", "ops", "state", "candidates", "list", "--format", "json")
+    assert row.actions[0].command == ("polylogue", "mark", "candidates", "list", "--format", "json")
 
 
 def test_archive_debt_reports_convergence_failures(tmp_path: Path) -> None:

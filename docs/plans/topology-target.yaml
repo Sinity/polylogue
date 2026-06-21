@@ -294,7 +294,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/expression.py
-    loc: 2450
+    loc: 2497
     target: polylogue/archive/query/expression.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -339,7 +339,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/predicate.py
-    loc: 153
+    loc: 178
     target: polylogue/archive/query/predicate.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -369,7 +369,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/runtime_matching.py
-    loc: 160
+    loc: 161
     target: polylogue/archive/query/runtime_matching.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -399,7 +399,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/unit_results.py
-    loc: 811
+    loc: 821
     target: polylogue/archive/query/unit_results.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -685,11 +685,11 @@ files:
     target: polylogue/cli/bulk_export.py
     owner: stable
   - path: polylogue/cli/click_app.py
-    loc: 377
+    loc: 378
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
-    loc: 185
+    loc: 181
     target: polylogue/cli/click_command_registration.py
     owner: stable
   - path: polylogue/cli/click_option_groups.py
@@ -721,7 +721,7 @@ files:
     target: polylogue/cli/commands/completions.py
     owner: stable
   - path: polylogue/cli/commands/config.py
-    loc: 106
+    loc: 120
     target: polylogue/cli/commands/config.py
     owner: stable
   - path: polylogue/cli/commands/dashboard.py
@@ -788,22 +788,6 @@ files:
     loc: 216
     target: polylogue/cli/commands/tutorial.py
     owner: stable
-  - path: polylogue/cli/commands/user_state.py
-    loc: 662
-    target: polylogue/cli/commands/user_state.py
-    owner: stable
-  - path: polylogue/cli/commands/user_state_blackboard.py
-    loc: 197
-    target: polylogue/cli/commands/user_state_blackboard.py
-    owner: stable
-  - path: polylogue/cli/commands/user_state_feedback.py
-    loc: 182
-    target: polylogue/cli/commands/user_state_feedback.py
-    owner: stable
-  - path: polylogue/cli/commands/user_state_tags.py
-    loc: 54
-    target: polylogue/cli/commands/user_state_tags.py
-    owner: stable
   - path: polylogue/cli/help_markdown.py
     loc: 59
     target: polylogue/cli/help_markdown.py
@@ -841,7 +825,7 @@ files:
     target: polylogue/cli/query_feedback.py
     owner: stable
   - path: polylogue/cli/query_group.py
-    loc: 275
+    loc: 277
     target: polylogue/cli/query_group.py
     owner: stable
   - path: polylogue/cli/query_output.py
@@ -861,7 +845,7 @@ files:
     target: polylogue/cli/query_stats.py
     owner: stable
   - path: polylogue/cli/query_verbs.py
-    loc: 1113
+    loc: 1277
     target: polylogue/cli/query_verbs.py
     owner: stable
   - path: polylogue/cli/read_view_handlers.py
@@ -3282,7 +3266,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/__init__.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive.py
-    loc: 6272
+    loc: 6278
     target: polylogue/storage/sqlite/archive_tiers/archive.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive_init.py

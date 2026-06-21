@@ -202,7 +202,6 @@ content-hash boundary by construction (#1131):
   heuristic suggestions. Auto-tag and summary merge helpers live in
   `polylogue/insights/feedback.py`.
 - Surfaces:
-  - CLI: `polylogue ops state feedback {record,list,clear}`.
   - MCP: `record_correction`, `list_corrections`, `clear_corrections`.
   - Library: `Polylogue.record_correction(...)`,
     `Polylogue.list_corrections(...)`,

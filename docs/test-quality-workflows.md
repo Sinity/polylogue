@@ -14,10 +14,10 @@ Current registry snapshot:
 - mutation campaigns: `19`
 - benchmark campaigns: `7`
 - synthetic benchmark campaigns: `6`
-- scenario projections: `295`
+- scenario projections: `265`
 - inferred corpus scenarios: `8`
   - benchmark-campaign: `7`
-  - exercise: `188`
+  - exercise: `158`
   - inferred-corpus-scenario: `8`
   - mutation-campaign: `19`
   - synthetic-benchmark: `6`
@@ -359,6 +359,12 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-init` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | init help |
 | `exercise` | `help-main` | — | — | — | — | — | Main help screen |
 | `exercise` | `help-mark` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | mark help |
+| `exercise` | `help-mark-candidates` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | mark candidates help |
+| `exercise` | `help-mark-candidates-accept` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | mark candidates accept help |
+| `exercise` | `help-mark-candidates-defer` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | mark candidates defer help |
+| `exercise` | `help-mark-candidates-list` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | mark candidates list help |
+| `exercise` | `help-mark-candidates-reject` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | mark candidates reject help |
+| `exercise` | `help-mark-candidates-supersede` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | mark candidates supersede help |
 | `exercise` | `help-ops` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops help |
 | `exercise` | `help-ops-auth` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops auth help |
 | `exercise` | `help-ops-backup` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops backup help |
@@ -409,41 +415,6 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-ops-schema-compare` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops schema compare help |
 | `exercise` | `help-ops-schema-explain` | `schema-explain-query-loop` | `schema_packages`<br>`schema_explanation_results` | `cli.help`<br>`query-schema-explanations` | — | `generated`<br>`help`<br>`structural` | ops schema explain help |
 | `exercise` | `help-ops-schema-list` | `schema-list-query-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios`<br>`schema_list_results` | `cli.help`<br>`query-schema-catalog` | — | `generated`<br>`help`<br>`structural` | ops schema list help |
-| `exercise` | `help-ops-state` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state help |
-| `exercise` | `help-ops-state-annotations` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state annotations help |
-| `exercise` | `help-ops-state-annotations-delete` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state annotations delete help |
-| `exercise` | `help-ops-state-annotations-list` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state annotations list help |
-| `exercise` | `help-ops-state-annotations-save` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state annotations save help |
-| `exercise` | `help-ops-state-blackboard` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state blackboard help |
-| `exercise` | `help-ops-state-blackboard-list` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state blackboard list help |
-| `exercise` | `help-ops-state-blackboard-post` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state blackboard post help |
-| `exercise` | `help-ops-state-candidates` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state candidates help |
-| `exercise` | `help-ops-state-candidates-accept` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state candidates accept help |
-| `exercise` | `help-ops-state-candidates-defer` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state candidates defer help |
-| `exercise` | `help-ops-state-candidates-list` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state candidates list help |
-| `exercise` | `help-ops-state-candidates-reject` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state candidates reject help |
-| `exercise` | `help-ops-state-candidates-supersede` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state candidates supersede help |
-| `exercise` | `help-ops-state-feedback` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state feedback help |
-| `exercise` | `help-ops-state-feedback-clear` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state feedback clear help |
-| `exercise` | `help-ops-state-feedback-list` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state feedback list help |
-| `exercise` | `help-ops-state-feedback-record` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state feedback record help |
-| `exercise` | `help-ops-state-marks` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state marks help |
-| `exercise` | `help-ops-state-marks-add` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state marks add help |
-| `exercise` | `help-ops-state-marks-list` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state marks list help |
-| `exercise` | `help-ops-state-marks-remove` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state marks remove help |
-| `exercise` | `help-ops-state-recall-packs` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state recall-packs help |
-| `exercise` | `help-ops-state-recall-packs-delete` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state recall-packs delete help |
-| `exercise` | `help-ops-state-recall-packs-list` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state recall-packs list help |
-| `exercise` | `help-ops-state-recall-packs-save` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state recall-packs save help |
-| `exercise` | `help-ops-state-saved-views` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state saved-views help |
-| `exercise` | `help-ops-state-saved-views-delete` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state saved-views delete help |
-| `exercise` | `help-ops-state-saved-views-list` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state saved-views list help |
-| `exercise` | `help-ops-state-saved-views-save` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state saved-views save help |
-| `exercise` | `help-ops-state-tags` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state tags help |
-| `exercise` | `help-ops-state-workspaces` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state workspaces help |
-| `exercise` | `help-ops-state-workspaces-delete` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state workspaces delete help |
-| `exercise` | `help-ops-state-workspaces-list` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state workspaces list help |
-| `exercise` | `help-ops-state-workspaces-save` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops state workspaces save help |
 | `exercise` | `help-ops-status` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops status help |
 | `exercise` | `help-read` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | read help |
 | `exercise` | `help-select` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | select help |
@@ -457,7 +428,6 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `json-insights-threads` | `thread-query-loop` | `thread_rows`<br>`thread_fts`<br>`thread_results` | `cli.json-contract`<br>`query-threads` | — | `generated`<br>`json-contract`<br>`insights`<br>`threads` | insights threads JSON contract |
 | `exercise` | `json-insights-work-events` | `session-work-event-query-loop` | `session_work_event_rows`<br>`session_work_event_fts`<br>`session_work_event_results` | `cli.json-contract`<br>`query-session-work-events` | — | `generated`<br>`json-contract`<br>`insights`<br>`work-events` | insights work-events JSON contract |
 | `exercise` | `json-schema-list` | `schema-list-query-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios`<br>`schema_list_results` | `cli.json-contract`<br>`query-schema-catalog` | — | `generated`<br>`json-contract` | schema list JSON contract |
-| `exercise` | `json-tags` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.json-contract`<br>`query-sessions` | — | `generated`<br>`json-contract` | tags JSON contract |
 | `exercise` | `query-count` | — | — | — | — | — | Count sessions |
 | `exercise` | `query-dialogue-only` | — | — | — | — | — | Latest with dialogue only |
 | `exercise` | `query-filter-provider` | — | — | — | — | — | Filter by provider |

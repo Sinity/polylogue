@@ -1,9 +1,0 @@
-Usage: polylogue ops state candidates reject [OPTIONS] CANDIDATE_REF
-
-  Reject a candidate assertion with a durable reason.
-
-Options:
-  --reason TEXT        [required]
-  --actor-ref TEXT     [default: user:local]
-  -f, --format [json]
-  -h, --help           Show this message and exit.

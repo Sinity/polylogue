@@ -330,17 +330,17 @@ can be inspected like any other assertion row:
 
 ```bash
 polylogue assertions where 'status:candidate AND target:session:codex-session:abc123' --format json
-polylogue ops state candidates list --target-ref session:codex-session:abc123 --format json
+polylogue mark candidates list --target-ref session:codex-session:abc123 --format json
 ```
 
-The judgment workflow lives under `polylogue ops state candidates` and writes
+The judgment workflow lives under `polylogue mark candidates` and writes
 back into the same `user.db` assertion substrate:
 
 ```bash
-polylogue ops state candidates accept assertion:candidate-id --reason "confirmed by transcript" --format json
-polylogue ops state candidates reject assertion:candidate-id --reason "unsupported by evidence" --format json
-polylogue ops state candidates defer assertion:candidate-id --reason "needs another source" --format json
-polylogue ops state candidates supersede assertion:candidate-id --kind summary --body "replacement claim" --format json
+polylogue mark candidates accept assertion:candidate-id --reason "confirmed by transcript" --format json
+polylogue mark candidates reject assertion:candidate-id --reason "unsupported by evidence" --format json
+polylogue mark candidates defer assertion:candidate-id --reason "needs another source" --format json
+polylogue mark candidates supersede assertion:candidate-id --kind summary --body "replacement claim" --format json
 ```
 
 `accept` and `supersede` create an active assertion whose evidence includes the

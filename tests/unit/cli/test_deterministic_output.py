@@ -253,8 +253,8 @@ _PLAIN_COMMANDS: tuple[tuple[str, ...], ...] = (
     ("read",),
     ("continue",),
     ("stats",),
-    ("ops", "state"),
-    ("ops", "state", "tags"),
+    ("mark",),
+    ("mark", "candidates"),
 )
 _PLAIN_CMD_IDS = [" ".join(args) if args else "root" for args in _PLAIN_COMMANDS]
 
@@ -289,15 +289,17 @@ class TestJsonOutputValidity:
         assert isinstance(parsed, dict)
         assert "status" in parsed
 
-    def test_tags_json_is_valid(self: object, cli_workspace: dict[str, Path]) -> None:
-        """polylogue ops state tags --format json produces parseable JSON."""
+    def test_candidate_assertions_json_is_valid(self: object, cli_workspace: dict[str, Path]) -> None:
+        """polylogue mark candidates list --format json produces parseable JSON."""
         runner = CliRunner()
-        result = runner.invoke(cli, ["--plain", "ops", "state", "tags", "--format", "json"], catch_exceptions=False)
+        result = runner.invoke(
+            cli, ["--plain", "mark", "candidates", "list", "--format", "json"], catch_exceptions=False
+        )
         assert result.exit_code == 0
         parsed = _extract_json(result.output)
         assert isinstance(parsed, dict)
-        assert parsed["status"] == "ok"
-        assert "tags" in _result_payload(parsed)
+        assert "items" in parsed
+        assert parsed["statuses"] == ["candidate"]
 
 
 # ---------------------------------------------------------------------------
@@ -312,9 +314,8 @@ class TestJsonEnvelopeParametrized:
         "cmd_args,result_key",
         [
             (["ops", "doctor", "--format", "json"], None),
-            (["ops", "state", "tags", "--format", "json"], "tags"),
         ],
-        ids=["ops-doctor", "tags"],
+        ids=["ops-doctor"],
     )
     def test_json_envelope_shape(
         self: object,
@@ -339,9 +340,9 @@ class TestJsonEnvelopeParametrized:
         "cmd_args",
         [
             ["ops", "doctor", "--format", "json"],
-            ["ops", "state", "tags", "--format", "json"],
+            ["mark", "candidates", "list", "--format", "json"],
         ],
-        ids=["ops-doctor", "tags"],
+        ids=["ops-doctor", "candidate-assertions"],
     )
     def test_json_output_no_ansi(
         self: object,
@@ -358,9 +359,9 @@ class TestJsonEnvelopeParametrized:
         "cmd_args",
         [
             ["ops", "doctor", "--format", "json"],
-            ["ops", "state", "tags", "--format", "json"],
+            ["mark", "candidates", "list", "--format", "json"],
         ],
-        ids=["ops-doctor", "tags"],
+        ids=["ops-doctor", "candidate-assertions"],
     )
     def test_json_output_round_trips(
         self: object,
@@ -380,9 +381,9 @@ class TestJsonEnvelopeParametrized:
     @pytest.mark.parametrize(
         "cmd_args,expected_error",
         [
-            (["ops", "state", "tags", "--format", "yaml"], "Invalid value for '--format'"),
+            (["mark", "candidates", "list", "--format", "yaml"], "Invalid value for '--format'"),
         ],
-        ids=["tags-yaml-rejected"],
+        ids=["candidate-assertions-yaml-rejected"],
     )
     def test_json_only_commands_reject_other_formats(
         self: object,
@@ -390,7 +391,7 @@ class TestJsonEnvelopeParametrized:
         cmd_args: list[str],
         expected_error: str,
     ) -> None:
-        """JSON-only commands (tags) reject non-json formats with a clear Click error."""
+        """JSON-only commands reject non-json formats with a clear Click error."""
         runner = CliRunner()
         result = runner.invoke(cli, ["--plain", *cmd_args], catch_exceptions=False)
         assert result.exit_code != 0
@@ -439,15 +440,15 @@ class TestJsonDeterminism:
 
         assert parsed[0] == parsed[1]
 
-    def test_tags_json_deterministic(self: object, cli_workspace: dict[str, Path]) -> None:
-        """Two ops state tags --format json runs produce identical output."""
+    def test_candidate_assertions_json_deterministic(self: object, cli_workspace: dict[str, Path]) -> None:
+        """Two mark candidates list --format json runs produce identical output."""
         runner = CliRunner()
         outputs: list[str] = []
 
         for _ in range(2):
             result = runner.invoke(
                 cli,
-                ["--plain", "ops", "state", "tags", "--format", "json"],
+                ["--plain", "mark", "candidates", "list", "--format", "json"],
                 catch_exceptions=False,
             )
             assert result.exit_code == 0
