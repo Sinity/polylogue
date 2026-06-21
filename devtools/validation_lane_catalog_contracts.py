@@ -621,7 +621,7 @@ COMPOSITE_LANES: dict[str, LaneEntry] = {
     ),
     "live-archive-slow": LaneEntry(
         name="live-archive-slow",
-        description="Broader live archive dogfood lane including retrieval/readiness and live QA exercises",
+        description="Broader live archive dogfood lane including retrieval/readiness and live scenario checks",
         timeout_s=2400,
         category="composite",
         origin=_COMPOSITE_ORIGIN,

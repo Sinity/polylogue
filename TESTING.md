@@ -142,7 +142,7 @@ tests/
 │   ├── pipeline/            # Stage independence, resilience
 │   ├── cli/                 # Commands, terminal snapshots (syrupy)
 │   ├── mcp/                 # MCP tool contracts, edge cases
-│   ├── showcase/            # QA runner, reports
+│   ├── showcase/            # Verification-lab scenarios and reports
 │   └── security/            # Protected — never delete
 ├── property/                # Hypothesis property tests
 ├── integration/             # End-to-end (slow, protected)
@@ -222,7 +222,7 @@ need the host clock (timing benchmarks, fuzz harnesses, the
 `frozen_clock` self-tests) add their path to the allowlist with a
 one-line rationale; everything else migrates to the fixture.
 
-## QA Exercises
+## Scenario Exercises
 
 ```bash
 # Seeded (fast, no real data)

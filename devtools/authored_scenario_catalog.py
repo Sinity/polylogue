@@ -21,13 +21,13 @@ from polylogue.scenarios import (
 )
 from polylogue.schemas.operator.inference import list_inferred_corpus_scenarios
 from polylogue.showcase.exercise_models import Exercise
-from polylogue.showcase.exercises import EXERCISE_SCENARIOS, QA_EXTRA_SCENARIOS
+from polylogue.showcase.exercises import EXERCISE_SCENARIOS, SUPPLEMENTAL_SCENARIOS
 
 
 @dataclass(frozen=True)
 class AuthoredScenarioCatalog:
     exercise_scenarios: tuple[Exercise, ...]
-    qa_extra_scenarios: tuple[Exercise, ...]
+    supplemental_scenarios: tuple[Exercise, ...]
     validation_lanes: tuple[LaneEntry, ...]
     mutation_campaigns: tuple[MutationCampaignEntry, ...]
     benchmark_campaigns: tuple[BenchmarkCampaignEntry, ...]
@@ -49,7 +49,7 @@ class AuthoredScenarioCatalog:
     def projection_sources(self) -> tuple[ScenarioProjectionSource, ...]:
         result: list[ScenarioProjectionSource] = []
         result.extend(self.exercise_scenarios)
-        result.extend(self.qa_extra_scenarios)
+        result.extend(self.supplemental_scenarios)
         result.extend(self.validation_lanes)  # type: ignore[arg-type]
         result.extend(self.mutation_campaigns)
         result.extend(self.benchmark_campaigns)
@@ -82,7 +82,7 @@ class AuthoredScenarioCatalog:
 def get_authored_scenario_catalog() -> AuthoredScenarioCatalog:
     return AuthoredScenarioCatalog(
         exercise_scenarios=EXERCISE_SCENARIOS,
-        qa_extra_scenarios=QA_EXTRA_SCENARIOS,
+        supplemental_scenarios=SUPPLEMENTAL_SCENARIOS,
         validation_lanes=build_validation_lane_entries(),
         mutation_campaigns=build_mutation_entries(),
         benchmark_campaigns=build_benchmark_entries(),

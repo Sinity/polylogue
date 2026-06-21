@@ -339,7 +339,7 @@ attachments, exports):
 
 ### Verification (repo health)
 - `devtools/` — operator tooling, lints, campaigns, rendering
-- `showcase/` — QA exercises, deterministic acceptance tests
+- `showcase/` — verification-lab scenarios and deterministic acceptance tests
 - `tests/` — pytest suite, property tests, integration tests
 
 ### Cross-cutting

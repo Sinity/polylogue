@@ -485,7 +485,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
             "polylogue.schemas.operator.inference.list_schemas",
             "polylogue.schemas.operator.resolution.explain_schema",
         ),
-        readiness_surfaces=("schema", "qa"),
+        readiness_surfaces=("schema", "verification-lab"),
     ),
     ArtifactNode(
         name="schema_cluster_manifests",
@@ -495,7 +495,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
             "polylogue.schemas.registry.SchemaRegistry",
             "polylogue.schemas.operator.inference.list_schemas",
         ),
-        readiness_surfaces=("schema", "qa"),
+        readiness_surfaces=("schema", "verification-lab"),
     ),
     ArtifactNode(
         name="inferred_corpus_specs",
@@ -506,7 +506,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
             "polylogue.scenarios.corpus.build_inferred_corpus_specs",
             "polylogue.schemas.operator.inference.list_inferred_corpus_specs",
         ),
-        readiness_surfaces=("schema", "qa", "synthetic"),
+        readiness_surfaces=("schema", "verification-lab", "synthetic"),
     ),
     ArtifactNode(
         name="inferred_corpus_scenarios",
@@ -517,7 +517,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
             "polylogue.scenarios.corpus.build_corpus_scenarios",
             "polylogue.schemas.operator.inference.list_inferred_corpus_scenarios",
         ),
-        readiness_surfaces=("schema", "qa", "synthetic"),
+        readiness_surfaces=("schema", "verification-lab", "synthetic"),
     ),
     ArtifactNode(
         name="schema_list_results",

@@ -144,7 +144,7 @@ def test_complete_run_source_names_includes_last(tmp_path: Path) -> None:
 
 def test_complete_configured_source_names_excludes_last(tmp_path: Path) -> None:
     config = _config_with_sources(tmp_path, ["chatgpt", "claude-ai"])
-    ctx = click.Context(click.Command("qa"))
+    ctx = click.Context(click.Command("scenario"))
     ctx.obj = SimpleNamespace(config=config)
     param = click.Option(["--source"])
 

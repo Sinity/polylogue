@@ -1,7 +1,7 @@
 """Redaction report for schema generation.
 
 Collects every filtering decision made during schema annotation and
-provides structured + human-readable output for QA auditing.
+provides structured + human-readable output for schema review.
 """
 
 from __future__ import annotations

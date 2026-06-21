@@ -7,7 +7,7 @@ from polylogue.showcase.exercise_models import AssertionSpec, Exercise
 from polylogue.showcase.generators import (
     generate_command_help_scenarios,
     generate_json_contract_scenarios,
-    generate_qa_extra_scenarios,
+    generate_supplemental_scenarios,
 )
 
 _CATALOG = load_exercise_catalog()
@@ -27,8 +27,8 @@ EXERCISE_SCENARIOS: tuple[Exercise, ...] = (
     + _GENERATED_EXERCISE_SCENARIOS
 )
 EXERCISES: tuple[Exercise, ...] = EXERCISE_SCENARIOS
-QA_EXTRA_SCENARIOS: tuple[Exercise, ...] = generate_qa_extra_scenarios()
-QA_EXTRA_EXERCISES: tuple[Exercise, ...] = QA_EXTRA_SCENARIOS
+SUPPLEMENTAL_SCENARIOS: tuple[Exercise, ...] = generate_supplemental_scenarios()
+SUPPLEMENTAL_EXERCISES: tuple[Exercise, ...] = SUPPLEMENTAL_SCENARIOS
 
 EXERCISE_INDEX: dict[str, Exercise] = {e.name: e for e in EXERCISES}
 
@@ -70,8 +70,8 @@ __all__ = [
     "EXERCISE_SCENARIOS",
     "EXERCISE_INDEX",
     "GROUPS",
-    "QA_EXTRA_EXERCISES",
-    "QA_EXTRA_SCENARIOS",
+    "SUPPLEMENTAL_EXERCISES",
+    "SUPPLEMENTAL_SCENARIOS",
     "Exercise",
     "AssertionSpec",
     "exercises_by_group",

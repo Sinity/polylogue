@@ -68,7 +68,7 @@ class VerificationWorkspace:
 def create_verification_workspace(
     workspace_dir: Path | None = None,
     *,
-    prefix: str = "polylogue-qa-",
+    prefix: str = "polylogue-lab-",
 ) -> VerificationWorkspace:
     """Create an isolated verification workspace and its environment map."""
     if workspace_dir is None:

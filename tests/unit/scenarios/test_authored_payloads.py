@@ -33,18 +33,18 @@ class _Record:
 
 
 def test_require_payload_mapping_returns_string_keyed_mapping() -> None:
-    payload = require_payload_mapping({"passed": 2}, context="qa.summary")
+    payload = require_payload_mapping({"passed": 2}, context="scenario.summary")
 
     assert payload == {"passed": 2}
 
 
 def test_require_payload_mapping_rejects_non_string_keys() -> None:
-    with pytest.raises(TypeError, match="qa.summary"):
-        require_payload_mapping({1: "bad"}, context="qa.summary")
+    with pytest.raises(TypeError, match="scenario.summary"):
+        require_payload_mapping({1: "bad"}, context="scenario.summary")
 
 
 def test_payload_count_mapping_coerces_count_values() -> None:
-    counts = payload_count_mapping({"passed": "2", "failed": 1.0}, context="qa.summary")
+    counts = payload_count_mapping({"passed": "2", "failed": 1.0}, context="scenario.summary")
 
     assert counts == {"passed": 2, "failed": 1}
 

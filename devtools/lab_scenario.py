@@ -130,7 +130,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     run_parser.add_argument("--tier", type=int, default=None, help="Only run exercises at this tier.")
     run_parser.add_argument("--report-dir", type=Path, default=None, help="Directory for scenario artifacts.")
-    run_parser.add_argument("--json", action="store_true", help="Emit a machine-readable QA session payload.")
+    run_parser.add_argument("--json", action="store_true", help="Emit a machine-readable scenario payload.")
     run_parser.add_argument("--verbose", action="store_true", help="Print exercise outputs.")
     run_parser.add_argument("--fail-fast", action="store_true", help="Stop on first exercise failure.")
 
@@ -199,7 +199,7 @@ def run_reader_visual_smoke(*, report_dir: Path | None, as_json: bool) -> int:
 
 
 def _format_scenario_summary(result: _ScenarioResult) -> str:
-    """Format the scenario runner's direct stage result without QA reports."""
+    """Format the scenario runner's direct stage result without report wrapping."""
     stage_statuses = result.stage_statuses()
     failed_stages = result.failed_stages()
     lines = ["Scenario stages:"]
@@ -243,7 +243,7 @@ def run_archive_smoke(
 
 
 def _scenario_payload(result: _ScenarioResult) -> dict[str, object]:
-    """Return the direct lab-scenario payload without QA report wrapping."""
+    """Return the direct lab-scenario payload without report wrapping."""
     stage_statuses = result.stage_statuses()
     failed_stages = result.failed_stages()
     return {

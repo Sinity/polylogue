@@ -1,4 +1,4 @@
-"""Authored corpus-request presets for showcase and QA workflows."""
+"""Authored corpus-request presets for showcase and verification-lab workflows."""
 
 from __future__ import annotations
 
