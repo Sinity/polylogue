@@ -35,11 +35,14 @@ async function render() {
   const tab = await activeTab();
   document.getElementById("page").textContent = hostLabel(tab?.url || "");
   const state = stored.polylogueState;
+  const requestNode = document.getElementById("receiver-request");
   if (!state) {
     stateNode.textContent = "No capture state yet.";
+    requestNode.textContent = "--";
     setBadge("warn", "idle");
     return;
   }
+  requestNode.textContent = state.last_receiver_request_id || "--";
   if (!state.online) {
     stateNode.textContent = `Receiver offline. Start: polylogue browser-capture serve\n${state.error || ""}`.trim();
     document.getElementById("archive").textContent = "Offline";
