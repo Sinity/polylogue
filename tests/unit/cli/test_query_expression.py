@@ -547,6 +547,31 @@ class TestBooleanQueryExpression:
         assert predicate.field_ref.source_name == "repo"
         assert predicate.field_ref.unit is None
 
+    def test_runtime_terminal_unit_accepts_descriptor_backed_session_scope(self) -> None:
+        source = parse_unit_source_expression(
+            "context-snapshots where session.repo:polylogue AND boundary:session_start"
+        )
+
+        assert source is not None
+        assert source.unit == "context-snapshot"
+        predicate = cast(QueryBoolPredicate, source.predicate)
+        scoped_repo = cast(QueryFieldPredicate, predicate.children[0])
+        boundary = cast(QueryFieldPredicate, predicate.children[1])
+
+        assert scoped_repo.field_ref is not None
+        assert scoped_repo.field_ref.scope == "session"
+        assert scoped_repo.field_ref.name == "repo"
+        assert scoped_repo.field_ref.source_name == "session.repo"
+        assert scoped_repo.field_ref.unit == "context-snapshot"
+        assert boundary.field_ref is not None
+        assert boundary.field_ref.scope == "unit"
+        assert boundary.field_ref.name == "boundary"
+        assert boundary.field_ref.unit == "context-snapshot"
+
+    def test_runtime_terminal_unit_rejects_session_scope_not_in_summary_projection(self) -> None:
+        with pytest.raises(ExpressionCompileError, match="field 'session.action' is not supported"):
+            parse_unit_source_expression("context-snapshots where session.action:file_edit")
+
     def test_pipeline_session_source_scopes_terminal_unit_query(self) -> None:
         source = parse_unit_source_expression(
             "sessions where repo:polylogue AND origin:claude-code-session | messages where role:assistant"
@@ -2534,33 +2559,11 @@ class TestBooleanQueryExpression:
         )
         assert review_row.metadata["delivery_state"] == "injected_context"
 
-        unsupported_summary_source = parse_unit_source_expression(
-            "context-snapshots where session.tool:bash AND boundary:session_start"
-        )
-        assert unsupported_summary_source is not None
-        with ArchiveStore.open_existing(archive_root) as archive:
-            unsupported_summary_envelope = query_unit_rows(
-                archive,
-                unsupported_summary_source,
-                query="context-snapshots where session.tool:bash AND boundary:session_start",
-                limit=10,
-            )
+        with pytest.raises(ExpressionCompileError, match="field 'session.tool' is not supported"):
+            parse_unit_source_expression("context-snapshots where session.tool:bash AND boundary:session_start")
 
-        assert unsupported_summary_envelope.items == ()
-
-        path_source = parse_unit_source_expression(
-            "context-snapshots where session.path:polylogue AND boundary:session_start"
-        )
-        assert path_source is not None
-        with ArchiveStore.open_existing(archive_root) as archive:
-            path_envelope = query_unit_rows(
-                archive,
-                path_source,
-                query="context-snapshots where session.path:polylogue AND boundary:session_start",
-                limit=10,
-            )
-
-        assert path_envelope.items == ()
+        with pytest.raises(ExpressionCompileError, match="field 'session.path' is not supported"):
+            parse_unit_source_expression("context-snapshots where session.path:polylogue AND boundary:session_start")
 
     def test_context_snapshot_session_since_uses_created_at_fallback(self, workspace_env: dict[str, Path]) -> None:
         """Runtime-transform session date filters match normal session timestamp semantics."""

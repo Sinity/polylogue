@@ -105,6 +105,20 @@ def test_query_unit_descriptors_own_terminal_aliases() -> None:
     assert "runs where session.repo:polylogue AND role:main" in terminal_query_examples()
 
 
+def test_runtime_terminal_units_expose_only_summary_available_session_scope() -> None:
+    from polylogue.archive.query.metadata import terminal_query_fields
+
+    message_fields = set(terminal_query_fields("messages"))
+    context_fields = set(terminal_query_fields("context-snapshots"))
+    observed_fields = set(terminal_query_fields("observed-events"))
+
+    assert {"session.action", "session.tool", "session.has"}.issubset(message_fields)
+    assert {"session.repo", "session.origin", "session.messages", "session.date"}.issubset(context_fields)
+    assert {"session.repo", "session.origin", "session.messages", "session.date"}.issubset(observed_fields)
+    assert context_fields.isdisjoint({"session.action", "session.tool", "session.path", "session.has"})
+    assert observed_fields.isdisjoint({"session.action", "session.tool", "session.path", "session.has"})
+
+
 def test_query_unit_schema_surfaces_are_descriptor_derived() -> None:
     from devtools.render_cli_output_schemas import SCHEMAS
     from polylogue.archive.query.metadata import terminal_query_cli_surfaces

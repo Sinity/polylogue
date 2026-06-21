@@ -234,13 +234,16 @@ one child row matching the nested predicate.
 | `assertion` | `author`, `author_kind`, `author_ref`, `body`, `context`, `evidence`, `key`, `kind`, `scope`, `scope_ref`, `status`, `target`, `target_ref`, `text`, `value`, `visibility` |
 
 Structural units also accept `session.<field>` predicates for the owning
-session fields, such as `session.repo`, `session.origin`,
-`session.tag`, `session.title`, `session.date`, `session.since`, and
-`session.until`. Count and date session fields accept compact comparison
-prefixes such as `session.messages:>=2`, `session.words:<=500`, and
-`session.date:>=2026-01-02`. This lets a unit query carry its session scope
-inline instead of splitting selection between the query string and parallel
-parameters.
+session fields that their lowerer can evaluate. SQL-backed units can use the
+full session filter surface, including action/tool/path/feature predicates.
+Runtime-transform units (`runs`, `observed-events`, `context-snapshots`) can
+only use fields present on the session-summary projection, such as
+`session.repo`, `session.origin`, `session.tag`, `session.title`,
+`session.date`, `session.since`, and `session.until`. Count and date session
+fields accept compact comparison prefixes such as `session.messages:>=2`,
+`session.words:<=500`, and `session.date:>=2026-01-02`. This lets a unit query
+carry its session scope inline instead of splitting selection between the
+query string and parallel parameters.
 
 Examples:
 
@@ -313,7 +316,10 @@ polylogue context-snapshots where session.messages:>=2 AND session.date:>=2026-0
 sources. They return projected evidence from existing recovery/run-projection
 transforms, not durable SQL table rows, so they are terminal unit sources only;
 they do not act as `exists run(...)`, `exists observed-event(...)`, or
-`exists context-snapshot(...)` session selectors.
+`exists context-snapshot(...)` session selectors. Their inline `session.*`
+predicates are limited to summary-backed fields; SQL-backed session predicates
+such as `session.action`, `session.tool`, `session.path`, and `session.has` are
+typed errors for these runtime sources rather than empty or broadened matches.
 
 Session filters such as `--origin`, `--tag`, `--repo`, `--since`, and `--until`
 still narrow the owning sessions before rows are returned. Session-only actions
