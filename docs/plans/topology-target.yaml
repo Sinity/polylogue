@@ -2369,32 +2369,6 @@ files:
     target: polylogue/showcase/lab_corpus.py
     owner: stable
     reason: verification-lab showcase substrate retained
-  - path: polylogue/showcase/qa_runner.py
-    loc: 13
-    target: polylogue/showcase/qa_runner.py
-    owner: stable
-    reason: verification-lab showcase substrate retained
-  - path: polylogue/showcase/qa_runner_models.py
-    loc: 94
-    target: polylogue/showcase/qa_runner_models.py
-    owner: stable
-    reason: verification-lab showcase substrate retained
-    cross_cut: { lifecycle: model }
-  - path: polylogue/showcase/qa_runner_request.py
-    loc: 158
-    target: polylogue/showcase/qa_runner_request.py
-    owner: stable
-    reason: verification-lab showcase substrate retained
-  - path: polylogue/showcase/qa_runner_stages.py
-    loc: 43
-    target: polylogue/showcase/qa_runner_stages.py
-    owner: stable
-    reason: verification-lab showcase substrate retained
-  - path: polylogue/showcase/qa_runner_workflow.py
-    loc: 168
-    target: polylogue/showcase/qa_runner_workflow.py
-    owner: stable
-    reason: verification-lab showcase substrate retained
   - path: polylogue/showcase/runner.py
     loc: 133
     target: polylogue/showcase/runner.py
