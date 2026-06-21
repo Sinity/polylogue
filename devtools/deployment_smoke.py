@@ -7,10 +7,12 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any
 
 SYSTEMWIDE_PATH = (
@@ -81,6 +83,19 @@ class CompletionProbe:
 
 
 @dataclass(frozen=True, slots=True)
+class BrowserCaptureArchiveProbe:
+    spool_path: str
+    source_db_path: str
+    spooled_count: int
+    latest_spooled_path: str | None
+    latest_spooled_mtime: float | None
+    raw_rows: int | None
+    latest_raw_file_mtime_ms: int | None
+    ok: bool
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class DeploymentSmokeReport:
     ok: bool
     path: str
@@ -90,6 +105,7 @@ class DeploymentSmokeReport:
     commands: list[CommandProbe]
     routes: list[RouteProbe]
     completions: list[CompletionProbe]
+    browser_capture_archive: BrowserCaptureArchiveProbe
     diagnostics: dict[str, Any]
     failures: list[str]
 
@@ -278,6 +294,53 @@ def _probe_completion(
     )
 
 
+def _probe_browser_capture_archive(*, archive_root: Path) -> BrowserCaptureArchiveProbe:
+    spool_path = archive_root / "browser-capture"
+    source_db_path = archive_root / "source.db"
+    files = (
+        sorted(
+            (path for path in spool_path.rglob("*.json") if path.is_file()),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        if spool_path.exists()
+        else []
+    )
+    latest = files[0] if files else None
+    latest_mtime = latest.stat().st_mtime if latest is not None else None
+    raw_rows: int | None = None
+    latest_raw_file_mtime_ms: int | None = None
+    error: str | None = None
+    if source_db_path.exists():
+        try:
+            with sqlite3.connect(source_db_path) as conn:
+                row = conn.execute(
+                    """
+                    SELECT count(*), max(file_mtime_ms)
+                    FROM raw_sessions
+                    WHERE source_path LIKE '%browser-capture%'
+                    """
+                ).fetchone()
+            raw_rows = int(row[0]) if row is not None and row[0] is not None else 0
+            latest_raw_file_mtime_ms = int(row[1]) if row is not None and row[1] is not None else None
+        except sqlite3.Error as exc:
+            error = f"{type(exc).__name__}: {exc}"
+    elif files:
+        error = "source_db_missing"
+    ok = error is None and (not files or (raw_rows is not None and raw_rows > 0))
+    return BrowserCaptureArchiveProbe(
+        spool_path=str(spool_path),
+        source_db_path=str(source_db_path),
+        spooled_count=len(files),
+        latest_spooled_path=str(latest) if latest is not None else None,
+        latest_spooled_mtime=latest_mtime,
+        raw_rows=raw_rows,
+        latest_raw_file_mtime_ms=latest_raw_file_mtime_ms,
+        ok=ok,
+        error=error,
+    )
+
+
 def _probe_route(url: str, *, timeout_s: float) -> RouteProbe:
     try:
         with _open_url(url, timeout_s=timeout_s) as response:
@@ -301,7 +364,12 @@ def _probe_route(url: str, *, timeout_s: float) -> RouteProbe:
         return RouteProbe(url=url, status=None, ok=False, error=f"{type(exc).__name__}: {exc}")
 
 
-def _diagnose(commands: list[CommandProbe], routes: list[RouteProbe], repo_head: str | None) -> dict[str, Any]:
+def _diagnose(
+    commands: list[CommandProbe],
+    routes: list[RouteProbe],
+    repo_head: str | None,
+    browser_capture_archive: BrowserCaptureArchiveProbe,
+) -> dict[str, Any]:
     command_by_name = {probe.name: probe for probe in commands}
     route_by_path = {probe.url.rsplit("/", 1)[-1]: probe for probe in routes}
     polylogue = command_by_name.get("polylogue --version")
@@ -328,6 +396,11 @@ def _diagnose(commands: list[CommandProbe], routes: list[RouteProbe], repo_head:
     if facets_route is not None and not facets_route.ok:
         likely_causes.append("web-shell facets route exceeds the deployed smoke timeout")
         next_actions.append("profile /api/facets and move expensive facet aggregation behind caching or bounded reads")
+    if not browser_capture_archive.ok and browser_capture_archive.spooled_count > 0:
+        likely_causes.append("browser-capture artifacts are spooled but absent from raw archive rows")
+        next_actions.append(
+            "verify daemon watch/catch-up includes the browser-capture spool and restart the deployed daemon"
+        )
     if repo_head is not None and deployed_commit is not None and not repo_head.startswith(deployed_commit):
         likely_causes.append("systemwide polylogue commit differs from the current checkout")
         next_actions.append("compare the deployed package input with the checkout before trusting live UI probes")
@@ -337,6 +410,7 @@ def _diagnose(commands: list[CommandProbe], routes: list[RouteProbe], repo_head:
         "polylogue_commit": deployed_commit,
         "polylogued_version_ok": polylogued.ok if polylogued is not None else None,
         "browser_capture_state": browser_capture_state,
+        "browser_capture_archive": asdict(browser_capture_archive),
         "likely_causes": likely_causes,
         "next_actions": next_actions,
     }
@@ -347,6 +421,7 @@ def build_report(
     path: str,
     daemon_base_url: str,
     receiver_base_url: str,
+    archive_root: Path,
     timeout_s: float,
 ) -> DeploymentSmokeReport:
     commands = [
@@ -375,6 +450,9 @@ def build_report(
         for probe in completions
         if not probe.ok
     )
+    browser_capture_archive = _probe_browser_capture_archive(archive_root=archive_root)
+    if not browser_capture_archive.ok:
+        failures.append(f"browser-capture-archive:{browser_capture_archive.error or 'spooled_without_raw_rows'}")
     repo_head = _repo_head()
     return DeploymentSmokeReport(
         ok=not failures,
@@ -385,7 +463,8 @@ def build_report(
         commands=commands,
         routes=routes,
         completions=completions,
-        diagnostics=_diagnose(commands, routes, repo_head),
+        browser_capture_archive=browser_capture_archive,
+        diagnostics=_diagnose(commands, routes, repo_head, browser_capture_archive),
         failures=failures,
     )
 
@@ -416,6 +495,14 @@ def _print_human(report: DeploymentSmokeReport) -> None:
         if completion_probe.missing:
             detail = f"missing={','.join(completion_probe.missing)} candidates={detail}"
         print(f"  {marker} {completion_probe.name}: {detail}")
+    capture_probe = report.browser_capture_archive
+    print("")
+    print("Browser capture archive:")
+    marker = "ok" if capture_probe.ok else "FAIL"
+    print(
+        f"  {marker} spooled={capture_probe.spooled_count} raw_rows={capture_probe.raw_rows} "
+        f"latest={capture_probe.latest_spooled_path or ''} error={capture_probe.error or ''}"
+    )
     if report.failures:
         print("")
         print("Failures:")
@@ -435,6 +522,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--path", default=SYSTEMWIDE_PATH, help="PATH used to resolve deployed binaries.")
     parser.add_argument("--daemon-url", default="http://127.0.0.1:8766", help="Daemon API base URL.")
     parser.add_argument("--receiver-url", default="http://127.0.0.1:8765", help="Browser-capture receiver base URL.")
+    parser.add_argument(
+        "--archive-root",
+        type=Path,
+        default=Path.home() / ".local" / "share" / "polylogue",
+        help="Archive root used for local browser-capture/archive consistency probes.",
+    )
     parser.add_argument("--timeout-s", type=float, default=5.0, help="Per-probe timeout in seconds.")
     args = parser.parse_args(argv)
 
@@ -442,6 +535,7 @@ def main(argv: list[str] | None = None) -> int:
         path=str(args.path),
         daemon_base_url=str(args.daemon_url),
         receiver_base_url=str(args.receiver_url),
+        archive_root=Path(args.archive_root),
         timeout_s=float(args.timeout_s),
     )
     if args.json:
