@@ -100,6 +100,23 @@ def _socket_connectable(port: int, *, host: str = "127.0.0.1", timeout_s: float 
         return False
 
 
+def _allocate_loopback_port(*, reserved: set[int] | None = None) -> int:
+    reserved_ports = reserved or set()
+    for _attempt in range(20):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = int(sock.getsockname()[1])
+        if port not in reserved_ports and not _socket_connectable(port):
+            return port
+    raise RuntimeError("could not allocate an unused loopback port for the dev-loop")
+
+
+def allocate_isolated_ports() -> tuple[int, int]:
+    api_port = _allocate_loopback_port()
+    browser_capture_port = _allocate_loopback_port(reserved={api_port})
+    return api_port, browser_capture_port
+
+
 def system_service_status(unit: str = "polylogued.service") -> dict[str, Any]:
     result = _run_command(
         [
@@ -1115,6 +1132,7 @@ def build_dev_loop_status(
     archive_root: Path | None = None,
     log_dir: Path | None = None,
     prepare: bool = False,
+    port_selection: str = "explicit",
 ) -> dict[str, Any]:
     root = repo_root or _repo_root()
     archive = archive_root or root / ".local" / "dev-archive"
@@ -1144,7 +1162,7 @@ def build_dev_loop_status(
         terminal_artifact_dir.mkdir(parents=True, exist_ok=True)
         tui_artifact_dir.mkdir(parents=True, exist_ok=True)
     warnings: list[str] = []
-    if service.get("active"):
+    if service.get("active") and port_selection != "isolated":
         warnings.append(
             "systemwide polylogued.service is active; stop it or use isolated ports before branch-local runs"
         )
@@ -1157,6 +1175,7 @@ def build_dev_loop_status(
         "branch": branch,
         "commit": commit,
         "run_id": run_id,
+        "port_selection": port_selection,
         "prepared": prepare,
         "preflight_json_written": False,
         "dev_archive_root": str(archive),
@@ -1184,9 +1203,19 @@ def build_dev_loop_status(
         },
         "commands": {
             "stop_system_service": "systemctl --user stop polylogued.service",
-            "prepare": "devtools workspace dev-loop --prepare",
-            "save_preflight": f"mkdir -p {run_log_dir} && devtools workspace dev-loop --json > {preflight_json}",
-            "receiver_smoke": "devtools workspace dev-loop --receiver-smoke --json",
+            "prepare": (
+                f"devtools workspace dev-loop --api-port {api_port} "
+                f"--browser-capture-port {browser_capture_port} --prepare"
+            ),
+            "prepare_isolated": "devtools workspace dev-loop --isolated-ports --prepare",
+            "save_preflight": (
+                f"mkdir -p {run_log_dir} && devtools workspace dev-loop --api-port {api_port} "
+                f"--browser-capture-port {browser_capture_port} --json > {preflight_json}"
+            ),
+            "receiver_smoke": (
+                f"devtools workspace dev-loop --api-port {api_port} "
+                f"--browser-capture-port {browser_capture_port} --receiver-smoke --json"
+            ),
             "run_daemon": (
                 f"env POLYLOGUE_ARCHIVE_ROOT={archive} "
                 f"POLYLOGUE_API_PORT={api_port} "
@@ -1375,6 +1404,11 @@ def main(argv: list[str] | None = None) -> int:
         type=int,
         default=int(os.environ.get("POLYLOGUE_BROWSER_CAPTURE_PORT", DEFAULT_BROWSER_CAPTURE_PORT)),
     )
+    parser.add_argument(
+        "--isolated-ports",
+        action="store_true",
+        help="Pick currently-free loopback API and browser-capture ports for this dev-loop run.",
+    )
     parser.add_argument("--archive-root", type=Path, help="Branch-local archive root to report/use.")
     parser.add_argument("--log-dir", type=Path, help="Branch-local dev-loop log directory to report/use.")
     parser.add_argument("--prepare", action="store_true", help="Create the reported archive/log directories.")
@@ -1441,9 +1475,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.capture_cli and not args.json and "--" not in original_argv and capture_command[-1:] == ["--json"]:
         args.json = True
         capture_command = capture_command[:-1]
+    api_port = args.api_port
+    browser_capture_port = args.browser_capture_port
+    port_selection = "explicit"
+    if args.isolated_ports:
+        api_port, browser_capture_port = allocate_isolated_ports()
+        port_selection = "isolated"
     payload = build_dev_loop_status(
-        api_port=args.api_port,
-        browser_capture_port=args.browser_capture_port,
+        api_port=api_port,
+        browser_capture_port=browser_capture_port,
         archive_root=args.archive_root,
         log_dir=args.log_dir,
         prepare=args.prepare
@@ -1452,6 +1492,7 @@ def main(argv: list[str] | None = None) -> int:
         or args.extension_smoke
         or args.browser_plan
         or args.tui_plan,
+        port_selection=port_selection,
     )
     if args.receiver_smoke:
         smoke_payload: dict[str, Any] = {
