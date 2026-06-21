@@ -168,6 +168,7 @@ def test_receiver_rejects_web_origins_by_default(tmp_path: Path) -> None:
         error = BrowserCaptureErrorPayload.model_validate(json.loads(response.read()))
 
     assert response.status == HTTPStatus.FORBIDDEN
+    assert response.getheader("X-Request-ID")
     assert error.error == "origin_not_allowed"
 
 
@@ -189,6 +190,7 @@ def test_receiver_accepts_extension_capture_and_reports_typed_dto(tmp_path: Path
         body = BrowserCaptureAcceptedPayload.model_validate(json.loads(response.read()))
 
     assert response.status == HTTPStatus.ACCEPTED
+    assert response.getheader("X-Request-ID")
     assert body.ok is True
     assert body.receiver == "polylogue-browser-capture"
     assert body.source == "browser-extension"
@@ -197,6 +199,25 @@ def test_receiver_accepts_extension_capture_and_reports_typed_dto(tmp_path: Path
     assert body.artifact_ref == capture_artifact_ref(BrowserCaptureEnvelope.model_validate(_payload()), tmp_path)
     assert Path(body.artifact_ref).is_absolute() is False
     assert (tmp_path / body.artifact_ref).exists()
+
+
+def test_receiver_echoes_safe_request_id_header(tmp_path: Path) -> None:
+    with _running_receiver(tmp_path) as (host, port):
+        conn = HTTPConnection(host, port)
+        conn.request(
+            "GET",
+            "/v1/status",
+            headers={
+                "Origin": _EXTENSION_ORIGIN,
+                "X-Request-ID": "dev-loop/request 123",
+            },
+        )
+        response = conn.getresponse()
+        response.read()
+        conn.close()
+
+    assert response.status == HTTPStatus.OK
+    assert response.getheader("X-Request-ID") == "dev-looprequest123"
 
 
 @pytest.mark.parametrize(

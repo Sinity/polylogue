@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import time
+from collections.abc import Callable
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+from uuid import uuid4
 
 from pydantic import ValidationError
 
@@ -24,6 +27,9 @@ from polylogue.browser_capture.receiver import (
 )
 from polylogue.core.json import dumps_bytes
 from polylogue.core.loopback import is_loopback_host
+from polylogue.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 def _json_bytes(payload: object) -> bytes:
@@ -74,14 +80,50 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
     """
 
     server: BrowserCaptureHTTPServer
+    _polylogue_request_id: str
+    _polylogue_status: int | None
 
     def log_message(self, format: str, *args: object) -> None:
         return
+
+    def _request_id(self) -> str:
+        existing = getattr(self, "_polylogue_request_id", None)
+        if isinstance(existing, str):
+            return existing
+        header = self.headers.get("X-Request-ID", "").strip()
+        request_id = "".join(ch for ch in header if ch.isalnum() or ch in "-_")[:80] if header else uuid4().hex[:16]
+        if not request_id:
+            request_id = uuid4().hex[:16]
+        self._polylogue_request_id = request_id
+        return request_id
+
+    def send_response(self, code: int, message: str | None = None) -> None:
+        self._polylogue_status = code
+        super().send_response(code, message)
+
+    def _finish_observed_request(self, method: str, started_at: float) -> None:
+        logger.info(
+            "browser_capture.request",
+            request_id=self._request_id(),
+            method=method,
+            path=urlparse(self.path).path,
+            status=getattr(self, "_polylogue_status", None),
+            duration_ms=round((time.perf_counter() - started_at) * 1000, 3),
+            origin=self.headers.get("Origin"),
+        )
+
+    def _observe_request(self, method: str, fn: Callable[[], None]) -> None:
+        started_at = time.perf_counter()
+        try:
+            fn()
+        finally:
+            self._finish_observed_request(method, started_at)
 
     def _send_json(self, status: HTTPStatus, payload: object) -> None:
         raw = _json_bytes(payload)
         origin = self.headers.get("Origin")
         self.send_response(status.value)
+        self.send_header("X-Request-ID", self._request_id())
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(raw)))
         if _origin_allowed(origin, self.server.config):
@@ -98,6 +140,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         origin = self.headers.get("Origin")
         if _origin_allowed(origin, self.server.config):
             return False
+        logger.warning("browser_capture.origin_rejected", request_id=self._request_id(), origin=origin)
         self._safe_error(HTTPStatus.FORBIDDEN, "origin_not_allowed")
         return True
 
@@ -108,16 +151,23 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             return False
         if _check_token(dict(self.headers), config):
             return False
+        logger.warning(
+            "browser_capture.token_rejected", request_id=self._request_id(), origin=self.headers.get("Origin")
+        )
         self._safe_error(HTTPStatus.UNAUTHORIZED, "unauthorized")
         return True
 
     def do_OPTIONS(self) -> None:
+        self._observe_request("OPTIONS", self._do_options)
+
+    def _do_options(self) -> None:
         # Browser CORS preflights cannot carry Authorization.  Guard origin here
         # and enforce the bearer token on the actual data request.
         if self._reject_origin():
             return
         origin = self.headers.get("Origin")
         self.send_response(HTTPStatus.NO_CONTENT.value)
+        self.send_header("X-Request-ID", self._request_id())
         self.send_header("Access-Control-Allow-Origin", origin or "null")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
@@ -125,6 +175,9 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self) -> None:
+        self._observe_request("GET", self._do_get)
+
+    def _do_get(self) -> None:
         if self._reject_origin() or self._reject_token():
             return
         parsed = urlparse(self.path)
@@ -146,6 +199,9 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         self._safe_error(HTTPStatus.NOT_FOUND, "not_found")
 
     def do_POST(self) -> None:
+        self._observe_request("POST", self._do_post)
+
+    def _do_post(self) -> None:
         if self._reject_origin() or self._reject_token():
             return
         if urlparse(self.path).path != "/v1/browser-captures":
@@ -162,18 +218,30 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         try:
             payload = json.loads(self.rfile.read(length))
         except json.JSONDecodeError:
+            logger.warning("browser_capture.invalid_json", request_id=self._request_id())
             self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_json")
             return
         try:
             envelope = BrowserCaptureEnvelope.model_validate(payload)
         except ValidationError:
+            logger.warning("browser_capture.invalid_payload", request_id=self._request_id())
             self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_payload")
             return
         try:
             result = write_capture_envelope(envelope, spool_path=self.server.config.spool_path)
-        except OSError:
+        except OSError as exc:
+            logger.warning("browser_capture.write_failed", request_id=self._request_id(), error=repr(exc))
             self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
             return
+        logger.info(
+            "browser_capture.capture_accepted",
+            request_id=self._request_id(),
+            provider=result.provider,
+            provider_session_id=result.provider_session_id,
+            artifact_ref=result.artifact_ref,
+            bytes_written=result.bytes_written,
+            replaced=result.replaced,
+        )
         self._send_json(
             HTTPStatus.ACCEPTED,
             BrowserCaptureAcceptedPayload(
