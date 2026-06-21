@@ -62,12 +62,20 @@ If you keep the deployed service running, use different ports and verify the
 preflight output before starting the branch daemon:
 
 ```bash
+devtools workspace dev-loop --isolated-ports --prepare
 devtools workspace dev-loop --api-port 8876 --browser-capture-port 8875
 ```
+
+`--isolated-ports` asks the dev-loop helper to allocate currently-free loopback
+ports and writes those exact ports into `preflight.json`, generated browser/TUI
+plans, and the copy-pastable daemon/CLI commands. Use explicit `--api-port` /
+`--browser-capture-port` when you need stable numbers for a longer debugging
+session.
 
 Then launch the branch-local daemon with the managed helper:
 
 ```bash
+devtools workspace dev-loop --isolated-ports --launch-daemon
 devtools workspace dev-loop --api-port 8876 --browser-capture-port 8875 --launch-daemon
 ```
 

@@ -128,6 +128,90 @@ def test_build_dev_loop_status_uses_branch_local_paths_and_warnings(
     ]
 
 
+def test_build_dev_loop_status_marks_isolated_ports_without_service_warning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True)
+
+    monkeypatch.setattr(
+        dev_loop,
+        "system_service_status",
+        lambda: {
+            "unit": "polylogued.service",
+            "available": True,
+            "active": True,
+            "active_state": "active",
+            "main_pid": 123,
+            "archive_root": "/prod",
+        },
+    )
+    monkeypatch.setattr(
+        dev_loop,
+        "port_status",
+        lambda port: {"port": port, "connectable": False, "owner_count": 0, "owners": []},
+    )
+    monkeypatch.setattr(
+        dev_loop, "_git_value", lambda args, *, cwd: "feature/dev-loop" if args[0] == "branch" else "abc1234"
+    )
+
+    payload = dev_loop.build_dev_loop_status(
+        repo_root=repo,
+        api_port=9911,
+        browser_capture_port=9912,
+        prepare=True,
+        port_selection="isolated",
+    )
+
+    assert payload["port_selection"] == "isolated"
+    assert payload["run_id"] == "feature-dev-loop-abc1234-api9911-capture9912"
+    assert payload["warnings"] == []
+    assert payload["suggested_env"]["POLYLOGUE_API_PORT"] == "9911"
+    assert payload["suggested_env"]["POLYLOGUE_BROWSER_CAPTURE_PORT"] == "9912"
+    assert "--api-port 9911 --browser-capture-port 9912 --prepare" in payload["commands"]["prepare"]
+    assert payload["commands"]["prepare_isolated"] == "devtools workspace dev-loop --isolated-ports --prepare"
+    assert "--api-port 9911 --browser-capture-port 9912 --json" in payload["commands"]["save_preflight"]
+
+
+def test_main_isolated_ports_allocates_free_ports(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(dev_loop, "system_service_status", lambda: {"active": True})
+    monkeypatch.setattr(
+        dev_loop,
+        "port_status",
+        lambda port: {"port": port, "connectable": False, "owner_count": 0, "owners": []},
+    )
+    monkeypatch.setattr(
+        dev_loop, "_git_value", lambda args, *, cwd: "feature/dev-loop" if args[0] == "branch" else "abc1234"
+    )
+    monkeypatch.setattr(dev_loop, "allocate_isolated_ports", lambda: (9921, 9922))
+
+    assert (
+        dev_loop.main(
+            [
+                "--json",
+                "--isolated-ports",
+                "--log-dir",
+                str(tmp_path / "dev-loop-logs"),
+                "--archive-root",
+                str(tmp_path / "archive"),
+            ]
+        )
+        == 0
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["port_selection"] == "isolated"
+    assert payload["ports"]["api"]["port"] == 9921
+    assert payload["ports"]["browser_capture"]["port"] == 9922
+    assert payload["warnings"] == []
+    assert payload["commands"]["open_web_shell"] == "http://127.0.0.1:9921/"
+
+
 def test_main_json_outputs_machine_payload(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
