@@ -258,11 +258,10 @@ def _summary_timestamp_matches(summary: ArchiveSessionSummary, field: str, predi
 
 
 def _summary_field_matches(summary: ArchiveSessionSummary, predicate: QueryFieldPredicate) -> bool:
-    field = (
-        predicate.field_ref.name
-        if predicate.field_ref is not None and predicate.field_ref.scope == "session"
-        else predicate.field.removeprefix("session.")
-    )
+    field_ref = predicate.require_field_ref(context="matching runtime-transform session predicates")
+    if field_ref.scope != "session":
+        return False
+    field = field_ref.name
     values = predicate.values
     if field == "id":
         return _exact_or_contains(str(summary.session_id), values)
@@ -311,10 +310,9 @@ def _observed_event_field_matches(
     summary: ArchiveSessionSummary,
     predicate: QueryFieldPredicate,
 ) -> bool:
-    field = predicate.field_ref.name if predicate.field_ref is not None else predicate.field
-    if predicate.field_ref is not None and predicate.field_ref.scope == "session":
-        return _summary_field_matches(summary, predicate)
-    if field.startswith("session."):
+    field_ref = predicate.require_field_ref(context="matching observed-event predicates")
+    field = field_ref.name
+    if field_ref.scope == "session":
         return _summary_field_matches(summary, predicate)
     if field == "kind":
         return _exact_or_contains(event.kind, predicate.values, exact=True)
@@ -381,10 +379,9 @@ def _context_snapshot_field_matches(
     summary: ArchiveSessionSummary,
     predicate: QueryFieldPredicate,
 ) -> bool:
-    field = predicate.field_ref.name if predicate.field_ref is not None else predicate.field
-    if predicate.field_ref is not None and predicate.field_ref.scope == "session":
-        return _summary_field_matches(summary, predicate)
-    if field.startswith("session."):
+    field_ref = predicate.require_field_ref(context="matching context-snapshot predicates")
+    field = field_ref.name
+    if field_ref.scope == "session":
         return _summary_field_matches(summary, predicate)
     if field == "boundary":
         return _exact_or_contains(snapshot.boundary, predicate.values, exact=True)
@@ -435,10 +432,9 @@ def _run_field_matches(
     summary: ArchiveSessionSummary,
     predicate: QueryFieldPredicate,
 ) -> bool:
-    field = predicate.field_ref.name if predicate.field_ref is not None else predicate.field
-    if predicate.field_ref is not None and predicate.field_ref.scope == "session":
-        return _summary_field_matches(summary, predicate)
-    if field.startswith("session."):
+    field_ref = predicate.require_field_ref(context="matching run predicates")
+    field = field_ref.name
+    if field_ref.scope == "session":
         return _summary_field_matches(summary, predicate)
     if field in {"run", "run_ref"}:
         return _contains_value((_object_ref_text(run.run_ref),), predicate.values)

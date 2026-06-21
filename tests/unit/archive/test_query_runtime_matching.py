@@ -7,7 +7,7 @@ import pytest
 from polylogue.archive.actions.actions import Action
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.query.plan import SessionQueryPlan
-from polylogue.archive.query.predicate import QueryBoolPredicate, QueryFieldPredicate
+from polylogue.archive.query.predicate import QueryBoolPredicate, QueryFieldPredicate, QueryFieldRef
 from polylogue.archive.query.runtime_matching import (
     matches_action_predicate_sequence,
     matches_action_sequence,
@@ -67,6 +67,12 @@ def _patch_events(
     events: tuple[Action, ...],
 ) -> None:
     monkeypatch.setattr("polylogue.archive.query.runtime_matching._actions_for", lambda _session: events)
+
+
+def _action_predicate(field: str, *values: str) -> QueryFieldPredicate:
+    return QueryFieldPredicate(field=field, values=values).with_field_ref(
+        QueryFieldRef(scope="unit", name=field, source_name=field, unit="action")
+    )
 
 
 def test_matches_referenced_path_requires_each_term_across_affected_paths(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -138,31 +144,39 @@ def test_matches_action_predicate_sequence_filters_step_fields(monkeypatch: pyte
         ),
     )
     steps = (
-        QueryFieldPredicate(field="action", values=("file_edit",)),
+        _action_predicate("action", "file_edit"),
         QueryBoolPredicate(
             op="and",
             children=(
-                QueryFieldPredicate(field="tool", values=("bash",)),
-                QueryFieldPredicate(field="output", values=("failed",)),
+                _action_predicate("tool", "bash"),
+                _action_predicate("output", "failed"),
             ),
         ),
-        QueryFieldPredicate(field="path", values=("archive/query",)),
+        _action_predicate("path", "archive/query"),
     )
 
     assert matches_action_predicate_sequence(steps, session) is True
 
     missed_steps = (
-        QueryFieldPredicate(field="action", values=("file_edit",)),
+        _action_predicate("action", "file_edit"),
         QueryBoolPredicate(
             op="and",
             children=(
-                QueryFieldPredicate(field="tool", values=("bash",)),
-                QueryFieldPredicate(field="output", values=("passed",)),
+                _action_predicate("tool", "bash"),
+                _action_predicate("output", "passed"),
             ),
         ),
-        QueryFieldPredicate(field="path", values=("archive/query",)),
+        _action_predicate("path", "archive/query"),
     )
     assert matches_action_predicate_sequence(missed_steps, session) is False
+
+
+def test_matches_action_predicate_sequence_rejects_unbound_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    session = _session()
+    _patch_events(monkeypatch, (_event(ToolCategory.FILE_EDIT),))
+
+    with pytest.raises(ValueError, match="unbound query field predicate"):
+        matches_action_predicate_sequence((QueryFieldPredicate(field="action", values=("file_edit",)),), session)
 
 
 def test_matches_action_predicate_sequence_treats_field_values_as_alternatives(
@@ -183,15 +197,15 @@ def test_matches_action_predicate_sequence_treats_field_values_as_alternatives(
         ),
     )
     steps = (
-        QueryFieldPredicate(field="action", values=("file_edit",)),
+        _action_predicate("action", "file_edit"),
         QueryBoolPredicate(
             op="and",
             children=(
-                QueryFieldPredicate(field="command", values=("ruff", "pytest")),
-                QueryFieldPredicate(field="output", values=("error", "failed")),
+                _action_predicate("command", "ruff", "pytest"),
+                _action_predicate("output", "error", "failed"),
             ),
         ),
-        QueryFieldPredicate(field="path", values=("missing/path", "archive/query")),
+        _action_predicate("path", "missing/path", "archive/query"),
     )
 
     assert matches_action_predicate_sequence(steps, session) is True

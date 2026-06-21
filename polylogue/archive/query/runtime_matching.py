@@ -115,7 +115,7 @@ def _matches_action_field(predicate: QueryFieldPredicate, action: Action) -> boo
     values = tuple(value.strip().lower() for value in predicate.values if value.strip())
     if not values:
         return False
-    field = predicate.field_ref.name if predicate.field_ref is not None else predicate.field
+    field = predicate.bound_field_name(context="matching action predicates")
     if field in {"action", "type"}:
         return _matches_exact_values(action.kind.value, values)
     if field == "tool":

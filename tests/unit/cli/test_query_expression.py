@@ -2936,6 +2936,38 @@ class TestBooleanQueryExpression:
         with pytest.raises(ExpressionCompileError, match="field 'session.path' is not supported"):
             parse_unit_source_expression("context-snapshots where session.path:polylogue AND boundary:session_start")
 
+    def test_runtime_transform_unit_rejects_unbound_session_predicate(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        from polylogue.archive.query.unit_results import query_unit_rows
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from tests.infra.storage_records import SessionBuilder
+
+        archive_root = workspace_env["archive_root"]
+        index_db = archive_root / "index.db"
+        (
+            SessionBuilder(index_db, "unbound-context")
+            .provider("codex")
+            .git_repository_url("polylogue")
+            .title("unbound context")
+            .add_message("m-unbound", role="user", text="Initial prompt")
+            .save()
+        )
+
+        source = QueryUnitSource(
+            unit="context-snapshot",
+            predicate=QueryFieldPredicate(field="session.repo", values=("polylogue",)),
+        )
+        with ArchiveStore.open_existing(archive_root) as archive:
+            with pytest.raises(ValueError, match="unbound query field predicate"):
+                query_unit_rows(
+                    archive,
+                    source,
+                    query="context-snapshots where session.repo:polylogue",
+                    limit=10,
+                )
+
     def test_context_snapshot_session_since_uses_created_at_fallback(self, workspace_env: dict[str, Path]) -> None:
         """Runtime-transform session date filters match normal session timestamp semantics."""
         import sqlite3
