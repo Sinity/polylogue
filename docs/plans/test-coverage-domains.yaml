@@ -132,10 +132,10 @@ domains:
     covering_tests:
       - tests/unit/storage/test_repository_lifecycle_laws.py
       - tests/unit/storage/test_tag_contracts.py
-      - tests/integration/test_cli_tags_surface.py
+      - tests/unit/cli/test_cli_action_contracts.py
     notes: >
-      covered — add/remove/list/bulk/validation via catalog-driven
-      parametrization
+      covered — storage add/remove/list/bulk/validation plus query-first
+      mark tag mutation behavior
 
   - domain: embeddings
     production_modules:

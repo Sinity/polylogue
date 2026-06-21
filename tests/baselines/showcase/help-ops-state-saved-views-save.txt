@@ -1,8 +1,0 @@
-Usage: polylogue ops state saved-views save [OPTIONS] NAME QUERY_JSON
-
-  Create or update a saved view from a canonical query JSON object.
-
-Options:
-  --view-id TEXT
-  -f, --format [json]
-  -h, --help           Show this message and exit.

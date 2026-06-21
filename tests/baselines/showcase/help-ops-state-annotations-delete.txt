@@ -1,7 +1,0 @@
-Usage: polylogue ops state annotations delete [OPTIONS] ANNOTATION_ID
-
-  Delete a durable annotation.
-
-Options:
-  -f, --format [json]
-  -h, --help           Show this message and exit.

@@ -1,9 +1,0 @@
-Usage: polylogue ops state candidates list [OPTIONS]
-
-  List candidate assertion claims.
-
-Options:
-  --target-ref TEXT    Limit candidates to one target object ref.
-  -l, --limit INTEGER  [default: 50]
-  -f, --format [json]
-  -h, --help           Show this message and exit.

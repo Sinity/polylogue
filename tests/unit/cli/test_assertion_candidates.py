@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 
 from click.testing import CliRunner
 
-from polylogue.cli.commands.user_state import candidates_group
+from polylogue.cli.query_verbs import mark_candidates_group
 from polylogue.surfaces.payloads import AssertionClaimPayload, AssertionJudgmentPayload, AssertionJudgmentResultPayload
 
 
@@ -29,7 +29,7 @@ def _claim(status: str = "candidate") -> AssertionClaimPayload:
 def test_candidates_list_emits_shared_json_payload() -> None:
     env = SimpleNamespace(polylogue=SimpleNamespace(list_assertion_candidates=AsyncMock(return_value=[_claim()])))
 
-    result = CliRunner().invoke(candidates_group, ["list", "--format", "json"], obj=env, catch_exceptions=False)
+    result = CliRunner().invoke(mark_candidates_group, ["list", "--format", "json"], obj=env, catch_exceptions=False)
 
     assert result.exit_code == 0
     payload = json.loads(result.output)
@@ -60,7 +60,7 @@ def test_candidates_accept_emits_judgment_result_payload() -> None:
     env = SimpleNamespace(polylogue=SimpleNamespace(judge_assertion_candidate=AsyncMock(return_value=payload)))
 
     result = CliRunner().invoke(
-        candidates_group,
+        mark_candidates_group,
         ["accept", "assertion:candidate-cli-1", "--reason", "confirmed", "--format", "json"],
         obj=env,
         catch_exceptions=False,

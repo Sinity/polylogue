@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 import click
 from click.shell_completion import CompletionItem
 
-from polylogue.cli.click_command_registration import _LazyCommand, register_root_commands
+from polylogue.cli.click_command_registration import _LazyCommand, _LazyGroup, register_root_commands
 from polylogue.cli.click_option_groups import apply_query_mode_options
 from polylogue.cli.help_markdown import render_help_markdown
 from polylogue.cli.machine_main import extract_option as _extract_option
@@ -346,8 +346,9 @@ _QUERY_VERB_HELP: dict[str, str] = {
 
 for _verb in sorted(QUERY_VERB_NAMES):
     _attr = f"{_verb.replace('-', '_')}_verb"
+    _cls = _LazyGroup if _verb == "mark" else _LazyCommand
     cli.add_command(
-        _LazyCommand(
+        _cls(
             _verb,
             "polylogue.cli.query_verbs",
             _attr,

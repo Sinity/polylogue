@@ -86,7 +86,7 @@ _COMMANDS: list[tuple[list[str], bool]] = [
     (["config"], False),  # TOML output with root --json (not JSON, but pipeable)
     (["continue"], True),
     (["continue", "--candidates"], True),
-    (["ops", "state", "tags"], False),
+    (["mark", "candidates", "list"], False),
     # ── Insights subcommands ─────────────────────────────────────────
     (["ops", "insights", "status"], False),
     (["ops", "insights", "audit"], False),
@@ -106,7 +106,6 @@ _COMMANDS: list[tuple[list[str], bool]] = [
     (["--latest", "ops", "diagnostics", "turns"], True),  # needs session; fails cleanly on empty
     # ── Embed, feedback, schema, maintenance ─────────────────────────
     (["ops", "embed", "status"], False),
-    (["ops", "state", "feedback", "list"], False),
     (["ops", "schema", "list"], False),
     (["ops", "maintenance", "status"], False),
     (["ops", "maintenance", "preview"], False),
@@ -128,7 +127,7 @@ _EXCLUDED: list[str] = [
     "recent (pre-existing bug: hardcoded sort=updated_at is invalid)",
     "insights timeline (requires SESSION_ID argument)",
     "insights export (requires --out argument)",
-    "ops state marks (maintenance writes require explicit arguments)",
+    "mark mutation writes require an explicit query target",
 ]
 
 _COMMAND_IDS: list[str] = [" ".join(args) for args, _ in _COMMANDS]

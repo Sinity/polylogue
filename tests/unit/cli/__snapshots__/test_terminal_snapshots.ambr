@@ -221,16 +221,18 @@
     -h, --help                      Show this message and exit.
   Commands:
     analyze
-    config    Show configuration paths and resolved settings.
-    continue  Compile a successor-agent continuation report.
-    delete    Delete matched sessions.
-    demo      Seed and verify the deterministic demo archive.
-    import    Import sessions from configured sources.
-    init      Detect chat sources and write a starter polylogue.toml.
+    config     Show resolved Polylogue configuration with precedence sources.
+    continue   Compile a successor-agent continuation report.
+    dashboard  Open the local dashboard.
+    delete     Delete matched sessions.
+    demo       Seed and verify the deterministic demo archive.
+    import     Import sessions from configured sources.
+    init       Detect chat sources and write a starter polylogue.toml.
     mark
-    ops       Run operational archive and daemon commands.
-    read      Read matched sessions (route to view<PATH>).
+    ops        Run operational archive and daemon commands.
+    read       Read matched sessions (route to view<PATH>).
     select
+    tutorial   Interactive first-run walk-through.
   '''
 # ---
 # name: TestTerminalDimensions.test_help_at_narrow_width
@@ -464,18 +466,21 @@
   .
   Commands:
     analyze
-    config    Show configuration paths and resolved settings.
-    continue  Compile a successor-agent continuation report.
-    delete    Delete matched sessions.
-    demo      Seed and verify the deterministic demo archive.
-    import    Import sessions from configured sources.
-    init      Detect chat sources and write a starter polylogu
-  e.toml.
+    config     Show resolved Polylogue configuration with prec
+  edence sources.
+    continue   Compile a successor-agent continuation report.
+    dashboard  Open the local dashboard.
+    delete     Delete matched sessions.
+    demo       Seed and verify the deterministic demo archive.
+    import     Import sessions from configured sources.
+    init       Detect chat sources and write a starter polylog
+  ue.toml.
     mark
-    ops       Run operational archive and daemon commands.
-    read      Read matched sessions (route to view<PATH>
-  ).
+    ops        Run operational archive and daemon commands.
+    read       Read matched sessions (route to view<PATH>
+  n).
     select
+    tutorial   Interactive first-run walk-through.
   '''
 # ---
 # name: TestTerminalDimensions.test_help_at_wide_width
@@ -624,15 +629,17 @@
     -h, --help                      Show this message and exit.
   Commands:
     analyze
-    config    Show configuration paths and resolved settings.
-    continue  Compile a successor-agent continuation report.
-    delete    Delete matched sessions.
-    demo      Seed and verify the deterministic demo archive.
-    import    Import sessions from configured sources.
-    init      Detect chat sources and write a starter polylogue.toml.
+    config     Show resolved Polylogue configuration with precedence sources.
+    continue   Compile a successor-agent continuation report.
+    dashboard  Open the local dashboard.
+    delete     Delete matched sessions.
+    demo       Seed and verify the deterministic demo archive.
+    import     Import sessions from configured sources.
+    init       Detect chat sources and write a starter polylogue.toml.
     mark
-    ops       Run operational archive and daemon commands.
-    read      Read matched sessions (route to view<PATH>).
+    ops        Run operational archive and daemon commands.
+    read       Read matched sessions (route to view<PATH>).
     select
+    tutorial   Interactive first-run walk-through.
   '''
 # ---

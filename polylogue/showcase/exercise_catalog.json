@@ -28,21 +28,20 @@
       "vhs_capture": true
     },
     {
-      "name": "help-ops-state-tags",
+      "name": "help-mark-candidates",
       "group": "structural",
-      "description": "Ops state tags subcommand help",
+      "description": "Mark candidate assertions help",
       "execution": {
         "kind": "polylogue",
         "argv": [
-          "ops",
-          "state",
-          "tags",
+          "mark",
+          "candidates",
           "--help"
         ]
       },
       "assertion": {
         "stdout_contains": [
-          "--format"
+          "candidates"
         ]
       },
       "tier": 0
@@ -71,6 +70,7 @@
       "execution": {
         "kind": "polylogue",
         "argv": [
+          "config",
           "completions",
           "--shell",
           "bash"
@@ -118,7 +118,10 @@
       "execution": {
         "kind": "polylogue",
         "argv": [
-          "list"
+          "read",
+          "--all",
+          "-n",
+          "1"
         ]
       },
       "assertion": {
@@ -134,7 +137,10 @@
       "execution": {
         "kind": "polylogue",
         "argv": [
-          "list",
+          "read",
+          "--all",
+          "-n",
+          "1",
           "-f",
           "json"
         ]
@@ -154,7 +160,10 @@
       "execution": {
         "kind": "polylogue",
         "argv": [
-          "list",
+          "read",
+          "--all",
+          "-n",
+          "1",
           "-f",
           "csv"
         ]
@@ -174,7 +183,10 @@
       "execution": {
         "kind": "polylogue",
         "argv": [
-          "list",
+          "read",
+          "--all",
+          "-n",
+          "1",
           "-f",
           "yaml"
         ]
@@ -193,7 +205,8 @@
       "execution": {
         "kind": "polylogue",
         "argv": [
-          "count"
+          "analyze",
+          "--count"
         ]
       },
       "assertion": {
@@ -426,7 +439,7 @@
       "execution": {
         "kind": "polylogue",
         "argv": [
-          "stats"
+          "analyze"
         ]
       },
       "needs_data": true
@@ -516,7 +529,8 @@
       "execution": {
         "kind": "polylogue",
         "argv": [
-          "count"
+          "analyze",
+          "--count"
         ]
       },
       "assertion": {
@@ -655,7 +669,8 @@
       "execution": {
         "kind": "polylogue",
         "argv": [
-          "count"
+          "analyze",
+          "--count"
         ]
       },
       "assertion": {

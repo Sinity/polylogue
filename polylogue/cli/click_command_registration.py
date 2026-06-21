@@ -52,7 +52,7 @@ class _LazyGroup(_LazyCommand, click.Group):
     """Lazy proxy for Click groups that need nested command dispatch."""
 
     def invoke(self, ctx: click.Context) -> object:
-        return click.Group.invoke(self, ctx)
+        return self._resolve().invoke(ctx)
 
     def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
         return click.Group.parse_args(self, ctx, args)
@@ -107,13 +107,11 @@ _SHORT_HELP: dict[str, str] = {
     "schema": "Inspect and audit provider schemas.",
     "status": "Show daemon and archive status.",
     "tutorial": "Interactive first-run walk-through.",
-    "user_state": "Manage durable reader state.",
 }
 
 _COMMAND_NAMES: dict[str, str] = {
     "check": "doctor",
     "import_command": "import",
-    "user_state": "state",
 }
 
 _GROUP_ATTRS: dict[str, str] = {
@@ -125,7 +123,6 @@ _GROUP_ATTRS: dict[str, str] = {
     "maintenance": "maintenance_group",
     "ops": "ops_command",
     "schema": "schema_command",
-    "user_state": "state_command",
 }
 
 _COMMAND_ATTRS: dict[str, str] = {
@@ -165,7 +162,6 @@ OPS_COMMANDS: tuple[click.Command, ...] = (
     _L("maintenance"),
     _L("reset"),
     _L("schema"),
-    _L("user_state"),
     _L("status"),
 )
 

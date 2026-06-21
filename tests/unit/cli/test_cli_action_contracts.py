@@ -309,6 +309,19 @@ def test_mark_contract_guard_allows_first_for_multi_match(workspace_env: dict[st
     run_coroutine_sync.assert_called_once()
 
 
+def test_explicit_mark_candidates_terms_remain_query_text() -> None:
+    """`find mark candidates` searches those words instead of dispatching `mark candidates`."""
+    click_args, query_terms, has_subcommand, explicit_query = _split_query_mode_args(
+        cli,
+        ["find", "mark", "candidates"],
+    )
+
+    assert click_args == []
+    assert query_terms == ("mark", "candidates")
+    assert has_subcommand is False
+    assert explicit_query is True
+
+
 def test_import_contract_guard_rejects_missing_source_path(tmp_path: Path) -> None:
     """`path_exists_or_demo` is enforced by the public import CLI."""
     _assert_contract_declares_guard(("import",), "path_exists_or_demo")

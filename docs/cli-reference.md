@@ -348,7 +348,7 @@ Options:
 ## Mark Verb
 
 ```text
-Usage: polylogue mark [OPTIONS]
+Usage: polylogue mark [OPTIONS] COMMAND [ARGS]...
 
   Mark matched sessions with tags, notes, or durable marks.
 
@@ -379,6 +379,27 @@ Options:
   --all             Apply to all matched sessions (default: singleton only)
   --first           Apply to the first matched session only
   --help            Show this message and exit.
+
+Commands:
+  candidates  Review candidate assertions awaiting judgment.
+```
+
+## Mark Candidate Assertions
+
+```text
+Usage: polylogue mark candidates [OPTIONS] COMMAND [ARGS]...
+
+  Review candidate assertions awaiting judgment.
+
+Options:
+  --help  Show this message and exit.
+
+Commands:
+  accept     Accept a candidate assertion into an active assertion.
+  defer      Record a candidate assertion deferral without changing...
+  list       List candidate assertion claims.
+  reject     Reject a candidate assertion with a durable reason.
+  supersede  Supersede a candidate with an explicit active assertion.
 ```
 
 ## Continue Verb
@@ -468,7 +489,6 @@ Commands:
   maintenance  Preview and run maintenance backfill operations.
   reset        Reset local archive state.
   schema       Inspect and audit provider schemas.
-  state        Manage durable reader state.
   status       Show daemon and archive status.
 ```
 
@@ -533,50 +553,6 @@ Options:
                                   validation during schema verification
                                   (mutates DB)
   --help                          Show this message and exit.
-```
-
-## Ops State
-
-```text
-Usage: polylogue ops state [OPTIONS] COMMAND [ARGS]...
-
-  Manage durable reader state.
-
-Options:
-  --help  Show this message and exit.
-
-Commands:
-  annotations   Manage session and message annotations.
-  blackboard    Persistent agent-addressable notes surface.
-  candidates    Review candidate assertions awaiting judgment.
-  feedback      Record and inspect learning corrections for derived...
-  marks         Manage session and message marks.
-  recall-packs  Manage recall packs with explicit target evidence.
-  saved-views   Manage saved query views.
-  tags          List user tags with session counts.
-  workspaces    Manage durable reader workspaces.
-```
-
-## Ops State Tags
-
-```text
-Usage: polylogue ops state tags [OPTIONS]
-
-  List user tags with session counts.
-
-  Examples:
-      polylogue ops state tags                         # List all tags
-      polylogue ops state tags -o claude-ai-export     # Tags for Claude web sessions only
-      polylogue ops state tags --format json           # Machine-readable output
-      polylogue ops state tags -n 10                   # Top 10 tags
-      polylogue find id:abc then mark --tag-add tps
-      polylogue find id:abc then mark --tag-remove tps
-
-Options:
-  -o, --origin TEXT    Filter tags by origin
-  -f, --format [json]  Output format
-  -n, --count INTEGER  Show top N tags
-  --help               Show this message and exit.
 ```
 
 ## Auth

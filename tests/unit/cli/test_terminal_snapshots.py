@@ -75,7 +75,7 @@ class TestErrorOutput:
     def test_missing_required_argument_error(self) -> None:
         """Verify error on missing required arguments."""
         # Use completions command without --shell (requires it)
-        result = run_in_pty(["ops", "completions"])
+        result = run_in_pty(["config", "completions"])
         assert result.exit_code != 0
 
 
