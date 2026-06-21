@@ -1,13 +1,13 @@
-"""Systematic test that every CLI command accepts ``--json`` without crashing (#1689).
+"""Systematic test that every CLI command accepts ``--json`` without crashing.
 
 Tests that each command, when invoked with ``--json --plain``, produces:
 - Exit code 0 or a clean error (no traceback)
 - Valid JSON on stdout (or empty/non-JSON output for commands that don't claim JSON)
 - No ANSI escape codes in stdout (pipeability)
 
-The root-level ``--json`` flag (#1712) forces plain output and sets
-``output_format=json``. This test ensures every command either produces
-valid JSON or exits cleanly without a traceback.
+The root-level ``--json`` flag forces plain output and sets
+``output_format=json``. This test ensures every command either produces valid
+JSON or exits cleanly without a traceback.
 """
 
 from __future__ import annotations
@@ -72,8 +72,8 @@ def _looks_like_json_output(text: str) -> bool:
 # Commands intentionally excluded:
 #   - delete, ops reset    → destructive
 #   - import               → requires source config, modifies archive
-#   - ops tutorial, auth, init → interactive or requires external service
-#   - ops dashboard, open      → side effect (opens browser)
+#   - tutorial, ops auth, init → interactive or requires external service
+#   - dashboard, open          → side effect (opens browser)
 #   - ops backup           → creates backup file; needs populated archive
 _COMMANDS: list[tuple[list[str], bool]] = [
     # ── Query verbs (root --json flows through to output_format) ──────
@@ -111,7 +111,7 @@ _COMMANDS: list[tuple[list[str], bool]] = [
     (["ops", "maintenance", "status"], False),
     (["ops", "maintenance", "preview"], False),
     # ── Shell integration (emits scripts, not JSON; must not crash) ──
-    (["ops", "completions", "--shell", "bash"], False),
+    (["config", "completions", "--shell", "bash"], False),
 ]
 
 # Excluded from COMMANDS for documented reasons:
@@ -119,10 +119,10 @@ _EXCLUDED: list[str] = [
     "delete (destructive)",
     "ops reset (destructive)",
     "import (requires source config, modifies archive)",
-    "ops tutorial (interactive)",
+    "tutorial (interactive)",
     "ops auth (interactive, requires external service)",
     "init (interactive, writes config)",
-    "ops dashboard (side effect: opens browser)",
+    "dashboard (side effect: opens browser)",
     "open (side effect: opens browser)",
     "ops backup (creates backup file)",
     "recent (pre-existing bug: hardcoded sort=updated_at is invalid)",

@@ -1,14 +1,14 @@
 """Per-shell coverage matrix for dynamic completers.
 
-Issue #1271 acceptance: every dynamic completer must work on every
-supported shell (bash, zsh, fish). This test parametrizes the matrix
-and asserts that each (completer, shell) pair returns at least one
-completion item without raising — both against an empty archive
-(static and graceful-empty behavior) and against a seeded archive
-(dynamic completers that read SQLite).
+Every dynamic completer must work on every supported shell (bash, zsh,
+fish). This test parametrizes the matrix and asserts that each
+(completer, shell) pair returns at least one completion item without
+raising — both against an empty archive (static and graceful-empty
+behavior) and against a seeded archive (dynamic completers that read
+SQLite).
 
-The script-emit side of ``polylogue ops completions --shell <SHELL>`` is
-covered by ``test_completions_contract.py``; this test covers the
+The script-emit side of ``polylogue config completions --shell <SHELL>``
+is covered by ``test_completions_contract.py``; this test covers the
 runtime completion-handler protocol the script invokes.
 """
 

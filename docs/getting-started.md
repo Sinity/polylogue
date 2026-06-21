@@ -51,7 +51,7 @@ polylogue --since 2026-01 --limit 5 list --format json
 Review estimated API costs:
 
 ```bash
-polylogue ops cost outlook --plan claude-pro
+polylogue analyze --cost-outlook --plan claude-pro
 ```
 
 Polylogue includes a 23-model pricing catalog covering Anthropic, OpenAI, and
@@ -83,7 +83,7 @@ polylogued status
 | `polylogue --since <when> read --all` | List matched sessions |
 | `polylogue --origin <origin> analyze --count` | Count matched sessions |
 | `polylogue analyze --by origin` | Grouped statistics |
-| `polylogue ops cost outlook --plan claude-pro` | Subscription/quota cost outlook |
+| `polylogue analyze --cost-outlook --plan claude-pro` | Subscription/quota cost outlook |
 | `polylogue --id <id> read` | Export one session |
 | `polylogue --since yesterday read --all` | Batch export |
 | `polylogued run` | Start the daemon |

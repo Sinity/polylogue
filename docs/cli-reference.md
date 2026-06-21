@@ -161,16 +161,18 @@ Options:
 
 Commands:
   analyze
-  config    Show configuration paths and resolved settings.
-  continue  Compile a successor-agent continuation report.
-  delete    Delete matched sessions.
-  demo      Seed and verify the deterministic demo archive.
-  import    Import sessions from configured sources.
-  init      Detect chat sources and write a starter polylogue.toml.
+  config     Show resolved Polylogue configuration with precedence sources.
+  continue   Compile a successor-agent continuation report.
+  dashboard  Open the local dashboard.
+  delete     Delete matched sessions.
+  demo       Seed and verify the deterministic demo archive.
+  import     Import sessions from configured sources.
+  init       Detect chat sources and write a starter polylogue.toml.
   mark
-  ops       Run operational archive and daemon commands.
-  read      Read matched sessions (route to view/destination).
+  ops        Run operational archive and daemon commands.
+  read       Read matched sessions (route to view/destination).
   select
+  tutorial   Interactive first-run walk-through.
 ```
 
 ## Analyze Verb
@@ -190,6 +192,7 @@ Usage: polylogue analyze [OPTIONS]
       polylogue find 'repo:polylogue since:7d' then analyze --by month
       polylogue find 'repo:polylogue' then analyze --facets
       polylogue find 'repo:polylogue' then analyze --by day --format json
+      polylogue analyze --cost-outlook --plan claude-pro --format json
 
 Options:
   --count                         Print only the matched-session count.
@@ -197,6 +200,11 @@ Options:
                                   Group statistics by dimension
   --facets                        Show facet aggregates for the matched result
                                   set
+  --cost-outlook                  Project the current billing cycle for a
+                                  configured subscription plan.
+  --plan TEXT                     Subscription plan name for --cost-outlook.
+  --method [linear|trailing-7d-mean|eom-naive]
+                                  Projection method for --cost-outlook.
   --no-idf                        With --facets, skip inverse-document-
                                   frequency weighting
   -f, --format [markdown|json|ndjson|html|obsidian|org|yaml|plaintext|csv]
@@ -452,21 +460,16 @@ Options:
 Commands:
   auth         Authenticate optional external services.
   backup       Create a timestamped durability-tier backup.
-  completions  Emit shell completion setup for polylogue.
-  cost         Summarize session cost telemetry.
-  dashboard    Open the local dashboard.
   debt         List archive work that needs operator attention.
   diagnostics  Run archive and session diagnostics.
   doctor       Run archive health checks and repairs.
   embed        Enable, preflight, and backfill the embedding pipeline.
   insights     Rebuild and inspect derived session insights.
   maintenance  Preview and run maintenance backfill operations.
-  paths        Print canonical archive paths and bind-mount detection.
   reset        Reset local archive state.
   schema       Inspect and audit provider schemas.
   state        Manage durable reader state.
   status       Show daemon and archive status.
-  tutorial     Interactive first-run walk-through.
 ```
 
 ## Doctor
@@ -640,10 +643,28 @@ Commands:
   list     List available schema packages, versions, and evidence manifests.
 ```
 
+## Config
+
+```text
+Usage: polylogue config [OPTIONS] COMMAND [ARGS]...
+
+  Show resolved Polylogue configuration with precedence sources.
+
+Options:
+  -f, --format [toml|json]  Output format.
+  --show-layers             Show the layer source for each config key
+                            (default/site/user/env/cli).
+  --help                    Show this message and exit.
+
+Commands:
+  completions  Generate shell completion scripts.
+  paths        Print canonical archive paths and filesystem topology.
+```
+
 ## Completions
 
 ```text
-Usage: polylogue ops completions [OPTIONS]
+Usage: polylogue config completions [OPTIONS]
 
   Generate shell completion scripts.
 
@@ -652,19 +673,34 @@ Options:
   --help                   Show this message and exit.
 
   Install:
-    bash: add  eval "$(polylogue ops completions --shell bash)"  to ~/.bashrc
-    zsh:  add  eval "$(polylogue ops completions --shell zsh)"   to ~/.zshrc
-    fish: polylogue ops completions --shell fish > ~/.config/fish/completions/polylogue.fish
+    bash: add  eval "$(polylogue config completions --shell bash)"  to ~/.bashrc
+    zsh:  add  eval "$(polylogue config completions --shell zsh)"   to ~/.zshrc
+    fish: polylogue config completions --shell fish > ~/.config/fish/completions/polylogue.fish
 
   Dynamic completers cover: session IDs, origins/source-families,
   tags, repos, cwd prefixes, action categories and sequences, tool names,
   message types, retrieval lanes.
 ```
 
+## Paths
+
+```text
+Usage: polylogue config paths [OPTIONS]
+
+  Print canonical archive paths and filesystem topology.
+
+  Reports the resolved archive root, database path, config file path, blob
+  store root, and whether any bind mounts are detected.
+
+Options:
+  -f, --format [text|json]  Output format.
+  --help                    Show this message and exit.
+```
+
 ## Dashboard
 
 ```text
-Usage: polylogue ops dashboard [OPTIONS]
+Usage: polylogue dashboard [OPTIONS]
 
   Launch the dashboard TUI.
 
@@ -675,7 +711,7 @@ Options:
 ## Tutorial
 
 ```text
-Usage: polylogue ops tutorial [OPTIONS]
+Usage: polylogue tutorial [OPTIONS]
 
   Walk through a fresh polylogue install end-to-end.
 

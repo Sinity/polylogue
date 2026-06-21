@@ -1,4 +1,4 @@
-"""Tests for the ``polylogue ops tutorial`` walkthrough (#1263)."""
+"""Tests for the ``polylogue tutorial`` walkthrough."""
 
 from __future__ import annotations
 

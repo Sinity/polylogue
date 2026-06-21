@@ -496,7 +496,7 @@ rather than 5xx-ing, so a fresh archive still emits the discovery
 skeleton.
 
 Archive layout observability is emitted on the same scrape. The
-`polylogue_archive_storage_layout` gauge mirrors `polylogue ops paths`
+`polylogue_archive_storage_layout` gauge mirrors `polylogue config paths`
 with bounded labels for `archive_missing`, `archive_partial`, and
 `archive_complete`; `polylogue_archive_tier_count` and
 `polylogue_archive_blocker_count` provide compact alerting

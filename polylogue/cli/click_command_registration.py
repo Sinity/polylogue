@@ -6,6 +6,8 @@ import importlib
 
 import click
 
+from polylogue.cli.commands.config import config_command
+
 # ── lazy-command wrapper ───────────────────────────────────────────
 
 
@@ -90,7 +92,6 @@ _SHORT_HELP: dict[str, str] = {
     "check": "Run archive health checks and repairs.",
     "completions": "Emit shell completion setup for polylogue.",
     "config": "Show configuration paths and resolved settings.",
-    "cost": "Summarize session cost telemetry.",
     "dashboard": "Open the local dashboard.",
     "demo": "Seed and verify the deterministic demo archive.",
     "debt": "List archive work that needs operator attention.",
@@ -116,7 +117,6 @@ _COMMAND_NAMES: dict[str, str] = {
 }
 
 _GROUP_ATTRS: dict[str, str] = {
-    "cost": "cost_command",
     "debt": "debt_command",
     "demo": "demo_command",
     "diagnostics": "diagnostics_group",
@@ -145,31 +145,28 @@ def _L(name: str) -> _LazyCommand:  # noqa: N802
 # ── command list ───────────────────────────────────────────────────
 
 ROOT_COMMANDS: tuple[click.Command, ...] = (
-    _L("config"),
+    config_command,
+    _L("dashboard"),
     _L("demo"),
     _L("import_command"),
     _L("init"),
     _L("ops"),
+    _L("tutorial"),
 )
 
 OPS_COMMANDS: tuple[click.Command, ...] = (
     _L("auth"),
     _L("backup"),
     _L("check"),
-    _L("completions"),
-    _L("cost"),
-    _L("dashboard"),
     _L("debt"),
     _L("diagnostics"),
     _L("embed"),
     _L("insights"),
     _L("maintenance"),
-    _L("paths"),
     _L("reset"),
     _L("schema"),
     _L("user_state"),
     _L("status"),
-    _L("tutorial"),
 )
 
 
