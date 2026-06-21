@@ -90,23 +90,22 @@ _COMMANDS: list[tuple[list[str], bool]] = [
     # ── Insights subcommands ─────────────────────────────────────────
     (["ops", "insights", "status"], False),
     (["ops", "insights", "audit"], False),
-    (["ops", "insights", "coverage"], False),
-    (["ops", "insights", "debt"], False),
-    (["ops", "insights", "profiles"], False),
-    (["ops", "insights", "phases"], False),
-    (["ops", "insights", "threads"], False),
-    (["ops", "insights", "work-events"], False),
-    (["ops", "insights", "cost-rollups"], False),
-    (["ops", "insights", "costs"], False),
-    (["ops", "insights", "tool-usage"], False),
-    (["ops", "insights", "tags"], False),
+    (["analyze", "insights", "coverage"], False),
+    (["analyze", "insights", "debt"], False),
+    (["analyze", "insights", "profiles"], False),
+    (["analyze", "insights", "phases"], False),
+    (["analyze", "insights", "threads"], False),
+    (["analyze", "insights", "work-events"], False),
+    (["analyze", "insights", "cost-rollups"], False),
+    (["analyze", "insights", "costs"], False),
+    (["analyze", "insights", "tool-usage"], False),
+    (["analyze", "insights", "tags"], False),
     # ── Diagnostics subcommands ──────────────────────────────────────
     (["ops", "diagnostics", "pace"], False),
     (["ops", "diagnostics", "tools"], False),
     (["--latest", "ops", "diagnostics", "turns"], True),  # needs session; fails cleanly on empty
     # ── Embed, feedback, schema, maintenance ─────────────────────────
     (["ops", "embed", "status"], False),
-    (["ops", "schema", "list"], False),
     (["ops", "maintenance", "status"], False),
     (["ops", "maintenance", "preview"], False),
     # ── Shell integration (emits scripts, not JSON; must not crash) ──
@@ -125,7 +124,7 @@ _EXCLUDED: list[str] = [
     "open (side effect: opens browser)",
     "ops backup (creates backup file)",
     "recent (pre-existing bug: hardcoded sort=updated_at is invalid)",
-    "insights timeline (requires SESSION_ID argument)",
+    "analyze insights timeline (requires SESSION_ID argument)",
     "insights export (requires --out argument)",
     "mark mutation writes require an explicit query target",
 ]

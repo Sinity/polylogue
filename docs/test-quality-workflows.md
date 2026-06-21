@@ -14,10 +14,10 @@ Current registry snapshot:
 - mutation campaigns: `19`
 - benchmark campaigns: `7`
 - synthetic benchmark campaigns: `6`
-- scenario projections: `260`
+- scenario projections: `246`
 - inferred corpus scenarios: `8`
   - benchmark-campaign: `7`
-  - exercise: `153`
+  - exercise: `139`
   - inferred-corpus-scenario: `8`
   - mutation-campaign: `19`
   - synthetic-benchmark: `6`
@@ -25,16 +25,16 @@ Current registry snapshot:
 
 ## Runtime Coverage
 
-- covered runtime paths: `23`
-- covered runtime artifacts: `47`
-- covered runtime operations: `27`
+- covered runtime paths: `21`
+- covered runtime artifacts: `45`
+- covered runtime operations: `25`
 - covered maintenance targets: `3`
-- covered declared operation targets: `48`
-- uncovered runtime paths: —
-- uncovered runtime artifacts: —
-- uncovered runtime operations: `mutate-add-tag`, `mutate-bulk-tag-sessions`, `mutate-delete-metadata`, `mutate-delete-session`, `mutate-remove-tag`, `mutate-set-metadata`
+- covered declared operation targets: `46`
+- uncovered runtime paths: `schema-explain-query-loop`, `schema-list-query-loop`
+- uncovered runtime artifacts: `schema_explanation_results`, `schema_list_results`
+- uncovered runtime operations: `mutate-add-tag`, `mutate-bulk-tag-sessions`, `mutate-delete-metadata`, `mutate-delete-session`, `mutate-remove-tag`, `mutate-set-metadata`, `query-schema-catalog`, `query-schema-explanations`
 - uncovered maintenance targets: `empty_sessions`, `message_embeddings`, `message_type_backfill`, `orphaned_attachments`, `orphaned_messages`, `superseded_raw_snapshots`, `wal_checkpoint`
-- uncovered declared operation targets: `mutate-add-tag`, `mutate-bulk-tag-sessions`, `mutate-delete-metadata`, `mutate-delete-session`, `mutate-remove-tag`, `mutate-set-metadata`
+- uncovered declared operation targets: `mutate-add-tag`, `mutate-bulk-tag-sessions`, `mutate-delete-metadata`, `mutate-delete-session`, `mutate-remove-tag`, `mutate-set-metadata`, `query-schema-catalog`, `query-schema-explanations`
 
 Inspect the full authored map with:
 
@@ -335,15 +335,6 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `gen-fmt-plaintext-list` | `session-query-loop` | `message_fts`<br>`session_query_results` | `query-sessions` | — | `generated`<br>`formats`<br>`plaintext`<br>`list` | Generated: plaintext format in list mode |
 | `exercise` | `gen-fmt-yaml-latest` | `session-query-loop` | `message_fts`<br>`session_query_results` | `query-sessions` | — | `generated`<br>`formats`<br>`yaml`<br>`latest` | Generated: yaml format in latest mode |
 | `exercise` | `gen-fmt-yaml-list` | `session-query-loop` | `message_fts`<br>`session_query_results` | `query-sessions` | — | `generated`<br>`formats`<br>`yaml`<br>`list` | Generated: yaml format in list mode |
-| `exercise` | `gen-schema-explain-antigravity` | `schema-explain-query-loop` | `schema_packages`<br>`schema_explanation_results` | `query-schema-explanations` | — | `generated`<br>`schema`<br>`antigravity` | Generated: schema explain --provider antigravity |
-| `exercise` | `gen-schema-explain-chatgpt` | `schema-explain-query-loop` | `schema_packages`<br>`schema_explanation_results` | `query-schema-explanations` | — | `generated`<br>`schema`<br>`chatgpt` | Generated: schema explain --provider chatgpt |
-| `exercise` | `gen-schema-explain-claude-ai` | `schema-explain-query-loop` | `schema_packages`<br>`schema_explanation_results` | `query-schema-explanations` | — | `generated`<br>`schema`<br>`claude-ai` | Generated: schema explain --provider claude-ai |
-| `exercise` | `gen-schema-explain-claude-code` | `schema-explain-query-loop` | `schema_packages`<br>`schema_explanation_results` | `query-schema-explanations` | — | `generated`<br>`schema`<br>`claude-code` | Generated: schema explain --provider claude-code |
-| `exercise` | `gen-schema-explain-codex` | `schema-explain-query-loop` | `schema_packages`<br>`schema_explanation_results` | `query-schema-explanations` | — | `generated`<br>`schema`<br>`codex` | Generated: schema explain --provider codex |
-| `exercise` | `gen-schema-explain-gemini` | `schema-explain-query-loop` | `schema_packages`<br>`schema_explanation_results` | `query-schema-explanations` | — | `generated`<br>`schema`<br>`gemini` | Generated: schema explain --provider gemini |
-| `exercise` | `gen-schema-explain-gemini-cli` | `schema-explain-query-loop` | `schema_packages`<br>`schema_explanation_results` | `query-schema-explanations` | — | `generated`<br>`schema`<br>`gemini-cli` | Generated: schema explain --provider gemini-cli |
-| `exercise` | `gen-schema-explain-hermes` | `schema-explain-query-loop` | `schema_packages`<br>`schema_explanation_results` | `query-schema-explanations` | — | `generated`<br>`schema`<br>`hermes` | Generated: schema explain --provider hermes |
-| `exercise` | `gen-schema-list` | `schema-list-query-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios`<br>`schema_list_results` | `query-schema-catalog` | — | `generated`<br>`schema`<br>`list` | Generated: schema list --format json returns valid JSON |
 | `exercise` | `help-analyze` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | analyze help |
 | `exercise` | `help-analyze-insights` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | analyze insights help |
 | `exercise` | `help-analyze-insights-cost-rollups` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | analyze insights cost-rollups help |
@@ -412,17 +403,12 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-ops-maintenance-run` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops maintenance run help |
 | `exercise` | `help-ops-maintenance-status` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops maintenance status help |
 | `exercise` | `help-ops-reset` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops reset help |
-| `exercise` | `help-ops-schema` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops schema help |
-| `exercise` | `help-ops-schema-compare` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops schema compare help |
-| `exercise` | `help-ops-schema-explain` | `schema-explain-query-loop` | `schema_packages`<br>`schema_explanation_results` | `cli.help`<br>`query-schema-explanations` | — | `generated`<br>`help`<br>`structural` | ops schema explain help |
-| `exercise` | `help-ops-schema-list` | `schema-list-query-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios`<br>`schema_list_results` | `cli.help`<br>`query-schema-catalog` | — | `generated`<br>`help`<br>`structural` | ops schema list help |
 | `exercise` | `help-ops-status` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops status help |
 | `exercise` | `help-read` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | read help |
 | `exercise` | `help-select` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | select help |
 | `exercise` | `help-tutorial` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | tutorial help |
 | `exercise` | `json-doctor` | `message-fts-readiness-loop`<br>`retrieval-band-readiness-loop` | `message_fts`<br>`session_insight_readiness`<br>`retrieval_band_readiness`<br>`archive_readiness` | `cli.json-contract`<br>`project-archive-readiness` | — | `generated`<br>`json-contract`<br>`maintenance`<br>`readiness` | doctor JSON contract |
 | `exercise` | `json-doctor-session-insights-preview` | `session-insight-repair-loop` | `session_insight_rows`<br>`session_insight_fts`<br>`session_insight_readiness` | `cli.json-contract`<br>`project-session-insight-readiness` | — | `generated`<br>`json-contract`<br>`maintenance`<br>`session-insights` | doctor JSON contract |
-| `exercise` | `json-schema-list` | `schema-list-query-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios`<br>`schema_list_results` | `cli.json-contract`<br>`query-schema-catalog` | — | `generated`<br>`json-contract` | schema list JSON contract |
 | `exercise` | `query-count` | — | — | — | — | — | Count sessions |
 | `exercise` | `query-dialogue-only` | — | — | — | — | — | Latest with dialogue only |
 | `exercise` | `query-filter-provider` | — | — | — | — | — | Filter by provider |

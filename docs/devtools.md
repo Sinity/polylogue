@@ -53,7 +53,10 @@ repo verification checks and evidence records, not end-user archive workflows.
 | `devtools lab projections` | Inspect the unified projection inventory that feeds runtime coverage, generated docs, and control-plane maps. |
 | `devtools lab scenario` | Run showcase exercise smoke scenarios and committed baseline checks outside the archive CLI. |
 | `devtools lab schema audit` | Check committed schema package quality gates without presenting them as normal archive usage. |
+| `devtools lab schema compare` | Review schema package drift between committed versions in the verification-lab surface. |
+| `devtools lab schema explain` | Inspect schema package annotations, semantic roles, and review evidence from the lab surface. |
 | `devtools lab schema generate` | Refresh provider schema package artifacts from archive observations outside the archive CLI. |
+| `devtools lab schema list` | Inspect committed provider schema package catalogs without presenting them as normal archive usage. |
 | `devtools lab schema promote` | Turn reviewed schema evidence clusters into committed provider schema packages. |
 | `devtools lab schema roundtrip` | Close the schema inference-validation loop: package manifests must roundtrip through typed models, and every supported element schema must be reachable from the runtime registry. |
 | `devtools lab snapshot read-surface` | Freeze archive read-surface behavior before archive work, then compare candidate archives against the captured envelope baseline. |
@@ -118,7 +121,10 @@ These are the commands worth remembering during normal repo work:
 | `devtools lab projections` | Render the authored scenario-bearing verification projections. |
 | `devtools lab scenario` | Run verification-lab showcase scenario sets and baseline checks. |
 | `devtools lab schema audit` | Run committed provider schema package quality checks. |
+| `devtools lab schema compare` | Compare two committed schema package versions for a provider. |
+| `devtools lab schema explain` | Explain a committed package element schema with evidence and annotations. |
 | `devtools lab schema generate` | Generate provider schema packages and optional evidence clusters. |
+| `devtools lab schema list` | List committed schema packages, versions, and evidence manifests. |
 | `devtools lab schema promote` | Promote a schema evidence cluster into a registered package version. |
 | `devtools lab schema roundtrip` | Verify committed provider schema packages reload and roundtrip cleanly. |
 | `devtools lab snapshot read-surface` | Capture and compare archive read-surface snapshots. |

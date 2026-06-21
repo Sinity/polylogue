@@ -6,14 +6,17 @@ from pathlib import Path
 
 import pytest
 
-from devtools import schema_audit, schema_generate, schema_promote
+from devtools import schema_audit, schema_generate, schema_inspect, schema_promote
 from polylogue.core.outcomes import OutcomeCheck, OutcomeStatus
 from polylogue.schemas.audit.models import AuditReport
 from polylogue.schemas.generation.models import GenerationResult
 from polylogue.schemas.operator.models import (
     SchemaAuditRequest,
+    SchemaCompareRequest,
+    SchemaExplainRequest,
     SchemaInferRequest,
     SchemaInferResult,
+    SchemaListRequest,
     SchemaPromoteRequest,
     SchemaPromoteResult,
 )
@@ -61,6 +64,96 @@ def test_schema_audit_returns_failure_for_failing_report(
 
     assert payload["status"] == "ok"
     assert payload["result"]["summary"]["failed"] == 1
+
+
+def test_schema_inspect_list_forwards_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[SchemaListRequest] = []
+    sentinel = object()
+
+    def fake_list(request: SchemaListRequest) -> object:
+        captured.append(request)
+        return sentinel
+
+    rendered: dict[str, object] = {}
+
+    def fake_render(*, provider: str | None, result: object, json_output: bool) -> None:
+        rendered.update({"provider": provider, "result": result, "json_output": json_output})
+
+    monkeypatch.setattr(schema_inspect, "list_schemas", fake_list)
+    monkeypatch.setattr(schema_inspect, "render_schema_list_result", fake_render)
+
+    assert schema_inspect.list_main(["--provider", "chatgpt", "--json"]) == 0
+
+    assert captured == [SchemaListRequest(provider="chatgpt")]
+    assert rendered == {"provider": "chatgpt", "result": sentinel, "json_output": True}
+
+
+def test_schema_inspect_compare_forwards_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[SchemaCompareRequest] = []
+    sentinel = object()
+
+    def fake_compare(request: SchemaCompareRequest) -> object:
+        captured.append(request)
+        return sentinel
+
+    rendered: dict[str, object] = {}
+
+    def fake_render(*, result: object, json_output: bool, md_output: bool) -> None:
+        rendered.update({"result": result, "json_output": json_output, "md_output": md_output})
+
+    monkeypatch.setattr(schema_inspect, "compare_schema_versions", fake_compare)
+    monkeypatch.setattr(schema_inspect, "render_schema_compare_result", fake_render)
+
+    assert (
+        schema_inspect.compare_main(
+            ["--provider", "chatgpt", "--from", "v1", "--to", "v2", "--element", "session_document", "--markdown"]
+        )
+        == 0
+    )
+
+    assert captured == [
+        SchemaCompareRequest(
+            provider="chatgpt",
+            from_version="v1",
+            to_version="v2",
+            element_kind="session_document",
+        )
+    ]
+    assert rendered == {"result": sentinel, "json_output": False, "md_output": True}
+
+
+def test_schema_inspect_explain_forwards_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[SchemaExplainRequest] = []
+    sentinel = object()
+
+    def fake_explain(request: SchemaExplainRequest) -> object:
+        captured.append(request)
+        return sentinel
+
+    rendered: dict[str, object] = {}
+
+    def fake_render(*, result: object, json_output: bool, verbose: bool) -> None:
+        rendered.update({"result": result, "json_output": json_output, "verbose": verbose})
+
+    monkeypatch.setattr(schema_inspect, "explain_schema", fake_explain)
+    monkeypatch.setattr(schema_inspect, "render_schema_explain_result", fake_render)
+
+    assert (
+        schema_inspect.explain_main(
+            ["--provider", "chatgpt", "--version", "latest", "--element", "session_document", "--review-evidence"]
+        )
+        == 0
+    )
+
+    assert captured == [
+        SchemaExplainRequest(
+            provider="chatgpt",
+            version="latest",
+            element_kind="session_document",
+            review_evidence=True,
+        )
+    ]
+    assert rendered == {"result": sentinel, "json_output": False, "verbose": False}
 
 
 def test_schema_generate_forwards_generation_request(

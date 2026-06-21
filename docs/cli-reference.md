@@ -471,10 +471,9 @@ Commands:
   diagnostics  Run archive and session diagnostics.
   doctor       Run archive health checks and repairs.
   embed        Enable, preflight, and backfill the embedding pipeline.
-  insights     Rebuild and inspect derived session insights.
+  insights     Check and export derived insight materialization.
   maintenance  Preview and run maintenance backfill operations.
   reset        Reset local archive state.
-  schema       Inspect and audit provider schemas.
   status       Show daemon and archive status.
 ```
 
@@ -587,22 +586,6 @@ Options:
   --session TEXT     Tombstone a specific session by ID
   --source PATH      Tombstone all sessions from a source path
   --help             Show this message and exit.
-```
-
-## Schema
-
-```text
-Usage: polylogue ops schema [OPTIONS] COMMAND [ARGS]...
-
-  Inspect schema packages, versions, and evidence.
-
-Options:
-  --help  Show this message and exit.
-
-Commands:
-  compare  Compare two schema package versions for a provider.
-  explain  Explain a package element schema with evidence and annotations.
-  list     List available schema packages, versions, and evidence manifests.
 ```
 
 ## Config

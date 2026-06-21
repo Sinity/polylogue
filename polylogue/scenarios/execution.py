@@ -60,7 +60,6 @@ _KNOWN_POLYLOGUE_SUBCOMMANDS = frozenset(
         "insights",
         "ops",
         "render",
-        "schema",
         "site",
         "tags",
     }
@@ -137,17 +136,14 @@ def _metadata_for_polylogue_insights(argv: tuple[str, ...]) -> ScenarioMetadata:
     return _metadata_for_operations(operation_name) if operation_name else ScenarioMetadata()
 
 
-def _metadata_for_polylogue_schema(argv: tuple[str, ...]) -> ScenarioMetadata:
-    try:
-        schema_index = argv.index("schema")
-    except ValueError:
+def _metadata_for_devtools(subcommand: str) -> ScenarioMetadata:
+    parts = tuple(part for part in subcommand.split() if part)
+    if parts[:2] != ("lab", "schema") or len(parts) < 3:
         return ScenarioMetadata()
-    if schema_index + 1 >= len(argv):
-        return ScenarioMetadata()
-    subcommand = argv[schema_index + 1]
-    if subcommand == "list":
+    schema_command = parts[2]
+    if schema_command == "list":
         return _metadata_for_operations("query-schema-catalog")
-    if subcommand == "explain":
+    if schema_command == "explain":
         return _metadata_for_operations("query-schema-explanations")
     return ScenarioMetadata()
 
@@ -180,8 +176,6 @@ def _metadata_for_polylogue_embed(argv: tuple[str, ...]) -> ScenarioMetadata:
 
 
 def _default_metadata_for_polylogue(argv: tuple[str, ...]) -> ScenarioMetadata:
-    if "schema" in argv:
-        return _metadata_for_polylogue_schema(argv)
     if "insights" in argv:
         return _metadata_for_polylogue_insights(argv)
     if "doctor" in argv:
@@ -558,11 +552,12 @@ def polylogue_execution(*argv: str, metadata: ScenarioMetadata | None = None) ->
 
 
 def devtools_execution(subcommand: str, *argv: str, metadata: ScenarioMetadata | None = None) -> ExecutionSpec:
+    defaults = _metadata_for_devtools(subcommand)
     return ExecutionSpec(
         kind=ExecutionKind.DEVTOOLS,
         subcommand=subcommand,
         argv=tuple(argv),
-        metadata=metadata or ScenarioMetadata(),
+        metadata=defaults if metadata is None else metadata.with_default_targets(defaults),
     )
 
 

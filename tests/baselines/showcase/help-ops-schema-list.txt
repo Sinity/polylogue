@@ -1,8 +1,0 @@
-Usage: polylogue ops schema list [OPTIONS]
-
-  List available schema packages, versions, and evidence manifests.
-
-Options:
-  -p, --provider TEXT  Filter to specific provider
-  -f, --format [json]  Output format
-  -h, --help           Show this message and exit.
