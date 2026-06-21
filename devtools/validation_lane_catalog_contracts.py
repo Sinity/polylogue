@@ -103,6 +103,22 @@ CONTRACT_LANES: dict[str, LaneEntry] = {
             "tests/unit/core/test_session_semantics.py",
         ),
     ),
+    "schema-list-contract": LaneEntry(
+        name="schema-list-contract",
+        description="Devtools schema package catalog list surface and runtime projection coverage",
+        timeout_s=120,
+        category="contract",
+        execution=devtools_execution("lab schema list", "--json"),
+        tags=("contract", "schema", "devtools"),
+    ),
+    "schema-explain-contract": LaneEntry(
+        name="schema-explain-contract",
+        description="Devtools schema package explanation surface and runtime projection coverage",
+        timeout_s=120,
+        category="contract",
+        execution=devtools_execution("lab schema explain", "--provider", "chatgpt", "--json"),
+        tags=("contract", "schema", "devtools"),
+    ),
     "source-provider-fidelity": LaneEntry(
         name="source-provider-fidelity",
         description="Source traversal, Drive/runtime source boundaries, parser decoding, and provider-ingest fidelity",

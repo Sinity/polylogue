@@ -8,33 +8,33 @@ This reference is generated from the live validation-lane, mutation-campaign, an
 
 Current registry snapshot:
 
-- contract lanes: `24`
+- contract lanes: `26`
 - live lanes: `19`
 - composite lanes: `24`
 - mutation campaigns: `19`
 - benchmark campaigns: `7`
 - synthetic benchmark campaigns: `6`
-- scenario projections: `252`
+- scenario projections: `254`
 - inferred corpus scenarios: `8`
   - benchmark-campaign: `7`
   - exercise: `145`
   - inferred-corpus-scenario: `8`
   - mutation-campaign: `19`
   - synthetic-benchmark: `6`
-  - validation-lane: `67`
+  - validation-lane: `69`
 
 ## Runtime Coverage
 
-- covered runtime paths: `21`
-- covered runtime artifacts: `45`
-- covered runtime operations: `25`
+- covered runtime paths: `23`
+- covered runtime artifacts: `47`
+- covered runtime operations: `27`
 - covered maintenance targets: `3`
-- covered declared operation targets: `46`
-- uncovered runtime paths: `schema-explain-query-loop`, `schema-list-query-loop`
-- uncovered runtime artifacts: `schema_explanation_results`, `schema_list_results`
-- uncovered runtime operations: `mutate-add-tag`, `mutate-bulk-tag-sessions`, `mutate-delete-metadata`, `mutate-delete-session`, `mutate-remove-tag`, `mutate-set-metadata`, `query-schema-catalog`, `query-schema-explanations`
+- covered declared operation targets: `48`
+- uncovered runtime paths: —
+- uncovered runtime artifacts: —
+- uncovered runtime operations: `mutate-add-tag`, `mutate-bulk-tag-sessions`, `mutate-delete-metadata`, `mutate-delete-session`, `mutate-remove-tag`, `mutate-set-metadata`
 - uncovered maintenance targets: `empty_sessions`, `message_embeddings`, `message_type_backfill`, `orphaned_attachments`, `orphaned_messages`, `superseded_raw_snapshots`, `wal_checkpoint`
-- uncovered declared operation targets: `mutate-add-tag`, `mutate-bulk-tag-sessions`, `mutate-delete-metadata`, `mutate-delete-session`, `mutate-remove-tag`, `mutate-set-metadata`, `query-schema-catalog`, `query-schema-explanations`
+- uncovered declared operation targets: `mutate-add-tag`, `mutate-bulk-tag-sessions`, `mutate-delete-metadata`, `mutate-delete-session`, `mutate-remove-tag`, `mutate-set-metadata`
 
 Inspect the full authored map with:
 
@@ -165,6 +165,8 @@ Use the named lanes through the runner.
 | `retrieval-checks` | 480 | Action-aware query truth, grouped retrieval stats, archive readiness, and MCP retrieval payload coverage |
 | `scale-fast` | 120 | Fast storage scale budgets |
 | `scale-slow` | 360 | Slow local storage scale budgets |
+| `schema-explain-contract` | 120 | Devtools schema package explanation surface and runtime projection coverage |
+| `schema-list-contract` | 120 | Devtools schema package catalog list surface and runtime projection coverage |
 | `semantic-insight-normalization` | 900 | Semantic/session insight normalization, operator/toolchain narrowing, schema contracts, and provider parser cleanup |
 | `semantic-stack` | 360 | Unified harmonization, semantic facts/profile convergence, and contract inventory coverage |
 | `source-provider-fidelity` | 420 | Source traversal, Drive/runtime source boundaries, parser decoding, and provider-ingest fidelity |
@@ -542,6 +544,8 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `validation-lane` | `scale-fast` | — | — | — | — | — | Fast storage scale budgets |
 | `validation-lane` | `scale-slow` | — | — | — | — | — | Slow local storage scale budgets |
 | `validation-lane` | `scale-stretch` | — | — | — | — | — | Combined fast and slow storage scale budgets |
+| `validation-lane` | `schema-explain-contract` | `schema-explain-query-loop` | `schema_packages`<br>`schema_explanation_results` | `query-schema-explanations` | — | `contract`<br>`schema`<br>`devtools` | Devtools schema package explanation surface and runtime projection coverage |
+| `validation-lane` | `schema-list-contract` | `schema-list-query-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios`<br>`schema_list_results` | `query-schema-catalog` | — | `contract`<br>`schema`<br>`devtools` | Devtools schema package catalog list surface and runtime projection coverage |
 | `validation-lane` | `semantic-insight-hardening` | `session-insight-status-query-loop`<br>`session-tag-rollup-query-loop`<br>`archive-coverage-query-loop`<br>`archive-debt-query-loop`<br>`message-fts-readiness-loop`<br>`retrieval-band-readiness-loop` | `session_insight_readiness`<br>`session_insight_status_results`<br>`session_tag_rollup_rows`<br>`session_tag_rollup_results`<br>`archive_session_rows`<br>`session_profile_rows`<br>`archive_coverage_results`<br>`archive_readiness`<br>`embedding_status_results`<br>`message_fts`<br>`archive_debt_results`<br>`retrieval_band_readiness` | `query-session-insight-status`<br>`query-session-tag-rollups`<br>`query-archive-coverage`<br>`query-archive-debt`<br>`cli.json-contract`<br>`project-archive-readiness` | — | `insights`<br>`status`<br>`tags`<br>`coverage`<br>`debt`<br>`maintenance`<br>`readiness`<br>`live`<br>`preview` | Full semantic-insight normalization and toolchain convergence lane |
 | `validation-lane` | `semantic-insight-live` | `session-insight-status-query-loop`<br>`session-tag-rollup-query-loop`<br>`archive-coverage-query-loop`<br>`archive-debt-query-loop`<br>`message-fts-readiness-loop`<br>`retrieval-band-readiness-loop` | `session_insight_readiness`<br>`session_insight_status_results`<br>`session_tag_rollup_rows`<br>`session_tag_rollup_results`<br>`archive_session_rows`<br>`session_profile_rows`<br>`archive_coverage_results`<br>`archive_readiness`<br>`embedding_status_results`<br>`message_fts`<br>`archive_debt_results`<br>`retrieval_band_readiness` | `query-session-insight-status`<br>`query-session-tag-rollups`<br>`query-archive-coverage`<br>`query-archive-debt`<br>`cli.json-contract`<br>`project-archive-readiness` | — | `insights`<br>`status`<br>`tags`<br>`coverage`<br>`debt`<br>`maintenance`<br>`readiness`<br>`live`<br>`preview` | Bounded live archive lane for normalized insights, maintenance preview, and memory budgets |
 | `validation-lane` | `semantic-insight-normalization` | — | — | — | — | — | Semantic/session insight normalization, operator/toolchain narrowing, schema contracts, and provider parser cleanup |
