@@ -264,14 +264,17 @@ def test_receiver_auth_allows_cors_preflight_without_bearer_token(tmp_path: Path
             "/v1/browser-captures",
             headers={
                 "Origin": _CHATGPT_ORIGIN,
-                "Access-Control-Request-Headers": "authorization, content-type",
+                "Access-Control-Request-Headers": "authorization, content-type, x-request-id",
             },
         )
         response = conn.getresponse()
+        allow_headers = response.getheader("Access-Control-Allow-Headers")
         response.read()
         conn.close()
 
     assert response.status == HTTPStatus.NO_CONTENT
+    assert allow_headers is not None
+    assert "X-Request-ID" in allow_headers
 
 
 def test_receiver_allows_extra_web_origin_only_with_token(tmp_path: Path) -> None:
