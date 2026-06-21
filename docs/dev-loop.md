@@ -97,9 +97,12 @@ readiness_succeeded | readiness_failed
 If the selected ports are already occupied, the helper writes a
 `launch_rejected` event before exiting. Each event carries the run id, checkout
 path, branch, commit, archive root, status, timestamp, and a small event
-payload. Use this file together with `polylogued.launch.json` and
-`polylogued.log` when diagnosing whether a branch-local failure happened before
-process spawn, during API/receiver readiness, or inside the daemon itself.
+payload. For a port-blocked launch, this event stream is the primary artifact:
+the daemon process is never spawned, so `polylogued.launch.json` and
+`polylogued.log` are not expected to exist. When the process does spawn, use the
+event stream together with `polylogued.launch.json` and `polylogued.log` to
+diagnose whether a branch-local failure happened during API/receiver readiness
+or inside the daemon itself.
 
 ## Web Shell Debugging
 
