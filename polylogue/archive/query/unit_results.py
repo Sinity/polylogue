@@ -228,8 +228,12 @@ def _numeric_field_matches(value: int | None, predicate: QueryFieldPredicate) ->
         target = int(predicate.values[-1])
     except ValueError:
         return False
+    if predicate.op == ">":
+        return value > target
     if predicate.op == ">=":
         return value >= target
+    if predicate.op == "<":
+        return value < target
     if predicate.op == "<=":
         return value <= target
     return value == target
@@ -242,8 +246,12 @@ def _summary_timestamp_matches(summary: ArchiveSessionSummary, field: str, predi
     target = _epoch_ms(field, predicate.values[-1])
     if timestamp is None or target is None:
         return False
+    if predicate.op == ">":
+        return timestamp > target
     if predicate.op == ">=":
         return timestamp >= target
+    if predicate.op == "<":
+        return timestamp < target
     if predicate.op == "<=":
         return timestamp <= target
     return timestamp == target
