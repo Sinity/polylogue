@@ -216,6 +216,8 @@ def test_cli_capture_runs_command_with_branch_local_artifacts(
         dev_loop.main(
             [
                 "--json",
+                "--log-dir",
+                str(tmp_path / "dev-loop-logs"),
                 "--archive-root",
                 str(tmp_path / "archive"),
                 "--capture-cli",
@@ -245,6 +247,15 @@ def test_cli_capture_runs_command_with_branch_local_artifacts(
     assert env_payload["POLYLOGUE_API_AUTH_TOKEN"] == "[redacted]"
     assert env_payload["POLYLOGUE_NOTIFICATION_EMAIL_PASSWORD"] == "[redacted]"
     assert json.loads(summary_path.read_text(encoding="utf-8"))["exit_code"] == 0
+    event_path = Path(payload["preflight"]["artifacts"]["dev_events"])
+    event_rows = [json.loads(line) for line in event_path.read_text(encoding="utf-8").splitlines()]
+    capture_events = event_rows[-2:]
+    assert [row["event_type"] for row in capture_events] == ["cli_capture_requested", "cli_capture_finished"]
+    assert capture_events[0]["surface"] == "cli"
+    assert capture_events[0]["payload"]["command"] == command
+    assert capture_events[1]["status"] == "ok"
+    assert capture_events[1]["payload"]["exit_code"] == 0
+    assert capture_events[1]["payload"]["artifacts"]["transcript"] == str(transcript_path)
 
 
 def test_cli_capture_rejects_missing_command(capsys: pytest.CaptureFixture[str]) -> None:

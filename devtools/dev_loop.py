@@ -329,6 +329,7 @@ def run_cli_capture(
         raise ValueError("preflight payload is missing artifact paths")
     terminal_dir = Path(str(artifacts["terminal_dir"]))
     terminal_dir.mkdir(parents=True, exist_ok=True)
+    event_path = Path(str(artifacts.get("dev_events", Path(str(preflight["run_log_dir"])) / "dev-loop.events.jsonl")))
 
     env = os.environ.copy()
     suggested_env = preflight.get("suggested_env")
@@ -344,6 +345,19 @@ def run_cli_capture(
     summary_path = terminal_dir / f"{artifact_name}.summary.json"
 
     started_at = datetime.now(UTC)
+    _write_dev_loop_event(
+        event_path,
+        preflight=preflight,
+        surface="cli",
+        event_type="cli_capture_requested",
+        status="starting",
+        payload={
+            "command": command,
+            "command_text": shlex.join(command),
+            "artifact_name": artifact_name,
+            "timeout_s": timeout_s,
+        },
+    )
     started = time.monotonic()
     timed_out = False
     try:
@@ -409,6 +423,21 @@ def run_cli_capture(
         },
     }
     summary_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _write_dev_loop_event(
+        event_path,
+        preflight=preflight,
+        surface="cli",
+        event_type="cli_capture_finished",
+        status="ok" if exit_code == 0 else "failed",
+        payload={
+            "command": command,
+            "command_text": shlex.join(command),
+            "exit_code": exit_code,
+            "timed_out": timed_out,
+            "duration_ms": duration_ms,
+            "artifacts": payload["artifacts"],
+        },
+    )
     return payload
 
 
