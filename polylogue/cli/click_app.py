@@ -346,7 +346,7 @@ _QUERY_VERB_HELP: dict[str, str] = {
 
 for _verb in sorted(QUERY_VERB_NAMES):
     _attr = f"{_verb.replace('-', '_')}_verb"
-    _cls = _LazyGroup if _verb == "mark" else _LazyCommand
+    _cls = _LazyGroup if _verb in {"analyze", "mark"} else _LazyCommand
     cli.add_command(
         _cls(
             _verb,

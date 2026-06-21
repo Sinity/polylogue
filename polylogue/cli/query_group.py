@@ -162,17 +162,40 @@ def _find_root_option_after_verb(group: click.Group, verb: str, remaining: list[
             for opt in param.opts:
                 root_opts.add(opt)
     command = group.commands.get(verb)
-    command_opts: set[str] = set()
-    if command is not None:
-        ctx = click.Context(command)
-        for param in command.get_params(ctx):
-            if isinstance(param, click.Option):
-                command_opts.update(param.opts)
-                command_opts.update(param.secondary_opts)
+    command_opts = _command_options_for_remaining(command, remaining) if command is not None else set()
     for arg in remaining:
         if arg in root_opts and arg not in command_opts:
             return arg
     return None
+
+
+def _command_options_for_remaining(command: click.Command, remaining: list[str]) -> set[str]:
+    """Collect options owned by a verb and any nested subcommand path.
+
+    The root parser checks for misplaced root filters before Click has
+    dispatched into nested groups.  A grouped verb such as
+    ``analyze insights profiles --sort wallclock`` must therefore include the
+    options from ``profiles`` before treating ``--sort`` as a misplaced root
+    sort option.
+    """
+
+    opts: set[str] = set()
+    current: click.Command | None = command
+    index = 0
+    while current is not None:
+        ctx = click.Context(current)
+        for param in current.get_params(ctx):
+            if isinstance(param, click.Option):
+                opts.update(param.opts)
+                opts.update(param.secondary_opts)
+        if not isinstance(current, click.Group) or index >= len(remaining):
+            break
+        next_token = remaining[index]
+        if next_token.startswith("-"):
+            break
+        current = current.get_command(ctx, next_token)
+        index += 1
+    return opts
 
 
 def _detect_subcommand_and_verb(group: click.Group, args: list[str]) -> tuple[str | None, str | None]:

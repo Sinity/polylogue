@@ -226,7 +226,7 @@ def test_insights_profiles_json(cli_workspace: CliWorkspace) -> None:
     _seed_products(cli_workspace)
 
     runner = CliRunner()
-    result = runner.invoke(cli, ["ops", "insights", "profiles", "--format", "json"], catch_exceptions=False)
+    result = runner.invoke(cli, ["analyze", "insights", "profiles", "--format", "json"], catch_exceptions=False)
 
     assert result.exit_code == 0
     payload = extract_json_result(result.output)
@@ -255,7 +255,7 @@ def test_insights_costs_json(cli_workspace: CliWorkspace) -> None:
     _seed_cost_products(cli_workspace)
 
     runner = CliRunner()
-    result = runner.invoke(cli, ["ops", "insights", "costs", "--format", "json"], catch_exceptions=False)
+    result = runner.invoke(cli, ["analyze", "insights", "costs", "--format", "json"], catch_exceptions=False)
 
     assert result.exit_code == 0
     payload = extract_json_result(result.output)
@@ -280,7 +280,7 @@ def test_insights_cost_rollups_json(cli_workspace: CliWorkspace) -> None:
     _seed_cost_products(cli_workspace)
 
     runner = CliRunner()
-    result = runner.invoke(cli, ["ops", "insights", "cost-rollups", "--format", "json"], catch_exceptions=False)
+    result = runner.invoke(cli, ["analyze", "insights", "cost-rollups", "--format", "json"], catch_exceptions=False)
 
     assert result.exit_code == 0
     payload = extract_json_result(result.output)
@@ -301,7 +301,17 @@ def test_insights_profiles_support_wallclock_filters_and_sort(cli_workspace: Cli
     runner = CliRunner()
     result = runner.invoke(
         cli,
-        ["ops", "insights", "profiles", "--sort", "wallclock", "--min-wallclock-seconds", "250", "--format", "json"],
+        [
+            "analyze",
+            "insights",
+            "profiles",
+            "--sort",
+            "wallclock",
+            "--min-wallclock-seconds",
+            "250",
+            "--format",
+            "json",
+        ],
         catch_exceptions=False,
     )
 
@@ -313,7 +323,7 @@ def test_insights_profiles_support_wallclock_filters_and_sort(cli_workspace: Cli
 
     result = runner.invoke(
         cli,
-        ["ops", "insights", "profiles", "--sort", "wallclock", "--format", "json"],
+        ["analyze", "insights", "profiles", "--sort", "wallclock", "--format", "json"],
         catch_exceptions=False,
     )
 
@@ -327,7 +337,7 @@ def test_insights_profiles_plain_output_shows_session_time_axis(cli_workspace: C
     _seed_products(cli_workspace)
 
     runner = CliRunner()
-    result = runner.invoke(cli, ["ops", "insights", "profiles", "--sort", "wallclock"], catch_exceptions=False)
+    result = runner.invoke(cli, ["analyze", "insights", "profiles", "--sort", "wallclock"], catch_exceptions=False)
 
     assert result.exit_code == 0
     assert "first=2026-03-01T10:00:00+00:00" in result.output
@@ -340,7 +350,7 @@ def test_insights_profiles_format_json_alias(cli_workspace: CliWorkspace) -> Non
     _seed_products(cli_workspace)
 
     runner = CliRunner()
-    result = runner.invoke(cli, ["ops", "insights", "profiles", "--format", "json"], catch_exceptions=False)
+    result = runner.invoke(cli, ["analyze", "insights", "profiles", "--format", "json"], catch_exceptions=False)
 
     assert result.exit_code == 0
     payload = extract_json_result(result.output)
@@ -353,7 +363,7 @@ def test_insights_profiles_inherit_root_format_json(cli_workspace: CliWorkspace)
     runner = CliRunner()
     result = runner.invoke(
         cli,
-        ["--format", "json", "ops", "insights", "profiles", "--limit", "1"],
+        ["--format", "json", "analyze", "insights", "profiles", "--limit", "1"],
         catch_exceptions=False,
     )
 
@@ -490,7 +500,7 @@ def test_insights_profiles_json_includes_folded_enrichment(cli_workspace: CliWor
         [
             "--origin",
             "claude-code-session",
-            "ops",
+            "analyze",
             "insights",
             "profiles",
             "--session-date-since",
@@ -537,12 +547,12 @@ def test_insights_profiles_json_supports_explicit_evidence_and_inference_tiers(c
     runner = CliRunner()
     evidence_result = runner.invoke(
         cli,
-        ["ops", "insights", "profiles", "--tier", "evidence", "--format", "json"],
+        ["analyze", "insights", "profiles", "--tier", "evidence", "--format", "json"],
         catch_exceptions=False,
     )
     inference_result = runner.invoke(
         cli,
-        ["ops", "insights", "profiles", "--tier", "inference", "--format", "json"],
+        ["analyze", "insights", "profiles", "--tier", "inference", "--format", "json"],
         catch_exceptions=False,
     )
 
@@ -574,12 +584,12 @@ def test_insights_profiles_json_handles_blank_tier_search_text_from_migrated_row
     runner = CliRunner()
     evidence_result = runner.invoke(
         cli,
-        ["ops", "insights", "profiles", "--tier", "evidence", "--format", "json"],
+        ["analyze", "insights", "profiles", "--tier", "evidence", "--format", "json"],
         catch_exceptions=False,
     )
     inference_result = runner.invoke(
         cli,
-        ["ops", "insights", "profiles", "--tier", "inference", "--format", "json"],
+        ["analyze", "insights", "profiles", "--tier", "inference", "--format", "json"],
         catch_exceptions=False,
     )
 
@@ -602,7 +612,7 @@ def test_insights_work_events_filter_by_canonical_session_date(cli_workspace: Cl
     matched = runner.invoke(
         cli,
         [
-            "ops",
+            "analyze",
             "insights",
             "work-events",
             "--session-date-since",
@@ -617,7 +627,7 @@ def test_insights_work_events_filter_by_canonical_session_date(cli_workspace: Cl
     missed = runner.invoke(
         cli,
         [
-            "ops",
+            "analyze",
             "insights",
             "work-events",
             "--session-date-since",
@@ -643,7 +653,7 @@ def test_insights_profile_date_filters_and_phases_json(cli_workspace: CliWorkspa
     profiles = runner.invoke(
         cli,
         [
-            "ops",
+            "analyze",
             "insights",
             "profiles",
             "--session-date-since",
@@ -655,7 +665,7 @@ def test_insights_profile_date_filters_and_phases_json(cli_workspace: CliWorkspa
         ],
         catch_exceptions=False,
     )
-    phases = runner.invoke(cli, ["ops", "insights", "phases", "--format", "json"], catch_exceptions=False)
+    phases = runner.invoke(cli, ["analyze", "insights", "phases", "--format", "json"], catch_exceptions=False)
 
     assert profiles.exit_code == 0
     assert phases.exit_code == 0
@@ -770,7 +780,7 @@ def test_insights_threads_json(cli_workspace: CliWorkspace) -> None:
     _seed_products(cli_workspace)
 
     runner = CliRunner()
-    threads = runner.invoke(cli, ["ops", "insights", "threads", "--format", "json"], catch_exceptions=False)
+    threads = runner.invoke(cli, ["analyze", "insights", "threads", "--format", "json"], catch_exceptions=False)
 
     assert threads.exit_code == 0
 
@@ -793,15 +803,15 @@ def test_insights_tag_and_summary_rollups_json(cli_workspace: CliWorkspace) -> N
     _seed_products(cli_workspace)
 
     runner = CliRunner()
-    tags = runner.invoke(cli, ["ops", "insights", "tags", "--format", "json"], catch_exceptions=False)
+    tags = runner.invoke(cli, ["analyze", "insights", "tags", "--format", "json"], catch_exceptions=False)
     days = runner.invoke(
         cli,
-        ["ops", "insights", "coverage", "--group-by", "day", "--format", "json"],
+        ["analyze", "insights", "coverage", "--group-by", "day", "--format", "json"],
         catch_exceptions=False,
     )
     weeks = runner.invoke(
         cli,
-        ["ops", "insights", "coverage", "--group-by", "week", "--format", "json"],
+        ["analyze", "insights", "coverage", "--group-by", "week", "--format", "json"],
         catch_exceptions=False,
     )
 
@@ -828,7 +838,17 @@ def test_insights_analytics_json(cli_workspace: CliWorkspace) -> None:
     runner = CliRunner()
     result = runner.invoke(
         cli,
-        ["--origin", "claude-code-session", "ops", "insights", "coverage", "--group-by", "origin", "--format", "json"],
+        [
+            "--origin",
+            "claude-code-session",
+            "analyze",
+            "insights",
+            "coverage",
+            "--group-by",
+            "origin",
+            "--format",
+            "json",
+        ],
         catch_exceptions=False,
     )
 
@@ -844,7 +864,7 @@ def test_insights_analytics_json(cli_workspace: CliWorkspace) -> None:
 
 def test_insights_debt_json(cli_workspace: CliWorkspace) -> None:
     runner = CliRunner()
-    result = runner.invoke(cli, ["ops", "insights", "debt", "--format", "json"], catch_exceptions=False)
+    result = runner.invoke(cli, ["analyze", "insights", "debt", "--format", "json"], catch_exceptions=False)
 
     assert result.exit_code == 0
     payload = extract_json_result(result.output)
@@ -923,13 +943,13 @@ def test_session_insight_status_marks_missing_profile_rows_not_ready(cli_workspa
 
 
 def test_insights_timeline_json_emits_fidelity_tags(cli_workspace: CliWorkspace) -> None:
-    """`insights timeline <conv-id> --format json` emits per-entry fidelity tags."""
+    """`analyze insights timeline <conv-id> --format json` emits per-entry fidelity tags."""
     _seed_products(cli_workspace)
 
     runner = CliRunner()
     result = runner.invoke(
         cli,
-        ["ops", "insights", "timeline", NID_ROOT, "--format", "json"],
+        ["analyze", "insights", "timeline", NID_ROOT, "--format", "json"],
         catch_exceptions=False,
     )
 
@@ -954,7 +974,7 @@ def test_insights_timeline_plain_includes_legend(cli_workspace: CliWorkspace) ->
     runner = CliRunner()
     result = runner.invoke(
         cli,
-        ["ops", "insights", "timeline", NID_ROOT],
+        ["analyze", "insights", "timeline", NID_ROOT],
         catch_exceptions=False,
     )
 

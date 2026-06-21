@@ -119,7 +119,7 @@ _GROUP_ATTRS: dict[str, str] = {
     "demo": "demo_command",
     "diagnostics": "diagnostics_group",
     "embed": "embed_command",
-    "insights": "insights_command",
+    "insights": "ops_insights_command",
     "maintenance": "maintenance_group",
     "ops": "ops_command",
     "schema": "schema_command",

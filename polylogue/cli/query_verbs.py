@@ -1020,7 +1020,7 @@ def _emit_candidate_judgment(
     click.echo(f"{decision}: {payload.candidate.assertion_id} -> {result_ref}")
 
 
-@click.command("analyze")
+@click.group("analyze", invoke_without_command=True)
 @click.option("--count", "count_only", is_flag=True, help="Print only the matched-session count.")
 @click.option(
     "--by",
@@ -1087,6 +1087,9 @@ def analyze_verb(
         polylogue find 'repo:polylogue' then analyze --by day --format json
         polylogue analyze --cost-outlook --plan claude-pro --format json
     """
+    if ctx.invoked_subcommand is not None:
+        return
+
     import json as _json
 
     from polylogue.api.sync.bridge import run_coroutine_sync
@@ -1191,6 +1194,15 @@ def analyze_verb(
     if output_format:
         updated = updated.with_param_updates(output_format=output_format)
     _execute_query_verb(ctx, updated)
+
+
+def _attach_analyze_subcommands() -> None:
+    from polylogue.cli.commands.insights import analyze_insights_command
+
+    analyze_verb.add_command(analyze_insights_command)
+
+
+_attach_analyze_subcommands()
 
 
 def _parent_query_terms(ctx: click.Context) -> tuple[str, ...]:

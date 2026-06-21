@@ -178,7 +178,7 @@ Commands:
 ## Analyze Verb
 
 ```text
-Usage: polylogue analyze [OPTIONS]
+Usage: polylogue analyze [OPTIONS] COMMAND [ARGS]...
 
   Analyze matched sessions: statistics, facets, and aggregates.
 
@@ -212,6 +212,9 @@ Options:
                                   per row, streaming-friendly)
   -l, -n, --limit INTEGER         Max matched sessions before grouping
   --help                          Show this message and exit.
+
+Commands:
+  insights  Inspect durable archive insight read models.
 ```
 
 ## Read Verb
@@ -440,32 +443,15 @@ Options:
 ```text
 Usage: polylogue ops insights [OPTIONS] COMMAND [ARGS]...
 
-  Inspect durable archive insights.
+  Operate durable archive insight materialization.
 
 Options:
   --help  Show this message and exit.
 
-Session-level:
-  phases
-  profiles
-  timeline
-  work-events
-
-Aggregate:
-  coverage
-  tags
-  threads
-
-Analytics:
-  cost-rollups
-  costs
-  debt
-  tool-usage
-
-Admin:
-  audit
-  export
-  status
+Commands:
+  audit   Report per-product rigor profile across materialized insights...
+  export  Export versioned archive-insight bundles.
+  status  Report insight materialization coverage and readiness.
 ```
 
 ## Operations

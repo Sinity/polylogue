@@ -14,10 +14,10 @@ Current registry snapshot:
 - mutation campaigns: `19`
 - benchmark campaigns: `7`
 - synthetic benchmark campaigns: `6`
-- scenario projections: `265`
+- scenario projections: `260`
 - inferred corpus scenarios: `8`
   - benchmark-campaign: `7`
-  - exercise: `158`
+  - exercise: `153`
   - inferred-corpus-scenario: `8`
   - mutation-campaign: `19`
   - synthetic-benchmark: `6`
@@ -345,6 +345,18 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `gen-schema-explain-hermes` | `schema-explain-query-loop` | `schema_packages`<br>`schema_explanation_results` | `query-schema-explanations` | — | `generated`<br>`schema`<br>`hermes` | Generated: schema explain --provider hermes |
 | `exercise` | `gen-schema-list` | `schema-list-query-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios`<br>`schema_list_results` | `query-schema-catalog` | — | `generated`<br>`schema`<br>`list` | Generated: schema list --format json returns valid JSON |
 | `exercise` | `help-analyze` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | analyze help |
+| `exercise` | `help-analyze-insights` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | analyze insights help |
+| `exercise` | `help-analyze-insights-cost-rollups` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | analyze insights cost-rollups help |
+| `exercise` | `help-analyze-insights-costs` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | analyze insights costs help |
+| `exercise` | `help-analyze-insights-coverage` | `archive-coverage-query-loop` | `archive_session_rows`<br>`session_profile_rows`<br>`archive_coverage_results` | `cli.help`<br>`query-archive-coverage` | — | `generated`<br>`help`<br>`structural` | analyze insights coverage help |
+| `exercise` | `help-analyze-insights-debt` | `archive-debt-query-loop` | `archive_readiness`<br>`embedding_status_results`<br>`message_fts`<br>`archive_debt_results` | `cli.help`<br>`query-archive-debt` | — | `generated`<br>`help`<br>`structural` | analyze insights debt help |
+| `exercise` | `help-analyze-insights-phases` | `session-phase-query-loop` | `session_phase_rows`<br>`session_phase_results` | `cli.help`<br>`query-session-phases` | — | `generated`<br>`help`<br>`structural` | analyze insights phases help |
+| `exercise` | `help-analyze-insights-profiles` | `session-profile-query-loop` | `session_profile_rows`<br>`session_profile_results` | `cli.help`<br>`query-session-profiles` | — | `generated`<br>`help`<br>`structural` | analyze insights profiles help |
+| `exercise` | `help-analyze-insights-tags` | `session-tag-rollup-query-loop` | `session_tag_rollup_rows`<br>`session_tag_rollup_results` | `cli.help`<br>`query-session-tag-rollups` | — | `generated`<br>`help`<br>`structural` | analyze insights tags help |
+| `exercise` | `help-analyze-insights-threads` | `thread-query-loop` | `thread_rows`<br>`thread_fts`<br>`thread_results` | `cli.help`<br>`query-threads` | — | `generated`<br>`help`<br>`structural` | analyze insights threads help |
+| `exercise` | `help-analyze-insights-timeline` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | analyze insights timeline help |
+| `exercise` | `help-analyze-insights-tool-usage` | `tool-usage-query-loop` | `archive_session_rows`<br>`tool_usage_results` | `cli.help`<br>`query-tool-usage` | — | `generated`<br>`help`<br>`structural` | analyze insights tool-usage help |
+| `exercise` | `help-analyze-insights-work-events` | `session-work-event-query-loop` | `session_work_event_rows`<br>`session_work_event_fts`<br>`session_work_event_results` | `cli.help`<br>`query-session-work-events` | — | `generated`<br>`help`<br>`structural` | analyze insights work-events help |
 | `exercise` | `help-config` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | config help |
 | `exercise` | `help-config-completions` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | config completions help |
 | `exercise` | `help-config-paths` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | config paths help |
@@ -385,19 +397,8 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-ops-embed-status` | `embedding-materialization-loop` | `archive_session_rows`<br>`embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors` | `cli.help`<br>`materialize-transcript-embeddings` | — | `generated`<br>`help`<br>`structural` | ops embed status help |
 | `exercise` | `help-ops-insights` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops insights help |
 | `exercise` | `help-ops-insights-audit` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops insights audit help |
-| `exercise` | `help-ops-insights-cost-rollups` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops insights cost-rollups help |
-| `exercise` | `help-ops-insights-costs` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops insights costs help |
-| `exercise` | `help-ops-insights-coverage` | `archive-coverage-query-loop` | `archive_session_rows`<br>`session_profile_rows`<br>`archive_coverage_results` | `cli.help`<br>`query-archive-coverage` | — | `generated`<br>`help`<br>`structural` | ops insights coverage help |
-| `exercise` | `help-ops-insights-debt` | `archive-debt-query-loop` | `archive_readiness`<br>`embedding_status_results`<br>`message_fts`<br>`archive_debt_results` | `cli.help`<br>`query-archive-debt` | — | `generated`<br>`help`<br>`structural` | ops insights debt help |
 | `exercise` | `help-ops-insights-export` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops insights export help |
-| `exercise` | `help-ops-insights-phases` | `session-phase-query-loop` | `session_phase_rows`<br>`session_phase_results` | `cli.help`<br>`query-session-phases` | — | `generated`<br>`help`<br>`structural` | ops insights phases help |
-| `exercise` | `help-ops-insights-profiles` | `session-profile-query-loop` | `session_profile_rows`<br>`session_profile_results` | `cli.help`<br>`query-session-profiles` | — | `generated`<br>`help`<br>`structural` | ops insights profiles help |
 | `exercise` | `help-ops-insights-status` | `session-insight-status-query-loop` | `session_insight_readiness`<br>`session_insight_status_results` | `cli.help`<br>`query-session-insight-status` | — | `generated`<br>`help`<br>`structural` | ops insights status help |
-| `exercise` | `help-ops-insights-tags` | `session-tag-rollup-query-loop` | `session_tag_rollup_rows`<br>`session_tag_rollup_results` | `cli.help`<br>`query-session-tag-rollups` | — | `generated`<br>`help`<br>`structural` | ops insights tags help |
-| `exercise` | `help-ops-insights-threads` | `thread-query-loop` | `thread_rows`<br>`thread_fts`<br>`thread_results` | `cli.help`<br>`query-threads` | — | `generated`<br>`help`<br>`structural` | ops insights threads help |
-| `exercise` | `help-ops-insights-timeline` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops insights timeline help |
-| `exercise` | `help-ops-insights-tool-usage` | `tool-usage-query-loop` | `archive_session_rows`<br>`tool_usage_results` | `cli.help`<br>`query-tool-usage` | — | `generated`<br>`help`<br>`structural` | ops insights tool-usage help |
-| `exercise` | `help-ops-insights-work-events` | `session-work-event-query-loop` | `session_work_event_rows`<br>`session_work_event_fts`<br>`session_work_event_results` | `cli.help`<br>`query-session-work-events` | — | `generated`<br>`help`<br>`structural` | ops insights work-events help |
 | `exercise` | `help-ops-maintenance` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops maintenance help |
 | `exercise` | `help-ops-maintenance-archive-init` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops maintenance archive-init help |
 | `exercise` | `help-ops-maintenance-archive-plan` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops maintenance archive-plan help |
@@ -421,12 +422,6 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-tutorial` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | tutorial help |
 | `exercise` | `json-doctor` | `message-fts-readiness-loop`<br>`retrieval-band-readiness-loop` | `message_fts`<br>`session_insight_readiness`<br>`retrieval_band_readiness`<br>`archive_readiness` | `cli.json-contract`<br>`project-archive-readiness` | — | `generated`<br>`json-contract`<br>`maintenance`<br>`readiness` | doctor JSON contract |
 | `exercise` | `json-doctor-session-insights-preview` | `session-insight-repair-loop` | `session_insight_rows`<br>`session_insight_fts`<br>`session_insight_readiness` | `cli.json-contract`<br>`project-session-insight-readiness` | — | `generated`<br>`json-contract`<br>`maintenance`<br>`session-insights` | doctor JSON contract |
-| `exercise` | `json-insights-coverage` | `archive-coverage-query-loop` | `archive_session_rows`<br>`session_profile_rows`<br>`archive_coverage_results` | `cli.json-contract`<br>`query-archive-coverage` | — | `generated`<br>`json-contract`<br>`insights`<br>`coverage` | insights coverage JSON contract |
-| `exercise` | `json-insights-phases` | `session-phase-query-loop` | `session_phase_rows`<br>`session_phase_results` | `cli.json-contract`<br>`query-session-phases` | — | `generated`<br>`json-contract`<br>`insights`<br>`phases` | insights phases JSON contract |
-| `exercise` | `json-insights-profiles` | `session-profile-query-loop` | `session_profile_rows`<br>`session_profile_results` | `cli.json-contract`<br>`query-session-profiles` | — | `generated`<br>`json-contract`<br>`insights`<br>`session-profiles` | insights profiles JSON contract |
-| `exercise` | `json-insights-tags` | `session-tag-rollup-query-loop` | `session_tag_rollup_rows`<br>`session_tag_rollup_results` | `cli.json-contract`<br>`query-session-tag-rollups` | — | `generated`<br>`json-contract`<br>`insights`<br>`tags` | insights tags JSON contract |
-| `exercise` | `json-insights-threads` | `thread-query-loop` | `thread_rows`<br>`thread_fts`<br>`thread_results` | `cli.json-contract`<br>`query-threads` | — | `generated`<br>`json-contract`<br>`insights`<br>`threads` | insights threads JSON contract |
-| `exercise` | `json-insights-work-events` | `session-work-event-query-loop` | `session_work_event_rows`<br>`session_work_event_fts`<br>`session_work_event_results` | `cli.json-contract`<br>`query-session-work-events` | — | `generated`<br>`json-contract`<br>`insights`<br>`work-events` | insights work-events JSON contract |
 | `exercise` | `json-schema-list` | `schema-list-query-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios`<br>`schema_list_results` | `cli.json-contract`<br>`query-schema-catalog` | — | `generated`<br>`json-contract` | schema list JSON contract |
 | `exercise` | `query-count` | — | — | — | — | — | Count sessions |
 | `exercise` | `query-dialogue-only` | — | — | — | — | — | Latest with dialogue only |
