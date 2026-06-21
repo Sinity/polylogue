@@ -104,6 +104,16 @@ event stream together with `polylogued.launch.json` and `polylogued.log` to
 diagnose whether a branch-local failure happened during API/receiver readiness
 or inside the daemon itself.
 
+Once the daemon passes its schema preflight, it also writes durable
+`daemon.lifecycle` rows to the existing `ops.db` daemon event ledger. These
+rows carry the same dev-loop run id when `POLYLOGUE_DEV_LOOP_RUN_ID` is set and
+record startup, API/browser-capture binding, FTS readiness, converger/watcher
+start, skipped watcher state, and shutdown. Use the launcher JSONL stream for
+process-spawn/readiness questions and `/api/events?kind=daemon.lifecycle` or
+the ops event reader for daemon-internal lifecycle questions. Schema-blocked
+startup intentionally does not write these rows, because that path must remain
+observable without opening archive databases.
+
 ## Web Shell Debugging
 
 The branch-local web shell is served by the branch-local `polylogued run`
