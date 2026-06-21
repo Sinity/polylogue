@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import click
 
-from polylogue.cli.commands.completions import completions_command
+from polylogue.cli.commands.completions import completions_command, query_completions_command
 from polylogue.cli.commands.paths import paths_command
 from polylogue.cli.shared.types import AppEnv
 
@@ -35,6 +35,7 @@ def config_command(ctx: click.Context, output_format: str, show_layers: bool) ->
 
 
 config_command.add_command(completions_command)
+config_command.add_command(query_completions_command)
 config_command.add_command(paths_command)
 
 
