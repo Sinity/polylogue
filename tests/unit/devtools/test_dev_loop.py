@@ -70,7 +70,7 @@ def test_build_dev_loop_status_uses_branch_local_paths_and_warnings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo = tmp_path / "repo"
-    repo.mkdir()
+    repo.mkdir(parents=True)
 
     monkeypatch.setattr(
         dev_loop,
@@ -110,6 +110,9 @@ def test_build_dev_loop_status_uses_branch_local_paths_and_warnings(
     assert Path(str(payload["artifacts"]["preflight_json"])).is_file()
     assert payload["artifacts"]["daemon_log"].endswith(
         ".cache/dev-loop/feature-dev-loop-abc1234-api9999-capture9998/polylogued.log"
+    )
+    assert payload["artifacts"]["dev_events"].endswith(
+        ".cache/dev-loop/feature-dev-loop-abc1234-api9999-capture9998/dev-loop.events.jsonl"
     )
     assert "polylogued run --api-port 9999 --port 9998" in payload["commands"]["run_daemon"]
     assert "polylogue ops status" in payload["commands"]["capture_cli_status"]
@@ -287,10 +290,14 @@ def test_cli_capture_treats_forwarded_trailing_json_as_wrapper_flag(
 
 
 def test_daemon_launch_writes_branch_local_process_artifacts(
-    tmp_path: Path,
+    workspace_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    repo = workspace_env["state_dir"] / "repo"
+    repo.mkdir(parents=True)
+    archive_root = workspace_env["archive_root"]
+    monkeypatch.setattr(dev_loop, "_repo_root", lambda: repo)
     monkeypatch.setattr(dev_loop, "system_service_status", lambda: {"active": False})
     monkeypatch.setattr(
         dev_loop,
@@ -330,7 +337,7 @@ def test_daemon_launch_writes_branch_local_process_artifacts(
             [
                 "--json",
                 "--archive-root",
-                str(tmp_path / "archive"),
+                str(archive_root),
                 "--api-port",
                 "9876",
                 "--browser-capture-port",
@@ -354,7 +361,7 @@ def test_daemon_launch_writes_branch_local_process_artifacts(
 
     env = launched["env"]
     assert isinstance(env, dict)
-    assert env["POLYLOGUE_ARCHIVE_ROOT"] == str(tmp_path / "archive")
+    assert env["POLYLOGUE_ARCHIVE_ROOT"] == str(archive_root)
     assert launched["cwd"] == Path(payload["preflight"]["repo_root"])
 
     artifacts = launch["artifacts"]
@@ -362,13 +369,31 @@ def test_daemon_launch_writes_branch_local_process_artifacts(
     assert json.loads(Path(artifacts["summary"]).read_text(encoding="utf-8"))["pid"] == 4242
     assert json.loads(Path(artifacts["env"]).read_text(encoding="utf-8"))["POLYLOGUE_API_PORT"] == "9876"
     assert Path(artifacts["log"]).read_text(encoding="utf-8").startswith("\n# dev-loop launch")
+    event_rows = [
+        json.loads(line) for line in Path(artifacts["events"]).read_text(encoding="utf-8").splitlines() if line.strip()
+    ]
+    assert [row["event_type"] for row in event_rows] == [
+        "launch_requested",
+        "process_spawned",
+        "readiness_succeeded",
+    ]
+    assert event_rows[0]["run_id"] == payload["preflight"]["run_id"]
+    assert event_rows[0]["archive_root"] == str(archive_root)
+    assert event_rows[0]["payload"]["api_port"] == 9876
+    assert event_rows[1]["payload"]["pid"] == 4242
+    assert event_rows[2]["status"] == "ok"
+    assert event_rows[2]["payload"]["api_ready"] is True
 
 
 def test_daemon_launch_rejects_occupied_branch_local_ports(
-    tmp_path: Path,
+    workspace_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    repo = workspace_env["state_dir"] / "repo"
+    repo.mkdir(parents=True)
+    archive_root = workspace_env["archive_root"]
+    monkeypatch.setattr(dev_loop, "_repo_root", lambda: repo)
     monkeypatch.setattr(dev_loop, "system_service_status", lambda: {"active": False})
     monkeypatch.setattr(
         dev_loop,
@@ -380,7 +405,13 @@ def test_daemon_launch_rejects_occupied_branch_local_ports(
     )
 
     with pytest.raises(SystemExit) as exc:
-        dev_loop.main(["--archive-root", str(tmp_path / "archive"), "--launch-daemon"])
+        dev_loop.main(["--archive-root", str(archive_root), "--launch-daemon"])
 
     assert exc.value.code == 2
     assert "selected branch-local ports already have listeners" in capsys.readouterr().err
+    run_log_dir = repo / ".cache" / "dev-loop" / "feature-dev-loop-abc1234-api8766-capture8765"
+    event_path = run_log_dir / "dev-loop.events.jsonl"
+    event_rows = [json.loads(line) for line in event_path.read_text(encoding="utf-8").splitlines()]
+    assert [row["event_type"] for row in event_rows] == ["launch_rejected"]
+    assert event_rows[0]["status"] == "blocked"
+    assert event_rows[0]["payload"]["occupied_ports"] == ["api port 8766", "browser_capture port 8765"]
