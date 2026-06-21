@@ -904,6 +904,29 @@ def _read_event_rows(path: Path) -> tuple[list[dict[str, object]], list[dict[str
     return rows, malformed
 
 
+def _payload_artifacts(payload: object) -> dict[str, object]:
+    if not isinstance(payload, dict):
+        return {}
+    artifacts = payload.get("artifacts")
+    return artifacts if isinstance(artifacts, dict) else {}
+
+
+def _payload_duration_ms(payload: object) -> int | None:
+    if not isinstance(payload, dict):
+        return None
+    duration = payload.get("duration_ms")
+    if isinstance(duration, int):
+        return duration
+    if isinstance(duration, float):
+        return int(duration)
+    return None
+
+
+def _timed_event_duration(row: dict[str, object]) -> int:
+    duration = row.get("duration_ms")
+    return duration if isinstance(duration, int) else 0
+
+
 def summarize_dev_loop_run(run_dir: Path) -> dict[str, object]:
     """Summarize one dev-loop run directory from persisted local artifacts."""
 
@@ -915,6 +938,7 @@ def summarize_dev_loop_run(run_dir: Path) -> dict[str, object]:
     event_status_counts: dict[str, int] = {}
     event_surface_counts: dict[str, int] = {}
     problem_events: list[dict[str, object]] = []
+    timed_events: list[dict[str, object]] = []
     for row in events:
         status = str(row.get("status") or "unknown")
         surface = str(row.get("surface") or "unknown")
@@ -922,6 +946,16 @@ def summarize_dev_loop_run(run_dir: Path) -> dict[str, object]:
         event_surface_counts[surface] = event_surface_counts.get(surface, 0) + 1
         if status in {"failed", "blocked"}:
             problem_events.append(row)
+        duration_ms = _payload_duration_ms(row.get("payload"))
+        if duration_ms is not None:
+            timed_events.append(
+                {
+                    "surface": surface,
+                    "event_type": str(row.get("event_type") or "unknown"),
+                    "status": status,
+                    "duration_ms": duration_ms,
+                }
+            )
 
     summary_files = {
         "daemon_launch": run_dir / "polylogued.launch.json",
@@ -935,6 +969,36 @@ def summarize_dev_loop_run(run_dir: Path) -> dict[str, object]:
     loaded_terminal = [
         payload for payload in (_read_json_file(path) for path in terminal_summaries) if isinstance(payload, dict)
     ]
+    failed_summaries = [
+        {
+            "name": name,
+            "exit_code": payload.get("exit_code"),
+            "duration_ms": payload.get("duration_ms"),
+            "artifacts": _payload_artifacts(payload),
+        }
+        for name, payload in loaded_summaries.items()
+        if isinstance(payload, dict) and payload.get("ok") is False
+    ]
+    failed_terminal = [
+        {
+            "command_text": payload.get("command_text"),
+            "exit_code": payload.get("exit_code"),
+            "duration_ms": payload.get("duration_ms"),
+            "artifacts": _payload_artifacts(payload),
+        }
+        for payload in loaded_terminal
+        if payload.get("ok") is False
+    ]
+    artifact_index: dict[str, object] = {}
+    for name, payload in loaded_summaries.items():
+        artifacts = _payload_artifacts(payload)
+        if artifacts:
+            artifact_index[name] = artifacts
+    if loaded_terminal:
+        artifact_index["terminal_captures"] = [
+            _payload_artifacts(payload) for payload in loaded_terminal if _payload_artifacts(payload)
+        ]
+    slowest_events = sorted(timed_events, key=_timed_event_duration, reverse=True)[:10]
     missing_artifacts = [
         str(path)
         for path in (
@@ -953,6 +1017,10 @@ def summarize_dev_loop_run(run_dir: Path) -> dict[str, object]:
         warnings.append(f"{len(malformed_event_lines)} malformed dev-loop event row(s) were skipped")
     if problem_events:
         warnings.append(f"{len(problem_events)} event(s) have failed/blocked status")
+    if failed_summaries:
+        warnings.append(f"{len(failed_summaries)} run summary file(s) report failure")
+    if failed_terminal:
+        warnings.append(f"{len(failed_terminal)} terminal capture(s) report failure")
     return {
         "ok": not warnings,
         "run_dir": str(run_dir),
@@ -964,9 +1032,13 @@ def summarize_dev_loop_run(run_dir: Path) -> dict[str, object]:
         "last_event": events[-1] if events else None,
         "problem_events": problem_events,
         "malformed_event_lines": malformed_event_lines,
+        "slowest_events": slowest_events,
         "summaries": loaded_summaries,
+        "failed_summaries": failed_summaries,
         "terminal_captures": loaded_terminal,
         "terminal_capture_count": len(loaded_terminal),
+        "failed_terminal_captures": failed_terminal,
+        "artifact_index": artifact_index,
         "missing_artifacts": missing_artifacts,
         "warnings": warnings,
     }
@@ -1551,6 +1623,11 @@ def _print_run_summary(payload: dict[str, object]) -> None:
     print(f"  ok:         {payload.get('ok')}")
     print(f"  events:     {payload.get('event_count')}")
     print(f"  terminals:  {payload.get('terminal_capture_count')}")
+    slowest = payload.get("slowest_events")
+    if isinstance(slowest, list) and slowest:
+        first = slowest[0]
+        if isinstance(first, dict):
+            print(f"  slowest:    {first.get('surface')}/{first.get('event_type')} {first.get('duration_ms')} ms")
     warnings = payload.get("warnings")
     if isinstance(warnings, list) and warnings:
         print("  warnings:")
@@ -1562,6 +1639,11 @@ def _print_run_summary(payload: dict[str, object]) -> None:
             "  last event: "
             f"{last_event.get('surface')}/{last_event.get('event_type')} status={last_event.get('status')}"
         )
+    artifacts = payload.get("artifact_index")
+    if isinstance(artifacts, dict) and artifacts:
+        print("  artifacts:")
+        for name in sorted(artifacts):
+            print(f"    - {name}")
 
 
 def main(argv: list[str] | None = None) -> int:

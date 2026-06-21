@@ -652,8 +652,21 @@ def test_inspect_run_summarizes_dev_loop_artifacts(
     (run_dir / "preflight.json").write_text(json.dumps(preflight), encoding="utf-8")
     events = [
         {"surface": "daemon", "event_type": "launch_requested", "status": "starting"},
-        {"surface": "cli", "event_type": "cli_capture_finished", "status": "ok"},
-        {"surface": "browser_extension", "event_type": "extension_smoke_finished", "status": "failed"},
+        {
+            "surface": "cli",
+            "event_type": "cli_capture_finished",
+            "status": "ok",
+            "payload": {"duration_ms": 120},
+        },
+        {
+            "surface": "browser_extension",
+            "event_type": "extension_smoke_finished",
+            "status": "failed",
+            "payload": {
+                "duration_ms": 450,
+                "artifacts": {"stdout": "/tmp/ext.stdout", "stderr": "/tmp/ext.stderr"},
+            },
+        },
     ]
     (run_dir / "dev-loop.events.jsonl").write_text(
         "\n".join([json.dumps(events[0]), "{not-json", *(json.dumps(row) for row in events[1:])]) + "\n",
@@ -662,10 +675,13 @@ def test_inspect_run_summarizes_dev_loop_artifacts(
     (run_dir / "polylogued.log").write_text("daemon log\n", encoding="utf-8")
     (run_dir / "polylogued.launch.json").write_text(json.dumps({"ok": True, "pid": 1234}), encoding="utf-8")
     (browser_dir / "browser-plan.json").write_text(json.dumps({"ok": True}), encoding="utf-8")
-    (browser_dir / "extension-smoke.json").write_text(json.dumps({"ok": False}), encoding="utf-8")
+    (browser_dir / "extension-smoke.json").write_text(
+        json.dumps({"ok": False, "exit_code": 1, "duration_ms": 450, "artifacts": {"stderr": "/tmp/ext.stderr"}}),
+        encoding="utf-8",
+    )
     (tui_dir / "tui-plan.json").write_text(json.dumps({"ok": True}), encoding="utf-8")
     (terminal_dir / "polylogue.summary.json").write_text(
-        json.dumps({"ok": True, "exit_code": 0}),
+        json.dumps({"ok": False, "exit_code": 2, "duration_ms": 80, "artifacts": {"stderr": "/tmp/cli.stderr"}}),
         encoding="utf-8",
     )
 
@@ -680,14 +696,40 @@ def test_inspect_run_summarizes_dev_loop_artifacts(
     assert payload["problem_events"][0]["event_type"] == "extension_smoke_finished"
     assert payload["malformed_event_lines"][0]["line"] == 2
     assert payload["malformed_event_lines"][0]["text"] == "{not-json"
+    assert payload["slowest_events"][0] == {
+        "duration_ms": 450,
+        "event_type": "extension_smoke_finished",
+        "status": "failed",
+        "surface": "browser_extension",
+    }
     assert payload["summaries"]["daemon_launch"]["pid"] == 1234
     assert payload["summaries"]["tui_plan"]["ok"] is True
+    assert payload["failed_summaries"] == [
+        {
+            "name": "extension_smoke",
+            "exit_code": 1,
+            "duration_ms": 450,
+            "artifacts": {"stderr": "/tmp/ext.stderr"},
+        }
+    ]
     assert payload["terminal_capture_count"] == 1
-    assert payload["terminal_captures"][0]["exit_code"] == 0
+    assert payload["terminal_captures"][0]["exit_code"] == 2
+    assert payload["failed_terminal_captures"] == [
+        {
+            "command_text": None,
+            "exit_code": 2,
+            "duration_ms": 80,
+            "artifacts": {"stderr": "/tmp/cli.stderr"},
+        }
+    ]
+    assert payload["artifact_index"]["extension_smoke"]["stderr"] == "/tmp/ext.stderr"
+    assert payload["artifact_index"]["terminal_captures"][0]["stderr"] == "/tmp/cli.stderr"
     assert payload["missing_artifacts"] == []
     assert payload["warnings"] == [
         "1 malformed dev-loop event row(s) were skipped",
         "1 event(s) have failed/blocked status",
+        "1 run summary file(s) report failure",
+        "1 terminal capture(s) report failure",
     ]
 
 

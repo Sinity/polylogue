@@ -380,9 +380,11 @@ devtools workspace dev-loop --inspect-run .cache/dev-loop/<run-id> --json
 The summary reads `preflight.json`, `dev-loop.events.jsonl`, daemon launch
 summaries, browser/extension/TUI plans, and terminal capture summaries. It
 reports event counts by status/surface, the last event, failed or blocked
-events, missing core artifacts, and captured terminal command summaries. Use it
-as the first stop when a daemon/web/extension loop looks stuck: it tells you
-which artifact to open next instead of making you scan the whole run directory.
+events, failed summary files, failed terminal captures, slowest timed events,
+missing core artifacts, and an artifact index grouped by surface. Use it as the
+first stop when a daemon/web/extension loop looks stuck: it tells you which
+surface failed, which command or smoke was slow, and which stdout/stderr/log
+artifact to open next instead of making you scan the whole run directory.
 
 ## Current Boundary
 
