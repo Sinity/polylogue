@@ -24,7 +24,7 @@ over the `CREATE TABLE` statement.
 | `source.py` | `source.db` | `SOURCE_SCHEMA_VERSION = 1` |
 | `index.py` | `index.db` | `INDEX_SCHEMA_VERSION = 4` |
 | `embeddings.py` | `embeddings.db` | `EMBEDDINGS_SCHEMA_VERSION = 1` |
-| `user.py` | `user.db` | `USER_SCHEMA_VERSION = 1` |
+| `user.py` | `user.db` | `USER_SCHEMA_VERSION = 3` |
 | `ops.py` | `ops.db` | `OPS_SCHEMA_VERSION = 1` |
 
 There is no single global "schema version" number. Each tier is versioned and

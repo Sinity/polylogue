@@ -37,7 +37,7 @@ import pytest
 from polylogue import Polylogue
 from polylogue.api.archive import SessionNotFoundError
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import BlockType, Origin, Provider
+from polylogue.core.enums import AssertionKind, BlockType, Origin, Provider
 from polylogue.errors import DatabaseError, PolylogueError
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -4206,7 +4206,7 @@ async def test_facade_judges_candidate_assertion_in_user_tier(workspace_env: dic
             conn,
             assertion_id="candidate-api-1",
             target_ref="session:claude-ai-export:conv-alpha",
-            kind="transform_candidate",
+            kind=AssertionKind.TRANSFORM_CANDIDATE,
             value={"candidate_kind": "decision"},
             body_text="Use the shared assertion lifecycle.",
             evidence_refs=("session:claude-ai-export:conv-alpha",),

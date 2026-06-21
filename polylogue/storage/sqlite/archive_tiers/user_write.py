@@ -12,46 +12,14 @@ import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from enum import StrEnum
 from typing import TYPE_CHECKING, Final
 
+from polylogue.core.enums import AssertionKind
 from polylogue.core.json import JSONValue, require_json_value
 from polylogue.core.refs import ObjectRef, normalize_object_ref_text, normalize_public_ref_text
 
 if TYPE_CHECKING:
     from polylogue.insights.transforms import DecisionCandidate, RecoveryDigest, TransformRawRef
-
-
-class AssertionKind(StrEnum):
-    """Closed vocabulary for ``assertions.kind``.
-
-    The unified assertions table collapses the legacy user-tier overlays; each
-    kind below corresponds to a meaning carried by one of those mini-systems or
-    by the agent-blackboard surface. The DDL stores ``kind`` as plain ``TEXT``
-    (no CHECK) so the vocabulary can grow without a schema bump; this enum is
-    the authoritative documentation and typing aid.
-    """
-
-    MARK = "mark"
-    HIGHLIGHT = "highlight"
-    ANNOTATION = "annotation"
-    CORRECTION = "correction"
-    SUPPRESSION = "suppression"
-    TAG = "tag"
-    METADATA = "metadata"
-    SAVED_QUERY = "saved_query"
-    RECALL_PACK = "recall_pack"
-    WORKSPACE_NOTE = "workspace_note"
-    NOTE = "note"
-    DECISION = "decision"
-    CAVEAT = "caveat"
-    LESSON = "lesson"
-    BLOCKER = "blocker"
-    HANDOFF = "handoff"
-    JUDGMENT = "judgment"
-    RUN_STATE = "run_state"
-    PROMPT_EVAL = "prompt_eval"
-    TRANSFORM_CANDIDATE = "transform_candidate"
 
 
 ASSERTION_DEFAULT_STATUS: Final = "active"

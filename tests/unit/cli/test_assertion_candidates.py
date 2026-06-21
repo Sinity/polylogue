@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 from click.testing import CliRunner
 
 from polylogue.cli.query_verbs import mark_candidates_group
+from polylogue.core.enums import AssertionKind
 from polylogue.surfaces.payloads import AssertionClaimPayload, AssertionJudgmentPayload, AssertionJudgmentResultPayload
 
 
@@ -14,7 +15,7 @@ def _claim(status: str = "candidate") -> AssertionClaimPayload:
     return AssertionClaimPayload(
         assertion_id="candidate-cli-1",
         target_ref="session:cli",
-        kind="transform_candidate",
+        kind=AssertionKind.TRANSFORM_CANDIDATE,
         value={"candidate_kind": "decision"},
         body_text="Keep candidate review explicit.",
         evidence_refs=("session:cli",),
@@ -54,7 +55,11 @@ def test_candidates_accept_emits_judgment_result_payload() -> None:
         candidate=_claim(status="accepted"),
         judgment=judgment,
         resulting_assertion=_claim(status="active").model_copy(
-            update={"assertion_id": "active-cli-1", "kind": "decision", "supersedes": ("assertion:candidate-cli-1",)}
+            update={
+                "assertion_id": "active-cli-1",
+                "kind": AssertionKind.DECISION,
+                "supersedes": ("assertion:candidate-cli-1",),
+            }
         ),
     )
     env = SimpleNamespace(polylogue=SimpleNamespace(judge_assertion_candidate=AsyncMock(return_value=payload)))

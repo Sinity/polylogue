@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from polylogue.context.preamble import compose_context_preamble
+from polylogue.core.enums import AssertionKind
 
 
 def _session() -> SimpleNamespace:
@@ -52,7 +53,7 @@ def test_compose_context_preamble_includes_injectable_assertion_claims() -> None
     env.polylogue.list_assertion_claim_payloads = AsyncMock(
         return_value=[
             SimpleNamespace(
-                kind="decision",
+                kind=AssertionKind.DECISION,
                 body_text="Keep context claims behind explicit injection.",
                 target_ref="session:target",
                 scope_ref="repo:polylogue",

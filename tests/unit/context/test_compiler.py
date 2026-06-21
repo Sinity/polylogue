@@ -12,7 +12,7 @@ from polylogue.context.compiler import (
     context_image_from_recovery,
     context_snapshot_record_from_image,
 )
-from polylogue.core.enums import Origin
+from polylogue.core.enums import AssertionKind, Origin
 from polylogue.core.refs import EvidenceRef, ObjectRef
 from polylogue.insights.transforms import RecoveryWorkPacketEntry, compile_recovery_digest
 from polylogue.types import SessionId
@@ -151,7 +151,7 @@ def test_context_image_from_recovery_preserves_assertion_refs() -> None:
     claim = AssertionClaimPayload(
         assertion_id="claim-1",
         target_ref="session:codex-session:compiler",
-        kind="decision",
+        kind=AssertionKind.DECISION,
         body_text="Keep context compilation evidence-backed.",
         evidence_refs=("codex-session:compiler",),
         status="active",

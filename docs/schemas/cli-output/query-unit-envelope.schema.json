@@ -120,6 +120,33 @@
       "title": "ActionQueryRowPayload",
       "type": "object"
     },
+    "AssertionKind": {
+      "description": "Closed vocabulary for ``user.db`` assertion rows.\n\nThe unified assertions table collapses the old user-tier overlay\nmini-systems. The SQLite column is stored as ``TEXT`` so the vocabulary can\ngrow without forcing a user-tier schema bump; this enum is the typed\nruntime and surface boundary.",
+      "enum": [
+        "mark",
+        "highlight",
+        "annotation",
+        "correction",
+        "suppression",
+        "tag",
+        "metadata",
+        "saved_query",
+        "recall_pack",
+        "workspace_note",
+        "note",
+        "decision",
+        "caveat",
+        "lesson",
+        "blocker",
+        "handoff",
+        "judgment",
+        "run_state",
+        "prompt_eval",
+        "transform_candidate"
+      ],
+      "title": "AssertionKind",
+      "type": "string"
+    },
     "AssertionQueryRowPayload": {
       "additionalProperties": false,
       "description": "Shared terminal-query row for user-tier assertions.",
@@ -175,8 +202,7 @@
           "title": "Key"
         },
         "kind": {
-          "title": "Kind",
-          "type": "string"
+          "$ref": "#/$defs/AssertionKind"
         },
         "scope_ref": {
           "anyOf": [
