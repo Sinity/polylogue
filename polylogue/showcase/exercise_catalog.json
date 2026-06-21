@@ -24,8 +24,7 @@
           "polylogue"
         ]
       },
-      "tier": 0,
-      "vhs_capture": true
+      "tier": 0
     },
     {
       "name": "help-mark-candidates",
@@ -93,7 +92,6 @@
         ]
       },
       "needs_data": true,
-      "vhs_capture": true,
       "execution": {
         "kind": "polylogue",
         "argv": []
@@ -127,8 +125,7 @@
       "assertion": {
         "stdout_min_lines": 1
       },
-      "needs_data": true,
-      "vhs_capture": true
+      "needs_data": true
     },
     {
       "name": "query-list-json",
@@ -267,8 +264,7 @@
         ]
       },
       "needs_data": true,
-      "output_ext": ".md",
-      "vhs_capture": true
+      "output_ext": ".md"
     },
     {
       "name": "query-latest-html",
@@ -699,8 +695,7 @@
           "ok"
         ]
       },
-      "needs_data": true,
-      "vhs_capture": true
+      "needs_data": true
     },
     {
       "name": "doctor-json",
