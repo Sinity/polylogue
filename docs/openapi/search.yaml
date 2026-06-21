@@ -1500,6 +1500,13 @@ components:
             - $ref: '#/components/schemas/ContextSnapshotQueryRowPayload'
           title: Items
           type: array
+        pipeline:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          default: null
+          title: Pipeline
         pipeline_stages:
           default: []
           items:
@@ -1620,6 +1627,13 @@ components:
             $ref: '#/components/schemas/QueryUnitAggregateRowPayload'
           title: Items
           type: array
+        pipeline:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          default: null
+          title: Pipeline
         pipeline_stages:
           default: []
           items:

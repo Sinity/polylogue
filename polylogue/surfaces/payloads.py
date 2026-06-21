@@ -1639,6 +1639,8 @@ class QueryUnitEnvelope(SurfacePayloadModel):
     unit: QueryUnitKind
     query: str
     items: tuple[QueryUnitRowPayload, ...]
+    pipeline: dict[str, object] | None = None
+    """Typed source-to-result pipeline that shaped this terminal-unit page."""
     pipeline_stages: tuple[dict[str, object], ...] = Field(
         default=(),
         json_schema_extra=_QUERY_UNIT_PIPELINE_STAGE_SCHEMA,
@@ -1658,6 +1660,8 @@ class QueryUnitAggregateEnvelope(SurfacePayloadModel):
     unit: QueryUnitKind
     query: str
     items: tuple[QueryUnitAggregateRowPayload, ...]
+    pipeline: dict[str, object] | None = None
+    """Typed source-to-result pipeline that shaped this aggregate page."""
     pipeline_stages: tuple[dict[str, object], ...] = Field(
         default=(),
         json_schema_extra=_QUERY_UNIT_PIPELINE_STAGE_SCHEMA,
@@ -1744,6 +1748,7 @@ def build_query_unit_envelope(
     limit: int,
     offset: int,
     has_next: bool,
+    pipeline: Mapping[str, object] | None = None,
     pipeline_stages: Sequence[Mapping[str, object]] = (),
 ) -> QueryUnitEnvelope:
     """Construct the canonical terminal query-unit response envelope."""
@@ -1753,6 +1758,7 @@ def build_query_unit_envelope(
         unit=unit,
         query=query,
         items=items_tuple,
+        pipeline=dict(pipeline) if pipeline is not None else None,
         pipeline_stages=tuple(dict(stage) for stage in pipeline_stages),
         total=len(items_tuple),
         limit=limit,
@@ -1769,6 +1775,7 @@ def build_query_unit_aggregate_envelope(
     limit: int,
     offset: int,
     has_next: bool,
+    pipeline: Mapping[str, object] | None = None,
     pipeline_stages: Sequence[Mapping[str, object]] = (),
 ) -> QueryUnitAggregateEnvelope:
     """Construct the canonical terminal aggregate response envelope."""
@@ -1778,6 +1785,7 @@ def build_query_unit_aggregate_envelope(
         unit=unit,
         query=query,
         items=items_tuple,
+        pipeline=dict(pipeline) if pipeline is not None else None,
         pipeline_stages=tuple(dict(stage) for stage in pipeline_stages),
         total=len(items_tuple),
         limit=limit,

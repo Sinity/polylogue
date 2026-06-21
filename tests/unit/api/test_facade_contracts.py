@@ -1820,6 +1820,10 @@ async def test_query_units_reports_pipeline_stages(tmp_path: Path) -> None:
             {"kind": "limit", "value": 1},
             {"kind": "offset", "value": 1},
         )
+        assert envelope.pipeline is not None
+        assert envelope.pipeline["stages"] == list(envelope.pipeline_stages)
+        assert envelope.pipeline["result"] == {"limit": 1, "offset": 1}
+        assert envelope.pipeline["session_scope"] == envelope.pipeline_stages[0]["predicate"]
         assert envelope.limit == 1
         assert [cast(Any, item).message_id for item in envelope.items] == ["codex-session:unit-pipeline-codex:m2"]
     finally:

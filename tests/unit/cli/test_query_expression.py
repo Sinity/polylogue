@@ -29,7 +29,8 @@ from click.testing import CliRunner
 from polylogue.archive.query.expression import (
     EXPRESSION_FIELD_REGISTRY,
     ExpressionCompileError,
-    QueryUnitPipelineStage,
+    QueryUnitPipeline,
+    QueryUnitSessionScopeStage,
     QueryUnitSource,
     _CountRangeToken,
     _CountToken,
@@ -334,6 +335,19 @@ class TestExplainExpression:
                     ],
                     "kind": "and",
                 },
+                "pipeline": {
+                    "source": {
+                        "unit": "message",
+                        "predicate": {
+                            "children": [
+                                _field_payload("role", "assistant", field_ref=_unit_field_ref("role", "message")),
+                                _field_payload("text", "timeout", field_ref=_unit_field_ref("text", "message")),
+                            ],
+                            "kind": "and",
+                        },
+                    },
+                    "stages": [],
+                },
             },
         }
         assert payload["lowering_plan"] == {
@@ -345,6 +359,7 @@ class TestExplainExpression:
                 "compatibility session selector: exists message(...)",
             ],
             "compatibility_selector": "exists message(...)",
+            "pipeline": cast(dict[str, Any], payload["ast"])["unit_source"]["pipeline"],
         }
         assert explanation.predicate == QueryBoolPredicate(
             op="and",
@@ -373,9 +388,26 @@ class TestExplainExpression:
                     {"kind": "limit", "value": 2},
                     {"kind": "offset", "value": 3},
                 ],
+                "pipeline": {
+                    "source": {
+                        "unit": "message",
+                        "predicate": _field_payload("role", "assistant", field_ref=_unit_field_ref("role", "message")),
+                    },
+                    "stages": [
+                        {"kind": "sort", "sort": {"field": "time", "direction": "desc"}},
+                        {"kind": "limit", "value": 2},
+                        {"kind": "offset", "value": 3},
+                    ],
+                    "result": {
+                        "sort": {"field": "time", "direction": "desc"},
+                        "limit": 2,
+                        "offset": 3,
+                    },
+                },
             },
         }
         lowering_plan = cast(dict[str, Any], payload["lowering_plan"])
+        assert lowering_plan["pipeline"] == cast(dict[str, Any], payload["ast"])["unit_source"]["pipeline"]
         assert lowering_plan["pipeline_stages"] == [
             {"kind": "sort", "sort": {"field": "time", "direction": "desc"}},
             {"kind": "limit", "value": 2},
@@ -395,7 +427,30 @@ class TestExplainExpression:
             _session_scope_stage("repo", "polylogue"),
             {"kind": "limit", "value": 5},
         ]
+        assert unit_source["pipeline"] == {
+            "source": {
+                "unit": "message",
+                "predicate": {
+                    "children": [
+                        _field_payload(
+                            "session.repo",
+                            "polylogue",
+                            field_ref=_session_field_ref("repo", source_name="session.repo", unit="message"),
+                        ),
+                        _field_payload("role", "assistant", field_ref=_unit_field_ref("role", "message")),
+                    ],
+                    "kind": "and",
+                },
+            },
+            "session_scope": _field_payload("repo", "polylogue", field_ref=_session_field_ref("repo")),
+            "stages": [
+                _session_scope_stage("repo", "polylogue"),
+                {"kind": "limit", "value": 5},
+            ],
+            "result": {"limit": 5},
+        }
         lowering_plan = cast(dict[str, Any], payload["lowering_plan"])
+        assert lowering_plan["pipeline"] == unit_source["pipeline"]
         assert lowering_plan["pipeline_stages"] == unit_source["pipeline_stages"]
 
 
@@ -706,10 +761,7 @@ class TestBooleanQueryExpression:
             ),
         )
         assert source.pipeline_stages == (
-            QueryUnitPipelineStage(
-                kind="session_scope",
-                predicate=QueryLineagePredicate(seed_session_id="chatgpt-export:ext-child"),
-            ),
+            QueryUnitSessionScopeStage(QueryLineagePredicate(seed_session_id="chatgpt-export:ext-child")),
         )
 
     def test_pipeline_split_ignores_field_alternation_pipe(self) -> None:
@@ -740,6 +792,15 @@ class TestBooleanQueryExpression:
             {"kind": "limit", "value": 2},
             {"kind": "offset", "value": 3},
         ]
+        assert source.pipeline == QueryUnitPipeline(
+            source_unit="message",
+            predicate=source.predicate,
+            session_predicate=source.session_predicate,
+            stages=source.pipeline_stages,
+            limit=2,
+            offset=3,
+        )
+        assert source.pipeline.to_payload()["result"] == {"limit": 2, "offset": 3}
 
     def test_terminal_source_pipeline_limit_offset_and_sort_are_parsed(self) -> None:
         source = parse_unit_source_expression("messages where role:assistant | sort by time desc | limit 2 | offset 3")
@@ -1899,6 +1960,9 @@ class TestBooleanQueryExpression:
             {"kind": "limit", "value": 1},
             {"kind": "offset", "value": 1},
         )
+        assert envelope.pipeline is not None
+        assert envelope.pipeline["stages"] == list(envelope.pipeline_stages)
+        assert envelope.pipeline["result"] == {"limit": 1, "offset": 1}
         assert len(envelope.items) == 1
         row = envelope.items[0]
         from polylogue.surfaces.payloads import MessageQueryRowPayload
@@ -2057,6 +2121,9 @@ class TestBooleanQueryExpression:
             {"kind": "group", "field": "role"},
             {"kind": "count", "metric": "count"},
         )
+        assert envelope.pipeline is not None
+        assert envelope.pipeline["stages"] == list(envelope.pipeline_stages)
+        assert envelope.pipeline["result"] == {"group_by": "role", "aggregate": "count"}
         assert [(row.group_by, row.group_key, row.count) for row in envelope.items] == [
             ("role", "assistant", 2),
             ("role", "user", 1),

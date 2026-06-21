@@ -268,31 +268,119 @@ QueryUnitPipelineStageKind = Literal["session_scope", "sort", "limit", "offset",
 
 
 @dataclass(frozen=True)
-class QueryUnitPipelineStage:
-    """Typed terminal query pipeline stage for explain and future lowerers."""
+class QueryUnitSessionScopeStage:
+    """Session-source stage in a terminal query-unit pipeline."""
 
-    kind: QueryUnitPipelineStageKind
-    predicate: QueryPredicate | None = None
-    sort: QueryUnitSort | None = None
-    value: int | None = None
-    field: str | None = None
-    metric: Literal["count"] | None = None
+    predicate: QueryPredicate
 
     def to_payload(self) -> dict[str, object]:
-        payload: dict[str, object] = {"kind": self.kind}
-        if self.predicate is not None:
-            payload["predicate"] = self.predicate.to_payload()
+        return {"kind": "session_scope", "predicate": self.predicate.to_payload()}
+
+
+@dataclass(frozen=True)
+class QueryUnitSortStage:
+    """Row or aggregate sort stage in a terminal query-unit pipeline."""
+
+    sort: QueryUnitSort
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "kind": "sort",
+            "sort": {
+                "field": self.sort.field,
+                "direction": self.sort.direction,
+            },
+        }
+
+
+@dataclass(frozen=True)
+class QueryUnitLimitStage:
+    """Limit stage in a terminal query-unit pipeline."""
+
+    value: int
+
+    def to_payload(self) -> dict[str, object]:
+        return {"kind": "limit", "value": self.value}
+
+
+@dataclass(frozen=True)
+class QueryUnitOffsetStage:
+    """Offset stage in a terminal query-unit pipeline."""
+
+    value: int
+
+    def to_payload(self) -> dict[str, object]:
+        return {"kind": "offset", "value": self.value}
+
+
+@dataclass(frozen=True)
+class QueryUnitGroupStage:
+    """Aggregate grouping stage in a terminal query-unit pipeline."""
+
+    field: str
+
+    def to_payload(self) -> dict[str, object]:
+        return {"kind": "group", "field": self.field}
+
+
+@dataclass(frozen=True)
+class QueryUnitCountStage:
+    """Count aggregation stage in a terminal query-unit pipeline."""
+
+    def to_payload(self) -> dict[str, object]:
+        return {"kind": "count", "metric": "count"}
+
+
+QueryUnitPipelineStage = (
+    QueryUnitSessionScopeStage
+    | QueryUnitSortStage
+    | QueryUnitLimitStage
+    | QueryUnitOffsetStage
+    | QueryUnitGroupStage
+    | QueryUnitCountStage
+)
+
+
+@dataclass(frozen=True)
+class QueryUnitPipeline:
+    """Executable terminal-row pipeline parsed from the query DSL."""
+
+    source_unit: QueryUnitName
+    predicate: QueryPredicate
+    session_predicate: QueryPredicate | None = None
+    stages: tuple[QueryUnitPipelineStage, ...] = ()
+    limit: int | None = None
+    offset: int | None = None
+    sort: QueryUnitSort | None = None
+    group_by: str | None = None
+    aggregate: Literal["count"] | None = None
+
+    def to_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "source": {
+                "unit": self.source_unit,
+                "predicate": self.predicate.to_payload(),
+            },
+            "stages": [stage.to_payload() for stage in self.stages],
+        }
+        if self.session_predicate is not None:
+            payload["session_scope"] = self.session_predicate.to_payload()
+        result: dict[str, object] = {}
         if self.sort is not None:
-            payload["sort"] = {
+            result["sort"] = {
                 "field": self.sort.field,
                 "direction": self.sort.direction,
             }
-        if self.value is not None:
-            payload["value"] = self.value
-        if self.field is not None:
-            payload["field"] = self.field
-        if self.metric is not None:
-            payload["metric"] = self.metric
+        if self.group_by is not None:
+            result["group_by"] = self.group_by
+        if self.aggregate is not None:
+            result["aggregate"] = self.aggregate
+        if self.limit is not None:
+            result["limit"] = self.limit
+        if self.offset is not None:
+            result["offset"] = self.offset
+        if result:
+            payload["result"] = result
         return payload
 
 
@@ -309,6 +397,22 @@ class QueryUnitSource:
     group_by: str | None = None
     aggregate: Literal["count"] | None = None
     pipeline_stages: tuple[QueryUnitPipelineStage, ...] = ()
+
+    @property
+    def pipeline(self) -> QueryUnitPipeline:
+        """Return the typed executable pipeline for this terminal source."""
+
+        return QueryUnitPipeline(
+            source_unit=self.unit,
+            predicate=self.predicate,
+            session_predicate=self.session_predicate,
+            stages=self.pipeline_stages,
+            limit=self.limit,
+            offset=self.offset,
+            sort=self.sort,
+            group_by=self.group_by,
+            aggregate=self.aggregate,
+        )
 
 
 ExplainClauseKind = Literal["field", "count", "count_range", "date", "date_range", "text", "json"]
@@ -1419,7 +1523,7 @@ def _apply_pipeline_stage(source: QueryUnitSource, stage: str) -> QueryUnitSourc
             sort=sort,
             pipeline_stages=(
                 *source.pipeline_stages,
-                QueryUnitPipelineStage(kind="sort", sort=sort),
+                QueryUnitSortStage(sort),
             ),
         )
     group_by = _parse_group_stage(stage)
@@ -1437,7 +1541,7 @@ def _apply_pipeline_stage(source: QueryUnitSource, stage: str) -> QueryUnitSourc
             group_by=group_by,
             pipeline_stages=(
                 *source.pipeline_stages,
-                QueryUnitPipelineStage(kind="group", field=group_by),
+                QueryUnitGroupStage(group_by),
             ),
         )
     if _parse_count_stage(stage):
@@ -1449,7 +1553,7 @@ def _apply_pipeline_stage(source: QueryUnitSource, stage: str) -> QueryUnitSourc
             aggregate="count",
             pipeline_stages=(
                 *source.pipeline_stages,
-                QueryUnitPipelineStage(kind="count", metric="count"),
+                QueryUnitCountStage(),
             ),
         )
     limit = _parse_non_negative_int_stage(stage, "limit")
@@ -1461,7 +1565,7 @@ def _apply_pipeline_stage(source: QueryUnitSource, stage: str) -> QueryUnitSourc
             limit=limit,
             pipeline_stages=(
                 *source.pipeline_stages,
-                QueryUnitPipelineStage(kind="limit", value=limit),
+                QueryUnitLimitStage(limit),
             ),
         )
     offset = _parse_non_negative_int_stage(stage, "offset")
@@ -1471,7 +1575,7 @@ def _apply_pipeline_stage(source: QueryUnitSource, stage: str) -> QueryUnitSourc
             offset=offset,
             pipeline_stages=(
                 *source.pipeline_stages,
-                QueryUnitPipelineStage(kind="offset", value=offset),
+                QueryUnitOffsetStage(offset),
             ),
         )
     raise ExpressionCompileError(
@@ -1531,7 +1635,7 @@ def _parse_pipeline_unit_source(expression: str) -> QueryUnitSource | None:
             group_by=terminal_source.group_by,
             aggregate=terminal_source.aggregate,
             pipeline_stages=(
-                QueryUnitPipelineStage(kind="session_scope", predicate=session_predicate),
+                QueryUnitSessionScopeStage(session_predicate),
                 *terminal_source.pipeline_stages,
             ),
         )
@@ -1843,6 +1947,7 @@ def _ast_payload(
             unit_payload["aggregate"] = unit_source.aggregate
         if unit_source.pipeline_stages:
             unit_payload["pipeline_stages"] = [stage.to_payload() for stage in unit_source.pipeline_stages]
+        unit_payload["pipeline"] = unit_source.pipeline.to_payload()
         payload["unit_source"] = unit_payload
     return payload
 
@@ -1854,6 +1959,7 @@ def _lowering_plan_payload(
     execution_legs: tuple[str, ...],
     plan_description: tuple[str, ...],
     compatibility_selector: str | None = None,
+    pipeline: QueryUnitPipeline | None = None,
     pipeline_stages: tuple[QueryUnitPipelineStage, ...] = (),
 ) -> dict[str, object]:
     payload: dict[str, object] = {
@@ -1864,6 +1970,8 @@ def _lowering_plan_payload(
     }
     if compatibility_selector is not None:
         payload["compatibility_selector"] = compatibility_selector
+    if pipeline is not None:
+        payload["pipeline"] = pipeline.to_payload()
     if pipeline_stages:
         payload["pipeline_stages"] = [stage.to_payload() for stage in pipeline_stages]
     return payload
@@ -1933,6 +2041,7 @@ def explain_expression(expression: str) -> QueryExpressionExplanation:
                 execution_legs=execution_legs,
                 plan_description=plan_description,
                 compatibility_selector=compatibility_selector,
+                pipeline=unit_source.pipeline,
                 pipeline_stages=unit_source.pipeline_stages,
             ),
         )
@@ -2493,7 +2602,14 @@ __all__ = [
     "QueryExpressionExplainClause",
     "QueryExpressionExplanation",
     "QueryExpressionAST",
+    "QueryUnitPipeline",
+    "QueryUnitCountStage",
+    "QueryUnitGroupStage",
+    "QueryUnitLimitStage",
+    "QueryUnitOffsetStage",
     "QueryUnitPipelineStage",
+    "QueryUnitSessionScopeStage",
+    "QueryUnitSortStage",
     "QueryUnitSort",
     "QueryUnitSource",
     "_HAS_BOOL_MAP",

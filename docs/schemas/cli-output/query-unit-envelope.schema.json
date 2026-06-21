@@ -943,6 +943,19 @@
       "title": "Offset",
       "type": "integer"
     },
+    "pipeline": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Pipeline"
+    },
     "pipeline_stages": {
       "default": [],
       "items": {
