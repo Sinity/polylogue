@@ -32,8 +32,12 @@ is exercised by ``tests/unit/cli/test_completion_matrix.py``.
 
 from __future__ import annotations
 
+import json
+
 import click
 from click.shell_completion import get_completion_class
+
+from polylogue.archive.query.completions import QUERY_COMPLETION_KINDS, QueryCompletionError, query_completion_payload
 
 _INSTALL_EPILOG = """\
 \b
@@ -63,4 +67,19 @@ def completions_command(ctx: click.Context, shell: str) -> None:
     click.echo(comp.source())
 
 
-__all__ = ["completions_command"]
+@click.command("query-completions")
+@click.option("--kind", type=click.Choice(QUERY_COMPLETION_KINDS), required=True)
+@click.option("--incomplete", default="", show_default=True, help="Current token or partial text to complete.")
+@click.option("--unit", help="Structural or terminal query unit for unit-scoped completion.")
+@click.option("--field", help="Query field for operator completion.")
+def query_completions_command(kind: str, incomplete: str, unit: str | None, field: str | None) -> None:
+    """Print shared query-builder completion metadata as JSON."""
+
+    try:
+        payload = query_completion_payload(kind, incomplete=incomplete, unit=unit, field=field)
+    except QueryCompletionError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(json.dumps(payload, indent=2, sort_keys=True))
+
+
+__all__ = ["completions_command", "query_completions_command"]

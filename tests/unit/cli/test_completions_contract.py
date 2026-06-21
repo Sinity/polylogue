@@ -10,6 +10,8 @@ Companion to ``test_plain_output_contract.py`` and ``test_help_contract.py``.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from click.testing import CliRunner
 
@@ -97,3 +99,49 @@ class TestCompletionsErrorPaths:
             f"expected Click usage error on stderr, got stderr={result.stderr!r}"
         )
         assert "Missing option" not in result.stdout
+
+
+class TestQueryCompletionMetadata:
+    """The CLI exposes the shared query-builder metadata payload directly."""
+
+    def test_query_completions_prints_shared_field_payload(self, runner: CliRunner) -> None:
+        result = runner.invoke(cli, ["config", "query-completions", "--kind", "field", "--incomplete", "da"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["kind"] == "field"
+        candidates = payload["candidates"]
+        assert isinstance(candidates, list)
+        date_candidate = next(candidate for candidate in candidates if candidate["value"] == "date")
+        assert date_candidate["insert"] == "date "
+        assert date_candidate["source"] == "DATE_QUERY_FIELD_REGISTRY"
+
+    def test_query_completions_prints_unit_scoped_terminal_fields(self, runner: CliRunner) -> None:
+        result = runner.invoke(
+            cli,
+            [
+                "config",
+                "query-completions",
+                "--kind",
+                "terminal-field",
+                "--unit",
+                "context-snapshots",
+                "--incomplete",
+                "bound",
+            ],
+        )
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["kind"] == "terminal-field"
+        assert payload["unit"] == "context-snapshots"
+        candidates = payload["candidates"]
+        assert isinstance(candidates, list)
+        assert [candidate["value"] for candidate in candidates] == ["boundary"]
+
+    def test_query_completions_reports_missing_context_cleanly(self, runner: CliRunner) -> None:
+        result = runner.invoke(cli, ["config", "query-completions", "--kind", "terminal-field"])
+
+        assert result.exit_code != 0
+        assert "--unit is required for terminal-field completion" in result.output
+        assert TRACEBACK_SENTINEL not in result.output

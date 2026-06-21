@@ -605,8 +605,9 @@ Options:
   --help                    Show this message and exit.
 
 Commands:
-  completions  Generate shell completion scripts.
-  paths        Print canonical archive paths and filesystem topology.
+  completions        Generate shell completion scripts.
+  paths              Print canonical archive paths and filesystem topology.
+  query-completions  Print shared query-builder completion metadata as JSON.
 ```
 
 ## Completions
