@@ -7,9 +7,11 @@ import importlib
 import importlib.util
 import json
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 from contextlib import suppress
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -36,6 +38,23 @@ class ProbeResult:
         payload = asdict(self)
         payload["expected"] = self.expected
         return payload
+
+
+@dataclass(frozen=True, slots=True)
+class BenchmarkResult:
+    name: str
+    status: ProbeStatus
+    summary: str
+    duration_ms: float | None
+    row_count: int
+    db_bytes: int | None
+    sidecar_bytes: int | None
+    command: list[str]
+    stdout: str = ""
+    stderr: str = ""
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
 
 
 SQL_PROBES: tuple[tuple[str, tuple[str, ...], str, ProbeStatus, str], ...] = (
@@ -101,6 +120,8 @@ SQL_PROBES: tuple[tuple[str, tuple[str, ...], str, ProbeStatus, str], ...] = (
     ),
 )
 
+OPS_BENCHMARK_ROWS = 2500
+
 
 def _find_python_turso() -> object | None:
     return importlib.util.find_spec("turso")
@@ -114,8 +135,191 @@ def _find_tursodb() -> str | None:
     return shutil.which("tursodb")
 
 
-def _run_command(command: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, capture_output=True, text=True, check=False, timeout=20)
+def _run_command(
+    command: list[str],
+    *,
+    stdin: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        command,
+        input=stdin,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=20,
+    )
+
+
+def _ops_sidecar_bytes(db_path: Path) -> int:
+    total = 0
+    for suffix in ("-wal", "-shm", "-log"):
+        sidecar = Path(f"{db_path}{suffix}")
+        if sidecar.exists():
+            total += sidecar.stat().st_size
+    return total
+
+
+def _remove_db_with_sidecars(db_path: Path) -> None:
+    db_path.unlink(missing_ok=True)
+    for suffix in ("-wal", "-shm", "-log"):
+        Path(f"{db_path}{suffix}").unlink(missing_ok=True)
+
+
+def _sqlite_ops_benchmark(*, scratch_dir: Path, row_count: int = OPS_BENCHMARK_ROWS) -> BenchmarkResult:
+    db_path = scratch_dir / "ops-workload-sqlite.db"
+    _remove_db_with_sidecars(db_path)
+    command = [
+        sys.executable,
+        "-c",
+        "sqlite3 ops.db; insert ops-shaped daemon/convergence rows",
+    ]
+    started = time.perf_counter()
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.executescript(
+            """
+            CREATE TABLE ingest_attempts(
+              attempt_id INTEGER PRIMARY KEY,
+              source_path TEXT NOT NULL,
+              status TEXT NOT NULL,
+              duration_ms INTEGER NOT NULL
+            ) STRICT;
+            CREATE TABLE convergence_debt(
+              debt_id INTEGER PRIMARY KEY,
+              stage TEXT NOT NULL,
+              status TEXT NOT NULL,
+              updated_at_ms INTEGER NOT NULL
+            ) STRICT;
+            CREATE TABLE daemon_events(
+              event_id INTEGER PRIMARY KEY,
+              run_id TEXT NOT NULL,
+              event_type TEXT NOT NULL,
+              payload_json TEXT NOT NULL
+            ) STRICT;
+            """
+        )
+        conn.executemany(
+            "INSERT INTO ingest_attempts(source_path, status, duration_ms) VALUES (?, ?, ?)",
+            ((f"/source/{index % 17}.jsonl", "completed", index % 1000) for index in range(row_count)),
+        )
+        conn.executemany(
+            "INSERT INTO convergence_debt(stage, status, updated_at_ms) VALUES (?, ?, ?)",
+            (
+                (f"stage-{index % 5}", "open" if index % 7 else "resolved", 1_700_000_000_000 + index)
+                for index in range(row_count)
+            ),
+        )
+        conn.executemany(
+            "INSERT INTO daemon_events(run_id, event_type, payload_json) VALUES (?, ?, ?)",
+            (
+                (f"run-{index % 13}", "stage", json.dumps({"index": index, "stage": index % 5}))
+                for index in range(row_count)
+            ),
+        )
+        conn.execute("UPDATE convergence_debt SET status = 'resolved' WHERE debt_id % 11 = 0")
+        conn.execute("SELECT stage, count(*) FROM convergence_debt WHERE status = 'open' GROUP BY stage").fetchall()
+        conn.execute("SELECT event_type, count(*) FROM daemon_events GROUP BY event_type").fetchall()
+        conn.commit()
+    finally:
+        conn.close()
+    duration_ms = (time.perf_counter() - started) * 1000
+    return BenchmarkResult(
+        name="sqlite_ops_workload",
+        status="pass",
+        summary="SQLite WAL baseline for an ops.db-shaped write/read workload.",
+        duration_ms=round(duration_ms, 3),
+        row_count=row_count * 3,
+        db_bytes=db_path.stat().st_size if db_path.exists() else None,
+        sidecar_bytes=_ops_sidecar_bytes(db_path),
+        command=command,
+    )
+
+
+def _turso_ops_sql(row_count: int) -> str:
+    ingest_rows = ",\n".join(
+        f"('/source/{index % 17}.jsonl', 'completed', {index % 1000})" for index in range(row_count)
+    )
+    debt_rows = ",\n".join(
+        (f"('stage-{index % 5}', '{'resolved' if index % 7 == 0 else 'open'}', {1_700_000_000_000 + index})")
+        for index in range(row_count)
+    )
+    event_rows = ",\n".join(
+        (f"('run-{index % 13}', 'stage', '{{\"index\":{index},\"stage\":{index % 5}}}')") for index in range(row_count)
+    )
+    return f"""
+    PRAGMA journal_mode=mvcc;
+    CREATE TABLE ingest_attempts(
+      attempt_id INTEGER PRIMARY KEY,
+      source_path TEXT NOT NULL,
+      status TEXT NOT NULL,
+      duration_ms INTEGER NOT NULL
+    ) STRICT;
+    CREATE TABLE convergence_debt(
+      debt_id INTEGER PRIMARY KEY,
+      stage TEXT NOT NULL,
+      status TEXT NOT NULL,
+      updated_at_ms INTEGER NOT NULL
+    ) STRICT;
+    CREATE TABLE daemon_events(
+      event_id INTEGER PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      payload_json TEXT NOT NULL
+    ) STRICT;
+    BEGIN CONCURRENT;
+    INSERT INTO ingest_attempts(source_path, status, duration_ms) VALUES
+    {ingest_rows};
+    INSERT INTO convergence_debt(stage, status, updated_at_ms) VALUES
+    {debt_rows};
+    INSERT INTO daemon_events(run_id, event_type, payload_json) VALUES
+    {event_rows};
+    UPDATE convergence_debt SET status = 'resolved' WHERE debt_id % 11 = 0;
+    COMMIT;
+    SELECT stage, count(*) FROM convergence_debt WHERE status = 'open' GROUP BY stage;
+    SELECT event_type, count(*) FROM daemon_events GROUP BY event_type;
+    """
+
+
+def _turso_ops_benchmark(
+    *,
+    tursodb: str | None,
+    scratch_dir: Path,
+    row_count: int = OPS_BENCHMARK_ROWS,
+) -> BenchmarkResult:
+    if tursodb is None:
+        return BenchmarkResult(
+            name="turso_ops_workload",
+            status="skip",
+            summary="Skipped because `tursodb` is not on PATH.",
+            duration_ms=None,
+            row_count=row_count * 3,
+            db_bytes=None,
+            sidecar_bytes=None,
+            command=["tursodb", "--quiet", "ops-workload-turso.db", "<ops workload SQL>"],
+        )
+    db_path = scratch_dir / "ops-workload-turso.db"
+    _remove_db_with_sidecars(db_path)
+    sql = _turso_ops_sql(row_count)
+    command = [tursodb, "--quiet", str(db_path)]
+    public_command = [tursodb, "--quiet", str(db_path), "< ops-workload.sql"]
+    started = time.perf_counter()
+    result = _run_command(command, stdin=sql)
+    duration_ms = (time.perf_counter() - started) * 1000
+    return BenchmarkResult(
+        name="turso_ops_workload",
+        status="pass" if result.returncode == 0 else "fail",
+        summary="Turso CLI/MVCC run of the same ops.db-shaped write/read workload.",
+        duration_ms=round(duration_ms, 3),
+        row_count=row_count * 3,
+        db_bytes=db_path.stat().st_size if db_path.exists() else None,
+        sidecar_bytes=_ops_sidecar_bytes(db_path),
+        command=public_command,
+        stdout=result.stdout.strip(),
+        stderr=result.stderr.strip(),
+    )
 
 
 def _python_unavailable_result(name: str, summary: str) -> ProbeResult:
@@ -418,6 +622,12 @@ def run_probe(*, tursodb: str | None = None, scratch_dir: Path | None = None) ->
                         )
                     )
                 results.append(_attach_probe(tursodb=resolved_tursodb, scratch_dir=root))
+        benchmark_root = scratch_root / "benchmarks"
+        benchmark_root.mkdir(parents=True, exist_ok=True)
+        benchmarks = [
+            _sqlite_ops_benchmark(scratch_dir=benchmark_root),
+            _turso_ops_benchmark(tursodb=resolved_tursodb, scratch_dir=benchmark_root),
+        ]
     finally:
         if tmp_context is not None:
             tmp_context.cleanup()
@@ -435,6 +645,7 @@ def run_probe(*, tursodb: str | None = None, scratch_dir: Path | None = None) ->
         "ok": not unexpected,
         "tursodb": resolved_tursodb,
         "results": [result.to_dict() for result in results],
+        "benchmarks": [benchmark.to_dict() for benchmark in benchmarks],
         "compatibility_blockers": blockers,
         "unexpected": unexpected,
         "recommendation": _recommendation(blockers=blockers, unexpected=unexpected),
@@ -482,6 +693,14 @@ def main(argv: list[str] | None = None) -> int:
             assert isinstance(result, dict)
             marker = "expected" if result["expected"] else "UNEXPECTED"
             print(f"  - {result['name']}: {result['status']} ({marker})")
+        benchmarks = payload["benchmarks"]
+        assert isinstance(benchmarks, list)
+        print("  benchmarks:")
+        for benchmark in benchmarks:
+            assert isinstance(benchmark, dict)
+            duration = benchmark["duration_ms"]
+            duration_text = f"{duration} ms" if duration is not None else "n/a"
+            print(f"  - {benchmark['name']}: {benchmark['status']} ({duration_text})")
         print(f"  recommendation: {payload['recommendation']}")
     return 1 if args.check and not payload["ok"] else 0
 
