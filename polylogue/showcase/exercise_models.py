@@ -28,9 +28,7 @@ class Exercise(ExecutableScenario):
     tier: int = 1  # Complexity tier: 0=fast/structural, 1=basic, 2=advanced
     env: str = "any"  # "any" | "seeded" | "live"
     timeout_s: float = 120.0  # Per-exercise timeout in seconds
-    vhs_capture: bool = False  # Whether this exercise should be captured as VHS recording
     artifact_class: str = "text"  # "text" | "json" | "visual" | "bundle"
-    capture_steps: tuple[str, ...] = ()  # Optional VHS interaction steps for complex scenarios
 
     @property
     def args(self) -> list[str]:

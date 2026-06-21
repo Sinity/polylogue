@@ -43,11 +43,6 @@ def exercises_by_group() -> dict[str, list[Exercise]]:
     return result
 
 
-def vhs_exercises() -> list[Exercise]:
-    """Return only exercises where vhs_capture is True."""
-    return [e for e in EXERCISES if e.vhs_capture]
-
-
 def topological_order(exercises: list[Exercise]) -> list[Exercise]:
     """Sort exercises respecting depends_on ordering."""
     index = {e.name: e for e in exercises}
@@ -81,5 +76,4 @@ __all__ = [
     "AssertionSpec",
     "exercises_by_group",
     "topological_order",
-    "vhs_exercises",
 ]

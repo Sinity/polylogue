@@ -1,71 +1,52 @@
-"""Tests for VHS tape generation from showcase exercises."""
+"""Tests for direct VHS tape generation specs."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from polylogue.scenarios import polylogue_execution
-from polylogue.showcase.exercises import Exercise, vhs_exercises
-from polylogue.showcase.vhs import generate_all_tapes, generate_tape
+from polylogue.showcase.vhs import VHSTapeSpec, default_tape_specs, generate_all_tapes, generate_tape
 
 
 class TestGenerateTape:
     """generate_tape produces valid tape content."""
 
     def test_basic_tape_has_output_directive(self) -> None:
-        ex = Exercise(
-            name="test-ex",
-            group="structural",
-            description="Test exercise",
-            execution=polylogue_execution("--help"),
-            vhs_capture=True,
-        )
-        tape = generate_tape(ex)
+        spec = VHSTapeSpec(name="test-ex", description="Test exercise", display_command=("polylogue", "--help"))
+
+        tape = generate_tape(spec)
+
         assert "Output test-ex.gif" in tape
 
     def test_tape_has_set_directives(self) -> None:
-        ex = Exercise(
-            name="test-ex",
-            group="structural",
-            description="Test exercise",
-            execution=polylogue_execution("--help"),
-            vhs_capture=True,
-        )
-        tape = generate_tape(ex)
+        spec = VHSTapeSpec(name="test-ex", description="Test exercise", display_command=("polylogue", "--help"))
+
+        tape = generate_tape(spec)
+
         assert "Set FontSize" in tape
         assert "Set Width" in tape
         assert "Set Height" in tape
         assert "Set Padding" in tape
 
     def test_tape_includes_correct_command(self) -> None:
-        ex = Exercise(
-            name="test-cmd",
-            group="structural",
-            description="Test",
-            execution=polylogue_execution("ops", "status"),
-            vhs_capture=True,
-        )
-        tape = generate_tape(ex)
+        spec = VHSTapeSpec(name="test-cmd", description="Test", display_command=("polylogue", "ops", "status"))
+
+        tape = generate_tape(spec)
+
         assert 'Type "polylogue ops status"' in tape
         assert "Enter" in tape
 
     def test_tape_with_no_args(self) -> None:
-        ex = Exercise(
-            name="default",
-            group="structural",
-            description="Default",
-            vhs_capture=True,
-        )
-        tape = generate_tape(ex)
+        spec = VHSTapeSpec(name="default", description="Default")
+
+        tape = generate_tape(spec)
+
         assert 'Type "polylogue"' in tape
 
     def test_tape_with_capture_steps(self) -> None:
-        ex = Exercise(
+        spec = VHSTapeSpec(
             name="custom",
-            group="structural",
             description="Custom steps",
-            execution=polylogue_execution("--help"),
-            vhs_capture=True,
+            display_command=("polylogue", "--help"),
             capture_steps=(
                 'Type "polylogue --help"',
                 "Enter",
@@ -74,44 +55,36 @@ class TestGenerateTape:
                 "Enter",
             ),
         )
-        tape = generate_tape(ex)
-        # Custom steps should be present
+
+        tape = generate_tape(spec)
+
         assert 'Type "polylogue --help"' in tape
         assert 'Type "polylogue --version"' in tape
-        # Auto-generated command should NOT be present (since capture_steps overrides)
-        lines = tape.splitlines()
-        type_lines = [line for line in lines if line.startswith("Type")]
+        type_lines = [line for line in tape.splitlines() if line.startswith("Type")]
         assert len(type_lines) == 2
 
     def test_custom_dimensions(self) -> None:
-        ex = Exercise(
-            name="dim",
-            group="structural",
-            description="Dimensions",
-            execution=polylogue_execution("--help"),
-            vhs_capture=True,
-        )
-        tape = generate_tape(ex, font_size=22, padding=30)
+        spec = VHSTapeSpec(name="dim", description="Dimensions", display_command=("polylogue", "--help"))
+
+        tape = generate_tape(spec, font_size=22, padding=30)
+
         assert "Set FontSize 22" in tape
         assert "Set Padding 30" in tape
 
-    def test_tape_has_exercise_description_comment(self) -> None:
-        ex = Exercise(
-            name="desc",
-            group="structural",
-            description="My cool exercise",
-            execution=polylogue_execution("--help"),
-            vhs_capture=True,
-        )
-        tape = generate_tape(ex)
-        assert "# My cool exercise" in tape
+    def test_tape_has_spec_description_comment(self) -> None:
+        spec = VHSTapeSpec(name="desc", description="My cool tape", display_command=("polylogue", "--help"))
+
+        tape = generate_tape(spec)
+
+        assert "# My cool tape" in tape
 
 
 class TestGenerateAllTapes:
-    """generate_all_tapes returns expected exercises."""
+    """generate_all_tapes returns expected direct tape specs."""
 
     def test_returns_dict_of_tape_content(self) -> None:
         tapes = generate_all_tapes()
+
         assert isinstance(tapes, dict)
         assert len(tapes) > 0
         for name, content in tapes.items():
@@ -119,48 +92,57 @@ class TestGenerateAllTapes:
             assert isinstance(content, str)
             assert "Output" in content
 
-    def test_only_vhs_capture_exercises(self) -> None:
-        vhs_names = {e.name for e in vhs_exercises()}
-        tapes = generate_all_tapes()
-        assert set(tapes.keys()) == vhs_names
+    def test_uses_direct_default_tape_inventory(self) -> None:
+        expected_names = {spec.name for spec in default_tape_specs()}
 
-    def test_skips_non_capturable_in_explicit_list(self) -> None:
-        exs = [
-            Exercise(name="cap", group="g", description="C", vhs_capture=True),
-            Exercise(name="nocap", group="g", description="N", vhs_capture=False),
+        tapes = generate_all_tapes()
+
+        assert set(tapes.keys()) == expected_names
+
+    def test_accepts_explicit_specs(self) -> None:
+        specs = [
+            VHSTapeSpec(name="one", description="One", display_command=("polylogue", "--help")),
+            VHSTapeSpec(name="two", description="Two", display_command=("polylogue", "ops", "status")),
         ]
-        tapes = generate_all_tapes(exs)
-        assert "cap" in tapes
-        assert "nocap" not in tapes
+
+        tapes = generate_all_tapes(specs)
+
+        assert set(tapes) == {"one", "two"}
 
     def test_writes_to_output_dir(self, tmp_path: Path) -> None:
-        exs = [
-            Exercise(
-                name="write-test",
-                group="g",
-                description="W",
-                vhs_capture=True,
-                execution=polylogue_execution("--help"),
-            ),
+        specs = [
+            VHSTapeSpec(name="write-test", description="W", display_command=("polylogue", "--help")),
         ]
-        tapes = generate_all_tapes(exs, output_dir=tmp_path / "tapes")
+
+        tapes = generate_all_tapes(specs, output_dir=tmp_path / "tapes")
+
         assert (tmp_path / "tapes" / "write-test.tape").exists()
         content = (tmp_path / "tapes" / "write-test.tape").read_text()
         assert content == tapes["write-test"]
 
 
-class TestTapeContentCorrectness:
-    """Tape content includes correct commands for real exercises."""
+class TestDefaultTapeContent:
+    """Default tape specs preserve the existing visual evidence flows."""
+
+    def test_default_tape_names(self) -> None:
+        assert [spec.name for spec in default_tape_specs()] == [
+            "help-main",
+            "stats-default",
+            "query-list",
+            "doctor-readiness",
+            "query-latest-md",
+        ]
 
     def test_help_main_tape(self) -> None:
-        exs = [e for e in vhs_exercises() if e.name == "help-main"]
-        assert len(exs) == 1
-        tape = generate_tape(exs[0])
+        spec = next(spec for spec in default_tape_specs() if spec.name == "help-main")
+
+        tape = generate_tape(spec)
+
         assert 'Type "polylogue --help"' in tape
 
     def test_stats_default_tape(self) -> None:
-        exs = [e for e in vhs_exercises() if e.name == "stats-default"]
-        assert len(exs) == 1
-        tape = generate_tape(exs[0])
-        # stats-default has no args → just "polylogue"
+        spec = next(spec for spec in default_tape_specs() if spec.name == "stats-default")
+
+        tape = generate_tape(spec)
+
         assert 'Type "polylogue"' in tape

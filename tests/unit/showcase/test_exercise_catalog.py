@@ -10,7 +10,6 @@ from polylogue.showcase.exercises import (
     Exercise,
     exercises_by_group,
     topological_order,
-    vhs_exercises,
 )
 from polylogue.showcase.generators import (
     command_help_exercise_names,
@@ -135,36 +134,6 @@ class TestExercisesByGroup:
 
         assert [scenario.name for scenario in QA_EXTRA_SCENARIOS] == expected_names
         assert [exercise.name for exercise in QA_EXTRA_EXERCISES] == expected_names
-
-
-class TestVhsExercises:
-    """vhs_exercises returns only capturable exercises."""
-
-    def test_returns_only_capturable(self) -> None:
-        vhs = vhs_exercises()
-        for e in vhs:
-            assert e.vhs_capture is True, f"Exercise {e.name!r} in vhs_exercises() but vhs_capture=False"
-
-    def test_excludes_non_capturable(self) -> None:
-        vhs_names = {e.name for e in vhs_exercises()}
-        for e in EXERCISES:
-            if not e.vhs_capture:
-                assert e.name not in vhs_names
-
-    def test_expected_count(self) -> None:
-        """Five exercises are marked for VHS capture."""
-        assert len(vhs_exercises()) == 5
-
-    def test_expected_names(self) -> None:
-        vhs_names = {e.name for e in vhs_exercises()}
-        expected = {
-            "help-main",
-            "stats-default",
-            "query-list",
-            "doctor-readiness",
-            "query-latest-md",
-        }
-        assert vhs_names == expected
 
 
 class TestTopologicalOrder:
