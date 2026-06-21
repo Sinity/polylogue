@@ -256,6 +256,141 @@ def run_receiver_smoke(*, spool_path: Path) -> dict[str, object]:
     }
 
 
+def run_extension_smoke(*, preflight: dict[str, Any]) -> dict[str, object]:
+    """Run the browser-extension background worker against a real receiver."""
+
+    artifacts = preflight.get("artifacts")
+    if not isinstance(artifacts, dict):
+        raise ValueError("preflight payload is missing artifact paths")
+    browser_dir = Path(str(artifacts["browser_dir"]))
+    browser_dir.mkdir(parents=True, exist_ok=True)
+    event_path = Path(str(artifacts.get("dev_events", Path(str(preflight["run_log_dir"])) / "dev-loop.events.jsonl")))
+    extension_root = Path(str(preflight["repo_root"])) / "browser-extension"
+    spool_path = browser_dir / "extension-smoke-spool"
+    summary_path = browser_dir / "extension-smoke.json"
+    result_path = browser_dir / "extension-smoke-result.json"
+    stdout_path = browser_dir / "extension-smoke.stdout"
+    stderr_path = browser_dir / "extension-smoke.stderr"
+    env_path = browser_dir / "extension-smoke.env.json"
+
+    _write_dev_loop_event(
+        event_path,
+        preflight=preflight,
+        surface="browser_extension",
+        event_type="extension_smoke_requested",
+        status="starting",
+        payload={
+            "extension_root": str(extension_root),
+            "spool_path": str(spool_path),
+        },
+    )
+
+    spool_path.mkdir(parents=True, exist_ok=True)
+    server = make_server(
+        "127.0.0.1",
+        0,
+        spool_path=spool_path,
+        auth_token=_RECEIVER_SMOKE_TOKEN,
+        extra_origins=(_RECEIVER_SMOKE_ORIGIN,),
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address[:2]
+    if isinstance(host, bytes):
+        host = host.decode("ascii")
+    receiver_url = f"http://{host}:{port}"
+    env = os.environ.copy()
+    env.update(
+        {
+            "POLYLOGUE_EXTENSION_RECEIVER_URL": receiver_url,
+            "POLYLOGUE_EXTENSION_RECEIVER_TOKEN": _RECEIVER_SMOKE_TOKEN,
+            "POLYLOGUE_EXTENSION_SMOKE_OUT": str(result_path),
+        }
+    )
+    env_path.write_text(json.dumps(_dev_loop_env_snapshot(env), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    started = time.monotonic()
+    try:
+        result = subprocess.run(
+            ["npm", "run", "dev-loop-smoke", "--silent"],
+            cwd=str(extension_root),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = _decode_timeout_stream(exc.stdout)
+        stderr = _decode_timeout_stream(exc.stderr)
+        result_payload: dict[str, object] | None = None
+        exit_code = 124
+        stderr = (stderr + "\n" if stderr else "") + "extension smoke timed out after 20s\n"
+    except OSError as exc:
+        stdout = ""
+        stderr = f"{type(exc).__name__}: {exc}\n"
+        result_payload = None
+        exit_code = 127
+    else:
+        stdout = result.stdout
+        stderr = result.stderr
+        exit_code = int(result.returncode)
+        result_payload = None
+        if result_path.exists():
+            result_payload = json.loads(result_path.read_text(encoding="utf-8"))
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    duration_ms = int((time.monotonic() - started) * 1000)
+    stdout_path.write_text(stdout, encoding="utf-8")
+    stderr_path.write_text(stderr, encoding="utf-8")
+    artifact_ref = None
+    artifact_path: Path | None = None
+    if isinstance(result_payload, dict):
+        capture = result_payload.get("capture")
+        if isinstance(capture, dict):
+            artifact_ref = capture.get("artifact_ref")
+            if isinstance(artifact_ref, str):
+                artifact_path = spool_path / artifact_ref
+    ok = exit_code == 0 and artifact_path is not None and artifact_path.exists()
+    payload: dict[str, object] = {
+        "ok": ok,
+        "exit_code": exit_code,
+        "duration_ms": duration_ms,
+        "extension_root": str(extension_root),
+        "receiver_url": receiver_url,
+        "spool_path": str(spool_path),
+        "artifact_ref": artifact_ref,
+        "artifact_path": str(artifact_path) if artifact_path is not None else None,
+        "result": result_payload,
+        "artifacts": {
+            "stdout": str(stdout_path),
+            "stderr": str(stderr_path),
+            "summary": str(summary_path),
+            "result": str(result_path),
+            "env": str(env_path),
+            "spool": str(spool_path),
+        },
+    }
+    summary_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _write_dev_loop_event(
+        event_path,
+        preflight=preflight,
+        surface="browser_extension",
+        event_type="extension_smoke_finished",
+        status="ok" if ok else "failed",
+        payload={
+            "exit_code": exit_code,
+            "duration_ms": duration_ms,
+            "artifact_ref": artifact_ref,
+            "artifact_path": str(artifact_path) if artifact_path is not None else None,
+            "artifacts": payload["artifacts"],
+        },
+    )
+    return payload
+
+
 def _decode_timeout_stream(value: bytes | str | None) -> str:
     if value is None:
         return ""
@@ -799,6 +934,21 @@ def _print_daemon_launch(payload: dict[str, Any]) -> None:
     print(f"  summary:  {artifacts['summary']}")
 
 
+def _print_extension_smoke(payload: dict[str, Any]) -> None:
+    preflight = payload["preflight"]
+    smoke = payload["extension_smoke"]
+    assert isinstance(preflight, dict)
+    assert isinstance(smoke, dict)
+    artifacts = smoke["artifacts"]
+    assert isinstance(artifacts, dict)
+    print("Polylogue dev-loop browser extension smoke")
+    print(f"  run id:   {preflight['run_id']}")
+    print(f"  ok:       {smoke['ok']}")
+    print(f"  receiver: {smoke['receiver_url']}")
+    print(f"  artifact: {smoke.get('artifact_ref')}")
+    print(f"  summary:  {artifacts['summary']}")
+
+
 def main(argv: list[str] | None = None) -> int:
     original_argv = list(argv) if argv is not None else sys.argv[1:]
     parser = argparse.ArgumentParser(description=__doc__)
@@ -834,6 +984,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Launch branch-local polylogued with --no-watch and write PID/log/summary artifacts.",
     )
     parser.add_argument(
+        "--extension-smoke",
+        action="store_true",
+        help="Run the browser-extension background worker against a temporary local receiver.",
+    )
+    parser.add_argument(
         "--daemon-ready-timeout-s",
         type=float,
         default=10.0,
@@ -850,7 +1005,7 @@ def main(argv: list[str] | None = None) -> int:
         browser_capture_port=args.browser_capture_port,
         archive_root=args.archive_root,
         log_dir=args.log_dir,
-        prepare=args.prepare or args.receiver_smoke or args.launch_daemon,
+        prepare=args.prepare or args.receiver_smoke or args.launch_daemon or args.extension_smoke,
     )
     if args.receiver_smoke:
         smoke_payload: dict[str, Any] = {
@@ -903,6 +1058,18 @@ def main(argv: list[str] | None = None) -> int:
         else:
             _print_daemon_launch(combined_payload)
         return 0 if launch_payload.get("ok") is True else 1
+    if args.extension_smoke:
+        smoke_payload = run_extension_smoke(preflight=payload)
+        combined_payload = {
+            "preflight": payload,
+            "extension_smoke": smoke_payload,
+        }
+        if args.json:
+            json.dump(combined_payload, sys.stdout, indent=2, sort_keys=True)
+            sys.stdout.write("\n")
+        else:
+            _print_extension_smoke(combined_payload)
+        return 0 if smoke_payload.get("ok") is True else 1
     if args.json:
         json.dump(payload, sys.stdout, indent=2, sort_keys=True)
         sys.stdout.write("\n")

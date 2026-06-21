@@ -243,6 +243,32 @@ authenticated synthetic capture is accepted, and reports the written spool
 artifact. It uses the branch-local run directory and does not talk to the
 deployed `polylogued.service`.
 
+For service-worker-to-receiver coverage, run the extension smoke:
+
+```bash
+devtools workspace dev-loop --extension-smoke
+devtools workspace dev-loop --extension-smoke --json
+```
+
+This starts a temporary local browser-capture receiver, imports the actual
+extension background worker with a small Chrome API mock, sends the same
+runtime messages that popup/content scripts use, proves unauthenticated capture
+rejection, configures the branch-local receiver token, checks receiver status,
+and posts a deterministic capture envelope. It appends
+`extension_smoke_requested` / `extension_smoke_finished` rows to
+`dev-loop.events.jsonl` and writes stdout, stderr, a summary JSON, redacted
+environment snapshot, and the receiver spool artifact under:
+
+```text
+.cache/dev-loop/<run-id>/browser/
+```
+
+This is the CI-safe branch-local proof for the extension background HTTP path.
+It does not need authenticated ChatGPT/Claude.ai cookies and does not claim to
+prove GUI content-script injection. Use the same run id and receiver settings
+when you then load `browser-extension/` unpacked into an agent/private Chrome
+profile for real-page inspection.
+
 ## Current Boundary
 
 `devtools workspace dev-loop` is a preflight and directory-preparation command.

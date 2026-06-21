@@ -71,6 +71,19 @@ default port. Each status/archive/capture request sends `X-Request-ID` and the
 popup shows the receiver's echoed request id. Use that value to correlate the
 popup/service-worker result with browser network traces and receiver logs.
 
+Before loading a GUI browser, run the branch-local background/receiver smoke:
+
+```bash
+devtools workspace dev-loop --extension-smoke
+```
+
+The smoke starts a temporary local receiver, imports the actual background
+worker with a Chrome API mock, proves unauthenticated rejection, configures the
+receiver token, checks receiver status, and posts a deterministic capture
+envelope. Artifacts are written under `.cache/dev-loop/<run-id>/browser/`.
+This proves the extension service-worker HTTP path without using real
+ChatGPT/Claude.ai profile data.
+
 ## Supported Sites
 
 | Site | Provider | Notes |
@@ -127,6 +140,7 @@ npm test              # vitest
 npm run test:watch    # watch mode
 npm run lint          # eslint
 npm run validate      # in-tree manifest validation
+npm run dev-loop-smoke # background worker -> local receiver smoke
 npm run build         # build Chrome .zip + Firefox .xpi under dist/
 npm run screenshots   # capture store-submission screenshots (Playwright)
 ```
