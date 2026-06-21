@@ -26,6 +26,10 @@ REQUIRED_DAEMON_ROUTES = (
     "/api/status",
     "/api/read-view-profiles",
 )
+REQUIRED_WEB_ROUTES = (
+    "/api/sessions?limit=1&offset=0",
+    "/api/facets",
+)
 REQUIRED_RECEIVER_ROUTES = ("/v1/status",)
 COMPLETION_PROBES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("query-then-connector", "polylogue find id:abc t", ("then",)),
@@ -304,6 +308,7 @@ def _diagnose(commands: list[CommandProbe], routes: list[RouteProbe], repo_head:
     polylogued = command_by_name.get("polylogued --version")
     deployed_commit = _version_commit(polylogue.stdout) if polylogue is not None else None
     read_view_route = route_by_path.get("read-view-profiles")
+    facets_route = next((probe for probe in routes if probe.url.endswith("/api/facets")), None)
     daemon_status = next((probe for probe in routes if probe.url.endswith("/api/status")), None)
     browser_capture_state = None
     if daemon_status is not None and daemon_status.payload is not None:
@@ -320,6 +325,9 @@ def _diagnose(commands: list[CommandProbe], routes: list[RouteProbe], repo_head:
     if read_view_route is not None and not read_view_route.ok:
         likely_causes.append("deployed daemon API predates /api/read-view-profiles or is not restarted")
         next_actions.append("restart polylogued after deploying a build that contains the read-view profiles route")
+    if facets_route is not None and not facets_route.ok:
+        likely_causes.append("web-shell facets route exceeds the deployed smoke timeout")
+        next_actions.append("profile /api/facets and move expensive facet aggregation behind caching or bounded reads")
     if repo_head is not None and deployed_commit is not None and not repo_head.startswith(deployed_commit):
         likely_causes.append("systemwide polylogue commit differs from the current checkout")
         next_actions.append("compare the deployed package input with the checkout before trusting live UI probes")
@@ -352,7 +360,7 @@ def build_report(
     routes = [
         *(
             _probe_route(f"{daemon_base_url.rstrip('/')}{route}", timeout_s=timeout_s)
-            for route in REQUIRED_DAEMON_ROUTES
+            for route in (*REQUIRED_DAEMON_ROUTES, *REQUIRED_WEB_ROUTES)
         ),
         *(
             _probe_route(f"{receiver_base_url.rstrip('/')}{route}", timeout_s=timeout_s)
