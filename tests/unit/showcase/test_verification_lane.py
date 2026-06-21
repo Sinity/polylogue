@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import importlib
 import json
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -13,14 +15,19 @@ def test_module_imports() -> None:
     assert importlib.import_module("devtools.lab_scenario") is not None
 
 
-def test_get_tier_0_exercises_returns_structural_data_free_cases() -> None:
-    from devtools.lab_scenario import get_tier_0_exercises
+def test_get_archive_smoke_checks_returns_direct_cli_cases() -> None:
+    from devtools.lab_scenario import get_archive_smoke_checks
 
-    exercises = get_tier_0_exercises()
+    checks = get_archive_smoke_checks()
 
-    assert exercises
-    assert all(ex.group == "structural" for ex in exercises)
-    assert all(not ex.needs_data for ex in exercises)
+    assert [check.name for check in checks] == [
+        "help-main",
+        "help-mark-candidates",
+        "completions-bash",
+    ]
+    assert checks[0].execution.polylogue_args == ("--help",)
+    assert checks[1].execution.polylogue_args == ("mark", "candidates", "--help")
+    assert checks[2].execution.polylogue_args == ("config", "completions", "--shell", "bash")
 
 
 def test_list_scenarios_reports_live_paths_without_baseline_counts(capsys: pytest.CaptureFixture[str]) -> None:
@@ -33,50 +40,98 @@ def test_list_scenarios_reports_live_paths_without_baseline_counts(capsys: pytes
     visual = next(entry for entry in payload["scenarios"] if entry["name"] == "reader-visual-smoke")
     assert archive == {
         "name": "archive-smoke",
-        "kind": "showcase",
-        "tier_0_exercise_count": archive["tier_0_exercise_count"],
+        "kind": "cli-smoke",
+        "tier_0_check_count": archive["tier_0_check_count"],
     }
-    assert archive["tier_0_exercise_count"] > 0
+    assert archive["tier_0_check_count"] > 0
     assert visual["command"]
 
 
 def test_main_prints_direct_stage_summary(capsys: pytest.CaptureFixture[str]) -> None:
     from devtools.lab_scenario import main
-    from polylogue.showcase.showcase_runner_models import ShowcaseResult
 
-    with (
-        patch("devtools.lab_scenario.ShowcaseRunner") as runner_class,
-        patch("devtools.lab_scenario.check_invariants", return_value=[]),
-    ):
-        runner_class.return_value.run.return_value = ShowcaseResult()
+    def _invoke(execution: object, **_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(output=f"{execution}\npolylogue candidates complete", exit_code=0)
+
+    with patch("devtools.lab_scenario.invoke_showcase_cli", side_effect=_invoke):
         assert main(["run", "archive-smoke", "--tier", "0"]) == 0
 
     out = capsys.readouterr().out
     assert "Scenario stages:" in out
-    assert "showcase: ok" in out
-    assert "invariants: ok" in out
+    assert "cli: ok" in out
     assert "Failed stages: none" in out
 
 
 def test_main_json_reports_direct_scenario_payload(capsys: pytest.CaptureFixture[str]) -> None:
     from devtools.lab_scenario import main
-    from polylogue.showcase.showcase_runner_models import ShowcaseResult
 
-    with (
-        patch("devtools.lab_scenario.ShowcaseRunner") as runner_class,
-        patch("devtools.lab_scenario.check_invariants", return_value=[]),
-    ):
-        runner_class.return_value.run.return_value = ShowcaseResult()
+    def _invoke(_execution: object, **_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(output="polylogue candidates complete", exit_code=0)
+
+    with patch("devtools.lab_scenario.invoke_showcase_cli", side_effect=_invoke):
         assert main(["run", "archive-smoke", "--tier", "0", "--json"]) == 0
 
     payload = json.loads(capsys.readouterr().out)
     assert payload == {
         "scenario": "archive-smoke",
         "stages": {
-            "showcase": "ok",
-            "invariants": "ok",
+            "cli": "ok",
         },
         "failed_stages": [],
         "ok": True,
         "report_dir": None,
     }
+
+
+def test_main_json_reports_direct_check_failures(capsys: pytest.CaptureFixture[str]) -> None:
+    from devtools.lab_scenario import main
+
+    def _invoke(_execution: object, **_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(output="", exit_code=3)
+
+    with patch("devtools.lab_scenario.invoke_showcase_cli", side_effect=_invoke):
+        assert main(["run", "archive-smoke", "--tier", "0", "--json", "--fail-fast"]) == 1
+
+    output = capsys.readouterr().out
+    payload = json.loads(output[output.index("{") :])
+    assert payload == {
+        "scenario": "archive-smoke",
+        "stages": {
+            "cli": "error",
+        },
+        "failed_stages": ["cli"],
+        "ok": False,
+        "report_dir": None,
+    }
+
+
+def test_main_writes_direct_archive_smoke_report(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    from devtools.lab_scenario import main
+
+    def _invoke(_execution: object, **_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(output="polylogue candidates complete", exit_code=0)
+
+    report_dir = tmp_path / "reports"
+    with patch("devtools.lab_scenario.invoke_showcase_cli", side_effect=_invoke):
+        assert main(["run", "archive-smoke", "--tier", "0", "--report-dir", str(report_dir), "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["report_dir"] == str(report_dir)
+    report_payload = json.loads((report_dir / "archive-smoke.json").read_text(encoding="utf-8"))
+    assert report_payload["scenario"] == "archive-smoke"
+    assert [check["name"] for check in report_payload["checks"]] == [
+        "help-main",
+        "help-mark-candidates",
+        "completions-bash",
+    ]
+    assert all(check["passed"] is True for check in report_payload["checks"])
+
+
+def test_main_reports_unsupported_archive_smoke_tier(capsys: pytest.CaptureFixture[str]) -> None:
+    from devtools.lab_scenario import main
+
+    assert main(["run", "archive-smoke", "--tier", "2", "--json"]) == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["stages"] == {"cli": "error"}
+    assert payload["failed_stages"] == ["cli"]

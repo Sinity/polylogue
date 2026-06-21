@@ -6,21 +6,18 @@ import argparse
 import json
 import subprocess
 import sys
+import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, TextIO
 
 from devtools import repo_root as _get_root
 from polylogue.core.outcomes import OutcomeStatus
+from polylogue.scenarios import AssertionSpec, ExecutionSpec, polylogue_execution
 from polylogue.showcase.cli_boundary import invoke_showcase_cli
-from polylogue.showcase.exercises import EXERCISES, Exercise
-from polylogue.showcase.invariants import InvariantResult, check_invariants
-from polylogue.showcase.runner import ShowcaseRunner
-from polylogue.showcase.showcase_runner_models import ShowcaseResult
-from polylogue.showcase.showcase_runner_support import run_exercise
 
 _SCENARIO_NAMES = ("archive-smoke", "reader-visual-smoke")
-TIER_0_GROUPS = frozenset({"structural"})
-_ENV_DEPENDENT: frozenset[str] = frozenset({"version"})
+_ARCHIVE_SMOKE_TIER = 0
 
 
 class _ScenarioResult(Protocol):
@@ -31,65 +28,95 @@ class _ScenarioResult(Protocol):
     def failed_stages(self) -> tuple[str, ...]: ...
 
 
+@dataclass(frozen=True, slots=True)
+class ArchiveSmokeCheck:
+    name: str
+    execution: ExecutionSpec
+    assertion: AssertionSpec
+    timeout_s: float = 60.0
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveSmokeCheckResult:
+    check: ArchiveSmokeCheck
+    passed: bool
+    exit_code: int
+    output: str
+    duration_ms: float
+    error: str | None = None
+
+
+_ARCHIVE_SMOKE_CHECKS: tuple[ArchiveSmokeCheck, ...] = (
+    ArchiveSmokeCheck(
+        name="help-main",
+        execution=polylogue_execution("--help"),
+        assertion=AssertionSpec(stdout_contains=("polylogue",)),
+    ),
+    ArchiveSmokeCheck(
+        name="help-mark-candidates",
+        execution=polylogue_execution("mark", "candidates", "--help"),
+        assertion=AssertionSpec(stdout_contains=("candidates",)),
+    ),
+    ArchiveSmokeCheck(
+        name="completions-bash",
+        execution=polylogue_execution("config", "completions", "--shell", "bash"),
+        assertion=AssertionSpec(stdout_contains=("complete",)),
+    ),
+)
+
+
 class ArchiveSmokeResult:
     """Direct result wrapper for the archive-smoke lab scenario."""
 
     def __init__(
         self,
         *,
-        showcase_result: ShowcaseResult,
-        invariant_results: list[InvariantResult],
+        check_results: list[ArchiveSmokeCheckResult],
         report_dir: Path | None,
+        unsupported_reason: str | None = None,
     ) -> None:
-        self.showcase_result = showcase_result
-        self.invariant_results = invariant_results
+        self.check_results = check_results
         self.report_dir = report_dir
+        self.unsupported_reason = unsupported_reason
 
     @property
     def all_passed(self) -> bool:
         return not self.failed_stages()
 
     def stage_statuses(self) -> dict[str, OutcomeStatus]:
-        invariant_status = (
+        status = (
             OutcomeStatus.ERROR
-            if any(result.status is OutcomeStatus.ERROR for result in self.invariant_results)
+            if self.unsupported_reason is not None or any(not result.passed for result in self.check_results)
             else OutcomeStatus.OK
         )
         return {
-            "showcase": OutcomeStatus.OK if self.showcase_result.failed == 0 else OutcomeStatus.ERROR,
-            "invariants": invariant_status,
+            "cli": status,
         }
 
     def failed_stages(self) -> tuple[str, ...]:
         return tuple(name for name, status in self.stage_statuses().items() if status is OutcomeStatus.ERROR)
 
 
-def get_tier_0_exercises() -> list[Exercise]:
-    """Return tier-0 exercises with stable committed baseline output."""
-    return [ex for ex in EXERCISES if ex.group in TIER_0_GROUPS and not ex.needs_data and ex.name not in _ENV_DEPENDENT]
+def get_archive_smoke_checks() -> tuple[ArchiveSmokeCheck, ...]:
+    """Return direct CLI checks for the archive-smoke lab scenario."""
+    return _ARCHIVE_SMOKE_CHECKS
 
 
 def run_tier_0() -> dict[str, str]:
-    """Run tier-0 showcase exercises and return output by exercise name."""
-    from polylogue.showcase.exercises import topological_order
-
-    exercises = topological_order(get_tier_0_exercises())
+    """Run direct archive-smoke checks and return output by check name."""
+    checks = get_archive_smoke_checks()
     results: dict[str, str] = {}
     failures: list[str] = []
-    total = len(exercises)
-    for index, exercise in enumerate(exercises, start=1):
-        print(f"  [{index:03d}/{total:03d}] {exercise.name}", flush=True)
-        result = run_exercise(
-            exercise,
-            env_vars={},
-            invoke_showcase_cli_fn=invoke_showcase_cli,
-        )
-        results[exercise.name] = result.output or ""
+    total = len(checks)
+    for index, check in enumerate(checks, start=1):
+        print(f"  [{index:03d}/{total:03d}] {check.name}", flush=True)
+        result = _run_archive_smoke_check(check)
+        results[check.name] = result.output or ""
         if not result.passed:
-            failures.append(f"{exercise.name}: exit {result.exit_code}: {result.error or 'failed'}")
+            failures.append(f"{check.name}: exit {result.exit_code}: {result.error or 'failed'}")
     if failures:
         joined = "\n  - ".join(failures)
-        raise RuntimeError(f"tier-0 showcase exercises failed:\n  - {joined}")
+        raise RuntimeError(f"archive-smoke checks failed:\n  - {joined}")
     return results
 
 
@@ -113,13 +140,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def list_scenarios(*, as_json: bool) -> int:
-    """List available showcase scenarios with their tier-0 exercise inventory."""
-    tier_0 = get_tier_0_exercises()
+    """List available scenario checks."""
+    archive_checks = get_archive_smoke_checks()
     scenarios: list[dict[str, object]] = [
         {
             "name": "archive-smoke",
-            "kind": "showcase",
-            "tier_0_exercise_count": len(tier_0),
+            "kind": "cli-smoke",
+            "tier_0_check_count": len(archive_checks),
         },
         {
             "name": "reader-visual-smoke",
@@ -136,7 +163,7 @@ def list_scenarios(*, as_json: bool) -> int:
         if name == "reader-visual-smoke":
             print(f"{name:<20s}  command: {entry['command']}")
             continue
-        print(f"{name:<20s}  tier-0 exercises: {entry['tier_0_exercise_count']}")
+        print(f"{name:<20s}  tier-0 checks: {entry['tier_0_check_count']}")
     return 0
 
 
@@ -194,21 +221,24 @@ def run_archive_smoke(
     report_dir: Path | None,
     verbose: bool,
     fail_fast: bool,
+    as_json: bool = False,
 ) -> ArchiveSmokeResult:
-    """Run the archive-smoke lab scenario without QA session wrapping."""
-    runner = ShowcaseRunner(
-        live=live,
-        output_dir=report_dir,
-        fail_fast=fail_fast,
+    """Run direct archive-smoke CLI checks without showcase catalog wrapping."""
+    if tier not in (None, _ARCHIVE_SMOKE_TIER):
+        return ArchiveSmokeResult(
+            check_results=[],
+            report_dir=report_dir,
+            unsupported_reason=f"archive-smoke only supports tier {_ARCHIVE_SMOKE_TIER} direct CLI checks",
+        )
+    check_results = _run_archive_smoke_checks(
         verbose=verbose,
-        tier_filter=tier,
+        fail_fast=fail_fast,
+        progress_stream=sys.stderr if as_json else sys.stdout,
     )
-    showcase_result = runner.run()
-    invariant_results = check_invariants(showcase_result.results)
+    _write_archive_smoke_report(report_dir, check_results=check_results, live=live, tier=tier)
     return ArchiveSmokeResult(
-        showcase_result=showcase_result,
-        invariant_results=invariant_results,
-        report_dir=showcase_result.output_dir,
+        check_results=check_results,
+        report_dir=report_dir,
     )
 
 
@@ -223,6 +253,90 @@ def _scenario_payload(result: _ScenarioResult) -> dict[str, object]:
         "ok": not failed_stages,
         "report_dir": str(result.report_dir) if result.report_dir is not None else None,
     }
+
+
+def _run_archive_smoke_check(check: ArchiveSmokeCheck) -> ArchiveSmokeCheckResult:
+    started = time.monotonic()
+    try:
+        cli_result = invoke_showcase_cli(check.execution, env={"POLYLOGUE_FORCE_PLAIN": "1"}, timeout=check.timeout_s)
+    except subprocess.TimeoutExpired:
+        duration_ms = (time.monotonic() - started) * 1000
+        return ArchiveSmokeCheckResult(
+            check=check,
+            passed=False,
+            exit_code=-1,
+            output="",
+            duration_ms=duration_ms,
+            error=f"timed out after {check.timeout_s:.0f}s",
+        )
+    except Exception as exc:
+        duration_ms = (time.monotonic() - started) * 1000
+        return ArchiveSmokeCheckResult(
+            check=check,
+            passed=False,
+            exit_code=-1,
+            output="",
+            duration_ms=duration_ms,
+            error=f"invoke crashed: {exc}",
+        )
+    output = cli_result.output
+    error = check.assertion.validate_process(output, cli_result.exit_code)
+    duration_ms = (time.monotonic() - started) * 1000
+    return ArchiveSmokeCheckResult(
+        check=check,
+        passed=error is None,
+        exit_code=cli_result.exit_code,
+        output=output,
+        duration_ms=duration_ms,
+        error=error,
+    )
+
+
+def _run_archive_smoke_checks(
+    *,
+    verbose: bool,
+    fail_fast: bool,
+    progress_stream: TextIO,
+) -> list[ArchiveSmokeCheckResult]:
+    results: list[ArchiveSmokeCheckResult] = []
+    checks = get_archive_smoke_checks()
+    for index, check in enumerate(checks, start=1):
+        print(f"  [{index:03d}/{len(checks):03d}] {check.name}", flush=True, file=progress_stream)
+        result = _run_archive_smoke_check(check)
+        results.append(result)
+        if verbose and result.output:
+            print(result.output, end="" if result.output.endswith("\n") else "\n", file=progress_stream)
+        if fail_fast and not result.passed:
+            break
+    return results
+
+
+def _write_archive_smoke_report(
+    report_dir: Path | None,
+    *,
+    check_results: list[ArchiveSmokeCheckResult],
+    live: bool,
+    tier: int | None,
+) -> None:
+    if report_dir is None:
+        return
+    report_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "scenario": "archive-smoke",
+        "live": live,
+        "tier": tier,
+        "checks": [
+            {
+                "name": result.check.name,
+                "exit_code": result.exit_code,
+                "passed": result.passed,
+                "duration_ms": round(result.duration_ms, 1),
+                "error": result.error,
+            }
+            for result in check_results
+        ],
+    }
+    (report_dir / "archive-smoke.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -240,6 +354,7 @@ def main(argv: list[str] | None = None) -> int:
         report_dir=args.report_dir,
         verbose=bool(args.verbose),
         fail_fast=bool(args.fail_fast),
+        as_json=bool(args.json),
     )
     if args.json:
         print(json.dumps(_scenario_payload(result), indent=2))
