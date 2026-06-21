@@ -10,6 +10,7 @@ import shutil
 import sqlite3
 import subprocess
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -97,6 +98,17 @@ class BrowserCaptureArchiveProbe:
 
 
 @dataclass(frozen=True, slots=True)
+class BrowserCaptureReceiverArchiveStateProbe:
+    url: str | None
+    provider: str | None
+    provider_session_id: str | None
+    status: int | None
+    payload: dict[str, Any] | None
+    ok: bool
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class DeploymentSmokeReport:
     ok: bool
     path: str
@@ -107,6 +119,7 @@ class DeploymentSmokeReport:
     routes: list[RouteProbe]
     completions: list[CompletionProbe]
     browser_capture_archive: BrowserCaptureArchiveProbe
+    browser_capture_receiver_archive_state: BrowserCaptureReceiverArchiveStateProbe
     diagnostics: dict[str, Any]
     failures: list[str]
 
@@ -153,6 +166,11 @@ def _run_completion_command(
 
 def _open_url(url: str, *, timeout_s: float) -> Any:
     return urllib.request.urlopen(url, timeout=timeout_s)
+
+
+def _open_receiver_url(url: str, *, timeout_s: float) -> Any:
+    request = urllib.request.Request(url, headers={"Origin": "chrome-extension://polylogue-deployment-smoke"})
+    return urllib.request.urlopen(request, timeout=timeout_s)
 
 
 def _timeout_stream(value: bytes | None) -> str:
@@ -354,6 +372,99 @@ def _probe_browser_capture_archive(*, archive_root: Path) -> BrowserCaptureArchi
     )
 
 
+def _latest_spooled_capture_identity(path: str | None) -> tuple[str, str, str | None]:
+    if path is None:
+        return "", "", None
+    try:
+        raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return "", "", f"{type(exc).__name__}: {exc}"
+    session = raw.get("session") if isinstance(raw, dict) else None
+    if not isinstance(session, dict):
+        return "", "", "missing_session"
+    provider = session.get("provider")
+    provider_session_id = session.get("provider_session_id")
+    if not isinstance(provider, str) or not provider:
+        return "", "", "missing_provider"
+    if not isinstance(provider_session_id, str) or not provider_session_id:
+        return "", "", "missing_provider_session_id"
+    return provider, provider_session_id, None
+
+
+def _probe_browser_capture_receiver_archive_state(
+    *,
+    receiver_base_url: str,
+    browser_capture_archive: BrowserCaptureArchiveProbe,
+    timeout_s: float,
+) -> BrowserCaptureReceiverArchiveStateProbe:
+    provider, provider_session_id, identity_error = _latest_spooled_capture_identity(
+        browser_capture_archive.latest_spooled_path
+    )
+    if browser_capture_archive.latest_spooled_path is None:
+        return BrowserCaptureReceiverArchiveStateProbe(
+            url=None,
+            provider=None,
+            provider_session_id=None,
+            status=None,
+            payload=None,
+            ok=True,
+        )
+    if identity_error is not None:
+        return BrowserCaptureReceiverArchiveStateProbe(
+            url=None,
+            provider=None,
+            provider_session_id=None,
+            status=None,
+            payload=None,
+            ok=False,
+            error=f"invalid_latest_spooled_capture:{identity_error}",
+        )
+    query = urllib.parse.urlencode({"provider": provider, "provider_session_id": provider_session_id})
+    url = f"{receiver_base_url.rstrip('/')}/v1/archive-state?{query}"
+    try:
+        with _open_receiver_url(url, timeout_s=timeout_s) as response:
+            raw = response.read().decode("utf-8", "replace")
+            decoded = json.loads(raw) if raw else {}
+            payload = decoded if isinstance(decoded, dict) else {"value": decoded}
+            error = None
+            artifact_path = payload.get("artifact_path")
+            if isinstance(artifact_path, str) and Path(artifact_path).is_absolute():
+                error = "receiver_archive_state_absolute_artifact_path"
+            elif payload.get("artifact_ref") is None:
+                error = "receiver_archive_state_missing_artifact_ref"
+            elif payload.get("captured") is not True:
+                error = "receiver_archive_state_not_captured"
+            return BrowserCaptureReceiverArchiveStateProbe(
+                url=url,
+                provider=provider,
+                provider_session_id=provider_session_id,
+                status=response.status,
+                payload=payload,
+                ok=200 <= response.status < 300 and error is None,
+                error=error,
+            )
+    except urllib.error.HTTPError as exc:
+        return BrowserCaptureReceiverArchiveStateProbe(
+            url=url,
+            provider=provider,
+            provider_session_id=provider_session_id,
+            status=exc.code,
+            payload=None,
+            ok=False,
+            error="http_error",
+        )
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+        return BrowserCaptureReceiverArchiveStateProbe(
+            url=url,
+            provider=provider,
+            provider_session_id=provider_session_id,
+            status=None,
+            payload=None,
+            ok=False,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+
+
 def _probe_route(url: str, *, timeout_s: float) -> RouteProbe:
     try:
         with _open_url(url, timeout_s=timeout_s) as response:
@@ -382,6 +493,7 @@ def _diagnose(
     routes: list[RouteProbe],
     repo_head: str | None,
     browser_capture_archive: BrowserCaptureArchiveProbe,
+    browser_capture_receiver_archive_state: BrowserCaptureReceiverArchiveStateProbe,
 ) -> dict[str, Any]:
     command_by_name = {probe.name: probe for probe in commands}
     route_by_path = {probe.url.rsplit("/", 1)[-1]: probe for probe in routes}
@@ -419,6 +531,9 @@ def _diagnose(
         next_actions.append(
             "verify daemon watch/catch-up includes the browser-capture spool and restart the deployed daemon"
         )
+    if browser_capture_receiver_archive_state.error == "receiver_archive_state_absolute_artifact_path":
+        likely_causes.append("deployed browser-capture receiver archive-state DTO leaks absolute artifact paths")
+        next_actions.append("restart a deployed receiver built from the current relative artifact-ref contract")
     if repo_head is not None and deployed_commit is not None and not repo_head.startswith(deployed_commit):
         likely_causes.append("systemwide polylogue commit differs from the current checkout")
         next_actions.append("compare the deployed package input with the checkout before trusting live UI probes")
@@ -429,6 +544,7 @@ def _diagnose(
         "polylogued_version_ok": polylogued.ok if polylogued is not None else None,
         "browser_capture_state": browser_capture_state,
         "browser_capture_archive": asdict(browser_capture_archive),
+        "browser_capture_receiver_archive_state": asdict(browser_capture_receiver_archive_state),
         "likely_causes": likely_causes,
         "next_actions": next_actions,
     }
@@ -471,6 +587,16 @@ def build_report(
     browser_capture_archive = _probe_browser_capture_archive(archive_root=archive_root)
     if not browser_capture_archive.ok:
         failures.append(f"browser-capture-archive:{browser_capture_archive.error or 'spooled_without_raw_rows'}")
+    browser_capture_receiver_archive_state = _probe_browser_capture_receiver_archive_state(
+        receiver_base_url=receiver_base_url,
+        browser_capture_archive=browser_capture_archive,
+        timeout_s=timeout_s,
+    )
+    if not browser_capture_receiver_archive_state.ok:
+        failures.append(
+            "browser-capture-receiver-archive-state:"
+            f"{browser_capture_receiver_archive_state.error or browser_capture_receiver_archive_state.status}"
+        )
     repo_head = _repo_head()
     return DeploymentSmokeReport(
         ok=not failures,
@@ -482,7 +608,14 @@ def build_report(
         routes=routes,
         completions=completions,
         browser_capture_archive=browser_capture_archive,
-        diagnostics=_diagnose(commands, routes, repo_head, browser_capture_archive),
+        browser_capture_receiver_archive_state=browser_capture_receiver_archive_state,
+        diagnostics=_diagnose(
+            commands,
+            routes,
+            repo_head,
+            browser_capture_archive,
+            browser_capture_receiver_archive_state,
+        ),
         failures=failures,
     )
 
@@ -521,6 +654,14 @@ def _print_human(report: DeploymentSmokeReport) -> None:
         f"  {marker} spooled={capture_probe.spooled_count} raw_rows={capture_probe.raw_rows} "
         f"latest={capture_probe.latest_spooled_path or ''} error={capture_probe.error or ''}"
     )
+    receiver_state_probe = report.browser_capture_receiver_archive_state
+    if receiver_state_probe.url is not None or not receiver_state_probe.ok:
+        marker = "ok" if receiver_state_probe.ok else "FAIL"
+        print(
+            f"  {marker} receiver archive-state provider={receiver_state_probe.provider or ''} "
+            f"session={receiver_state_probe.provider_session_id or ''} status={receiver_state_probe.status} "
+            f"error={receiver_state_probe.error or ''}"
+        )
     if report.failures:
         print("")
         print("Failures:")

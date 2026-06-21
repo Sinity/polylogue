@@ -22,6 +22,34 @@ def _create_browser_source_db(path: Path, *, file_mtime_ms: int | None = None) -
             )
 
 
+def _write_spooled_capture(path: Path, *, provider_session_id: str = "capture") -> Path:
+    capture_dir = path / "browser-capture" / "chatgpt"
+    capture_dir.mkdir(parents=True)
+    capture = capture_dir / f"{provider_session_id}.json"
+    capture.write_text(
+        json.dumps(
+            {
+                "polylogue_capture_kind": "browser_llm_session",
+                "schema_version": 1,
+                "provenance": {
+                    "source_url": f"https://chatgpt.com/c/{provider_session_id}",
+                    "page_title": "Deployment smoke capture",
+                    "captured_at": "2026-06-21T20:10:00+00:00",
+                    "adapter_name": "deployment-smoke-test",
+                },
+                "session": {
+                    "provider": "chatgpt",
+                    "provider_session_id": provider_session_id,
+                    "title": "Deployment smoke capture",
+                    "turns": [{"provider_turn_id": "u1", "role": "user", "text": "probe"}],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    return capture
+
+
 class _FakeResponse:
     def __init__(self, status: int, payload: dict[str, object]) -> None:
         self.status = status
@@ -273,3 +301,90 @@ def test_deployment_smoke_accepts_browser_capture_raw_row_at_latest_mtime(tmp_pa
     assert probe.spooled_count == 1
     assert probe.raw_rows == 1
     assert probe.error is None
+
+
+def test_deployment_smoke_accepts_current_receiver_archive_state_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    capture = _write_spooled_capture(tmp_path, provider_session_id="capture-ok")
+    archive_probe = deployment_smoke.BrowserCaptureArchiveProbe(
+        spool_path=str(tmp_path / "browser-capture"),
+        source_db_path=str(tmp_path / "source.db"),
+        spooled_count=1,
+        latest_spooled_path=str(capture),
+        latest_spooled_mtime=capture.stat().st_mtime,
+        latest_spooled_mtime_ms=int(capture.stat().st_mtime * 1000),
+        raw_rows=1,
+        latest_raw_file_mtime_ms=int(capture.stat().st_mtime * 1000),
+        ok=True,
+    )
+
+    def fake_open_receiver_url(url: str, *, timeout_s: float) -> _FakeResponse:
+        del timeout_s
+        assert "provider=chatgpt" in url
+        assert "provider_session_id=capture-ok" in url
+        return _FakeResponse(
+            200,
+            {
+                "provider": "chatgpt",
+                "provider_session_id": "capture-ok",
+                "captured": True,
+                "artifact_ref": "chatgpt/capture-ok.json",
+            },
+        )
+
+    monkeypatch.setattr(deployment_smoke, "_open_receiver_url", fake_open_receiver_url)
+
+    probe = deployment_smoke._probe_browser_capture_receiver_archive_state(
+        receiver_base_url="http://receiver",
+        browser_capture_archive=archive_probe,
+        timeout_s=1,
+    )
+
+    assert probe.ok is True
+    assert probe.provider == "chatgpt"
+    assert probe.provider_session_id == "capture-ok"
+    assert probe.error is None
+
+
+def test_deployment_smoke_reports_receiver_archive_state_absolute_artifact_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    capture = _write_spooled_capture(tmp_path, provider_session_id="capture-stale")
+    archive_probe = deployment_smoke.BrowserCaptureArchiveProbe(
+        spool_path=str(tmp_path / "browser-capture"),
+        source_db_path=str(tmp_path / "source.db"),
+        spooled_count=1,
+        latest_spooled_path=str(capture),
+        latest_spooled_mtime=capture.stat().st_mtime,
+        latest_spooled_mtime_ms=int(capture.stat().st_mtime * 1000),
+        raw_rows=0,
+        latest_raw_file_mtime_ms=None,
+        ok=False,
+        error="spooled_without_raw_rows",
+    )
+
+    monkeypatch.setattr(
+        deployment_smoke,
+        "_open_receiver_url",
+        lambda url, *, timeout_s: _FakeResponse(
+            200,
+            {
+                "provider": "chatgpt",
+                "provider_session_id": "capture-stale",
+                "captured": True,
+                "artifact_path": str(capture),
+            },
+        ),
+    )
+
+    probe = deployment_smoke._probe_browser_capture_receiver_archive_state(
+        receiver_base_url="http://receiver",
+        browser_capture_archive=archive_probe,
+        timeout_s=1,
+    )
+
+    assert probe.ok is False
+    assert probe.error == "receiver_archive_state_absolute_artifact_path"
