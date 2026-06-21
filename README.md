@@ -67,26 +67,12 @@ Polylogue is that substrate, and a cockpit over it:
   to guess at), blob storage is content-addressed, and the daemon exposes
   health checks and Prometheus metrics.
 
-## Architecture at a glance
+## Archive model
 
-```
-source files (JSON/JSONL/ZIP)
-  → detect_provider()          shape-based, not filename
-  → provider parser            parsers/{chatgpt,claude,codex,drive,…}.py
-  → content hash (NFC)         SHA-256 over normalized payload
-  → store (upsert-if-changed)  idempotent by content hash
-  → session insights           profiles, work events, phases, threads
-  → FTS index                  unicode61 tokenizer
-
-           CLI / MCP / HTTP Reader / Python API
-                       ↑
-                 filter chain → query → storage
-```
-
-Polylogue has four rings: archive substrate, derived read models, user and
-machine surfaces, and verification/maintenance. The substrate owns stored
-meaning; everything else derives from it, exposes it, or verifies it. The
-archive itself is a split-tier SQLite file set:
+Polylogue is organized around one rule: source evidence and user-authored
+state are durable; search indexes, insight read models, embeddings, and daemon
+telemetry are rebuildable. The archive uses a split-tier SQLite file set so
+each class can be backed up, rebuilt, and inspected independently:
 
 - `source.db` — raw acquisition evidence and source artifacts;
 - `index.db` — parsed sessions, messages, FTS/search indexes, and derived
@@ -97,9 +83,12 @@ archive itself is a split-tier SQLite file set:
   operational state.
 
 Large binary content lives in a content-addressed blob store keyed by SHA-256.
+The CLI, MCP server, daemon reader, and Python API all read through the same
+archive/query substrate rather than maintaining separate stores.
 
-See [docs/architecture.md](docs/architecture.md) for the ring boundaries and
-[docs/internals.md](docs/internals.md) for hot files and extension points.
+See [docs/architecture.md](docs/architecture.md) for the system rings and data
+flow, and [docs/internals.md](docs/internals.md) for hot files, invariants, and
+extension points.
 
 ## Privacy and local-first
 
