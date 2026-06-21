@@ -279,6 +279,7 @@ For service-worker-to-receiver coverage, run the extension smoke:
 ```bash
 devtools workspace dev-loop --extension-smoke
 devtools workspace dev-loop --extension-smoke --json
+devtools workspace dev-loop --browser-plan --extension-smoke --json
 ```
 
 This starts a temporary local browser-capture receiver, imports the actual
@@ -299,6 +300,9 @@ It does not need authenticated ChatGPT/Claude.ai cookies and does not claim to
 prove GUI content-script injection. Use the same run id and receiver settings
 when you then load `browser-extension/` unpacked into an agent/private Chrome
 profile for real-page inspection.
+Combine it with `--browser-plan` when you want one run id and browser artifact
+directory containing both the synthetic extension proof and the real-browser
+handoff plan.
 
 For GUI/browser inspection, generate a branch-local browser plan:
 
