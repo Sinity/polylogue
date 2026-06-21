@@ -1,4 +1,4 @@
-"""Verification-lab showcase scenario runner."""
+"""Verification-lab smoke scenario runner."""
 
 from __future__ import annotations
 
@@ -121,20 +121,20 @@ def run_tier_0() -> dict[str, str]:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run verification-lab showcase scenarios.")
+    parser = argparse.ArgumentParser(description="Run verification-lab smoke scenarios.")
     subparsers = parser.add_subparsers(dest="action", required=True)
-    run_parser = subparsers.add_parser("run", help="Run a named showcase scenario set.")
+    run_parser = subparsers.add_parser("run", help="Run a named smoke scenario set.")
     run_parser.add_argument("scenario", choices=_SCENARIO_NAMES, help="Scenario set to run.")
     run_parser.add_argument(
         "--live", action="store_true", help="Run against the active archive instead of a seeded workspace."
     )
-    run_parser.add_argument("--tier", type=int, default=None, help="Only run exercises at this tier.")
+    run_parser.add_argument("--tier", type=int, default=None, help="Only run smoke checks at this tier.")
     run_parser.add_argument("--report-dir", type=Path, default=None, help="Directory for scenario artifacts.")
     run_parser.add_argument("--json", action="store_true", help="Emit a machine-readable scenario payload.")
-    run_parser.add_argument("--verbose", action="store_true", help="Print exercise outputs.")
-    run_parser.add_argument("--fail-fast", action="store_true", help="Stop on first exercise failure.")
+    run_parser.add_argument("--verbose", action="store_true", help="Print smoke-check outputs.")
+    run_parser.add_argument("--fail-fast", action="store_true", help="Stop on first smoke-check failure.")
 
-    list_parser = subparsers.add_parser("list", help="List available showcase scenarios.")
+    list_parser = subparsers.add_parser("list", help="List available smoke scenarios.")
     list_parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
     return parser
 

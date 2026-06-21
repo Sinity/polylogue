@@ -1,4 +1,4 @@
-"""Subprocess-backed CLI boundary for showcase exercises."""
+"""Subprocess-backed CLI boundary for verification-lab smoke scenarios."""
 
 from __future__ import annotations
 

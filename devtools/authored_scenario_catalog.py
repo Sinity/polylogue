@@ -1,4 +1,4 @@
-"""Central authored catalog for scenario-bearing verification sources."""
+"""Central authored catalog for verification lanes and campaigns."""
 
 from __future__ import annotations
 
@@ -20,14 +20,10 @@ from polylogue.scenarios import (
     compile_projection_entries,
 )
 from polylogue.schemas.operator.inference import list_inferred_corpus_scenarios
-from polylogue.showcase.exercise_models import Exercise
-from polylogue.showcase.exercises import EXERCISE_SCENARIOS, SUPPLEMENTAL_SCENARIOS
 
 
 @dataclass(frozen=True)
 class AuthoredScenarioCatalog:
-    exercise_scenarios: tuple[Exercise, ...]
-    supplemental_scenarios: tuple[Exercise, ...]
     validation_lanes: tuple[LaneEntry, ...]
     mutation_campaigns: tuple[MutationCampaignEntry, ...]
     benchmark_campaigns: tuple[BenchmarkCampaignEntry, ...]
@@ -48,8 +44,6 @@ class AuthoredScenarioCatalog:
 
     def projection_sources(self) -> tuple[ScenarioProjectionSource, ...]:
         result: list[ScenarioProjectionSource] = []
-        result.extend(self.exercise_scenarios)
-        result.extend(self.supplemental_scenarios)
         result.extend(self.validation_lanes)  # type: ignore[arg-type]
         result.extend(self.mutation_campaigns)
         result.extend(self.benchmark_campaigns)
@@ -81,8 +75,6 @@ class AuthoredScenarioCatalog:
 @lru_cache(maxsize=1)
 def get_authored_scenario_catalog() -> AuthoredScenarioCatalog:
     return AuthoredScenarioCatalog(
-        exercise_scenarios=EXERCISE_SCENARIOS,
-        supplemental_scenarios=SUPPLEMENTAL_SCENARIOS,
         validation_lanes=build_validation_lane_entries(),
         mutation_campaigns=build_mutation_entries(),
         benchmark_campaigns=build_benchmark_entries(),

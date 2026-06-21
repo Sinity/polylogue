@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import os
 import tempfile
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
 from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.config import Config, Source, get_config
-from polylogue.insights.authored_payloads import canonical_payload_json
 from polylogue.scenarios import (
     CorpusRequest,
     CorpusScenario,
@@ -21,8 +20,6 @@ from polylogue.scenarios import (
     flatten_corpus_specs,
 )
 from polylogue.schemas.synthetic.models import SyntheticWrittenBatch
-from polylogue.showcase.corpus_requests import showcase_corpus_request
-from polylogue.showcase.exercise_models import Exercise
 
 
 def _resolved_corpus_request(
@@ -317,39 +314,6 @@ def seed_workspace_from_corpus_options(
     )
 
 
-def seed_workspace_with(
-    workspace_dir: Path,
-    *,
-    corpus_request: CorpusRequest | None = None,
-    exercises: tuple[Exercise, ...] = (),
-    generate_fixtures: Callable[[Path, CorpusRequest], None],
-) -> dict[str, str]:
-    """Populate a verification workspace from exercise specs or generated fixtures."""
-    workspace = create_verification_workspace(workspace_dir)
-    request = corpus_request or showcase_corpus_request()
-    corpus_specs = _merge_exercise_corpus_specs(exercises)
-    if corpus_specs:
-        seed_workspace_from_specs(workspace, corpus_specs=corpus_specs)
-        return dict(workspace.env_vars)
-    generate_fixtures(workspace.fixture_dir, request)
-    run_pipeline_for_fixture_workspace(workspace)
-    return dict(workspace.env_vars)
-
-
-def _merge_exercise_corpus_specs(exercises: tuple[Exercise, ...]) -> tuple[CorpusSpec, ...]:
-    """Return ordered unique corpus specs referenced by the selected exercises."""
-    seen: set[str] = set()
-    merged: list[CorpusSpec] = []
-    for exercise in exercises:
-        for corpus_spec in exercise.corpus_specs:
-            key = canonical_payload_json(corpus_spec.to_payload())
-            if key in seen:
-                continue
-            seen.add(key)
-            merged.append(corpus_spec)
-    return tuple(merged)
-
-
 def mirror_fixtures_to_inbox(fixture_dir: Path, inbox_dir: Path) -> None:
     """Copy generated fixture files into the inbox layout used by source discovery."""
     inbox_dir.mkdir(parents=True, exist_ok=True)
@@ -463,7 +427,6 @@ __all__ = [
     "seed_workspace_from_corpus_options",
     "seed_workspace_from_scenarios",
     "seed_workspace_from_specs",
-    "seed_workspace_with",
     "run_pipeline_for_configured_sources",
     "run_pipeline_for_fixture_workspace",
 ]

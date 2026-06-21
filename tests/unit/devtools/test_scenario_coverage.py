@@ -32,7 +32,7 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
         "schema-explain-query-loop",
     }
     incomplete_paths = {name: path for name, path in coverage.paths.items() if not path.complete}
-    assert set(incomplete_paths) == set()
+    assert set(incomplete_paths) == {"thread-query-loop", "tool-usage-query-loop"}
     assert "raw_validation_state" in coverage.artifacts
     assert "configured_sources" in coverage.artifacts
     assert "source_payload_stream" in coverage.artifacts
@@ -70,9 +70,17 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
     assert "query-schema-explanations" in coverage.operations
     assert "cli.help" in coverage.declared_operations
     assert "benchmark.query.search-filters" in coverage.declared_operations
-    assert coverage.uncovered_artifacts == ()
-    # Mutation operations are runtime mutations, not in scenario coverage.
-    assert all(name.startswith("mutate-") for name in coverage.uncovered_operations)
+    assert coverage.uncovered_artifacts == ("thread_results", "tool_usage_results")
+    assert coverage.uncovered_operations == (
+        "mutate-add-tag",
+        "mutate-bulk-tag-sessions",
+        "mutate-delete-metadata",
+        "mutate-delete-session",
+        "mutate-remove-tag",
+        "mutate-set-metadata",
+        "query-threads",
+        "query-tool-usage",
+    )
     assert coverage.uncovered_maintenance_targets == (
         "empty_sessions",
         "message_embeddings",
@@ -82,4 +90,4 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
         "superseded_raw_snapshots",
         "wal_checkpoint",
     )
-    assert all(name.startswith("mutate-") for name in coverage.uncovered_declared_operations)
+    assert coverage.uncovered_declared_operations == coverage.uncovered_operations

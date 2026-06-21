@@ -24,8 +24,6 @@ from polylogue.scenarios import (
 def test_build_document_includes_live_registry_sections() -> None:
     registry = QualityRegistry(
         catalog=AuthoredScenarioCatalog(
-            exercise_scenarios=(),
-            supplemental_scenarios=(),
             validation_lanes=(
                 LaneEntry(
                     name="machine-contract",
@@ -108,10 +106,10 @@ def test_build_document_includes_live_registry_sections() -> None:
                 source_payload={"family": "runtime-substrate"},
             ),
             ScenarioProjectionEntry(
-                source_kind=ScenarioProjectionSourceKind.EXERCISE,
-                name="json-doctor-session-insights-preview",
-                description="Session-insight doctor preview.",
-                origin="generated.json-contract",
+                source_kind=ScenarioProjectionSourceKind.VALIDATION_LANE,
+                name="session-insight-repair",
+                description="Session-insight repair lane.",
+                origin="authored.validation-lane",
                 path_targets=("session-insight-repair-loop",),
                 artifact_targets=("session_insight_rows",),
                 operation_targets=("project-session-insight-readiness",),
@@ -165,11 +163,10 @@ def test_build_document_includes_live_registry_sections() -> None:
     assert "- inferred corpus scenarios: `1`" in rendered
     assert "- scenario projections: `4`" in rendered
     assert "  - benchmark-campaign: `1`" in rendered
-    assert "  - exercise: `1`" in rendered
     assert "  - inferred-corpus-scenario: `1`" in rendered
-    assert "  - validation-lane: `1`" in rendered
+    assert "  - validation-lane: `2`" in rendered
     assert "## Scenario Projection Catalog" in rendered
-    assert "| `exercise` | `json-doctor-session-insights-preview` |" in rendered
+    assert "| `validation-lane` | `session-insight-repair` |" in rendered
     assert "| `validation-lane` | `runtime-substrate-hardening` |" in rendered
     assert "| `inferred-corpus-scenario` | `chatgpt:v1` |" in rendered
     assert "`session-insight-repair-loop`" in rendered
@@ -178,8 +175,6 @@ def test_build_document_includes_live_registry_sections() -> None:
 def test_build_document_includes_runtime_coverage_section() -> None:
     registry = QualityRegistry(
         catalog=AuthoredScenarioCatalog(
-            exercise_scenarios=(),
-            supplemental_scenarios=(),
             validation_lanes=(),
             mutation_campaigns=(),
             benchmark_campaigns=(),
@@ -192,9 +187,9 @@ def test_build_document_includes_runtime_coverage_section() -> None:
         artifacts={
             "session_insight_rows": (
                 ScenarioCoverageRef(
-                    source="exercise",
-                    name="json-doctor-session-insights-preview",
-                    origin="generated.json-contract",
+                    source="validation-lane",
+                    name="session-insight-repair",
+                    origin="authored.validation-lane",
                 ),
             ),
         },
@@ -206,9 +201,9 @@ def test_build_document_includes_runtime_coverage_section() -> None:
                 name="session-insight-repair-loop",
                 refs=(
                     ScenarioCoverageRef(
-                        source="exercise",
-                        name="json-doctor-session-insights-preview",
-                        origin="generated.json-contract",
+                        source="validation-lane",
+                        name="session-insight-repair",
+                        origin="authored.validation-lane",
                     ),
                 ),
                 uncovered_artifacts=("session_insight_fts",),

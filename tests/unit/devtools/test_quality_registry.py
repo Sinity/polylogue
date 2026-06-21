@@ -134,22 +134,6 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
         "materialize-session-insights",
     )
     assert daemon_live.tags == ("benchmark", "synthetic", "daemon", "live", "convergence")
-    insight_profiles = next(
-        entry for entry in registry.catalog.exercise_scenarios if entry.name == "json-insights-profiles"
-    )
-    assert insight_profiles.path_targets == ("session-profile-query-loop",)
-    assert insight_profiles.artifact_targets == (
-        "session_profile_rows",
-        "session_profile_results",
-    )
-    assert insight_profiles.operation_targets == ("cli.json-contract", "query-session-profiles")
-    insight_threads = next(
-        entry for entry in registry.catalog.exercise_scenarios if entry.name == "json-insights-threads"
-    )
-    assert insight_threads.path_targets == ("thread-query-loop",)
-    assert insight_threads.artifact_targets == ("thread_rows", "thread_fts", "thread_results")
-    assert insight_threads.operation_targets == ("cli.json-contract", "query-threads")
-    assert not any(entry.name == "json-doctor-action-preview" for entry in registry.scenario_projections)
     frontier_local = next(entry for entry in registry.composite_lanes if entry.name == "frontier-local")
     archive_intelligence = next(entry for entry in registry.composite_lanes if entry.name == "archive-intelligence")
     runtime_substrate = next(entry for entry in registry.composite_lanes if entry.name == "runtime-substrate-hardening")
