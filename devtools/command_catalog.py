@@ -13,6 +13,7 @@ VERIFICATION_LAB_COMMAND_NAMES: tuple[str, ...] = (
     "lab graph",
     "lab lanes",
     "lab policy schema-versioning",
+    "lab provider completeness",
     "lab probe capture-regression",
     "lab probe pipeline",
     "lab probe turso",
@@ -36,7 +37,6 @@ CATEGORY_ORDER: tuple[str, ...] = (
     "verification",
     "benchmarking",
     "workspace",
-    "maintenance",
 )
 
 
@@ -194,8 +194,8 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "provider completeness",
-        "maintenance",
+        "lab provider completeness",
+        "verification lab",
         "Report provider/importer package completeness by origin and capture mode.",
         "devtools.provider_completeness",
         use_when=(
@@ -203,10 +203,10 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "before claiming a provider/importer mode is product-ready."
         ),
         examples=(
-            "devtools provider completeness",
-            "devtools provider completeness --json",
-            "devtools provider completeness --origin codex-session --json",
-            "devtools provider completeness --check",
+            "devtools lab provider completeness",
+            "devtools lab provider completeness --json",
+            "devtools lab provider completeness --origin codex-session --json",
+            "devtools lab provider completeness --check",
         ),
     ),
     CommandSpec(
@@ -377,19 +377,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "Wired into devtools render all so drift fails the generated-surface check."
         ),
         examples=("devtools render topology-status", "devtools render topology-status --check"),
-    ),
-    CommandSpec(
-        "render readme-media",
-        "generated surfaces",
-        "Generate README media assets (architecture diagrams, flowcharts) under docs/media/.",
-        "devtools.generate_readme_media",
-        use_when="Refresh architecture diagrams, data-flow charts, and provider-detection flowcharts for the README.",
-        examples=(
-            "devtools render readme-media",
-            "devtools render readme-media --list",
-            "devtools render readme-media --name data-flow",
-            "devtools render readme-media --check",
-        ),
     ),
     CommandSpec(
         "verify closure-matrix",

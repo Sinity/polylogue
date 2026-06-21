@@ -136,12 +136,3 @@ coverage_gaps:
     review_after: "2026-08-01"
     issue: 590
     next_evidence: devtools lab projections
-  - id: scenario.docs-media
-    subject: docs_media
-    gap: No scenario for documentation freshness verification
-    owner: scenario-coverage
-    severity: major
-    declared_at: "2026-05-02"
-    review_after: "2026-08-01"
-    issue: 590
-    next_evidence: devtools lab projections
