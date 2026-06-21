@@ -15,6 +15,7 @@ VERIFICATION_LAB_COMMAND_NAMES: tuple[str, ...] = (
     "lab policy schema-versioning",
     "lab probe capture-regression",
     "lab probe pipeline",
+    "lab probe turso",
     "lab projections",
     "lab scenario",
     "lab schema audit",
@@ -509,6 +510,22 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=(
             "devtools lab probe pipeline --provider chatgpt --stage parse",
             "devtools lab probe pipeline --input-mode archive-subset --capture-regression live-parse-drift",
+        ),
+    ),
+    CommandSpec(
+        "lab probe turso",
+        "verification lab",
+        "Probe Turso Database compatibility against Polylogue storage assumptions.",
+        "devtools.turso_probe",
+        use_when=(
+            "Collect executable evidence before changing production storage backends: "
+            "Python binding availability, generated-column support, FTS compatibility, MVCC, CDC, "
+            "vector functions, ATTACH, and WAL pragma behavior."
+        ),
+        examples=(
+            "devtools lab probe turso --json",
+            "devtools lab probe turso --check",
+            "devtools lab probe turso --tursodb /nix/store/.../bin/tursodb --json",
         ),
     ),
     CommandSpec(
