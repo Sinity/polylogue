@@ -1061,17 +1061,26 @@ def query_unit_field_names(unit_or_source: str) -> tuple[str, ...]:
     return tuple(field.name for field in descriptor.fields)
 
 
-def terminal_query_field_info(source: str, field: str) -> StructuralQueryFieldInfo | None:
-    """Return metadata for a field accepted after ``<source> where``."""
+def query_unit_field_info(unit_or_source: str, field: str) -> StructuralQueryFieldInfo | None:
+    """Return descriptor-owned metadata for a query-unit field."""
 
-    descriptor = query_unit_descriptor(source)
-    if descriptor is None or not descriptor.terminal_supported:
+    descriptor = query_unit_descriptor(unit_or_source)
+    if descriptor is None:
         return None
     normalized = field.lower()
     for field_info in descriptor.fields:
         if field_info.name == normalized:
             return field_info
     return None
+
+
+def terminal_query_field_info(source: str, field: str) -> StructuralQueryFieldInfo | None:
+    """Return metadata for a field accepted after ``<source> where``."""
+
+    descriptor = query_unit_descriptor(source)
+    if descriptor is None or not descriptor.terminal_supported:
+        return None
+    return query_unit_field_info(source, field)
 
 
 def terminal_query_pipeline_stage_infos(source: str) -> tuple[QueryPipelineStageInfo, ...]:
@@ -1229,6 +1238,7 @@ __all__ = [
     "numeric_query_operators",
     "query_unit_descriptor",
     "query_unit_descriptors",
+    "query_unit_field_info",
     "structural_query_field_info",
     "structural_query_fields",
     "structural_query_units",

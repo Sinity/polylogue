@@ -5034,9 +5034,14 @@ def _structural_predicate_clause(
         if session_field is not None:
             if session_alias is None:
                 raise ValueError(f"session-scoped {unit} predicate requires a session alias")
+            session_predicate = (
+                predicate
+                if predicate.field_ref is not None and predicate.field_ref.scope == "session"
+                else QueryFieldPredicate(field=session_field, values=predicate.values, op=predicate.op)
+            )
             return _field_predicate_clause(
                 session_alias,
-                QueryFieldPredicate(field=session_field, values=predicate.values, op=predicate.op),
+                session_predicate,
                 tags_relation="session_tags",
             )
         if unit == "message":
